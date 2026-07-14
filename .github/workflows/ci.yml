@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify pinned protocol sources
+        run: pnpm protocol:verify
+
+      - name: Check formatting, lint, and types
+        run: pnpm check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Compile external regtest smoke harness
+        run: pnpm test:regtest
+
+      - name: Build packages and applications
+        run: pnpm build

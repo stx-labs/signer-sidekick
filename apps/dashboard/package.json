@@ -1,0 +1,28 @@
+{
+  "name": "@stx-labs/signer-sidekick-dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
+    "@stx-labs/signer-sidekick-protocol": "workspace:*",
+    "@tanstack/react-query": "5.101.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
+    "vitest": "4.1.10"
+  }
+}

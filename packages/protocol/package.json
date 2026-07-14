@@ -1,0 +1,30 @@
+{
+  "name": "@stx-labs/signer-sidekick-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "generate:manager": "tsx src/generate-manager.ts",
+    "generate:mainnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/mainnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/mainnet/signer-manager.clar"
+  },
+  "dependencies": {
+    "@stacks/transactions": "7.5.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

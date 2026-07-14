@@ -1,0 +1,18 @@
+{
+  "id": "stacks-4.0.0-mainnet-reference-manager",
+  "network": "mainnet",
+  "upstream": {
+    "tag": "4.0.0",
+    "commit": "5595f08a244362cefc316f95b398510a2b8cb791",
+    "sourceSha256": "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf"
+  },
+  "contracts": {
+    "pox5": "SP000000000000000000002Q6VF78.pox-5",
+    "sbtcDeployer": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4"
+  },
+  "expectedReplacements": {
+    "pox5": 8,
+    "sbtcDeployer": 13
+  },
+  "productionApproved": false
+}

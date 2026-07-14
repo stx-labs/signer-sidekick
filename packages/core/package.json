@@ -1,0 +1,22 @@
+{
+  "name": "@stx-labs/signer-sidekick-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
