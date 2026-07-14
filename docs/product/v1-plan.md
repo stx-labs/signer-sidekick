@@ -1013,7 +1013,6 @@ Against the exact generated manager artifact and released PoX-5 contract:
 - Protocol profile independently reviewed against stacks-core 4.0.0.
 - Generated mainnet manager artifact source hash independently reproduced.
 - Earliest safe manager-claim condition and normal/fallback `calculate-rewards` timing confirmed or encoded through authoritative contract readiness checks.
-- Matter and Matter Mono redistribution rights confirmed for this GPL-3.0 repository and release image, or the type tokens changed to redistributable substitutes before release.
 - Canonical Stacks/STX/Bitcoin assets needed by the UI are sourced with provenance and redistribution terms; no locally redrawn brand marks ship.
 - Design-system token use, light/dark behavior, responsive layouts, and WCAG 2.2 AA checks pass for all critical operator flows.
 - Exact Stacks 4.0.0 signer grant command and JSON output tested end to end.
@@ -1050,7 +1049,7 @@ Deliverables:
 - Confirm earliest manager-claim condition and expected normal/fallback global calculator behavior.
 - Confirm API v9 endpoint/event contracts with the API team.
 - Record architecture decisions for runtime, database, UI, and auth.
-- Confirm design-system font and brand-asset redistribution rights and obtain any missing canonical assets required for v1.
+- Confirm canonical design-system brand assets required for v1.
 
 Exit: no unresolved question can materially change custody, contract identity, transaction authority, or the core data model.
 
@@ -1243,7 +1242,6 @@ These are the remaining decisions that should be answered during review. Propose
 | UI auth | Single local operator session; loopback bind | No |
 | Mainnet confirmation policy | Conservative configurable default established in testing | **Yes, before automation GA** |
 | API endpoint/event guarantees | Ask maintainers; use conservative replay/read-only reconciliation regardless | No architecture blocker |
-| Matter/Matter Mono redistribution | Confirm coverage for a public GPL-3.0 repository and container; otherwise select metrically appropriate open substitutes | **Yes, before UI release** |
 | Canonical brand assets | Pull only the Stacks/STX/Bitcoin SVGs used by v1 with provenance; use Phosphor for generic icons | **Yes, before UI release** |
 
 ### Requested reviewers
@@ -1255,7 +1253,7 @@ These are the remaining decisions that should be answered during review. Propose
 - **Security:** source recognition, key separation, transaction post conditions, auth, supply chain.
 - **Pool operators:** dashboard language, payout policies, alert thresholds, recovery workflows.
 - **Open source/release:** GPL notices, corresponding source, and upstream provenance in release artifacts.
-- **Stacks design/brand:** font redistribution, canonical asset provenance, token/component alignment, and testnet treatment.
+- **Stacks design/brand:** canonical asset provenance, token/component alignment, and testnet treatment.
 
 ---
 
@@ -1278,4 +1276,4 @@ A reviewer should explicitly mark each item accepted, changed, or unresolved:
 - [ ] Batch contracts and bond pooling are appropriately deferred.
 - [ ] Milestones and acceptance criteria are sufficient to create implementation issues.
 - [ ] GPL-3.0 release and upstream-provenance obligations are covered.
-- [ ] The Stacks Labs design-system contract, asset provenance, and font licensing are accepted.
+- [ ] The Stacks Labs design-system contract and asset provenance are accepted.

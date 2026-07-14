@@ -1,4 +1,4 @@
-<!-- Vendored verbatim from Claude Design project "Stacks Labs Design System" on 2026-07-14. See DESIGN.md for provenance and re-sync instructions. -->
+<!-- Vendored from Claude Design project "Stacks Labs Design System" on 2026-07-14. See DESIGN.md for local licensing status and re-sync instructions. -->
 
 # Stacks Labs Design System
 
@@ -262,4 +262,4 @@ All three brand families are self-hosted from `/fonts` and registered via `@font
 - **Instrument Sans** (`--font-body`) — `fonts/InstrumentSans-Regular.woff2` + `InstrumentSans-Italic.woff2`.
 - **Open Sauce Sans** — included as a secondary fallback in the Explorer codebase.
 
-**License note:** verify Matter / Matter Mono license coverage with Stacks Labs before production use. The licensed `.woff2` files in `/fonts` render the real typeface.
+Matter and Matter Mono redistribution for Signer Sidekick has been confirmed by Stacks Labs. The vendored `.woff2` files render the real typeface.

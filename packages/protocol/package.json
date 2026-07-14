@@ -8,6 +8,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./clarity-codecs": {
+      "types": "./dist/clarity-codecs.d.ts",
+      "default": "./dist/clarity-codecs.js"
+    },
+    "./manager-adapter": {
+      "types": "./dist/manager-adapter.d.ts",
+      "default": "./dist/manager-adapter.js"
+    },
+    "./manager-artifact": {
+      "types": "./dist/manager-artifact.d.ts",
+      "default": "./dist/manager-artifact.js"
     }
   },
   "scripts": {

@@ -14,10 +14,11 @@ observatory dashboards with tables, block heights, hashes, and status badges.
 | `tokens/tokens.css` | All color/type/spacing/radius/elevation tokens (light + dark via `[data-theme="dark"]`). Link it; never hard-code hex |
 | `fonts/` | Vendored Matter, Matter Mono, Instrument Sans, and Open Sauce Sans webfont files referenced by the tokens |
 
-`README.md` and `SKILL.md` are verbatim copies from the Claude Design project
-(synced 2026-07-14). `tokens/tokens.css` has the same vendored token content but is
-mechanically formatted by this repository. The project remains the source of truth —
-re-sync before major design pushes.
+`SKILL.md` is a verbatim copy from the Claude Design project (synced 2026-07-14).
+`README.md` carries a local licensing-status update, and `tokens/tokens.css` has the same
+vendored token content with local font-resolution and formatting adjustments. The project
+remains the source of truth — re-sync before major design pushes and reapply these documented
+local deltas.
 
 ## What's NOT vendored (pull on demand from the Claude Design project)
 
@@ -26,12 +27,9 @@ re-sync before major design pushes.
   renders for every primitive, composition recipes, and full-page example screens
   (Explorer, Bridge, Dual Stacking, Bitcoin Staking marketing pages).
 
-The font files are present locally, but **Matter and Matter Mono are licensed fonts**.
-Their presence is not proof that they may be redistributed in a public GPL-3.0 repository
-or container image. Confirm coverage with Stacks Labs before shipping; use redistributable
-fallbacks if coverage is not confirmed. `tokens.css` also references
-`MatterSQMono-Medium.woff`, which is not currently present, so the weight-500 mono face
-must either be supplied with approved provenance or removed before production.
+Matter and Matter Mono redistribution for this project has been confirmed by Stacks Labs.
+The optional `MatterSQMono-Medium.woff` file is not present, so `tokens.css` maps weights
+400–500 to the vendored regular Matter Mono face instead of referencing a missing asset.
 
 `SKILL.md` contains one contradictory shorthand row that calls the default card
 `--surface-secondary`. Follow the detailed surface-system sections in `SKILL.md` and

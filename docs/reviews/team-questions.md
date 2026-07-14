@@ -49,10 +49,8 @@ mainnet-specific.
 
 ## Stacks design and open-source release
 
-1. May Matter and Matter Mono be redistributed in this internal repository, a future public
-   GPL-3.0 repository, and container images?
-2. Which canonical Stacks, STX, and Bitcoin SVG assets should be used, and under what terms?
-3. Does the documented mainnet/testnet accent treatment match the current product system?
+1. Which canonical Stacks, STX, and Bitcoin SVG assets should be used, and under what terms?
+2. Does the documented mainnet/testnet accent treatment match the current product system?
 
 ## Pool operators
 

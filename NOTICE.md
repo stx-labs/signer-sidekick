@@ -5,6 +5,4 @@ the exact version and hashes recorded in `contracts/PROVENANCE.md`. The upstream
 licensed under GPL-3.0.
 
 The `design/` directory contains Stacks Labs design-system guidance, tokens, and font files.
-Matter and Matter Mono redistribution rights must be confirmed before those font files are
-included in a public release artifact. Their presence in this internal repository does not
-establish redistribution rights.
+Matter and Matter Mono redistribution for this project has been confirmed by Stacks Labs.
