@@ -84,11 +84,34 @@ const apiStatusSchema = z.object({
   }),
 });
 
+const signerStakersPageSchema = z
+  .object({
+    total: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(200),
+    cursor: z
+      .object({
+        next: z.string().nullable(),
+        previous: z.string().nullable(),
+        current: z.string().nullable(),
+      })
+      .strict(),
+    results: z.array(
+      z
+        .object({
+          staker: z.string().refine(validatePrincipal, "Invalid staker principal"),
+          types: z.array(z.enum(["stx", "btc"])).min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 export type NodeInfo = z.infer<typeof nodeInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
 export type ContractSource = z.infer<typeof contractSourceSchema>;
 export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
+export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 
 type Fetch = typeof fetch;
 
@@ -200,6 +223,24 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v1/status`,
       apiStatusSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getSignerStakers(
+    signerPrincipal: string,
+    cursor: string | null = null,
+    limit = 200,
+  ): Promise<SignerStakersPage> {
+    if (!validatePrincipal(signerPrincipal)) throw new Error("Invalid signer principal");
+    if (cursor !== null && !validatePrincipal(cursor)) throw new Error("Invalid staker cursor");
+    const parsedLimit = z.number().int().min(1).max(200).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit) });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/staking/signers/${encodeURIComponent(signerPrincipal)}/stakers?${query}`,
+      signerStakersPageSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }

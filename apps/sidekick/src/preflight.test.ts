@@ -8,6 +8,7 @@ const config: SidekickConfig = {
   apiUrl: "https://api.mainnet.hiro.so",
   apiKeyHeader: "x-api-key",
   maxApiBurnBlockLag: 12,
+  databasePath: "/tmp/sidekick.sqlite",
 };
 
 function sources(overrides: Partial<PreflightSources> = {}): PreflightSources {

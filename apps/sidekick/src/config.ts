@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { z } from "zod";
 
 export const sidekickNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
@@ -15,6 +16,7 @@ export interface SidekickConfig {
   apiKey?: string;
   apiKeyHeader: string;
   maxApiBurnBlockLag: number;
+  databasePath: string;
 }
 
 function parseUrl(value: string, name: string): string {
@@ -49,6 +51,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     ...(env.STACKS_API_KEY ? { apiKey: env.STACKS_API_KEY } : {}),
     apiKeyHeader: env.STACKS_API_KEY_HEADER ?? "x-api-key",
     maxApiBurnBlockLag,
+    databasePath:
+      env.SIDEKICK_DATABASE_PATH === ":memory:"
+        ? ":memory:"
+        : resolve(env.SIDEKICK_DATABASE_PATH ?? "data/sidekick.sqlite"),
   };
 }
 

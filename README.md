@@ -15,6 +15,7 @@ This repository is in the protocol-foundation phase. It is not ready for mainnet
 - [round 2 review and product-owner disposition](docs/reviews/round2-disposition.md)
 - [development setup](docs/operator/development.md)
 - [upstream source provenance](contracts/PROVENANCE.md)
+- [SQLite persistence decision](docs/architecture/decisions/0002-sqlite-persistence.md)
 
 ## Current scaffold
 
@@ -50,6 +51,7 @@ another hosted or self-managed API.
 pnpm --filter @stx-labs/signer-sidekick build
 
 pnpm --filter @stx-labs/signer-sidekick cli config validate
+pnpm --filter @stx-labs/signer-sidekick cli doctor
 pnpm --filter @stx-labs/signer-sidekick cli preflight
 pnpm --filter @stx-labs/signer-sidekick cli \
   init fresh <admin-principal> <contract-name> <output-directory> <auth-id>

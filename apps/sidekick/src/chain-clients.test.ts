@@ -29,6 +29,42 @@ describe("Stacks API client", () => {
     );
     expect(fetchImpl.mock.calls[0]?.[0]).not.toContain("top-secret");
   });
+
+  it("reads the API v9 signer-stakers cursor contract without repr parsing", async () => {
+    const signer = "SP000000000000000000002Q6VF78.signer-manager";
+    const cursor = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          total: 2,
+          limit: 1,
+          cursor: { next: cursor, previous: null, current: null },
+          results: [{ staker: "SP000000000000000000002Q6VF78", types: ["stx"] }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getSignerStakers(signer, cursor, 1)).resolves.toMatchObject({
+      total: 2,
+      results: [{ types: ["stx"] }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v3/staking/signers/${signer}/stakers?limit=1&cursor=${cursor}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("rejects signer-staker cursors before making an API request", () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    expect(() =>
+      client.getSignerStakers("SP000000000000000000002Q6VF78.signer-manager", "not-a-principal"),
+    ).toThrow("Invalid staker cursor");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe("Stacks node client", () => {

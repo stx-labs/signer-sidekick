@@ -15,6 +15,7 @@ describe("Sidekick configuration", () => {
       apiKey: "secret-key",
       apiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
+      databasePath: expect.stringMatching(/data\/sidekick\.sqlite$/),
     });
     expect(redactConfig(config)).not.toHaveProperty("apiKey");
     expect(redactConfig(config)).toMatchObject({ apiKeyConfigured: true });

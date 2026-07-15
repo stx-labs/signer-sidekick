@@ -12,6 +12,7 @@ import { verifyManagerRegistration } from "./registration-verification.js";
 import { createServer } from "./server.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
+import { openSidekickStore } from "./storage/store.js";
 import { createSupportBundle } from "./support-bundle.js";
 
 const [command = "help", ...arguments_] = process.argv.slice(2);
@@ -48,6 +49,25 @@ if (command === "serve") {
 } else if (command === "config" && arguments_[0] === "validate") {
   const config = loadConfig(process.env);
   console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));
+} else if (command === "doctor") {
+  const config = loadConfig(process.env);
+  const { store, backupPath } = await openSidekickStore(config.databasePath);
+  try {
+    console.log(
+      JSON.stringify(
+        {
+          status: "ok",
+          config: redactConfig(config),
+          database: store.databaseStatus(),
+          migrationBackupCreated: backupPath,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    store.close();
+  }
 } else if (command === "init" && arguments_[0] === "fresh") {
   const [, adminPrincipal, contractName, outputDirectory, authId, signerConfigPath] = arguments_;
   if (!adminPrincipal || !contractName || !outputDirectory || !authId) {
@@ -292,6 +312,7 @@ if (command === "serve") {
 Usage:
   sidekick serve    Start the loopback-only local API
   sidekick config validate  Validate and print redacted endpoint configuration
+  sidekick doctor  Open, migrate, and verify the local SQLite store
   sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
   sidekick init attach <manager>  Build an activation plan from a running manager
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
@@ -310,5 +331,6 @@ Environment:
   SIDEKICK_NETWORK     mainnet (default), testnet, devnet, or regtest
   STACKS_API_URL       Optional for mainnet/testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
+  SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
   SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory`);
 }
