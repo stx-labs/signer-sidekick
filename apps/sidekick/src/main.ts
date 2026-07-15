@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
+import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { renderManagerDeployment } from "./manager-render.js";
 import { inspectDeployedManager } from "./manager-verification.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import { createServer } from "./server.js";
+import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
 
 const [command = "help", ...arguments_] = process.argv.slice(2);
@@ -16,6 +18,21 @@ function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
     node: new StacksNodeClient(config.nodeRpcUrl),
     api: new StacksApiClient(config.apiUrl, config.apiKey, config.apiKeyHeader),
   };
+}
+
+async function setupContext(managerPrincipal: string) {
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const [preflight, manager] = await Promise.all([
+    runOperatorPreflight(config, node, api),
+    inspectDeployedManager(node, config.network, managerPrincipal),
+  ]);
+  const registration =
+    manager.attachAllowed && preflight.pox.pox5ContractId
+      ? await verifyManagerRegistration(node, preflight.pox.pox5ContractId, managerPrincipal)
+      : null;
+  const setup = await readPoolSetupStatus(node, preflight, manager, registration);
+  return { config, preflight, manager, registration, setup };
 }
 
 if (command === "serve") {
@@ -44,6 +61,34 @@ if (command === "serve") {
     JSON.stringify({ config: redactConfig(config), preflight, manager, registration }, null, 2),
   );
   if (preflight.status === "fail" || !manager.attachAllowed) process.exitCode = 2;
+} else if (command === "setup" && arguments_[0] === "status") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick setup status <manager-principal>");
+  const { config, preflight, manager, registration, setup } = await setupContext(managerPrincipal);
+  console.log(
+    JSON.stringify(
+      { config: redactConfig(config), preflight, manager, registration, setup },
+      null,
+      2,
+    ),
+  );
+  if (setup.status === "blocked") process.exitCode = 2;
+} else if (command === "pool" && arguments_[0] === "enrollment-info") {
+  const [, managerPrincipal, poolConfigPath] = arguments_;
+  if (!managerPrincipal || !poolConfigPath) {
+    throw new Error("Usage: sidekick pool enrollment-info <manager-principal> <pool-config.json>");
+  }
+  const poolConfig = JSON.parse(await readFile(resolve(poolConfigPath), "utf8")) as unknown;
+  const { preflight, manager, registration, setup } = await setupContext(managerPrincipal);
+  const enrollment = createPoolEnrollmentDocument(
+    poolConfig,
+    preflight,
+    manager,
+    registration,
+    setup,
+  );
+  console.log(JSON.stringify(enrollment, null, 2));
+  if (!enrollment.readiness.enrollmentReady) process.exitCode = 2;
 } else if (command === "manager" && arguments_[0] === "render") {
   const [, adminPrincipal, contractName, outputDirectory] = arguments_;
   if (!adminPrincipal || !contractName || !outputDirectory) {
@@ -139,6 +184,8 @@ Usage:
   sidekick serve    Start the loopback-only local API
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
   sidekick attach <manager>  Verify and attach an existing manager in Observe mode
+  sidekick setup status <manager>  Verify registration and current/next eligibility
+  sidekick pool enrollment-info <manager> <pool-config.json>
   sidekick manager render <admin> <name> <output-dir>
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
   sidekick signer-grant verify <manager> <auth-id> <signer-output.json>

@@ -6,6 +6,11 @@ export const STACKS_CORE_4_0_0 = {
   referenceManagerSourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
 } as const;
 
+// PoX-5's SIGNER_SET_MIN_USTX constant. Keep this value pinned to the vendored
+// stacks-core profile rather than deriving eligibility from the API's global
+// stacking minimum, which represents a different protocol value.
+export const POX5_SIGNER_SET_MIN_USTX = 50_000_000_000n;
+
 export const REFERENCE_MANAGER_PUBLIC_FUNCTIONS = [
   "validate-stake!",
   "claim-rewards",

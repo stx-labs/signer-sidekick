@@ -40,6 +40,26 @@ pnpm build
 See [the development guide](docs/operator/development.md) for the upstream refresh and
 regtest workflows.
 
+### Activation CLI
+
+Connected commands require `STACKS_NODE_RPC_URL`. Mainnet and testnet default to the matching
+Hiro API; `STACKS_API_URL`, `STACKS_API_KEY`, and `STACKS_API_KEY_HEADER` can point Sidekick at
+another hosted or self-managed API.
+
+```sh
+pnpm --filter @stx-labs/signer-sidekick build
+
+pnpm --filter @stx-labs/signer-sidekick cli preflight
+pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
+pnpm --filter @stx-labs/signer-sidekick cli \
+  pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json
+```
+
+The enrollment command writes a versioned public JSON document to standard output. Its fee is
+explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields
+come from the connected node. It does not collect staker inputs or connect, sign, or broadcast for
+a wallet.
+
 ## License
 
 Signer Sidekick is licensed under GPL-3.0-only. Vendored upstream files retain their own

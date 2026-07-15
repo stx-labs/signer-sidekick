@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "displayName": "Example STX Pool",
+  "websiteUrl": "https://pool.example.com",
+  "support": {
+    "email": "support@pool.example.com",
+    "url": "https://pool.example.com/support"
+  },
+  "currentFeeBips": 500,
+  "rewardDestinations": {
+    "directSbtc": true,
+    "bitcoinL1": false
+  },
+  "durationPolicy": {
+    "minimumCycles": 1,
+    "maximumCycles": 12
+  }
+}
