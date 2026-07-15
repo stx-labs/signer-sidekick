@@ -387,7 +387,24 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/api/v1/onboarding", async (_request, reply) => {
     if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
-    return { onboarding: options.onboarding.get() };
+    return {
+      onboarding: options.onboarding.get(),
+      wizard: options.onboarding.wizardState(),
+    };
+  });
+  server.post("/api/v1/onboarding/dismiss", async (_request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    return {
+      onboarding: options.onboarding.get(),
+      wizard: options.onboarding.dismissWizard(),
+    };
+  });
+  server.post("/api/v1/onboarding/resume", async (_request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    return {
+      onboarding: options.onboarding.get(),
+      wizard: options.onboarding.resumeWizard(),
+    };
   });
   server.post("/api/v1/onboarding/start", async (request, reply) => {
     if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });

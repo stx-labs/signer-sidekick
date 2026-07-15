@@ -29,7 +29,8 @@ Sidekick instance to silently switch managers.
 
 SQLite migration 8 adds a singleton `onboarding_state` row. Migration 9 adds an append-only
 `onboarding_audit` that records action, path, step, status, and time without storing submitted
-payloads. The state row stores the chosen path, current
+payloads. Migration 10 stores the independent wizard-dismissal preference and its audit history.
+The state row stores the chosen path, current
 step, status, activation plan, generated public artifacts, and verified signer-grant output. Each
 transition is committed before its response is returned, so a browser reload or Sidekick restart
 resumes at the stored step.
@@ -50,6 +51,11 @@ Starting the same path is a no-op, and switching paths requires explicit confirm
 saved progress is reset. Deployment and registration screens poll every 20 seconds while visible and also offer manual
 refresh. Poll failures are non-destructive: the stored step remains available and the operator can
 retry after their node or API recovers.
+
+The wizard is optional. An operator who configured the manager, node, and API directly can select
+**Skip guided setup** at any time. Sidekick records the dismissal separately from activation state,
+continues to expose every operator surface, and does not represent skipped checks as complete.
+Selecting **Open guided setup** later restores the saved path and step without discarding progress.
 
 ## Runtime settings and secrets
 

@@ -443,6 +443,26 @@ const migrations: readonly Migration[] = [
         ON onboarding_audit (changed_at DESC, event_id DESC);
     `,
   },
+  {
+    version: 10,
+    name: "onboarding_wizard_preference",
+    sql: `
+      CREATE TABLE onboarding_wizard_preference (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        dismissed_at TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE onboarding_wizard_audit (
+        event_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN ('dismissed', 'resumed')),
+        changed_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX onboarding_wizard_audit_recent
+        ON onboarding_wizard_audit (changed_at DESC, event_id DESC);
+    `,
+  },
 ];
 
 const sourceInputSchema = z
@@ -1497,6 +1517,70 @@ export class SidekickStore {
       path: z.enum(["attach", "fresh"]).parse(row.path),
       currentStep: z.string().min(1).parse(row.current_step),
       status: z.enum(["in-progress", "blocked", "complete"]).parse(row.status),
+      changedAt: z.iso.datetime().parse(row.changed_at),
+    }));
+  }
+
+  getOnboardingWizardPreference(): {
+    dismissedAt: string | null;
+    updatedAt: string;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT dismissed_at, updated_at
+         FROM onboarding_wizard_preference WHERE singleton_id = 1`,
+      )
+      .get() as { dismissed_at: string | null; updated_at: string } | undefined;
+    if (!row) return null;
+    return {
+      dismissedAt: z.iso.datetime().nullable().parse(row.dismissed_at),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    };
+  }
+
+  setOnboardingWizardDismissed(dismissed: boolean, changedAt: string): void {
+    const parsedDismissed = z.boolean().parse(dismissed);
+    const parsedChangedAt = z.iso.datetime().parse(changedAt);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO onboarding_wizard_preference (singleton_id, dismissed_at, updated_at)
+           VALUES (1, ?, ?)
+           ON CONFLICT (singleton_id) DO UPDATE SET
+             dismissed_at = excluded.dismissed_at,
+             updated_at = excluded.updated_at`,
+        )
+        .run(parsedDismissed ? parsedChangedAt : null, parsedChangedAt);
+      this.db
+        .prepare(
+          `INSERT INTO onboarding_wizard_audit (event_id, action, changed_at)
+           VALUES (?, ?, ?)`,
+        )
+        .run(randomUUID(), parsedDismissed ? "dismissed" : "resumed", parsedChangedAt);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listOnboardingWizardAudit(limit = 20): Array<{
+    action: "dismissed" | "resumed";
+    changedAt: string;
+  }> {
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT action, changed_at
+         FROM onboarding_wizard_audit ORDER BY changed_at DESC, event_id DESC LIMIT ?`,
+      )
+      .all(parsedLimit) as Array<{
+      action: "dismissed" | "resumed";
+      changed_at: string;
+    }>;
+    return rows.map((row) => ({
+      action: z.enum(["dismissed", "resumed"]).parse(row.action),
       changedAt: z.iso.datetime().parse(row.changed_at),
     }));
   }

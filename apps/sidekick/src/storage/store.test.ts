@@ -67,7 +67,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 9,
+      schemaVersion: 10,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -116,6 +116,21 @@ describe("Sidekick SQLite store", () => {
         status: "in-progress",
         changedAt: later,
       },
+    ]);
+
+    store.setOnboardingWizardDismissed(true, later);
+    expect(store.getOnboardingWizardPreference()).toEqual({
+      dismissedAt: later,
+      updatedAt: later,
+    });
+    store.setOnboardingWizardDismissed(false, "2026-07-15T13:00:00.000Z");
+    expect(store.getOnboardingWizardPreference()).toEqual({
+      dismissedAt: null,
+      updatedAt: "2026-07-15T13:00:00.000Z",
+    });
+    expect(store.listOnboardingWizardAudit()).toEqual([
+      { action: "resumed", changedAt: "2026-07-15T13:00:00.000Z" },
+      { action: "dismissed", changedAt: later },
     ]);
   });
 
@@ -703,7 +718,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 9,
+      schemaVersion: 10,
       journalMode: "wal",
     });
   });

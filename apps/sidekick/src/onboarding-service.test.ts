@@ -177,4 +177,39 @@ describe("onboarding service", () => {
     expect(onboarding.get()).toBeNull();
     expect(() => onboarding.artifact("source")).toThrow("Stored onboarding state is invalid");
   });
+
+  it("records a reversible wizard dismissal without discarding onboarding progress", async () => {
+    const { onboarding } = await service();
+    onboarding.start("fresh", false, "2026-07-15T12:05:00.000Z");
+    const prepared = await onboarding.prepareFresh(
+      {
+        adminPrincipal: "SP000000000000000000002Q6VF78",
+        contractName: "signer-manager",
+        authId: "7",
+        signerConfigPath: "/etc/stacks-signer/signer.toml",
+      },
+      "2026-07-15T12:10:00.000Z",
+    );
+
+    expect(onboarding.dismissWizard("2026-07-15T12:15:00.000Z")).toMatchObject({
+      dismissed: true,
+      dismissedAt: "2026-07-15T12:15:00.000Z",
+      audit: [{ action: "dismissed" }],
+    });
+    expect(onboarding.get()).toMatchObject({
+      path: "fresh",
+      currentStep: prepared.currentStep,
+      artifact: { available: true },
+    });
+    expect(onboarding.resumeWizard("2026-07-15T12:20:00.000Z")).toMatchObject({
+      dismissed: false,
+      dismissedAt: null,
+      audit: [{ action: "resumed" }, { action: "dismissed" }],
+    });
+    expect(onboarding.get()).toMatchObject({
+      path: "fresh",
+      currentStep: prepared.currentStep,
+      artifact: { available: true },
+    });
+  });
 });

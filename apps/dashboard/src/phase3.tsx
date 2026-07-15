@@ -63,6 +63,13 @@ interface OnboardingState {
   }>;
 }
 
+interface OnboardingWizardState {
+  dismissed: boolean;
+  dismissedAt: string | null;
+  updatedAt: string | null;
+  audit: Array<{ action: "dismissed" | "resumed"; changedAt: string }>;
+}
+
 export interface RuntimeSettings {
   schemaVersion: 1;
   revision: number;
@@ -335,6 +342,12 @@ function workflowStepId(path: "attach" | "fresh", rawStep: string): string {
 
 export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string }) {
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [wizard, setWizard] = useState<OnboardingWizardState>({
+    dismissed: false,
+    dismissedAt: null,
+    updatedAt: null,
+    audit: [],
+  });
   const [path, setPath] = useState<"attach" | "fresh">("attach");
   const [selectedStep, setSelectedStep] = useState<string>("preflight");
   const [busy, setBusy] = useState(false);
@@ -355,7 +368,11 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
 
   const load = useCallback(async () => {
     try {
-      const result = await api<{ onboarding: OnboardingState | null }>(token, "/api/v1/onboarding");
+      const result = await api<{
+        onboarding: OnboardingState | null;
+        wizard: OnboardingWizardState;
+      }>(token, "/api/v1/onboarding");
+      setWizard(result.wizard);
       if (result.onboarding) {
         setOnboarding(result.onboarding);
         setPath(result.onboarding.path);
@@ -464,26 +481,92 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
     }
   };
 
+  const setWizardDismissed = async (dismissed: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api<{
+        onboarding: OnboardingState | null;
+        wizard: OnboardingWizardState;
+      }>(token, dismissed ? "/api/v1/onboarding/dismiss" : "/api/v1/onboarding/resume", {
+        method: "POST",
+      });
+      setWizard(result.wizard);
+      if (result.onboarding) {
+        setOnboarding(result.onboarding);
+        setPath(result.onboarding.path);
+        setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (wizard.dismissed) {
+    return (
+      <>
+        <PageHead
+          title="Initial Setup"
+          lede="Guided setup is optional. Sidekick can operate from configuration supplied directly by the operator."
+        />
+        <ErrorCallout error={error} />
+        <div className="card-standout phase3-action-card manual-setup-card">
+          <div className="card-head">
+            <h2>Using manual configuration</h2>
+            <StatusBadge status="Wizard skipped" />
+          </div>
+          <p className="muted">
+            Sidekick will continue using the configured manager principal, node, and API. Skipping
+            does not mark activation checks complete and does not erase saved wizard progress.
+          </p>
+          {wizard.dismissedAt ? (
+            <p className="help">Skipped {new Date(wizard.dismissedAt).toLocaleString()}</p>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn-accent"
+            disabled={busy}
+            onClick={() => void setWizardDismissed(false)}
+          >
+            Open guided setup
+          </button>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <PageHead
         title="Initial Setup"
         lede="Attach a running manager or prepare a fresh PoX-5 deployment. Sidekick verifies and generates artifacts; signing and broadcast stay outside the app."
         actions={
-          <div className="seg">
+          <div className="setup-head-actions">
+            <div className="seg">
+              <button
+                type="button"
+                className={path === "attach" ? "on" : ""}
+                onClick={() => void start("attach")}
+              >
+                Attach existing
+              </button>
+              <button
+                type="button"
+                className={path === "fresh" ? "on" : ""}
+                onClick={() => void start("fresh")}
+              >
+                Fresh setup
+              </button>
+            </div>
             <button
               type="button"
-              className={path === "attach" ? "on" : ""}
-              onClick={() => void start("attach")}
+              className="btn btn-tertiary"
+              disabled={busy}
+              onClick={() => void setWizardDismissed(true)}
             >
-              Attach existing
-            </button>
-            <button
-              type="button"
-              className={path === "fresh" ? "on" : ""}
-              onClick={() => void start("fresh")}
-            >
-              Fresh setup
+              Skip guided setup
             </button>
           </div>
         }

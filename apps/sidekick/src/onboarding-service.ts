@@ -141,6 +141,16 @@ export interface PublicOnboardingState {
   };
 }
 
+export interface PublicOnboardingWizardState {
+  dismissed: boolean;
+  dismissedAt: string | null;
+  updatedAt: string | null;
+  audit: Array<{
+    action: "dismissed" | "resumed";
+    changedAt: string;
+  }>;
+}
+
 function statusFor(plan: ActivationPlan | null): PublicOnboardingState["status"] {
   if (!plan) return "in-progress";
   if (plan.status === "blocked") return "blocked";
@@ -167,6 +177,26 @@ export class OnboardingService {
       contractsDirectory: string;
     },
   ) {}
+
+  wizardState(): PublicOnboardingWizardState {
+    const preference = this.options.store.getOnboardingWizardPreference();
+    return {
+      dismissed: Boolean(preference?.dismissedAt),
+      dismissedAt: preference?.dismissedAt ?? null,
+      updatedAt: preference?.updatedAt ?? null,
+      audit: this.options.store.listOnboardingWizardAudit(),
+    };
+  }
+
+  dismissWizard(observedAt = new Date().toISOString()): PublicOnboardingWizardState {
+    this.options.store.setOnboardingWizardDismissed(true, observedAt);
+    return this.wizardState();
+  }
+
+  resumeWizard(observedAt = new Date().toISOString()): PublicOnboardingWizardState {
+    this.options.store.setOnboardingWizardDismissed(false, observedAt);
+    return this.wizardState();
+  }
 
   get(): PublicOnboardingState | null {
     const stored = this.options.store.getOnboardingState();
