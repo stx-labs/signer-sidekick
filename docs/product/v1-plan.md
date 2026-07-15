@@ -1,6 +1,6 @@
 # Signer Sidekick: PoX-5 Pool Operator Control Plane
 
-- **Status:** Detailed v1 scope for review
+- **Status:** Approved v1 scope; activation and read-only control plane implemented, automation gated
 - **Last updated:** July 14, 2026
 - **Working name:** Signer Sidekick
 - **Target:** Stacks 4.0 / PoX-5 (SIP-045)
@@ -83,7 +83,7 @@ The product may generate operator-facing values and instructions that a pool pub
 ### 2.4 Non-goals for v1
 
 - Installing, upgrading, restarting, or configuring the Stacks node or `stacks-signer` process automatically.
-- Reading signer `/metrics`, `/info`, logs, host resources, proposal responses, or block-signing performance.
+- Reading signer metrics, logs, host resources, proposal responses, or block-signing performance. V1 may make one narrowly scoped, read-only version/liveness probe after the signer tooling team confirms its supported endpoint and response field.
 - Competing with Slotwatch or other consensus-health products.
 - Pooling sBTC protocol bonds, preparing SPV proofs, managing L1 bond lockups, or processing bond-member rewards.
 - Hosting a public pool directory or end-user enrollment UI.
@@ -291,9 +291,9 @@ For any failed or delayed job, the operator sees:
 
 Retries reuse the same logical idempotency key. The operator never has to guess whether a duplicate claim or settlement is safe.
 
-### 5.5 Pool enrollment information page
+### 5.5 Pool enrollment information artifact
 
-Sidekick should generate operator-facing and optionally public material that a pool can use with official enrollment interfaces such as Leather. It does not connect a staker wallet, encode user-specific calldata, sign, or submit a stake.
+Sidekick generates an embeddable pool card and versioned JSON that an operator hosts on a site they already run. Sidekick itself exposes no public route. It does not connect a staker wallet, encode user-specific calldata, sign, or submit a stake.
 
 The page includes only information needed to identify and evaluate the pool in an official interface:
 
@@ -306,7 +306,7 @@ The page includes only information needed to identify and evaluate the pool in a
 - Current pool STX total and margin above/below the 50,000 STX threshold.
 - Copy buttons, explorer links, data height/freshness, and links into supported official enrollment platforms.
 
-The same fields are available as a versioned, read-only JSON document so official platforms can consume them later. Provider-specific sections are adapters over this metadata and ship only after the provider publishes or confirms its PoX-5 requirements. The page must not request an amount, Bitcoin address, wallet connection, signature, or transaction approval.
+The generator offers a live artifact, which may query only unauthenticated public chain/API endpoints from the operator's site, and a static HTML/JSON snapshot with values baked in. It must never embed the operator's API key or expose the gas payer, job internals, alerts, or local database data. Provider-specific sections are adapters over this metadata and ship only after the provider publishes or confirms its PoX-5 requirements. The card must not request an amount, Bitcoin address, wallet connection, signature, or transaction approval.
 
 Visually this remains a compact product-information surface, not a marketing landing page. It uses the same tokens, network treatment, data-freshness semantics, and accessibility requirements as the operator dashboard, with no persuasive copy or decorative modules.
 
@@ -490,9 +490,10 @@ Default Docker Compose deployment:
 - One secret mount for the gas-payer key.
 - Connection to the operator's existing Stacks node RPC, preferably over localhost/private networking.
 - Connection to a Stacks API v9 endpoint. Use the network-appropriate Hiro API by default, with a configurable self-hosted base URL and optional secret API key.
+- Optional read-only connection to a confirmed signer version/liveness endpoint; no signer metrics, logs, signing activity, or key material.
 - Loopback-only HTTP bind by default; reverse proxy/TLS documented for remote use.
 
-Sidekick may run on the signer host, but it does not mount signer configuration, signer keys, Docker socket, or host process controls.
+Sidekick may run on the signer host, but it does not mount signer configuration, signer keys, Docker socket, or host process controls. The optional signer connection is restricted to the externally configured version/liveness endpoint.
 
 ### 8.5 Internal component boundaries
 
@@ -744,7 +745,9 @@ The detailed closed surface-system rules in `design/README.md` and `design/SKILL
 3. **Pool**
 4. **Rewards**
 5. **Operations**
-6. **Setup**
+6. **Initial Setup**
+7. **Public Pool Page**
+8. **Settings**
 
 ### 12.3 Screen jobs
 
@@ -758,6 +761,8 @@ Each screen must answer one primary operator question. Supporting modules remain
 | Rewards | Where, if anywhere, is the reward pipeline blocked? |
 | Operations | What is queued, in flight, failed, or awaiting approval? |
 | Setup | What must this operator complete next to attach or launch safely? |
+| Public Pool Page | What reviewed artifact should the operator publish on their own site? |
+| Settings | Which ongoing deployment and display settings are active? |
 
 ### 12.4 Overview
 
@@ -810,15 +815,20 @@ Each screen must answer one primary operator question. Supporting modules remain
 
 - Attach/fresh wizard state.
 - Node/API/profile preflight.
-- Data-source settings with network-appropriate Hiro defaults, custom/self-hosted API URL, optional API key, connection test, detected API version, and indexed-tip lag.
-- Pool enrollment-information page settings, public-page toggle, and official-platform links.
 - Manager artifact/deployment verification.
 - Signer grant and registration ceremony.
 - Gas-payer and alert configuration.
 - Dry-run report and mode activation.
 - Redacted operator record and support bundle export.
 
-### 12.10 UI principles
+### 12.10 Settings and generated pool artifact
+
+- Ongoing data-source settings with network-appropriate Hiro defaults, custom/self-hosted API URL, optional API key, connection test, detected API version, and indexed-tip lag.
+- Pool display name, website/support contact, display/time/number/theme preferences, payout policy, automation/alert policy, access/security status, and maintenance exports.
+- Optional signer version/liveness endpoint and polling interval, pending confirmation of the exact signer-tooling contract.
+- Live/static pool-card generator, reviewed public-field allowlist, official-platform links, and preview. Sidekick hosts no public pool route.
+
+### 12.11 UI principles
 
 - Show block heights before estimated times.
 - Mark API-estimated, locally derived, and contract-authoritative values distinctly.
@@ -841,6 +851,8 @@ sidekick manager render
 sidekick manager verify
 sidekick pool enrollment-info
 sidekick pool sync-stakers <manager-principal>
+sidekick pool status <manager-principal>
+sidekick rewards status <manager-principal> [reward-cycle]
 sidekick setup status
 sidekick doctor
 sidekick config validate
@@ -866,10 +878,9 @@ Stacks 4.0.0 ships `stacks-signer generate-staking-signature --config <file> --s
 - `/api/v1/jobs/*`
 - `/api/v1/alerts/*`
 - `/api/v1/setup/*`
-- `/public/v1/pool` and `/pool` when the operator enables the public enrollment-information page
 - `/health/live`, `/health/ready`, `/metrics`
 
-All non-health endpoints require authentication except the explicitly enabled public pool-information routes, which expose only the reviewed metadata schema and never proxy arbitrary manager/internal data. Mutating routes enforce CSRF protection for browser sessions, local role checks, audit logging, and current-mode constraints.
+All non-health endpoints require authentication. The application has no public pool-information route; it generates artifacts for the operator to host elsewhere. Mutating routes enforce CSRF protection for browser sessions, local role checks, audit logging, and current-mode constraints.
 
 ### 13.3 Configuration
 
@@ -885,7 +896,10 @@ Non-secret configuration includes:
 - Payout thresholds and gas budgets.
 - Alert destinations by secret reference.
 - HTTP bind/auth settings.
-- Optional public pool profile: display name, website/support contact, enabled reward destinations, official-platform links, and public-page toggle.
+- Pool identity: display name, website/support contact, enabled reward destinations, and official-platform links.
+- Optional signer version/liveness endpoint and polling interval.
+- Display timezone, absolute/relative time mode, number format, and light/dark/system theme.
+- Pool-card artifact type (`live` or `static`) and unauthenticated public API URL. A live artifact may never contain the operator API key.
 
 Secret references include only:
 
@@ -1205,7 +1219,7 @@ The project should avoid maintaining a behavior-changing manager fork. Necessary
 - KMS/HSM gas-key adapters.
 - OIDC and multi-user roles.
 - Batch claim optimization if measurements justify a reviewed periphery contract.
-- Optional public pool metadata endpoint coordinated with the staking UI team.
+- Additional official-platform adapters for the generated pool artifact.
 - Postgres/Chainhook ingestion profile for larger operators.
 
 ### v2 signer health

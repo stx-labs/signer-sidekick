@@ -15,9 +15,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/static": "8.3.0",
+    "@stacks/transactions": "7.5.0",
     "@stx-labs/signer-sidekick-core": "workspace:*",
     "@stx-labs/signer-sidekick-protocol": "workspace:*",
-    "@stacks/transactions": "7.5.0",
     "fastify": "5.10.0",
     "pino": "10.3.1",
     "zod": "4.4.3"

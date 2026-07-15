@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registration — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+</head>
+<body data-page="registration" data-mode="assist"
+      data-crumbs="<strong>Registration</strong> · Trust Machines Pool"
+      data-fresh="burn 962,184 · manager read-only verified 40s ago">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Registration</h1>
+          <p class="lede">Can the manager and signer accept and retain eligible stakes? Protocol registration health — not signer-machine health.</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-tertiary sm"><i class="ph ph-arrows-clockwise"></i> Re-verify grant</button>
+        </div>
+      </div>
+
+      <div class="callout callout-info" style="margin-bottom:16px;">
+        <i class="ph ph-info ic"></i>
+        <div class="body">
+          Sidekick holds no signer or admin key. Registration and grant actions are prepared as offline manifests and verified after you broadcast them from your own wallet or signer host.
+        </div>
+      </div>
+
+      <!-- Identity + grant -->
+      <div class="grid cols-2" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="card-head"><h2>Manager &amp; signer</h2><span class="badge b-success"><span class="dot"></span>Recognized profile</span></div>
+          <div class="statline"><span class="k">Manager principal</span><span class="v identifier">SP2C2...J8VZ.tm-signer <i class="ph ph-copy copy"></i></span></div>
+          <div class="statline"><span class="k">Source profile</span><span class="v">reference signer-manager <span class="sub">stacks-core 4.0.0</span></span></div>
+          <div class="statline"><span class="k">Source hash</span><span class="v identifier src src-chain">a3f9c1...c218 <span class="sub">matches pinned mainnet artifact</span></span></div>
+          <div class="statline"><span class="k">Deploy tx</span><span class="v identifier">0x91ea...77b0 <span class="sub">block 961,904 · confirmed</span></span></div>
+          <div class="statline"><span class="k">Signer public key</span><span class="v identifier">0x03a1b7...9f4c</span></div>
+          <div class="statline"><span class="k">Registration</span><span class="v"><span class="badge b-success" style="height:20px;"><span class="dot"></span>register-self confirmed</span></span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Signer key grant</h2><span class="badge b-success"><span class="dot"></span>Valid</span></div>
+          <div class="statline"><span class="k">verify-signer-key-grant</span><span class="v src src-chain">true <span class="sub">re-checked at 962,184</span></span></div>
+          <div class="statline"><span class="k">Auth ID</span><span class="v identifier">840127734 <span class="sub">single-use · consumed at register</span></span></div>
+          <div class="statline"><span class="k">SIP-018 domain</span><span class="v identifier">pox-5 · mainnet</span></div>
+          <div class="statline"><span class="k">Granted</span><span class="v">block 961,930 <span class="sub">by signer host</span></span></div>
+          <div class="divider" style="margin:14px 0;"></div>
+          <div class="callout callout-neutral" style="padding:12px 14px;">
+            <i class="ph ph-warning-octagon ic" style="font-size:16px;"></i>
+            <div class="body" style="font-size:12px;">
+              <strong>If the grant is revoked:</strong> new <span class="mono">stake</span> and any <span class="mono">stake-update</span> that would extend, increase, or switch into this manager are blocked. Existing positions keep earning and wind down — the pool does not disappear. Sidekick raises a wind-down alert.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signer-set membership -->
+      <div class="section-title">Signer-set membership &amp; weight</div>
+      <div class="grid cols-2-1" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="tbl-wrap" style="border:0;">
+            <table>
+              <thead><tr><th>Reward cycle</th><th class="right">Delegated STX</th><th class="right">Weight</th><th>Threshold</th><th>Eligibility</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">141 <span class="badge b-accent" style="height:18px; margin-left:6px;">current</span></td><td class="right mono">128,400</td><td class="right mono">2.14%</td><td class="mono muted src src-chain">+78,400</td><td><span class="badge b-success">Eligible</span></td></tr>
+                <tr><td class="mono">142 <span class="badge b-outline" style="height:18px; margin-left:6px;">next</span></td><td class="right mono">121,900</td><td class="right mono">2.03%</td><td class="mono muted src src-api">+71,900</td><td><span class="badge b-success">Eligible</span></td></tr>
+                <tr><td class="mono">143</td><td class="right mono">121,900</td><td class="right mono">—</td><td class="mono muted src src-api">+71,900</td><td><span class="badge b-success">Eligible</span></td></tr>
+                <tr><td class="mono">144 <span class="badge b-caution" style="height:18px; margin-left:6px;">forecast</span></td><td class="right mono">41,200</td><td class="right mono">—</td><td class="mono src src-local" style="color:var(--status-error);">−8,800</td><td><span class="badge b-error">Below 50k</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-standout">
+          <h2 style="margin-bottom:12px;">Threshold margin · cycle 141</h2>
+          <div class="qty" style="font-size:32px;">128,400 <span class="muted" style="font-size:16px;">STX</span></div>
+          <div class="meter" style="margin-top:14px;">
+            <div class="track"><div class="fill" style="width:82%;"></div><div class="mark" style="left:39%;" title="50,000 STX minimum"></div></div>
+            <div class="scale"><span>0</span><span>50k min</span><span>156k</span></div>
+          </div>
+          <p class="muted" style="font-size:12px; margin:14px 0 0;">The 50,000 STX signer-set minimum is enforced per cycle. Falling under it zeroes STX-only reward shares for that cycle.</p>
+        </div>
+      </div>
+
+      <!-- Admins + timeline -->
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head"><h2>Admin principals</h2><span class="badge b-outline">enumerated from events</span></div>
+          <p class="muted" style="font-size:12px; margin:-6px 0 14px;">Recovered from deployment and event history. Enumeration may be incomplete — admin operations are offline and never signed by Sidekick.</p>
+          <div class="statline"><span class="k"><span class="badge b-neutral" style="height:20px;">admin</span> Deployer</span><span class="v identifier">SP2C2...J8VZ</span></div>
+          <div class="statline"><span class="k"><span class="badge b-neutral" style="height:20px;">admin</span> update-admin → </span><span class="v identifier">SP3FB...K1QA <span class="sub">block 961,940</span></span></div>
+          <div class="divider"></div>
+          <div class="section-title" style="font-size:13px; margin:0 0 8px;">Offline remediation</div>
+          <div class="pill-row">
+            <button class="btn btn-secondary sm"><i class="ph ph-file-text"></i> register-self manifest</button>
+            <button class="btn btn-secondary sm"><i class="ph ph-file-text"></i> Fee-change manifest</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Grant · register · revoke timeline</h2></div>
+          <div class="timeline">
+            <div class="ev ok"><div class="t">Grant re-verified</div><div class="m">verify-signer-key-grant → true</div><div class="h">962,184 · 40s ago</div></div>
+            <div class="ev ok"><div class="t">register-self confirmed</div><div class="m">signer key registered to manager</div><div class="h">961,952 · 2d ago</div></div>
+            <div class="ev ok"><div class="t">Signer key granted</div><div class="m">SIP-018 · auth-id 840127734</div><div class="h">961,930 · 2d ago</div></div>
+            <div class="ev ok"><div class="t">Manager deployed &amp; hash verified</div><div class="m">source matches pinned 4.0.0 artifact</div><div class="h">961,904 · 2d ago</div></div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+</body>
+</html>

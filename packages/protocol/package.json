@@ -21,6 +21,10 @@
       "types": "./dist/manager-artifact.d.ts",
       "default": "./dist/manager-artifact.js"
     },
+    "./manager-events": {
+      "types": "./dist/manager-events.d.ts",
+      "default": "./dist/manager-events.js"
+    },
     "./known-managers": {
       "types": "./dist/known-managers.d.ts",
       "default": "./dist/known-managers.js"

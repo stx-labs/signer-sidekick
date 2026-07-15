@@ -16,6 +16,7 @@ export interface SidekickConfig {
   apiKey?: string;
   apiKeyHeader: string;
   maxApiBurnBlockLag: number;
+  forecastHorizonCycles: number;
   databasePath: string;
 }
 
@@ -34,7 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
   const nodeRpcUrl = env.STACKS_NODE_RPC_URL;
   if (!nodeRpcUrl) throw new Error("STACKS_NODE_RPC_URL is required");
 
-  const apiUrl = env.STACKS_API_URL ?? defaults[network];
+  const apiUrl = env.STACKS_API_URL?.trim() || defaults[network];
   if (!apiUrl) throw new Error(`STACKS_API_URL is required for ${network}`);
 
   const maxApiBurnBlockLag = z.coerce
@@ -43,6 +44,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     .nonnegative()
     .default(12)
     .parse(env.SIDEKICK_MAX_API_BURN_BLOCK_LAG);
+  const forecastHorizonCycles = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(96)
+    .default(6)
+    .parse(env.SIDEKICK_FORECAST_HORIZON_CYCLES);
 
   return {
     network,
@@ -51,6 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     ...(env.STACKS_API_KEY ? { apiKey: env.STACKS_API_KEY } : {}),
     apiKeyHeader: env.STACKS_API_KEY_HEADER ?? "x-api-key",
     maxApiBurnBlockLag,
+    forecastHorizonCycles,
     databasePath:
       env.SIDEKICK_DATABASE_PATH === ":memory:"
         ? ":memory:"

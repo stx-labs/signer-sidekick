@@ -106,12 +106,58 @@ const signerStakersPageSchema = z
   })
   .strict();
 
+const eventCursorSchema = z.string().regex(/^\d+:\d+:\d+:\d+$/);
+const smartContractLogPageSchema = z
+  .object({
+    limit: z.number().int().min(1).max(100),
+    offset: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    next_cursor: eventCursorSchema.nullable(),
+    prev_cursor: eventCursorSchema.nullable(),
+    cursor: eventCursorSchema.nullable(),
+    results: z.array(
+      z
+        .object({
+          event_index: z.number().int().nonnegative(),
+          event_type: z.literal("smart_contract_log"),
+          tx_id: z.string().regex(/^0x[0-9a-f]{64}$/i),
+          contract_log: z
+            .object({
+              contract_id: z.string(),
+              topic: z.string(),
+              value: z.object({ hex: z.string(), repr: z.string() }).strict(),
+            })
+            .strict(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const transactionSummarySchema = z.object({
+  tx_id: z.string().regex(/^0x[0-9a-f]{64}$/i),
+  status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
+  block: z.object({
+    height: z.number().int().nonnegative(),
+    hash: z.string().regex(/^0x[0-9a-f]{64}$/i),
+    index_hash: z.string().regex(/^0x[0-9a-f]{64}$/i),
+    time: z.number().nonnegative(),
+    tx_index: z.number().int().nonnegative(),
+  }),
+  bitcoin_block: z.object({
+    height: z.number().int().nonnegative(),
+    time: z.number().nonnegative(),
+  }),
+});
+
 export type NodeInfo = z.infer<typeof nodeInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
 export type ContractSource = z.infer<typeof contractSourceSchema>;
 export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
+export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
+export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
 
 type Fetch = typeof fetch;
 
@@ -241,6 +287,39 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v3/staking/signers/${encodeURIComponent(signerPrincipal)}/stakers?${query}`,
       signerStakersPageSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getSmartContractLogs(
+    contractId: string,
+    cursor: string | null = null,
+    limit = 100,
+  ): Promise<SmartContractLogPage> {
+    if (!validatePrincipal(contractId) || !contractId.includes(".")) {
+      throw new Error("Invalid contract principal");
+    }
+    if (cursor !== null) eventCursorSchema.parse(cursor);
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit), offset: "0" });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v2/smart-contracts/${encodeURIComponent(contractId)}/logs?${query}`,
+      smartContractLogPageSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getTransaction(txId: string): Promise<TransactionSummary> {
+    const parsedTxId = z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/i)
+      .parse(txId);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/transactions/${parsedTxId}`,
+      transactionSummarySchema,
       this.headers ? { headers: this.headers } : {},
     );
   }

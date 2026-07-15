@@ -87,6 +87,22 @@ The JSON result includes current and next reward-cycle IDs, threshold and stacke
 uSTX, and authoritative prepare/reward phase burn heights and countdowns from `/v2/pox`. Amounts
 are emitted as decimal strings so downstream consumers do not lose integer precision.
 
+## Local dashboard development
+
+The dashboard follows `design/HANDOFF.md` and the static references under `design/screens/`. Run the backend on port 3998 and Vite on port 5173; Vite proxies API, health, and metrics requests to the backend.
+
+```sh
+SIDEKICK_NETWORK=mainnet \
+STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
+SIDEKICK_MANAGER_PRINCIPAL=SP1234OFFLINEADMIN.my-signer-manager \
+SIDEKICK_AUTH_TOKEN='replace-with-at-least-24-random-characters' \
+pnpm --filter @stx-labs/signer-sidekick dev
+
+pnpm --filter @stx-labs/signer-sidekick-dashboard dev
+```
+
+The credential is held in browser `sessionStorage`, sent only as a bearer credential to the loopback API, and cleared when the API rejects it. Production builds embed `apps/dashboard/dist` in the Fastify process. Use the supplied light/dark theme control and verify critical screens at 1440px, 768px, and 375px.
+
 ## Attach an existing manager
 
 Build the backend, then supply the deployed manager contract principal:

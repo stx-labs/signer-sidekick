@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat } from "node:fs/promises";
+import { access, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
@@ -153,6 +153,222 @@ const migrations: readonly Migration[] = [
         ON cycle_memberships (manager_principal, reward_cycle, active, staker_principal);
     `,
   },
+  {
+    version: 3,
+    name: "deferred_stx_unlock_height",
+    sql: `
+      ALTER TABLE stake_positions ADD COLUMN unlock_burn_height TEXT;
+    `,
+  },
+  {
+    version: 4,
+    name: "normalized_manager_activity",
+    sql: `
+      CREATE TABLE manager_activity_events (
+        chain_id INTEGER NOT NULL,
+        tx_id TEXT NOT NULL,
+        event_index INTEGER NOT NULL CHECK (event_index >= 0),
+        manager_principal TEXT NOT NULL,
+        block_height INTEGER NOT NULL CHECK (block_height >= 0),
+        canonical INTEGER NOT NULL CHECK (canonical IN (0, 1)),
+        kind TEXT NOT NULL CHECK (kind IN (
+          'claim-staker-rewards',
+          'reclaim-failed-withdrawal',
+          'settle-accepted-withdrawal'
+        )),
+        staker_principal TEXT NOT NULL,
+        reward_cycle TEXT,
+        bond_index TEXT,
+        amount_sats TEXT NOT NULL,
+        request_id TEXT,
+        withdrawal_amount_sats TEXT,
+        max_fee_sats TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (chain_id, tx_id, event_index),
+        FOREIGN KEY (chain_id, tx_id, event_index)
+          REFERENCES chain_events(chain_id, tx_id, event_index)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX manager_activity_by_kind_height
+        ON manager_activity_events (
+          chain_id, manager_principal, canonical, kind, block_height DESC, event_index DESC
+        );
+      CREATE INDEX manager_activity_by_request
+        ON manager_activity_events (
+          chain_id, manager_principal, request_id, canonical, block_height
+        );
+
+      INSERT INTO manager_activity_events (
+        chain_id, tx_id, event_index, manager_principal, block_height, canonical, kind,
+        staker_principal, reward_cycle, bond_index, amount_sats, request_id,
+        withdrawal_amount_sats, max_fee_sats, updated_at
+      )
+      SELECT
+        chain_id,
+        tx_id,
+        event_index,
+        contract_id,
+        block_height,
+        canonical,
+        json_extract(decoded_payload_json, '$.event.kind'),
+        json_extract(decoded_payload_json, '$.event.stakerPrincipal'),
+        json_extract(decoded_payload_json, '$.event.rewardCycle'),
+        json_extract(decoded_payload_json, '$.event.bondIndex'),
+        COALESCE(
+          json_extract(decoded_payload_json, '$.event.amountSats'),
+          json_extract(decoded_payload_json, '$.event.liabilityReleasedSats')
+        ),
+        COALESCE(
+          json_extract(decoded_payload_json, '$.event.l1Withdrawal.requestId'),
+          json_extract(decoded_payload_json, '$.event.requestId')
+        ),
+        json_extract(decoded_payload_json, '$.event.l1Withdrawal.amountSats'),
+        json_extract(decoded_payload_json, '$.event.l1Withdrawal.maxFeeSats'),
+        updated_at
+      FROM chain_events
+      WHERE contract_id IS NOT NULL
+        AND decoded_payload_json IS NOT NULL
+        AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+        AND json_extract(decoded_payload_json, '$.event.kind') IN (
+          'claim-staker-rewards',
+          'reclaim-failed-withdrawal',
+          'settle-accepted-withdrawal'
+        );
+    `,
+  },
+  {
+    version: 5,
+    name: "longitudinal_pool_evidence",
+    sql: `
+      CREATE TABLE staker_position_observations (
+        manager_principal TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        has_stx INTEGER NOT NULL CHECK (has_stx IN (0, 1)),
+        has_btc INTEGER NOT NULL CHECK (has_btc IN (0, 1)),
+        stx_node_verified INTEGER CHECK (stx_node_verified IN (0, 1)),
+        position_present INTEGER NOT NULL CHECK (position_present IN (0, 1)),
+        signer_principal TEXT,
+        amount_ustx TEXT,
+        first_reward_cycle TEXT,
+        num_cycles TEXT,
+        unlock_cycle TEXT,
+        unlock_burn_height TEXT,
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        verification_source_id TEXT REFERENCES chain_sources(source_id),
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (
+          manager_principal,
+          staker_principal,
+          observed_burn_block_height,
+          observed_stacks_tip_height
+        ),
+        CHECK (
+          (position_present = 0 AND signer_principal IS NULL AND amount_ustx IS NULL
+            AND first_reward_cycle IS NULL AND num_cycles IS NULL AND unlock_cycle IS NULL)
+          OR
+          (position_present = 1 AND signer_principal IS NOT NULL AND amount_ustx IS NOT NULL
+            AND first_reward_cycle IS NOT NULL AND num_cycles IS NOT NULL
+            AND unlock_cycle IS NOT NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX staker_position_observations_history
+        ON staker_position_observations (
+          manager_principal, staker_principal,
+          observed_burn_block_height DESC, observed_stacks_tip_height DESC
+        );
+
+      CREATE TABLE pool_cycle_snapshots (
+        manager_principal TEXT NOT NULL,
+        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        status TEXT NOT NULL CHECK (status IN ('ready', 'attention')),
+        roster_available INTEGER NOT NULL CHECK (roster_available IN (0, 1)),
+        staker_count INTEGER CHECK (staker_count IS NULL OR staker_count >= 0),
+        enumerated_stx_ustx TEXT,
+        enumeration_delta_ustx TEXT,
+        pending_stx_ustx TEXT NOT NULL,
+        eligible_stx_shares_ustx TEXT NOT NULL,
+        total_delegated_ustx TEXT NOT NULL,
+        non_stx_delegated_ustx TEXT,
+        in_signer_set INTEGER NOT NULL CHECK (in_signer_set IN (0, 1)),
+        threshold_ustx TEXT NOT NULL,
+        threshold_margin_ustx TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (
+          manager_principal,
+          reward_cycle,
+          observed_burn_block_height,
+          observed_stacks_tip_height
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX pool_cycle_snapshots_history
+        ON pool_cycle_snapshots (
+          manager_principal, reward_cycle DESC,
+          observed_burn_block_height DESC, observed_stacks_tip_height DESC
+        );
+    `,
+  },
+  {
+    version: 6,
+    name: "reward_cycle_ledger",
+    sql: `
+      CREATE TABLE reward_cycle_snapshots (
+        manager_principal TEXT NOT NULL,
+        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
+        status TEXT NOT NULL CHECK (status IN ('ready', 'attention')),
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        last_reward_compute_burn_height TEXT NOT NULL,
+        last_computed_reward_cycle TEXT,
+        rewards_per_token TEXT NOT NULL,
+        signer_earned_before_manager_claim_sats TEXT NOT NULL,
+        fee_snapshot_bips TEXT NOT NULL,
+        earned_fees_sats TEXT NOT NULL,
+        withdrawal_liability_sats TEXT NOT NULL,
+        unclaimed_staker_rewards_sats TEXT NOT NULL,
+        staker_count INTEGER NOT NULL CHECK (staker_count >= 0),
+        gross_sats TEXT NOT NULL,
+        earned_sats TEXT NOT NULL,
+        fee_sats TEXT NOT NULL,
+        actionable_claims INTEGER NOT NULL CHECK (actionable_claims >= 0),
+        l1_claims_waiting_for_fee_threshold INTEGER NOT NULL
+          CHECK (l1_claims_waiting_for_fee_threshold >= 0),
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (manager_principal, reward_cycle)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE TABLE staker_reward_cycle_snapshots (
+        manager_principal TEXT NOT NULL,
+        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
+        staker_principal TEXT NOT NULL,
+        payout_kind TEXT NOT NULL CHECK (payout_kind IN ('direct-sbtc', 'bitcoin-l1')),
+        pox_address_version_hex TEXT,
+        pox_address_hashbytes_hex TEXT,
+        max_fee_sats TEXT,
+        earned_sats TEXT NOT NULL,
+        fee_sats TEXT NOT NULL,
+        gross_sats TEXT NOT NULL,
+        claimable_by_policy INTEGER NOT NULL CHECK (claimable_by_policy IN (0, 1)),
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (manager_principal, reward_cycle, staker_principal),
+        FOREIGN KEY (manager_principal, reward_cycle)
+          REFERENCES reward_cycle_snapshots(manager_principal, reward_cycle)
+          ON DELETE CASCADE
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX reward_cycle_snapshots_history
+        ON reward_cycle_snapshots (manager_principal, reward_cycle DESC);
+      CREATE INDEX staker_reward_cycle_snapshots_page
+        ON staker_reward_cycle_snapshots (
+          manager_principal, reward_cycle, staker_principal
+        );
+    `,
+  },
 ];
 
 const sourceInputSchema = z
@@ -243,6 +459,62 @@ const eventRowSchema = z.object({
   updated_at: z.string(),
 });
 
+const unsignedIntegerTextSchema = z.string().regex(/^\d+$/);
+const managerActivityEnvelopeSchema = z.object({
+  transactionStatus: z.literal("success"),
+  event: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("claim-staker-rewards"),
+      stakerPrincipal: z.string(),
+      rewardCycle: unsignedIntegerTextSchema,
+      bondIndex: unsignedIntegerTextSchema.nullable(),
+      amountSats: unsignedIntegerTextSchema,
+      l1Withdrawal: z
+        .object({
+          requestId: unsignedIntegerTextSchema,
+          amountSats: unsignedIntegerTextSchema,
+          maxFeeSats: unsignedIntegerTextSchema,
+        })
+        .nullable(),
+    }),
+    z.object({
+      kind: z.literal("reclaim-failed-withdrawal"),
+      requestId: unsignedIntegerTextSchema,
+      stakerPrincipal: z.string(),
+      amountSats: unsignedIntegerTextSchema,
+    }),
+    z.object({
+      kind: z.literal("settle-accepted-withdrawal"),
+      requestId: unsignedIntegerTextSchema,
+      stakerPrincipal: z.string(),
+      liabilityReleasedSats: unsignedIntegerTextSchema,
+    }),
+  ]),
+});
+
+const managerClaimRowSchema = z.object({
+  tx_id: z.string(),
+  event_index: z.number().int().nonnegative(),
+  block_height: z.number().int().nonnegative(),
+  staker_principal: z.string(),
+  reward_cycle: z.string(),
+  bond_index: z.string().nullable(),
+  amount_sats: z.string(),
+  request_id: z.string().nullable(),
+});
+
+const managerWithdrawalRowSchema = z.object({
+  request_id: z.string(),
+  staker_principal: z.string(),
+  amount_sats: z.string(),
+  max_fee_sats: z.string(),
+  initiated_tx_id: z.string(),
+  initiated_block_height: z.number().int().nonnegative(),
+  resolution_kind: z.enum(["reclaim-failed-withdrawal", "settle-accepted-withdrawal"]).nullable(),
+  resolved_tx_id: z.string().nullable(),
+  resolved_block_height: z.number().int().nonnegative().nullable(),
+});
+
 const principalSchema = z.string().refine(validatePrincipal, "Invalid Stacks principal");
 const signerCycleMembershipInputSchema = z
   .object({
@@ -257,6 +529,7 @@ const signerStakerPositionInputSchema = z
     amountUstx: z.bigint().nonnegative(),
     firstRewardCycle: z.bigint().nonnegative(),
     numCycles: z.bigint().min(1n).max(96n),
+    unlockBurnHeight: z.bigint().nonnegative().optional(),
     cycleMemberships: z.array(signerCycleMembershipInputSchema).max(96),
   })
   .strict();
@@ -344,6 +617,7 @@ const storedSignerStakerRowSchema = z.object({
   first_reward_cycle: z.string().nullable(),
   num_cycles: z.string().nullable(),
   unlock_cycle: z.string().nullable(),
+  unlock_burn_height: z.string().nullable(),
   position_active: z.union([z.literal(0), z.literal(1)]).nullable(),
 });
 
@@ -353,6 +627,151 @@ const cycleMembershipRowSchema = z.object({
   signer_principal: z.string(),
   amount_ustx: z.string(),
   active: z.union([z.literal(0), z.literal(1)]),
+});
+
+const stakerPositionObservationRowSchema = z.object({
+  manager_principal: z.string(),
+  staker_principal: z.string(),
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_stacks_tip_height: z.number().int().nonnegative(),
+  has_stx: z.union([z.literal(0), z.literal(1)]),
+  has_btc: z.union([z.literal(0), z.literal(1)]),
+  stx_node_verified: z.union([z.literal(0), z.literal(1)]).nullable(),
+  position_present: z.union([z.literal(0), z.literal(1)]),
+  signer_principal: z.string().nullable(),
+  amount_ustx: z.string().nullable(),
+  first_reward_cycle: z.string().nullable(),
+  num_cycles: z.string().nullable(),
+  unlock_cycle: z.string().nullable(),
+  unlock_burn_height: z.string().nullable(),
+  observed_at: z.string(),
+});
+
+const poolCycleSnapshotInputSchema = z
+  .object({
+    managerPrincipal: principalSchema,
+    observedAt: z.iso.datetime(),
+    burnBlockHeight: z.number().int().nonnegative(),
+    stacksTipHeight: z.number().int().nonnegative(),
+    cycles: z.array(
+      z
+        .object({
+          cycleId: z.number().int().nonnegative(),
+          status: z.enum(["ready", "attention"]),
+          rosterAvailable: z.boolean(),
+          stakerCount: z.number().int().nonnegative().nullable(),
+          enumeratedStxUstx: z.string().nullable(),
+          enumerationDeltaUstx: z.string().nullable(),
+          pendingStxUstx: unsignedIntegerTextSchema,
+          eligibleStxSharesUstx: unsignedIntegerTextSchema,
+          totalDelegatedUstx: unsignedIntegerTextSchema,
+          nonStxDelegatedUstx: unsignedIntegerTextSchema.nullable(),
+          inSignerSet: z.boolean(),
+          thresholdUstx: unsignedIntegerTextSchema,
+          thresholdMarginUstx: z.string().regex(/^-?\d+$/),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const poolCycleSnapshotRowSchema = z.object({
+  manager_principal: z.string(),
+  reward_cycle: z.number().int().nonnegative(),
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_stacks_tip_height: z.number().int().nonnegative(),
+  status: z.enum(["ready", "attention"]),
+  roster_available: z.union([z.literal(0), z.literal(1)]),
+  staker_count: z.number().int().nonnegative().nullable(),
+  enumerated_stx_ustx: z.string().nullable(),
+  enumeration_delta_ustx: z.string().nullable(),
+  pending_stx_ustx: z.string(),
+  eligible_stx_shares_ustx: z.string(),
+  total_delegated_ustx: z.string(),
+  non_stx_delegated_ustx: z.string().nullable(),
+  in_signer_set: z.union([z.literal(0), z.literal(1)]),
+  threshold_ustx: z.string(),
+  threshold_margin_ustx: z.string(),
+  observed_at: z.string(),
+});
+
+const rewardCycleSnapshotInputSchema = z
+  .object({
+    managerPrincipal: principalSchema,
+    rewardCycle: z.number().int().nonnegative(),
+    status: z.enum(["ready", "attention"]),
+    observedAt: z.iso.datetime(),
+    burnBlockHeight: z.number().int().nonnegative(),
+    stacksTipHeight: z.number().int().nonnegative(),
+    global: z
+      .object({
+        lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+        lastComputedRewardCycle: unsignedIntegerTextSchema.nullable(),
+        rewardsPerToken: unsignedIntegerTextSchema,
+        signerEarnedBeforeManagerClaimSats: unsignedIntegerTextSchema,
+      })
+      .strict(),
+    manager: z
+      .object({
+        feeSnapshotBips: unsignedIntegerTextSchema,
+        earnedFeesSats: unsignedIntegerTextSchema,
+        withdrawalLiabilitySats: unsignedIntegerTextSchema,
+        unclaimedStakerRewardsSats: unsignedIntegerTextSchema,
+      })
+      .strict(),
+    totals: z
+      .object({
+        stakers: z.number().int().nonnegative(),
+        grossSats: unsignedIntegerTextSchema,
+        earnedSats: unsignedIntegerTextSchema,
+        feeSats: unsignedIntegerTextSchema,
+        actionableClaims: z.number().int().nonnegative(),
+        l1ClaimsWaitingForFeeThreshold: z.number().int().nonnegative(),
+      })
+      .strict(),
+    stakers: z.array(
+      z
+        .object({
+          stakerPrincipal: principalSchema,
+          payout: z.discriminatedUnion("kind", [
+            z.object({
+              kind: z.literal("direct-sbtc"),
+              poxAddress: z.null(),
+              maxFeeSats: z.null(),
+            }),
+            z.object({
+              kind: z.literal("bitcoin-l1"),
+              poxAddress: z.object({ versionHex: z.string(), hashbytesHex: z.string() }),
+              maxFeeSats: unsignedIntegerTextSchema,
+            }),
+          ]),
+          rewards: z
+            .object({
+              earnedSats: unsignedIntegerTextSchema,
+              feeSats: unsignedIntegerTextSchema,
+              grossSats: unsignedIntegerTextSchema,
+            })
+            .strict(),
+          claimableByPolicy: z.boolean(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const rewardCycleSummaryRowSchema = z.object({
+  manager_principal: z.string(),
+  reward_cycle: z.number().int().nonnegative(),
+  status: z.enum(["ready", "attention"]),
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_stacks_tip_height: z.number().int().nonnegative(),
+  staker_count: z.number().int().nonnegative(),
+  gross_sats: z.string(),
+  earned_sats: z.string(),
+  fee_sats: z.string(),
+  actionable_claims: z.number().int().nonnegative(),
+  l1_claims_waiting_for_fee_threshold: z.number().int().nonnegative(),
+  observed_at: z.string(),
 });
 
 export type ChainSourceInput = z.infer<typeof sourceInputSchema>;
@@ -376,6 +795,8 @@ export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
 export type SignerStakerPositionInput = z.infer<typeof signerStakerPositionInputSchema>;
 export type SignerStakerPageItem = z.infer<typeof signerStakerPageItemSchema>;
 export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
+export type PoolCycleSnapshotInput = z.infer<typeof poolCycleSnapshotInputSchema>;
+export type RewardCycleSnapshotInput = z.infer<typeof rewardCycleSnapshotInputSchema>;
 
 export interface SignerStakerRun {
   runId: string;
@@ -408,6 +829,7 @@ export interface StoredSignerStaker {
     firstRewardCycle: bigint;
     numCycles: bigint;
     unlockCycle: bigint;
+    unlockBurnHeight: bigint | null;
     active: boolean;
   };
 }
@@ -418,6 +840,117 @@ export interface StoredCycleMembership {
   signerPrincipal: string;
   amountUstx: bigint;
   active: boolean;
+}
+
+export interface StoredStakerPositionObservation {
+  managerPrincipal: string;
+  stakerPrincipal: string;
+  observedBurnBlockHeight: number;
+  observedStacksTipHeight: number;
+  hasStx: boolean;
+  hasBtc: boolean;
+  stxNodeVerified: boolean | null;
+  position: null | {
+    signerPrincipal: string;
+    amountUstx: string;
+    firstRewardCycle: string;
+    numCycles: string;
+    unlockCycle: string;
+    unlockBurnHeight: string | null;
+  };
+  observedAt: string;
+}
+
+export interface StoredPoolCycleSnapshot {
+  managerPrincipal: string;
+  cycleId: number;
+  observedBurnBlockHeight: number;
+  observedStacksTipHeight: number;
+  status: "ready" | "attention";
+  rosterAvailable: boolean;
+  stakerCount: number | null;
+  enumeratedStxUstx: string | null;
+  enumerationDeltaUstx: string | null;
+  pendingStxUstx: string;
+  eligibleStxSharesUstx: string;
+  totalDelegatedUstx: string;
+  nonStxDelegatedUstx: string | null;
+  inSignerSet: boolean;
+  thresholdUstx: string;
+  thresholdMarginUstx: string;
+  observedAt: string;
+}
+
+export interface StoredRewardCycleSummary {
+  managerPrincipal: string;
+  rewardCycle: number;
+  status: "ready" | "attention";
+  observedBurnBlockHeight: number;
+  observedStacksTipHeight: number;
+  stakerCount: number;
+  grossSats: string;
+  earnedSats: string;
+  feeSats: string;
+  actionableClaims: number;
+  l1ClaimsWaitingForFeeThreshold: number;
+  observedAt: string;
+}
+
+export interface StoredManagerClaim {
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  stakerPrincipal: string;
+  rewardCycle: string;
+  bondIndex: string | null;
+  amountSats: string;
+  destination: "direct-sbtc" | "bitcoin-l1";
+  withdrawalRequestId: string | null;
+}
+
+export interface StoredManagerWithdrawal {
+  requestId: string;
+  stakerPrincipal: string;
+  amountSats: string;
+  maxFeeSats: string;
+  initiatedTxId: string;
+  initiatedBlockHeight: number;
+  state: "pending" | "settled" | "reclaimed";
+  resolvedTxId: string | null;
+  resolvedBlockHeight: number | null;
+}
+
+export interface ManagerActivityPage<T> {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+function toStoredChainEvent(row: unknown): StoredChainEvent {
+  const value = eventRowSchema.parse(row);
+  return {
+    chainId: value.chain_id,
+    txId: value.tx_id,
+    eventIndex: value.event_index,
+    blockHeight: value.block_height,
+    blockHash: value.block_hash,
+    indexBlockHash: value.index_block_hash,
+    microblockHash: value.microblock_hash,
+    microblockSequence: value.microblock_sequence,
+    canonical: value.canonical === 1,
+    microblockCanonical: value.microblock_canonical === 1,
+    contractId: value.contract_id,
+    topic: value.topic,
+    rawPayload: JSON.parse(value.raw_payload_json) as unknown,
+    decodedSchemaVersion: value.decoded_schema_version,
+    decodedPayload: value.decoded_payload_json
+      ? (JSON.parse(value.decoded_payload_json) as unknown)
+      : null,
+    sourceId: value.source_id,
+    firstSeenAt: value.first_seen_at,
+    updatedAt: value.updated_at,
+  };
 }
 
 function migrationChecksum(migration: Migration): string {
@@ -515,6 +1048,65 @@ function applyMigrations(db: DatabaseSync, now: string): void {
 export interface OpenSidekickStoreResult {
   store: SidekickStore;
   backupPath: string | null;
+}
+
+export interface DatabaseBackupResult {
+  sourcePath: string;
+  destinationPath: string;
+  sizeBytes: number;
+  quickCheck: "ok";
+}
+
+export async function backupSidekickDatabase(
+  sourcePath: string,
+  destinationPath: string,
+): Promise<DatabaseBackupResult> {
+  if (sourcePath === ":memory:") throw new Error("An in-memory database cannot be backed up");
+  const source = resolve(sourcePath);
+  const destination = resolve(destinationPath);
+  if (source === destination) throw new Error("Backup destination must differ from the database");
+  const sourceStat = await stat(source).catch(() => null);
+  if (!sourceStat?.isFile() || sourceStat.size === 0) {
+    throw new Error(`Sidekick database does not exist or is empty: ${source}`);
+  }
+  const destinationExists = await access(destination)
+    .then(() => true)
+    .catch(() => false);
+  if (destinationExists) throw new Error(`Backup destination already exists: ${destination}`);
+
+  await mkdir(dirname(destination), { recursive: true });
+  const db = new DatabaseSync(source, { allowExtension: false, readOnly: true, timeout: 5_000 });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    await backup(db, destination);
+  } catch (error) {
+    await rm(destination, { force: true });
+    throw error;
+  } finally {
+    db.close();
+  }
+
+  const verification = new DatabaseSync(destination, {
+    allowExtension: false,
+    readOnly: true,
+    timeout: 5_000,
+  });
+  try {
+    const quickCheck = verification.prepare("PRAGMA quick_check").get() as
+      | { quick_check?: unknown }
+      | undefined;
+    if (quickCheck?.quick_check !== "ok") {
+      throw new Error(`Backup integrity check failed: ${String(quickCheck?.quick_check)}`);
+    }
+    return {
+      sourcePath: source,
+      destinationPath: destination,
+      sizeBytes: (await stat(destination)).size,
+      quickCheck: "ok",
+    };
+  } finally {
+    verification.close();
+  }
 }
 
 export async function openSidekickStore(
@@ -725,6 +1317,84 @@ export class SidekickStore {
         value.observedAt,
         value.observedAt,
       );
+    this.putManagerActivityProjection(value);
+  }
+
+  private putManagerActivityProjection(value: ChainEventInput): void {
+    if (!value.contractId) return;
+    const parsed = managerActivityEnvelopeSchema.safeParse(value.decodedPayload);
+    if (!parsed.success) return;
+    const event = parsed.data.event;
+    const isClaim = event.kind === "claim-staker-rewards";
+    const amountSats =
+      event.kind === "settle-accepted-withdrawal" ? event.liabilityReleasedSats : event.amountSats;
+    const requestId = isClaim ? event.l1Withdrawal?.requestId : event.requestId;
+    this.db
+      .prepare(
+        `INSERT INTO manager_activity_events (
+          chain_id, tx_id, event_index, manager_principal, block_height, canonical, kind,
+          staker_principal, reward_cycle, bond_index, amount_sats, request_id,
+          withdrawal_amount_sats, max_fee_sats, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (chain_id, tx_id, event_index) DO UPDATE SET
+          manager_principal = excluded.manager_principal,
+          block_height = excluded.block_height,
+          canonical = excluded.canonical,
+          kind = excluded.kind,
+          staker_principal = excluded.staker_principal,
+          reward_cycle = excluded.reward_cycle,
+          bond_index = excluded.bond_index,
+          amount_sats = excluded.amount_sats,
+          request_id = excluded.request_id,
+          withdrawal_amount_sats = excluded.withdrawal_amount_sats,
+          max_fee_sats = excluded.max_fee_sats,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        value.chainId,
+        value.txId,
+        value.eventIndex,
+        value.contractId,
+        value.blockHeight,
+        value.canonical ? 1 : 0,
+        event.kind,
+        event.stakerPrincipal,
+        isClaim ? event.rewardCycle : null,
+        isClaim ? event.bondIndex : null,
+        amountSats,
+        requestId ?? null,
+        isClaim ? (event.l1Withdrawal?.amountSats ?? null) : null,
+        isClaim ? (event.l1Withdrawal?.maxFeeSats ?? null) : null,
+        value.observedAt,
+      );
+  }
+
+  putChainEventPage(events: readonly ChainEventInput[], cursor: ChainCursorInput): void {
+    eventInputSchema.array().parse(events);
+    cursorInputSchema.parse(cursor);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const event of events) this.putChainEvent(event);
+      this.putCursor(cursor);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  hasChainEventsForContract(chainId: number, contractId: string): boolean {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const parsedContractId = principalSchema.parse(contractId);
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM chain_events
+           WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+           LIMIT 1`,
+        )
+        .get(parsedChainId, parsedContractId),
+    );
   }
 
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null {
@@ -738,28 +1408,216 @@ export class SidekickStore {
       )
       .get(chainId, txId, eventIndex);
     if (!row) return null;
-    const value = eventRowSchema.parse(row);
+    return toStoredChainEvent(row);
+  }
+
+  listChainEventsForContract(
+    chainId: number,
+    contractId: string,
+    limit = 500,
+    canonicalOnly = true,
+  ): StoredChainEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const parsedContractId = principalSchema.parse(contractId);
+    const parsedLimit = z.number().int().min(1).max(10_000).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
+          microblock_hash, microblock_sequence, canonical, microblock_canonical,
+          contract_id, topic, raw_payload_json, decoded_schema_version,
+          decoded_payload_json, source_id, first_seen_at, updated_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id = ? AND (? = 0 OR canonical = 1)
+         ORDER BY block_height DESC, event_index DESC
+         LIMIT ?`,
+      )
+      .all(parsedChainId, parsedContractId, canonicalOnly ? 1 : 0, parsedLimit);
+    return rows.map(toStoredChainEvent);
+  }
+
+  listManagerClaims(
+    chainId: number,
+    managerPrincipal: string,
+    options: { limit?: number; offset?: number; rewardCycle?: string | null } = {},
+  ): ManagerActivityPage<StoredManagerClaim> {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .parse(options.limit ?? 50);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const rewardCycle =
+      options.rewardCycle === undefined || options.rewardCycle === null
+        ? null
+        : unsignedIntegerTextSchema.parse(options.rewardCycle);
+    const where = `chain_id = ? AND manager_principal = ? AND canonical = 1
+      AND kind = 'claim-staker-rewards' AND (? IS NULL OR reward_cycle = ?)`;
+    const totalRow = this.db
+      .prepare(`SELECT count(*) AS count FROM manager_activity_events WHERE ${where}`)
+      .get(parsedChainId, manager, rewardCycle, rewardCycle) as { count: number };
+    const rows = this.db
+      .prepare(
+        `SELECT tx_id, event_index, block_height, staker_principal, reward_cycle,
+          bond_index, amount_sats, request_id
+         FROM manager_activity_events
+         WHERE ${where}
+         ORDER BY block_height DESC, event_index DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(parsedChainId, manager, rewardCycle, rewardCycle, limit, offset);
     return {
-      chainId: value.chain_id,
-      txId: value.tx_id,
-      eventIndex: value.event_index,
-      blockHeight: value.block_height,
-      blockHash: value.block_hash,
-      indexBlockHash: value.index_block_hash,
-      microblockHash: value.microblock_hash,
-      microblockSequence: value.microblock_sequence,
-      canonical: value.canonical === 1,
-      microblockCanonical: value.microblock_canonical === 1,
-      contractId: value.contract_id,
-      topic: value.topic,
-      rawPayload: JSON.parse(value.raw_payload_json) as unknown,
-      decodedSchemaVersion: value.decoded_schema_version,
-      decodedPayload: value.decoded_payload_json
-        ? (JSON.parse(value.decoded_payload_json) as unknown)
-        : null,
-      sourceId: value.source_id,
-      firstSeenAt: value.first_seen_at,
-      updatedAt: value.updated_at,
+      items: rows.map((row) => {
+        const value = managerClaimRowSchema.parse(row);
+        return {
+          txId: value.tx_id,
+          eventIndex: value.event_index,
+          blockHeight: value.block_height,
+          stakerPrincipal: value.staker_principal,
+          rewardCycle: value.reward_cycle,
+          bondIndex: value.bond_index,
+          amountSats: value.amount_sats,
+          destination: value.request_id === null ? "direct-sbtc" : "bitcoin-l1",
+          withdrawalRequestId: value.request_id,
+        };
+      }),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
+  }
+
+  listManagerWithdrawals(
+    chainId: number,
+    managerPrincipal: string,
+    options: {
+      limit?: number;
+      offset?: number;
+      state?: "pending" | "settled" | "reclaimed" | null;
+    } = {},
+  ): ManagerActivityPage<StoredManagerWithdrawal> {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .parse(options.limit ?? 50);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const state = z
+      .enum(["pending", "settled", "reclaimed"])
+      .nullable()
+      .parse(options.state ?? null);
+    const cte = `WITH withdrawal_state AS (
+      SELECT
+        initiation.request_id,
+        initiation.staker_principal,
+        initiation.withdrawal_amount_sats AS amount_sats,
+        initiation.max_fee_sats,
+        initiation.tx_id AS initiated_tx_id,
+        initiation.block_height AS initiated_block_height,
+        resolution.kind AS resolution_kind,
+        resolution.tx_id AS resolved_tx_id,
+        resolution.block_height AS resolved_block_height,
+        CASE resolution.kind
+          WHEN 'settle-accepted-withdrawal' THEN 'settled'
+          WHEN 'reclaim-failed-withdrawal' THEN 'reclaimed'
+          ELSE 'pending'
+        END AS state
+      FROM manager_activity_events AS initiation
+      LEFT JOIN manager_activity_events AS resolution
+        ON resolution.chain_id = initiation.chain_id
+        AND resolution.manager_principal = initiation.manager_principal
+        AND resolution.request_id = initiation.request_id
+        AND resolution.canonical = 1
+        AND resolution.kind IN ('settle-accepted-withdrawal', 'reclaim-failed-withdrawal')
+        AND NOT EXISTS (
+          SELECT 1 FROM manager_activity_events AS later
+          WHERE later.chain_id = resolution.chain_id
+            AND later.manager_principal = resolution.manager_principal
+            AND later.request_id = resolution.request_id
+            AND later.canonical = 1
+            AND later.kind IN ('settle-accepted-withdrawal', 'reclaim-failed-withdrawal')
+            AND (later.block_height > resolution.block_height OR (
+              later.block_height = resolution.block_height AND later.event_index > resolution.event_index
+            ))
+        )
+      WHERE initiation.chain_id = ?
+        AND initiation.manager_principal = ?
+        AND initiation.canonical = 1
+        AND initiation.kind = 'claim-staker-rewards'
+        AND initiation.request_id IS NOT NULL
+    )`;
+    const totalRow = this.db
+      .prepare(
+        `${cte} SELECT count(*) AS count FROM withdrawal_state WHERE (? IS NULL OR state = ?)`,
+      )
+      .get(parsedChainId, manager, state, state) as { count: number };
+    const rows = this.db
+      .prepare(
+        `${cte}
+         SELECT request_id, staker_principal, amount_sats, max_fee_sats,
+           initiated_tx_id, initiated_block_height, resolution_kind,
+           resolved_tx_id, resolved_block_height
+         FROM withdrawal_state
+         WHERE (? IS NULL OR state = ?)
+         ORDER BY initiated_block_height DESC, length(request_id) DESC, request_id DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(parsedChainId, manager, state, state, limit, offset);
+    return {
+      items: rows.map((row) => {
+        const value = managerWithdrawalRowSchema.parse(row);
+        return {
+          requestId: value.request_id,
+          stakerPrincipal: value.staker_principal,
+          amountSats: value.amount_sats,
+          maxFeeSats: value.max_fee_sats,
+          initiatedTxId: value.initiated_tx_id,
+          initiatedBlockHeight: value.initiated_block_height,
+          state:
+            value.resolution_kind === "settle-accepted-withdrawal"
+              ? "settled"
+              : value.resolution_kind === "reclaim-failed-withdrawal"
+                ? "reclaimed"
+                : "pending",
+          resolvedTxId: value.resolved_tx_id,
+          resolvedBlockHeight: value.resolved_block_height,
+        };
+      }),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
+  }
+
+  getManagerActivityMetadata(
+    chainId: number,
+    managerPrincipal: string,
+  ): { eventCount: number; latestBlockHeight: number | null } {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const row = this.db
+      .prepare(
+        `SELECT count(*) AS count, max(block_height) AS latest_block_height
+         FROM manager_activity_events
+         WHERE chain_id = ? AND manager_principal = ? AND canonical = 1`,
+      )
+      .get(parsedChainId, manager) as { count: number; latest_block_height: number | null };
+    return {
+      eventCount: z.number().int().nonnegative().parse(row.count),
+      latestBlockHeight: z.number().int().nonnegative().nullable().parse(row.latest_block_height),
     };
   }
 
@@ -773,7 +1631,70 @@ export class SidekickStore {
          WHERE chain_id = ? AND index_block_hash = ? AND canonical = 1`,
       )
       .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
+    this.db
+      .prepare(
+        `UPDATE manager_activity_events AS activity
+         SET canonical = 0, updated_at = ?
+         WHERE activity.chain_id = ? AND activity.canonical = 1
+           AND EXISTS (
+             SELECT 1 FROM chain_events AS event
+             WHERE event.chain_id = activity.chain_id
+               AND event.tx_id = activity.tx_id
+               AND event.event_index = activity.event_index
+               AND event.index_block_hash = ?
+               AND event.canonical = 0
+           )`,
+      )
+      .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
     return Number(result.changes);
+  }
+
+  markMissingCanonicalContractEvents(
+    chainId: number,
+    contractId: string,
+    boundaryBlockHeight: number,
+    includeBoundary: boolean,
+    presentEventIds: ReadonlySet<string>,
+    updatedAt: string,
+  ): number {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const parsedContractId = principalSchema.parse(contractId);
+    const parsedBoundary = z.number().int().nonnegative().parse(boundaryBlockHeight);
+    const parsedUpdatedAt = z.iso.datetime().parse(updatedAt);
+    const rows = this.db
+      .prepare(
+        `SELECT tx_id, event_index FROM chain_events
+         WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+           AND block_height ${includeBoundary ? ">=" : ">"} ?`,
+      )
+      .all(parsedChainId, parsedContractId, parsedBoundary) as Array<{
+      tx_id: string;
+      event_index: number;
+    }>;
+    const update = this.db.prepare(
+      `UPDATE chain_events SET canonical = 0, updated_at = ?
+       WHERE chain_id = ? AND tx_id = ? AND event_index = ? AND canonical = 1`,
+    );
+    const updateProjection = this.db.prepare(
+      `UPDATE manager_activity_events SET canonical = 0, updated_at = ?
+       WHERE chain_id = ? AND tx_id = ? AND event_index = ? AND canonical = 1`,
+    );
+    let changed = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        if (presentEventIds.has(`${row.tx_id}:${row.event_index}`)) continue;
+        changed += Number(
+          update.run(parsedUpdatedAt, parsedChainId, row.tx_id, row.event_index).changes,
+        );
+        updateProjection.run(parsedUpdatedAt, parsedChainId, row.tx_id, row.event_index);
+      }
+      this.db.exec("COMMIT");
+      return changed;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   startOrResumeSignerStakerRun(
@@ -890,16 +1811,17 @@ export class SidekickStore {
     const upsertPosition = this.db.prepare(
       `INSERT INTO stake_positions (
         manager_principal, staker_principal, signer_principal, amount_ustx,
-        first_reward_cycle, num_cycles, unlock_cycle, active, discovery_source_id,
+        first_reward_cycle, num_cycles, unlock_cycle, unlock_burn_height, active, discovery_source_id,
         verification_source_id, last_seen_run_id, observed_burn_block_height,
         observed_stacks_tip_height, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
         signer_principal = excluded.signer_principal,
         amount_ustx = excluded.amount_ustx,
         first_reward_cycle = excluded.first_reward_cycle,
         num_cycles = excluded.num_cycles,
         unlock_cycle = excluded.unlock_cycle,
+        unlock_burn_height = excluded.unlock_burn_height,
         active = 1,
         discovery_source_id = excluded.discovery_source_id,
         verification_source_id = excluded.verification_source_id,
@@ -924,6 +1846,32 @@ export class SidekickStore {
         observed_burn_block_height = excluded.observed_burn_block_height,
         observed_stacks_tip_height = excluded.observed_stacks_tip_height,
         updated_at = excluded.updated_at`,
+    );
+    const putPositionObservation = this.db.prepare(
+      `INSERT INTO staker_position_observations (
+        manager_principal, staker_principal, observed_burn_block_height,
+        observed_stacks_tip_height, has_stx, has_btc, stx_node_verified,
+        position_present, signer_principal, amount_ustx, first_reward_cycle,
+        num_cycles, unlock_cycle, unlock_burn_height, source_id,
+        verification_source_id, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (
+        manager_principal, staker_principal,
+        observed_burn_block_height, observed_stacks_tip_height
+      ) DO UPDATE SET
+        has_stx = excluded.has_stx,
+        has_btc = excluded.has_btc,
+        stx_node_verified = excluded.stx_node_verified,
+        position_present = excluded.position_present,
+        signer_principal = excluded.signer_principal,
+        amount_ustx = excluded.amount_ustx,
+        first_reward_cycle = excluded.first_reward_cycle,
+        num_cycles = excluded.num_cycles,
+        unlock_cycle = excluded.unlock_cycle,
+        unlock_burn_height = excluded.unlock_burn_height,
+        source_id = excluded.source_id,
+        verification_source_id = excluded.verification_source_id,
+        observed_at = excluded.observed_at`,
     );
 
     this.db.exec("BEGIN IMMEDIATE");
@@ -955,8 +1903,31 @@ export class SidekickStore {
         deactivatePosition.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
         deactivateMemberships.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
 
-        if (!item.position) continue;
-        const position = item.position;
+        const observedPosition = item.position;
+        putPositionObservation.run(
+          value.managerPrincipal,
+          item.stakerPrincipal,
+          value.burnBlockHeight,
+          value.stacksTipHeight,
+          item.hasStx ? 1 : 0,
+          item.hasBtc ? 1 : 0,
+          item.stxNodeVerified === null ? null : item.stxNodeVerified ? 1 : 0,
+          observedPosition ? 1 : 0,
+          observedPosition?.signerPrincipal ?? null,
+          observedPosition?.amountUstx.toString() ?? null,
+          observedPosition?.firstRewardCycle.toString() ?? null,
+          observedPosition?.numCycles.toString() ?? null,
+          observedPosition
+            ? (observedPosition.firstRewardCycle + observedPosition.numCycles).toString()
+            : null,
+          observedPosition?.unlockBurnHeight?.toString() ?? null,
+          value.sourceId,
+          item.hasStx ? value.nodeSourceId : null,
+          value.observedAt,
+        );
+
+        if (!observedPosition) continue;
+        const position = observedPosition;
         const unlockCycle = position.firstRewardCycle + position.numCycles;
         upsertPosition.run(
           value.managerPrincipal,
@@ -966,6 +1937,7 @@ export class SidekickStore {
           position.firstRewardCycle.toString(),
           position.numCycles.toString(),
           unlockCycle.toString(),
+          position.unlockBurnHeight?.toString() ?? null,
           value.sourceId,
           value.nodeSourceId,
           value.runId,
@@ -1036,23 +2008,31 @@ export class SidekickStore {
     }
   }
 
-  listSignerStakers(managerPrincipal: string, activeOnly = true): StoredSignerStaker[] {
+  listSignerStakers(
+    managerPrincipal: string,
+    activeOnly = true,
+    sourceId: string | null = null,
+  ): StoredSignerStaker[] {
     const manager = principalSchema.parse(managerPrincipal);
+    const parsedSourceId = sourceId === null ? null : z.string().min(1).parse(sourceId);
     const rows = this.db
       .prepare(
         `SELECT s.manager_principal, s.staker_principal, s.has_stx, s.has_btc,
           s.stx_node_verified, s.active, s.source_id, s.last_seen_run_id,
           s.verification_source_id, s.first_seen_at, s.last_seen_at,
           p.signer_principal, p.amount_ustx,
-          p.first_reward_cycle, p.num_cycles, p.unlock_cycle, p.active AS position_active
+          p.first_reward_cycle, p.num_cycles, p.unlock_cycle, p.unlock_burn_height,
+          p.active AS position_active
          FROM stakers s
          LEFT JOIN stake_positions p
            ON p.manager_principal = s.manager_principal
           AND p.staker_principal = s.staker_principal
-         WHERE s.manager_principal = ? AND (? = 0 OR s.active = 1)
+         WHERE s.manager_principal = ?
+           AND (? = 0 OR s.active = 1)
+           AND (? IS NULL OR s.source_id = ?)
          ORDER BY s.staker_principal`,
       )
-      .all(manager, activeOnly ? 1 : 0);
+      .all(manager, activeOnly ? 1 : 0, parsedSourceId, parsedSourceId);
     return rows.map((row) => {
       const value = storedSignerStakerRowSchema.parse(row);
       return {
@@ -1081,22 +2061,31 @@ export class SidekickStore {
                 firstRewardCycle: BigInt(value.first_reward_cycle),
                 numCycles: BigInt(value.num_cycles),
                 unlockCycle: BigInt(value.unlock_cycle),
+                unlockBurnHeight:
+                  value.unlock_burn_height === null ? null : BigInt(value.unlock_burn_height),
                 active: value.position_active === 1,
               },
       };
     });
   }
 
-  listCycleMemberships(managerPrincipal: string, activeOnly = true): StoredCycleMembership[] {
+  listCycleMemberships(
+    managerPrincipal: string,
+    activeOnly = true,
+    sourceId: string | null = null,
+  ): StoredCycleMembership[] {
     const manager = principalSchema.parse(managerPrincipal);
+    const parsedSourceId = sourceId === null ? null : z.string().min(1).parse(sourceId);
     const rows = this.db
       .prepare(
         `SELECT staker_principal, reward_cycle, signer_principal, amount_ustx, active
          FROM cycle_memberships
-         WHERE manager_principal = ? AND (? = 0 OR active = 1)
+         WHERE manager_principal = ?
+           AND (? = 0 OR active = 1)
+           AND (? IS NULL OR discovery_source_id = ?)
          ORDER BY length(reward_cycle), reward_cycle, staker_principal`,
       )
-      .all(manager, activeOnly ? 1 : 0);
+      .all(manager, activeOnly ? 1 : 0, parsedSourceId, parsedSourceId);
     return rows.map((row) => {
       const value = cycleMembershipRowSchema.parse(row);
       return {
@@ -1107,5 +2096,348 @@ export class SidekickStore {
         active: value.active === 1,
       };
     });
+  }
+
+  listStakerPositionObservations(
+    managerPrincipal: string,
+    stakerPrincipal: string,
+    limit = 100,
+  ): StoredStakerPositionObservation[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const staker = principalSchema.parse(stakerPrincipal);
+    const parsedLimit = z.number().int().min(1).max(500).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT manager_principal, staker_principal, observed_burn_block_height,
+          observed_stacks_tip_height, has_stx, has_btc, stx_node_verified,
+          position_present, signer_principal, amount_ustx, first_reward_cycle,
+          num_cycles, unlock_cycle, unlock_burn_height, observed_at
+         FROM staker_position_observations
+         WHERE manager_principal = ? AND staker_principal = ?
+         ORDER BY observed_burn_block_height DESC, observed_stacks_tip_height DESC
+         LIMIT ?`,
+      )
+      .all(manager, staker, parsedLimit);
+    return rows.map((row) => {
+      const value = stakerPositionObservationRowSchema.parse(row);
+      const position =
+        value.position_present === 1 &&
+        value.signer_principal !== null &&
+        value.amount_ustx !== null &&
+        value.first_reward_cycle !== null &&
+        value.num_cycles !== null &&
+        value.unlock_cycle !== null
+          ? {
+              signerPrincipal: value.signer_principal,
+              amountUstx: value.amount_ustx,
+              firstRewardCycle: value.first_reward_cycle,
+              numCycles: value.num_cycles,
+              unlockCycle: value.unlock_cycle,
+              unlockBurnHeight: value.unlock_burn_height,
+            }
+          : null;
+      return {
+        managerPrincipal: value.manager_principal,
+        stakerPrincipal: value.staker_principal,
+        observedBurnBlockHeight: value.observed_burn_block_height,
+        observedStacksTipHeight: value.observed_stacks_tip_height,
+        hasStx: value.has_stx === 1,
+        hasBtc: value.has_btc === 1,
+        stxNodeVerified: value.stx_node_verified === null ? null : value.stx_node_verified === 1,
+        position,
+        observedAt: value.observed_at,
+      };
+    });
+  }
+
+  putPoolCycleSnapshots(input: PoolCycleSnapshotInput): void {
+    const value = poolCycleSnapshotInputSchema.parse(input);
+    const upsert = this.db.prepare(
+      `INSERT INTO pool_cycle_snapshots (
+        manager_principal, reward_cycle, observed_burn_block_height,
+        observed_stacks_tip_height, status, roster_available, staker_count,
+        enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
+        eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
+        in_signer_set, threshold_ustx, threshold_margin_ustx, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (
+        manager_principal, reward_cycle,
+        observed_burn_block_height, observed_stacks_tip_height
+      ) DO UPDATE SET
+        status = excluded.status,
+        roster_available = excluded.roster_available,
+        staker_count = excluded.staker_count,
+        enumerated_stx_ustx = excluded.enumerated_stx_ustx,
+        enumeration_delta_ustx = excluded.enumeration_delta_ustx,
+        pending_stx_ustx = excluded.pending_stx_ustx,
+        eligible_stx_shares_ustx = excluded.eligible_stx_shares_ustx,
+        total_delegated_ustx = excluded.total_delegated_ustx,
+        non_stx_delegated_ustx = excluded.non_stx_delegated_ustx,
+        in_signer_set = excluded.in_signer_set,
+        threshold_ustx = excluded.threshold_ustx,
+        threshold_margin_ustx = excluded.threshold_margin_ustx,
+        observed_at = excluded.observed_at`,
+    );
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const cycle of value.cycles) {
+        upsert.run(
+          value.managerPrincipal,
+          cycle.cycleId,
+          value.burnBlockHeight,
+          value.stacksTipHeight,
+          cycle.status,
+          cycle.rosterAvailable ? 1 : 0,
+          cycle.stakerCount,
+          cycle.enumeratedStxUstx,
+          cycle.enumerationDeltaUstx,
+          cycle.pendingStxUstx,
+          cycle.eligibleStxSharesUstx,
+          cycle.totalDelegatedUstx,
+          cycle.nonStxDelegatedUstx,
+          cycle.inSignerSet ? 1 : 0,
+          cycle.thresholdUstx,
+          cycle.thresholdMarginUstx,
+          value.observedAt,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listLatestPoolCycleSnapshots(
+    managerPrincipal: string,
+    options: { limit?: number; offset?: number } = {},
+  ): ManagerActivityPage<StoredPoolCycleSnapshot> {
+    const manager = principalSchema.parse(managerPrincipal);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .parse(options.limit ?? 50);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const totalRow = this.db
+      .prepare(
+        `SELECT count(DISTINCT reward_cycle) AS count
+         FROM pool_cycle_snapshots WHERE manager_principal = ?`,
+      )
+      .get(manager) as { count: number };
+    const rows = this.db
+      .prepare(
+        `WITH ranked AS (
+          SELECT *, row_number() OVER (
+            PARTITION BY reward_cycle
+            ORDER BY observed_burn_block_height DESC, observed_stacks_tip_height DESC
+          ) AS observation_rank
+          FROM pool_cycle_snapshots
+          WHERE manager_principal = ?
+        )
+        SELECT manager_principal, reward_cycle, observed_burn_block_height,
+          observed_stacks_tip_height, status, roster_available, staker_count,
+          enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
+          eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
+          in_signer_set, threshold_ustx, threshold_margin_ustx, observed_at
+        FROM ranked WHERE observation_rank = 1
+        ORDER BY reward_cycle DESC LIMIT ? OFFSET ?`,
+      )
+      .all(manager, limit, offset);
+    return {
+      items: rows.map((row) => {
+        const value = poolCycleSnapshotRowSchema.parse(row);
+        return {
+          managerPrincipal: value.manager_principal,
+          cycleId: value.reward_cycle,
+          observedBurnBlockHeight: value.observed_burn_block_height,
+          observedStacksTipHeight: value.observed_stacks_tip_height,
+          status: value.status,
+          rosterAvailable: value.roster_available === 1,
+          stakerCount: value.staker_count,
+          enumeratedStxUstx: value.enumerated_stx_ustx,
+          enumerationDeltaUstx: value.enumeration_delta_ustx,
+          pendingStxUstx: value.pending_stx_ustx,
+          eligibleStxSharesUstx: value.eligible_stx_shares_ustx,
+          totalDelegatedUstx: value.total_delegated_ustx,
+          nonStxDelegatedUstx: value.non_stx_delegated_ustx,
+          inSignerSet: value.in_signer_set === 1,
+          thresholdUstx: value.threshold_ustx,
+          thresholdMarginUstx: value.threshold_margin_ustx,
+          observedAt: value.observed_at,
+        };
+      }),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
+  }
+
+  putRewardCycleSnapshot(input: RewardCycleSnapshotInput): void {
+    const value = rewardCycleSnapshotInputSchema.parse(input);
+    const upsertCycle = this.db.prepare(
+      `INSERT INTO reward_cycle_snapshots (
+        manager_principal, reward_cycle, status, observed_burn_block_height,
+        observed_stacks_tip_height, last_reward_compute_burn_height,
+        last_computed_reward_cycle, rewards_per_token,
+        signer_earned_before_manager_claim_sats, fee_snapshot_bips,
+        earned_fees_sats, withdrawal_liability_sats, unclaimed_staker_rewards_sats,
+        staker_count, gross_sats, earned_sats, fee_sats, actionable_claims,
+        l1_claims_waiting_for_fee_threshold, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (manager_principal, reward_cycle) DO UPDATE SET
+        status = excluded.status,
+        observed_burn_block_height = excluded.observed_burn_block_height,
+        observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        last_reward_compute_burn_height = excluded.last_reward_compute_burn_height,
+        last_computed_reward_cycle = excluded.last_computed_reward_cycle,
+        rewards_per_token = excluded.rewards_per_token,
+        signer_earned_before_manager_claim_sats = excluded.signer_earned_before_manager_claim_sats,
+        fee_snapshot_bips = excluded.fee_snapshot_bips,
+        earned_fees_sats = excluded.earned_fees_sats,
+        withdrawal_liability_sats = excluded.withdrawal_liability_sats,
+        unclaimed_staker_rewards_sats = excluded.unclaimed_staker_rewards_sats,
+        staker_count = excluded.staker_count,
+        gross_sats = excluded.gross_sats,
+        earned_sats = excluded.earned_sats,
+        fee_sats = excluded.fee_sats,
+        actionable_claims = excluded.actionable_claims,
+        l1_claims_waiting_for_fee_threshold = excluded.l1_claims_waiting_for_fee_threshold,
+        observed_at = excluded.observed_at`,
+    );
+    const insertStaker = this.db.prepare(
+      `INSERT INTO staker_reward_cycle_snapshots (
+        manager_principal, reward_cycle, staker_principal, payout_kind,
+        pox_address_version_hex, pox_address_hashbytes_hex, max_fee_sats,
+        earned_sats, fee_sats, gross_sats, claimable_by_policy, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      upsertCycle.run(
+        value.managerPrincipal,
+        value.rewardCycle,
+        value.status,
+        value.burnBlockHeight,
+        value.stacksTipHeight,
+        value.global.lastRewardComputeBurnHeight,
+        value.global.lastComputedRewardCycle,
+        value.global.rewardsPerToken,
+        value.global.signerEarnedBeforeManagerClaimSats,
+        value.manager.feeSnapshotBips,
+        value.manager.earnedFeesSats,
+        value.manager.withdrawalLiabilitySats,
+        value.manager.unclaimedStakerRewardsSats,
+        value.totals.stakers,
+        value.totals.grossSats,
+        value.totals.earnedSats,
+        value.totals.feeSats,
+        value.totals.actionableClaims,
+        value.totals.l1ClaimsWaitingForFeeThreshold,
+        value.observedAt,
+      );
+      this.db
+        .prepare(
+          `DELETE FROM staker_reward_cycle_snapshots
+           WHERE manager_principal = ? AND reward_cycle = ?`,
+        )
+        .run(value.managerPrincipal, value.rewardCycle);
+      for (const staker of value.stakers) {
+        insertStaker.run(
+          value.managerPrincipal,
+          value.rewardCycle,
+          staker.stakerPrincipal,
+          staker.payout.kind,
+          staker.payout.poxAddress?.versionHex ?? null,
+          staker.payout.poxAddress?.hashbytesHex ?? null,
+          staker.payout.maxFeeSats,
+          staker.rewards.earnedSats,
+          staker.rewards.feeSats,
+          staker.rewards.grossSats,
+          staker.claimableByPolicy ? 1 : 0,
+          value.observedAt,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listRewardCycleSummaries(
+    managerPrincipal: string,
+    options: { limit?: number; offset?: number } = {},
+  ): ManagerActivityPage<StoredRewardCycleSummary> {
+    const manager = principalSchema.parse(managerPrincipal);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .parse(options.limit ?? 50);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const totalRow = this.db
+      .prepare(`SELECT count(*) AS count FROM reward_cycle_snapshots WHERE manager_principal = ?`)
+      .get(manager) as { count: number };
+    const rows = this.db
+      .prepare(
+        `SELECT manager_principal, reward_cycle, status, observed_burn_block_height,
+          observed_stacks_tip_height, staker_count, gross_sats, earned_sats,
+          fee_sats, actionable_claims, l1_claims_waiting_for_fee_threshold, observed_at
+         FROM reward_cycle_snapshots WHERE manager_principal = ?
+         ORDER BY reward_cycle DESC LIMIT ? OFFSET ?`,
+      )
+      .all(manager, limit, offset);
+    return {
+      items: rows.map((row) => {
+        const value = rewardCycleSummaryRowSchema.parse(row);
+        return {
+          managerPrincipal: value.manager_principal,
+          rewardCycle: value.reward_cycle,
+          status: value.status,
+          observedBurnBlockHeight: value.observed_burn_block_height,
+          observedStacksTipHeight: value.observed_stacks_tip_height,
+          stakerCount: value.staker_count,
+          grossSats: value.gross_sats,
+          earnedSats: value.earned_sats,
+          feeSats: value.fee_sats,
+          actionableClaims: value.actionable_claims,
+          l1ClaimsWaitingForFeeThreshold: value.l1_claims_waiting_for_fee_threshold,
+          observedAt: value.observed_at,
+        };
+      }),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
+  }
+
+  getLatestCompletedSignerStakerRun(
+    sourceId: string,
+    managerPrincipal: string,
+  ): SignerStakerRun | null {
+    const parsedSourceId = z.string().min(1).parse(sourceId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const row = this.db
+      .prepare(
+        `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
+          pages_processed, items_processed, started_at, updated_at, completed_at
+         FROM ingestion_runs
+         WHERE source_id = ? AND stream = ? AND manager_principal = ? AND status = 'completed'
+         ORDER BY completed_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(parsedSourceId, signerStakersStream, manager);
+    return row ? toSignerStakerRun(row) : null;
   }
 }

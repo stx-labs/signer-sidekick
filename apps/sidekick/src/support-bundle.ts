@@ -36,6 +36,7 @@ export const supportBundleSchema = z
         apiKeyHeader: z.string(),
         apiKeyConfigured: z.boolean(),
         maxApiBurnBlockLag: z.number().int().nonnegative(),
+        forecastHorizonCycles: z.number().int().min(1).max(96),
       })
       .strict(),
     diagnostics: z
@@ -139,6 +140,7 @@ export function createSupportBundle(
       apiKeyHeader: config.apiKeyHeader,
       apiKeyConfigured: Boolean(config.apiKey),
       maxApiBurnBlockLag: config.maxApiBurnBlockLag,
+      forecastHorizonCycles: config.forecastHorizonCycles,
     },
     diagnostics: {
       preflight: {

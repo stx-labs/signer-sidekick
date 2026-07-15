@@ -17,6 +17,7 @@ const config: SidekickConfig = {
   apiKey: "do-not-export",
   apiKeyHeader: "x-api-key",
   maxApiBurnBlockLag: 12,
+  forecastHorizonCycles: 6,
   databasePath: "/tmp/sidekick.sqlite",
 };
 

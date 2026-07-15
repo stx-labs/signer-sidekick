@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Public Pool Page — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+<style>
+  .code-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .split-col { display:flex; flex-direction:column; gap:10px; }
+  .split-item { display:flex; gap:10px; align-items:flex-start; padding:11px 13px; border-radius:9px; background:var(--surface-secondary); }
+  .split-item .ic { width:26px; height:26px; border-radius:7px; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; }
+  .split-item .t { font-size:13px; font-weight:500; }
+  .split-item .m { font-size:12px; color:var(--text-secondary); margin-top:1px; }
+  .ic-static { background:var(--surface-fifth); color:var(--text-secondary); }
+  .ic-live { background:var(--status-info-bg); color:var(--status-info); }
+  .ic-never { background:var(--status-error-bg); color:var(--status-error); }
+  .preview-frame { border:1px solid var(--border-secondary); border-radius:12px; overflow:hidden; background:var(--surface-tertiary); }
+  .preview-frame .pv-bar { display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--border-secondary); background:var(--surface-secondary); }
+  .preview-frame .pv-bar .lights { display:flex; gap:5px; }
+  .preview-frame .pv-bar .lights span { width:9px; height:9px; border-radius:50%; background:var(--sand-300); }
+  .preview-frame .pv-bar .pv-url { font-family:var(--font-mono); font-size:11px; color:var(--text-secondary); background:var(--surface-fourth); border-radius:6px; padding:3px 10px; flex:1; }
+  .preview-frame .pv-body { padding:20px; }
+</style>
+</head>
+<body data-page="enrollment" data-mode="assist"
+      data-crumbs="<strong>Public Pool Page</strong> · Trust Machines Pool"
+      data-fresh="burn 962,184 · embed regenerated 12s ago">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Public Pool Page</h1>
+          <p class="lede">Generate an embeddable pool card for a website you already run. Sidekick hosts nothing and opens no public route — the card reads live data from public APIs at view time.</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-tertiary sm"><i class="ph ph-eye"></i> <a href="pool-public.html" target="_blank" rel="noopener" style="text-decoration:none; color:inherit;">Standalone preview</a></button>
+        </div>
+      </div>
+
+      <!-- Security posture -->
+      <div class="callout callout-info" style="margin-bottom:16px;">
+        <i class="ph ph-shield-check ic"></i>
+        <div class="body">
+          <strong>No public surface on this app.</strong> Sidekick stays loopback-bound. This screen produces a snippet you paste onto your own site; at view time it queries only public, unauthenticated on-chain data keyed by your manager principal. Your gas key, job internals, and alerts are never part of it.
+        </div>
+      </div>
+
+      <!-- Mode -->
+      <div class="card-standout" style="margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+          <div>
+            <div class="muted" style="font-size:12px; font-weight:500;">Embed type</div>
+            <div class="seg" id="modeSeg" style="margin-top:8px;">
+              <button class="on" data-mode="live"><i class="ph ph-broadcast"></i> Live card</button>
+              <button data-mode="static"><i class="ph ph-camera"></i> Static snapshot</button>
+            </div>
+          </div>
+          <div style="width:1px; align-self:stretch; background:var(--border-secondary);"></div>
+          <div style="flex:1; min-width:240px;" class="tertiary" id="modeDesc">
+            <span style="font-size:12px;"><strong>Live card</strong> — a self-contained snippet that fetches current cycle, pool size, and grant status from a public API each time the page loads. Always current; nothing to re-paste.</span>
+          </div>
+          <div>
+            <div class="field" style="margin:0;">
+              <label style="font-size:12px;">Public data source</label>
+              <div class="select input" style="display:flex; align-items:center; gap:10px; justify-content:space-between; cursor:pointer; height:34px; min-width:220px;">Hiro public API (api.hiro.so)<i class="ph ph-caret-down"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Snippet + data split -->
+      <div class="grid cols-3-2" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="code-head">
+            <h2 style="font-family:var(--font-display); font-size:15px; font-weight:500; margin:0;" id="snippetTitle">Embed snippet</h2>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-tertiary sm" id="dlBtn"><i class="ph ph-download-simple"></i> <span id="dlLabel">Download .html</span></button>
+              <button class="btn btn-primary sm"><i class="ph ph-copy"></i> Copy</button>
+            </div>
+          </div>
+          <div class="code" id="liveCode">&lt;!-- Trust Machines Pool · PoX-5 pool card. Paste anywhere on your site. --&gt;
+&lt;div class="stx-pool-card"&gt;&lt;/div&gt;
+&lt;script&gt;
+(function(){
+  <span class="c">// self-contained · no dependency on Sidekick · public data only</span>
+  var API     = <span class="s">"https://api.hiro.so"</span>;        <span class="c">// unauthenticated</span>
+  var MANAGER = <span class="s">"SP2C2...J8VZ.tm-signer"</span>;
+  var STATIC  = {
+    name:      <span class="s">"Trust Machines Pool"</span>,
+    website:   <span class="s">"trustmachines.co/pool"</span>,
+    support:   <span class="s">"pool@trustmachines.co"</span>,
+    signerKey: <span class="s">"0x03a1b7...9f4c"</span>
+  };
+  <span class="c">// fetch /v2/pox + manager read-onlys, then render the card …</span>
+})();
+&lt;/script&gt;</div>
+          <div class="code" id="staticCode" style="display:none;">{
+  <span class="k">"schema"</span>: <span class="s">"stacks-pool-card/v1"</span>,
+  <span class="k">"generatedAtBurnHeight"</span>: 962184,
+  <span class="k">"manager"</span>: <span class="s">"SP2C2...J8VZ.tm-signer"</span>,
+  <span class="k">"network"</span>: <span class="s">"mainnet"</span>,
+  <span class="k">"name"</span>: <span class="s">"Trust Machines Pool"</span>,
+  <span class="k">"signerKey"</span>: <span class="s">"0x03a1b7...9f4c"</span>,
+  <span class="k">"grantValid"</span>: true,
+  <span class="k">"fee"</span>: <span class="s">"5.0%"</span>,
+  <span class="k">"cycle"</span>: 141,
+  <span class="k">"poolStx"</span>: <span class="s">"128400"</span>,
+  <span class="k">"aboveThreshold"</span>: true
+}
+<span class="c">// plus a matching static .html fragment with these values baked in</span></div>
+          <p class="tertiary" style="font-size:11px; margin:12px 0 0;" id="snippetNote">The snippet is fully self-contained — no external script host, no runtime dependency on Sidekick. An <span class="mono">&lt;iframe&gt;</span> variant pointing at a static file you host is also available.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>What's in the card</h2></div>
+          <div class="split-col">
+            <div class="split-item">
+              <div class="ic ic-static"><i class="ph ph-pencil-simple"></i></div>
+              <div><div class="t">You maintain (baked in)</div><div class="m">Pool name, website, support, official links, manager principal, signer public key. Regenerate when the signer key rotates.</div></div>
+            </div>
+            <div class="split-item">
+              <div class="ic ic-live"><i class="ph ph-broadcast"></i></div>
+              <div><div class="t">Fetched live from public API</div><div class="m">Cycle &amp; prepare-phase window, pool STX + 50k margin, eligibility, grant validity, fee, source hash — all keyed by the manager principal.</div></div>
+            </div>
+            <div class="split-item">
+              <div class="ic ic-never"><i class="ph ph-prohibit"></i></div>
+              <div><div class="t">Never included</div><div class="m">Gas payer, any key, job/transaction internals, alerts, or anything from Sidekick's database.</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preview -->
+      <div class="section-title">Preview <span class="hint">what the card renders on your site, from public data</span></div>
+      <div class="preview-frame">
+        <div class="pv-bar">
+          <div class="lights"><span></span><span></span><span></span></div>
+          <div class="pv-url">trustmachines.co/stacking</div>
+          <span class="badge b-neutral" style="height:22px;"><i class="ph ph-code"></i> embedded card</span>
+        </div>
+        <div class="pv-body">
+          <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:16px;">
+            <div>
+              <div class="qty" style="font-size:24px;">Trust Machines Pool</div>
+              <div class="muted" style="font-size:12px; margin-top:2px;">trustmachines.co/pool · pool@trustmachines.co</div>
+            </div>
+            <span class="badge b-success"><span class="dot"></span>Grant valid</span>
+          </div>
+          <div class="grid cols-2" style="margin-bottom:16px;">
+            <div class="card-standout">
+              <div class="card-head"><h2>Pool identity</h2></div>
+              <div class="statline"><span class="k">Signer-manager</span><span class="v identifier">SP2C2...J8VZ.tm-signer</span></div>
+              <div class="statline"><span class="k">Source hash</span><span class="v identifier src src-api">a3f9c1...c218</span></div>
+              <div class="statline"><span class="k">Signer key</span><span class="v identifier">0x03a1b7...9f4c</span></div>
+            </div>
+            <div class="card-standout">
+              <div class="card-head"><h2>Terms &amp; window</h2></div>
+              <div class="statline"><span class="k">Fee</span><span class="v mono">5.0%</span></div>
+              <div class="statline"><span class="k">Duration</span><span class="v mono">1–96 cycles</span></div>
+              <div class="statline"><span class="k">Destinations</span><span class="v">sBTC · <span class="btc-value">L1</span></span></div>
+              <div class="statline"><span class="k">Enrollment</span><span class="v"><span class="badge b-success" style="height:20px;">Open · cycle 141</span></span></div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:16px;">
+            <div class="card-head"><h2>Pool size</h2><span class="muted src src-api" style="font-size:12px;">via public API</span></div>
+            <div style="display:flex; align-items:baseline; gap:12px;">
+              <div class="qty" style="font-size:26px;">128,400 <span class="muted" style="font-size:14px;">STX</span></div>
+              <span class="badge b-success"><i class="ph ph-check"></i> +78,400 above 50k minimum</span>
+            </div>
+            <div class="meter" style="margin-top:12px;"><div class="track"><div class="fill" style="width:82%;"></div><div class="mark" style="left:39%;"></div></div></div>
+          </div>
+          <div class="card-standout">
+            <div class="card-head"><h2>Enroll through an official interface</h2></div>
+            <div class="pill-row">
+              <button class="btn btn-accent sm"><i class="ph ph-wallet"></i> Open in Leather</button>
+              <button class="btn btn-secondary sm"><i class="ph ph-copy"></i> Copy manager principal</button>
+            </div>
+          </div>
+          <p class="tertiary" style="font-size:11px; margin:14px 0 0;">Data via public Stacks API · burn height 962,184. Rendered on your site — Sidekick is not in the request path.</p>
+        </div>
+      </div>
+
+      <p class="tertiary" style="font-size:12px; margin-top:16px;"><i class="ph ph-arrow-clockwise"></i> Content (name, links, signer key) is edited in <a href="settings.html" style="color:var(--accent-text); text-decoration:none;">Settings → Pool identity</a>. Regenerate the snippet after changing any baked-in value.</p>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+<script>
+  (function(){
+    var seg=document.getElementById('modeSeg');
+    var live=document.getElementById('liveCode'), stat=document.getElementById('staticCode');
+    var title=document.getElementById('snippetTitle'), note=document.getElementById('snippetNote');
+    var dlLabel=document.getElementById('dlLabel'), desc=document.getElementById('modeDesc');
+    seg.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click', function(){
+        seg.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+        b.classList.add('on');
+        var isLive=b.dataset.mode==='live';
+        live.style.display=isLive?'block':'none';
+        stat.style.display=isLive?'none':'block';
+        title.textContent=isLive?'Embed snippet':'Static JSON + HTML';
+        dlLabel.textContent=isLive?'Download .html':'Download .json';
+        note.innerHTML=isLive
+          ? 'The snippet is fully self-contained — no external script host, no runtime dependency on Sidekick. An <span class="mono">&lt;iframe&gt;</span> variant pointing at a static file you host is also available.'
+          : 'Values are baked in at generation time (“as of burn height 962,184”). Re-generate to refresh — nothing is fetched at view time.';
+        desc.innerHTML=isLive
+          ? '<span style="font-size:12px;"><strong>Live card</strong> — a self-contained snippet that fetches current cycle, pool size, and grant status from a public API each time the page loads. Always current; nothing to re-paste.</span>'
+          : '<span style="font-size:12px;"><strong>Static snapshot</strong> — values frozen at generation time. No network calls at view time, but you must regenerate when anything changes.</span>';
+      });
+    });
+  })();
+</script>
+</body>
+</html>

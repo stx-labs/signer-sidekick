@@ -77,6 +77,10 @@ export function encodeUIntHex(value: bigint): string {
   return cvToHex(uintCV(value));
 }
 
+export function encodeOptionalUIntHex(value: bigint | null): string {
+  return cvToHex(value === null ? noneCV() : someCV(uintCV(value)));
+}
+
 export function encodeBufferHex(hex: string): string {
   if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex)) {
     throw new ClarityCodecError("expected an even-length hexadecimal buffer");

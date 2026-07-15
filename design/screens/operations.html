@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+<style>
+  .job-policy { display:flex; align-items:center; gap:14px; padding:14px 0; border-bottom:1px solid var(--border-tertiary); }
+  .job-policy:last-child { border-bottom:0; }
+  .job-policy .ic { width:34px; height:34px; border-radius:9px; background:var(--surface-secondary); color:var(--text-secondary); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:17px; }
+  .job-policy .body { flex:1; }
+  .job-policy .body .t { font-size:13px; font-weight:500; }
+  .job-policy .body .m { font-size:12px; color:var(--text-secondary); margin-top:1px; }
+  .manifest { border:1px solid var(--border-secondary); border-radius:var(--radius-lg); overflow:hidden; }
+  .manifest .mhead { display:flex; align-items:center; gap:12px; padding:14px 16px; background:var(--surface-secondary); border-bottom:1px solid var(--border-secondary); }
+  .manifest .mbody { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .attempt { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px dashed var(--border-tertiary); font-size:12px; }
+  .attempt:last-child { border-bottom:0; }
+</style>
+</head>
+<body data-page="operations" data-mode="assist"
+      data-crumbs="<strong>Operations</strong> · Trust Machines Pool"
+      data-fresh="burn 962,184 · gas-payer nonce reconciled 12s ago">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Operations</h1>
+          <p class="lede">What Sidekick has queued, in flight, failed, or is holding for your approval. Everything here uses only the low-balance gas payer.</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-warning sm"><i class="ph ph-pause"></i> Pause all broadcasts</button>
+        </div>
+      </div>
+
+      <!-- Mode + breaker -->
+      <div class="card-standout" style="margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:24px; flex-wrap:wrap;">
+          <div>
+            <div class="muted" style="font-size:12px; font-weight:500;">Automation mode</div>
+            <div class="seg" style="margin-top:8px;">
+              <button><i class="ph ph-eye"></i> Observe</button>
+              <button class="on"><i class="ph ph-hand-tap"></i> Assist</button>
+              <button><i class="ph ph-lightning"></i> Automate</button>
+            </div>
+          </div>
+          <div style="width:1px; align-self:stretch; background:var(--border-secondary);"></div>
+          <div>
+            <div class="muted" style="font-size:12px; font-weight:500;">Circuit breaker</div>
+            <div style="margin-top:10px;"><span class="badge b-success lg"><span class="dot"></span>Closed</span></div>
+          </div>
+          <div style="width:1px; align-self:stretch; background:var(--border-secondary);"></div>
+          <div>
+            <div class="muted" style="font-size:12px; font-weight:500;">Ingestion</div>
+            <div style="margin-top:10px;"><span class="badge b-success lg"><span class="dot"></span>Running</span></div>
+          </div>
+          <div style="flex:1; min-width:200px;" class="tertiary">
+            <span style="font-size:12px;">Assist builds and simulates eligible jobs; you approve each broadcast. Admin-only calls are never signed. The breaker trips on network mismatch, unknown profile, global pause, or repeated unexpected contract errors — and pausing broadcasts never stops ingestion.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-job enablement -->
+      <div class="grid cols-2" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="card-head"><h2>Jobs</h2><span class="muted" style="font-size:12px;">4 enabled · 1 gated</span></div>
+          <div class="job-policy">
+            <div class="ic"><i class="ph ph-radar"></i></div>
+            <div class="body"><div class="t">Global distribution watchdog</div><div class="m">observe + fallback crank after 40-block grace · jitter</div></div>
+            <div class="toggle on"></div>
+          </div>
+          <div class="job-policy">
+            <div class="ic"><i class="ph ph-coins"></i></div>
+            <div class="body"><div class="t">Manager reward claim</div><div class="m">claim when get-earned advances · needs not-paused</div></div>
+            <div class="toggle on"></div>
+          </div>
+          <div class="job-policy">
+            <div class="ic"><i class="ph ph-hand-coins"></i></div>
+            <div class="body"><div class="t">STX-only staker payout</div><div class="m">min payout · L1 max-fee gate · concurrency 3</div></div>
+            <div class="toggle on"></div>
+          </div>
+          <div class="job-policy">
+            <div class="ic"><i class="ph ph-broom"></i></div>
+            <div class="body"><div class="t">Withdrawal janitor</div><div class="m">settle accepted · reclaim rejected · age pending</div></div>
+            <div class="toggle on"></div>
+          </div>
+          <div class="job-policy">
+            <div class="ic"><i class="ph ph-scales"></i></div>
+            <div class="body"><div class="t">Reconciler</div><div class="m">startup · boundaries · pre-broadcast · periodic</div></div>
+            <span class="badge b-neutral">always on</span>
+          </div>
+        </div>
+
+        <!-- Gas payer -->
+        <div class="card">
+          <div class="card-head"><h2>Gas payer · nonce &amp; mempool</h2><span class="badge b-caution"><span class="dot"></span>Low balance</span></div>
+          <div class="statline"><span class="k">Principal</span><span class="v identifier">SP6GP...A0K3 <i class="ph ph-copy copy"></i></span></div>
+          <div class="statline"><span class="k">Balance</span><span class="v mono" style="color:var(--status-caution);">4.20 STX <span class="sub">min 5.00</span></span></div>
+          <div class="statline"><span class="k">Account nonce (confirmed)</span><span class="v mono src src-chain">1,204</span></div>
+          <div class="statline"><span class="k">Next reserved nonce</span><span class="v mono src src-local">1,206 <span class="sub">2 in mempool</span></span></div>
+          <div class="divider"></div>
+          <div class="section-title" style="font-size:13px; margin:0 0 8px;">In mempool</div>
+          <div class="attempt"><span class="badge b-pending" style="height:20px;">nonce 1,204</span><span class="mono">claim-staker-rewards</span><span class="mono muted" style="margin-left:auto;">fee 0.00018 · 0x3a..c1</span></div>
+          <div class="attempt"><span class="badge b-pending" style="height:20px;">nonce 1,205</span><span class="mono">claim-staker-rewards</span><span class="mono muted" style="margin-left:auto;">fee 0.00018 · 0x7f..92</span></div>
+          <p class="tertiary" style="font-size:11px; margin-top:12px;">Nonces are reserved transactionally in SQLite and reconciled with confirmed + mempool before each new sequence. An unknown tx from this account trips a foreign-use alert and blocks broadcasts.</p>
+        </div>
+      </div>
+
+      <!-- Approval manifest (Assist) -->
+      <div class="section-title">Awaiting approval <span class="hint">Assist mode holds each broadcast</span></div>
+      <div class="manifest" style="margin-bottom:16px;">
+        <div class="mhead">
+          <span class="badge b-info"><span class="dot"></span>Awaiting approval</span>
+          <strong style="font-size:14px;">Staker payout · SP4T8...Q9WC</strong>
+          <span class="mono tertiary" style="font-size:12px;">job #2291</span>
+          <div style="margin-left:auto; display:flex; gap:8px;">
+            <button class="btn btn-tertiary sm">Skip</button>
+            <button class="btn btn-tertiary sm"><i class="ph ph-play"></i> Simulate</button>
+            <button class="btn btn-accent sm"><i class="ph ph-check"></i> Approve &amp; broadcast</button>
+          </div>
+        </div>
+        <div class="mbody">
+          <div>
+            <div class="section-title" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-tertiary);">Contract call</div>
+            <div class="code"><span class="k">contract-call?</span> SP2C2...J8VZ.tm-signer
+  <span class="k">claim-staker-rewards</span>
+  staker:      <span class="s">SP4T8...Q9WC</span>
+  reward-cycle: <span class="s">u141</span>
+  bond-index:  <span class="s">none</span>
+<span class="c">;; post-conditions: sBTC transfer, deny-by-default</span></div>
+            <div class="statline" style="margin-top:12px;"><span class="k">Idempotency key</span><span class="v identifier" style="font-size:11px;">chain·mgr·SP4T8·141·none·rpt-8814</span></div>
+            <div class="statline"><span class="k">Trigger height</span><span class="v mono">962,152 <span class="sub">manager claim reconciled</span></span></div>
+          </div>
+          <div>
+            <div class="section-title" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-tertiary);">Simulation &amp; policy</div>
+            <div class="statline"><span class="k">Read-only result</span><span class="v src src-chain" style="color:var(--status-success);">net 0.0030 sBTC</span></div>
+            <div class="statline"><span class="k">Destination</span><span class="v">Direct sBTC transfer</span></div>
+            <div class="statline"><span class="k">Min-payout gate</span><span class="v" style="color:var(--status-success);">pass · ≥ 0.0010</span></div>
+            <div class="statline"><span class="k">Max fee</span><span class="v mono">0.00020 STX</span></div>
+            <div class="statline"><span class="k">Expected effect</span><span class="v">staker balance +0.0030 sBTC</span></div>
+            <div class="statline"><span class="k">Retry safety</span><span class="v" style="color:var(--status-success);">safe · superseded if rpt advances</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Job queue -->
+      <div class="section-title">Job queue</div>
+      <div class="tbl-wrap" style="margin-bottom:16px;">
+        <table>
+          <thead><tr><th>Job</th><th>Target</th><th>State</th><th>Attempts</th><th class="right">Nonce · fee · tx</th><th>Reconciled</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">#2291 payout</td><td class="mono">SP4T8 · 141</td><td><span class="badge b-info">● Awaiting approval</span></td><td class="mono">0</td><td class="right mono muted">—</td><td class="muted">—</td></tr>
+            <tr><td class="mono">#2289 payout</td><td class="mono">SP3K8 · 141</td><td><span class="badge b-pending">● Broadcast</span></td><td class="mono">1</td><td class="right mono">1,205 · 0.00018 · 0x7f..92</td><td class="muted">pending</td></tr>
+            <tr><td class="mono">#2288 payout</td><td class="mono">SP2J6 · 141</td><td><span class="badge b-success">● Succeeded</span></td><td class="mono">1</td><td class="right mono">1,203 · 0.00018 · 0x22..e8</td><td class="src src-chain">balance +0.0115</td></tr>
+            <tr><td class="mono">#2280 claim</td><td class="mono">dist 282 · 141</td><td><span class="badge b-neutral">● Superseded</span></td><td class="mono">1</td><td class="right mono muted">race · other caller</td><td class="src src-chain">rpt advanced</td></tr>
+            <tr><td class="mono">#2274 janitor</td><td class="mono">req #4460</td><td><span class="badge b-error">● Failed</span></td><td class="mono">2</td><td class="right mono">1,201 · 0.00022 · 0x0a..bb</td><td><button class="btn btn-tertiary sm" style="height:24px;">Retry</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Alerts -->
+      <div class="grid cols-2-1">
+        <div class="card">
+          <div class="card-head"><h2>Alerts</h2><span class="muted" style="font-size:12px;">3 active · 1 acknowledged</span></div>
+          <div class="alert-row"><span class="sev sev-warning"></span><div class="body"><div class="t">Gas payer below minimum balance</div><div class="m">4.20 STX · min 5.00 · first seen 962,120</div></div><div class="meta">warning<br>2h · ×3</div></div>
+          <div class="alert-row"><span class="sev sev-warning"></span><div class="body"><div class="t">Forecast signer-set below 50k in cycle 144</div><div class="m">60,000 STX position expires after 143</div></div><div class="meta">warning<br>3h · ×1</div></div>
+          <div class="alert-row"><span class="sev sev-info"></span><div class="body"><div class="t">L1 withdrawal pending beyond 8h</div><div class="m">request #4471 · 0.0156 sBTC</div></div><div class="meta">info<br>1h · ×1</div></div>
+          <div class="alert-row" style="opacity:0.55;"><span class="sev sev-info"></span><div class="body"><div class="t">Manager claim completed</div><div class="m">acknowledged by operator</div></div><div class="meta">resolved<br>2h</div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Destinations</h2></div>
+          <div class="statline"><span class="k"><i class="ph ph-slack-logo"></i> Slack</span><span class="v"><span class="badge b-success" style="height:20px;">delivering</span></span></div>
+          <div class="statline"><span class="k"><i class="ph ph-webhooks-logo"></i> Signed webhook</span><span class="v"><span class="badge b-success" style="height:20px;">delivering</span></span></div>
+          <div class="divider"></div>
+          <div class="section-title" style="font-size:13px; margin:0 0 8px;">Recent delivery</div>
+          <div class="attempt"><span class="mono muted">962,120</span><span>Slack · gas low</span><span class="badge b-success" style="height:18px; margin-left:auto;">200</span></div>
+          <div class="attempt"><span class="mono muted">961,980</span><span>Webhook · claim ok</span><span class="badge b-success" style="height:18px; margin-left:auto;">200</span></div>
+          <p class="tertiary" style="font-size:11px; margin-top:12px;">Deduplicated by key + height so repeated polling never spams a destination.</p>
+        </div>
+      </div>
+
+      <!-- Environment -->
+      <div class="section-title" style="margin-top:28px;">Environment <span class="hint">polled live and verified · node and signer</span></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head"><h2><i class="ph ph-hard-drives" style="font-size:16px; margin-right:6px; vertical-align:-2px;"></i>Stacks node</h2><span class="badge b-success"><span class="live-dot"></span>Live · polled 8s ago</span></div>
+          <div class="statline"><span class="k">Version</span><span class="v src src-chain">stacks-core 4.0.0 <span class="badge b-success" style="height:18px; margin-left:4px;">Supported</span> <a class="btn-ghost" style="font-size:12px; padding:0; margin-left:6px;" href="https://github.com/stacks-network/stacks-core/releases/tag/4.0.0" target="_blank" rel="noopener">release <i class="ph ph-arrow-square-out"></i></a></span></div>
+          <div class="statline"><span class="k">Network</span><span class="v mono src src-chain">mainnet · chain 0x00000001</span></div>
+          <div class="statline"><span class="k">Epoch</span><span class="v src src-chain">4.0 <span class="sub">PoX-5 active</span></span></div>
+          <div class="statline"><span class="k">Burn tip</span><span class="v mono src src-chain">962,184 <span class="sub">in sync with Sidekick</span></span></div>
+          <div class="statline"><span class="k">RPC endpoint</span><span class="v identifier">http://127.0.0.1:20443 <i class="ph ph-copy copy"></i></span></div>
+          <p class="tertiary" style="font-size:11px; margin:12px 0 0;">Polled from the node's <span class="mono">/v2/info</span> on an interval. <span class="mono">server_version</span> is checked against the versions this profile supports.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2><i class="ph ph-key" style="font-size:16px; margin-right:6px; vertical-align:-2px;"></i>stacks-signer</h2><span class="badge b-success"><span class="live-dot"></span>Live · polled 8s ago</span></div>
+          <div class="statline"><span class="k">Version</span><span class="v src src-chain">stacks-signer 4.0.0 <span class="badge b-success" style="height:18px; margin-left:4px;">Supported</span> <a class="btn-ghost" style="font-size:12px; padding:0; margin-left:6px;" href="https://github.com/stacks-network/stacks-core/releases/tag/4.0.0" target="_blank" rel="noopener">release <i class="ph ph-arrow-square-out"></i></a></span></div>
+          <div class="statline"><span class="k">Liveness</span><span class="v src src-chain" style="color:var(--status-success);">responding <span class="sub">version + build probe</span></span></div>
+          <div class="statline"><span class="k">Endpoint</span><span class="v identifier">http://127.0.0.1:30000 <i class="ph ph-copy copy"></i></span></div>
+          <div class="statline"><span class="k">Registered key</span><span class="v identifier src src-chain">0x03a1b7...9f4c</span></div>
+          <div class="statline"><span class="k">Grant</span><span class="v"><span class="badge b-success" style="height:20px;"><span class="dot"></span>Valid</span></span></div>
+          <p class="tertiary" style="font-size:11px; margin:12px 0 0;">Read-only version + liveness probe of the signer endpoint. Sidekick still holds no signer key and does not read signing performance, proposals, logs, or host state — that stays v2.</p>
+        </div>
+      </div>
+      <p class="tertiary" style="font-size:12px; margin-top:12px;">Connected API: <span class="mono">Stacks API v9.0.0</span> · Sidekick <span class="mono">v1.0.0</span> · version checks re-run on reconnect and every poll.</p>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+</body>
+</html>

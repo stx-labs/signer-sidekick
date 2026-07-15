@@ -1,0 +1,33 @@
+services:
+  sidekick:
+    build:
+      context: .
+      target: runtime
+    image: signer-sidekick:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "127.0.0.1:3998:3998"
+    environment:
+      SIDEKICK_NETWORK: ${SIDEKICK_NETWORK:-mainnet}
+      STACKS_NODE_RPC_URL: ${STACKS_NODE_RPC_URL:?Set STACKS_NODE_RPC_URL in .env}
+      STACKS_API_URL: ${STACKS_API_URL:-}
+      STACKS_API_KEY: ${STACKS_API_KEY:-}
+      STACKS_API_KEY_HEADER: ${STACKS_API_KEY_HEADER:-x-api-key}
+      SIDEKICK_MANAGER_PRINCIPAL: ${SIDEKICK_MANAGER_PRINCIPAL:?Set SIDEKICK_MANAGER_PRINCIPAL in .env}
+      SIDEKICK_AUTH_TOKEN: ${SIDEKICK_AUTH_TOKEN:?Set SIDEKICK_AUTH_TOKEN in .env}
+      SIDEKICK_FORECAST_HORIZON_CYCLES: ${SIDEKICK_FORECAST_HORIZON_CYCLES:-6}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - sidekick-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  sidekick-data:

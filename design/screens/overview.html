@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+</head>
+<body data-page="overview" data-mode="assist"
+      data-crumbs="<strong>Overview</strong> · Trust Machines Pool"
+      data-fresh="burn 962,184 · api synced to 962,184 · 4s ago">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Overview</h1>
+          <p class="lede">Trust Machines Pool · one signer-manager. This screen answers a single question — does the pool need you right now?</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-tertiary sm"><i class="ph ph-arrows-clockwise"></i> Reconcile now</button>
+          <button class="btn btn-secondary sm"><i class="ph ph-download-simple"></i> Support bundle</button>
+        </div>
+      </div>
+
+      <!-- Cycle clock -->
+      <div class="card" style="padding:0; margin-bottom:16px;">
+        <div style="display:flex;">
+          <div style="flex:1; padding:14px 18px; border-right:1px solid var(--border-secondary);">
+            <div class="kpi-l" style="font-size:12px; color:var(--text-secondary); font-weight:500;">Burn height</div>
+            <div class="mono" style="font-size:20px; margin-top:5px;">962,184</div>
+            <div class="src src-chain tertiary" style="font-size:11px; margin-top:3px;">Stacks node tip</div>
+          </div>
+          <div style="flex:1; padding:14px 18px; border-right:1px solid var(--border-secondary);">
+            <div style="font-size:12px; color:var(--text-secondary); font-weight:500;">Reward cycle</div>
+            <div class="qty" style="font-size:20px; margin-top:5px; display:flex; align-items:baseline; gap:8px;">#141 <span class="badge b-accent" style="height:18px;">First PoX-5 cycle</span></div>
+            <div class="src src-chain tertiary" style="font-size:11px; margin-top:3px;">day 6 of 14</div>
+          </div>
+          <div style="flex:1; padding:14px 18px; border-right:1px solid var(--border-secondary);">
+            <div style="font-size:12px; color:var(--text-secondary); font-weight:500;">Distribution</div>
+            <div class="qty" style="font-size:20px; margin-top:5px;">1 <span class="muted" style="font-size:14px;">of 2</span></div>
+            <div class="tertiary" style="font-size:11px; margin-top:3px;">next checkpoint at 962,700 · ~2d</div>
+          </div>
+          <div style="flex:1; padding:14px 18px;">
+            <div style="font-size:12px; color:var(--text-secondary); font-weight:500;">Cycle 142 prepare phase</div>
+            <div class="qty" style="font-size:20px; margin-top:5px;">1,866 <span class="muted" style="font-size:14px;">blocks</span></div>
+            <div class="tertiary" style="font-size:11px; margin-top:3px;">stake changes lock ~13d · at 964,050</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Required actions -->
+      <div class="section-title"><i class="ph ph-warning-circle" style="color:var(--status-caution);"></i> Required actions <span class="hint">3 items need you</span></div>
+      <div class="grid cols-3" style="margin-bottom:8px;">
+        <div class="callout callout-caution">
+          <i class="ph ph-gas-pump ic"></i>
+          <div class="body">
+            <strong>Gas payer below minimum</strong><br>
+            Balance 4.20 STX, minimum 5.00 STX. Automated claims pause when it runs dry.
+            <div class="actions"><button class="btn btn-secondary sm">View gas payer</button></div>
+          </div>
+        </div>
+        <div class="callout callout-caution">
+          <i class="ph ph-chart-line-down ic"></i>
+          <div class="body">
+            <strong>Signer set falls below 50,000 STX in cycle 144</strong><br>
+            A 60,000 STX position expires after cycle 143. Forecast: 41,200 STX.
+            <div class="actions"><button class="btn btn-secondary sm">Open forecast</button></div>
+          </div>
+        </div>
+        <div class="callout callout-info">
+          <i class="ph ph-hand-tap ic"></i>
+          <div class="body">
+            <strong>6 staker payouts awaiting approval</strong><br>
+            Assist mode holds each broadcast. Review calls, max fees, and expected effects.
+            <div class="actions"><button class="btn btn-accent sm">Review in Operations</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- KPI strip -->
+      <div class="section-title">Pool at a glance</div>
+      <div class="kpi" style="margin-bottom:16px;">
+        <div class="tile hero">
+          <div class="l">Stacked this cycle <span class="src src-chain"></span></div>
+          <div class="v">128,400 <span class="u">STX</span></div>
+          <div class="d up"><i class="ph ph-check-circle"></i> +78,400 above 50k threshold</div>
+        </div>
+        <div class="tile">
+          <div class="l">Next cycle (142) <span class="src src-api"></span></div>
+          <div class="v">121,900 <span class="u">STX</span></div>
+          <div class="d down"><i class="ph ph-arrow-down"></i> −6,500 · one exit</div>
+        </div>
+        <div class="tile">
+          <div class="l">Unpaid staker rewards <span class="src src-chain"></span></div>
+          <div class="v btc-value">0.0119 <span class="u">sBTC</span></div>
+          <div class="d">6 of 24 stakers outstanding</div>
+        </div>
+        <div class="tile">
+          <div class="l">Gas payer <span class="src src-chain"></span></div>
+          <div class="v" style="color:var(--status-caution);">4.20 <span class="u">STX</span></div>
+          <div class="d down"><i class="ph ph-warning"></i> below 5.00 minimum</div>
+        </div>
+      </div>
+
+      <!-- Rewards pipeline -->
+      <div class="section-title">Reward pipeline <span class="hint">cycle 141 · distribution 1 of 2</span></div>
+      <div class="card-standout" style="padding:8px; margin-bottom:16px;">
+        <div class="pipeline">
+          <div class="stage st-done">
+            <div class="st"><span class="ic"><i class="ph ph-check"></i></span> Global calculated</div>
+            <div class="sv">Done</div>
+            <div class="sm">at 962,140 · verified on-chain</div>
+          </div>
+          <div class="stage st-done">
+            <div class="st"><span class="ic"><i class="ph ph-check"></i></span> Manager claimed</div>
+            <div class="sv btc-value">0.0842 sBTC</div>
+            <div class="sm">fee snapshot 5.0% · 1 claim</div>
+          </div>
+          <div class="stage st-active">
+            <div class="st"><span class="ic"><i class="ph ph-spinner"></i></span> Stakers paid</div>
+            <div class="sv">18 <span class="muted" style="font-size:14px;">/ 24</span></div>
+            <div class="sm">6 awaiting approval · 0.0119 sBTC</div>
+          </div>
+          <div class="stage st-active">
+            <div class="st"><span class="ic"><i class="ph ph-arrow-down"></i></span> L1 withdrawals settled</div>
+            <div class="sv">1 <span class="muted" style="font-size:14px;">/ 3</span></div>
+            <div class="sm">2 pending · oldest 9h</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-up: registration + activity -->
+      <div class="grid cols-2-1" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="card-head">
+            <h2>Registration &amp; eligibility</h2>
+            <span class="badge b-success"><span class="dot"></span>Healthy</span>
+          </div>
+          <div class="grid cols-2" style="gap:20px;">
+            <div>
+              <div class="statline"><span class="k">Manager</span><span class="v identifier">SP2...J8VZ.tm-signer<span class="sub">recognized reference profile</span></span></div>
+              <div class="statline"><span class="k">Signer key</span><span class="v identifier">0x03a1...9f4c<span class="sub">registered</span></span></div>
+              <div class="statline"><span class="k">Grant</span><span class="v"><span class="badge b-success" style="height:20px;"><span class="dot"></span>Valid</span></span></div>
+            </div>
+            <div>
+              <div class="statline"><span class="k">In signer set · 141</span><span class="v"><span class="badge b-success" style="height:20px;">Eligible</span></span></div>
+              <div class="statline"><span class="k">In signer set · 142</span><span class="v"><span class="badge b-success" style="height:20px;">Eligible</span></span></div>
+              <div class="statline"><span class="k">Source hash</span><span class="v identifier src src-chain">a3f9...c218<span class="sub">matches pinned 4.0.0 artifact</span></span></div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="section-title" style="margin:0 0 10px; font-size:13px;">Threshold margin</div>
+          <div class="meter">
+            <div class="track">
+              <div class="fill" style="width:82%;"></div>
+              <div class="mark" style="left:39%;" title="50,000 STX signer-set minimum"></div>
+            </div>
+            <div class="scale"><span>0</span><span style="margin-left:auto;">50k min ↑ &nbsp; current 128.4k &nbsp; · &nbsp; cap 156k</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Recent activity</h2>
+            <button class="btn-ghost sm">View all</button>
+          </div>
+          <div class="timeline">
+            <div class="ev now">
+              <div class="t">Staker payout in progress</div>
+              <div class="m">18 of 24 paid this distribution</div>
+              <div class="h">962,180 · 1m ago</div>
+            </div>
+            <div class="ev ok">
+              <div class="t">Manager claimed rewards</div>
+              <div class="m">0.0842 sBTC · fee snapshot 5.0%</div>
+              <div class="h">962,152 · 2h ago</div>
+            </div>
+            <div class="ev ok">
+              <div class="t">Global distribution calculated</div>
+              <div class="m">cycle 141 · distribution 1</div>
+              <div class="h">962,140 · 3h ago</div>
+            </div>
+            <div class="ev ok">
+              <div class="t">Grant re-verified</div>
+              <div class="m">verify-signer-key-grant → true</div>
+              <div class="h">962,120 · 6h ago</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tertiary" style="font-size:12px; display:flex; align-items:center; gap:8px;">
+        <i class="ph ph-shield-check"></i> Observe / Assist / Automate: currently <strong style="color:var(--text-secondary);">Assist</strong> — Sidekick builds and simulates jobs, you approve each broadcast. No admin or signer key is held.
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+</body>
+</html>

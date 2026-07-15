@@ -65,6 +65,78 @@ describe("Stacks API client", () => {
     ).toThrow("Invalid staker cursor");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("reads canonical smart-contract logs with a durable event cursor", async () => {
+    const manager = "SP000000000000000000002Q6VF78.signer-manager";
+    const txId = `0x${"11".repeat(32)}`;
+    const cursor = "8600000:2147483647:3:1";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          limit: 100,
+          offset: 0,
+          total: 1,
+          next_cursor: null,
+          prev_cursor: null,
+          cursor,
+          results: [
+            {
+              event_index: 1,
+              event_type: "smart_contract_log",
+              tx_id: txId,
+              contract_log: {
+                contract_id: manager,
+                topic: "print",
+                value: { hex: "0x03", repr: "true" },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getSmartContractLogs(manager, cursor)).resolves.toMatchObject({
+      cursor,
+      results: [{ tx_id: txId }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v2/smart-contracts/${manager}/logs?limit=100&offset=0&cursor=${encodeURIComponent(cursor)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("enriches log evidence with v3 transaction block identity", async () => {
+    const txId = `0x${"11".repeat(32)}`;
+    const blockHash = `0x${"22".repeat(32)}`;
+    const indexHash = `0x${"33".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: txId,
+          status: "success",
+          block: {
+            height: 8_600_000,
+            hash: blockHash,
+            index_hash: indexHash,
+            time: 1_784_000_000,
+            tx_index: 3,
+          },
+          bitcoin_block: { height: 960_240, time: 1_784_000_000 },
+          type: "contract_call",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransaction(txId)).resolves.toMatchObject({
+      tx_id: txId,
+      block: { height: 8_600_000, hash: blockHash, index_hash: indexHash },
+      bitcoin_block: { height: 960_240 },
+    });
+  });
 });
 
 describe("Stacks node client", () => {

@@ -29,6 +29,7 @@ import {
   encodeBondPeriods,
   encodeBufferHex,
   encodeOptionalBondIndex,
+  encodeOptionalUIntHex,
   encodePrincipalHex,
   encodeUIntHex,
 } from "../src/clarity-codecs.js";
@@ -133,6 +134,8 @@ describe("Clarity boundary codecs", () => {
       cvToHex(contractPrincipalCV("SP000000000000000000002Q6VF78", "manager")),
     );
     expect(encodeUIntHex(141n)).toBe(cvToHex(uintCV(141n)));
+    expect(encodeOptionalUIntHex(null)).toBe(cvToHex(noneCV()));
+    expect(encodeOptionalUIntHex(3n)).toBe(cvToHex(someCV(uintCV(3n))));
     expect(encodeBufferHex("02".repeat(33))).toBe(cvToHex(bufferCV(new Uint8Array(33).fill(2))));
     expect(decodeOptionalBuffer(noneCV())).toBeNull();
     expect(decodeBuffer(bufferCV(Uint8Array.of(1, 2)))).toBe("0102");

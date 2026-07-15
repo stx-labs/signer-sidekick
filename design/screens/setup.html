@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+</head>
+<body data-page="setup" data-mode="observe"
+      data-crumbs="<strong>Initial Setup</strong> · Fresh PoX-5 manager"
+      data-fresh="burn 962,184 · node + api preflight passed">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Initial Setup</h1>
+          <p class="lede">Guided path to a verified manager registration. Sidekick prepares manifests and verifies results — it never holds your admin or signer key.</p>
+        </div>
+        <div class="actions">
+          <div class="seg"><button>Attach existing</button><button class="on">Fresh setup</button></div>
+        </div>
+      </div>
+
+      <div class="wizard">
+        <!-- Step rail -->
+        <div class="steps">
+          <div class="step done"><span class="num"><i class="ph ph-check"></i></span><span class="lbl">Prerequisites<small>node · API · signer · admin</small></span></div>
+          <div class="step done"><span class="num"><i class="ph ph-check"></i></span><span class="lbl">Manager artifact<small>rendered · hash a3f9…c218</small></span></div>
+          <div class="step done"><span class="num"><i class="ph ph-check"></i></span><span class="lbl">Deploy manager<small>confirmed 961,904</small></span></div>
+          <div class="step active"><span class="num">4</span><span class="lbl">Signer grant ceremony<small>in progress</small></span></div>
+          <div class="step"><span class="num">5</span><span class="lbl">Register manager<small>register-self</small></span></div>
+          <div class="step"><span class="num">6</span><span class="lbl">Pool policy<small>fee · payout · alerts</small></span></div>
+          <div class="step"><span class="num">7</span><span class="lbl">Automation identity<small>gas payer</small></span></div>
+          <div class="step"><span class="num">8</span><span class="lbl">Final verification<small>dry-run · operator record</small></span></div>
+        </div>
+
+        <!-- Active step -->
+        <div>
+          <div class="card-standout" style="margin-bottom:16px;">
+            <div class="card-head">
+              <h2>Step 4 · Signer grant ceremony</h2>
+              <span class="badge b-info"><span class="dot"></span>Awaiting signature</span>
+            </div>
+            <p class="muted" style="font-size:13px; margin:-6px 0 16px;">Authorize this manager to register your signer key with a one-time SIP-018 grant. You run the command on your signer host; Sidekick never reads your signer config or key.</p>
+
+            <div class="field">
+              <label>Auth ID <span class="muted">(unique, single-use)</span></label>
+              <div class="input-group">
+                <input value="840127734" readonly>
+                <span class="suffix"><i class="ph ph-arrows-clockwise"></i> regenerate</span>
+              </div>
+              <div class="help">Consumed on registration. A retry needs a new auth ID only if the previous one was actually consumed on-chain.</div>
+            </div>
+
+            <div class="section-title" style="font-size:12px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-tertiary); margin:20px 0 8px;">Run on your signer host</div>
+            <div class="code"><span class="k">stacks-signer</span> generate-staking-signature \
+  --config <span class="s">/etc/stacks-signer/config.toml</span> \
+  --signer-manager <span class="s">SP2C2...J8VZ.tm-signer</span> \
+  --auth-id <span class="s">840127734</span> \
+  --json</div>
+
+            <div class="field" style="margin-top:16px;">
+              <label>Paste the signer JSON output</label>
+              <textarea class="input mono" rows="3" style="height:auto; padding:10px 12px; resize:vertical;">{ "signature": "0x...", "auth-id": 840127734, "signer-manager": "SP2C2...J8VZ.tm-signer" }</textarea>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:4px;">
+              <button class="btn btn-accent"><i class="ph ph-seal-check"></i> Verify signature</button>
+              <button class="btn btn-tertiary">Back</button>
+            </div>
+          </div>
+
+          <!-- Out-of-band verification -->
+          <div class="card" style="margin-bottom:16px;">
+            <div class="card-head"><h2>Verify out-of-band before signing</h2></div>
+            <div class="grid cols-2" style="gap:20px;">
+              <div>
+                <div class="statline"><span class="k">Manager principal</span><span class="v identifier">SP2C2...J8VZ.tm-signer</span></div>
+                <div class="statline"><span class="k">Network</span><span class="v">Mainnet · chain 0x00000001</span></div>
+                <div class="statline"><span class="k">Signer public key</span><span class="v identifier">0x03a1b7...9f4c</span></div>
+              </div>
+              <div>
+                <div class="statline"><span class="k">Auth ID</span><span class="v mono">840127734</span></div>
+                <div class="statline"><span class="k">SIP-018 grant hash</span><span class="v identifier src src-chain">7de2...ab90 <span class="sub">derived from live pox-5</span></span></div>
+                <div class="statline"><span class="k">Topic</span><span class="v mono">grant-authorization</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="callout callout-neutral">
+            <i class="ph ph-shield-check ic"></i>
+            <div class="body" style="font-size:12px;">
+              Sidekick derives the expected grant hash independently from the connected PoX-5 contract and compares it to what your signer produced. The signer private key stays on the signer host. The next step prepares an offline <span class="mono">register-self</span> manifest for your admin wallet.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+</body>
+</html>

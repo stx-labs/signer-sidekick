@@ -2,6 +2,7 @@ import type { ClarityValue } from "@stx-labs/signer-sidekick-protocol/clarity-co
 import {
   decodePox5CycleMembership,
   decodePox5StakerInfo,
+  decodeUInt,
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
@@ -52,6 +53,7 @@ export interface SyncSignerStakersOptions {
   stacksTipHeight: number;
   currentRewardCycle: number;
   pageLimit?: number;
+  stakerConcurrency?: number;
 }
 
 export interface SyncSignerStakersResult {
@@ -121,6 +123,15 @@ async function verifyPageItem(
     throw new Error(`PoX-5 returned invalid num-cycles ${position.numCycles} for ${item.staker}`);
   }
   const unlockCycle = position.firstRewardCycle + position.numCycles;
+  const unlockBurnHeight = decodeUInt(
+    await options.node.callReadOnly(
+      options.pox5ContractId,
+      "reward-cycle-to-burn-height",
+      options.managerPrincipal,
+      [encodeUIntHex(unlockCycle)],
+    ),
+    "reward-cycle-to-burn-height",
+  );
   const firstActiveCycle =
     position.firstRewardCycle > BigInt(options.currentRewardCycle)
       ? position.firstRewardCycle
@@ -166,6 +177,7 @@ async function verifyPageItem(
         amountUstx: position.amountUstx,
         firstRewardCycle: position.firstRewardCycle,
         numCycles: position.numCycles,
+        unlockBurnHeight,
         cycleMemberships,
       },
     },
@@ -182,6 +194,10 @@ export async function syncSignerStakers(
   const pageLimit = options.pageLimit ?? 200;
   if (!Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 200) {
     throw new Error("pageLimit must be an integer from 1 through 200");
+  }
+  const stakerConcurrency = options.stakerConcurrency ?? 4;
+  if (!Number.isSafeInteger(stakerConcurrency) || stakerConcurrency < 1 || stakerConcurrency > 16) {
+    throw new Error("stakerConcurrency must be an integer from 1 through 16");
   }
   const initialRun = options.store.startOrResumeSignerStakerRun(
     options.sourceId,
@@ -208,10 +224,16 @@ export async function syncSignerStakers(
     }
 
     const verifiedItems: SignerStakerPageItem[] = [];
-    for (const item of page.results) {
-      const verified = await verifyPageItem(item, options);
-      verifiedItems.push(verified.item);
-      if (verified.discrepancy) discrepancies.push(verified.discrepancy);
+    for (let index = 0; index < page.results.length; index += stakerConcurrency) {
+      const verifiedBatch = await Promise.all(
+        page.results
+          .slice(index, index + stakerConcurrency)
+          .map((item) => verifyPageItem(item, options)),
+      );
+      for (const verified of verifiedBatch) {
+        verifiedItems.push(verified.item);
+        if (verified.discrepancy) discrepancies.push(verified.discrepancy);
+      }
     }
 
     run = options.store.commitSignerStakerPage({

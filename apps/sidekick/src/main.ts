@@ -4,16 +4,25 @@ import { createAttachActivationPlan, createFreshActivationPlan } from "./activat
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
+import { syncManagerEvents } from "./manager-event-sync.js";
 import { renderManagerDeployment } from "./manager-render.js";
 import { inspectDeployedManager } from "./manager-verification.js";
 import { createOperatorRecord } from "./operator-record.js";
+import { OperatorService } from "./operator-service.js";
+import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
+import { readStxRewardStatus } from "./reward-status.js";
 import { createServer } from "./server.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
 import { syncSignerStakers } from "./signer-staker-sync.js";
-import { createChainSourceId, createNodeSourceId, openSidekickStore } from "./storage/store.js";
+import {
+  backupSidekickDatabase,
+  createChainSourceId,
+  createNodeSourceId,
+  openSidekickStore,
+} from "./storage/store.js";
 import { createSupportBundle } from "./support-bundle.js";
 
 const [command = "help", ...arguments_] = process.argv.slice(2);
@@ -45,8 +54,27 @@ async function readJson(path: string): Promise<unknown> {
 }
 
 if (command === "serve") {
-  const server = createServer();
-  await server.listen({ host: "127.0.0.1", port: 3998 });
+  const config = loadConfig(process.env);
+  const managerPrincipal = process.env.SIDEKICK_MANAGER_PRINCIPAL;
+  if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required for serve");
+  const authToken = process.env.SIDEKICK_AUTH_TOKEN;
+  if (!authToken) throw new Error("SIDEKICK_AUTH_TOKEN is required for serve");
+  const port = Number.parseInt(process.env.SIDEKICK_HTTP_PORT ?? "3998", 10);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
+  }
+  const host = process.env.SIDEKICK_HTTP_HOST ?? "127.0.0.1";
+  const { node, api } = clientsFromConfig(config);
+  const { store } = await openSidekickStore(config.databasePath);
+  const service = new OperatorService({ config, managerPrincipal, store, node, api });
+  const staticDirectory = process.env.SIDEKICK_STATIC_DIRECTORY;
+  const server = createServer({
+    service,
+    authToken,
+    ...(staticDirectory ? { staticDirectory: resolve(staticDirectory) } : {}),
+  });
+  server.addHook("onClose", async () => store.close());
+  await server.listen({ host, port });
 } else if (command === "config" && arguments_[0] === "validate") {
   const config = loadConfig(process.env);
   console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));
@@ -69,6 +97,15 @@ if (command === "serve") {
   } finally {
     store.close();
   }
+} else if (command === "database" && arguments_[0] === "backup") {
+  const [, destination] = arguments_;
+  if (!destination) throw new Error("Usage: sidekick database backup <output.sqlite>");
+  const databasePath =
+    process.env.SIDEKICK_DATABASE_PATH === ":memory:"
+      ? ":memory:"
+      : resolve(process.env.SIDEKICK_DATABASE_PATH ?? "data/sidekick.sqlite");
+  const result = await backupSidekickDatabase(databasePath, destination);
+  console.log(JSON.stringify(result, null, 2));
 } else if (command === "init" && arguments_[0] === "fresh") {
   const [, adminPrincipal, contractName, outputDirectory, authId, signerConfigPath] = arguments_;
   if (!adminPrincipal || !contractName || !outputDirectory || !authId) {
@@ -204,6 +241,26 @@ if (command === "serve") {
       stacksTipHeight: preflight.node.stacksTipHeight,
       currentRewardCycle: preflight.cycle.currentId,
     });
+    const events = await syncManagerEvents({
+      store,
+      api,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      observedAt,
+    });
+    const forecast = await readPoolForecast({
+      store,
+      node,
+      sourceId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      currentRewardCycle: preflight.cycle.currentId,
+      horizonCycles: config.forecastHorizonCycles,
+      observedAt,
+      burnBlockHeight: preflight.node.burnBlockHeight,
+      stacksTipHeight: preflight.node.stacksTipHeight,
+    });
     console.log(
       JSON.stringify(
         {
@@ -214,11 +271,94 @@ if (command === "serve") {
             stacksTipHeight: preflight.node.stacksTipHeight,
           },
           result,
+          events,
+          forecast,
         },
         null,
         2,
       ),
     );
+  } finally {
+    store.close();
+  }
+} else if (command === "events" && arguments_[0] === "sync") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const [preflight, manager] = await Promise.all([
+    runOperatorPreflight(config, node, api),
+    inspectDeployedManager(node, config.network, managerPrincipal),
+  ]);
+  if (preflight.status === "fail" || !manager.attachAllowed) {
+    throw new Error("Event sync requires a healthy network and recognized manager contract");
+  }
+  const observedAt = new Date().toISOString();
+  const sourceId = createChainSourceId(config.network, config.apiUrl);
+  const { store, backupPath } = await openSidekickStore(config.databasePath, observedAt);
+  try {
+    store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    const result = await syncManagerEvents({
+      store,
+      api,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      observedAt,
+    });
+    console.log(JSON.stringify({ migrationBackupCreated: backupPath, result }, null, 2));
+  } finally {
+    store.close();
+  }
+} else if (command === "pool" && arguments_[0] === "status") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick pool status <manager-principal>");
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const [preflight, manager] = await Promise.all([
+    runOperatorPreflight(config, node, api),
+    inspectDeployedManager(node, config.network, managerPrincipal),
+  ]);
+  if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
+    throw new Error("Pool status requires a successful preflight with active PoX-5");
+  }
+  if (!manager.attachAllowed) {
+    throw new Error("Pool status requires a recognized or compatible manager contract");
+  }
+  const observedAt = new Date().toISOString();
+  const sourceId = createChainSourceId(config.network, config.apiUrl);
+  const { store, backupPath } = await openSidekickStore(config.databasePath, observedAt);
+  try {
+    const forecast = await readPoolForecast({
+      store,
+      node,
+      sourceId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      currentRewardCycle: preflight.cycle.currentId,
+      horizonCycles: config.forecastHorizonCycles,
+      observedAt,
+      burnBlockHeight: preflight.node.burnBlockHeight,
+      stacksTipHeight: preflight.node.stacksTipHeight,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          config: redactConfig(config),
+          migrationBackupCreated: backupPath,
+          forecast,
+        },
+        null,
+        2,
+      ),
+    );
+    if (forecast.status === "attention") process.exitCode = 2;
   } finally {
     store.close();
   }
@@ -251,6 +391,63 @@ if (command === "serve") {
   );
   console.log(JSON.stringify(record, null, 2));
   if (setup.status === "blocked") process.exitCode = 2;
+} else if (command === "rewards" && arguments_[0] === "status") {
+  const [, managerPrincipal, rewardCycleArgument] = arguments_;
+  if (!managerPrincipal) {
+    throw new Error("Usage: sidekick rewards status <manager-principal> [reward-cycle]");
+  }
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const [preflight, manager] = await Promise.all([
+    runOperatorPreflight(config, node, api),
+    inspectDeployedManager(node, config.network, managerPrincipal),
+  ]);
+  if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
+    throw new Error("Reward status requires a successful preflight with active PoX-5");
+  }
+  if (!manager.attachAllowed) {
+    throw new Error("Reward status requires a recognized or compatible manager contract");
+  }
+  const rewardCycle = rewardCycleArgument
+    ? Number.parseInt(rewardCycleArgument, 10)
+    : preflight.cycle.currentId;
+  if (
+    !Number.isSafeInteger(rewardCycle) ||
+    rewardCycle < 0 ||
+    String(rewardCycle) !== String(rewardCycleArgument ?? rewardCycle)
+  ) {
+    throw new Error("reward-cycle must be a non-negative integer");
+  }
+  const observedAt = new Date().toISOString();
+  const sourceId = createChainSourceId(config.network, config.apiUrl);
+  const { store, backupPath } = await openSidekickStore(config.databasePath, observedAt);
+  try {
+    const rewards = await readStxRewardStatus({
+      store,
+      node,
+      sourceId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      rewardCycle,
+      observedAt,
+      burnBlockHeight: preflight.node.burnBlockHeight,
+      stacksTipHeight: preflight.node.stacksTipHeight,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          config: redactConfig(config),
+          migrationBackupCreated: backupPath,
+          rewards,
+        },
+        null,
+        2,
+      ),
+    );
+    if (rewards.status === "attention") process.exitCode = 2;
+  } finally {
+    store.close();
+  }
 } else if (command === "export" && arguments_[0] === "support-bundle") {
   const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
   if (!managerPrincipal) {
@@ -380,6 +577,7 @@ Usage:
   sidekick serve    Start the loopback-only local API
   sidekick config validate  Validate and print redacted endpoint configuration
   sidekick doctor  Open, migrate, and verify the local SQLite store
+  sidekick database backup <output.sqlite>  Create and integrity-check an online backup
   sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
   sidekick init attach <manager>  Build an activation plan from a running manager
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
@@ -389,6 +587,9 @@ Usage:
   sidekick setup record <manager> <pool-config.json> [record-metadata.json]
   sidekick pool enrollment-info <manager> <pool-config.json>
   sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
+  sidekick events sync <manager>  Backfill and update canonical manager events
+  sidekick pool status <manager>  Reconcile current and future pool totals
+  sidekick rewards status <manager> [cycle]  Read STX reward and payout state
   sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
   sidekick manager render <admin> <name> <output-dir>
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
@@ -400,5 +601,7 @@ Environment:
   STACKS_API_URL       Optional for mainnet/testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
+  SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
+  SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
   SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory`);
 }

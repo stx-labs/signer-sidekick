@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  backupSidekickDatabase,
   createChainSourceId,
   createNodeSourceId,
   openSidekickStore,
@@ -61,7 +62,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 6,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -191,6 +192,107 @@ describe("Sidekick SQLite store", () => {
     expect(store.getChainEvent(1, txId, 0)).toMatchObject({ canonical: false, updatedAt: later });
   });
 
+  it("materializes unbounded manager claim and withdrawal history for paginated reads", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    const put = (
+      id: string,
+      eventIndex: number,
+      blockHeight: number,
+      event: Record<string, unknown>,
+    ) =>
+      store.putChainEvent({
+        chainId: 1,
+        txId: id,
+        eventIndex,
+        blockHeight,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: true,
+        microblockCanonical: true,
+        contractId: manager,
+        topic: String(event.kind),
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: { transactionStatus: "success", event },
+        sourceId,
+        observedAt,
+      });
+    put(txId, 0, 8_600_000, {
+      kind: "claim-staker-rewards",
+      stakerPrincipal: stakerOne,
+      rewardCycle: "141",
+      bondIndex: null,
+      amountSats: "10000",
+      l1Withdrawal: { requestId: "72", amountSats: "9000", maxFeeSats: "1000" },
+    });
+    put(`0x${"66".repeat(32)}`, 0, 8_600_001, {
+      kind: "settle-accepted-withdrawal",
+      requestId: "72",
+      stakerPrincipal: stakerOne,
+      liabilityReleasedSats: "9000",
+    });
+
+    expect(store.listManagerClaims(1, manager, { limit: 1 })).toMatchObject({
+      total: 1,
+      items: [{ rewardCycle: "141", destination: "bitcoin-l1" }],
+    });
+    expect(store.listManagerWithdrawals(1, manager, { limit: 1 })).toMatchObject({
+      total: 1,
+      items: [{ requestId: "72", state: "settled" }],
+    });
+    expect(store.getManagerActivityMetadata(1, manager)).toEqual({
+      eventCount: 2,
+      latestBlockHeight: 8_600_001,
+    });
+  });
+
+  it("paginates manager activity beyond the former 2,000-event read ceiling", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    const eventCount = 2_105;
+    for (let index = 0; index < eventCount; index += 1) {
+      store.putChainEvent({
+        chainId: 1,
+        txId: `0x${index.toString(16).padStart(64, "0")}`,
+        eventIndex: 0,
+        blockHeight: 8_600_000 + index,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: true,
+        microblockCanonical: true,
+        contractId: manager,
+        topic: "claim-staker-rewards",
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          transactionStatus: "success",
+          event: {
+            kind: "claim-staker-rewards",
+            stakerPrincipal: stakerOne,
+            rewardCycle: String(100 + (index % 96)),
+            bondIndex: null,
+            amountSats: "10000",
+            l1Withdrawal: null,
+          },
+        },
+        sourceId,
+        observedAt,
+      });
+    }
+
+    expect(store.listManagerClaims(1, manager, { limit: 50, offset: 2_050 })).toMatchObject({
+      total: eventCount,
+      offset: 2_050,
+      limit: 50,
+      items: expect.arrayContaining([expect.objectContaining({ blockHeight: 8_600_054 })]),
+    });
+  });
+
   it("projects node-verified positions into exact reward-cycle memberships", async () => {
     const store = await memoryStore();
     registerSource(store);
@@ -228,6 +330,7 @@ describe("Sidekick SQLite store", () => {
     });
 
     expect(completed).toMatchObject({ status: "completed", pagesProcessed: 1 });
+    expect(store.getLatestCompletedSignerStakerRun(sourceId, manager)).toEqual(completed);
     expect(store.listSignerStakers(manager)).toMatchObject([
       {
         stakerPrincipal: stakerOne,
@@ -264,6 +367,128 @@ describe("Sidekick SQLite store", () => {
         active: true,
       },
     ]);
+    expect(store.listStakerPositionObservations(manager, stakerOne)).toMatchObject([
+      {
+        observedBurnBlockHeight: 960_240,
+        observedStacksTipHeight: 8_600_000,
+        stxNodeVerified: true,
+        position: {
+          amountUstx: "50000000000",
+          firstRewardCycle: "141",
+          unlockCycle: "144",
+        },
+      },
+    ]);
+    expect(store.listCycleMemberships(manager, true, "api:mainnet:unknown")).toEqual([]);
+  });
+
+  it("retains the latest pool observation for every historical reward cycle", async () => {
+    const store = await memoryStore();
+    store.putPoolCycleSnapshots({
+      managerPrincipal: manager,
+      observedAt,
+      burnBlockHeight: 960_240,
+      stacksTipHeight: 8_600_000,
+      cycles: [141, 142].map((cycleId) => ({
+        cycleId,
+        status: "ready" as const,
+        rosterAvailable: true,
+        stakerCount: 500,
+        enumeratedStxUstx: "60000000000",
+        enumerationDeltaUstx: "0",
+        pendingStxUstx: "60000000000",
+        eligibleStxSharesUstx: "60000000000",
+        totalDelegatedUstx: "60000000000",
+        nonStxDelegatedUstx: "0",
+        inSignerSet: true,
+        thresholdUstx: "50000000000",
+        thresholdMarginUstx: "10000000000",
+      })),
+    });
+    store.putPoolCycleSnapshots({
+      managerPrincipal: manager,
+      observedAt: later,
+      burnBlockHeight: 960_241,
+      stacksTipHeight: 8_600_001,
+      cycles: [
+        {
+          cycleId: 141,
+          status: "attention",
+          rosterAvailable: true,
+          stakerCount: 499,
+          enumeratedStxUstx: "59000000000",
+          enumerationDeltaUstx: "-1000000000",
+          pendingStxUstx: "60000000000",
+          eligibleStxSharesUstx: "60000000000",
+          totalDelegatedUstx: "60000000000",
+          nonStxDelegatedUstx: "0",
+          inSignerSet: true,
+          thresholdUstx: "50000000000",
+          thresholdMarginUstx: "10000000000",
+        },
+      ],
+    });
+
+    expect(store.listLatestPoolCycleSnapshots(manager, { limit: 1 })).toMatchObject({
+      total: 2,
+      items: [{ cycleId: 142, status: "ready", stakerCount: 500 }],
+    });
+    expect(store.listLatestPoolCycleSnapshots(manager, { limit: 1, offset: 1 })).toMatchObject({
+      total: 2,
+      items: [{ cycleId: 141, status: "attention", stakerCount: 499 }],
+    });
+  });
+
+  it("keeps one bounded reward ledger entry per manager, cycle, and staker", async () => {
+    const store = await memoryStore();
+    const snapshot = (rewardCycle: number, earnedSats: string) => ({
+      managerPrincipal: manager,
+      rewardCycle,
+      status: "ready" as const,
+      observedAt,
+      burnBlockHeight: 960_240,
+      stacksTipHeight: 8_600_000,
+      global: {
+        lastRewardComputeBurnHeight: "960200",
+        lastComputedRewardCycle: "140",
+        rewardsPerToken: "42",
+        signerEarnedBeforeManagerClaimSats: "0",
+      },
+      manager: {
+        feeSnapshotBips: "500",
+        earnedFeesSats: "100",
+        withdrawalLiabilitySats: "0",
+        unclaimedStakerRewardsSats: earnedSats,
+      },
+      totals: {
+        stakers: 1,
+        grossSats: earnedSats,
+        earnedSats,
+        feeSats: "0",
+        actionableClaims: 1,
+        l1ClaimsWaitingForFeeThreshold: 0,
+      },
+      stakers: [
+        {
+          stakerPrincipal: stakerOne,
+          payout: { kind: "direct-sbtc" as const, poxAddress: null, maxFeeSats: null },
+          rewards: { earnedSats, feeSats: "0", grossSats: earnedSats },
+          claimableByPolicy: true,
+        },
+      ],
+    });
+    store.putRewardCycleSnapshot(snapshot(141, "10000"));
+    store.putRewardCycleSnapshot(snapshot(142, "11000"));
+    store.putRewardCycleSnapshot(snapshot(141, "12000"));
+
+    expect(store.listRewardCycleSummaries(manager, { limit: 1 })).toMatchObject({
+      total: 2,
+      items: [{ rewardCycle: 142, earnedSats: "11000" }],
+    });
+    expect(store.listRewardCycleSummaries(manager, { limit: 1, offset: 1 })).toMatchObject({
+      total: 2,
+      items: [{ rewardCycle: 141, earnedSats: "12000" }],
+    });
   });
 
   it("resumes partial scans without deactivating unseen members until completion", async () => {
@@ -356,9 +581,29 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 6,
       journalMode: "wal",
     });
+  });
+
+  it("creates and verifies an explicit online database backup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-backup-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const destination = join(directory, "backups", "sidekick.sqlite");
+    const { store } = await openSidekickStore(path, observedAt);
+    openStores.push(store);
+    registerSource(store);
+
+    await expect(backupSidekickDatabase(path, destination)).resolves.toMatchObject({
+      sourcePath: path,
+      destinationPath: destination,
+      quickCheck: "ok",
+    });
+    expect((await stat(destination)).size).toBeGreaterThan(0);
+    await expect(backupSidekickDatabase(path, destination)).rejects.toThrow(
+      "Backup destination already exists",
+    );
   });
 
   it("refuses a database whose schema version has no migration ledger", async () => {

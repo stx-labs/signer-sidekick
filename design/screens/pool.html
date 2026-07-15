@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-network="mainnet">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pool — Signer Sidekick</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link rel="stylesheet" href="_app.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2/src/regular/style.css">
+<style>
+  .barchart { display:flex; align-items:flex-end; gap:14px; height:180px; padding:8px 4px 0; position:relative; }
+  .barchart .col { flex:1; display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; position:relative; z-index:1; }
+  .barchart .bar { width:100%; max-width:52px; border-radius:6px 6px 0 0; background:var(--accent); transition:height 200ms ease-out; }
+  .barchart .bar.next { background:var(--accent); opacity:0.6; }
+  .barchart .bar.forecast { background:var(--sand-300); }
+  .barchart .bar.under { background:var(--red-400); }
+  .barchart .cyc { font-family:var(--font-mono); font-size:11px; color:var(--text-secondary); }
+  .barchart .amt { font-family:var(--font-mono); font-size:11px; color:var(--text-primary); }
+  .barchart .thresh { position:absolute; left:0; right:0; border-top:2px dashed var(--red-400); z-index:0; }
+  .barchart .thresh span { position:absolute; right:0; top:-16px; font-family:var(--font-mono); font-size:10px; color:var(--status-error); background:var(--surface-tertiary); padding:0 4px; }
+</style>
+</head>
+<body data-page="pool" data-mode="assist"
+      data-crumbs="<strong>Pool</strong> · Trust Machines Pool"
+      data-fresh="burn 962,184 · indexed to 962,184 · roster reconciled with pox-5 read-only">
+<div class="app">
+  <div class="content">
+    <main class="main">
+
+      <div class="page-head">
+        <div>
+          <h1>Pool positions</h1>
+          <p class="lede">Every STX-only staker assigned to this manager, which cycles they count in, and how they want to be paid. No wallet connection or stake submission here.</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-tertiary sm"><i class="ph ph-file-csv"></i> CSV</button>
+          <button class="btn btn-tertiary sm"><i class="ph ph-brackets-curly"></i> JSON</button>
+        </div>
+      </div>
+
+      <div class="kpi" style="margin-bottom:16px;">
+        <div class="tile hero"><div class="l">Stakers</div><div class="v">24</div><div class="d">21 active · 2 joining · 1 unstaking</div></div>
+        <div class="tile"><div class="l">Stacked · cycle 141 <span class="src src-chain"></span></div><div class="v">128,400 <span class="u">STX</span></div><div class="d up"><i class="ph ph-check-circle"></i> above threshold</div></div>
+        <div class="tile"><div class="l">Direct sBTC</div><div class="v">19</div><div class="d">pay to L2 on claim</div></div>
+        <div class="tile"><div class="l">Bitcoin L1 payout</div><div class="v btc-value">5</div><div class="d">via signer calldata · max-fee set</div></div>
+      </div>
+
+      <!-- Forecast chart -->
+      <div class="section-title">Pool total by cycle <span class="hint">forecast from current positions and known expirations</span></div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="barchart">
+          <div class="thresh" style="bottom:32%;"><span>50k min</span></div>
+          <div class="col"><div class="amt">128.4k</div><div class="bar" style="height:82%;"></div><div class="cyc">141</div></div>
+          <div class="col"><div class="amt">121.9k</div><div class="bar next" style="height:78%;"></div><div class="cyc">142</div></div>
+          <div class="col"><div class="amt">121.9k</div><div class="bar forecast" style="height:78%;"></div><div class="cyc">143</div></div>
+          <div class="col"><div class="amt" style="color:var(--status-error);">41.2k</div><div class="bar under" style="height:26%;"></div><div class="cyc">144</div></div>
+          <div class="col"><div class="amt" style="color:var(--status-error);">41.2k</div><div class="bar under" style="height:26%;"></div><div class="cyc">145</div></div>
+          <div class="col"><div class="amt" style="color:var(--status-error);">41.2k</div><div class="bar under" style="height:26%;"></div><div class="cyc">146</div></div>
+        </div>
+        <div class="divider"></div>
+        <div style="display:flex; gap:20px; align-items:center; font-size:12px; color:var(--text-secondary);">
+          <span class="kv-inline"><span style="width:10px;height:10px;border-radius:2px;background:var(--accent);"></span> Confirmed</span>
+          <span class="kv-inline"><span style="width:10px;height:10px;border-radius:2px;background:var(--sand-300);"></span> Forecast</span>
+          <span class="kv-inline"><span style="width:10px;height:10px;border-radius:2px;background:var(--red-400);"></span> Below 50k minimum</span>
+          <span style="margin-left:auto;"><i class="ph ph-warning" style="color:var(--status-caution);"></i> A 60,000 STX position expires after cycle 143 — pool drops below the signer-set minimum in cycle 144.</span>
+        </div>
+      </div>
+
+      <!-- Roster -->
+      <div class="section-title">Staker roster</div>
+      <div class="tbl-wrap">
+        <div class="tbl-toolbar">
+          <div class="search-inline"><i class="ph ph-magnifying-glass"></i><input placeholder="Search principal…"></div>
+          <div class="filters">
+            <span class="filter">Status: All <i class="ph ph-caret-down"></i></span>
+            <span class="filter">Payout: Any <i class="ph ph-caret-down"></i></span>
+            <span class="total" style="margin-left:8px;">24 stakers · 128,400 STX</span>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Staker</th>
+              <th class="right">Amount</th>
+              <th>First cycle</th>
+              <th>Last cycle</th>
+              <th>Payout</th>
+              <th>Status</th>
+              <th class="right">Next change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP1H1...7Z9R</span></div></td>
+              <td class="right mono">60,000</td><td class="mono">138</td><td class="mono">143</td>
+              <td><span class="badge b-neutral">Direct sBTC</span></td>
+              <td><span class="badge b-caution"><span class="dot"></span>Expiring</span></td>
+              <td class="right mono muted">ends 143</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP3K8...0X4Z</span></div></td>
+              <td class="right mono">25,000</td><td class="mono">141</td><td class="mono">156</td>
+              <td><span class="badge b-neutral btc-value">Bitcoin L1 · max 0.0003</span></td>
+              <td><span class="badge b-success"><span class="dot"></span>Active</span></td>
+              <td class="right mono muted">—</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP2J6...H4KX</span></div></td>
+              <td class="right mono">18,500</td><td class="mono">141</td><td class="mono">153</td>
+              <td><span class="badge b-neutral">Direct sBTC</span></td>
+              <td><span class="badge b-success"><span class="dot"></span>Active</span></td>
+              <td class="right mono muted">—</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP9K2...YY3R</span></div></td>
+              <td class="right mono">12,000</td><td class="mono">142</td><td class="mono">154</td>
+              <td><span class="badge b-neutral">Direct sBTC</span></td>
+              <td><span class="badge b-info"><span class="dot"></span>Joining 142</span></td>
+              <td class="right mono src src-api" style="color:var(--status-success);">+12,000 · 142</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP55X...ZZ1A</span></div></td>
+              <td class="right mono">8,000</td><td class="mono">139</td><td class="mono">141</td>
+              <td><span class="badge b-neutral">Direct sBTC</span></td>
+              <td><span class="badge b-caution"><span class="dot"></span>Unstaking</span></td>
+              <td class="right mono muted">unlock 143 end</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP7QF...M2LD</span></div></td>
+              <td class="right mono">5,000</td><td class="mono">141</td><td class="mono">147</td>
+              <td><span class="badge b-neutral btc-value">Bitcoin L1 · max 0.0002</span></td>
+              <td><span class="badge b-success"><span class="dot"></span>Active</span></td>
+              <td class="right mono muted">—</td>
+            </tr>
+            <tr>
+              <td><div class="staker"><span class="avatar">SP</span><span class="mono">SP4T8...Q9WC</span></div></td>
+              <td class="right mono">4,900</td><td class="mono">141</td><td class="mono">150</td>
+              <td><span class="badge b-neutral">Direct sBTC</span></td>
+              <td><span class="badge b-info"><span class="dot"></span>Increase 142</span></td>
+              <td class="right mono src src-api" style="color:var(--status-success);">+2,000 · 142</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="tertiary" style="font-size:12px; margin-top:12px;">
+        <i class="ph ph-info"></i> An <span class="mono">unstake</span> is shown immediately, but STX stays locked until its returned unlock burn height (cycle-end), so the position still counts until then. Lifecycle events ingested: <span class="mono">stake · stake-update · unstake</span>.
+      </p>
+
+    </main>
+  </div>
+</div>
+<script src="_app.js"></script>
+</body>
+</html>

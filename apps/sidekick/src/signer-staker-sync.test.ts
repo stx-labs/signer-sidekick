@@ -78,11 +78,13 @@ function membership(amountUstx = 75_000_000_000n, signer = manager) {
 
 function nodeReads() {
   return {
-    callReadOnly: vi
-      .fn()
-      .mockImplementation((_contract, functionName) =>
-        Promise.resolve(functionName === "get-staker-info" ? position() : membership()),
-      ),
+    callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+      if (functionName === "get-staker-info") return Promise.resolve(position());
+      if (functionName === "reward-cycle-to-burn-height") {
+        return Promise.resolve(uintCV(961_000n));
+      }
+      return Promise.resolve(membership());
+    }),
   };
 }
 
@@ -124,6 +126,7 @@ describe("signer-staker synchronization", () => {
       callReadOnly: vi
         .fn()
         .mockResolvedValueOnce(position())
+        .mockResolvedValueOnce(uintCV(961_000n))
         .mockResolvedValueOnce(membership(49_000_000_000n))
         .mockResolvedValueOnce(membership()),
     };
@@ -141,7 +144,7 @@ describe("signer-staker synchronization", () => {
 
     expect(api.getSignerStakers).toHaveBeenNthCalledWith(1, manager, null, 1);
     expect(api.getSignerStakers).toHaveBeenNthCalledWith(2, manager, stakerTwo, 1);
-    expect(node.callReadOnly).toHaveBeenCalledTimes(3);
+    expect(node.callReadOnly).toHaveBeenCalledTimes(4);
     expect(node.callReadOnly).toHaveBeenCalledWith(
       pox5,
       "get-staker-info",
@@ -204,6 +207,7 @@ describe("signer-staker synchronization", () => {
       callReadOnly: vi
         .fn()
         .mockResolvedValueOnce(position())
+        .mockResolvedValueOnce(uintCV(961_000n))
         .mockResolvedValueOnce(membership(49_000_000_000n, otherManager))
         .mockResolvedValueOnce(membership()),
     };
@@ -262,5 +266,41 @@ describe("signer-staker synchronization", () => {
         { kind: "stx-position-missing", stakerPrincipal: stakerOne },
       ],
     });
+  });
+
+  it("verifies stakers concurrently while respecting the configured worker bound", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi.fn().mockResolvedValue(
+        page(
+          [
+            { staker: stakerOne, types: ["stx"] },
+            { staker: stakerTwo, types: ["stx"] },
+          ],
+          null,
+          null,
+        ),
+      ),
+    };
+    let activeReads = 0;
+    let maximumReads = 0;
+    const node = {
+      callReadOnly: vi.fn().mockImplementation(async () => {
+        activeReads += 1;
+        maximumReads = Math.max(maximumReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeReads -= 1;
+        return noneCV();
+      }),
+    };
+
+    await syncSignerStakers({
+      ...options(sidekickStore, api, node),
+      pageLimit: 2,
+      stakerConcurrency: 2,
+    });
+
+    expect(maximumReads).toBe(2);
+    expect(node.callReadOnly).toHaveBeenCalledTimes(2);
   });
 });

@@ -45,3 +45,6 @@ jobs:
 
       - name: Build packages and applications
         run: pnpm build
+
+      - name: Build production container
+        run: docker build --target runtime --tag signer-sidekick:ci .

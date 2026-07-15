@@ -15,6 +15,7 @@ describe("Sidekick configuration", () => {
       apiKey: "secret-key",
       apiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
+      forecastHorizonCycles: 6,
       databasePath: expect.stringMatching(/data\/sidekick\.sqlite$/),
     });
     expect(redactConfig(config)).not.toHaveProperty("apiKey");
@@ -27,6 +28,16 @@ describe("Sidekick configuration", () => {
     ).toThrow("STACKS_API_URL is required for regtest");
   });
 
+  it("treats an empty Compose API override as absent", () => {
+    const config = loadConfig({
+      SIDEKICK_NETWORK: "testnet",
+      STACKS_NODE_RPC_URL: "http://node:20443",
+      STACKS_API_URL: "",
+    });
+
+    expect(config.apiUrl).toBe("https://api.testnet.hiro.so");
+  });
+
   it("rejects credentials embedded in endpoint URLs", () => {
     expect(() =>
       loadConfig({ STACKS_NODE_RPC_URL: "http://user:password@127.0.0.1:20443" }),
@@ -37,5 +48,14 @@ describe("Sidekick configuration", () => {
     expect(() =>
       loadConfig({ STACKS_NODE_RPC_URL: "http://127.0.0.1:20443?token=secret" }),
     ).toThrow("must not contain query parameters or a fragment");
+  });
+
+  it("bounds the operator forecast horizon to the PoX-5 lock period", () => {
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        SIDEKICK_FORECAST_HORIZON_CYCLES: "97",
+      }),
+    ).toThrow();
   });
 });
