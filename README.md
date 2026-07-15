@@ -49,7 +49,11 @@ another hosted or self-managed API.
 ```sh
 pnpm --filter @stx-labs/signer-sidekick build
 
+pnpm --filter @stx-labs/signer-sidekick cli config validate
 pnpm --filter @stx-labs/signer-sidekick cli preflight
+pnpm --filter @stx-labs/signer-sidekick cli \
+  init fresh <admin-principal> <contract-name> <output-directory> <auth-id>
+pnpm --filter @stx-labs/signer-sidekick cli init attach <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli \
   pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json

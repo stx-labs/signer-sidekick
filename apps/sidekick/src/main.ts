@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createAttachActivationPlan, createFreshActivationPlan } from "./activation-plan.js";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
@@ -44,6 +45,37 @@ async function readJson(path: string): Promise<unknown> {
 if (command === "serve") {
   const server = createServer();
   await server.listen({ host: "127.0.0.1", port: 3998 });
+} else if (command === "config" && arguments_[0] === "validate") {
+  const config = loadConfig(process.env);
+  console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));
+} else if (command === "init" && arguments_[0] === "fresh") {
+  const [, adminPrincipal, contractName, outputDirectory, authId, signerConfigPath] = arguments_;
+  if (!adminPrincipal || !contractName || !outputDirectory || !authId) {
+    throw new Error(
+      "Usage: sidekick init fresh <admin-principal> <contract-name> <output-directory> <auth-id> [signer-config-path]",
+    );
+  }
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const preflight = await runOperatorPreflight(config, node, api);
+  const activationPlan = createFreshActivationPlan({
+    network: config.network,
+    preflight,
+    adminPrincipal,
+    contractName,
+    outputDirectory,
+    authId,
+    ...(signerConfigPath ? { signerConfigPath } : {}),
+  });
+  console.log(JSON.stringify({ config: redactConfig(config), preflight, activationPlan }, null, 2));
+  if (activationPlan.status === "blocked") process.exitCode = 2;
+} else if (command === "init" && arguments_[0] === "attach") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick init attach <manager-principal>");
+  const { config, preflight, manager, registration, setup } = await setupContext(managerPrincipal);
+  const activationPlan = createAttachActivationPlan(preflight, manager, registration, setup);
+  console.log(JSON.stringify({ config: redactConfig(config), activationPlan }, null, 2));
+  if (activationPlan.status === "blocked") process.exitCode = 2;
 } else if (command === "preflight") {
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
@@ -67,6 +99,14 @@ if (command === "serve") {
     JSON.stringify({ config: redactConfig(config), preflight, manager, registration }, null, 2),
   );
   if (preflight.status === "fail" || !manager.attachAllowed) process.exitCode = 2;
+} else if (command === "manager" && arguments_[0] === "verify") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick manager verify <manager-principal>");
+  const config = loadConfig(process.env);
+  const { node } = clientsFromConfig(config);
+  const manager = await inspectDeployedManager(node, config.network, managerPrincipal);
+  console.log(JSON.stringify({ config: redactConfig(config), manager }, null, 2));
+  if (!manager.attachAllowed) process.exitCode = 2;
 } else if (command === "setup" && arguments_[0] === "status") {
   const [, managerPrincipal] = arguments_;
   if (!managerPrincipal) throw new Error("Usage: sidekick setup status <manager-principal>");
@@ -251,8 +291,12 @@ if (command === "serve") {
 
 Usage:
   sidekick serve    Start the loopback-only local API
+  sidekick config validate  Validate and print redacted endpoint configuration
+  sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
+  sidekick init attach <manager>  Build an activation plan from a running manager
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
   sidekick attach <manager>  Verify and attach an existing manager in Observe mode
+  sidekick manager verify <manager>  Verify deployed source and interface compatibility
   sidekick setup status <manager>  Verify registration and current/next eligibility
   sidekick setup record <manager> <pool-config.json> [record-metadata.json]
   sidekick pool enrollment-info <manager> <pool-config.json>
