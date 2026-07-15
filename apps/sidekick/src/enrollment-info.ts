@@ -34,6 +34,19 @@ export const poolEnrollmentConfigSchema = z
         maximumCycles: z.number().int().min(1).max(96),
       })
       .strict(),
+    officialPlatforms: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(40),
+            label: z.string().trim().min(1).max(80),
+            url: z.url(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(10)
+      .optional(),
   })
   .strict()
   .refine(({ durationPolicy }) => durationPolicy.maximumCycles >= durationPolicy.minimumCycles, {
@@ -254,14 +267,15 @@ export function createPoolEnrollmentDocument(
     },
     links: {
       managerExplorer: `https://explorer.hiro.so/address/${encodeURIComponent(manager.managerPrincipal)}?chain=${explorerChain(preflight.network)}`,
-      officialPlatforms: [
-        {
-          id: "leather",
-          label: "Leather Stacking",
-          url: "https://app.leather.io/stacking",
-          integration: "link-only" as const,
-        },
-      ],
+      officialPlatforms: (
+        config.officialPlatforms ?? [
+          {
+            id: "leather",
+            label: "Leather Stacking",
+            url: "https://earn.leather.io",
+          },
+        ]
+      ).map((platform) => ({ ...platform, integration: "link-only" as const })),
     },
     userInteraction: {
       collectsAmount: false as const,

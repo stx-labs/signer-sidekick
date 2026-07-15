@@ -1,12 +1,15 @@
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
+import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { inspectDeployedManager } from "./manager-verification.js";
+import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import { readStxRewardStatus } from "./reward-status.js";
+import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { syncSignerStakers } from "./signer-staker-sync.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
@@ -25,6 +28,7 @@ export interface OperatorServiceOptions {
   node: StacksNodeClient;
   api: StacksApiClient;
   cacheTtlMs?: number;
+  runtimeSettings?: RuntimeSettingsController;
 }
 
 function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: string) {
@@ -229,8 +233,52 @@ export class OperatorService {
     );
   }
 
+  settings() {
+    if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
+    return this.options.runtimeSettings.publicSettings();
+  }
+
+  updateSettings(input: unknown) {
+    if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
+    const result = this.options.runtimeSettings.update(input);
+    this.cached = null;
+    return result;
+  }
+
+  async poolCard(mode: PoolCardMode) {
+    if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
+    const snapshot = await this.snapshot(true);
+    if (!snapshot.setup) throw new Error("Pool card generation requires completed manager setup");
+    const settings = this.options.runtimeSettings.publicSettings();
+    const support = settings.pool.supportContact
+      ? settings.pool.supportContact.includes("@")
+        ? { email: settings.pool.supportContact }
+        : { url: settings.pool.supportContact }
+      : undefined;
+    const enrollment = createPoolEnrollmentDocument(
+      {
+        schemaVersion: 1,
+        displayName: settings.pool.displayName,
+        ...(settings.pool.websiteUrl ? { websiteUrl: settings.pool.websiteUrl } : {}),
+        ...(support ? { support } : {}),
+        currentFeeBips: Number(snapshot.rewards?.manager.configuredFeeBips ?? 0),
+        rewardDestinations: { directSbtc: true, bitcoinL1: true },
+        durationPolicy: { minimumCycles: 1, maximumCycles: 96 },
+        officialPlatforms: [
+          { id: "leather", label: "Leather Stacking", url: settings.pool.leatherUrl },
+        ],
+      },
+      snapshot.preflight,
+      snapshot.manager,
+      snapshot.registration,
+      snapshot.setup,
+    );
+    return createPoolCardArtifact(enrollment, mode, settings.embed.publicApiUrl);
+  }
+
   private async runSynchronization() {
-    const { config, managerPrincipal, store, node, api } = this.options;
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
     const observedAt = new Date().toISOString();
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
@@ -283,7 +331,8 @@ export class OperatorService {
   }
 
   private async load() {
-    const { config, managerPrincipal, store, node, api } = this.options;
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
     const generatedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const [preflight, manager] = await Promise.all([
@@ -346,9 +395,26 @@ export class OperatorService {
       generatedAt,
       network: config.network,
       config: redactConfig(config),
+      ...(this.options.runtimeSettings
+        ? { runtimeSettings: this.options.runtimeSettings.publicSettings() }
+        : {}),
       managerPrincipal,
       ...partial,
       alerts: buildAlerts(partial),
     };
+  }
+
+  private runtimeContext(): {
+    config: SidekickConfig;
+    node: StacksNodeClient;
+    api: StacksApiClient;
+  } {
+    return (
+      this.options.runtimeSettings?.clients() ?? {
+        config: this.options.config,
+        node: this.options.node,
+        api: this.options.api,
+      }
+    );
   }
 }

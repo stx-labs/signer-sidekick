@@ -9,10 +9,8 @@ import {
   FileCsv,
   Gauge,
   GearSix,
-  Key,
   ListChecks,
   Moon,
-  Plugs,
   SealCheck,
   ShareNetwork,
   ShieldCheck,
@@ -22,11 +20,12 @@ import {
   Warning,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../../design/tokens/tokens.css";
 import "../../../design/screens/_app.css";
 import "./styles.css";
+import { EnrollmentPage, type RuntimeSettings, SettingsPage, SetupPage } from "./phase3.js";
 
 type Page =
   | "overview"
@@ -48,6 +47,7 @@ interface Snapshot {
     apiKeyConfigured: boolean;
     forecastHorizonCycles: number;
   };
+  runtimeSettings?: RuntimeSettings;
   preflight: {
     status: "pass" | "warn" | "fail";
     node: { networkId: number; burnBlockHeight: number; stacksTipHeight: number };
@@ -227,8 +227,8 @@ const nav: Array<{ group?: string; id?: Page; label?: string; icon?: typeof Gaug
   { id: "operations", label: "Operations", icon: ListChecks },
   { group: "Configure" },
   { id: "setup", label: "Initial Setup", icon: SlidersHorizontal },
-  { id: "enrollment", label: "Public Pool Page", icon: ShareNetwork },
   { id: "settings", label: "Settings", icon: GearSix },
+  { id: "enrollment", label: "Public Pool Page", icon: ShareNetwork },
 ];
 
 function StacksGlyph() {
@@ -1418,389 +1418,6 @@ function Operations({ data }: { data: Snapshot }) {
   );
 }
 
-function Setup({ data }: { data: Snapshot }) {
-  const checks = data.setup?.checks ?? data.preflight.checks;
-  return (
-    <>
-      <PageHead
-        title="Initial Setup"
-        lede="Guided path to a verified manager registration. Sidekick prepares manifests and verifies results — it never holds your admin or signer key."
-        actions={
-          <div className="seg">
-            <button type="button" className="on">
-              Attach existing
-            </button>
-            <button type="button">Fresh setup</button>
-          </div>
-        }
-      />
-      <div className="wizard">
-        <div className="steps">
-          {[
-            "Prerequisites",
-            "Manager artifact",
-            "Deploy manager",
-            "Signer grant ceremony",
-            "Register manager",
-            "Pool policy",
-            "Automation identity",
-            "Final verification",
-          ].map((label, index) => {
-            const done = index < 2 && data.manager.attachAllowed;
-            const active = index === (data.setup?.status === "ready" ? 7 : 0);
-            return (
-              <div className={`step ${done ? "done" : ""} ${active ? "active" : ""}`} key={label}>
-                <span className="num">{done ? <Check /> : index + 1}</span>
-                <span className="lbl">
-                  {label}
-                  <small>{done ? "verified" : active ? "review current checks" : "pending"}</small>
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <div>
-          <div className="card-standout">
-            <div className="card-head">
-              <h2>Attach verification</h2>
-              <Badge
-                state={
-                  data.setup?.status === "ready"
-                    ? "success"
-                    : data.setup?.status === "blocked"
-                      ? "error"
-                      : "caution"
-                }
-              >
-                {data.setup?.status ?? "Preflight"}
-              </Badge>
-            </div>
-            <p className="muted setup-copy">
-              The existing manager is never redeployed or replaced. Sidekick compares its source and
-              interface, then verifies registration, grant, and eligibility.
-            </p>
-            <div className="checklist">
-              {checks.map((check) => (
-                <div className="check-item" key={check.id}>
-                  <span
-                    className={`box ${check.status === "pass" ? "ok" : check.status === "fail" ? "bad" : "wait"}`}
-                  >
-                    {check.status === "pass" ? <Check /> : <Warning />}
-                  </span>
-                  <div className="body">
-                    <strong>{check.id.replaceAll("-", " ")}</strong>
-                    <div className="m">{check.message}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="callout callout-neutral setup-note">
-            <ShieldCheck className="ic" />
-            <div className="body">
-              Fresh setup commands remain CLI-first: render the pinned artifact, generate the signer
-              grant on the signer host, then verify the externally broadcast registration.
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function Settings({
-  data,
-  theme,
-  setTheme,
-}: {
-  data: Snapshot;
-  theme: "light" | "dark";
-  setTheme: (theme: "light" | "dark") => void;
-}) {
-  return (
-    <>
-      <PageHead
-        title="Settings"
-        lede="Ongoing configuration for this deployment. Secret values are never returned to the browser."
-      />
-      <div className="grid cols-1-2 settings-grid">
-        <nav className="set-nav">
-          <a className="active" href="#identity">
-            Pool identity
-          </a>
-          <a href="#sources">Data sources</a>
-          <a href="#display">Display</a>
-          <a href="#security">Access &amp; security</a>
-        </nav>
-        <div>
-          <div className="card-standout set-section" id="identity">
-            <div className="card-head">
-              <h2>Pool identity</h2>
-              <Badge state="neutral">read-only</Badge>
-            </div>
-            <div className="field">
-              <label htmlFor="manager-principal">Manager principal</label>
-              <input
-                id="manager-principal"
-                className="input mono"
-                readOnly
-                value={data.managerPrincipal}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="pool-display-name">Display name</label>
-              <input id="pool-display-name" className="input" readOnly value="Stacks Pool" />
-              <div className="help">
-                Configure the local display label server-side in the current build.
-              </div>
-            </div>
-          </div>
-          <div className="card-standout set-section" id="sources">
-            <div className="card-head">
-              <h2>
-                <Plugs /> Data sources
-              </h2>
-              <Badge state={data.preflight.status === "fail" ? "error" : "success"}>
-                Connected
-              </Badge>
-            </div>
-            <ReadOnlyField
-              label="Stacks node RPC URL"
-              value={data.config?.nodeRpcUrl ?? "configured server-side"}
-              help="Authoritative for actionable state."
-            />
-            <ReadOnlyField
-              label="Stacks API base URL"
-              value={data.config?.apiUrl ?? "configured server-side"}
-              help={`${data.preflight.api.serverVersion} · ${data.preflight.api.burnBlockLag} block lag`}
-            />
-            <ReadOnlyField
-              label="API key"
-              value={data.config?.apiKeyConfigured ? "Configured" : "Not configured"}
-              help="Stored server-side and never returned to the browser."
-            />
-          </div>
-          <div className="card-standout set-section" id="display">
-            <div className="card-head">
-              <h2>Display preferences</h2>
-            </div>
-            <div className="field">
-              <span className="field-label">Default theme</span>
-              <div className="seg">
-                <button
-                  type="button"
-                  className={theme === "light" ? "on" : ""}
-                  onClick={() => setTheme("light")}
-                >
-                  Light
-                </button>
-                <button
-                  type="button"
-                  className={theme === "dark" ? "on" : ""}
-                  onClick={() => setTheme("dark")}
-                >
-                  Dark
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor="forecast-horizon">Forecast horizon</label>
-              <div className="input-group">
-                <input
-                  id="forecast-horizon"
-                  readOnly
-                  value={data.config?.forecastHorizonCycles ?? 6}
-                />
-                <span className="suffix">cycles</span>
-              </div>
-            </div>
-          </div>
-          <div className="card set-section" id="security">
-            <div className="card-head">
-              <h2>Access &amp; security</h2>
-            </div>
-            <StatLine label="HTTP bind">
-              <span className="mono">127.0.0.1 · loopback</span>
-            </StatLine>
-            <StatLine label="Operator session">
-              <span>Bearer credential · browser session only</span>
-            </StatLine>
-            <div className="callout callout-critical security-note">
-              <Key className="ic" />
-              <div className="body">
-                <strong>Never configurable here.</strong> Manager admin and signer private keys are
-                not accepted. Sidekick has no public pool HTTP surface.
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function ReadOnlyField({ label, value, help }: { label: string; value: string; help: string }) {
-  return (
-    <div className="field">
-      <label>
-        {label}
-        <input className="input mono" readOnly value={value} />
-      </label>
-      <div className="help">{help}</div>
-    </div>
-  );
-}
-
-function Enrollment({ data }: { data: Snapshot }) {
-  const [mode, setMode] = useState<"live" | "static">("live");
-  const current = data.forecast?.cycles[0];
-  const publicApiUrl =
-    data.network === "mainnet" ? "https://api.mainnet.hiro.so" : "https://api.testnet.hiro.so";
-  const payload = {
-    schema: "stacks-pool-card/v1",
-    generatedAtBurnHeight: data.preflight.node.burnBlockHeight,
-    manager: data.managerPrincipal,
-    network: data.network,
-    signerKey: data.registration?.signerKeyHex,
-    grantValid: data.registration?.signerKeyGrantValid,
-    sourceHash: data.manager.source.sha256,
-    cycle: data.preflight.cycle.currentId,
-    poolUstx: current?.contract.pendingStxUstx,
-    aboveThreshold: current?.threshold.meetsThreshold,
-  };
-  const staticCode = JSON.stringify(payload, null, 2);
-  const liveCode = `<!-- Signer Sidekick PoX-5 pool card. Host this file on your own site. -->\n<div class="stx-pool-card" data-manager="${data.managerPrincipal}">\n  <strong>Stacks Pool</strong>\n  <code>${data.managerPrincipal}</code>\n  <span>Cycle ${data.preflight.cycle.currentId} · ${stx(current?.contract.pendingStxUstx)} STX</span>\n</div>\n<script>\nfetch("${publicApiUrl}/v2/pox")\n  .then(r => r.json())\n  .then(pox => document.querySelector(".stx-pool-card span").dataset.cycle = pox.reward_cycle_id);\n</script>`;
-  const code = mode === "live" ? liveCode : staticCode;
-  return (
-    <>
-      <PageHead
-        title="Public Pool Page"
-        lede="Generate an embeddable pool card for a website you already run. Sidekick hosts nothing and opens no public route."
-      />
-      <div className="callout callout-info intro-callout">
-        <ShieldCheck className="ic" />
-        <div className="body">
-          <strong>No public surface on this app.</strong> The generated artifact contains public
-          manager and pool facts only. It never includes the API key, gas payer, jobs, alerts, or
-          local database state.
-        </div>
-      </div>
-      <div className="card-standout embed-mode">
-        <div>
-          <span className="muted">Embed type</span>
-          <div className="seg">
-            <button
-              type="button"
-              className={mode === "live" ? "on" : ""}
-              onClick={() => setMode("live")}
-            >
-              Live card
-            </button>
-            <button
-              type="button"
-              className={mode === "static" ? "on" : ""}
-              onClick={() => setMode("static")}
-            >
-              Static snapshot
-            </button>
-          </div>
-        </div>
-        <p className="tertiary">
-          {mode === "live"
-            ? "Fetches the public PoX cycle at view time; pool identity and verified snapshot values remain baked in."
-            : "Versioned JSON with the current verified values, for a fully static integration."}
-        </p>
-      </div>
-      <div className="grid cols-3-2 embed-grid">
-        <div className="card">
-          <div className="card-head">
-            <h2>{mode === "live" ? "Embed snippet" : "Static pool JSON"}</h2>
-            <button
-              type="button"
-              className="btn btn-accent sm"
-              onClick={() => navigator.clipboard.writeText(code)}
-            >
-              Copy
-            </button>
-          </div>
-          <pre className="code">{code}</pre>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <h2>What's in the card</h2>
-          </div>
-          <div className="actions-list">
-            <InfoCell
-              title="You maintain"
-              detail="Pool name, website, support, official links, manager principal, signer public key."
-            />
-            <InfoCell
-              title="Public chain data"
-              detail="Cycle, pool size, threshold status, grant validity, fee, and source hash."
-            />
-            <InfoCell
-              title="Never included"
-              detail="Gas payer, secret keys, jobs, transactions, alerts, or the Sidekick database."
-            />
-          </div>
-        </div>
-      </div>
-      <div className="section-title">Preview</div>
-      <div className="preview-frame">
-        <div className="pv-bar">
-          <span className="mono">your-site.example / stacking</span>
-          <Badge state="neutral">embedded card</Badge>
-        </div>
-        <div className="pv-body">
-          <div className="preview-title">
-            <div>
-              <h2>Stacks Pool</h2>
-              <p>{short(data.managerPrincipal, 14, 8)}</p>
-            </div>
-            <Badge state={data.registration?.signerKeyGrantValid ? "success" : "error"}>
-              {data.registration?.signerKeyGrantValid ? "Grant valid" : "Grant invalid"}
-            </Badge>
-          </div>
-          <div className="grid cols-2">
-            <div className="card-standout">
-              <StatLine label="Reward cycle">
-                <span className="mono">{data.preflight.cycle.currentId}</span>
-              </StatLine>
-              <StatLine label="Pool size">
-                <span className="mono">{stx(current?.contract.pendingStxUstx)} STX</span>
-              </StatLine>
-            </div>
-            <div className="card-standout">
-              <StatLine label="Threshold">
-                <Badge state={current?.threshold.meetsThreshold ? "success" : "error"}>
-                  {current?.threshold.meetsThreshold ? "Eligible" : "Below 50k"}
-                </Badge>
-              </StatLine>
-              <StatLine label="Source">
-                <span className="identifier">{short(data.manager.source.sha256)}</span>
-              </StatLine>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function InfoCell({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="action-item">
-      <div className="ic">
-        <Check />
-      </div>
-      <div className="body">
-        <div className="t">{title}</div>
-        <div className="m">{detail}</div>
-      </div>
-    </div>
-  );
-}
-
 function Login({ onLogin }: { onLogin: (token: string) => void }) {
   const [token, setToken] = useState("");
   return (
@@ -1848,6 +1465,7 @@ function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
   );
+  const settingsThemeApplied = useRef(false);
   const [data, setData] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -1881,6 +1499,18 @@ function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
   useEffect(() => {
+    if (settingsThemeApplied.current || !data?.runtimeSettings) return;
+    settingsThemeApplied.current = true;
+    const preference = data.runtimeSettings.display.defaultTheme;
+    setTheme(
+      preference === "system"
+        ? matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light"
+        : preference,
+    );
+  }, [data]);
+  useEffect(() => {
     const handler = () => {
       const hash = location.hash.slice(1) as Page;
       if (nav.some((item) => item.id === hash)) setPage(hash);
@@ -1904,9 +1534,9 @@ function App() {
         pool: <Pool data={data} token={token} />,
         rewards: <Rewards data={data} token={token} />,
         operations: <Operations data={data} />,
-        setup: <Setup data={data} />,
-        enrollment: <Enrollment data={data} />,
-        settings: <Settings data={data} theme={theme} setTheme={setTheme} />,
+        setup: <SetupPage data={data} token={token} />,
+        enrollment: <EnrollmentPage data={data} token={token} />,
+        settings: <SettingsPage data={data} token={token} setTheme={setTheme} />,
       }[page]
     : null;
   if (!token) return <Login onLogin={login} />;

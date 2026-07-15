@@ -134,7 +134,7 @@ describe("pool enrollment information", () => {
         officialPlatforms: [
           {
             id: "leather",
-            url: "https://app.leather.io/stacking",
+            url: "https://earn.leather.io",
             integration: "link-only",
           },
         ],

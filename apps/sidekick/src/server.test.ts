@@ -196,4 +196,61 @@ describe("local API", () => {
     expect(response.json()).toEqual({ error: "internal_server_error" });
     expect(response.body).not.toContain("must-not-leak");
   });
+
+  it("validates authenticated Phase 3 settings and pool-card actions", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({ generatedAt: "2026-07-15T12:00:00.000Z" }),
+      synchronize: async () => ({}),
+      settings: vi.fn().mockReturnValue({ revision: 2, dataSources: { apiKeyConfigured: true } }),
+      updateSettings: vi.fn().mockReturnValue({ revision: 3 }),
+      poolCard: vi.fn().mockResolvedValue({
+        mode: "live",
+        filename: "signer-sidekick-pool.html",
+        contentType: "text/html; charset=utf-8",
+        body: "<!doctype html>",
+      }),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect(
+      (await server.inject({ method: "GET", url: "/api/v1/settings", headers })).json(),
+    ).toMatchObject({ revision: 2, dataSources: { apiKeyConfigured: true } });
+    const settingsBody = { pool: { displayName: "Pool" } };
+    expect(
+      (
+        await server.inject({
+          method: "PUT",
+          url: "/api/v1/settings",
+          headers,
+          payload: settingsBody,
+        })
+      ).json(),
+    ).toEqual({ revision: 3 });
+    expect(service.updateSettings).toHaveBeenCalledWith(settingsBody);
+
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/pool-card/generate",
+          headers,
+          payload: { mode: "live" },
+        })
+      ).json(),
+    ).toMatchObject({ filename: "signer-sidekick-pool.html" });
+    expect(service.poolCard).toHaveBeenCalledWith("live");
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/pool-card/generate",
+          headers,
+          payload: { mode: "dynamic" },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
 });

@@ -59,9 +59,14 @@ export interface RenderedManagerDeployment {
   manifestPath: string;
 }
 
-export async function renderManagerDeployment(
-  options: RenderManagerOptions,
-): Promise<RenderedManagerDeployment> {
+export interface ManagerDeploymentArtifact {
+  manifest: ManagerDeploymentManifest;
+  source: string;
+}
+
+export async function buildManagerDeploymentArtifact(
+  options: Omit<RenderManagerOptions, "outputDirectory">,
+): Promise<ManagerDeploymentArtifact> {
   const artifacts = knownManagerArtifactsForNetwork(options.network);
   if (artifacts.length !== 1) {
     throw new Error(
@@ -93,7 +98,6 @@ export async function renderManagerDeployment(
   }
 
   const sourceFile = `${options.contractName}.clar`;
-  const manifestFile = `${options.contractName}.deployment.json`;
   const warnings = reviewed.profile.productionApproved
     ? []
     : [`Profile ${reviewed.profile.id} is not production-approved; do not deploy this artifact`];
@@ -130,11 +134,20 @@ export async function renderManagerDeployment(
     warnings,
   };
 
+  return { manifest, source: artifact.source };
+}
+
+export async function renderManagerDeployment(
+  options: RenderManagerOptions,
+): Promise<RenderedManagerDeployment> {
+  const { manifest, source } = await buildManagerDeploymentArtifact(options);
   const outputDirectory = resolve(options.outputDirectory);
+  const sourceFile = manifest.artifact.sourceFile;
+  const manifestFile = `${manifest.transaction.contractName}.deployment.json`;
   const sourcePath = join(outputDirectory, sourceFile);
   const manifestPath = join(outputDirectory, manifestFile);
   await mkdir(outputDirectory, { recursive: true });
-  await writeFile(sourcePath, artifact.source, { flag: "wx", mode: 0o644 });
+  await writeFile(sourcePath, source, { flag: "wx", mode: 0o644 });
   try {
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
       flag: "wx",

@@ -217,6 +217,106 @@
   font-size: 13px;
 }
 
+.phase3-wizard .steps button.step {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.phase3-wizard .steps button.step.active {
+  background: var(--surface-primary);
+}
+
+.phase3-action-card,
+.form-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.phase3-action-card {
+  min-height: 360px;
+}
+
+.phase3-action-card > .btn,
+.form-grid > .btn {
+  align-self: flex-start;
+}
+
+.artifact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.artifact-actions .help {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+
+.command-code {
+  max-height: 340px;
+  margin-bottom: var(--space-4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.code-input {
+  height: auto;
+  min-height: 180px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  font-size: 13px;
+}
+
+.settings-saved {
+  margin-bottom: var(--space-4);
+}
+
+.settings-audit {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-secondary);
+}
+
+.settings-audit h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+}
+
+.audit-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.audit-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-row time {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
 .set-nav {
   position: sticky;
   top: 88px;
@@ -225,16 +325,23 @@
   gap: 1px;
 }
 
-.set-nav a {
+.set-nav a,
+.set-nav button {
   padding: 9px 11px;
+  border: 0;
   border-radius: 8px;
+  background: transparent;
   color: var(--text-secondary);
+  font-family: var(--font-body);
   font-size: 13px;
+  text-align: left;
   text-decoration: none;
 }
 
 .set-nav a:hover,
-.set-nav a.active {
+.set-nav a.active,
+.set-nav button:hover,
+.set-nav button.active {
   background: var(--surface-primary);
   color: var(--text-primary);
 }

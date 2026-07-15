@@ -5,8 +5,9 @@ operators. It is designed to attach to an existing compatible signer-manager dep
 guide a fresh operator through setup, then monitor and automate the pool lifecycle without
 holding the signer or manager-admin keys.
 
-The repository now contains the activation/setup path, the read-only v1 control plane, and a
-self-contained Epoch 4.0 lifecycle harness for the protocol foundation. Permissionless
+The repository now contains guided attach/fresh onboarding, editable runtime settings, the
+read-only v1 control plane, and a self-contained Epoch 4.0 lifecycle harness for the protocol
+foundation. Permissionless
 transaction automation and production-profile approval are still gated, so it is not yet ready
 for unattended mainnet operation.
 
@@ -18,6 +19,7 @@ for unattended mainnet operation.
 - [round 2 review and product-owner disposition](docs/reviews/round2-disposition.md)
 - [development setup](docs/operator/development.md)
 - [scale and longitudinal data design](docs/architecture/scaling.md)
+- [guided onboarding and runtime-settings design](docs/architecture/onboarding-and-settings.md)
 - [upstream source provenance](contracts/PROVENANCE.md)
 - [SQLite persistence decision](docs/architecture/decisions/0005-sqlite-persistence.md)
 
@@ -95,6 +97,13 @@ pnpm --filter @stx-labs/signer-sidekick start
 ```
 
 Open `http://127.0.0.1:3998`, enter the configured credential, and run **Reconcile now**. The app stays loopback-bound by default. It exposes authenticated operator APIs, `/health/live`, `/health/ready`, and `/metrics`; it deliberately has no public pool route. The Public Pool Page screen generates a live or static artifact for the operator to host elsewhere.
+
+Initial Setup provides resumable Attach Existing and Fresh Setup workflows. Settings can replace
+the node/API endpoints and API credential without restarting the process; API keys are write-only
+from the browser's perspective. Fresh Setup generates artifacts and external signing/broadcast
+instructions, but Sidekick never accepts the manager-admin or signer private keys. See the
+[onboarding and settings architecture](docs/architecture/onboarding-and-settings.md) for the exact
+boundary and persistence model.
 
 The enrollment command writes a versioned public JSON document to standard output. Its fee is
 explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields

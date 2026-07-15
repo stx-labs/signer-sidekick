@@ -394,6 +394,38 @@ const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 8,
+    name: "phase3_onboarding_and_settings",
+    sql: `
+      CREATE TABLE runtime_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        settings_json TEXT NOT NULL CHECK (json_valid(settings_json)),
+        api_key_secret TEXT,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE settings_audit (
+        audit_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        changed_fields_json TEXT NOT NULL CHECK (json_valid(changed_fields_json)),
+        changed_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX settings_audit_recent
+        ON settings_audit (changed_at DESC, audit_id DESC);
+
+      CREATE TABLE onboarding_state (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        path TEXT NOT NULL CHECK (path IN ('attach', 'fresh')),
+        current_step TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('in-progress', 'blocked', 'complete')),
+        state_json TEXT NOT NULL CHECK (json_valid(state_json)),
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
 
 const sourceInputSchema = z
@@ -942,6 +974,21 @@ export interface StoredRewardCycleSummary {
   observedAt: string;
 }
 
+export interface StoredRuntimeSettings {
+  settings: unknown;
+  apiKeySecret: string | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface StoredOnboardingState {
+  path: "attach" | "fresh";
+  currentStep: string;
+  status: "in-progress" | "blocked" | "complete";
+  state: unknown;
+  updatedAt: string;
+}
+
 export interface StoredManagerClaim {
   txId: string;
   eventIndex: number;
@@ -1244,6 +1291,146 @@ export class SidekickStore {
       journalMode: z.string().parse(journal?.journal_mode),
       foreignKeys: z.union([z.literal(0), z.literal(1)]).parse(foreignKeys?.foreign_keys) === 1,
     };
+  }
+
+  getRuntimeSettings(): StoredRuntimeSettings | null {
+    const row = this.db
+      .prepare(
+        `SELECT settings_json, api_key_secret, revision, updated_at
+         FROM runtime_settings WHERE singleton_id = 1`,
+      )
+      .get() as
+      | {
+          settings_json: string;
+          api_key_secret: string | null;
+          revision: number;
+          updated_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      settings: JSON.parse(row.settings_json) as unknown,
+      apiKeySecret: row.api_key_secret,
+      revision: z.number().int().positive().parse(row.revision),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    };
+  }
+
+  putRuntimeSettings(input: {
+    settings: unknown;
+    apiKeySecret: string | null;
+    changedFields: string[];
+    observedAt: string;
+  }): StoredRuntimeSettings {
+    const observedAt = z.iso.datetime().parse(input.observedAt);
+    const changedFields = z.array(z.string().min(1)).min(1).parse(input.changedFields);
+    const settingsJson = serializeJson(input.settings, "runtime settings");
+    const changedFieldsJson = serializeJson([...new Set(changedFields)].sort(), "changed fields");
+    const existing = this.getRuntimeSettings();
+    const revision = (existing?.revision ?? 0) + 1;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO runtime_settings (
+            singleton_id, settings_json, api_key_secret, revision, updated_at
+          ) VALUES (1, ?, ?, ?, ?)
+          ON CONFLICT (singleton_id) DO UPDATE SET
+            settings_json = excluded.settings_json,
+            api_key_secret = excluded.api_key_secret,
+            revision = excluded.revision,
+            updated_at = excluded.updated_at`,
+        )
+        .run(settingsJson, input.apiKeySecret, revision, observedAt);
+      this.db
+        .prepare(
+          `INSERT INTO settings_audit (
+            audit_id, revision, changed_fields_json, changed_at
+          ) VALUES (?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), revision, changedFieldsJson, observedAt);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return {
+      settings: JSON.parse(settingsJson) as unknown,
+      apiKeySecret: input.apiKeySecret,
+      revision,
+      updatedAt: observedAt,
+    };
+  }
+
+  listSettingsAudit(limit = 20): Array<{
+    revision: number;
+    changedFields: string[];
+    changedAt: string;
+  }> {
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT revision, changed_fields_json, changed_at
+         FROM settings_audit ORDER BY changed_at DESC, audit_id DESC LIMIT ?`,
+      )
+      .all(parsedLimit) as Array<{
+      revision: number;
+      changed_fields_json: string;
+      changed_at: string;
+    }>;
+    return rows.map((row) => ({
+      revision: z.number().int().positive().parse(row.revision),
+      changedFields: z.array(z.string()).parse(JSON.parse(row.changed_fields_json)),
+      changedAt: z.iso.datetime().parse(row.changed_at),
+    }));
+  }
+
+  getOnboardingState(): StoredOnboardingState | null {
+    const row = this.db
+      .prepare(
+        `SELECT path, current_step, status, state_json, updated_at
+         FROM onboarding_state WHERE singleton_id = 1`,
+      )
+      .get() as
+      | {
+          path: "attach" | "fresh";
+          current_step: string;
+          status: "in-progress" | "blocked" | "complete";
+          state_json: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      path: z.enum(["attach", "fresh"]).parse(row.path),
+      currentStep: z.string().min(1).parse(row.current_step),
+      status: z.enum(["in-progress", "blocked", "complete"]).parse(row.status),
+      state: JSON.parse(row.state_json) as unknown,
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    };
+  }
+
+  putOnboardingState(
+    input: Omit<StoredOnboardingState, "updatedAt"> & { updatedAt: string },
+  ): void {
+    const path = z.enum(["attach", "fresh"]).parse(input.path);
+    const currentStep = z.string().min(1).parse(input.currentStep);
+    const status = z.enum(["in-progress", "blocked", "complete"]).parse(input.status);
+    const updatedAt = z.iso.datetime().parse(input.updatedAt);
+    const stateJson = serializeJson(input.state, "onboarding state");
+    this.db
+      .prepare(
+        `INSERT INTO onboarding_state (
+          singleton_id, path, current_step, status, state_json, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT (singleton_id) DO UPDATE SET
+          path = excluded.path,
+          current_step = excluded.current_step,
+          status = excluded.status,
+          state_json = excluded.state_json,
+          updated_at = excluded.updated_at`,
+      )
+      .run(path, currentStep, status, stateJson, updatedAt);
   }
 
   upsertChainSource(input: ChainSourceInput): void {

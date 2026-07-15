@@ -1095,6 +1095,11 @@ Exit: the tool can deploy/recognize the manager in tests and execute every v1 co
 
 ### Milestone 2: activation setup cut
 
+Implementation status (July 15, 2026): the CLI foundation and authenticated Phase 3 web workflows
+are implemented locally. Both attach and fresh setup are resumable, settings are editable and
+redacted, and live/static pool artifacts can be generated for external hosting. Released
+node/signer/API validation and production-profile approval remain external exit gates.
+
 Deliverables:
 
 - Config/init CLI with Hiro defaults and custom API URL/key.

@@ -132,6 +132,21 @@ pnpm --filter @stx-labs/signer-sidekick-dashboard dev
 
 The credential is held in browser `sessionStorage`, sent only as a bearer credential to the loopback API, and cleared when the API rejects it. Production builds embed `apps/dashboard/dist` in the Fastify process. Use the supplied light/dark theme control and verify critical screens at 1440px, 768px, and 375px.
 
+The Phase 3 operator APIs are bearer-authenticated and intentionally have no public equivalents:
+
+- `GET|PUT /api/v1/settings` reads or replaces validated runtime settings. API-key values are
+  write-only and responses expose only configured/source metadata.
+- `/api/v1/onboarding/*` starts or resumes Attach Existing/Fresh Setup, verifies externally
+  completed operations, and downloads generated manager artifacts.
+- `POST /api/v1/pool-card/generate` returns static or live HTML plus versioned JSON for the operator
+  to host elsewhere.
+
+To test against a live node, set `SIDEKICK_MANAGER_PRINCIPAL` to the already deployed manager for
+Attach Existing. For Fresh Setup, set it to the future `ADMIN.contract-name` before starting
+Sidekick; the wizard requires the entered admin and contract name to match that identity. Use only
+a public signer-grant JSON result from the released signer command. Never place signer or
+manager-admin key material in the environment, UI, fixtures, or support bundle.
+
 ## Attach an existing manager
 
 Build the backend, then supply the deployed manager contract principal:

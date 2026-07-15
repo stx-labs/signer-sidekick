@@ -67,9 +67,45 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 7,
+      schemaVersion: 8,
       journalMode: "memory",
       foreignKeys: true,
+    });
+  });
+
+  it("persists redacted runtime settings history and resumable onboarding state", async () => {
+    const store = await memoryStore();
+    store.putRuntimeSettings({
+      settings: { schemaVersion: 1, displayName: "Test pool" },
+      apiKeySecret: "must-not-appear-in-settings-json",
+      changedFields: ["pool.displayName", "dataSources.apiKey"],
+      observedAt,
+    });
+    const runtime = store.getRuntimeSettings();
+    expect(runtime).toMatchObject({ revision: 1, settings: { displayName: "Test pool" } });
+    expect(JSON.stringify(runtime?.settings)).not.toContain("must-not-appear");
+    expect(runtime?.apiKeySecret).toBe("must-not-appear-in-settings-json");
+    expect(store.listSettingsAudit()).toEqual([
+      {
+        revision: 1,
+        changedFields: ["dataSources.apiKey", "pool.displayName"],
+        changedAt: observedAt,
+      },
+    ]);
+
+    store.putOnboardingState({
+      path: "fresh",
+      currentStep: "deploy-manager",
+      status: "in-progress",
+      state: { schemaVersion: 1, managerPrincipal: manager },
+      updatedAt: later,
+    });
+    expect(store.getOnboardingState()).toEqual({
+      path: "fresh",
+      currentStep: "deploy-manager",
+      status: "in-progress",
+      state: { schemaVersion: 1, managerPrincipal: manager },
+      updatedAt: later,
     });
   });
 
@@ -642,7 +678,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 8,
       journalMode: "wal",
     });
   });

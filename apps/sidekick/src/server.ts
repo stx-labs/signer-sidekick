@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
 import Fastify, { type FastifyError } from "fastify";
+import { z } from "zod";
+import type { OnboardingService } from "./onboarding-service.js";
 
 interface RosterRow {
   stakerPrincipal?: string;
@@ -48,6 +50,9 @@ interface OperatorSnapshotService {
   poolHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsPage?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
+  settings?(): unknown;
+  updateSettings?(input: unknown): unknown;
+  poolCard?(mode: "live" | "static"): Promise<unknown>;
 }
 
 export interface ServerOptions {
@@ -55,6 +60,7 @@ export interface ServerOptions {
   authToken?: string;
   logger?: boolean;
   staticDirectory?: string | null;
+  onboarding?: OnboardingService;
 }
 
 function authorized(header: string | undefined, expected: string): boolean {
@@ -344,7 +350,125 @@ export function createServer(options: ServerOptions = {}) {
       manager: snapshot?.manager,
       registration: snapshot?.registration,
       setup: snapshot?.setup,
+      onboarding: options.onboarding?.get() ?? null,
     };
+  });
+  server.get("/api/v1/settings", async (_request, reply) => {
+    if (!options.service?.settings) {
+      return reply.code(501).send({ error: "runtime_settings_unavailable" });
+    }
+    return options.service.settings();
+  });
+  server.put("/api/v1/settings", async (request, reply) => {
+    if (!options.service?.updateSettings) {
+      return reply.code(501).send({ error: "runtime_settings_unavailable" });
+    }
+    try {
+      return options.service.updateSettings(request.body);
+    } catch {
+      return reply.code(400).send({ error: "invalid_runtime_settings" });
+    }
+  });
+  server.get("/api/v1/onboarding", async (_request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    return { onboarding: options.onboarding.get() };
+  });
+  server.post("/api/v1/onboarding/start", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const parsed = z
+      .object({ path: z.enum(["attach", "fresh"]) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_path" });
+    return { onboarding: options.onboarding.start(parsed.data.path) };
+  });
+  server.post("/api/v1/onboarding/attach/verify", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const parsed = z
+      .object({ managerPrincipal: z.string().min(1) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_manager_principal" });
+    try {
+      return { onboarding: await options.onboarding.verifyAttach(parsed.data.managerPrincipal) };
+    } catch {
+      return reply.code(400).send({ error: "attach_verification_failed" });
+    }
+  });
+  server.post("/api/v1/onboarding/fresh/prepare", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    try {
+      return { onboarding: await options.onboarding.prepareFresh(request.body) };
+    } catch {
+      return reply.code(400).send({ error: "fresh_setup_preparation_failed" });
+    }
+  });
+  server.post("/api/v1/onboarding/fresh/grant/prepare", async (_request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    try {
+      return { onboarding: await options.onboarding.prepareGrant() };
+    } catch {
+      return reply.code(400).send({ error: "signer_grant_preparation_failed" });
+    }
+  });
+  server.post("/api/v1/onboarding/fresh/grant/verify", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const parsed = z.object({ signerOutput: z.unknown() }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
+    try {
+      return { onboarding: await options.onboarding.verifyGrant(parsed.data.signerOutput) };
+    } catch {
+      return reply.code(400).send({ error: "signer_grant_verification_failed" });
+    }
+  });
+  server.post("/api/v1/onboarding/fresh/refresh", async (_request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    try {
+      return { onboarding: await options.onboarding.refreshFresh() };
+    } catch {
+      return reply.code(400).send({ error: "fresh_setup_refresh_failed" });
+    }
+  });
+  server.patch("/api/v1/onboarding/progress", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const parsed = z
+      .object({ currentStep: z.string().min(1) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_step" });
+    try {
+      return { onboarding: options.onboarding.setCurrentStep(parsed.data.currentStep) };
+    } catch {
+      return reply.code(400).send({ error: "invalid_onboarding_step" });
+    }
+  });
+  server.get("/api/v1/onboarding/artifacts/:kind", async (request, reply) => {
+    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const parsed = z.object({ kind: z.enum(["source", "manifest"]) }).safeParse(request.params);
+    if (!parsed.success) return reply.code(404).send({ error: "artifact_not_found" });
+    try {
+      const artifact = options.onboarding.artifact(parsed.data.kind);
+      reply.type(artifact.contentType);
+      reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
+      return artifact.body;
+    } catch {
+      return reply.code(404).send({ error: "artifact_not_found" });
+    }
+  });
+  server.post("/api/v1/pool-card/generate", async (request, reply) => {
+    if (!options.service?.poolCard) {
+      return reply.code(501).send({ error: "pool_card_generation_unavailable" });
+    }
+    const parsed = z
+      .object({ mode: z.enum(["live", "static"]) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_pool_card_mode" });
+    try {
+      return await options.service.poolCard(parsed.data.mode);
+    } catch {
+      return reply.code(400).send({ error: "pool_card_generation_failed" });
+    }
   });
   server.post("/api/v1/sync", async (_request, reply) => {
     syncCount += 1;

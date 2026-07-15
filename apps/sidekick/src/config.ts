@@ -38,7 +38,7 @@ export interface SidekickConfig {
   databasePath: string;
 }
 
-function parseUrl(value: string, name: string): string {
+export function parseEndpointUrl(value: string, name: string): string {
   const parsed = z.url().parse(value);
   const url = new URL(parsed);
   if (url.username || url.password) throw new Error(`${name} must not contain credentials`);
@@ -78,8 +78,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
 
   return {
     network,
-    nodeRpcUrl: parseUrl(nodeRpcUrl, "STACKS_NODE_RPC_URL"),
-    apiUrl: parseUrl(apiUrl, "STACKS_API_URL"),
+    nodeRpcUrl: parseEndpointUrl(nodeRpcUrl, "STACKS_NODE_RPC_URL"),
+    apiUrl: parseEndpointUrl(apiUrl, "STACKS_API_URL"),
     ...(env.STACKS_API_KEY ? { apiKey: env.STACKS_API_KEY } : {}),
     apiKeyHeader: env.STACKS_API_KEY_HEADER ?? "x-api-key",
     maxApiBurnBlockLag,

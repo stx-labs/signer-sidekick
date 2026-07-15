@@ -7,12 +7,14 @@ import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { renderManagerDeployment } from "./manager-render.js";
 import { inspectDeployedManager } from "./manager-verification.js";
+import { OnboardingService } from "./onboarding-service.js";
 import { createOperatorRecord } from "./operator-record.js";
 import { OperatorService } from "./operator-service.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import { readStxRewardStatus } from "./reward-status.js";
+import { RuntimeSettingsController } from "./runtime-settings.js";
 import { createServer } from "./server.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
@@ -64,12 +66,28 @@ if (command === "serve") {
     throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
   }
   const host = process.env.SIDEKICK_HTTP_HOST ?? "127.0.0.1";
-  const { node, api } = clientsFromConfig(config);
   const { store } = await openSidekickStore(config.databasePath);
-  const service = new OperatorService({ config, managerPrincipal, store, node, api });
+  const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+  const { config: effectiveConfig, node, api } = runtimeSettings.clients();
+  const service = new OperatorService({
+    config: effectiveConfig,
+    managerPrincipal,
+    store,
+    node,
+    api,
+    runtimeSettings,
+  });
+  const onboarding = new OnboardingService({
+    store,
+    runtimeSettings,
+    managerPrincipal,
+    contractsDirectory:
+      process.env.SIDEKICK_CONTRACTS_DIR ?? resolve(import.meta.dirname, "../../../contracts"),
+  });
   const staticDirectory = process.env.SIDEKICK_STATIC_DIRECTORY;
   const server = createServer({
     service,
+    onboarding,
     authToken,
     ...(staticDirectory ? { staticDirectory: resolve(staticDirectory) } : {}),
   });
