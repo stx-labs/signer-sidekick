@@ -1,7 +1,7 @@
 import { bufferCV, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import { type RewardStatusStore, readStxRewardStatus } from "./reward-status.js";
-import type { SignerStakerRun, StoredSignerStaker } from "./storage/store.js";
+import type { SignerStakerRun, StoredCycleMembership } from "./storage/store.js";
 
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const pox5 = "SP000000000000000000002Q6VF78.pox-5";
@@ -21,27 +21,22 @@ const completedRun: SignerStakerRun = {
   completedAt: "2026-07-14T12:01:00.000Z",
 };
 
-function staker(stakerPrincipal: string): StoredSignerStaker {
+function membership(stakerPrincipal: string, active = true): StoredCycleMembership {
   return {
-    managerPrincipal: manager,
     stakerPrincipal,
-    hasStx: true,
-    hasBtc: false,
-    stxNodeVerified: true,
-    active: true,
-    sourceId,
-    verificationSourceId: "node:mainnet:test",
-    lastSeenRunId: completedRun.runId,
-    firstSeenAt: completedRun.startedAt,
-    lastSeenAt: completedRun.updatedAt,
-    position: null,
+    rewardCycle: 141n,
+    signerPrincipal: manager,
+    amountUstx: 50_000_000_000n,
+    active,
   };
 }
 
 function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
   return {
     getLatestCompletedSignerStakerRun: vi.fn().mockReturnValue(run),
-    listSignerStakers: vi.fn().mockReturnValue([staker(stakerOne), staker(stakerTwo)]),
+    listCycleMembershipsForCycle: vi
+      .fn()
+      .mockReturnValue([membership(stakerOne), membership(stakerTwo)]),
     putRewardCycleSnapshot: vi.fn(),
   };
 }
@@ -49,7 +44,11 @@ function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
 function options(projectionStore: RewardStatusStore, callReadOnly: ReturnType<typeof vi.fn>) {
   return {
     store: projectionStore,
-    node: { callReadOnly },
+    node: {
+      callReadOnly,
+      getDataVar: vi.fn().mockResolvedValue(uintCV(500n)),
+      getMapEntry: vi.fn().mockResolvedValue(someCV(uintCV(500n))),
+    },
     sourceId,
     managerPrincipal: manager,
     pox5ContractId: pox5,
@@ -82,7 +81,6 @@ describe("STX-only reward status", () => {
     const callReadOnly = vi
       .fn()
       .mockResolvedValueOnce(uintCV(960_000n))
-      .mockResolvedValueOnce(uintCV(500n))
       .mockResolvedValueOnce(uintCV(1_000n))
       .mockResolvedValueOnce(uintCV(2_000n))
       .mockResolvedValueOnce(uintCV(30_000n))
@@ -105,6 +103,7 @@ describe("STX-only reward status", () => {
         signerEarnedBeforeManagerClaimSats: "40000",
       },
       manager: {
+        configuredFeeBips: "500",
         feeSnapshotBips: "500",
         earnedFeesSats: "1000",
         withdrawalLiabilitySats: "2000",
@@ -146,14 +145,13 @@ describe("STX-only reward status", () => {
         ]),
       }),
     );
-    expect(callReadOnly).toHaveBeenCalledTimes(12);
+    expect(callReadOnly).toHaveBeenCalledTimes(11);
   });
 
   it("keeps global and manager state visible when no local roster is available", async () => {
     const projectionStore = store(null);
     const callReadOnly = vi
       .fn()
-      .mockResolvedValueOnce(uintCV(0n))
       .mockResolvedValueOnce(uintCV(0n))
       .mockResolvedValueOnce(uintCV(0n))
       .mockResolvedValueOnce(uintCV(0n))
@@ -167,6 +165,51 @@ describe("STX-only reward status", () => {
     expect(result.ingestion).toBeNull();
     expect(result.stakers).toEqual([]);
     expect(result.totals.stakers).toBe(0);
-    expect(projectionStore.listSignerStakers).not.toHaveBeenCalled();
+    expect(projectionStore.listCycleMembershipsForCycle).not.toHaveBeenCalled();
+  });
+
+  it("keeps an inactive departed staker in the requested historical cycle", async () => {
+    const projectionStore = store();
+    vi.mocked(projectionStore.listCycleMembershipsForCycle).mockReturnValue([
+      membership(stakerOne, false),
+    ]);
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(uintCV(0n))
+      .mockResolvedValueOnce(rewards(10_000n, 0n))
+      .mockResolvedValueOnce(noneCV());
+
+    const result = await readStxRewardStatus(options(projectionStore, callReadOnly));
+
+    expect(result.stakers).toMatchObject([{ stakerPrincipal: stakerOne }]);
+    expect(result.totals).toMatchObject({ stakers: 1, earnedSats: "10000" });
+    expect(projectionStore.listCycleMembershipsForCycle).toHaveBeenCalledWith(
+      manager,
+      141,
+      sourceId,
+    );
+  });
+
+  it("distinguishes a missing fee snapshot from an explicit zero-bips snapshot", async () => {
+    const projectionStore = store(null);
+    const callReadOnly = vi.fn().mockResolvedValue(uintCV(0n));
+    const missingOptions = options(projectionStore, callReadOnly);
+    vi.mocked(missingOptions.node.getDataVar).mockResolvedValue(uintCV(250n));
+    vi.mocked(missingOptions.node.getMapEntry).mockResolvedValue(noneCV());
+
+    await expect(readStxRewardStatus(missingOptions)).resolves.toMatchObject({
+      manager: { configuredFeeBips: "250", feeSnapshotBips: null },
+    });
+
+    const zeroOptions = options(projectionStore, vi.fn().mockResolvedValue(uintCV(0n)));
+    vi.mocked(zeroOptions.node.getMapEntry).mockResolvedValue(someCV(uintCV(0n)));
+    await expect(readStxRewardStatus(zeroOptions)).resolves.toMatchObject({
+      manager: { configuredFeeBips: "500", feeSnapshotBips: "0" },
+    });
   });
 });

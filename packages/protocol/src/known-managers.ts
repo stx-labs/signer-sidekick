@@ -26,8 +26,34 @@ export const MAINNET_REFERENCE_MANAGER = {
   canonicalSha256: "7fd58a7591ff0ae1643eb7e71ea2867385bcac237a3ea819f52301310c0d2e27",
 } as const satisfies ReviewedManagerArtifact;
 
+const regtestProfile = {
+  id: "stacks-4.0.0-regtest-reference-manager",
+  network: "regtest",
+  upstream: {
+    tag: "4.0.0",
+    commit: "5595f08a244362cefc316f95b398510a2b8cb791",
+    sourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+  },
+  contracts: {
+    pox5: "ST000000000000000000002AMW42H.pox-5",
+    sbtcDeployer: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT",
+  },
+  expectedReplacements: {
+    pox5: 8,
+    sbtcDeployer: 13,
+  },
+  productionApproved: false,
+} as const satisfies ManagerProfile;
+
+export const REGTEST_REFERENCE_MANAGER = {
+  profile: regtestProfile,
+  sourceSha256: "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
+  canonicalSha256: "ad8acf88b61617acec43dd3c0767ef58bfaea62e34fe2b5adb07521323d7f22b",
+} as const satisfies ReviewedManagerArtifact;
+
 export const KNOWN_MANAGER_ARTIFACTS: readonly ReviewedManagerArtifact[] = [
   MAINNET_REFERENCE_MANAGER,
+  REGTEST_REFERENCE_MANAGER,
 ];
 
 export function knownManagerArtifactsForNetwork(

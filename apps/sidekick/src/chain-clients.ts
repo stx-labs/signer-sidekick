@@ -14,6 +14,15 @@ const nodeInfoSchema = z.object({
   stacks_tip_height: z.number().int().nonnegative(),
 });
 
+// stacks-core currently serializes these uSTX quantities as JSON numbers. The known STX supply is
+// below this boundary, but rejecting an unsafe value is essential because JSON.parse would
+// otherwise silently round it before any bigint conversion.
+const safeUstxNumberSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .refine(Number.isSafeInteger, "uSTX value exceeds JavaScript's safe integer range");
+
 const poxInfoSchema = z.object({
   current_burnchain_block_height: z.number().int().nonnegative(),
   reward_cycle_id: z.number().int().nonnegative(),
@@ -23,17 +32,17 @@ const poxInfoSchema = z.object({
   current_cycle: z
     .object({
       id: z.number().int().nonnegative(),
-      min_threshold_ustx: z.number().int().nonnegative(),
-      stacked_ustx: z.number().int().nonnegative(),
+      min_threshold_ustx: safeUstxNumberSchema,
+      stacked_ustx: safeUstxNumberSchema,
       is_pox_active: z.boolean(),
     })
     .optional(),
   next_cycle: z
     .object({
       id: z.number().int().nonnegative(),
-      min_threshold_ustx: z.number().int().nonnegative(),
-      min_increment_ustx: z.number().int().nonnegative(),
-      stacked_ustx: z.number().int().nonnegative(),
+      min_threshold_ustx: safeUstxNumberSchema,
+      min_increment_ustx: safeUstxNumberSchema,
+      stacked_ustx: safeUstxNumberSchema,
       prepare_phase_start_block_height: z.number().int().nonnegative(),
       blocks_until_prepare_phase: z.number().int(),
       reward_phase_start_block_height: z.number().int().nonnegative(),
@@ -72,6 +81,10 @@ const readOnlyResponseSchema = z.discriminatedUnion("okay", [
 
 const clarityFunctionNamePattern = /^[a-zA-Z][a-zA-Z0-9-_!?+<>=/*]*$/;
 const clarityHexPattern = /^(?:0x)?(?:[0-9a-fA-F]{2})+$/;
+const clarityDataResponseSchema = z.object({
+  data: z.string().refine((value) => clarityHexPattern.test(value), "Invalid Clarity hex"),
+});
+
 const canonicalHex = z
   .string()
   .regex(/^0x[0-9a-f]{64}$/i)
@@ -312,6 +325,38 @@ export class StacksNodeClient {
       `${this.baseUrl}/v2/contracts/interface/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}`,
       contractInterfaceSchema,
     );
+  }
+
+  async getDataVar(principal: string, variableName: string): Promise<ClarityValue> {
+    const { address, contractName } = parseContractPrincipal(principal);
+    if (!clarityFunctionNamePattern.test(variableName)) {
+      throw new Error("Invalid Clarity data variable name");
+    }
+    const response = await fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/v2/data_var/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}/${encodeURIComponent(variableName)}?proof=0`,
+      clarityDataResponseSchema,
+    );
+    return decodeClarityHex(response.data);
+  }
+
+  async getMapEntry(principal: string, mapName: string, key: string): Promise<ClarityValue> {
+    const { address, contractName } = parseContractPrincipal(principal);
+    if (!clarityFunctionNamePattern.test(mapName)) throw new Error("Invalid Clarity map name");
+    if (!clarityHexPattern.test(key)) {
+      throw new Error("Map key must be a hex-encoded Clarity value");
+    }
+    const response = await fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/v2/map_entry/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}/${encodeURIComponent(mapName)}?proof=0`,
+      clarityDataResponseSchema,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(key),
+      },
+    );
+    return decodeClarityHex(response.data);
   }
 
   async callReadOnly(

@@ -23,6 +23,11 @@ const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
 const openStores: SidekickStore[] = [];
 const temporaryDirectories: string[] = [];
+const authoritativeProvenance = {
+  classification: "authoritative" as const,
+  contractSource: "pox5-read-only" as const,
+  localRosterSource: "api-indexed-node-verified" as const,
+};
 
 async function memoryStore(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
@@ -62,7 +67,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -380,6 +385,39 @@ describe("Sidekick SQLite store", () => {
       },
     ]);
     expect(store.listCycleMemberships(manager, true, "api:mainnet:unknown")).toEqual([]);
+
+    const nextRun = store.startOrResumeSignerStakerRun(sourceId, manager, later);
+    store.commitSignerStakerPage({
+      runId: nextRun.runId,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal: manager,
+      nextCursor: null,
+      items: [
+        {
+          stakerPrincipal: stakerOne,
+          hasStx: true,
+          hasBtc: false,
+          stxNodeVerified: true,
+          position: {
+            signerPrincipal: manager,
+            amountUstx: 50_000_000_000n,
+            firstRewardCycle: 142n,
+            numCycles: 2n,
+            cycleMemberships: [
+              { rewardCycle: 142n, signerPrincipal: manager, amountUstx: 50_000_000_000n },
+              { rewardCycle: 143n, signerPrincipal: manager, amountUstx: 50_000_000_000n },
+            ],
+          },
+        },
+      ],
+      observedAt: later,
+      burnBlockHeight: 960_241,
+      stacksTipHeight: 8_600_001,
+    });
+    expect(store.listCycleMembershipsForCycle(manager, 141, sourceId)).toEqual([
+      expect.objectContaining({ stakerPrincipal: stakerOne, rewardCycle: 141n, active: false }),
+    ]);
   });
 
   it("retains the latest pool observation for every historical reward cycle", async () => {
@@ -403,6 +441,13 @@ describe("Sidekick SQLite store", () => {
         inSignerSet: true,
         thresholdUstx: "50000000000",
         thresholdMarginUstx: "10000000000",
+        provenance:
+          cycleId === 141
+            ? authoritativeProvenance
+            : {
+                ...authoritativeProvenance,
+                classification: "projected" as const,
+              },
       })),
     });
     store.putPoolCycleSnapshots({
@@ -425,13 +470,21 @@ describe("Sidekick SQLite store", () => {
           inSignerSet: true,
           thresholdUstx: "50000000000",
           thresholdMarginUstx: "10000000000",
+          provenance: authoritativeProvenance,
         },
       ],
     });
 
     expect(store.listLatestPoolCycleSnapshots(manager, { limit: 1 })).toMatchObject({
       total: 2,
-      items: [{ cycleId: 142, status: "ready", stakerCount: 500 }],
+      items: [
+        {
+          cycleId: 142,
+          status: "ready",
+          stakerCount: 500,
+          provenance: { classification: "projected" },
+        },
+      ],
     });
     expect(store.listLatestPoolCycleSnapshots(manager, { limit: 1, offset: 1 })).toMatchObject({
       total: 2,
@@ -455,6 +508,7 @@ describe("Sidekick SQLite store", () => {
         signerEarnedBeforeManagerClaimSats: "0",
       },
       manager: {
+        configuredFeeBips: "750",
         feeSnapshotBips: "500",
         earnedFeesSats: "100",
         withdrawalLiabilitySats: "0",
@@ -483,7 +537,14 @@ describe("Sidekick SQLite store", () => {
 
     expect(store.listRewardCycleSummaries(manager, { limit: 1 })).toMatchObject({
       total: 2,
-      items: [{ rewardCycle: 142, earnedSats: "11000" }],
+      items: [
+        {
+          rewardCycle: 142,
+          earnedSats: "11000",
+          configuredFeeBips: "750",
+          feeSnapshotBips: "500",
+        },
+      ],
     });
     expect(store.listRewardCycleSummaries(manager, { limit: 1, offset: 1 })).toMatchObject({
       total: 2,
@@ -581,7 +642,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       journalMode: "wal",
     });
   });

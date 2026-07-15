@@ -107,7 +107,8 @@ interface Snapshot {
       signerEarnedBeforeManagerClaimSats: string;
     };
     manager: {
-      feeSnapshotBips: string;
+      configuredFeeBips: string;
+      feeSnapshotBips: string | null;
       earnedFeesSats: string;
       withdrawalLiabilitySats: string;
       unclaimedStakerRewardsSats: string;
@@ -174,6 +175,11 @@ interface CycleEligibility {
 interface ForecastCycle {
   cycleId: number;
   status: "ready" | "attention";
+  provenance: {
+    classification: "authoritative" | "projected";
+    contractSource: "pox5-read-only";
+    localRosterSource: "api-indexed-node-verified" | "unavailable";
+  };
   local: { stakerCount: number | null; enumeratedStxUstx: string | null; rosterAvailable: boolean };
   contract: { pendingStxUstx: string; inSignerSet: boolean };
   threshold: { marginUstx: string; meetsThreshold: boolean };
@@ -207,6 +213,8 @@ interface RewardCycleSummary {
   grossSats: string;
   earnedSats: string;
   feeSats: string;
+  configuredFeeBips: string | null;
+  feeSnapshotBips: string | null;
   actionableClaims: number;
 }
 
@@ -689,8 +697,16 @@ function Registration({ data }: { data: Snapshot }) {
                   </Badge>
                 </td>
                 <td>
-                  <span className={index < 2 ? "src src-chain" : "src src-local"}>
-                    {index < 2 ? "contract read-only" : "projection"}
+                  <span
+                    className={
+                      cycle.provenance.classification === "authoritative"
+                        ? "src src-chain"
+                        : "src src-local"
+                    }
+                  >
+                    {cycle.provenance.classification === "authoritative"
+                      ? "authoritative contract state"
+                      : "contract-backed projection"}
                   </span>
                 </td>
               </tr>
@@ -820,7 +836,10 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
       </div>
       <div className="section-title">
         Pool total by cycle{" "}
-        <span className="hint">contract reads with locally derived change markers</span>
+        <span className="hint">
+          current cycle is authoritative; future cycles remain labeled projections pending core
+          confirmation
+        </span>
       </div>
       <div className="card forecast-card">
         <div className="barchart">
@@ -834,6 +853,7 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
                 }}
               />
               <div className="cyc">{cycle.cycleId}</div>
+              <div className="hint">{cycle.provenance.classification}</div>
             </div>
           ))}
         </div>
@@ -1030,11 +1050,22 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
           <StatLine label="Fee">
             <span className="mono">{sbtc(rewards?.totals.feeSats)} sBTC</span>
           </StatLine>
-          <StatLine label="Fee snapshot">
+          <StatLine label="Configured fee · current">
             <span className="mono src src-chain">
-              {Number(rewards?.manager.feeSnapshotBips ?? 0) / 100}%
+              {Number(rewards?.manager.configuredFeeBips ?? 0) / 100}%
             </span>
           </StatLine>
+          <StatLine label={`Effective fee · cycle ${rewards?.rewardCycle ?? "—"}`}>
+            <span className="mono src src-chain">
+              {rewards?.manager.feeSnapshotBips === null || !rewards
+                ? "Not snapshotted"
+                : `${Number(rewards.manager.feeSnapshotBips) / 100}%`}
+            </span>
+          </StatLine>
+          <p className="tertiary balance-note">
+            The effective cycle fee is fixed on the manager's first claim. A real 0% snapshot is
+            shown as 0%; a missing snapshot is shown separately.
+          </p>
         </div>
         <div className="card">
           <div className="card-head">
@@ -1067,6 +1098,8 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
               <th className="right">Gross</th>
               <th className="right">Net</th>
               <th className="right">Fee</th>
+              <th className="right">Configured fee</th>
+              <th className="right">Effective fee</th>
               <th className="right">Actionable</th>
               <th>Observed burn block</th>
             </tr>
@@ -1084,6 +1117,16 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
                 <td className="right mono">{sbtc(cycle.grossSats)}</td>
                 <td className="right mono">{sbtc(cycle.earnedSats)}</td>
                 <td className="right mono">{sbtc(cycle.feeSats)}</td>
+                <td className="right mono">
+                  {cycle.configuredFeeBips === null
+                    ? "—"
+                    : `${Number(cycle.configuredFeeBips) / 100}%`}
+                </td>
+                <td className="right mono">
+                  {cycle.feeSnapshotBips === null
+                    ? "Not snapshotted"
+                    : `${Number(cycle.feeSnapshotBips) / 100}%`}
+                </td>
                 <td className="right mono">{number(cycle.actionableClaims)}</td>
                 <td className="mono">{number(cycle.observedBurnBlockHeight)}</td>
               </tr>

@@ -1,5 +1,5 @@
 {
-  "id": "stacks-4.0.0-regtest-reference-manager-example",
+  "id": "stacks-4.0.0-regtest-reference-manager",
   "network": "regtest",
   "upstream": {
     "tag": "4.0.0",
@@ -8,7 +8,7 @@
   },
   "contracts": {
     "pox5": "ST000000000000000000002AMW42H.pox-5",
-    "sbtcDeployer": "ST000000000000000000002AMW42H"
+    "sbtcDeployer": "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT"
   },
   "expectedReplacements": {
     "pox5": 8,

@@ -369,6 +369,31 @@ const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 7,
+    name: "phase2_value_provenance",
+    sql: `
+      ALTER TABLE pool_cycle_snapshots
+        ADD COLUMN value_classification TEXT NOT NULL DEFAULT 'projected'
+        CHECK (value_classification IN ('authoritative', 'projected'));
+      ALTER TABLE pool_cycle_snapshots
+        ADD COLUMN contract_source TEXT NOT NULL DEFAULT 'pox5-read-only';
+      ALTER TABLE pool_cycle_snapshots
+        ADD COLUMN local_roster_source TEXT NOT NULL DEFAULT 'unavailable'
+        CHECK (local_roster_source IN ('api-indexed-node-verified', 'unavailable'));
+
+      ALTER TABLE reward_cycle_snapshots
+        ADD COLUMN fee_snapshot_present INTEGER NOT NULL DEFAULT 0
+        CHECK (fee_snapshot_present IN (0, 1));
+      ALTER TABLE reward_cycle_snapshots ADD COLUMN configured_fee_bips TEXT;
+
+      CREATE INDEX manager_activity_stable_order
+        ON manager_activity_events (
+          chain_id, manager_principal, canonical, kind,
+          block_height DESC, tx_id DESC, event_index DESC
+        );
+    `,
+  },
 ];
 
 const sourceInputSchema = z
@@ -669,6 +694,13 @@ const poolCycleSnapshotInputSchema = z
           inSignerSet: z.boolean(),
           thresholdUstx: unsignedIntegerTextSchema,
           thresholdMarginUstx: z.string().regex(/^-?\d+$/),
+          provenance: z
+            .object({
+              classification: z.enum(["authoritative", "projected"]),
+              contractSource: z.literal("pox5-read-only"),
+              localRosterSource: z.enum(["api-indexed-node-verified", "unavailable"]),
+            })
+            .strict(),
         })
         .strict(),
     ),
@@ -692,6 +724,9 @@ const poolCycleSnapshotRowSchema = z.object({
   in_signer_set: z.union([z.literal(0), z.literal(1)]),
   threshold_ustx: z.string(),
   threshold_margin_ustx: z.string(),
+  value_classification: z.enum(["authoritative", "projected"]),
+  contract_source: z.literal("pox5-read-only"),
+  local_roster_source: z.enum(["api-indexed-node-verified", "unavailable"]),
   observed_at: z.string(),
 });
 
@@ -713,7 +748,8 @@ const rewardCycleSnapshotInputSchema = z
       .strict(),
     manager: z
       .object({
-        feeSnapshotBips: unsignedIntegerTextSchema,
+        configuredFeeBips: unsignedIntegerTextSchema,
+        feeSnapshotBips: unsignedIntegerTextSchema.nullable(),
         earnedFeesSats: unsignedIntegerTextSchema,
         withdrawalLiabilitySats: unsignedIntegerTextSchema,
         unclaimedStakerRewardsSats: unsignedIntegerTextSchema,
@@ -769,6 +805,9 @@ const rewardCycleSummaryRowSchema = z.object({
   gross_sats: z.string(),
   earned_sats: z.string(),
   fee_sats: z.string(),
+  fee_snapshot_bips: z.string(),
+  fee_snapshot_present: z.union([z.literal(0), z.literal(1)]),
+  configured_fee_bips: z.string().nullable(),
   actionable_claims: z.number().int().nonnegative(),
   l1_claims_waiting_for_fee_threshold: z.number().int().nonnegative(),
   observed_at: z.string(),
@@ -878,6 +917,11 @@ export interface StoredPoolCycleSnapshot {
   inSignerSet: boolean;
   thresholdUstx: string;
   thresholdMarginUstx: string;
+  provenance: {
+    classification: "authoritative" | "projected";
+    contractSource: "pox5-read-only";
+    localRosterSource: "api-indexed-node-verified" | "unavailable";
+  };
   observedAt: string;
 }
 
@@ -891,6 +935,8 @@ export interface StoredRewardCycleSummary {
   grossSats: string;
   earnedSats: string;
   feeSats: string;
+  configuredFeeBips: string | null;
+  feeSnapshotBips: string | null;
   actionableClaims: number;
   l1ClaimsWaitingForFeeThreshold: number;
   observedAt: string;
@@ -1436,7 +1482,7 @@ export class SidekickStore {
           decoded_payload_json, source_id, first_seen_at, updated_at
          FROM chain_events
          WHERE chain_id = ? AND contract_id = ? AND (? = 0 OR canonical = 1)
-         ORDER BY block_height DESC, event_index DESC
+         ORDER BY block_height DESC, tx_id DESC, event_index DESC
          LIMIT ?`,
       )
       .all(parsedChainId, parsedContractId, canonicalOnly ? 1 : 0, parsedLimit);
@@ -1476,7 +1522,7 @@ export class SidekickStore {
           bond_index, amount_sats, request_id
          FROM manager_activity_events
          WHERE ${where}
-         ORDER BY block_height DESC, event_index DESC
+         ORDER BY block_height DESC, tx_id DESC, event_index DESC
          LIMIT ? OFFSET ?`,
       )
       .all(parsedChainId, manager, rewardCycle, rewardCycle, limit, offset);
@@ -1557,9 +1603,19 @@ export class SidekickStore {
             AND later.request_id = resolution.request_id
             AND later.canonical = 1
             AND later.kind IN ('settle-accepted-withdrawal', 'reclaim-failed-withdrawal')
-            AND (later.block_height > resolution.block_height OR (
-              later.block_height = resolution.block_height AND later.event_index > resolution.event_index
-            ))
+            AND (
+              later.block_height > resolution.block_height
+              OR (
+                later.block_height = resolution.block_height
+                AND (
+                  later.tx_id > resolution.tx_id
+                  OR (
+                    later.tx_id = resolution.tx_id
+                    AND later.event_index > resolution.event_index
+                  )
+                )
+              )
+            )
         )
       WHERE initiation.chain_id = ?
         AND initiation.manager_principal = ?
@@ -2114,6 +2170,36 @@ export class SidekickStore {
     });
   }
 
+  listCycleMembershipsForCycle(
+    managerPrincipal: string,
+    rewardCycle: number,
+    sourceId: string | null = null,
+  ): StoredCycleMembership[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const cycle = z.number().int().nonnegative().parse(rewardCycle).toString();
+    const parsedSourceId = sourceId === null ? null : z.string().min(1).parse(sourceId);
+    const rows = this.db
+      .prepare(
+        `SELECT staker_principal, reward_cycle, signer_principal, amount_ustx, active
+         FROM cycle_memberships
+         WHERE manager_principal = ?
+           AND reward_cycle = ?
+           AND (? IS NULL OR discovery_source_id = ?)
+         ORDER BY staker_principal`,
+      )
+      .all(manager, cycle, parsedSourceId, parsedSourceId);
+    return rows.map((row) => {
+      const value = cycleMembershipRowSchema.parse(row);
+      return {
+        stakerPrincipal: value.staker_principal,
+        rewardCycle: BigInt(value.reward_cycle),
+        signerPrincipal: value.signer_principal,
+        amountUstx: BigInt(value.amount_ustx),
+        active: value.active === 1,
+      };
+    });
+  }
+
   listStakerPositionObservations(
     managerPrincipal: string,
     stakerPrincipal: string,
@@ -2174,8 +2260,9 @@ export class SidekickStore {
         observed_stacks_tip_height, status, roster_available, staker_count,
         enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
         eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
-        in_signer_set, threshold_ustx, threshold_margin_ustx, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        in_signer_set, threshold_ustx, threshold_margin_ustx, value_classification,
+        contract_source, local_roster_source, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (
         manager_principal, reward_cycle,
         observed_burn_block_height, observed_stacks_tip_height
@@ -2192,6 +2279,9 @@ export class SidekickStore {
         in_signer_set = excluded.in_signer_set,
         threshold_ustx = excluded.threshold_ustx,
         threshold_margin_ustx = excluded.threshold_margin_ustx,
+        value_classification = excluded.value_classification,
+        contract_source = excluded.contract_source,
+        local_roster_source = excluded.local_roster_source,
         observed_at = excluded.observed_at`,
     );
     this.db.exec("BEGIN IMMEDIATE");
@@ -2214,6 +2304,9 @@ export class SidekickStore {
           cycle.inSignerSet ? 1 : 0,
           cycle.thresholdUstx,
           cycle.thresholdMarginUstx,
+          cycle.provenance.classification,
+          cycle.provenance.contractSource,
+          cycle.provenance.localRosterSource,
           value.observedAt,
         );
       }
@@ -2260,7 +2353,8 @@ export class SidekickStore {
           observed_stacks_tip_height, status, roster_available, staker_count,
           enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
           eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
-          in_signer_set, threshold_ustx, threshold_margin_ustx, observed_at
+          in_signer_set, threshold_ustx, threshold_margin_ustx, value_classification,
+          contract_source, local_roster_source, observed_at
         FROM ranked WHERE observation_rank = 1
         ORDER BY reward_cycle DESC LIMIT ? OFFSET ?`,
       )
@@ -2285,6 +2379,11 @@ export class SidekickStore {
           inSignerSet: value.in_signer_set === 1,
           thresholdUstx: value.threshold_ustx,
           thresholdMarginUstx: value.threshold_margin_ustx,
+          provenance: {
+            classification: value.value_classification,
+            contractSource: value.contract_source,
+            localRosterSource: value.local_roster_source,
+          },
           observedAt: value.observed_at,
         };
       }),
@@ -2301,11 +2400,12 @@ export class SidekickStore {
         manager_principal, reward_cycle, status, observed_burn_block_height,
         observed_stacks_tip_height, last_reward_compute_burn_height,
         last_computed_reward_cycle, rewards_per_token,
-        signer_earned_before_manager_claim_sats, fee_snapshot_bips,
+        signer_earned_before_manager_claim_sats, fee_snapshot_bips, fee_snapshot_present,
+        configured_fee_bips,
         earned_fees_sats, withdrawal_liability_sats, unclaimed_staker_rewards_sats,
         staker_count, gross_sats, earned_sats, fee_sats, actionable_claims,
         l1_claims_waiting_for_fee_threshold, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, reward_cycle) DO UPDATE SET
         status = excluded.status,
         observed_burn_block_height = excluded.observed_burn_block_height,
@@ -2315,6 +2415,8 @@ export class SidekickStore {
         rewards_per_token = excluded.rewards_per_token,
         signer_earned_before_manager_claim_sats = excluded.signer_earned_before_manager_claim_sats,
         fee_snapshot_bips = excluded.fee_snapshot_bips,
+        fee_snapshot_present = excluded.fee_snapshot_present,
+        configured_fee_bips = excluded.configured_fee_bips,
         earned_fees_sats = excluded.earned_fees_sats,
         withdrawal_liability_sats = excluded.withdrawal_liability_sats,
         unclaimed_staker_rewards_sats = excluded.unclaimed_staker_rewards_sats,
@@ -2345,7 +2447,9 @@ export class SidekickStore {
         value.global.lastComputedRewardCycle,
         value.global.rewardsPerToken,
         value.global.signerEarnedBeforeManagerClaimSats,
-        value.manager.feeSnapshotBips,
+        value.manager.feeSnapshotBips ?? "0",
+        value.manager.feeSnapshotBips === null ? 0 : 1,
+        value.manager.configuredFeeBips,
         value.manager.earnedFeesSats,
         value.manager.withdrawalLiabilitySats,
         value.manager.unclaimedStakerRewardsSats,
@@ -2409,7 +2513,8 @@ export class SidekickStore {
       .prepare(
         `SELECT manager_principal, reward_cycle, status, observed_burn_block_height,
           observed_stacks_tip_height, staker_count, gross_sats, earned_sats,
-          fee_sats, actionable_claims, l1_claims_waiting_for_fee_threshold, observed_at
+          fee_sats, fee_snapshot_bips, fee_snapshot_present, configured_fee_bips,
+          actionable_claims, l1_claims_waiting_for_fee_threshold, observed_at
          FROM reward_cycle_snapshots WHERE manager_principal = ?
          ORDER BY reward_cycle DESC LIMIT ? OFFSET ?`,
       )
@@ -2427,6 +2532,8 @@ export class SidekickStore {
           grossSats: value.gross_sats,
           earnedSats: value.earned_sats,
           feeSats: value.fee_sats,
+          configuredFeeBips: value.configured_fee_bips,
+          feeSnapshotBips: value.fee_snapshot_present === 1 ? value.fee_snapshot_bips : null,
           actionableClaims: value.actionable_claims,
           l1ClaimsWaitingForFeeThreshold: value.l1_claims_waiting_for_fee_threshold,
           observedAt: value.observed_at,

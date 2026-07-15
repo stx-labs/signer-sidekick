@@ -15,6 +15,7 @@ RUN pnpm install --frozen-lockfile \
   && pnpm protocol:verify \
   && pnpm check \
   && pnpm test \
+  && pnpm test:regtest \
   && pnpm build \
   && pnpm --filter @stx-labs/signer-sidekick deploy --legacy --prod /opt/sidekick
 

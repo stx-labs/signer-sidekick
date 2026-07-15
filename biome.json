@@ -6,6 +6,7 @@
       "!**/node_modules",
       "!**/dist",
       "!**/coverage",
+      "!test/integration/regtest/.cache",
       "!contracts/**/*.clar",
       "!design",
       "!design/fonts"

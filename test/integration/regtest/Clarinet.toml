@@ -1,0 +1,17 @@
+[project]
+name = "signer-sidekick-pox5-lifecycle"
+
+[repl]
+costs_version = 1
+
+[contracts.pox-5]
+path = "contracts/pox-5.clar"
+clarity_version = 6
+epoch = 4.0
+
+[repl.analysis.lints]
+panic = "off"
+case_fn = "off"
+
+[project.override_boot_contracts_source]
+pox-5 = "contracts/pox-5.clar"

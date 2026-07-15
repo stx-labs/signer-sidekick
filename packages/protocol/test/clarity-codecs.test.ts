@@ -22,6 +22,7 @@ import {
   decodeEarnedStakerRewards,
   decodeOptionalBuffer,
   decodeOptionalPrincipal,
+  decodeOptionalUInt,
   decodePox5CycleMembership,
   decodePox5StakerInfo,
   decodePoxAddressPreference,
@@ -35,6 +36,11 @@ import {
 } from "../src/clarity-codecs.js";
 
 describe("Clarity boundary codecs", () => {
+  it("distinguishes a missing optional uint from an explicit zero", () => {
+    expect(decodeOptionalUInt(noneCV())).toBeNull();
+    expect(decodeOptionalUInt(someCV(uintCV(0n)))).toBe(0n);
+  });
+
   it("decodes a node read-only hex result structurally", () => {
     const value = tupleCV({ earned: uintCV(123n), fees: uintCV(4n) });
     expect(decodeEarnedStakerRewards(decodeClarityHex(cvToHex(value)))).toEqual({

@@ -122,6 +122,11 @@ describe("pool cycle forecast", () => {
     expect(result.cycles[0]).toMatchObject({
       cycleId: 141,
       status: "attention",
+      provenance: {
+        classification: "authoritative",
+        contractSource: "pox5-read-only",
+        localRosterSource: "api-indexed-node-verified",
+      },
       local: {
         stakerCount: 1,
         enumeratedStxUstx: "40000000000",
@@ -143,6 +148,10 @@ describe("pool cycle forecast", () => {
       changedAmountStakers: 0,
       netEnumeratedStxDeltaUstx: "20000000000",
     });
+    expect(result.cycles.slice(1).map(({ provenance }) => provenance.classification)).toEqual([
+      "projected",
+      "projected",
+    ]);
     expect(result.cycles[2]?.changesFromPrevious).toEqual({
       joiningStakers: 0,
       leavingStakers: 1,
@@ -198,6 +207,11 @@ describe("pool cycle forecast", () => {
       enumeratedStxUstx: null,
       enumerationDeltaUstx: null,
       matchesContractPending: null,
+    });
+    expect(result.cycles[0]?.provenance).toEqual({
+      classification: "authoritative",
+      contractSource: "pox5-read-only",
+      localRosterSource: "unavailable",
     });
     expect(projectionStore.listCycleMemberships).not.toHaveBeenCalled();
   });

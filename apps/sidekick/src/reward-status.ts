@@ -1,6 +1,8 @@
+import { cvToHex, noneCV, tupleCV, uintCV } from "@stacks/transactions";
 import {
   type ClarityValue,
   decodeEarnedStakerRewards,
+  decodeOptionalUInt,
   decodePoxAddressPreference,
   decodeUInt,
   encodeOptionalUIntHex,
@@ -10,7 +12,7 @@ import {
 import type {
   RewardCycleSnapshotInput,
   SignerStakerRun,
-  StoredSignerStaker,
+  StoredCycleMembership,
 } from "./storage/store.js";
 
 export interface RewardStatusNode {
@@ -20,6 +22,8 @@ export interface RewardStatusNode {
     sender: string,
     args: readonly string[],
   ): Promise<ClarityValue>;
+  getDataVar(principal: string, variableName: string): Promise<ClarityValue>;
+  getMapEntry(principal: string, mapName: string, key: string): Promise<ClarityValue>;
 }
 
 export interface RewardStatusStore {
@@ -27,11 +31,11 @@ export interface RewardStatusStore {
     sourceId: string,
     managerPrincipal: string,
   ): SignerStakerRun | null;
-  listSignerStakers(
+  listCycleMembershipsForCycle(
     managerPrincipal: string,
-    activeOnly?: boolean,
+    rewardCycle: number,
     sourceId?: string | null,
-  ): StoredSignerStaker[];
+  ): StoredCycleMembership[];
   putRewardCycleSnapshot?(input: RewardCycleSnapshotInput): void;
 }
 
@@ -93,7 +97,8 @@ export interface StxRewardStatus {
     signerEarnedBeforeManagerClaimSats: string;
   };
   manager: {
-    feeSnapshotBips: string;
+    configuredFeeBips: string;
+    feeSnapshotBips: string | null;
     earnedFeesSats: string;
     withdrawalLiabilitySats: string;
     unclaimedStakerRewardsSats: string;
@@ -162,15 +167,23 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     options.sourceId,
     options.managerPrincipal,
   );
-  const stakers = run
+  const cycleMemberships = run
     ? options.store
-        .listSignerStakers(options.managerPrincipal, true, options.sourceId)
-        .filter(({ hasStx, stxNodeVerified }) => hasStx && stxNodeVerified === true)
+        .listCycleMembershipsForCycle(
+          options.managerPrincipal,
+          options.rewardCycle,
+          options.sourceId,
+        )
+        .filter(({ signerPrincipal }) => signerPrincipal === options.managerPrincipal)
     : [];
+  const stakerPrincipals = [
+    ...new Set(cycleMemberships.map(({ stakerPrincipal }) => stakerPrincipal)),
+  ];
   const cycleArgs = [encodeUIntHex(BigInt(options.rewardCycle)), encodeOptionalUIntHex(null)];
   const signerCycleArgs = [encodePrincipalHex(options.managerPrincipal), ...cycleArgs];
   const [
     lastRewardComputeHeightValue,
+    configuredFeeValue,
     feeSnapshotValue,
     earnedFeesValue,
     withdrawalLiabilityValue,
@@ -184,11 +197,16 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
       options.managerPrincipal,
       [],
     ),
-    options.node.callReadOnly(
+    options.node.getDataVar(options.managerPrincipal, "fees-bips"),
+    options.node.getMapEntry(
       options.managerPrincipal,
-      "get-fee-bips-for-cycle",
-      options.managerPrincipal,
-      cycleArgs,
+      "fee-bips-for-cycle",
+      cvToHex(
+        tupleCV({
+          "reward-cycle": uintCV(BigInt(options.rewardCycle)),
+          "bond-index": noneCV(),
+        }),
+      ),
     ),
     options.node.callReadOnly(
       options.managerPrincipal,
@@ -239,12 +257,12 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
         );
 
   const rewardStatuses: StakerRewardStatus[] = [];
-  for (let index = 0; index < stakers.length; index += 8) {
+  for (let index = 0; index < stakerPrincipals.length; index += 8) {
     rewardStatuses.push(
       ...(await Promise.all(
-        stakers
+        stakerPrincipals
           .slice(index, index + 8)
-          .map(({ stakerPrincipal }) =>
+          .map((stakerPrincipal) =>
             readStakerReward(
               options.node,
               options.managerPrincipal,
@@ -279,7 +297,9 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
       signerEarnedBeforeManagerClaimSats: decodeUInt(signerEarnedValue, "get-earned").toString(),
     },
     manager: {
-      feeSnapshotBips: decodeUInt(feeSnapshotValue, "get-fee-bips-for-cycle").toString(),
+      configuredFeeBips: decodeUInt(configuredFeeValue, "fees-bips").toString(),
+      feeSnapshotBips:
+        decodeOptionalUInt(feeSnapshotValue, "fee-bips-for-cycle")?.toString() ?? null,
       earnedFeesSats: decodeUInt(earnedFeesValue, "get-earned-fees").toString(),
       withdrawalLiabilitySats: decodeUInt(
         withdrawalLiabilityValue,

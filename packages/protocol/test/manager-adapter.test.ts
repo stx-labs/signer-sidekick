@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAINNET_REFERENCE_MANAGER } from "../src/known-managers.js";
+import { MAINNET_REFERENCE_MANAGER, REGTEST_REFERENCE_MANAGER } from "../src/known-managers.js";
 import {
   canonicalizeClaritySource,
   createManagerAdapterFromHashes,
@@ -41,6 +41,20 @@ describe("reference manager source recognition", () => {
     expect(adapter.recognizeSource(source)).toMatchObject({
       match: "exact",
       profileId: MAINNET_REFERENCE_MANAGER.profile.id,
+      automationAllowed: false,
+    });
+  });
+
+  it("recognizes the rendered regtest artifact used by the lifecycle harness", async () => {
+    const source = await readFile(
+      resolve(root, "contracts/reference-manager/generated/regtest/signer-manager.clar"),
+      "utf8",
+    );
+    const adapter = createManagerAdapterFromHashes(REGTEST_REFERENCE_MANAGER);
+
+    expect(adapter.recognizeSource(source)).toMatchObject({
+      match: "exact",
+      profileId: REGTEST_REFERENCE_MANAGER.profile.id,
       automationAllowed: false,
     });
   });

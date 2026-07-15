@@ -12,3 +12,4 @@ data/
 tmp/
 test-results/
 playwright-report/
+test/integration/regtest/.cache/

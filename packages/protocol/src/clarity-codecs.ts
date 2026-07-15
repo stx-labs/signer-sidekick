@@ -49,6 +49,11 @@ export function decodeUInt(value: ClarityValue, path = "value"): bigint {
   return BigInt(uint.value);
 }
 
+export function decodeOptionalUInt(value: ClarityValue, path = "value"): bigint | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  return decodeUInt(expectType(value, ClarityType.OptionalSome, path).value, path);
+}
+
 export function decodeBoolean(value: ClarityValue, path = "value"): boolean {
   if (value.type === ClarityType.BoolTrue) return true;
   if (value.type === ClarityType.BoolFalse) return false;

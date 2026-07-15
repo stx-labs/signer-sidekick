@@ -1,4 +1,4 @@
-import { cvToHex, uintCV } from "@stacks/transactions";
+import { cvToHex, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import {
   RateLimitedError,
@@ -246,6 +246,31 @@ describe("Stacks API client", () => {
 });
 
 describe("Stacks node client", () => {
+  it("rejects unsafe uSTX quantities at the PoX JSON boundary", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          current_burnchain_block_height: 960_240,
+          reward_cycle_id: 141,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          current_cycle: {
+            id: 141,
+            min_threshold_ustx: Number.MAX_SAFE_INTEGER + 1,
+            stacked_ustx: 0,
+            is_pox_active: true,
+          },
+          contract_versions: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getPoxInfo()).rejects.toBeInstanceOf(UpstreamSchemaError);
+  });
+
   it("fetches deployed source without a MARF proof using a validated principal", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ source: "(ok true)", publish_height: 123 }), {
@@ -299,6 +324,44 @@ describe("Stacks node client", () => {
           sender: "SP000000000000000000002Q6VF78",
           arguments: [cvToHex(uintCV(141n))],
         }),
+      }),
+    );
+  });
+
+  it("reads a data variable and an optional map entry without a MARF proof", async () => {
+    const feeKey = cvToHex(tupleCV({ "reward-cycle": uintCV(141n), "bond-index": noneCV() }));
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: cvToHex(uintCV(500n)) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: cvToHex(someCV(uintCV(0n))) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+    const manager = "SP000000000000000000002Q6VF78.signer-manager";
+
+    await expect(client.getDataVar(manager, "fees-bips")).resolves.toEqual(uintCV(500n));
+    await expect(client.getMapEntry(manager, "fee-bips-for-cycle", feeKey)).resolves.toEqual(
+      someCV(uintCV(0n)),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:20443/v2/data_var/SP000000000000000000002Q6VF78/signer-manager/fees-bips?proof=0",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:20443/v2/map_entry/SP000000000000000000002Q6VF78/signer-manager/fee-bips-for-cycle?proof=0",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(feeKey),
       }),
     );
   });

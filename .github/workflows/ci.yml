@@ -40,7 +40,7 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Compile external regtest smoke harness
+      - name: Run self-contained Epoch 4.0 lifecycle
         run: pnpm test:regtest
 
       - name: Build packages and applications

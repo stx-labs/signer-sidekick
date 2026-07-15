@@ -22,20 +22,27 @@ do not impose those limits.
 
 ## Durable evidence
 
-SQLite schema version 6 separates current projections from longitudinal evidence:
+SQLite schema version 7 separates current projections from longitudinal evidence:
 
 - `stakers`, `stake_positions`, and `cycle_memberships` are the current operator view.
 - `staker_position_observations` records the node-verification result and position at each observed
   burn/Stacks tip pair. A changed or missing position does not erase the earlier observation.
 - `pool_cycle_snapshots` records local and contract totals for every observed reward cycle. The
   history API returns the most recent observation for each cycle while retaining the underlying
-  observations for audit work.
+  observations for audit work. Each row persists whether values were authoritative current-cycle
+  state or a future-cycle projection, plus its contract and roster sources.
 - `chain_events` remains the reorg-aware raw evidence ledger.
 - `manager_activity_events` is a normalized, indexed projection of claims and withdrawal
-  resolutions. Reads are no longer limited by the former 2,000-event reducer ceiling.
+  resolutions. It is now the only manager-activity read path, so reads cannot fall back to the
+  former truncated 2,000-event reducer. Same-block results use the transaction ID and event index
+  as a stable compound ordering key instead of comparing per-transaction event indexes directly.
 - `reward_cycle_snapshots` and `staker_reward_cycle_snapshots` retain the latest computed ledger
   for each manager/cycle pair. Rows are replaced within a cycle rather than appended on every
-  dashboard read, bounding storage to the number of cycles and participating stakers.
+  dashboard read, bounding storage to the number of cycles and participating stakers. The manager
+  row stores the current configured fee separately from the optional effective cycle snapshot.
+
+Historical reward reads select node-verified membership rows for the requested cycle, including
+inactive rows retained after a staker leaves. They do not reuse the current active roster.
 
 Forward database migrations create an online backup before modifying an existing on-disk store.
 The normal deployment backup/restore procedure remains the operator's disaster-recovery path.

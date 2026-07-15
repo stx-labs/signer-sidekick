@@ -5,7 +5,10 @@ operators. It is designed to attach to an existing compatible signer-manager dep
 guide a fresh operator through setup, then monitor and automate the pool lifecycle without
 holding the signer or manager-admin keys.
 
-The repository now contains the activation/setup path and the read-only v1 control plane. Permissionless transaction automation and production-profile approval are still gated, so it is not yet ready for unattended mainnet operation.
+The repository now contains the activation/setup path, the read-only v1 control plane, and a
+self-contained Epoch 4.0 lifecycle harness for the protocol foundation. Permissionless
+transaction automation and production-profile approval are still gated, so it is not yet ready
+for unattended mainnet operation.
 
 ## Start here
 
@@ -25,7 +28,7 @@ The repository now contains the activation/setup path and the read-only v1 contr
 - `packages/protocol`: versioned PoX-5 and signer-manager profiles, types, and artifact generator
 - `packages/core`: protocol-independent domain and reconciliation boundaries
 - `contracts`: pinned upstream sources and reproducibly generated manager artifacts
-- `test/integration/regtest`: externally provisioned Epoch 4.0 regtest/devnet smoke harness
+- `test/integration/regtest`: self-contained Epoch 4.0 contract lifecycle plus optional live-node smoke test
 
 ## Development
 
@@ -36,6 +39,7 @@ pnpm install
 pnpm protocol:verify
 pnpm check
 pnpm test
+pnpm test:regtest
 pnpm build
 ```
 

@@ -5,7 +5,7 @@
 - Node.js 24.18.0
 - pnpm 10.32.1
 - Git
-- Docker for the future self-contained integration environment
+- Docker only when exercising the optional external node/API environment
 
 The repository deliberately pins the current LTS runtime instead of using whichever Node.js
 release happens to be installed globally.
@@ -44,22 +44,44 @@ occurrences, rejects any remaining upstream placeholders, and writes source/outp
 the adjacent metadata file. The generated artifact is not approved for production deployment
 until the manager authors independently confirm all production principals.
 
+## Self-contained Epoch 4.0 lifecycle harness
+
+The default regtest suite runs in Clarinet's in-memory Epoch 4.0 environment. It loads the pinned
+PoX-5 boot source, renders the manager and its sBTC principals from committed profiles, and deploys
+the exact sBTC withdrawal dependency beside Clarinet's canonical testnet token and registry. It
+does not require Docker, Bitcoin Core, a Stacks node, a signer process, an API, network access, or
+private operator keys after dependencies are installed.
+
+```sh
+pnpm protocol:generate:regtest
+pnpm protocol:verify
+pnpm test:regtest
+```
+
+The suite proves the rendered-principal alignment and executes registration/grant, STX-only stake,
+reward calculation, manager claim, direct staker payout, fee withdrawal, rejected-withdrawal reclaim,
+accepted-withdrawal settlement and dust sweep, early unstake, and revoked-grant rejection against the
+actual Clarity 6 PoX-5 and manager sources.
+The deterministic development mnemonics under `test/integration/regtest/settings/` are public test
+fixtures and must never be used on any live network.
+
 ## External regtest/devnet smoke harness
 
-The initial harness connects to an already-running Epoch 4.0 regtest/devnet. It does not yet
-provision Bitcoin Core, stacks-core, the Stacks API, sBTC contracts, or a signer.
+The optional smoke test still connects the production clients to an already-running Epoch 4.0
+regtest/devnet with a fully indexed Stacks API:
 
 ```sh
 RUN_REGTEST=1 \
 STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
 STACKS_API_URL=http://127.0.0.1:3999 \
-pnpm test:regtest
+pnpm test:regtest:external
 ```
 
 The smoke test runs the production preflight clients and evaluator. It requires matching node/API
 network identities, a ready Stacks API v9 or newer, and PoX-5 availability. API lag may produce a
-warning up to the configured policy boundary; a failed preflight fails the test. Self-contained
-lifecycle provisioning is the next harness increment in Milestone 1.
+warning up to the configured policy boundary; a failed preflight fails the test. A first run
+against a released stacks-node/signer/API environment remains a Phase 1 exit gate, not a local
+development prerequisite.
 
 ## Operator preflight
 
@@ -85,7 +107,14 @@ and defaults to 12 blocks.
 
 The JSON result includes current and next reward-cycle IDs, threshold and stacked amounts in
 uSTX, and authoritative prepare/reward phase burn heights and countdowns from `/v2/pox`. Amounts
-are emitted as decimal strings so downstream consumers do not lose integer precision.
+are accepted only while they remain within JavaScript's safe-integer boundary, then emitted as
+decimal strings so downstream consumers do not lose integer precision. An out-of-range upstream
+value fails closed instead of being rounded.
+
+Reward status reads the manager's current `fees-bips` data variable and the underlying
+`fee-bips-for-cycle` map directly from the configured node. This preserves the distinction between
+an absent effective fee snapshot and an explicit zero-bips snapshot; no private key or proof is
+required.
 
 ## Local dashboard development
 

@@ -1072,6 +1072,15 @@ Exit: no unresolved question can materially change custody, contract identity, t
 
 ### Milestone 1: protocol foundation and harness
 
+Implementation status (July 15, 2026): the pinned profiles, generated mainnet and regtest manager
+artifacts, Clarity codecs/adapter, Epoch 4.0 Stacking/PoX post-condition serialization tests, and
+self-contained Clarinet lifecycle are implemented. Golden tests execute registration, STX-only
+stake, reward calculation, manager/staker claims, fees, rejected-withdrawal reclaim,
+accepted-withdrawal settlement and dust sweep, early unstake, and grant
+revocation. The remaining exit work is an end-to-end run with the released signer and an external
+node/API environment plus independent production-profile approval; neither blocks local Phase 2
+hardening.
+
 Deliverables:
 
 - Monorepo, CI, formatting, release image, SBOM.

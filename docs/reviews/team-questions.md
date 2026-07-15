@@ -1,8 +1,9 @@
 # PoX-5 Signer Sidekick v1 review questions
 
-This document is the forwardable review questionnaire for the v1 plan. Reviewers should link
-to source, code, or a reproducible observation where possible and identify whether an answer is
-mainnet-specific.
+This document is the forwardable technical review questionnaire for the v1 plan. Operator/product
+decisions are tracked separately in GitHub issue #2. These questions are intended for the CTO,
+Stacks core, signer, reference-manager, and API developers. Reviewers should link to source, code,
+or a reproducible observation where possible and identify whether an answer is mainnet-specific.
 
 ## Stacks core and PoX-5
 
@@ -34,12 +35,13 @@ mainnet-specific.
 
 1. Please confirm the complete fresh-setup prerequisites. The Stacks 4.0.0 signer command and its
    four-field JSON output are now pinned and covered by the upstream cross-language fixture.
-2. What supported signer endpoint and response field should Sidekick use for its narrowly scoped,
-   read-only version and liveness probe?
-3. Which signer configuration values may be displayed or exported safely in an operator support
+2. Which signer configuration values may be displayed or exported safely in an operator support
    bundle?
-4. What is the recommended operator ceremony for broadcasting and verifying `register-self`
+3. What is the recommended operator ceremony for broadcasting and verifying `register-self`
    without giving Sidekick the signer or manager-admin key?
+
+Signer-host version/liveness and signing-health monitoring are deferred to V2 and are not v1
+review blockers.
 
 ## Future-cycle forecast
 

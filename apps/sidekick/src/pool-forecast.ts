@@ -57,6 +57,11 @@ export interface PoolForecastOptions {
 export interface PoolCycleForecast {
   cycleId: number;
   status: "ready" | "attention";
+  provenance: {
+    classification: "authoritative" | "projected";
+    contractSource: "pox5-read-only";
+    localRosterSource: "api-indexed-node-verified" | "unavailable";
+  };
   local: {
     rosterAvailable: boolean;
     stakerCount: number | null;
@@ -268,6 +273,11 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
     cycles.push({
       cycleId,
       status,
+      provenance: {
+        classification: cycleId === options.currentRewardCycle ? "authoritative" : "projected",
+        contractSource: "pox5-read-only",
+        localRosterSource: run ? "api-indexed-node-verified" : "unavailable",
+      },
       local: {
         rosterAvailable: run !== null,
         stakerCount: run ? localMemberships.size : null,
@@ -346,6 +356,7 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
       inSignerSet: cycle.contract.inSignerSet,
       thresholdUstx: cycle.threshold.thresholdUstx,
       thresholdMarginUstx: cycle.threshold.marginUstx,
+      provenance: cycle.provenance,
     })),
   });
   return forecast;
