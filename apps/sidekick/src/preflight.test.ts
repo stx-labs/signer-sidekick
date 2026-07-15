@@ -47,6 +47,27 @@ describe("operator preflight", () => {
     });
   });
 
+  it("does not call a scheduled PoX-5 version available before its activation height", () => {
+    const baseline = sources();
+    const result = evaluatePreflight(
+      config,
+      sources({
+        nodePoxInfo: {
+          ...baseline.nodePoxInfo,
+          contract_versions: [
+            {
+              contract_id: "SP000000000000000000002Q6VF78.pox-5",
+              activation_burnchain_block_height: 960_230,
+              first_reward_cycle_id: 141,
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result.pox).toMatchObject({ pox5Available: false, pox5ContractId: null });
+  });
+
   it("fails closed on a node/API network mismatch", () => {
     const result = evaluatePreflight(
       config,
@@ -123,6 +144,22 @@ describe("operator preflight", () => {
           reward_cycle_length: 2_100,
           prepare_cycle_length: 100,
           contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          current_cycle: {
+            id: 140,
+            min_threshold_ustx: 120_000_000_000,
+            stacked_ustx: 550_000_000_000_000,
+            is_pox_active: true,
+          },
+          next_cycle: {
+            id: 141,
+            min_threshold_ustx: 50_000_000_000,
+            min_increment_ustx: 10_000_000_000,
+            stacked_ustx: 75_000_000_000,
+            prepare_phase_start_block_height: 962_050,
+            blocks_until_prepare_phase: 1_810,
+            reward_phase_start_block_height: 962_150,
+            blocks_until_reward_phase: 1_910,
+          },
           contract_versions: [
             {
               contract_id: "SP000000000000000000002Q6VF78.pox-5",
@@ -136,5 +173,14 @@ describe("operator preflight", () => {
 
     expect(result.status).toBe("pass");
     expect(result.pox.pox5Available).toBe(true);
+    expect(result.cycle).toMatchObject({
+      currentId: 140,
+      currentMinThresholdUstx: "120000000000",
+      nextId: 141,
+      nextMinThresholdUstx: "50000000000",
+      preparePhaseStartBurnHeight: 962_050,
+      blocksUntilPreparePhase: 1_810,
+      isPreparePhase: false,
+    });
   });
 });

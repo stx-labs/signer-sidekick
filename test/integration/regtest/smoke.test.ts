@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { StacksApiClient, StacksNodeClient } from "../../../apps/sidekick/src/chain-clients.js";
 import { loadConfig } from "../../../apps/sidekick/src/config.js";
-import { evaluatePreflight } from "../../../apps/sidekick/src/preflight.js";
+import { runOperatorPreflight } from "../../../apps/sidekick/src/preflight.js";
 
 const enabled = process.env.RUN_REGTEST === "1";
 const suite = enabled ? describe : describe.skip;
@@ -18,19 +18,7 @@ suite("Epoch 4.0 external regtest/devnet", () => {
     });
     const node = new StacksNodeClient(config.nodeRpcUrl);
     const api = new StacksApiClient(config.apiUrl, config.apiKey, config.apiKeyHeader);
-    const [nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus] = await Promise.all([
-      node.getInfo(),
-      node.getPoxInfo(),
-      api.getNodeInfo(),
-      api.getStatus(),
-    ]);
-
-    const result = evaluatePreflight(config, {
-      nodeInfo,
-      nodePoxInfo,
-      apiNodeInfo,
-      apiStatus,
-    });
+    const result = await runOperatorPreflight(config, node, api);
 
     expect(result.status).not.toBe("fail");
     expect(result.pox.pox5Available).toBe(true);

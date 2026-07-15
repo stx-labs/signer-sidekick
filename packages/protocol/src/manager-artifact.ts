@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalizeClaritySource } from "./manager-adapter.js";
 import type { ManagerProfile } from "./profile.js";
 
 export const UPSTREAM_POX5 = "ST000000000000000000002AMW42H.pox-5";
@@ -13,6 +14,7 @@ export interface GeneratedManagerArtifact {
     upstreamCommit: string;
     sourceSha256: string;
     outputSha256: string;
+    canonicalOutputSha256: string;
     replacements: {
       pox5: number;
       sbtcDeployer: number;
@@ -81,6 +83,7 @@ export function generateManagerArtifact(
       upstreamCommit: profile.upstream.commit,
       sourceSha256,
       outputSha256: hash(generated),
+      canonicalOutputSha256: hash(canonicalizeClaritySource(generated)),
       replacements,
       productionApproved: profile.productionApproved,
     },

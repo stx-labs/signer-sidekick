@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAINNET_REFERENCE_MANAGER } from "../src/known-managers.js";
 import {
   canonicalizeClaritySource,
+  createManagerAdapterFromHashes,
   createReferenceManagerAdapter,
 } from "../src/manager-adapter.js";
 import { parseManagerProfile } from "../src/profile.js";
@@ -28,6 +30,17 @@ describe("reference manager source recognition", () => {
     expect(adapter.recognizeSource(source)).toMatchObject({
       match: "exact",
       profileId: profile.id,
+      automationAllowed: false,
+    });
+  });
+
+  it("recognizes the generated artifact from the bundled immutable hash registry", async () => {
+    const { source } = await loadFixture();
+    const adapter = createManagerAdapterFromHashes(MAINNET_REFERENCE_MANAGER);
+
+    expect(adapter.recognizeSource(source)).toMatchObject({
+      match: "exact",
+      profileId: MAINNET_REFERENCE_MANAGER.profile.id,
       automationAllowed: false,
     });
   });

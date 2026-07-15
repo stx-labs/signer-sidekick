@@ -1,15 +1,20 @@
 import {
+  bufferCV,
   ClarityType,
   type ClarityValue,
+  cvToHex,
   deserializeCV,
   type ListCV,
   listCV,
   noneCV,
   type OptionalCV,
+  principalCV,
   someCV,
   type UIntCV,
   uintCV,
 } from "@stacks/transactions";
+
+export type { ClarityValue } from "@stacks/transactions";
 
 export class ClarityCodecError extends Error {
   constructor(
@@ -42,6 +47,37 @@ export function decodeClarityHex(hex: string): ClarityValue {
 export function decodeUInt(value: ClarityValue, path = "value"): bigint {
   const uint = expectType(value, ClarityType.UInt, path);
   return BigInt(uint.value);
+}
+
+export function decodeBoolean(value: ClarityValue, path = "value"): boolean {
+  if (value.type === ClarityType.BoolTrue) return true;
+  if (value.type === ClarityType.BoolFalse) return false;
+  throw new ClarityCodecError(`expected boolean, received ${value.type}`, path);
+}
+
+export function decodeOptionalBuffer(value: ClarityValue, path = "value"): string | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  const buffer = expectType(
+    expectType(value, ClarityType.OptionalSome, path).value,
+    ClarityType.Buffer,
+    path,
+  );
+  return buffer.value;
+}
+
+export function encodePrincipalHex(principal: string): string {
+  return cvToHex(principalCV(principal));
+}
+
+export function encodeUIntHex(value: bigint): string {
+  return cvToHex(uintCV(value));
+}
+
+export function encodeBufferHex(hex: string): string {
+  if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex)) {
+    throw new ClarityCodecError("expected an even-length hexadecimal buffer");
+  }
+  return cvToHex(bufferCV(Uint8Array.from(Buffer.from(hex, "hex"))));
 }
 
 export function decodeResponseOk(value: ClarityValue, path = "value"): ClarityValue {

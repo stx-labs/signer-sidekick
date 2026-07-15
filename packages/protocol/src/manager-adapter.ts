@@ -20,7 +20,13 @@ export interface ManagerAdapter {
   assertAutomationCompatible(source: string): ManagerRecognition;
 }
 
-function sha256(value: string): string {
+export interface ReviewedManagerArtifact {
+  profile: ManagerProfile;
+  sourceSha256: string;
+  canonicalSha256: string;
+}
+
+export function claritySourceSha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -83,12 +89,23 @@ export function createReferenceManagerAdapter(
   profile: ManagerProfile,
   reviewedSource: string,
 ): ManagerAdapter {
-  const reviewedSourceSha256 = sha256(reviewedSource);
-  const reviewedCanonicalSha256 = sha256(canonicalizeClaritySource(reviewedSource));
+  return createManagerAdapterFromHashes({
+    profile,
+    sourceSha256: claritySourceSha256(reviewedSource),
+    canonicalSha256: claritySourceSha256(canonicalizeClaritySource(reviewedSource)),
+  });
+}
+
+export function createManagerAdapterFromHashes(artifact: ReviewedManagerArtifact): ManagerAdapter {
+  const {
+    profile,
+    sourceSha256: reviewedSourceSha256,
+    canonicalSha256: reviewedCanonicalSha256,
+  } = artifact;
 
   function recognizeSource(source: string): ManagerRecognition {
-    const sourceSha256 = sha256(source);
-    const canonicalSha256 = sha256(canonicalizeClaritySource(source));
+    const sourceSha256 = claritySourceSha256(source);
+    const canonicalSha256 = claritySourceSha256(canonicalizeClaritySource(source));
     const match: SourceMatch =
       sourceSha256 === reviewedSourceSha256
         ? "exact"

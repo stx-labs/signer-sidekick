@@ -1,5 +1,11 @@
 import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
-import type { ApiStatus, NodeInfo, PoxInfo } from "./chain-clients.js";
+import type {
+  ApiStatus,
+  NodeInfo,
+  PoxInfo,
+  StacksApiClient,
+  StacksNodeClient,
+} from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 
 export type PreflightCheckStatus = "pass" | "warn" | "fail";
@@ -30,7 +36,21 @@ export interface PreflightResult {
     rewardCycleLength: number;
     prepareCycleLength: number;
     pox5Available: boolean;
+    pox5ContractId: string | null;
     blocksUntilEpoch4: number | null;
+  };
+  cycle: {
+    currentId: number;
+    currentMinThresholdUstx: string | null;
+    currentStackedUstx: string | null;
+    nextId: number | null;
+    nextMinThresholdUstx: string | null;
+    nextStackedUstx: string | null;
+    preparePhaseStartBurnHeight: number | null;
+    blocksUntilPreparePhase: number | null;
+    rewardPhaseStartBurnHeight: number | null;
+    blocksUntilRewardPhase: number | null;
+    isPreparePhase: boolean | null;
   };
   checks: PreflightCheck[];
 }
@@ -40,6 +60,20 @@ export interface PreflightSources {
   nodePoxInfo: PoxInfo;
   apiNodeInfo: NodeInfo;
   apiStatus: ApiStatus;
+}
+
+export async function runOperatorPreflight(
+  config: SidekickConfig,
+  node: StacksNodeClient,
+  api: StacksApiClient,
+): Promise<PreflightResult> {
+  const [nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus] = await Promise.all([
+    node.getInfo(),
+    node.getPoxInfo(),
+    api.getNodeInfo(),
+    api.getStatus(),
+  ]);
+  return evaluatePreflight(config, { nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus });
 }
 
 const networkIds: Record<SidekickConfig["network"], number> = {
@@ -112,9 +146,16 @@ export function evaluatePreflight(
         : `API burnchain tip is ${burnBlockLag} block(s) ${apiTipPosition} the node`,
   });
 
-  const pox5Available =
-    nodePoxInfo.contract_id.endsWith(".pox-5") ||
-    nodePoxInfo.contract_versions.some((version) => version.contract_id.endsWith(".pox-5"));
+  const pox5Version = nodePoxInfo.contract_versions.find((version) =>
+    version.contract_id.endsWith(".pox-5"),
+  );
+  const pox5ContractId = nodePoxInfo.contract_id.endsWith(".pox-5")
+    ? nodePoxInfo.contract_id
+    : pox5Version &&
+        pox5Version.activation_burnchain_block_height <= nodePoxInfo.current_burnchain_block_height
+      ? pox5Version.contract_id
+      : null;
+  const pox5Available = pox5ContractId !== null;
   const blocksUntilEpoch4 =
     config.network === "mainnet"
       ? Math.max(
@@ -132,6 +173,12 @@ export function evaluatePreflight(
         ? "PoX-5 is not available after the configured Epoch 4.0 activation height"
         : `PoX-5 is not active yet; ${blocksUntilEpoch4 ?? "an unknown number of"} burn block(s) remain`,
   });
+
+  const currentCycle = nodePoxInfo.current_cycle;
+  const nextCycle = nodePoxInfo.next_cycle;
+  const isPreparePhase = nextCycle
+    ? nextCycle.blocks_until_prepare_phase <= 0 && nextCycle.blocks_until_reward_phase > 0
+    : null;
 
   return {
     status: overallStatus(checks),
@@ -153,7 +200,21 @@ export function evaluatePreflight(
       rewardCycleLength: nodePoxInfo.reward_cycle_length,
       prepareCycleLength: nodePoxInfo.prepare_cycle_length,
       pox5Available,
+      pox5ContractId,
       blocksUntilEpoch4,
+    },
+    cycle: {
+      currentId: currentCycle?.id ?? nodePoxInfo.reward_cycle_id,
+      currentMinThresholdUstx: currentCycle ? String(currentCycle.min_threshold_ustx) : null,
+      currentStackedUstx: currentCycle ? String(currentCycle.stacked_ustx) : null,
+      nextId: nextCycle?.id ?? null,
+      nextMinThresholdUstx: nextCycle ? String(nextCycle.min_threshold_ustx) : null,
+      nextStackedUstx: nextCycle ? String(nextCycle.stacked_ustx) : null,
+      preparePhaseStartBurnHeight: nextCycle?.prepare_phase_start_block_height ?? null,
+      blocksUntilPreparePhase: nextCycle ? Math.max(0, nextCycle.blocks_until_prepare_phase) : null,
+      rewardPhaseStartBurnHeight: nextCycle?.reward_phase_start_block_height ?? null,
+      blocksUntilRewardPhase: nextCycle ? Math.max(0, nextCycle.blocks_until_reward_phase) : null,
+      isPreparePhase,
     },
     checks,
   };

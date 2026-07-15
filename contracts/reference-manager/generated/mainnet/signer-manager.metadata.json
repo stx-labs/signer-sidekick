@@ -5,6 +5,7 @@
   "upstreamCommit": "5595f08a244362cefc316f95b398510a2b8cb791",
   "sourceSha256": "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
   "outputSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
+  "canonicalOutputSha256": "7fd58a7591ff0ae1643eb7e71ea2867385bcac237a3ea819f52301310c0d2e27",
   "replacements": {
     "pox5": 8,
     "sbtcDeployer": 13

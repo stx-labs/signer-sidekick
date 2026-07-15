@@ -6,6 +6,7 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "attach": "node dist/main.js attach",
     "dev": "tsx watch src/main.ts serve",
     "preflight": "node dist/main.js preflight",
     "start": "node dist/main.js serve",
@@ -20,6 +21,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@stacks/transactions": "7.5.0",
     "@types/node": "26.1.1",
     "tsx": "4.23.1",
     "typescript": "7.0.2",

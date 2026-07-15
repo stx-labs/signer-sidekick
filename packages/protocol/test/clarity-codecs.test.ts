@@ -8,20 +8,26 @@ import {
   responseOkCV,
   someCV,
   standardPrincipalCV,
+  trueCV,
   tupleCV,
   uintCV,
 } from "@stacks/transactions";
 import { describe, expect, it } from "vitest";
 import {
   ClarityCodecError,
+  decodeBoolean,
   decodeClaimRewardsResult,
   decodeClarityHex,
   decodeEarnedStakerRewards,
+  decodeOptionalBuffer,
   decodeOptionalPrincipal,
   decodePoxAddressPreference,
   decodeResponseOk,
   encodeBondPeriods,
+  encodeBufferHex,
   encodeOptionalBondIndex,
+  encodePrincipalHex,
+  encodeUIntHex,
 } from "../src/clarity-codecs.js";
 
 describe("Clarity boundary codecs", () => {
@@ -64,6 +70,18 @@ describe("Clarity boundary codecs", () => {
         someCV(contractPrincipalCV("SP000000000000000000002Q6VF78", "manager")),
       ),
     ).toBe("SP000000000000000000002Q6VF78.manager");
+  });
+
+  it("encodes read-only arguments and decodes optional buffers", () => {
+    expect(encodePrincipalHex("SP000000000000000000002Q6VF78.manager")).toBe(
+      cvToHex(contractPrincipalCV("SP000000000000000000002Q6VF78", "manager")),
+    );
+    expect(encodeUIntHex(141n)).toBe(cvToHex(uintCV(141n)));
+    expect(encodeBufferHex("02".repeat(33))).toBe(cvToHex(bufferCV(new Uint8Array(33).fill(2))));
+    expect(decodeOptionalBuffer(noneCV())).toBeNull();
+    expect(decodeOptionalBuffer(someCV(bufferCV(Uint8Array.of(1, 2))))).toBe("0102");
+    expect(decodeBoolean(decodeResponseOk(responseOkCV(trueCV())))).toBe(true);
+    expect(() => encodeBufferHex("abc")).toThrow("even-length hexadecimal");
   });
 
   it("decodes the manager claim response", () => {
