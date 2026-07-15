@@ -38,6 +38,35 @@ describe("Sidekick configuration", () => {
     expect(config.apiUrl).toBe("https://api.testnet.hiro.so");
   });
 
+  it("accepts a custom unsigned 32-bit network ID", () => {
+    expect(
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://node:20443",
+        SIDEKICK_NETWORK_ID: "256",
+      }).expectedNetworkId,
+    ).toBe(256);
+    expect(
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://node:20443",
+        SIDEKICK_NETWORK_ID: "0",
+      }).expectedNetworkId,
+    ).toBe(0);
+  });
+
+  it.each([
+    "-1",
+    "1.5",
+    "4294967296",
+    "not-a-number",
+  ])("rejects invalid custom network ID %s", (networkId) => {
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://node:20443",
+        SIDEKICK_NETWORK_ID: networkId,
+      }),
+    ).toThrow();
+  });
+
   it("rejects credentials embedded in endpoint URLs", () => {
     expect(() =>
       loadConfig({ STACKS_NODE_RPC_URL: "http://user:password@127.0.0.1:20443" }),

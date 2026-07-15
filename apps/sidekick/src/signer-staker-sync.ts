@@ -9,7 +9,7 @@ import {
 import type { SignerStakersPage } from "./chain-clients.js";
 import type { SidekickStore, SignerStakerPageItem } from "./storage/store.js";
 
-const maxStxStackingCycles = 96n;
+const maxStxFutureStackingCycles = 96n;
 
 export interface SignerStakerApi {
   getSignerStakers(
@@ -124,7 +124,7 @@ async function verifyPageItem(
         : { kind: "stx-position-missing", stakerPrincipal: item.staker },
     };
   }
-  if (position.numCycles < 1n || position.numCycles > maxStxStackingCycles) {
+  if (position.numCycles < 1n) {
     throw new Error(`PoX-5 returned invalid num-cycles ${position.numCycles} for ${item.staker}`);
   }
   const unlockCycle = position.firstRewardCycle + position.numCycles;
@@ -141,6 +141,17 @@ async function verifyPageItem(
     position.firstRewardCycle > BigInt(options.currentRewardCycle)
       ? position.firstRewardCycle
       : BigInt(options.currentRewardCycle);
+  const activeCycleSpan = unlockCycle - firstActiveCycle;
+  // stake-update retains the original first cycle and accumulates lifetime num-cycles. The
+  // contract's 96-cycle limit applies to the future period at each update, so a long-running
+  // position can legitimately report a much larger lifetime value. At most the current frozen
+  // cycle plus 96 future cycles should need verification.
+  if (activeCycleSpan < 1n || activeCycleSpan > maxStxFutureStackingCycles + 1n) {
+    throw new Error(
+      `PoX-5 returned invalid active cycle span ${activeCycleSpan} ` +
+        `(stored num-cycles ${position.numCycles}) for ${item.staker}`,
+    );
+  }
   const cycleMemberships: NonNullable<SignerStakerPageItem["position"]>["cycleMemberships"] = [];
   const cycles: bigint[] = [];
   for (let cycle = firstActiveCycle; cycle < unlockCycle; cycle += 1n) cycles.push(cycle);

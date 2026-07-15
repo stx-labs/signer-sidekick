@@ -622,9 +622,11 @@ const signerStakerPositionInputSchema = z
     signerPrincipal: principalSchema,
     amountUstx: z.bigint().nonnegative(),
     firstRewardCycle: z.bigint().nonnegative(),
-    numCycles: z.bigint().min(1n).max(96n),
+    // PoX-5 retains the original first cycle and accumulates lifetime num-cycles across updates.
+    numCycles: z.bigint().min(1n),
     unlockBurnHeight: z.bigint().nonnegative().optional(),
-    cycleMemberships: z.array(signerCycleMembershipInputSchema).max(96),
+    // The current frozen cycle plus at most 96 future cycles can be active at once.
+    cycleMemberships: z.array(signerCycleMembershipInputSchema).max(97),
   })
   .strict();
 const signerStakerPageItemSchema = z

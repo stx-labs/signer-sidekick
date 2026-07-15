@@ -89,7 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     .default(6)
     .parse(env.SIDEKICK_FORECAST_HORIZON_CYCLES);
   const expectedNetworkId = env.SIDEKICK_NETWORK_ID?.trim()
-    ? z.coerce.number().int().positive().parse(env.SIDEKICK_NETWORK_ID)
+    ? z.coerce.number().int().nonnegative().max(0xffff_ffff).parse(env.SIDEKICK_NETWORK_ID)
     : undefined;
 
   return {

@@ -54,13 +54,13 @@ async function store(): Promise<SidekickStore> {
   return store;
 }
 
-function position(signer = manager) {
+function position(signer = manager, firstRewardCycle = 141n, numCycles = 2n) {
   const [address, contractName] = signer.split(".") as [string, string];
   return someCV(
     tupleCV({
       "amount-ustx": uintCV(75_000_000_000n),
-      "first-reward-cycle": uintCV(141n),
-      "num-cycles": uintCV(2n),
+      "first-reward-cycle": uintCV(firstRewardCycle),
+      "num-cycles": uintCV(numCycles),
       signer: contractPrincipalCV(address, contractName),
     }),
   );
@@ -194,6 +194,65 @@ describe("signer-staker synchronization", () => {
       { stakerPrincipal: stakerOne, stxNodeVerified: false, position: null },
     ]);
     expect(sidekickStore.listCycleMemberships(manager)).toEqual([]);
+  });
+
+  it("reconciles long-lived positions whose accumulated lifetime exceeds 96 cycles", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    const node = {
+      callReadOnly: vi
+        .fn()
+        .mockResolvedValueOnce(position(manager, 11n, 275n))
+        .mockResolvedValueOnce(uintCV(5_720n))
+        .mockResolvedValueOnce(membership(100_000_000_000n))
+        .mockResolvedValueOnce(membership(100_000_000_000n)),
+    };
+
+    await expect(
+      syncSignerStakers({
+        ...options(sidekickStore, api, node),
+        currentRewardCycle: 284,
+      }),
+    ).resolves.toMatchObject({
+      status: "completed",
+      nodeVerifiedStxPositions: 1,
+      unverifiedStxDiscoveries: 0,
+      discrepanciesObservedThisInvocation: [],
+    });
+    expect(sidekickStore.listSignerStakers(manager)).toMatchObject([
+      {
+        stakerPrincipal: stakerOne,
+        stxNodeVerified: true,
+        position: { firstRewardCycle: 11n, numCycles: 275n },
+      },
+    ]);
+    expect(sidekickStore.listCycleMemberships(manager)).toMatchObject([
+      { rewardCycle: 284n, amountUstx: 100_000_000_000n },
+      { rewardCycle: 285n, amountUstx: 100_000_000_000n },
+    ]);
+  });
+
+  it("rejects positions with more than 97 active cycles", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    const node = {
+      callReadOnly: vi
+        .fn()
+        .mockResolvedValueOnce(position(manager, 141n, 98n))
+        .mockResolvedValueOnce(uintCV(5_720n)),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).rejects.toThrow(
+      "PoX-5 returned invalid active cycle span 98",
+    );
   });
 
   it("excludes cycles whose exact membership still belongs to the prior signer", async () => {
