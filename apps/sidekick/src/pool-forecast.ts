@@ -259,6 +259,7 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
     const status =
       matchesContractPending !== false &&
       delegatedCoversPendingStx &&
+      meetsThreshold &&
       thresholdAndSignerSetAgree &&
       eligibleSharesAgree
         ? "ready"

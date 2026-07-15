@@ -28,10 +28,10 @@ const preflight: PreflightResult = {
     blocksUntilEpoch4: 0,
   },
   cycle: {
-    currentId: 140,
+    currentId: 141,
     currentMinThresholdUstx: "50000000000",
     currentStackedUstx: "500000000000000",
-    nextId: 141,
+    nextId: 142,
     nextMinThresholdUstx: "50000000000",
     nextStackedUstx: "75000000000",
     preparePhaseStartBurnHeight: 962_050,
@@ -85,7 +85,7 @@ describe("pool setup status", () => {
 
     expect(result.status).toBe("ready");
     expect(result.eligibility.current).toMatchObject({
-      cycleId: 140,
+      cycleId: 141,
       delegatedUstx: "49000000000",
       thresholdUstx: "50000000000",
       marginUstx: "-1000000000",
@@ -93,7 +93,7 @@ describe("pool setup status", () => {
       inSignerSet: false,
     });
     expect(result.eligibility.next).toMatchObject({
-      cycleId: 141,
+      cycleId: 142,
       delegatedUstx: "51000000000",
       marginUstx: "1000000000",
       meetsThreshold: true,
@@ -119,6 +119,30 @@ describe("pool setup status", () => {
         id: "next-cycle-eligibility-consistency",
         status: "warn",
       }),
+    );
+  });
+
+  it("closes enrollment one block before prepare phase because the next transaction executes too late", async () => {
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(uintCV(50_000_000_000n))
+      .mockResolvedValueOnce(trueCV())
+      .mockResolvedValueOnce(uintCV(50_000_000_000n))
+      .mockResolvedValueOnce(trueCV());
+
+    const result = await readPoolSetupStatus(
+      { callReadOnly },
+      {
+        ...preflight,
+        cycle: { ...preflight.cycle, blocksUntilPreparePhase: 1, isPreparePhase: false },
+      },
+      manager,
+      registration,
+    );
+
+    expect(result.enrollmentWindow.status).toBe("prepare-phase");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ id: "enrollment-window", status: "warn" }),
     );
   });
 

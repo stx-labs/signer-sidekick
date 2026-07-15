@@ -31,6 +31,10 @@ function occurrenceCount(source: string, value: string): number {
   return source.split(value).length - 1;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function generateManagerArtifact(
   upstreamSource: string,
   profile: ManagerProfile,
@@ -58,11 +62,11 @@ export function generateManagerArtifact(
     );
   }
 
-  const generated = upstreamSource
-    .split(UPSTREAM_POX5)
-    .join(profile.contracts.pox5)
-    .split(UPSTREAM_SBTC_DEPLOYER)
-    .join(profile.contracts.sbtcDeployer);
+  const generated = upstreamSource.replace(
+    new RegExp(`${escapeRegExp(UPSTREAM_POX5)}|${escapeRegExp(UPSTREAM_SBTC_DEPLOYER)}`, "g"),
+    (principal) =>
+      principal === UPSTREAM_POX5 ? profile.contracts.pox5 : profile.contracts.sbtcDeployer,
+  );
 
   if (profile.contracts.pox5 !== UPSTREAM_POX5 && generated.includes(UPSTREAM_POX5)) {
     throw new Error("Generated manager still contains the upstream PoX-5 principal");

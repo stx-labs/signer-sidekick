@@ -19,6 +19,9 @@ if (!values.profile || !values.source || !values.output) {
 const profilePath = resolve(values.profile);
 const sourcePath = resolve(values.source);
 const outputPath = resolve(values.output);
+if (!outputPath.endsWith(".clar")) {
+  throw new Error("--output must end in .clar so contract metadata cannot overwrite the artifact");
+}
 const metadataPath = outputPath.replace(/\.clar$/, ".metadata.json");
 
 const profile = parseManagerProfile(JSON.parse(await readFile(profilePath, "utf8")));

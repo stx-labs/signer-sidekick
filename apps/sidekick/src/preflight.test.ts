@@ -147,13 +147,13 @@ describe("operator preflight", () => {
           prepare_cycle_length: 100,
           contract_id: "SP000000000000000000002Q6VF78.pox-5",
           current_cycle: {
-            id: 140,
+            id: 141,
             min_threshold_ustx: 120_000_000_000,
             stacked_ustx: 550_000_000_000_000,
             is_pox_active: true,
           },
           next_cycle: {
-            id: 141,
+            id: 142,
             min_threshold_ustx: 50_000_000_000,
             min_increment_ustx: 10_000_000_000,
             stacked_ustx: 75_000_000_000,
@@ -176,9 +176,9 @@ describe("operator preflight", () => {
     expect(result.status).toBe("pass");
     expect(result.pox.pox5Available).toBe(true);
     expect(result.cycle).toMatchObject({
-      currentId: 140,
+      currentId: 141,
       currentMinThresholdUstx: "120000000000",
-      nextId: 141,
+      nextId: 142,
       nextMinThresholdUstx: "50000000000",
       preparePhaseStartBurnHeight: 962_050,
       blocksUntilPreparePhase: 1_810,

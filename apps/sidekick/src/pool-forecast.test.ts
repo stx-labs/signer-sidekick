@@ -112,7 +112,7 @@ describe("pool cycle forecast", () => {
 
     const result = await readPoolForecast(options(projectionStore, callReadOnly));
 
-    expect(result.status).toBe("ready");
+    expect(result.status).toBe("attention");
     expect(result.ingestion).toMatchObject({
       pagesProcessed: 2,
       activeDiscoveredStakers: 2,
@@ -121,7 +121,7 @@ describe("pool cycle forecast", () => {
     });
     expect(result.cycles[0]).toMatchObject({
       cycleId: 141,
-      status: "ready",
+      status: "attention",
       local: {
         stakerCount: 1,
         enumeratedStxUstx: "40000000000",

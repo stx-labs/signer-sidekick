@@ -190,7 +190,9 @@ export async function readPoolSetupStatus(
   const enrollmentWindowStatus =
     preflight.cycle.isPreparePhase === null
       ? "unknown"
-      : preflight.cycle.isPreparePhase
+      : preflight.cycle.isPreparePhase ||
+          (preflight.cycle.blocksUntilPreparePhase !== null &&
+            preflight.cycle.blocksUntilPreparePhase <= 1)
         ? "prepare-phase"
         : "open";
   checks.push({
@@ -200,7 +202,7 @@ export async function readPoolSetupStatus(
       enrollmentWindowStatus === "open"
         ? `PoX-5 stake changes are open for cycle ${preflight.cycle.nextId ?? "unknown"}`
         : enrollmentWindowStatus === "prepare-phase"
-          ? "PoX-5 stake changes are closed during the prepare phase"
+          ? "PoX-5 stake changes are closed during the prepare phase and its final pre-execution block"
           : "The current PoX-5 enrollment window is unknown",
   });
 

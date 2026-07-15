@@ -9,6 +9,24 @@ const defaults: Partial<Record<SidekickNetwork, string>> = {
   testnet: "https://api.testnet.hiro.so",
 };
 
+const forbiddenKeyMaterialEnvironmentVariables = [
+  "SIDEKICK_ADMIN_KEY",
+  "SIDEKICK_ADMIN_PRIVATE_KEY",
+  "SIDEKICK_SIGNER_PRIVATE_KEY",
+  "MANAGER_ADMIN_KEY",
+  "MANAGER_ADMIN_PRIVATE_KEY",
+  "SIGNER_PRIVATE_KEY",
+  "STACKS_ADMIN_KEY",
+  "STACKS_ADMIN_PRIVATE_KEY",
+  "STACKS_PRIVATE_KEY",
+  "STACKS_SIGNER_PRIVATE_KEY",
+  "ADMIN_MNEMONIC",
+  "SIGNER_MNEMONIC",
+  "STACKS_MNEMONIC",
+  "MNEMONIC",
+  "SEED_PHRASE",
+] as const;
+
 export interface SidekickConfig {
   network: SidekickNetwork;
   nodeRpcUrl: string;
@@ -31,6 +49,12 @@ function parseUrl(value: string, name: string): string {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
+  const forbiddenName = forbiddenKeyMaterialEnvironmentVariables.find((name) => env[name]?.trim());
+  if (forbiddenName) {
+    throw new Error(
+      `${forbiddenName} is forbidden: Sidekick never accepts manager admin or signer key material`,
+    );
+  }
   const network = sidekickNetworkSchema.parse(env.SIDEKICK_NETWORK ?? "mainnet");
   const nodeRpcUrl = env.STACKS_NODE_RPC_URL;
   if (!nodeRpcUrl) throw new Error("STACKS_NODE_RPC_URL is required");

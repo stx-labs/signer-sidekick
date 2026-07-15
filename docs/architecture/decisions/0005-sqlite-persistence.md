@@ -1,4 +1,4 @@
-# ADR 0002: Built-in SQLite with a narrow typed repository
+# ADR 0005: Built-in SQLite with a narrow typed repository
 
 - Status: Accepted
 - Date: 2026-07-14

@@ -72,6 +72,10 @@ const readOnlyResponseSchema = z.discriminatedUnion("okay", [
 
 const clarityFunctionNamePattern = /^[a-zA-Z][a-zA-Z0-9-_!?+<>=/*]*$/;
 const clarityHexPattern = /^(?:0x)?(?:[0-9a-fA-F]{2})+$/;
+const canonicalHex = z
+  .string()
+  .regex(/^0x[0-9a-f]{64}$/i)
+  .transform((value) => value.toLowerCase());
 
 const apiStatusSchema = z.object({
   server_version: z.string(),
@@ -120,7 +124,7 @@ const smartContractLogPageSchema = z
         .object({
           event_index: z.number().int().nonnegative(),
           event_type: z.literal("smart_contract_log"),
-          tx_id: z.string().regex(/^0x[0-9a-f]{64}$/i),
+          tx_id: canonicalHex,
           contract_log: z
             .object({
               contract_id: z.string(),
@@ -135,12 +139,12 @@ const smartContractLogPageSchema = z
   .strict();
 
 const transactionSummarySchema = z.object({
-  tx_id: z.string().regex(/^0x[0-9a-f]{64}$/i),
+  tx_id: canonicalHex,
   status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
   block: z.object({
     height: z.number().int().nonnegative(),
-    hash: z.string().regex(/^0x[0-9a-f]{64}$/i),
-    index_hash: z.string().regex(/^0x[0-9a-f]{64}$/i),
+    hash: canonicalHex,
+    index_hash: canonicalHex,
     time: z.number().nonnegative(),
     tx_index: z.number().int().nonnegative(),
   }),
@@ -161,24 +165,121 @@ export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
 
 type Fetch = typeof fetch;
 
+export class UpstreamHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "UpstreamHttpError";
+  }
+}
+
+export class RateLimitedError extends UpstreamHttpError {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number | null,
+  ) {
+    super(message, 429);
+    this.name = "RateLimitedError";
+  }
+}
+
+export class UpstreamUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "UpstreamUnavailableError";
+  }
+}
+
+export class UpstreamSchemaError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "UpstreamSchemaError";
+  }
+}
+
+function sanitizedEndpoint(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
+  if (value === null) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function retryDelay(attempt: number): number {
+  const exponential = Math.min(5_000, 250 * 2 ** (attempt - 1));
+  return Math.round(exponential * (0.75 + Math.random() * 0.5));
+}
+
+async function sleep(milliseconds: number): Promise<void> {
+  if (milliseconds <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 async function fetchJson<T>(
   fetchImpl: Fetch,
   url: string,
   schema: z.ZodType<T>,
   request: RequestInit = {},
 ): Promise<T> {
-  const requestWithTimeout: RequestInit = {
-    ...request,
-    signal: AbortSignal.timeout(10_000),
-  };
+  const endpoint = sanitizedEndpoint(url);
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        ...request,
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        throw new UpstreamUnavailableError(
+          `${endpoint} was unavailable after ${attempt} attempts`,
+          {
+            cause: error,
+          },
+        );
+      }
+      await sleep(retryDelay(attempt));
+      continue;
+    }
 
-  const response = await fetchImpl(url, requestWithTimeout);
-  if (!response.ok) {
-    throw new Error(
-      `${new URL(url).origin}${new URL(url).pathname} returned HTTP ${response.status}`,
-    );
+    if (!response.ok) {
+      const retryable = response.status === 429 || response.status >= 500;
+      const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
+      if (retryable && attempt < maxAttempts) {
+        await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)));
+        continue;
+      }
+      if (response.status === 429) {
+        throw new RateLimitedError(
+          `${endpoint} remained rate limited after ${attempt} attempts`,
+          retryAfterMs,
+        );
+      }
+      if (response.status >= 500) {
+        throw new UpstreamUnavailableError(
+          `${endpoint} returned HTTP ${response.status} after ${attempt} attempts`,
+        );
+      }
+      throw new UpstreamHttpError(`${endpoint} returned HTTP ${response.status}`, response.status);
+    }
+
+    try {
+      return schema.parse(await response.json());
+    } catch (error) {
+      throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
+        cause: error,
+      });
+    }
   }
-  return schema.parse(await response.json());
+  throw new UpstreamUnavailableError(`${endpoint} was unavailable`);
 }
 
 export class StacksNodeClient {

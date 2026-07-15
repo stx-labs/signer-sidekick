@@ -1,6 +1,12 @@
 import { cvToHex, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
-import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import {
+  RateLimitedError,
+  StacksApiClient,
+  StacksNodeClient,
+  UpstreamHttpError,
+  UpstreamSchemaError,
+} from "./chain-clients.js";
 
 describe("Stacks API client", () => {
   it("sends a configured API key without putting it in the URL", async () => {
@@ -136,6 +142,106 @@ describe("Stacks API client", () => {
       block: { height: 8_600_000, hash: blockHash, index_hash: indexHash },
       bitcoin_block: { height: 960_240 },
     });
+  });
+
+  it("normalizes API transaction and block hashes before storage", async () => {
+    const upperTxId = `0x${"AB".repeat(32)}`;
+    const upperBlockHash = `0x${"CD".repeat(32)}`;
+    const upperIndexHash = `0x${"EF".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: upperTxId,
+          status: "success",
+          block: {
+            height: 8_600_000,
+            hash: upperBlockHash,
+            index_hash: upperIndexHash,
+            time: 1_784_000_000,
+            tx_index: 3,
+          },
+          bitcoin_block: { height: 960_240, time: 1_784_000_000 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransaction(upperTxId)).resolves.toMatchObject({
+      tx_id: upperTxId.toLowerCase(),
+      block: {
+        hash: upperBlockHash.toLowerCase(),
+        index_hash: upperIndexHash.toLowerCase(),
+      },
+    });
+  });
+
+  it("honors Retry-After and retries a rate-limited request", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "0" } }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            network_id: 1,
+            burn_block_height: 958_074,
+            stacks_tip_height: 8_550_394,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getNodeInfo()).resolves.toMatchObject({ network_id: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("classifies exhausted rate limits and non-retryable HTTP failures", async () => {
+    const limitedFetch = vi
+      .fn<typeof fetch>()
+      .mockImplementation(
+        async () => new Response(null, { status: 429, headers: { "retry-after": "0" } }),
+      );
+    const missingFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 404 }));
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        limitedFetch,
+      ).getNodeInfo(),
+    ).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        missingFetch,
+      ).getNodeInfo(),
+    ).rejects.toBeInstanceOf(UpstreamHttpError);
+  });
+
+  it("classifies an incompatible upstream response without leaking its body", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ private_detail: "must-not-leak" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const error = await new StacksApiClient(
+      "https://api.example.test",
+      undefined,
+      undefined,
+      fetchImpl,
+    )
+      .getNodeInfo()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(UpstreamSchemaError);
+    expect(String(error)).not.toContain("must-not-leak");
   });
 });
 

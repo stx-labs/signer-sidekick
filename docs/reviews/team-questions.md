@@ -34,10 +34,19 @@ mainnet-specific.
 
 1. Please confirm the complete fresh-setup prerequisites. The Stacks 4.0.0 signer command and its
    four-field JSON output are now pinned and covered by the upstream cross-language fixture.
-2. Which signer configuration values may be displayed or exported safely in an operator support
+2. What supported signer endpoint and response field should Sidekick use for its narrowly scoped,
+   read-only version and liveness probe?
+3. Which signer configuration values may be displayed or exported safely in an operator support
    bundle?
-3. What is the recommended operator ceremony for broadcasting and verifying `register-self`
+4. What is the recommended operator ceremony for broadcasting and verifying `register-self`
    without giving Sidekick the signer or manager-admin key?
+
+## Future-cycle forecast
+
+1. Which PoX-5 per-cycle read-only functions are authoritative for current and future signer-set
+   membership, delegated amount, pending STX, and eligible STX shares?
+2. Which future-cycle values must remain explicitly labeled as local projections rather than
+   authoritative contract state?
 
 ## Security
 

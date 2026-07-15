@@ -32,10 +32,10 @@ const preflight = {
     blocksUntilEpoch4: 0,
   },
   cycle: {
-    currentId: 140,
+    currentId: 141,
     currentMinThresholdUstx: "50000000000",
     currentStackedUstx: "500000000000000",
-    nextId: 141,
+    nextId: 142,
     nextMinThresholdUstx: "50000000000",
     nextStackedUstx: "75000000000",
     preparePhaseStartBurnHeight: 962_050,
@@ -89,7 +89,7 @@ const setup = {
   },
   eligibility: {
     current: {
-      cycleId: 140,
+      cycleId: 141,
       delegatedUstx: "51000000000",
       thresholdUstx: "50000000000",
       marginUstx: "1000000000",
@@ -98,7 +98,7 @@ const setup = {
       thresholdAndMembershipAgree: true,
     },
     next: {
-      cycleId: 141,
+      cycleId: 142,
       delegatedUstx: "52000000000",
       thresholdUstx: "50000000000",
       marginUstx: "2000000000",

@@ -5,12 +5,14 @@ Start here. This note orients you; the detail lives in the linked files.
 ## What was produced
 
 - **Screen mockups** — [`screens/`](screens/) (open [`screens/index.html`](screens/index.html)). Static HTML/CSS reference for the operator dashboard, built on the vendored Stacks Labs design system. These are the visual spec for the React component layer in `apps/dashboard` — reference, not the app itself.
-- **Design deltas** — [`DESIGN-DELTAS.md`](DESIGN-DELTAS.md). Everything the mockups add or change vs. `pox5-operator-suite-spec.md`, tagged `DECIDED` / `ADOPTED` / `PROPOSED` / `CONFIRM`. **Read this second.**
+- **Design deltas** — [`DESIGN-DELTAS.md`](DESIGN-DELTAS.md). Everything the mockups add or change vs. [`docs/product/v1-plan.md`](../docs/product/v1-plan.md), formerly circulated as `pox5-operator-suite-spec.md`, tagged `DECIDED` / `ADOPTED` / `PROPOSED` / `CONFIRM`. **Read this second.**
 - **Design system** — [`DESIGN.md`](DESIGN.md), [`SKILL.md`](SKILL.md), [`README.md`](README.md), [`tokens/tokens.css`](tokens/tokens.css), [`fonts/`](fonts/). The vendored Stacks Labs system. Everything must use these tokens; never hard-code brand hex.
 
 ## Screens (each answers one operator question)
 
 `overview` · `registration` · `pool` · `rewards` · `operations` · `setup` (Initial Setup wizard) · `settings` · `enrollment` (Public Pool Page = embed generator) + `pool-public` (embed preview). Shell + shared primitives live in [`screens/_app.css`](screens/_app.css) / [`screens/_app.js`](screens/_app.js).
+
+`screens/_app.css` is also a production-owned stylesheet imported by `apps/dashboard`; changes to it require dashboard regression testing even though it remains beside the mockups.
 
 ## What to build beyond the base spec (from DESIGN-DELTAS.md)
 
@@ -37,4 +39,4 @@ Start here. This note orients you; the detail lives in the linked files.
 
 Tokens/component layer from the mockups → read-only screens (Overview/Registration/Pool/Rewards) wired to node read-onlys + API → Settings + Environment polling → Operations (jobs/modes/approvals) → Public Pool Page embed generator.
 
-The spec edits that make `pox5-operator-suite-spec.md` match all this are listed in DESIGN-DELTAS.md §8 (not yet applied).
+The accepted spec edits are applied in [`docs/product/v1-plan.md`](../docs/product/v1-plan.md). The signer endpoint contract and future-cycle read-only guarantees remain external-confirmation items.

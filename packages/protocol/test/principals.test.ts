@@ -24,4 +24,10 @@ describe("contract principals", () => {
     expect(validatePrincipal("SP000000000000000000002Q6VF78.manager")).toBe(true);
     expect(validatePrincipal("not-a-principal")).toBe(false);
   });
+
+  it("accepts underscores and enforces the 40-character Clarity contract-name limit", () => {
+    expect(validatePrincipal("SP000000000000000000002Q6VF78.signer_manager")).toBe(true);
+    expect(validatePrincipal(`SP000000000000000000002Q6VF78.${"a".repeat(40)}`)).toBe(true);
+    expect(validatePrincipal(`SP000000000000000000002Q6VF78.${"a".repeat(41)}`)).toBe(false);
+  });
 });

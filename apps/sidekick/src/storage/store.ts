@@ -1273,9 +1273,11 @@ export class SidekickStore {
     const rawPayloadJson = serializeJson(value.rawPayload, "rawPayload");
     const decodedPayloadJson =
       value.decodedPayload === null ? null : serializeJson(value.decodedPayload, "decodedPayload");
-    this.db
-      .prepare(
-        `INSERT INTO chain_events (
+    this.db.exec("SAVEPOINT put_chain_event");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO chain_events (
           chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
@@ -1296,28 +1298,34 @@ export class SidekickStore {
           decoded_payload_json = excluded.decoded_payload_json,
           source_id = excluded.source_id,
           updated_at = excluded.updated_at`,
-      )
-      .run(
-        value.chainId,
-        value.txId,
-        value.eventIndex,
-        value.blockHeight,
-        value.blockHash,
-        value.indexBlockHash,
-        value.microblockHash,
-        value.microblockSequence,
-        value.canonical ? 1 : 0,
-        value.microblockCanonical ? 1 : 0,
-        value.contractId,
-        value.topic,
-        rawPayloadJson,
-        value.decodedSchemaVersion,
-        decodedPayloadJson,
-        value.sourceId,
-        value.observedAt,
-        value.observedAt,
-      );
-    this.putManagerActivityProjection(value);
+        )
+        .run(
+          value.chainId,
+          value.txId,
+          value.eventIndex,
+          value.blockHeight,
+          value.blockHash,
+          value.indexBlockHash,
+          value.microblockHash,
+          value.microblockSequence,
+          value.canonical ? 1 : 0,
+          value.microblockCanonical ? 1 : 0,
+          value.contractId,
+          value.topic,
+          rawPayloadJson,
+          value.decodedSchemaVersion,
+          decodedPayloadJson,
+          value.sourceId,
+          value.observedAt,
+          value.observedAt,
+        );
+      this.putManagerActivityProjection(value);
+      this.db.exec("RELEASE SAVEPOINT put_chain_event");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO SAVEPOINT put_chain_event");
+      this.db.exec("RELEASE SAVEPOINT put_chain_event");
+      throw error;
+    }
   }
 
   private putManagerActivityProjection(value: ChainEventInput): void {
@@ -1625,15 +1633,17 @@ export class SidekickStore {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const parsedIndexBlockHash = hashSchema.parse(indexBlockHash);
     const parsedUpdatedAt = z.iso.datetime().parse(updatedAt);
-    const result = this.db
-      .prepare(
-        `UPDATE chain_events SET canonical = 0, updated_at = ?
+    this.db.exec("SAVEPOINT mark_index_block_noncanonical");
+    try {
+      const result = this.db
+        .prepare(
+          `UPDATE chain_events SET canonical = 0, updated_at = ?
          WHERE chain_id = ? AND index_block_hash = ? AND canonical = 1`,
-      )
-      .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
-    this.db
-      .prepare(
-        `UPDATE manager_activity_events AS activity
+        )
+        .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
+      this.db
+        .prepare(
+          `UPDATE manager_activity_events AS activity
          SET canonical = 0, updated_at = ?
          WHERE activity.chain_id = ? AND activity.canonical = 1
            AND EXISTS (
@@ -1644,9 +1654,15 @@ export class SidekickStore {
                AND event.index_block_hash = ?
                AND event.canonical = 0
            )`,
-      )
-      .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
-    return Number(result.changes);
+        )
+        .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
+      this.db.exec("RELEASE SAVEPOINT mark_index_block_noncanonical");
+      return Number(result.changes);
+    } catch (error) {
+      this.db.exec("ROLLBACK TO SAVEPOINT mark_index_block_noncanonical");
+      this.db.exec("RELEASE SAVEPOINT mark_index_block_noncanonical");
+      throw error;
+    }
   }
 
   markMissingCanonicalContractEvents(

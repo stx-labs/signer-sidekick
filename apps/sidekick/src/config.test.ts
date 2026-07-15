@@ -58,4 +58,29 @@ describe("Sidekick configuration", () => {
       }),
     ).toThrow();
   });
+
+  it.each([
+    "SIDEKICK_ADMIN_PRIVATE_KEY",
+    "MANAGER_ADMIN_KEY",
+    "SIGNER_PRIVATE_KEY",
+    "STACKS_PRIVATE_KEY",
+    "SIGNER_MNEMONIC",
+    "SEED_PHRASE",
+  ])("rejects forbidden key material supplied as %s", (name) => {
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        [name]: "must-never-be-loaded",
+      }),
+    ).toThrow(`${name} is forbidden`);
+  });
+
+  it("does not reject empty forbidden fields inherited from an environment template", () => {
+    expect(
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        SIGNER_PRIVATE_KEY: "  ",
+      }).network,
+    ).toBe("mainnet");
+  });
 });

@@ -38,6 +38,11 @@ export type SignerStakerDiscrepancy =
       stakerPrincipal: string;
       expectedSignerPrincipal: string;
       actualSignerPrincipal: string;
+    }
+  | {
+      kind: "cycle-membership-missing";
+      stakerPrincipal: string;
+      rewardCycle: string;
     };
 
 export interface SyncSignerStakersOptions {
@@ -151,9 +156,7 @@ async function verifyPageItem(
         );
         const membership = decodePox5CycleMembership(value);
         if (!membership) {
-          throw new Error(
-            `PoX-5 has no cycle membership for ${item.staker} in cycle ${rewardCycle}`,
-          );
+          return null;
         }
         return {
           rewardCycle,
@@ -162,8 +165,34 @@ async function verifyPageItem(
         };
       }),
     );
+    const missingCycle = memberships.indexOf(null);
+    if (missingCycle !== -1) {
+      const rewardCycle = batch[missingCycle];
+      return {
+        item: {
+          stakerPrincipal: item.staker,
+          hasStx,
+          hasBtc,
+          stxNodeVerified: false,
+          position: null,
+        },
+        discrepancy: {
+          kind: "cycle-membership-missing",
+          stakerPrincipal: item.staker,
+          rewardCycle: String(rewardCycle),
+        },
+      };
+    }
     cycleMemberships.push(
-      ...memberships.filter(({ signerPrincipal }) => signerPrincipal === options.managerPrincipal),
+      ...memberships.filter(
+        (
+          membership,
+        ): membership is {
+          rewardCycle: bigint;
+          signerPrincipal: string;
+          amountUstx: bigint;
+        } => membership !== null && membership.signerPrincipal === options.managerPrincipal,
+      ),
     );
   }
   return {

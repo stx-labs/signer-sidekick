@@ -1,9 +1,13 @@
 .git
 .github
+.env
+.env.*
+!.env.example
 node_modules
 dist
 coverage
 data
+backups
 tmp
 test-results
 playwright-report

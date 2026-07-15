@@ -4,6 +4,10 @@ Signer Sidekick ships as one non-root OCI container with the dashboard embedded 
 operator API. The supplied Compose profile binds the application only to `127.0.0.1:3998`, drops
 all Linux capabilities, uses a read-only root filesystem, and keeps SQLite in a named volume.
 
+The read-only V1 container accepts its API key and bearer token through environment variables.
+Before any gas-payer automation is enabled, production key material must use the documented
+read-only Docker-secret mount rather than environment injection.
+
 ## Start
 
 Use a Stacks node RPC endpoint reachable from inside the container. On Docker Desktop and on the

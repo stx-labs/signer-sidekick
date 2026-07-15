@@ -880,7 +880,7 @@ Stacks 4.0.0 ships `stacks-signer generate-staking-signature --config <file> --s
 - `/api/v1/setup/*`
 - `/health/live`, `/health/ready`, `/metrics`
 
-All non-health endpoints require authentication. The application has no public pool-information route; it generates artifacts for the operator to host elsewhere. Mutating routes enforce CSRF protection for browser sessions, local role checks, audit logging, and current-mode constraints.
+All operator API endpoints require authentication. `/metrics` is intentionally unauthenticated for local Prometheus collection and must remain loopback-bound or protected by the operator's reverse proxy. The application has no public pool-information route; it generates artifacts for the operator to host elsewhere. Mutating routes enforce CSRF protection for browser sessions, local role checks, audit logging, and current-mode constraints.
 
 ### 13.3 Configuration
 
@@ -926,6 +926,8 @@ Manager admin and signer keys are invalid configuration fields and should cause 
 | UI/session secret | Secret mount/provider | Local authentication only |
 
 The gas payer has no special contract authority. Its loss should expose only its funded STX and the ability to pay gas for permissionless calls that anyone can already make.
+
+When configured after its supported endpoint contract is confirmed, Sidekick may make an unauthenticated read-only version/liveness probe to the signer. This probe never reads signer metrics, logs, proposal responses, signing performance, host state, configuration files, or key material.
 
 ### 14.2 Supported key providers
 
@@ -1257,6 +1259,8 @@ These are the remaining decisions that should be answered during review. Propose
 | UI auth | Single local operator session; loopback bind | No |
 | Mainnet confirmation policy | Conservative configurable default established in testing | **Yes, before automation GA** |
 | API endpoint/event guarantees | Ask maintainers; use conservative replay/read-only reconciliation regardless | No architecture blocker |
+| Signer version/liveness endpoint and response field | Confirm the supported signer-tooling endpoint before enabling the optional probe | **Yes, before signer probe GA** |
+| Future-cycle PoX-5 read-only guarantees | Confirm which per-cycle values are authoritative; label all remaining values as local projections | **Yes, before forecast GA** |
 | Canonical brand assets | Pull only the Stacks/STX/Bitcoin SVGs used by v1 with provenance; use Phosphor for generic icons | **Yes, before UI release** |
 
 ### Requested reviewers

@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAINNET_REFERENCE_MANAGER } from "../src/known-managers.js";
-import { generateManagerArtifact, UPSTREAM_POX5 } from "../src/manager-artifact.js";
+import {
+  generateManagerArtifact,
+  UPSTREAM_POX5,
+  UPSTREAM_SBTC_DEPLOYER,
+} from "../src/manager-artifact.js";
 import { parseManagerProfile } from "../src/profile.js";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -56,5 +61,44 @@ describe("reference manager artifact generation", () => {
     expect(() => generateManagerArtifact(`${source}\n;; modified`, profile)).toThrow(
       "source hash mismatch",
     );
+  });
+
+  it("substitutes a non-identity sBTC deployer in a synthetic non-production profile", () => {
+    const source = `(define-constant pox '${UPSTREAM_POX5})\n(define-constant sbtc '${UPSTREAM_SBTC_DEPLOYER})\n`;
+    const profile = parseManagerProfile({
+      id: "synthetic-mainnet",
+      network: "mainnet",
+      upstream: {
+        tag: "test",
+        commit: "0".repeat(40),
+        sourceSha256: createHash("sha256").update(source).digest("hex"),
+      },
+      contracts: {
+        pox5: "SP000000000000000000002Q6VF78.pox-5",
+        sbtcDeployer: "SP000000000000000000002Q6VF78",
+      },
+      expectedReplacements: { pox5: 1, sbtcDeployer: 1 },
+      productionApproved: false,
+    });
+
+    const artifact = generateManagerArtifact(source, profile);
+    expect(artifact.source).toContain("'SP000000000000000000002Q6VF78)");
+    expect(artifact.source).not.toContain(UPSTREAM_SBTC_DEPLOYER);
+  });
+
+  it("rejects a profile whose PoX-5 boot contract does not match its network", () => {
+    expect(() =>
+      parseManagerProfile({
+        id: "wrong-network",
+        network: "mainnet",
+        upstream: { tag: "test", commit: "0".repeat(40), sourceSha256: "0".repeat(64) },
+        contracts: {
+          pox5: "ST000000000000000000002AMW42H.pox-5",
+          sbtcDeployer: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4",
+        },
+        expectedReplacements: { pox5: 1, sbtcDeployer: 1 },
+        productionApproved: false,
+      }),
+    ).toThrow("canonical mainnet PoX-5 boot contract");
   });
 });

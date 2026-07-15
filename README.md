@@ -16,7 +16,7 @@ The repository now contains the activation/setup path and the read-only v1 contr
 - [development setup](docs/operator/development.md)
 - [scale and longitudinal data design](docs/architecture/scaling.md)
 - [upstream source provenance](contracts/PROVENANCE.md)
-- [SQLite persistence decision](docs/architecture/decisions/0002-sqlite-persistence.md)
+- [SQLite persistence decision](docs/architecture/decisions/0005-sqlite-persistence.md)
 
 ## Current scaffold
 

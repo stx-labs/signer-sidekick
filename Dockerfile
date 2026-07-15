@@ -20,9 +20,12 @@ RUN pnpm install --frozen-lockfile \
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
+ARG VCS_REF=unknown
+
 LABEL org.opencontainers.image.title="Signer Sidekick" \
   org.opencontainers.image.description="PoX-5 operations tooling for Stacks signer and pool operators" \
   org.opencontainers.image.licenses="GPL-3.0-only" \
+  org.opencontainers.image.revision="${VCS_REF}" \
   org.opencontainers.image.source="https://github.com/stx-labs/signer-sidekick"
 
 ENV NODE_ENV=production \
@@ -39,6 +42,7 @@ RUN groupadd --system --gid 10001 sidekick \
 COPY --from=build --chown=sidekick:sidekick /opt/sidekick /app
 COPY --from=build --chown=sidekick:sidekick /workspace/apps/dashboard/dist /app/dashboard
 COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /usr/share/doc/signer-sidekick/
+COPY --from=build /workspace/design/fonts/OFL-1.1.txt /usr/share/doc/signer-sidekick/OFL-1.1.txt
 
 USER sidekick
 WORKDIR /app

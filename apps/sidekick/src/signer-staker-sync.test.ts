@@ -268,6 +268,36 @@ describe("signer-staker synchronization", () => {
     });
   });
 
+  it("records a mid-scan cycle-membership race without aborting the synchronization", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    const node = {
+      callReadOnly: vi
+        .fn()
+        .mockResolvedValueOnce(position())
+        .mockResolvedValueOnce(uintCV(961_000n))
+        .mockResolvedValueOnce(noneCV())
+        .mockResolvedValueOnce(membership()),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
+      status: "completed",
+      nodeVerifiedStxPositions: 0,
+      unverifiedStxDiscoveries: 1,
+      discrepanciesObservedThisInvocation: [
+        {
+          kind: "cycle-membership-missing",
+          stakerPrincipal: stakerOne,
+          rewardCycle: "141",
+        },
+      ],
+    });
+  });
+
   it("verifies stakers concurrently while respecting the configured worker bound", async () => {
     const sidekickStore = await store();
     const api = {

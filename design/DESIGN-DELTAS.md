@@ -1,6 +1,6 @@
 # Design deltas & new capabilities
 
-**Purpose:** capture scope changes, new capabilities, and UI conventions that came out of the UI/UX design pass and are **not** (or not fully) in `pox5-operator-suite-spec.md`. This is the implementation hand-off so the agent building `apps/dashboard` and `apps/sidekick` knows what to add beyond the spec.
+**Purpose:** capture scope changes, new capabilities, and UI conventions that came out of the UI/UX design pass and are **not** (or not fully) in [`docs/product/v1-plan.md`](../docs/product/v1-plan.md), formerly circulated as `pox5-operator-suite-spec.md`. This is the implementation hand-off so the agent building `apps/dashboard` and `apps/sidekick` knows what to add beyond the spec.
 
 **Source of truth for visuals:** the static mockups in [`design/screens/`](screens/) (open [`screens/index.html`](screens/index.html)). They are reference for the React component layer, not the app itself.
 
@@ -143,4 +143,4 @@ Not new scope, but the mockups assume data the backend must actually source (fro
 
 ## 8. Spec sections to update (documentation follow-through)
 
-If/when these deltas are accepted, update: §2.4 (signer version/liveness carve-out), §5.5 (public page → generated embeddable artifact, app hosts nothing), §8.4 (signer endpoint connection), §12.2 (Settings nav), §12.9 (Setup wizard vs Settings editor), §13.2 (remove `/pool` and `/public/v1/pool` routes), §13.3 (new config fields in §3 above; remove the serve-public-page toggle), §14 (read-only signer connection in the trust model), §14.4 (drop the public-page reverse-proxy/TLS exposure), §20 (signer version/liveness endpoint as a launch-blocker to confirm), plus a matching ADR if the signer-connection change or the no-public-surface decision warrants one.
+The accepted deltas are now reflected in [`docs/product/v1-plan.md`](../docs/product/v1-plan.md). The two remaining confirmation items are the supported signer version/liveness endpoint contract and the future-cycle read-only guarantees used by the forecast.

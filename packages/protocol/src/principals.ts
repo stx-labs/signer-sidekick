@@ -1,6 +1,6 @@
 import { validateStacksAddress } from "@stacks/transactions";
 
-const contractNamePattern = /^[a-zA-Z][a-zA-Z0-9-_]{0,127}$/;
+export const contractNamePattern = /^[a-zA-Z][a-zA-Z0-9-_]{0,39}$/;
 
 export interface ContractPrincipalParts {
   address: string;

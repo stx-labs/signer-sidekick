@@ -1,8 +1,10 @@
 # Re-review (Round 2): Signer Sidekick PoX-5 Operator Suite Spec
 
+> **Superseded for implementation decisions.** See [`round2-disposition.md`](round2-disposition.md). In particular, the reward-pause finding below was explicitly not adopted for v1 by product-owner decision.
+
 **Reviewed:** July 14, 2026 (revision incorporating Round-1 feedback)
-**Spec:** `pox5-operator-suite-spec.md`
-**Prior review:** `pox5-operator-suite-spec-review.md`
+**Spec:** [`docs/product/v1-plan.md`](../product/v1-plan.md), formerly circulated as `pox5-operator-suite-spec.md`
+**Prior review:** [`initial-spec-review.md`](initial-spec-review.md)
 
 ---
 

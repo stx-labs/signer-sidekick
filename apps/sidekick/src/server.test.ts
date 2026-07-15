@@ -53,6 +53,16 @@ describe("local API", () => {
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
   });
 
+  it("rejects the documented placeholder bearer token", () => {
+    expect(() =>
+      createServer({
+        service: { snapshot: async () => ({}), synchronize: async () => ({}) },
+        authToken: "replace-with-at-least-24-random-characters",
+        logger: false,
+      }),
+    ).toThrow("SIDEKICK_AUTH_TOKEN");
+  });
+
   it("reports readiness and Prometheus counters without authentication", async () => {
     const service = {
       snapshot: async () => ({
@@ -154,5 +164,36 @@ describe("local API", () => {
         })
       ).statusCode,
     ).toBe(400);
+    expect(
+      (
+        await server.inject({
+          method: "GET",
+          url: "/api/v1/activity?rewardCycle=abc",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it("returns a generic 500 body when an operator service rejects", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      synchronize: async () => ({}),
+      poolPage: async () => {
+        throw new Error("https://upstream.example/private/path?api_key=must-not-leak");
+      },
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/pool",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({ error: "internal_server_error" });
+    expect(response.body).not.toContain("must-not-leak");
   });
 });

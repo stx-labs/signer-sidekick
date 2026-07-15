@@ -1,7 +1,7 @@
 # Review: Signer Sidekick PoX-5 Operator Suite Spec
 
 **Reviewed:** July 14, 2026
-**Spec:** `pox5-operator-suite-spec.md` (v1 scope, dated July 14, 2026)
+**Spec:** [`docs/product/v1-plan.md`](../product/v1-plan.md), formerly circulated as `pox5-operator-suite-spec.md` (v1 scope, dated July 14, 2026)
 **Method:** All protocol, artifact, and prior-art claims were independently verified against SIP-045, the Bitcoin Staking whitepaper appendix, `pox-5.clar` and `signer-manager.clar` at the stacks-core `4.0.0` tag, the stx-labs API/stacks.js repos, live mainnet `/v2/pox` state, and the `degen-lab/stacker-flow-automation` source.
 
 ---

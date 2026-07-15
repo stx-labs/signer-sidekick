@@ -79,17 +79,21 @@ function buildAlerts(snapshot: {
     });
   }
   if (snapshot.forecast?.status === "attention") {
-    const affected = snapshot.forecast.cycles
-      .filter(({ status }) => status === "attention")
+    const affectedCycles = snapshot.forecast.cycles.filter(({ status }) => status === "attention");
+    const affected = affectedCycles.map(({ cycleId }) => cycleId).join(", ");
+    const belowThreshold = affectedCycles
+      .filter(({ threshold }) => !threshold.meetsThreshold)
       .map(({ cycleId }) => cycleId)
       .join(", ");
     alerts.push({
       id: "pool:forecast-attention",
       severity: "warning",
-      title: "Pool Forecast Needs Attention",
-      detail: affected
-        ? `Review reward cycle(s) ${affected}.`
-        : "Pool roster evidence is incomplete.",
+      title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
+      detail: belowThreshold
+        ? `The pool is below the 50,000 STX signer-set threshold in reward cycle(s) ${belowThreshold}.`
+        : affected
+          ? `Review reward cycle(s) ${affected}.`
+          : "Pool roster evidence is incomplete.",
     });
   }
   if (snapshot.rewards?.status === "attention") {
@@ -124,6 +128,13 @@ export class OperatorService {
   constructor(private readonly options: OperatorServiceOptions) {}
 
   async snapshot(force = false) {
+    if (force && this.loading) {
+      try {
+        await this.loading;
+      } catch {
+        // A forced read must start after any older in-flight read, even if that read failed.
+      }
+    }
     const now = Date.now();
     if (!force && this.cached && this.cached.expiresAt > now) return this.cached.value;
     if (this.loading) return this.loading;

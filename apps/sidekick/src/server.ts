@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
-import Fastify from "fastify";
+import Fastify, { type FastifyError } from "fastify";
 
 interface RosterRow {
   stakerPrincipal?: string;
@@ -84,14 +84,36 @@ function integerQuery(
   return value;
 }
 
+function optionalUnsignedIntegerQuery(search: URLSearchParams, name: string): string | null {
+  const value = search.get(name);
+  if (value === null) return null;
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new Error(`${name} must be an unsigned integer`);
+  }
+  return value;
+}
+
 export function createServer(options: ServerOptions = {}) {
-  if (options.service && (!options.authToken || options.authToken.length < 24)) {
+  if (
+    options.service &&
+    (!options.authToken ||
+      options.authToken.length < 24 ||
+      options.authToken === "replace-with-at-least-24-random-characters")
+  ) {
     throw new Error("The operator API requires SIDEKICK_AUTH_TOKEN with at least 24 characters");
   }
   const server = Fastify({ logger: options.logger ?? true });
   let requestCount = 0;
   let syncCount = 0;
   let syncFailureCount = 0;
+
+  server.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = error.statusCode && error.statusCode < 500 ? error.statusCode : 500;
+    if (statusCode >= 500) request.log.error({ err: error }, "operator API request failed");
+    return reply
+      .code(statusCode)
+      .send({ error: statusCode >= 500 ? "internal_server_error" : "request_error" });
+  });
 
   server.addHook("onRequest", async (request, reply) => {
     requestCount += 1;
@@ -162,18 +184,20 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/api/v1/pool", async (request, reply) => {
     if (options.service?.poolPage) {
+      let pageOptions: { offset: number; limit: number; query: string };
       try {
         const search = new URL(request.url, "http://sidekick.local").searchParams;
         const limit = integerQuery(search, "limit", 50, 200);
         if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-        return options.service.poolPage({
+        pageOptions = {
           offset: integerQuery(search, "offset", 0, 10_000_000),
           limit,
           query: search.get("query") ?? "",
-        });
-      } catch (error) {
-        return reply.code(400).send({ error: "invalid_pagination", detail: String(error) });
+        };
+      } catch {
+        return reply.code(400).send({ error: "invalid_pagination" });
       }
+      return await options.service.poolPage(pageOptions);
     }
     const snapshot = await options.service?.snapshot();
     return {
@@ -209,17 +233,19 @@ export function createServer(options: ServerOptions = {}) {
     if (!options.service?.poolHistory) {
       return reply.code(501).send({ error: "pool_history_unavailable" });
     }
+    let pageOptions: { offset: number; limit: number };
     try {
       const search = new URL(request.url, "http://sidekick.local").searchParams;
       const limit = integerQuery(search, "limit", 50, 200);
       if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-      return options.service.poolHistory({
+      pageOptions = {
         offset: integerQuery(search, "offset", 0, 10_000_000),
         limit,
-      });
-    } catch (error) {
-      return reply.code(400).send({ error: "invalid_pagination", detail: String(error) });
+      };
+    } catch {
+      return reply.code(400).send({ error: "invalid_pagination" });
     }
+    return await options.service.poolHistory(pageOptions);
   });
   server.get("/api/v1/pool/roster.json", async (_request, reply) => {
     const snapshot = await options.service?.snapshot();
@@ -229,17 +255,19 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/api/v1/rewards", async (request, reply) => {
     if (options.service?.rewardsPage) {
+      let pageOptions: { offset: number; limit: number };
       try {
         const search = new URL(request.url, "http://sidekick.local").searchParams;
         const limit = integerQuery(search, "limit", 50, 200);
         if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-        return options.service.rewardsPage({
+        pageOptions = {
           offset: integerQuery(search, "offset", 0, 10_000_000),
           limit,
-        });
-      } catch (error) {
-        return reply.code(400).send({ error: "invalid_pagination", detail: String(error) });
+        };
+      } catch {
+        return reply.code(400).send({ error: "invalid_pagination" });
       }
+      return await options.service.rewardsPage(pageOptions);
     }
     const snapshot = await options.service?.snapshot();
     return {
@@ -259,17 +287,19 @@ export function createServer(options: ServerOptions = {}) {
     if (!options.service?.rewardsHistory) {
       return reply.code(501).send({ error: "reward_history_unavailable" });
     }
+    let pageOptions: { offset: number; limit: number };
     try {
       const search = new URL(request.url, "http://sidekick.local").searchParams;
       const limit = integerQuery(search, "limit", 50, 200);
       if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-      return options.service.rewardsHistory({
+      pageOptions = {
         offset: integerQuery(search, "offset", 0, 10_000_000),
         limit,
-      });
-    } catch (error) {
-      return reply.code(400).send({ error: "invalid_pagination", detail: String(error) });
+      };
+    } catch {
+      return reply.code(400).send({ error: "invalid_pagination" });
     }
+    return await options.service.rewardsHistory(pageOptions);
   });
   server.get("/api/v1/alerts", async () => {
     const snapshot = await options.service?.snapshot();
@@ -279,6 +309,7 @@ export function createServer(options: ServerOptions = {}) {
     if (!options.service?.activity) {
       return reply.code(501).send({ error: "paginated_activity_unavailable" });
     }
+    let activityOptions: NonNullable<Parameters<NonNullable<typeof options.service.activity>>[0]>;
     try {
       const search = new URL(request.url, "http://sidekick.local").searchParams;
       const claimLimit = integerQuery(search, "claimLimit", 50, 200);
@@ -290,17 +321,18 @@ export function createServer(options: ServerOptions = {}) {
       if (state !== null && !["pending", "settled", "reclaimed"].includes(state)) {
         return reply.code(400).send({ error: "invalid_withdrawal_state" });
       }
-      return options.service.activity({
+      activityOptions = {
         claimLimit,
         claimOffset: integerQuery(search, "claimOffset", 0, 10_000_000),
-        rewardCycle: search.get("rewardCycle"),
+        rewardCycle: optionalUnsignedIntegerQuery(search, "rewardCycle"),
         withdrawalLimit,
         withdrawalOffset: integerQuery(search, "withdrawalOffset", 0, 10_000_000),
         withdrawalState: state as "pending" | "settled" | "reclaimed" | null,
-      });
-    } catch (error) {
-      return reply.code(400).send({ error: "invalid_pagination", detail: String(error) });
+      };
+    } catch {
+      return reply.code(400).send({ error: "invalid_query" });
     }
+    return await options.service.activity(activityOptions);
   });
   server.get("/api/v1/setup", async () => {
     const snapshot = await options.service?.snapshot();
