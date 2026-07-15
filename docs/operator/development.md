@@ -113,3 +113,67 @@ An unknown source may attach in Observe mode only when it is on the configured n
 the complete manager interface. ABI similarity never enables automation. A wrong-network principal
 or incomplete manager interface is rejected. Sidekick does not redeploy, replace, sign for, or call
 the manager during attach.
+
+## Render a fresh manager deployment
+
+Rendering reads the pinned upstream source, applies the reviewed network substitutions, verifies
+both exact and canonical hashes against the immutable registry, and writes a Clarity 6 source file
+plus a deployment manifest. The output directory is explicit and existing files are never
+overwritten.
+
+```sh
+pnpm --filter @stx-labs/signer-sidekick build
+
+SIDEKICK_NETWORK=mainnet \
+pnpm --filter @stx-labs/signer-sidekick cli -- \
+  manager render \
+  SP1234OFFLINEADMIN \
+  my-signer-manager \
+  ./manager-deployment
+```
+
+The manifest contains the expected manager principal, source hashes, substituted PoX-5 and sBTC
+principals, Clarity version, and external-signing instructions. It never asks for or stores an
+admin key. The current mainnet profile is not production-approved, so the command writes a review
+artifact, sets `deploymentAllowed` to `false`, emits a warning, and exits with status 3. That gate
+must be changed only by reviewing and updating the pinned profile—not by a CLI override. Stacks
+core's own PoX-5 test configuration declares both PoX-5 and the reference signer manager as
+[Clarity 6 contracts in Epoch 4.0](https://github.com/stacks-network/stacks-core/blob/4.0.0/contrib/core-contract-tests/Clarinet.toml#L63-L76).
+
+## Signer grant ceremony
+
+After the manager is deployed and PoX-5 is active, generate a unique uint128 `auth-id` and prepare
+the signer-host command:
+
+```sh
+SIDEKICK_NETWORK=mainnet \
+STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
+pnpm --filter @stx-labs/signer-sidekick cli -- \
+  signer-grant prepare \
+  SP1234OFFLINEADMIN.my-signer-manager \
+  1700000001 \
+  /etc/stacks/signer.toml
+```
+
+Run only the returned `stacks-signer generate-staking-signature ... --json` command on the signer
+host, save its stdout as JSON, and transfer that non-secret result back to the Sidekick machine.
+The released Stacks 4.0.0 implementation emits exactly `signerKey`, `signerSignature`, `authId`,
+and `signerManager`; see the pinned
+[`handle_generate_staking_signature`](https://github.com/stacks-network/stacks-core/blob/4.0.0/stacks-signer/src/main.rs#L124-L162)
+implementation.
+
+```sh
+SIDEKICK_NETWORK=mainnet \
+STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
+pnpm --filter @stx-labs/signer-sidekick cli -- \
+  signer-grant verify \
+  SP1234OFFLINEADMIN.my-signer-manager \
+  1700000001 \
+  ./signer-grant.json
+```
+
+Verification is strict: manager and auth ID must match the ceremony; the JSON schema, compressed
+33-byte key, 65-byte RSV signature, and recovery ID must be valid; the message hash is fetched
+independently from PoX-5's `get-signer-grant-message-hash`; and the ECDSA signature and recovered
+key must both match. Only then does Sidekick emit the four encoded `register-self` arguments. The
+result remains an external-offline-admin instruction: Sidekick does not sign or broadcast it.

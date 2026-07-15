@@ -32,8 +32,8 @@ mainnet-specific.
 
 ## Signer tooling and operator documentation
 
-1. Please confirm the complete fresh-setup prerequisites and expected output of
-   `stacks-signer generate-staking-signature` for a PoX-5 manager grant.
+1. Please confirm the complete fresh-setup prerequisites. The Stacks 4.0.0 signer command and its
+   four-field JSON output are now pinned and covered by the upstream cross-language fixture.
 2. Which signer configuration values may be displayed or exported safely in an operator support
    bundle?
 3. What is the recommended operator ceremony for broadcasting and verifying `register-self`

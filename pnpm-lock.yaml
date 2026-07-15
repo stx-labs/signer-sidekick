@@ -60,6 +60,9 @@ importers:
 
   apps/sidekick:
     dependencies:
+      '@stacks/transactions':
+        specifier: 7.5.0
+        version: 7.5.0
       '@stx-labs/signer-sidekick-core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -76,9 +79,6 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@stacks/transactions':
-        specifier: 7.5.0
-        version: 7.5.0
       '@types/node':
         specifier: 26.1.1
         version: 26.1.1

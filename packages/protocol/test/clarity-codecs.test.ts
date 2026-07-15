@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClarityCodecError,
   decodeBoolean,
+  decodeBuffer,
   decodeClaimRewardsResult,
   decodeClarityHex,
   decodeEarnedStakerRewards,
@@ -79,6 +80,7 @@ describe("Clarity boundary codecs", () => {
     expect(encodeUIntHex(141n)).toBe(cvToHex(uintCV(141n)));
     expect(encodeBufferHex("02".repeat(33))).toBe(cvToHex(bufferCV(new Uint8Array(33).fill(2))));
     expect(decodeOptionalBuffer(noneCV())).toBeNull();
+    expect(decodeBuffer(bufferCV(Uint8Array.of(1, 2)))).toBe("0102");
     expect(decodeOptionalBuffer(someCV(bufferCV(Uint8Array.of(1, 2))))).toBe("0102");
     expect(decodeBoolean(decodeResponseOk(responseOkCV(trueCV())))).toBe(true);
     expect(() => encodeBufferHex("abc")).toThrow("even-length hexadecimal");

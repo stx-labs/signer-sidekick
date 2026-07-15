@@ -55,6 +55,10 @@ export function decodeBoolean(value: ClarityValue, path = "value"): boolean {
   throw new ClarityCodecError(`expected boolean, received ${value.type}`, path);
 }
 
+export function decodeBuffer(value: ClarityValue, path = "value"): string {
+  return expectType(value, ClarityType.Buffer, path).value;
+}
+
 export function decodeOptionalBuffer(value: ClarityValue, path = "value"): string | null {
   if (value.type === ClarityType.OptionalNone) return null;
   const buffer = expectType(
