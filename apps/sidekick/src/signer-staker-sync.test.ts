@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { contractPrincipalCV, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SignerStakersPage } from "./chain-clients.js";
@@ -10,6 +13,7 @@ import {
 } from "./storage/store.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
+const later = "2026-07-14T12:01:00.000Z";
 const apiUrl = "https://api.mainnet.hiro.so";
 const sourceId = createChainSourceId("mainnet", apiUrl);
 const nodeUrl = "http://127.0.0.1:20443";
@@ -20,6 +24,7 @@ const pox5 = "SP000000000000000000002Q6VF78.pox-5";
 const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
 const openStores: SidekickStore[] = [];
+const temporaryDirectories: string[] = [];
 
 function page(
   results: SignerStakersPage["results"],
@@ -109,8 +114,11 @@ function options(
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const sidekickStore of openStores.splice(0)) sidekickStore.close();
+  for (const directory of temporaryDirectories.splice(0)) {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 describe("signer-staker synchronization", () => {
@@ -308,6 +316,115 @@ describe("signer-staker synchronization", () => {
     });
     expect(resumedApi.getSignerStakers).toHaveBeenCalledWith(manager, stakerTwo, 1);
     expect(sidekickStore.listSignerStakers(manager)).toHaveLength(1);
+  });
+
+  it("resumes a committed page after the SQLite store is closed and reopened", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-resume-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "sidekick.sqlite");
+    const first = await openSidekickStore(databasePath, observedAt);
+    first.store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: apiUrl,
+      observedAt,
+    });
+    first.store.upsertChainSource({
+      sourceId: nodeSourceId,
+      kind: "node",
+      network: "mainnet",
+      baseUrl: nodeUrl,
+      observedAt,
+    });
+    const interruptedApi = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValueOnce(page([{ staker: stakerOne, types: ["stx"] }], null, stakerTwo))
+        .mockRejectedValueOnce(new Error("API unavailable")),
+    };
+
+    await expect(
+      syncSignerStakers(options(first.store, interruptedApi, nodeReads())),
+    ).rejects.toThrow("API unavailable");
+    first.store.close();
+
+    const reopened = await openSidekickStore(databasePath, later);
+    openStores.push(reopened.store);
+    const resumedApi = {
+      getSignerStakers: vi.fn().mockResolvedValue(page([], stakerTwo, null)),
+    };
+    await expect(
+      syncSignerStakers(options(reopened.store, resumedApi, nodeReads())),
+    ).resolves.toMatchObject({
+      resumed: true,
+      status: "completed",
+      pagesProcessed: 2,
+      itemsProcessed: 1,
+      activeStakers: 1,
+    });
+    expect(resumedApi.getSignerStakers).toHaveBeenCalledWith(manager, stakerTwo, 1);
+  });
+
+  it("reconciles 500 stakers across 12 active cycles without duplicate projections", async () => {
+    const sidekickStore = await store();
+    const stakers = Array.from({ length: 500 }, (_, index) => ({
+      staker: `${stakerOne}.s${index.toString().padStart(4, "0")}`,
+      types: ["stx"] as ("stx" | "btc")[],
+    }));
+    const indexByPrincipal = new Map(stakers.map(({ staker }, index) => [staker, index] as const));
+    const api = {
+      getSignerStakers: vi.fn(
+        async (_managerPrincipal: string, cursor: string | null, limit: number) => {
+          const start = cursor === null ? 0 : indexByPrincipal.get(cursor);
+          if (start === undefined) throw new Error(`Unknown cursor ${cursor}`);
+          const results = stakers.slice(start, start + limit);
+          const nextIndex = start + results.length;
+          return {
+            total: stakers.length,
+            limit,
+            cursor: {
+              current: cursor,
+              next: nextIndex < stakers.length ? (stakers[nextIndex]?.staker ?? null) : null,
+              previous: null,
+            },
+            results,
+          } satisfies SignerStakersPage;
+        },
+      ),
+    };
+    const node = {
+      callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+        if (functionName === "get-staker-info") {
+          return Promise.resolve(position(manager, 141n, 12n));
+        }
+        if (functionName === "reward-cycle-to-burn-height") {
+          return Promise.resolve(uintCV(986_200n));
+        }
+        return Promise.resolve(membership());
+      }),
+    };
+    const scaleOptions = {
+      ...options(sidekickStore, api, node),
+      pageLimit: 100,
+      stakerConcurrency: 16,
+    };
+
+    for (let run = 0; run < 2; run += 1) {
+      await expect(syncSignerStakers(scaleOptions)).resolves.toMatchObject({
+        status: "completed",
+        pagesProcessed: 5,
+        itemsProcessed: 500,
+        activeStakers: 500,
+        nodeVerifiedStxPositions: 500,
+        unverifiedStxDiscoveries: 0,
+        discrepanciesObservedThisInvocation: [],
+      });
+    }
+    expect(sidekickStore.listSignerStakers(manager)).toHaveLength(500);
+    expect(sidekickStore.listCycleMemberships(manager)).toHaveLength(6_000);
+    expect(sidekickStore.listCycleMembershipsForCycle(manager, 141)).toHaveLength(500);
+    expect(sidekickStore.listCycleMembershipsForCycle(manager, 152)).toHaveLength(500);
   });
 
   it("records a missing node position as a discrepancy", async () => {

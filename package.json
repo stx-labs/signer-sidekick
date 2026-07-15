@@ -17,6 +17,7 @@
     "test": "pnpm -r --if-present test",
     "test:regtest": "vitest run --config test/integration/regtest/vitest.clarinet.config.mts",
     "test:regtest:external": "RUN_REGTEST=1 vitest run test/integration/regtest/smoke.test.ts",
+    "test:container:external": "node scripts/smoke-container.mjs",
     "protocol:vendor": "node scripts/vendor-upstream.mjs",
     "protocol:verify": "node scripts/verify-upstream.mjs",
     "protocol:generate:mainnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:mainnet",

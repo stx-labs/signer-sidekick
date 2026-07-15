@@ -45,6 +45,11 @@ pnpm test:regtest
 pnpm build
 ```
 
+For a connected PoX-5 environment, `pnpm test:regtest:external` validates the configured network
+and optional deployed manager. `pnpm test:container:external` builds and exercises the hardened
+production image end to end, including repeated reconciliation, backup, dashboard, authentication,
+readiness, metrics, and HTTP sync. Both accept `SIDEKICK_NETWORK_ID` for private networks.
+
 See [the development guide](docs/operator/development.md) for the upstream refresh and
 regtest workflows. See [the container deployment guide](docs/operator/deployment.md) for the
 loopback-only Compose profile, upgrade, online backup, and offline restore procedure.

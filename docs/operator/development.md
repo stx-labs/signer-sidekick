@@ -85,6 +85,43 @@ warning up to the configured policy boundary; a failed preflight fails the test.
 against a released stacks-node/signer/API environment remains a Phase 1 exit gate, not a local
 development prerequisite.
 
+For a private network with a custom network ID and deployed manager, include both optional
+identifiers. This adds read-only manager interface, registration, and signer-grant checks:
+
+```sh
+SIDEKICK_NETWORK=testnet \
+SIDEKICK_NETWORK_ID=256 \
+STACKS_NODE_RPC_URL=https://api.private.example \
+STACKS_API_URL=https://api.private.example \
+SIDEKICK_MANAGER_PRINCIPAL=ST123EXAMPLE.signer-manager \
+pnpm test:regtest:external
+```
+
+## Production container smoke test
+
+`test:container:external` builds the production image by default, creates a disposable database
+volume, and exercises the packaged CLI twice against a live node/API. It validates preflight,
+attach, setup, staker and event synchronization, forecast and reward reads, support-bundle
+redaction, online backup, the embedded dashboard, bearer authentication, readiness, metrics, and
+`POST /api/v1/sync`. The runner uses the same read-only filesystem, dropped capabilities, and
+non-root user as the deployment image. It never requests a signer or manager-admin key and removes
+its container and volume on completion.
+
+```sh
+SIDEKICK_NETWORK=testnet \
+SIDEKICK_NETWORK_ID=256 \
+STACKS_NODE_RPC_URL=https://api.private.example \
+STACKS_API_URL=https://api.private.example \
+SIDEKICK_MANAGER_PRINCIPAL=ST123EXAMPLE.signer-manager \
+SIDEKICK_SMOKE_EXPECT_MIN_STAKERS=1 \
+pnpm test:container:external
+```
+
+Set `SIDEKICK_SMOKE_BUILD=0` and `SIDEKICK_SMOKE_IMAGE=signer-sidekick:local` to reuse an existing
+image. API credentials, when needed, are inherited from `STACKS_API_KEY` and
+`STACKS_API_KEY_HEADER`; the smoke runner asserts that the API key does not appear in its support
+bundle.
+
 ## Operator preflight
 
 The preflight command is safe to run against an existing setup. It performs read-only requests to

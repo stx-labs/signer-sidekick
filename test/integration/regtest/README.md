@@ -16,5 +16,9 @@ stacks-node and Stacks API. Configure the URLs and expected Epoch 4.0 network st
 `smoke.test.ts` before running it. That external run remains a Phase 1 release exit gate because it
 validates the released binaries and indexing behavior that Clarinet does not model.
 
+Set `SIDEKICK_NETWORK_ID` when the environment uses a custom unsigned 32-bit network ID. When
+`SIDEKICK_MANAGER_PRINCIPAL` is present, the smoke test also verifies manager ABI compatibility,
+PoX-5 registration, and the active signer grant. These checks are read-only.
+
 The mnemonics in `settings/Devnet.toml` are Clarinet's public deterministic test fixtures. Never
 reuse them outside this in-memory harness.
