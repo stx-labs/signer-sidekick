@@ -88,6 +88,24 @@ describe("operator preflight", () => {
     });
   });
 
+  it("accepts a custom network_id when expectedNetworkId overrides the network default", () => {
+    const customNetwork = { ...config, network: "regtest" as const, expectedNetworkId: 256 };
+    const result = evaluatePreflight(
+      customNetwork,
+      sources({
+        nodeInfo: { network_id: 256, burn_block_height: 5_636, stacks_tip_height: 192_259 },
+        apiNodeInfo: { network_id: 256, burn_block_height: 5_636, stacks_tip_height: 192_259 },
+      }),
+    );
+
+    expect(result.checks.find((check) => check.id === "node-network")).toMatchObject({
+      status: "pass",
+    });
+    expect(result.checks.find((check) => check.id === "api-network")).toMatchObject({
+      status: "pass",
+    });
+  });
+
   it("warns when the API is unexpectedly ahead of the configured node", () => {
     const result = evaluatePreflight(
       config,

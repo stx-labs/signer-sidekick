@@ -95,7 +95,7 @@ export function evaluatePreflight(
 ): PreflightResult {
   const { nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus } = sources;
   const checks: PreflightCheck[] = [];
-  const expectedNetworkId = networkIds[config.network];
+  const expectedNetworkId = config.expectedNetworkId ?? networkIds[config.network];
 
   checks.push({
     id: "node-network",

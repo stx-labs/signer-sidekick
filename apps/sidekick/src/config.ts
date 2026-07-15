@@ -36,6 +36,7 @@ export interface SidekickConfig {
   maxApiBurnBlockLag: number;
   forecastHorizonCycles: number;
   databasePath: string;
+  expectedNetworkId?: number;
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -87,6 +88,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     .max(96)
     .default(6)
     .parse(env.SIDEKICK_FORECAST_HORIZON_CYCLES);
+  const expectedNetworkId = env.SIDEKICK_NETWORK_ID?.trim()
+    ? z.coerce.number().int().positive().parse(env.SIDEKICK_NETWORK_ID)
+    : undefined;
 
   return {
     network,
@@ -100,6 +104,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
       env.SIDEKICK_DATABASE_PATH === ":memory:"
         ? ":memory:"
         : resolve(env.SIDEKICK_DATABASE_PATH ?? "data/sidekick.sqlite"),
+    ...(expectedNetworkId !== undefined ? { expectedNetworkId } : {}),
   };
 }
 
