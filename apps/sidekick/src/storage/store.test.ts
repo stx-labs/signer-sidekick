@@ -67,7 +67,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 8,
+      schemaVersion: 9,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -99,6 +99,7 @@ describe("Sidekick SQLite store", () => {
       status: "in-progress",
       state: { schemaVersion: 1, managerPrincipal: manager },
       updatedAt: later,
+      auditAction: "fresh-prepared",
     });
     expect(store.getOnboardingState()).toEqual({
       path: "fresh",
@@ -107,6 +108,15 @@ describe("Sidekick SQLite store", () => {
       state: { schemaVersion: 1, managerPrincipal: manager },
       updatedAt: later,
     });
+    expect(store.listOnboardingAudit()).toEqual([
+      {
+        action: "fresh-prepared",
+        path: "fresh",
+        currentStep: "deploy-manager",
+        status: "in-progress",
+        changedAt: later,
+      },
+    ]);
   });
 
   it("keeps durable cursors isolated by API source identity", async () => {
@@ -208,6 +218,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
     registerSource(store);
     for (const eventIndex of [0, 1]) {
+      const claim = eventIndex === 0;
       store.putChainEvent({
         chainId: 1,
         txId,
@@ -219,18 +230,32 @@ describe("Sidekick SQLite store", () => {
         microblockSequence: null,
         canonical: true,
         microblockCanonical: true,
-        contractId: null,
-        topic: null,
+        contractId: claim ? manager : null,
+        topic: claim ? "claim-staker-rewards" : null,
         rawPayload: { eventIndex },
-        decodedSchemaVersion: null,
-        decodedPayload: null,
+        decodedSchemaVersion: claim ? 1 : null,
+        decodedPayload: claim
+          ? {
+              transactionStatus: "success",
+              event: {
+                kind: "claim-staker-rewards",
+                stakerPrincipal: stakerOne,
+                rewardCycle: "141",
+                bondIndex: null,
+                amountSats: "10000",
+                l1Withdrawal: null,
+              },
+            }
+          : null,
         sourceId,
         observedAt,
       });
     }
 
+    expect(store.listManagerClaims(1, manager)).toMatchObject({ total: 1 });
     expect(store.markIndexBlockNonCanonical(1, indexBlockHash, later)).toBe(2);
     expect(store.getChainEvent(1, txId, 0)).toMatchObject({ canonical: false, updatedAt: later });
+    expect(store.listManagerClaims(1, manager)).toMatchObject({ total: 0, items: [] });
   });
 
   it("materializes unbounded manager claim and withdrawal history for paginated reads", async () => {
@@ -678,7 +703,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 8,
+      schemaVersion: 9,
       journalMode: "wal",
     });
   });

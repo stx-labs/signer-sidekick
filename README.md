@@ -96,7 +96,7 @@ SIDEKICK_AUTH_TOKEN='replace-with-at-least-24-random-characters' \
 pnpm --filter @stx-labs/signer-sidekick start
 ```
 
-Open `http://127.0.0.1:3998`, enter the configured credential, and run **Reconcile now**. The app stays loopback-bound by default. It exposes authenticated operator APIs, `/health/live`, `/health/ready`, and `/metrics`; it deliberately has no public pool route. The Public Pool Page screen generates a live or static artifact for the operator to host elsewhere.
+Open `http://127.0.0.1:3998`, enter the configured credential, and run **Reconcile now**. The app stays loopback-bound by default. It exposes authenticated operator APIs, the versioned compatibility endpoint `/healthz`, Kubernetes-style `/health/live` and `/health/ready`, and `/metrics`; it deliberately has no public pool route. The Public Pool Page screen generates live or static HTML plus versioned JSON for the operator to host elsewhere.
 
 Initial Setup provides resumable Attach Existing and Fresh Setup workflows. Settings can replace
 the node/API endpoints and API credential without restarting the process; API keys are write-only

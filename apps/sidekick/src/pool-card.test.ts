@@ -87,14 +87,32 @@ describe("pool card artifacts", () => {
     });
   });
 
-  it("generates a static versioned JSON artifact", () => {
+  it("generates static HTML plus a versioned JSON artifact", () => {
     const artifact = createPoolCardArtifact(enrollment, "static", "https://api.example.com");
-    expect(artifact.filename).toBe("signer-sidekick-pool.json");
-    expect(JSON.parse(artifact.body)).toMatchObject({
+    expect(artifact.filename).toBe("signer-sidekick-pool.html");
+    expect(artifact.body).toContain("Static snapshot");
+    expect(artifact.body).not.toContain("fetch(data.publicApiUrl");
+    expect(JSON.parse(artifact.json.body)).toMatchObject({
       schemaVersion: 1,
       generatedBy: "signer-sidekick",
       enrollment: { manager: { principal: enrollment.manager.principal } },
     });
     expect(artifact.liveFields).toEqual([]);
+  });
+
+  it("rejects hostile URL schemes at the rendering boundary", () => {
+    expect(() =>
+      createPoolCardArtifact(
+        {
+          ...enrollment,
+          pool: { ...enrollment.pool, websiteUrl: "javascript:alert(1)" },
+        } as PoolEnrollmentDocument,
+        "static",
+        "https://api.example.com",
+      ),
+    ).toThrow("must use http or https");
+    expect(() => createPoolCardArtifact(enrollment, "live", "data:text/html,unsafe")).toThrow(
+      "must use http or https",
+    );
   });
 });

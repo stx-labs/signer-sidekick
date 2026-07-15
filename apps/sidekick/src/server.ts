@@ -7,6 +7,22 @@ import Fastify, { type FastifyError } from "fastify";
 import { z } from "zod";
 import type { OnboardingService } from "./onboarding-service.js";
 
+async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error("Readiness snapshot deadline exceeded")),
+      milliseconds,
+    );
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 interface RosterRow {
   stakerPrincipal?: string;
   active?: boolean;
@@ -145,7 +161,7 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/health/ready", async (request, reply) => {
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
     try {
-      const snapshot = await options.service.snapshot();
+      const snapshot = await withDeadline(options.service.snapshot(), 20_000);
       const preflight = snapshot.preflight as { status?: string } | undefined;
       const ready = preflight?.status !== "fail";
       return reply.code(ready ? 200 : 503).send({
@@ -364,7 +380,7 @@ export function createServer(options: ServerOptions = {}) {
       return reply.code(501).send({ error: "runtime_settings_unavailable" });
     }
     try {
-      return options.service.updateSettings(request.body);
+      return await options.service.updateSettings(request.body);
     } catch {
       return reply.code(400).send({ error: "invalid_runtime_settings" });
     }
@@ -376,11 +392,15 @@ export function createServer(options: ServerOptions = {}) {
   server.post("/api/v1/onboarding/start", async (request, reply) => {
     if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
     const parsed = z
-      .object({ path: z.enum(["attach", "fresh"]) })
+      .object({ path: z.enum(["attach", "fresh"]), reset: z.boolean().optional() })
       .strict()
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_path" });
-    return { onboarding: options.onboarding.start(parsed.data.path) };
+    try {
+      return { onboarding: options.onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
+    } catch {
+      return reply.code(409).send({ error: "onboarding_reset_confirmation_required" });
+    }
   });
   server.post("/api/v1/onboarding/attach/verify", async (request, reply) => {
     if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });

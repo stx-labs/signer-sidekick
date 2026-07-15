@@ -58,10 +58,12 @@ pnpm protocol:verify
 pnpm test:regtest
 ```
 
-The suite proves the rendered-principal alignment and executes registration/grant, STX-only stake,
-reward calculation, manager claim, direct staker payout, fee withdrawal, rejected-withdrawal reclaim,
-accepted-withdrawal settlement and dust sweep, early unstake, and revoked-grant rejection against the
-actual Clarity 6 PoX-5 and manager sources.
+The suite proves rendered-principal alignment and executes every §15.2 contract path: grant and
+registration, stake/update/unstake, signer-threshold crossings in both directions, both half-cycle
+calculations, permissionless duplicate races, manager claims and insert-only fee snapshots, direct
+sBTC and above/below-fee L1 payouts, accepted settlement, rejected reclaim, prepare-phase
+rejections, and revoked-grant rejection. It also asserts representative print-event payloads
+against the actual Clarity 6 PoX-5 and manager sources.
 The deterministic development mnemonics under `test/integration/regtest/settings/` are public test
 fixtures and must never be used on any live network.
 
@@ -134,7 +136,8 @@ The credential is held in browser `sessionStorage`, sent only as a bearer creden
 
 The Phase 3 operator APIs are bearer-authenticated and intentionally have no public equivalents:
 
-- `GET|PUT /api/v1/settings` reads or replaces validated runtime settings. API-key values are
+- `GET|PUT /api/v1/settings` reads or replaces validated runtime settings. Candidate node/API/key
+  changes must pass connected preflight before the old revision is replaced. API-key values are
   write-only and responses expose only configured/source metadata.
 - `/api/v1/onboarding/*` starts or resumes Attach Existing/Fresh Setup, verifies externally
   completed operations, and downloads generated manager artifacts.

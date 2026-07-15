@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
@@ -47,7 +48,7 @@ function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: st
   }));
 }
 
-function buildAlerts(snapshot: {
+export function buildAlerts(snapshot: {
   preflight: Awaited<ReturnType<typeof runOperatorPreflight>>;
   manager: Awaited<ReturnType<typeof inspectDeployedManager>>;
   setup: Awaited<ReturnType<typeof readPoolSetupStatus>> | null;
@@ -89,12 +90,17 @@ function buildAlerts(snapshot: {
       .filter(({ threshold }) => !threshold.meetsThreshold)
       .map(({ cycleId }) => cycleId)
       .join(", ");
+    const thresholdUstx = affectedCycles.find(({ threshold }) => !threshold.meetsThreshold)
+      ?.threshold.thresholdUstx;
+    const thresholdStx = thresholdUstx
+      ? `${(BigInt(thresholdUstx) / 1_000_000n).toLocaleString("en-US")} STX`
+      : "the signer-set";
     alerts.push({
       id: "pool:forecast-attention",
       severity: "warning",
       title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
       detail: belowThreshold
-        ? `The pool is below the 50,000 STX signer-set threshold in reward cycle(s) ${belowThreshold}.`
+        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}.`
         : affected
           ? `Review reward cycle(s) ${affected}.`
           : "Pool roster evidence is incomplete.",
@@ -117,6 +123,13 @@ function buildAlerts(snapshot: {
     });
   }
   return alerts;
+}
+
+export function classifySupportContact(
+  value: string,
+): { email: string } | { url: string } | undefined {
+  if (!value) return undefined;
+  return z.email().safeParse(value).success ? { email: value } : { url: value };
 }
 
 export class OperatorService {
@@ -238,9 +251,9 @@ export class OperatorService {
     return this.options.runtimeSettings.publicSettings();
   }
 
-  updateSettings(input: unknown) {
+  async updateSettings(input: unknown) {
     if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
-    const result = this.options.runtimeSettings.update(input);
+    const result = await this.options.runtimeSettings.update(input);
     this.cached = null;
     return result;
   }
@@ -250,11 +263,7 @@ export class OperatorService {
     const snapshot = await this.snapshot(true);
     if (!snapshot.setup) throw new Error("Pool card generation requires completed manager setup");
     const settings = this.options.runtimeSettings.publicSettings();
-    const support = settings.pool.supportContact
-      ? settings.pool.supportContact.includes("@")
-        ? { email: settings.pool.supportContact }
-        : { url: settings.pool.supportContact }
-      : undefined;
+    const support = classifySupportContact(settings.pool.supportContact);
     const enrollment = createPoolEnrollmentDocument(
       {
         schemaVersion: 1,

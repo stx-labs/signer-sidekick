@@ -4,14 +4,15 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
-import { parseEndpointUrl, type SidekickConfig } from "./config.js";
+import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
+import { runOperatorPreflight } from "./preflight.js";
 import type { SidekickStore } from "./storage/store.js";
 
 const optionalUrlSchema = z
   .string()
   .trim()
   .max(500)
-  .refine((value) => value === "" || z.url().safeParse(value).success, "Expected a valid URL");
+  .refine((value) => value === "" || isHttpUrl(value), "Expected an HTTP(S) URL");
 
 const timeZoneSchema = z
   .string()
@@ -32,9 +33,8 @@ const supportContactSchema = z
   .trim()
   .max(200)
   .refine(
-    (value) =>
-      value === "" || z.email().safeParse(value).success || z.url().safeParse(value).success,
-    "Expected an email address or URL",
+    (value) => value === "" || z.email().safeParse(value).success || isHttpUrl(value),
+    "Expected an email address or HTTP(S) URL",
   );
 
 const persistedRuntimeSettingsSchema = z
@@ -45,7 +45,7 @@ const persistedRuntimeSettingsSchema = z
         displayName: z.string().trim().min(1).max(80),
         websiteUrl: optionalUrlSchema,
         supportContact: supportContactSchema,
-        leatherUrl: z.url(),
+        leatherUrl: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL"),
       })
       .strict(),
     display: z
@@ -123,6 +123,12 @@ export const runtimeSettingsUpdateSchema = persistedRuntimeSettingsSchema
   .strict();
 
 export type RuntimeSettingsUpdate = z.infer<typeof runtimeSettingsUpdateSchema>;
+
+export type RuntimeSettingsSourceValidator = (
+  config: SidekickConfig,
+  node: StacksNodeClient,
+  api: StacksApiClient,
+) => Promise<void>;
 
 export interface PublicRuntimeSettings {
   schemaVersion: 1;
@@ -218,6 +224,17 @@ export class RuntimeSettingsController {
     private readonly baseConfig: SidekickConfig,
     private readonly store: SidekickStore,
     private readonly managerPrincipal: string,
+    private readonly validateSources: RuntimeSettingsSourceValidator = async (
+      config,
+      node,
+      api,
+    ) => {
+      const preflight = await runOperatorPreflight(config, node, api);
+      if (preflight.status === "fail") {
+        const reason = preflight.checks.find(({ status }) => status === "fail")?.message;
+        throw new Error(reason ?? "Candidate node and API failed preflight");
+      }
+    },
   ) {
     const stored = store.getRuntimeSettings();
     this.settings = stored
@@ -229,20 +246,27 @@ export class RuntimeSettingsController {
   }
 
   effectiveConfig(): SidekickConfig {
+    return this.configFor(this.settings, this.apiKeySecret);
+  }
+
+  private configFor(
+    settings: PersistedRuntimeSettings,
+    apiKeySecret: string | null,
+  ): SidekickConfig {
     const apiKey =
-      this.settings.dataSources.apiKeyMode === "database"
-        ? (this.apiKeySecret ?? undefined)
-        : this.settings.dataSources.apiKeyMode === "environment"
+      settings.dataSources.apiKeyMode === "database"
+        ? (apiKeySecret ?? undefined)
+        : settings.dataSources.apiKeyMode === "environment"
           ? this.baseConfig.apiKey
           : undefined;
     const { apiKey: _baseApiKey, ...baseConfig } = this.baseConfig;
     return {
       ...baseConfig,
-      nodeRpcUrl: this.settings.dataSources.nodeRpcUrl,
-      apiUrl: this.settings.dataSources.apiUrl,
+      nodeRpcUrl: settings.dataSources.nodeRpcUrl,
+      apiUrl: settings.dataSources.apiUrl,
       ...(apiKey ? { apiKey } : {}),
-      apiKeyHeader: this.settings.dataSources.apiKeyHeader,
-      forecastHorizonCycles: this.settings.forecast.horizonCycles,
+      apiKeyHeader: settings.dataSources.apiKeyHeader,
+      forecastHorizonCycles: settings.forecast.horizonCycles,
     };
   }
 
@@ -279,7 +303,10 @@ export class RuntimeSettingsController {
     };
   }
 
-  update(input: unknown, observedAt = new Date().toISOString()): PublicRuntimeSettings {
+  async update(
+    input: unknown,
+    observedAt = new Date().toISOString(),
+  ): Promise<PublicRuntimeSettings> {
     const value = runtimeSettingsUpdateSchema.parse(input);
     if (value.automation.gasPayerPrincipal) {
       const manager = parseContractPrincipal(this.managerPrincipal);
@@ -325,6 +352,18 @@ export class RuntimeSettingsController {
     });
     const fields = changedFields(this.settings, next, action.action !== "keep");
     if (fields.length === 0) return this.publicSettings();
+    if (fields.some((field) => field.startsWith("dataSources."))) {
+      const candidateConfig = this.configFor(next, nextSecret);
+      await this.validateSources(
+        candidateConfig,
+        new StacksNodeClient(candidateConfig.nodeRpcUrl),
+        new StacksApiClient(
+          candidateConfig.apiUrl,
+          candidateConfig.apiKey,
+          candidateConfig.apiKeyHeader,
+        ),
+      );
+    }
     const stored = this.store.putRuntimeSettings({
       settings: next,
       apiKeySecret: nextSecret,

@@ -224,6 +224,22 @@ describe("Stacks API client", () => {
     ).rejects.toBeInstanceOf(UpstreamHttpError);
   });
 
+  it("cancels rejected response bodies before returning the typed error", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({ cancel });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 404 }));
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        fetchImpl,
+      ).getNodeInfo(),
+    ).rejects.toBeInstanceOf(UpstreamHttpError);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("classifies an incompatible upstream response without leaking its body", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ private_detail: "must-not-leak" }), {

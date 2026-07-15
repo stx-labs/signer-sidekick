@@ -20,6 +20,7 @@ async function controller() {
     config,
     store,
     "SP000000000000000000002Q6VF78.signer-manager",
+    async () => {},
   );
 }
 
@@ -27,7 +28,7 @@ describe("runtime settings", () => {
   it("applies provider and API-key replacement without returning the secret", async () => {
     const runtime = await controller();
     const current = runtime.publicSettings();
-    const updated = runtime.update(
+    const updated = await runtime.update(
       {
         pool: { ...current.pool, displayName: "Live node pool" },
         display: current.display,
@@ -87,9 +88,9 @@ describe("runtime settings", () => {
       automation: current.automation,
       alerts: current.alerts,
     };
-    expect(runtime.update(input).dataSources.apiKeyConfigured).toBe(false);
+    expect((await runtime.update(input)).dataSources.apiKeyConfigured).toBe(false);
     expect(runtime.effectiveConfig()).not.toHaveProperty("apiKey");
-    expect(() =>
+    await expect(
       runtime.update({
         ...input,
         dataSources: {
@@ -98,7 +99,7 @@ describe("runtime settings", () => {
           apiKeyAction: { action: "keep" },
         },
       }),
-    ).toThrow("must not contain credentials");
+    ).rejects.toThrow("must not contain credentials");
   });
 
   it("rejects the manager admin and wrong-network gas-payer principals", async () => {
@@ -123,10 +124,10 @@ describe("runtime settings", () => {
       alerts: current.alerts,
     };
 
-    expect(() => runtime.update(input)).toThrow(
+    await expect(runtime.update(input)).rejects.toThrow(
       "Gas-payer principal must not be the manager admin principal",
     );
-    expect(() =>
+    await expect(
       runtime.update({
         ...input,
         automation: {
@@ -134,6 +135,68 @@ describe("runtime settings", () => {
           gasPayerPrincipal: "ST000000000000000000002AMW42H",
         },
       }),
-    ).toThrow("Gas-payer principal does not match the configured network");
+    ).rejects.toThrow("Gas-payer principal does not match the configured network");
+  });
+
+  it("validates changed node and API sources before committing them", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-15T12:00:00.000Z");
+    stores.push(store);
+    const config = loadConfig({ STACKS_NODE_RPC_URL: "http://127.0.0.1:20443" });
+    const candidates: string[] = [];
+    const runtime = new RuntimeSettingsController(
+      config,
+      store,
+      "SP000000000000000000002Q6VF78.signer-manager",
+      async (candidate) => {
+        candidates.push(candidate.apiUrl);
+        throw new Error("Candidate sources are unavailable");
+      },
+    );
+    const current = runtime.publicSettings();
+
+    await expect(
+      runtime.update({
+        pool: current.pool,
+        display: current.display,
+        dataSources: {
+          nodeRpcUrl: "https://node.example.com",
+          apiUrl: "https://api.example.com",
+          apiKeyHeader: current.dataSources.apiKeyHeader,
+          apiKeyAction: { action: "keep" },
+        },
+        forecast: current.forecast,
+        embed: current.embed,
+        payoutPolicy: current.payoutPolicy,
+        automation: current.automation,
+        alerts: current.alerts,
+      }),
+    ).rejects.toThrow("Candidate sources are unavailable");
+    expect(candidates).toEqual(["https://api.example.com"]);
+    expect(runtime.publicSettings()).toMatchObject({
+      revision: 0,
+      dataSources: { nodeRpcUrl: "http://127.0.0.1:20443" },
+    });
+  });
+
+  it("rejects non-HTTP pool links", async () => {
+    const runtime = await controller();
+    const current = runtime.publicSettings();
+    await expect(
+      runtime.update({
+        pool: { ...current.pool, websiteUrl: "javascript:alert(1)" },
+        display: current.display,
+        dataSources: {
+          nodeRpcUrl: current.dataSources.nodeRpcUrl,
+          apiUrl: current.dataSources.apiUrl,
+          apiKeyHeader: current.dataSources.apiKeyHeader,
+          apiKeyAction: { action: "keep" },
+        },
+        forecast: current.forecast,
+        embed: current.embed,
+        payoutPolicy: current.payoutPolicy,
+        automation: current.automation,
+        alerts: current.alerts,
+      }),
+    ).rejects.toThrow("Expected an HTTP(S) URL");
   });
 });

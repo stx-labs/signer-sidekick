@@ -61,7 +61,11 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required for serve");
   const authToken = process.env.SIDEKICK_AUTH_TOKEN;
   if (!authToken) throw new Error("SIDEKICK_AUTH_TOKEN is required for serve");
-  const port = Number.parseInt(process.env.SIDEKICK_HTTP_PORT ?? "3998", 10);
+  const portValue = process.env.SIDEKICK_HTTP_PORT ?? "3998";
+  if (!/^[0-9]+$/.test(portValue)) {
+    throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
+  }
+  const port = Number(portValue);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
   }

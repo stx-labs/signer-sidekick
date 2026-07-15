@@ -1496,6 +1496,11 @@ function App() {
     void load();
   }, [load]);
   useEffect(() => {
+    const rejectAuth = () => setToken("");
+    window.addEventListener("sidekick-auth-rejected", rejectAuth);
+    return () => window.removeEventListener("sidekick-auth-rejected", rejectAuth);
+  }, []);
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
   useEffect(() => {

@@ -219,8 +219,8 @@ function sanitizedEndpoint(url: string): string {
 
 function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
   if (value === null) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  if (/^[0-9]+$/.test(value)) return Number(value) * 1_000;
+  if (!value.includes(",")) return null;
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(0, date - now) : null;
 }
@@ -233,6 +233,14 @@ function retryDelay(attempt: number): number {
 async function sleep(milliseconds: number): Promise<void> {
   if (milliseconds <= 0) return;
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function cancelResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response is already unusable; cancellation is best-effort connection-pool hygiene.
+  }
 }
 
 async function fetchJson<T>(
@@ -267,9 +275,11 @@ async function fetchJson<T>(
       const retryable = response.status === 429 || response.status >= 500;
       const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
       if (retryable && attempt < maxAttempts) {
+        await cancelResponse(response);
         await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)));
         continue;
       }
+      await cancelResponse(response);
       if (response.status === 429) {
         throw new RateLimitedError(
           `${endpoint} remained rate limited after ${attempt} attempts`,

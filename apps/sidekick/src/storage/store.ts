@@ -426,6 +426,23 @@ const migrations: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 9,
+    name: "onboarding_audit",
+    sql: `
+      CREATE TABLE onboarding_audit (
+        event_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        path TEXT NOT NULL CHECK (path IN ('attach', 'fresh')),
+        current_step TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('in-progress', 'blocked', 'complete')),
+        changed_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX onboarding_audit_recent
+        ON onboarding_audit (changed_at DESC, event_id DESC);
+    `,
+  },
 ];
 
 const sourceInputSchema = z
@@ -1411,26 +1428,77 @@ export class SidekickStore {
   }
 
   putOnboardingState(
-    input: Omit<StoredOnboardingState, "updatedAt"> & { updatedAt: string },
+    input: Omit<StoredOnboardingState, "updatedAt"> & {
+      updatedAt: string;
+      auditAction?: string;
+    },
   ): void {
     const path = z.enum(["attach", "fresh"]).parse(input.path);
     const currentStep = z.string().min(1).parse(input.currentStep);
     const status = z.enum(["in-progress", "blocked", "complete"]).parse(input.status);
     const updatedAt = z.iso.datetime().parse(input.updatedAt);
+    const auditAction = input.auditAction
+      ? z.string().trim().min(1).max(100).parse(input.auditAction)
+      : null;
     const stateJson = serializeJson(input.state, "onboarding state");
-    this.db
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO onboarding_state (
+            singleton_id, path, current_step, status, state_json, updated_at
+          ) VALUES (1, ?, ?, ?, ?, ?)
+          ON CONFLICT (singleton_id) DO UPDATE SET
+            path = excluded.path,
+            current_step = excluded.current_step,
+            status = excluded.status,
+            state_json = excluded.state_json,
+            updated_at = excluded.updated_at`,
+        )
+        .run(path, currentStep, status, stateJson, updatedAt);
+      if (auditAction) {
+        this.db
+          .prepare(
+            `INSERT INTO onboarding_audit (
+              event_id, action, path, current_step, status, changed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(randomUUID(), auditAction, path, currentStep, status, updatedAt);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listOnboardingAudit(limit = 20): Array<{
+    action: string;
+    path: "attach" | "fresh";
+    currentStep: string;
+    status: "in-progress" | "blocked" | "complete";
+    changedAt: string;
+  }> {
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const rows = this.db
       .prepare(
-        `INSERT INTO onboarding_state (
-          singleton_id, path, current_step, status, state_json, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?)
-        ON CONFLICT (singleton_id) DO UPDATE SET
-          path = excluded.path,
-          current_step = excluded.current_step,
-          status = excluded.status,
-          state_json = excluded.state_json,
-          updated_at = excluded.updated_at`,
+        `SELECT action, path, current_step, status, changed_at
+         FROM onboarding_audit ORDER BY changed_at DESC, event_id DESC LIMIT ?`,
       )
-      .run(path, currentStep, status, stateJson, updatedAt);
+      .all(parsedLimit) as Array<{
+      action: string;
+      path: "attach" | "fresh";
+      current_step: string;
+      status: "in-progress" | "blocked" | "complete";
+      changed_at: string;
+    }>;
+    return rows.map((row) => ({
+      action: z.string().min(1).parse(row.action),
+      path: z.enum(["attach", "fresh"]).parse(row.path),
+      currentStep: z.string().min(1).parse(row.current_step),
+      status: z.enum(["in-progress", "blocked", "complete"]).parse(row.status),
+      changedAt: z.iso.datetime().parse(row.changed_at),
+    }));
   }
 
   upsertChainSource(input: ChainSourceInput): void {

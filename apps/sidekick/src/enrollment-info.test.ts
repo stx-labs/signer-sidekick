@@ -179,5 +179,14 @@ describe("pool enrollment information", () => {
       }),
     ).toThrow();
     expect(() => poolEnrollmentConfigSchema.parse({ ...config, apiKey: "secret" })).toThrow();
+    expect(() =>
+      poolEnrollmentConfigSchema.parse({ ...config, websiteUrl: "javascript:alert(1)" }),
+    ).toThrow("Expected an HTTP(S) URL");
+    expect(() =>
+      poolEnrollmentConfigSchema.parse({
+        ...config,
+        officialPlatforms: [{ id: "unsafe", label: "Unsafe", url: "data:text/html,unsafe" }],
+      }),
+    ).toThrow("Expected an HTTP(S) URL");
   });
 });

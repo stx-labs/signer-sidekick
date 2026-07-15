@@ -81,17 +81,20 @@ async function service() {
   const runtimeSettings = {
     clients: () => ({ config, node, api }),
   } as unknown as RuntimeSettingsController;
-  return new OnboardingService({
+  return {
     store,
-    runtimeSettings,
-    managerPrincipal,
-    contractsDirectory: resolve(import.meta.dirname, "../../../contracts"),
-  });
+    onboarding: new OnboardingService({
+      store,
+      runtimeSettings,
+      managerPrincipal,
+      contractsDirectory: resolve(import.meta.dirname, "../../../contracts"),
+    }),
+  };
 }
 
 describe("onboarding service", () => {
   it("persists a resumable fresh path and creates deterministic download artifacts", async () => {
-    const onboarding = await service();
+    const { onboarding, store } = await service();
     expect(onboarding.start("fresh")).toMatchObject({
       path: "fresh",
       currentStep: "preflight",
@@ -119,10 +122,14 @@ describe("onboarding service", () => {
       transaction: { signingAuthority: "external-offline-admin" },
     });
     expect(onboarding.get()).toMatchObject({ currentStep: prepared.currentStep });
+    expect(store.listOnboardingAudit().map(({ action }) => action)).toEqual([
+      "fresh-prepared",
+      "path-started",
+    ]);
   });
 
   it("refuses a fresh principal that differs from the configured deployment", async () => {
-    const onboarding = await service();
+    const { onboarding } = await service();
     onboarding.start("fresh");
     await expect(
       onboarding.prepareFresh({
@@ -132,5 +139,42 @@ describe("onboarding service", () => {
         signerConfigPath: "/tmp/signer.toml",
       }),
     ).rejects.toThrow("must match SIDEKICK_MANAGER_PRINCIPAL");
+  });
+
+  it("preserves progress on same-path starts and requires confirmation to switch paths", async () => {
+    const { onboarding } = await service();
+    onboarding.start("fresh");
+    const prepared = await onboarding.prepareFresh({
+      adminPrincipal: "SP000000000000000000002Q6VF78",
+      contractName: "signer-manager",
+      authId: "7",
+      signerConfigPath: "/etc/stacks-signer/signer.toml",
+    });
+
+    expect(onboarding.start("fresh")).toMatchObject({
+      currentStep: prepared.currentStep,
+      artifact: { available: true },
+    });
+    expect(() => onboarding.start("attach")).toThrow("requires explicit reset confirmation");
+    expect(onboarding.start("attach", true)).toMatchObject({
+      path: "attach",
+      currentStep: "preflight",
+      artifact: { available: false },
+    });
+  });
+
+  it("fails closed to no public state when persisted onboarding JSON is invalid", async () => {
+    const { onboarding, store } = await service();
+    store.putOnboardingState({
+      path: "fresh",
+      currentStep: "deploy-manager",
+      status: "in-progress",
+      state: { schemaVersion: 999, managerPrincipal },
+      updatedAt: "2026-07-15T12:10:00.000Z",
+      auditAction: "invalid-test-state",
+    });
+
+    expect(onboarding.get()).toBeNull();
+    expect(() => onboarding.artifact("source")).toThrow("Stored onboarding state is invalid");
   });
 });

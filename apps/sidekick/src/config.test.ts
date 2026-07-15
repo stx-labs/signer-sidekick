@@ -50,6 +50,12 @@ describe("Sidekick configuration", () => {
     ).toThrow("must not contain query parameters or a fragment");
   });
 
+  it("rejects non-HTTP endpoint schemes", () => {
+    expect(() => loadConfig({ STACKS_NODE_RPC_URL: "data:text/plain,not-a-node" })).toThrow(
+      "must use http or https",
+    );
+  });
+
   it("bounds the operator forecast horizon to the PoX-5 lock period", () => {
     expect(() =>
       loadConfig({

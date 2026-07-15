@@ -14,6 +14,7 @@ const root = resolve(import.meta.dirname, "../../..");
 const deployer = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
 const managerId = `${deployer}.signer-manager`;
 const pox5Id = "ST000000000000000000002AMW42H.pox-5";
+const deploymentPlanPox5Id = `${deployer}.pox-5`;
 const sbtcDeployer = "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT";
 const sbtcTokenId = `${sbtcDeployer}.sbtc-token`;
 const sbtcAssetId = `${sbtcTokenId}.sbtc-token`;
@@ -117,7 +118,7 @@ function registerManager(): { signerKey: string; signerPrincipal: string } {
   };
 }
 
-function stake(staker: string, signerCalldata: ClarityValue = Cl.none()): void {
+function stake(staker: string, signerCalldata: ClarityValue = Cl.none()) {
   const result = simnet.callPublicFn(
     pox5Id,
     "stake",
@@ -131,9 +132,12 @@ function stake(staker: string, signerCalldata: ClarityValue = Cl.none()): void {
     staker,
   );
   expect(result.result.type).toBe("ok");
+  return result;
 }
 
-function distributeRewards(rewards: bigint): void {
+function distributeRewards(rewards: bigint) {
+  const permissionlessCaller = simnet.getAccounts().get("wallet_2");
+  if (!permissionlessCaller) throw new Error("Clarinet wallet fixture is missing");
   const cycleStart = uintValue(
     simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
   );
@@ -149,13 +153,21 @@ function distributeRewards(rewards: bigint): void {
   );
   const targetHeight = cycleStart + halfCycleLength;
   simnet.mineEmptyBurnBlocks(Number(targetHeight - BigInt(simnet.burnBlockHeight)));
-  expect(
-    simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([])], deployer).result.type,
-  ).toBe("ok");
-  expect(
-    simnet.callPublicFn(managerId, "claim-rewards", [Cl.list([]), Cl.uint(1)], deployer).result
-      .type,
-  ).toBe("ok");
+  const calculation = simnet.callPublicFn(
+    pox5Id,
+    "calculate-rewards",
+    [Cl.list([])],
+    permissionlessCaller,
+  );
+  expect(calculation.result.type).toBe("ok");
+  const claim = simnet.callPublicFn(
+    managerId,
+    "claim-rewards",
+    [Cl.list([]), Cl.uint(1)],
+    permissionlessCaller,
+  );
+  expect(claim.result.type).toBe("ok");
+  return { calculation, claim };
 }
 
 function sbtcBalance(principal: string): bigint {
@@ -190,6 +202,7 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
 
   it("loads the rendered contracts and keeps every regtest principal aligned", () => {
     expect(simnet.currentEpoch).toBe("4.0");
+    expect(pox5Id).not.toBe(deploymentPlanPox5Id);
     expect(simnet.getContractSource(pox5Id)).toContain(sbtcTokenId);
     expect(simnet.getContractSource(managerId)).toContain(pox5Id);
     expect(simnet.getContractSource(managerId)).toContain(sbtcWithdrawalId);
@@ -215,8 +228,16 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
       simnet.callPublicFn(managerId, "update-fees", [Cl.uint(1_000)], deployer).result,
       Cl.bool(true),
     );
-    stake(staker);
-    distributeRewards(2_000n);
+    const stakeResult = stake(staker);
+    const distribution = distributeRewards(2_000n);
+    expectOk(
+      simnet.callPublicFn(managerId, "update-fees", [Cl.uint(2_000)], deployer).result,
+      Cl.bool(true),
+    );
+
+    expect(JSON.stringify(stakeResult.events)).toContain("stake");
+    expect(JSON.stringify(distribution.calculation.events)).toContain("calculate-rewards");
+    expect(JSON.stringify(distribution.claim.events)).toContain("claim-rewards");
 
     expect(
       simnet.callReadOnlyFn(
@@ -329,6 +350,29 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
       simnet.callReadOnlyFn(managerId, "get-withdrawal-request-staker", [Cl.uint(1)], deployer)
         .result,
     ).toBeNone();
+  });
+
+  it("rejects an L1 payout whose reward cannot cover the configured maximum fee", () => {
+    initializePox5();
+    registerManager();
+    const staker = simnet.getAccounts().get("wallet_1");
+    const permissionlessCaller = simnet.getAccounts().get("wallet_2");
+    if (!staker || !permissionlessCaller) throw new Error("Clarinet wallet fixtures are missing");
+
+    stake(staker, poxAddressCalldata(2_000n));
+    distributeRewards(2_000n);
+    expect(
+      simnet.callPublicFn(
+        managerId,
+        "claim-staker-rewards",
+        [Cl.principal(staker), Cl.uint(1), Cl.none()],
+        permissionlessCaller,
+      ).result.type,
+    ).toBe("err");
+    expect(sbtcBalance(staker)).toBe(0n);
+    expect(
+      simnet.callReadOnlyFn(managerId, "get-withdrawal-liability", [], deployer).result,
+    ).toBeUint(0);
   });
 
   it("blocks new stake after the signer revokes the manager grant", () => {
@@ -465,5 +509,138 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         deployer,
       ).result,
     ).toBeUint(0);
+  });
+
+  it("updates stake membership and crosses the signer threshold in both directions", () => {
+    initializePox5();
+    registerManager();
+    const staker = simnet.getAccounts().get("wallet_1");
+    if (!staker) throw new Error("Clarinet wallet fixture is missing");
+
+    stake(staker);
+    expect(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "signer-set-contains-for-cycle",
+        [Cl.principal(managerId), Cl.uint(1)],
+        deployer,
+      ).result,
+    ).toBeBool(true);
+    expect(
+      simnet.callPublicFn(
+        pox5Id,
+        "stake-update",
+        [
+          Cl.principal(managerId),
+          Cl.principal(managerId),
+          Cl.uint(1),
+          Cl.uint(1_000_000),
+          Cl.none(),
+        ],
+        staker,
+      ).result.type,
+    ).toBe("ok");
+    expect(
+      simnet.callReadOnlyFn(pox5Id, "get-staker-info", [Cl.principal(staker)], deployer).result,
+    ).toBeSome(
+      Cl.tuple({
+        "amount-ustx": Cl.uint(minimumStake + 1_000_000n),
+        "first-reward-cycle": Cl.uint(1),
+        "num-cycles": Cl.uint(3),
+        signer: Cl.principal(managerId),
+      }),
+    );
+    expect(
+      simnet.callPublicFn(pox5Id, "unstake", [Cl.principal(managerId)], staker).result.type,
+    ).toBe("ok");
+    expect(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "signer-set-contains-for-cycle",
+        [Cl.principal(managerId), Cl.uint(1)],
+        deployer,
+      ).result,
+    ).toBeBool(false);
+  });
+
+  it("calculates both half-cycle distributions and rejects permissionless duplicate races", () => {
+    initializePox5();
+    registerManager();
+    const staker = simnet.getAccounts().get("wallet_1");
+    const permissionlessCaller = simnet.getAccounts().get("wallet_2");
+    if (!staker || !permissionlessCaller) throw new Error("Clarinet wallet fixtures are missing");
+    stake(staker);
+    distributeRewards(2_000n);
+
+    const cycleStart = uintValue(
+      simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
+    );
+    simnet.mintFT(sbtcAssetId, deployer, 1_000n);
+    expectOk(
+      simnet.callPublicFn(
+        sbtcTokenId,
+        "transfer",
+        [Cl.uint(1_000), Cl.principal(deployer), Cl.principal(pox5Id), Cl.none()],
+        deployer,
+      ).result,
+      Cl.bool(true),
+    );
+    const secondHalfHeight = cycleStart + rewardCycleLength;
+    simnet.mineEmptyBurnBlocks(Number(secondHalfHeight - BigInt(simnet.burnBlockHeight)));
+    expect(
+      simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([])], permissionlessCaller).result
+        .type,
+    ).toBe("ok");
+    expect(
+      simnet.callPublicFn(
+        managerId,
+        "claim-rewards",
+        [Cl.list([]), Cl.uint(1)],
+        permissionlessCaller,
+      ).result.type,
+    ).toBe("ok");
+    expect(
+      simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([])], permissionlessCaller).result,
+    ).toBeErr(Cl.uint(30));
+    expect(
+      simnet.callPublicFn(
+        managerId,
+        "claim-rewards",
+        [Cl.list([]), Cl.uint(1)],
+        permissionlessCaller,
+      ).result.type,
+    ).toBe("err");
+  });
+
+  it("rejects stake and unstake mutations during the prepare phase", () => {
+    initializePox5();
+    registerManager();
+    const staker = simnet.getAccounts().get("wallet_1");
+    const otherStaker = simnet.getAccounts().get("wallet_2");
+    if (!staker || !otherStaker) throw new Error("Clarinet wallet fixtures are missing");
+    stake(staker);
+    const firstCycleHeight = uintValue(
+      simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
+    );
+    const prepareStart = firstCycleHeight - 10n;
+    simnet.mineEmptyBurnBlocks(Number(prepareStart - BigInt(simnet.burnBlockHeight)));
+
+    expect(
+      simnet.callPublicFn(
+        pox5Id,
+        "stake",
+        [
+          Cl.principal(managerId),
+          Cl.uint(minimumStake),
+          Cl.uint(2),
+          Cl.uint(simnet.burnBlockHeight),
+          Cl.none(),
+        ],
+        otherStaker,
+      ).result,
+    ).toBeErr(Cl.uint(47));
+    expect(
+      simnet.callPublicFn(pox5Id, "unstake", [Cl.principal(managerId)], staker).result,
+    ).toBeErr(Cl.uint(28));
   });
 });

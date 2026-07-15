@@ -37,17 +37,78 @@ const freshInputSchema = z
 
 type FreshInput = z.infer<typeof freshInputSchema>;
 
-interface PersistedOnboardingData {
-  schemaVersion: 1;
-  managerPrincipal: string;
-  activationPlan: ActivationPlan | null;
-  freshInput: FreshInput | null;
-  managerArtifact: { source: string; manifest: ManagerDeploymentManifest } | null;
-  signerGrant: {
-    preparation: SignerGrantPreparation | null;
-    verified: VerifiedSignerGrant | null;
-  };
-}
+const managerManifestStorageSchema = z
+  .object({
+    artifact: z.object({ sourceFile: z.string().min(1) }).passthrough(),
+    transaction: z.object({ contractName: z.string().min(1) }).passthrough(),
+  })
+  .passthrough();
+
+const signerGrantPreparationStorageSchema = z
+  .object({
+    managerPrincipal: z.string().min(1),
+    pox5ContractId: z.string().min(1),
+    authId: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+    command: z.string().min(1),
+  })
+  .strict();
+
+const verifiedSignerGrantStorageSchema = z
+  .object({
+    managerPrincipal: z.string().min(1),
+    pox5ContractId: z.string().min(1),
+    authId: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    signerKeyHex: z.string().regex(/^(02|03)[0-9a-f]{64}$/),
+    signerSignatureHex: z.string().regex(/^[0-9a-f]{130}$/),
+    expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+    signatureValid: z.literal(true),
+    registerSelfCall: z
+      .object({
+        contract: z.string().min(1),
+        functionName: z.literal("register-self"),
+        arguments: z.array(z.string()).length(4),
+        signingPrincipal: z.string().min(1),
+        signingAuthority: z.literal("external-offline-admin"),
+      })
+      .strict(),
+  })
+  .strict();
+
+const persistedOnboardingDataSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    managerPrincipal: z.string().min(1),
+    activationPlan: activationPlanSchema.nullable(),
+    freshInput: freshInputSchema.nullable(),
+    managerArtifact: z
+      .object({
+        source: z.string(),
+        manifest: z.custom<ManagerDeploymentManifest>(
+          (value) => managerManifestStorageSchema.safeParse(value).success,
+        ),
+      })
+      .strict()
+      .nullable(),
+    signerGrant: z
+      .object({
+        preparation: z
+          .custom<SignerGrantPreparation>(
+            (value) =>
+              value === null || signerGrantPreparationStorageSchema.safeParse(value).success,
+          )
+          .nullable(),
+        verified: z
+          .custom<VerifiedSignerGrant>(
+            (value) => value === null || verifiedSignerGrantStorageSchema.safeParse(value).success,
+          )
+          .nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+type PersistedOnboardingData = z.infer<typeof persistedOnboardingDataSchema>;
 
 export interface PublicOnboardingState {
   schemaVersion: 1;
@@ -65,6 +126,13 @@ export interface PublicOnboardingState {
     manifest: ManagerDeploymentManifest | null;
   };
   signerGrant: PersistedOnboardingData["signerGrant"];
+  audit: Array<{
+    action: string;
+    path: "attach" | "fresh";
+    currentStep: string;
+    status: "in-progress" | "blocked" | "complete";
+    changedAt: string;
+  }>;
   safety: {
     acceptsManagerAdminKey: false;
     acceptsSignerPrivateKey: false;
@@ -103,7 +171,9 @@ export class OnboardingService {
   get(): PublicOnboardingState | null {
     const stored = this.options.store.getOnboardingState();
     if (!stored) return null;
-    const data = stored.state as PersistedOnboardingData;
+    const parsed = persistedOnboardingDataSchema.safeParse(stored.state);
+    if (!parsed.success) return null;
+    const data = parsed.data;
     const contractName = data.managerArtifact?.manifest.transaction.contractName ?? null;
     return {
       schemaVersion: 1,
@@ -121,6 +191,7 @@ export class OnboardingService {
         manifest: data.managerArtifact?.manifest ?? null,
       },
       signerGrant: data.signerGrant,
+      audit: this.options.store.listOnboardingAudit(),
       safety: {
         acceptsManagerAdminKey: false,
         acceptsSignerPrivateKey: false,
@@ -130,8 +201,17 @@ export class OnboardingService {
     };
   }
 
-  start(pathInput: unknown, observedAt = new Date().toISOString()): PublicOnboardingState {
+  start(
+    pathInput: unknown,
+    reset = false,
+    observedAt = new Date().toISOString(),
+  ): PublicOnboardingState {
     const path = z.enum(["attach", "fresh"]).parse(pathInput);
+    const current = this.get();
+    if (current?.path === path) return current;
+    if (current && !reset) {
+      throw new Error("Switching onboarding paths requires explicit reset confirmation");
+    }
     this.save(
       path,
       "preflight",
@@ -145,6 +225,7 @@ export class OnboardingService {
         signerGrant: { preparation: null, verified: null },
       },
       observedAt,
+      current ? "path-reset" : "path-started",
     );
     return this.getOrThrow();
   }
@@ -184,6 +265,7 @@ export class OnboardingService {
       statusFor(activationPlan),
       data,
       observedAt,
+      "attach-verified",
     );
     return this.getOrThrow();
   }
@@ -233,7 +315,14 @@ export class OnboardingService {
       managerArtifact,
       signerGrant: { preparation: null, verified: null },
     };
-    this.save("fresh", firstIncompleteStep(plan), statusFor(plan), data, observedAt);
+    this.save(
+      "fresh",
+      firstIncompleteStep(plan),
+      statusFor(plan),
+      data,
+      observedAt,
+      "fresh-prepared",
+    );
     return this.getOrThrow();
   }
 
@@ -267,7 +356,7 @@ export class OnboardingService {
       activationPlan: plan,
       signerGrant: { ...data.signerGrant, preparation },
     };
-    this.save("fresh", "verify-signer-grant", statusFor(plan), next, observedAt);
+    this.save("fresh", "verify-signer-grant", statusFor(plan), next, observedAt, "grant-prepared");
     return this.getOrThrow();
   }
 
@@ -300,7 +389,7 @@ export class OnboardingService {
       activationPlan: plan,
       signerGrant: { ...data.signerGrant, verified },
     };
-    this.save("fresh", "register-manager", statusFor(plan), next, observedAt);
+    this.save("fresh", "register-manager", statusFor(plan), next, observedAt, "grant-verified");
     return this.getOrThrow();
   }
 
@@ -358,7 +447,14 @@ export class OnboardingService {
       status: planStatus(steps),
     });
     const next = { ...data, activationPlan: plan };
-    this.save("fresh", firstIncompleteStep(plan), statusFor(plan), next, observedAt);
+    this.save(
+      "fresh",
+      firstIncompleteStep(plan),
+      statusFor(plan),
+      next,
+      observedAt,
+      "chain-refreshed",
+    );
     return this.getOrThrow();
   }
 
@@ -368,7 +464,7 @@ export class OnboardingService {
     if (step !== "complete" && !data.activationPlan?.steps.some(({ id }) => id === step)) {
       throw new Error("Unknown onboarding step");
     }
-    this.save(stored.path, step, stored.status, data, observedAt);
+    this.save(stored.path, step, stored.status, data, observedAt, "step-selected");
     return this.getOrThrow();
   }
 
@@ -398,7 +494,9 @@ export class OnboardingService {
     if (expectedPath && stored.path !== expectedPath) {
       throw new Error(`This action requires the ${expectedPath} onboarding path`);
     }
-    return { stored, data: stored.state as PersistedOnboardingData };
+    const data = persistedOnboardingDataSchema.safeParse(stored.state);
+    if (!data.success) throw new Error("Stored onboarding state is invalid; restart onboarding");
+    return { stored, data: data.data };
   }
 
   private save(
@@ -407,6 +505,7 @@ export class OnboardingService {
     status: PublicOnboardingState["status"],
     data: PersistedOnboardingData,
     updatedAt: string,
+    auditAction: string,
   ): void {
     this.options.store.putOnboardingState({
       path,
@@ -414,6 +513,7 @@ export class OnboardingService {
       status,
       state: data,
       updatedAt,
+      auditAction,
     });
   }
 

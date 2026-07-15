@@ -38,9 +38,21 @@ export interface SidekickConfig {
   databasePath: string;
 }
 
+export function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(z.url().parse(value));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function parseEndpointUrl(value: string, name: string): string {
   const parsed = z.url().parse(value);
   const url = new URL(parsed);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${name} must use http or https`);
+  }
   if (url.username || url.password) throw new Error(`${name} must not contain credentials`);
   if (url.search || url.hash) {
     throw new Error(`${name} must not contain query parameters or a fragment`);

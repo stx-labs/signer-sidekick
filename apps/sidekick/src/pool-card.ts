@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isHttpUrl, parseEndpointUrl } from "./config.js";
 import type { PoolEnrollmentDocument } from "./enrollment-info.js";
 
 export const poolCardModeSchema = z.enum(["live", "static"]);
@@ -10,6 +11,11 @@ export interface PoolCardArtifact {
   filename: string;
   contentType: string;
   body: string;
+  json: {
+    filename: string;
+    contentType: "application/json; charset=utf-8";
+    body: string;
+  };
   enrollment: PoolEnrollmentDocument;
   liveFields: string[];
   safety: {
@@ -135,23 +141,29 @@ export function createPoolCardArtifact(
   publicApiUrlInput: string,
 ): PoolCardArtifact {
   const mode = poolCardModeSchema.parse(modeInput);
-  const publicApiUrl = new URL(publicApiUrlInput);
-  if (publicApiUrl.username || publicApiUrl.password || publicApiUrl.search || publicApiUrl.hash) {
-    throw new Error(
-      "Public embed API URL must not contain credentials, query parameters, or a fragment",
-    );
+  const hrefs = [
+    enrollment.pool.websiteUrl,
+    enrollment.pool.support?.url,
+    enrollment.links.managerExplorer,
+    ...enrollment.links.officialPlatforms.map(({ url }) => url),
+  ].filter((value): value is string => Boolean(value));
+  if (hrefs.some((value) => !isHttpUrl(value))) {
+    throw new Error("Pool card links must use http or https");
   }
-  const normalizedApiUrl = publicApiUrl.toString().replace(/\/$/, "");
+  const normalizedApiUrl = parseEndpointUrl(publicApiUrlInput, "Public embed API URL");
   const isStatic = mode === "static";
-  const body = isStatic
-    ? `${JSON.stringify({ schemaVersion: 1, generatedBy: "signer-sidekick", enrollment }, null, 2)}\n`
-    : cardHtml(enrollment, mode, normalizedApiUrl);
+  const jsonBody = `${JSON.stringify({ schemaVersion: 1, generatedBy: "signer-sidekick", enrollment }, null, 2)}\n`;
   return {
     schemaVersion: 1,
     mode,
-    filename: isStatic ? "signer-sidekick-pool.json" : "signer-sidekick-pool.html",
-    contentType: isStatic ? "application/json; charset=utf-8" : "text/html; charset=utf-8",
-    body,
+    filename: "signer-sidekick-pool.html",
+    contentType: "text/html; charset=utf-8",
+    body: cardHtml(enrollment, mode, normalizedApiUrl),
+    json: {
+      filename: "signer-sidekick-pool.json",
+      contentType: "application/json; charset=utf-8",
+      body: jsonBody,
+    },
     enrollment,
     liveFields: isStatic ? [] : ["rewardCycleId", "burnBlockHeight"],
     safety: {

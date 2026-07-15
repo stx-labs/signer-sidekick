@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { SidekickNetwork } from "./config.js";
+import { isHttpUrl, type SidekickNetwork } from "./config.js";
 import type { ManagerVerificationReport } from "./manager-verification.js";
 import type { PreflightResult } from "./preflight.js";
 import type { RegistrationVerification } from "./registration-verification.js";
@@ -8,7 +8,7 @@ import type { PoolCycleEligibility, PoolSetupStatus } from "./setup-status.js";
 const contactSchema = z
   .object({
     email: z.email().optional(),
-    url: z.url().optional(),
+    url: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL").optional(),
   })
   .strict()
   .refine((contact) => Boolean(contact.email || contact.url), {
@@ -19,7 +19,7 @@ export const poolEnrollmentConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
     displayName: z.string().trim().min(1).max(80),
-    websiteUrl: z.url().optional(),
+    websiteUrl: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL").optional(),
     support: contactSchema.optional(),
     currentFeeBips: z.number().int().min(0).max(10_000),
     rewardDestinations: z
@@ -40,7 +40,7 @@ export const poolEnrollmentConfigSchema = z
           .object({
             id: z.string().trim().min(1).max(40),
             label: z.string().trim().min(1).max(80),
-            url: z.url(),
+            url: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL"),
           })
           .strict(),
       )
@@ -78,7 +78,7 @@ export const poolEnrollmentDocumentSchema = z
     pool: z
       .object({
         displayName: z.string(),
-        websiteUrl: z.url().optional(),
+        websiteUrl: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL").optional(),
         support: contactSchema.optional(),
       })
       .strict(),
@@ -154,13 +154,13 @@ export const poolEnrollmentDocumentSchema = z
       .strict(),
     links: z
       .object({
-        managerExplorer: z.url(),
+        managerExplorer: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL"),
         officialPlatforms: z.array(
           z
             .object({
               id: z.string(),
               label: z.string(),
-              url: z.url(),
+              url: z.string().refine(isHttpUrl, "Expected an HTTP(S) URL"),
               integration: z.literal("link-only"),
             })
             .strict(),

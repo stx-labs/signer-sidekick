@@ -889,7 +889,9 @@ Non-secret configuration includes:
 - Network/chain ID.
 - Node RPC URL.
 - API base URL, defaulting to the network-appropriate Hiro API.
-- Optional API-key secret reference for hosted or self-hosted API providers.
+- Optional API key for hosted or self-hosted API providers. It may come from the environment or be
+  replaced through the authenticated local UI; a UI replacement is stored in the protected local
+  SQLite database.
 - Manager principal and required protocol profile.
 - Confirmation and staleness policies.
 - Automation mode and per-job policies.
@@ -901,11 +903,14 @@ Non-secret configuration includes:
 - Display timezone, absolute/relative time mode, number format, and light/dark/system theme.
 - Pool-card artifact type (`live` or `static`) and unauthenticated public API URL. A live artifact may never contain the operator API key.
 
-Secret references include only:
+Secret-bearing configuration is limited to:
 
 - Gas-payer key provider.
 - UI credential/session secret.
-- API key, when configured.
+- API key, when configured. An environment-provided key remains external; an authenticated UI
+  replacement is stored in SQLite so it can take effect without rebuilding the container. The
+  database and every backup are therefore secret-bearing. This exception applies only to API
+  provider credentials, never signer, manager-admin, or gas-payer keys.
 - Webhook credentials.
 
 The operator can change the API URL and API key through setup/configuration without rebuilding the container. Sidekick validates the replacement endpoint before switching, never returns the stored API key to the browser, and resumes ingestion using a cursor associated with the new source rather than reusing the prior provider's cursor blindly.
@@ -1074,10 +1079,11 @@ Exit: no unresolved question can materially change custody, contract identity, t
 
 Implementation status (July 15, 2026): the pinned profiles, generated mainnet and regtest manager
 artifacts, Clarity codecs/adapter, Epoch 4.0 Stacking/PoX post-condition serialization tests, and
-self-contained Clarinet lifecycle are implemented. Golden tests execute registration, STX-only
-stake, reward calculation, manager/staker claims, fees, rejected-withdrawal reclaim,
-accepted-withdrawal settlement and dust sweep, early unstake, and grant
-revocation. The remaining exit work is an end-to-end run with the released signer and an external
+self-contained Clarinet lifecycle are implemented. Golden tests execute all §15.2 paths, including
+registration/grant, stake/update/unstake, threshold crossings, both half-cycle calculations,
+permissionless races, manager/staker claims, fee snapshots, direct and L1 payout boundaries,
+withdrawal settlement/reclaim, prepare-phase rejection, and grant revocation. The remaining exit
+work is an end-to-end run with the released signer and an external
 node/API environment plus independent production-profile approval; neither blocks local Phase 2
 hardening.
 

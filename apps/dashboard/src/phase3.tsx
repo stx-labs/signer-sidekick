@@ -54,6 +54,13 @@ interface OnboardingState {
       };
     };
   };
+  audit: Array<{
+    action: string;
+    path: "attach" | "fresh";
+    currentStep: string;
+    status: string;
+    changedAt: string;
+  }>;
 }
 
 export interface RuntimeSettings {
@@ -108,6 +115,7 @@ interface PoolCardArtifact {
   filename: string;
   contentType: string;
   body: string;
+  json: { filename: string; contentType: string; body: string };
   enrollment: EnrollmentDocument;
   liveFields: string[];
 }
@@ -135,7 +143,17 @@ async function api<T>(token: string, url: string, init: RequestInit = {}): Promi
       ...init.headers,
     },
   });
-  if (!response.ok) throw new Error(`Request failed with HTTP ${response.status}`);
+  if (response.status === 401) {
+    sessionStorage.removeItem("sidekick-token");
+    window.dispatchEvent(new Event("sidekick-auth-rejected"));
+    throw new Error("The operator credential was rejected.");
+  }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+    const detail =
+      typeof body?.error === "string" ? body.error.replaceAll("_", " ") : `HTTP ${response.status}`;
+    throw new Error(`Request failed: ${detail}`);
+  }
   return (await response.json()) as T;
 }
 
@@ -161,9 +179,13 @@ function PageHead({
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
-  const state = ["complete", "ready", "pass", "grant valid", "eligible"].includes(normalized)
+  const state = ["complete", "ready", "pass", "connected", "grant valid", "eligible"].includes(
+    normalized,
+  )
     ? "b-success"
-    : ["blocked", "fail", "grant not verified", "needs attention"].includes(normalized)
+    : ["blocked", "fail", "unavailable", "grant not verified", "needs attention"].includes(
+          normalized,
+        )
       ? "b-error"
       : "b-caution";
   return <span className={`badge ${state}`}>{status.replaceAll("-", " ")}</span>;
@@ -199,6 +221,11 @@ function Field({
 
 async function authenticatedDownload(token: string, url: string): Promise<void> {
   const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+  if (response.status === 401) {
+    sessionStorage.removeItem("sidekick-token");
+    window.dispatchEvent(new Event("sidekick-auth-rejected"));
+    throw new Error("The operator credential was rejected.");
+  }
   if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
   const blob = await response.blob();
   const disposition = response.headers.get("content-disposition") ?? "";
@@ -358,7 +385,6 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
       })
         .then((result) => {
           setOnboarding(result.onboarding);
-          setSelectedStep(workflowStepId("fresh", result.onboarding.currentStep));
         })
         .catch(() => {
           // The manager may not be deployed yet; the visible manual refresh reports errors.
@@ -383,11 +409,24 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
   };
 
   const start = async (nextPath: "attach" | "fresh") => {
+    if (onboarding?.path === nextPath) {
+      setPath(nextPath);
+      return;
+    }
+    const reset = Boolean(onboarding);
+    if (
+      reset &&
+      !window.confirm(
+        "Switch onboarding paths? This resets the saved wizard progress for the current path.",
+      )
+    ) {
+      return;
+    }
     setPath(nextPath);
     await run(() =>
       api(token, "/api/v1/onboarding/start", {
         method: "POST",
-        body: JSON.stringify({ path: nextPath }),
+        body: JSON.stringify({ path: nextPath, reset }),
       }),
     );
   };
@@ -656,7 +695,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                     <ArrowClockwise /> Verify deployment
                   </button>
                   {onboarding.artifact.manifest ? (
-                    <p className="help mono">
+                    <p className="help mono src src-chain">
                       source {onboarding.artifact.manifest.artifact.sourceSha256}
                     </p>
                   ) : null}
@@ -679,9 +718,18 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                       Prepare signer-host instruction
                     </button>
                   ) : (
-                    <pre className="code command-code">
-                      {onboarding.signerGrant.preparation.command}
-                    </pre>
+                    <>
+                      <pre className="code command-code">
+                        {onboarding.signerGrant.preparation.command}
+                      </pre>
+                      <div className="statline">
+                        <span className="k">SIP-018 grant hash</span>
+                        <span className="v identifier mono src src-chain">
+                          {onboarding.signerGrant.preparation.expectedMessageHashHex}
+                          <span className="sub">derived from live PoX-5</span>
+                        </span>
+                      </div>
+                    </>
                   )}
                   {onboarding.signerGrant.preparation && !onboarding.signerGrant.verified ? (
                     <>
@@ -819,6 +867,7 @@ export function SettingsPage({
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState("identity");
 
   useEffect(() => {
     void api<RuntimeSettings>(token, "/api/v1/settings")
@@ -905,12 +954,15 @@ export function SettingsPage({
               ["security", "Access & security"],
               ["maintenance", "About & maintenance"],
             ] as const
-          ).map(([id, label], index) => (
+          ).map(([id, label]) => (
             <button
               type="button"
-              className={index === 0 ? "active" : ""}
+              className={activeSection === id ? "active" : ""}
               key={id}
-              onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" })}
+              onClick={() => {
+                setActiveSection(id);
+                document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+              }}
             >
               {label}
             </button>
@@ -1032,7 +1084,15 @@ export function SettingsPage({
               <h2>
                 <Plugs /> Data sources
               </h2>
-              <StatusBadge status={data.preflight.status} />
+              <StatusBadge
+                status={
+                  data.preflight.status === "pass"
+                    ? "Connected"
+                    : data.preflight.status === "warn"
+                      ? "Attention"
+                      : "Unavailable"
+                }
+              />
             </div>
             <Field
               label="Stacks node RPC URL"
@@ -1102,9 +1162,13 @@ export function SettingsPage({
                 <input
                   inputMode="numeric"
                   value={settings.forecast.horizonCycles}
-                  onChange={(event) =>
-                    update("forecast", { horizonCycles: Number(event.target.value) })
-                  }
+                  onChange={(event) => {
+                    const value = event.target.valueAsNumber;
+                    if (Number.isInteger(value)) update("forecast", { horizonCycles: value });
+                  }}
+                  type="number"
+                  min={1}
+                  max={96}
                 />
                 <span className="suffix">cycles</span>
               </div>
@@ -1315,12 +1379,13 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
     void generate();
   }, [generate]);
 
-  const download = () => {
+  const download = (format: "html" | "json") => {
     if (!artifact) return;
-    const url = URL.createObjectURL(new Blob([artifact.body], { type: artifact.contentType }));
+    const selected = format === "html" ? artifact : artifact.json;
+    const url = URL.createObjectURL(new Blob([selected.body], { type: selected.contentType }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = artifact.filename;
+    anchor.download = selected.filename;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -1338,9 +1403,17 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
               type="button"
               className="btn btn-secondary"
               disabled={!artifact}
-              onClick={download}
+              onClick={() => download("html")}
             >
-              <DownloadSimple /> Download {mode === "live" ? ".html" : ".json"}
+              <DownloadSimple /> Download .html
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!artifact}
+              onClick={() => download("json")}
+            >
+              <DownloadSimple /> Download .json
             </button>
             <button
               type="button"
@@ -1384,13 +1457,13 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
         <p className="tertiary">
           {mode === "live"
             ? "Refreshes reward cycle and burn height from the configured unauthenticated public API. Verified pool identity and manager facts remain baked in."
-            : "Versioned JSON with the current verified values and no runtime network request."}
+            : "Baked HTML plus versioned JSON with current verified values and no runtime network request."}
         </p>
       </div>
       <div className="grid cols-3-2 embed-grid">
         <div className="card">
           <div className="card-head">
-            <h2>{mode === "live" ? "Self-contained HTML" : "Static pool JSON"}</h2>
+            <h2>{mode === "live" ? "Self-contained live HTML" : "Self-contained static HTML"}</h2>
             <button
               type="button"
               className="btn btn-tertiary sm"
@@ -1454,6 +1527,7 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
                 <div>
                   <h2>{enrollment.pool.displayName}</h2>
                   <p>{enrollment.manager.principal}</p>
+                  <p className="mono src src-chain">source {enrollment.manager.sourceSha256}</p>
                 </div>
                 <StatusBadge
                   status={enrollment.signer.grantValid ? "Grant valid" : "Grant not verified"}
@@ -1463,17 +1537,19 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
                 <div className="card-standout">
                   <div className="statline">
                     <span className="k">Reward cycle</span>
-                    <span className="v mono">{enrollment.chain.rewardCycleId}</span>
+                    <span className="v mono src src-chain">{enrollment.chain.rewardCycleId}</span>
                   </div>
                   <div className="statline">
                     <span className="k">Pool size</span>
-                    <span className="v mono">{formatUstx(current?.delegatedUstx)} STX</span>
+                    <span className="v mono src src-chain">
+                      {formatUstx(current?.delegatedUstx)} STX
+                    </span>
                   </div>
                 </div>
                 <div className="card-standout">
                   <div className="statline">
                     <span className="k">Eligibility</span>
-                    <span className="v">
+                    <span className="v src src-chain">
                       <StatusBadge
                         status={
                           current?.meetsThreshold && current.inSignerSet
