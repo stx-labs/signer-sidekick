@@ -21,6 +21,9 @@ function parseUrl(value: string, name: string): string {
   const parsed = z.url().parse(value);
   const url = new URL(parsed);
   if (url.username || url.password) throw new Error(`${name} must not contain credentials`);
+  if (url.search || url.hash) {
+    throw new Error(`${name} must not contain query parameters or a fragment`);
+  }
   return url.toString().replace(/\/$/, "");
 }
 

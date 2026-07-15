@@ -31,4 +31,10 @@ describe("Sidekick configuration", () => {
       loadConfig({ STACKS_NODE_RPC_URL: "http://user:password@127.0.0.1:20443" }),
     ).toThrow("must not contain credentials");
   });
+
+  it("rejects endpoint query parameters so tokens cannot leak through redacted output", () => {
+    expect(() =>
+      loadConfig({ STACKS_NODE_RPC_URL: "http://127.0.0.1:20443?token=secret" }),
+    ).toThrow("must not contain query parameters or a fragment");
+  });
 });

@@ -5,11 +5,13 @@ import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { renderManagerDeployment } from "./manager-render.js";
 import { inspectDeployedManager } from "./manager-verification.js";
+import { createOperatorRecord } from "./operator-record.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import { createServer } from "./server.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
+import { createSupportBundle } from "./support-bundle.js";
 
 const [command = "help", ...arguments_] = process.argv.slice(2);
 
@@ -33,6 +35,10 @@ async function setupContext(managerPrincipal: string) {
       : null;
   const setup = await readPoolSetupStatus(node, preflight, manager, registration);
   return { config, preflight, manager, registration, setup };
+}
+
+async function readJson(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(resolve(path), "utf8")) as unknown;
 }
 
 if (command === "serve") {
@@ -78,7 +84,7 @@ if (command === "serve") {
   if (!managerPrincipal || !poolConfigPath) {
     throw new Error("Usage: sidekick pool enrollment-info <manager-principal> <pool-config.json>");
   }
-  const poolConfig = JSON.parse(await readFile(resolve(poolConfigPath), "utf8")) as unknown;
+  const poolConfig = await readJson(poolConfigPath);
   const { preflight, manager, registration, setup } = await setupContext(managerPrincipal);
   const enrollment = createPoolEnrollmentDocument(
     poolConfig,
@@ -89,6 +95,69 @@ if (command === "serve") {
   );
   console.log(JSON.stringify(enrollment, null, 2));
   if (!enrollment.readiness.enrollmentReady) process.exitCode = 2;
+} else if (command === "setup" && arguments_[0] === "record") {
+  const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
+  if (!managerPrincipal || !poolConfigPath) {
+    throw new Error(
+      "Usage: sidekick setup record <manager-principal> <pool-config.json> [record-metadata.json]",
+    );
+  }
+  const [poolConfig, recordMetadata] = await Promise.all([
+    readJson(poolConfigPath),
+    recordMetadataPath ? readJson(recordMetadataPath) : { schemaVersion: 1 },
+  ]);
+  const { preflight, manager, registration, setup } = await setupContext(managerPrincipal);
+  const enrollment = createPoolEnrollmentDocument(
+    poolConfig,
+    preflight,
+    manager,
+    registration,
+    setup,
+  );
+  const record = createOperatorRecord(
+    recordMetadata,
+    preflight,
+    manager,
+    registration,
+    setup,
+    enrollment,
+  );
+  console.log(JSON.stringify(record, null, 2));
+  if (setup.status === "blocked") process.exitCode = 2;
+} else if (command === "export" && arguments_[0] === "support-bundle") {
+  const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
+  if (!managerPrincipal) {
+    throw new Error(
+      "Usage: sidekick export support-bundle <manager-principal> [pool-config.json] [record-metadata.json]",
+    );
+  }
+  const [poolConfig, recordMetadata] = await Promise.all([
+    poolConfigPath ? readJson(poolConfigPath) : null,
+    recordMetadataPath ? readJson(recordMetadataPath) : { schemaVersion: 1 },
+  ]);
+  const { config, preflight, manager, registration, setup } = await setupContext(managerPrincipal);
+  const enrollment = poolConfig
+    ? createPoolEnrollmentDocument(poolConfig, preflight, manager, registration, setup)
+    : null;
+  const record = createOperatorRecord(
+    recordMetadata,
+    preflight,
+    manager,
+    registration,
+    setup,
+    enrollment,
+  );
+  const bundle = createSupportBundle(
+    config,
+    preflight,
+    manager,
+    registration,
+    setup,
+    record,
+    enrollment,
+    process.env.npm_package_version,
+  );
+  console.log(JSON.stringify(bundle, null, 2));
 } else if (command === "manager" && arguments_[0] === "render") {
   const [, adminPrincipal, contractName, outputDirectory] = arguments_;
   if (!adminPrincipal || !contractName || !outputDirectory) {
@@ -185,7 +254,9 @@ Usage:
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
   sidekick attach <manager>  Verify and attach an existing manager in Observe mode
   sidekick setup status <manager>  Verify registration and current/next eligibility
+  sidekick setup record <manager> <pool-config.json> [record-metadata.json]
   sidekick pool enrollment-info <manager> <pool-config.json>
+  sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
   sidekick manager render <admin> <name> <output-dir>
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
   sidekick signer-grant verify <manager> <auth-id> <signer-output.json>

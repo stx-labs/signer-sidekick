@@ -53,12 +53,25 @@ pnpm --filter @stx-labs/signer-sidekick cli preflight
 pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli \
   pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json
+pnpm --filter @stx-labs/signer-sidekick cli \
+  setup record <manager-principal> \
+  docs/examples/pool-enrollment-config.example.json \
+  docs/examples/operator-record-metadata.example.json
+pnpm --filter @stx-labs/signer-sidekick cli \
+  export support-bundle <manager-principal> \
+  docs/examples/pool-enrollment-config.example.json \
+  docs/examples/operator-record-metadata.example.json
 ```
 
 The enrollment command writes a versioned public JSON document to standard output. Its fee is
 explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields
 come from the connected node. It does not collect staker inputs or connect, sign, or broadcast for
 a wallet.
+
+The operator record metadata contains only public identifiers. Its strict schema rejects private
+key fields and keeps the gas payer distinct from the manager admin. The support bundle is built
+from an explicit diagnostic allowlist; it does not dump environment variables or signer-host
+health and never includes the configured API key.
 
 ## License
 
