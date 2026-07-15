@@ -59,6 +59,7 @@ pnpm --filter @stx-labs/signer-sidekick cli init attach <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli \
   pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json
+pnpm --filter @stx-labs/signer-sidekick cli pool sync-stakers <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli \
   setup record <manager-principal> \
   docs/examples/pool-enrollment-config.example.json \
@@ -73,6 +74,13 @@ The enrollment command writes a versioned public JSON document to standard outpu
 explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields
 come from the connected node. It does not collect staker inputs or connect, sign, or broadcast for
 a wallet.
+
+The signer-staker sync uses the configured API only to discover the manager's paginated roster.
+It verifies every STX entry against the connected node's PoX-5 `get-staker-info` result before
+storing a position, then reads `get-signer-cycle-membership` for the exact amount and signer in
+each active cycle. Page checkpoints are durable and scoped to the API provider, so an interrupted
+scan resumes without prematurely removing unseen members. API-discovery and node-verification
+provenance are stored separately.
 
 The operator record metadata contains only public identifiers. Its strict schema rejects private
 key fields and keeps the gas payer distinct from the manager admin. The support bundle is built

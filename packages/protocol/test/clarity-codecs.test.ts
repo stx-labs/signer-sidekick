@@ -22,6 +22,8 @@ import {
   decodeEarnedStakerRewards,
   decodeOptionalBuffer,
   decodeOptionalPrincipal,
+  decodePox5CycleMembership,
+  decodePox5StakerInfo,
   decodePoxAddressPreference,
   decodeResponseOk,
   encodeBondPeriods,
@@ -71,6 +73,59 @@ describe("Clarity boundary codecs", () => {
         someCV(contractPrincipalCV("SP000000000000000000002Q6VF78", "manager")),
       ),
     ).toBe("SP000000000000000000002Q6VF78.manager");
+  });
+
+  it("decodes authoritative PoX-5 staker positions", () => {
+    expect(decodePox5StakerInfo(noneCV())).toBeNull();
+    expect(
+      decodePox5StakerInfo(
+        someCV(
+          tupleCV({
+            "amount-ustx": uintCV(50_000_000_000n),
+            "first-reward-cycle": uintCV(141n),
+            "num-cycles": uintCV(12n),
+            signer: contractPrincipalCV("SP000000000000000000002Q6VF78", "manager"),
+          }),
+        ),
+      ),
+    ).toEqual({
+      amountUstx: 50_000_000_000n,
+      firstRewardCycle: 141n,
+      numCycles: 12n,
+      signer: "SP000000000000000000002Q6VF78.manager",
+    });
+  });
+
+  it("rejects malformed PoX-5 staker position fields", () => {
+    expect(() =>
+      decodePox5StakerInfo(
+        someCV(
+          tupleCV({
+            "amount-ustx": uintCV(1n),
+            "first-reward-cycle": uintCV(141n),
+            "num-cycles": uintCV(1n),
+            signer: uintCV(1n),
+          }),
+        ),
+      ),
+    ).toThrow("get-staker-info.signer: expected principal");
+  });
+
+  it("decodes exact PoX-5 per-cycle memberships", () => {
+    expect(decodePox5CycleMembership(noneCV())).toBeNull();
+    expect(
+      decodePox5CycleMembership(
+        someCV(
+          tupleCV({
+            "amount-ustx": uintCV(49_000_000_000n),
+            signer: contractPrincipalCV("SP000000000000000000002Q6VF78", "manager"),
+          }),
+        ),
+      ),
+    ).toEqual({
+      amountUstx: 49_000_000_000n,
+      signer: "SP000000000000000000002Q6VF78.manager",
+    });
   });
 
   it("encodes read-only arguments and decodes optional buffers", () => {

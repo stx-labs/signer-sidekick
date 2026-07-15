@@ -840,6 +840,7 @@ sidekick preflight
 sidekick manager render
 sidekick manager verify
 sidekick pool enrollment-info
+sidekick pool sync-stakers <manager-principal>
 sidekick setup status
 sidekick doctor
 sidekick config validate

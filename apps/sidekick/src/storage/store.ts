@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import type { SidekickNetwork } from "../config.js";
 
@@ -68,6 +69,88 @@ const migrations: readonly Migration[] = [
         ON chain_events (contract_id, topic, block_height);
       CREATE INDEX chain_events_index_block
         ON chain_events (chain_id, index_block_hash);
+    `,
+  },
+  {
+    version: 2,
+    name: "signer_staker_projections",
+    sql: `
+      CREATE TABLE ingestion_runs (
+        run_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        stream TEXT NOT NULL,
+        manager_principal TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed')),
+        cursor_next TEXT,
+        pages_processed INTEGER NOT NULL DEFAULT 0 CHECK (pages_processed >= 0),
+        items_processed INTEGER NOT NULL DEFAULT 0 CHECK (items_processed >= 0),
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      ) STRICT;
+
+      CREATE UNIQUE INDEX ingestion_runs_one_active_scan
+        ON ingestion_runs (source_id, stream, manager_principal)
+        WHERE status = 'running';
+
+      CREATE TABLE stakers (
+        manager_principal TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        has_stx INTEGER NOT NULL CHECK (has_stx IN (0, 1)),
+        has_btc INTEGER NOT NULL CHECK (has_btc IN (0, 1)),
+        stx_node_verified INTEGER CHECK (stx_node_verified IN (0, 1)),
+        active INTEGER NOT NULL CHECK (active IN (0, 1)),
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        verification_source_id TEXT REFERENCES chain_sources(source_id),
+        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (manager_principal, staker_principal)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX stakers_active_by_manager
+        ON stakers (manager_principal, active, staker_principal);
+
+      CREATE TABLE stake_positions (
+        manager_principal TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        signer_principal TEXT NOT NULL,
+        amount_ustx TEXT NOT NULL,
+        first_reward_cycle TEXT NOT NULL,
+        num_cycles TEXT NOT NULL,
+        unlock_cycle TEXT NOT NULL,
+        active INTEGER NOT NULL CHECK (active IN (0, 1)),
+        discovery_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        verification_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (manager_principal, staker_principal),
+        FOREIGN KEY (manager_principal, staker_principal)
+          REFERENCES stakers(manager_principal, staker_principal)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE TABLE cycle_memberships (
+        manager_principal TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        reward_cycle TEXT NOT NULL,
+        signer_principal TEXT NOT NULL,
+        amount_ustx TEXT NOT NULL,
+        active INTEGER NOT NULL CHECK (active IN (0, 1)),
+        discovery_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        verification_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (manager_principal, staker_principal, reward_cycle),
+        FOREIGN KEY (manager_principal, staker_principal)
+          REFERENCES stakers(manager_principal, staker_principal)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX cycle_memberships_active_by_cycle
+        ON cycle_memberships (manager_principal, reward_cycle, active, staker_principal);
     `,
   },
 ];
@@ -160,6 +243,118 @@ const eventRowSchema = z.object({
   updated_at: z.string(),
 });
 
+const principalSchema = z.string().refine(validatePrincipal, "Invalid Stacks principal");
+const signerCycleMembershipInputSchema = z
+  .object({
+    rewardCycle: z.bigint().nonnegative(),
+    signerPrincipal: principalSchema,
+    amountUstx: z.bigint().nonnegative(),
+  })
+  .strict();
+const signerStakerPositionInputSchema = z
+  .object({
+    signerPrincipal: principalSchema,
+    amountUstx: z.bigint().nonnegative(),
+    firstRewardCycle: z.bigint().nonnegative(),
+    numCycles: z.bigint().min(1n).max(96n),
+    cycleMemberships: z.array(signerCycleMembershipInputSchema).max(96),
+  })
+  .strict();
+const signerStakerPageItemSchema = z
+  .object({
+    stakerPrincipal: principalSchema,
+    hasStx: z.boolean(),
+    hasBtc: z.boolean(),
+    stxNodeVerified: z.boolean().nullable(),
+    position: signerStakerPositionInputSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.hasStx && !value.hasBtc) {
+      context.addIssue({
+        code: "custom",
+        message: "A discovery must include at least one staking type",
+        path: ["hasStx"],
+      });
+    }
+    if (value.hasStx && value.stxNodeVerified === null) {
+      context.addIssue({
+        code: "custom",
+        message: "STX discoveries require a node verification result",
+        path: ["stxNodeVerified"],
+      });
+    }
+    if (!value.hasStx && value.stxNodeVerified !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "BTC-only discoveries cannot have an STX node verification result",
+        path: ["stxNodeVerified"],
+      });
+    }
+    if ((value.position !== null) !== (value.stxNodeVerified === true)) {
+      context.addIssue({
+        code: "custom",
+        message: "A trusted position requires successful STX node verification",
+        path: ["position"],
+      });
+    }
+  });
+const signerStakerPageInputSchema = z
+  .object({
+    runId: z.string().uuid(),
+    sourceId: z.string().min(1),
+    nodeSourceId: z.string().min(1),
+    managerPrincipal: principalSchema,
+    nextCursor: principalSchema.nullable(),
+    items: z.array(signerStakerPageItemSchema),
+    observedAt: z.iso.datetime(),
+    burnBlockHeight: z.number().int().nonnegative(),
+    stacksTipHeight: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const ingestionRunRowSchema = z.object({
+  run_id: z.string().uuid(),
+  source_id: z.string(),
+  stream: z.string(),
+  manager_principal: z.string(),
+  status: z.enum(["running", "completed"]),
+  cursor_next: z.string().nullable(),
+  pages_processed: z.number().int().nonnegative(),
+  items_processed: z.number().int().nonnegative(),
+  started_at: z.string(),
+  updated_at: z.string(),
+  completed_at: z.string().nullable(),
+});
+
+const storedSignerStakerRowSchema = z.object({
+  manager_principal: z.string(),
+  staker_principal: z.string(),
+  has_stx: z.union([z.literal(0), z.literal(1)]),
+  has_btc: z.union([z.literal(0), z.literal(1)]),
+  stx_node_verified: z.union([z.literal(0), z.literal(1)]).nullable(),
+  active: z.union([z.literal(0), z.literal(1)]),
+  source_id: z.string(),
+  verification_source_id: z.string().nullable(),
+  last_seen_run_id: z.string(),
+  first_seen_at: z.string(),
+  last_seen_at: z.string(),
+  signer_principal: z.string().nullable(),
+  amount_ustx: z.string().nullable(),
+  first_reward_cycle: z.string().nullable(),
+  num_cycles: z.string().nullable(),
+  unlock_cycle: z.string().nullable(),
+  position_active: z.union([z.literal(0), z.literal(1)]).nullable(),
+});
+
+const cycleMembershipRowSchema = z.object({
+  staker_principal: z.string(),
+  reward_cycle: z.string(),
+  signer_principal: z.string(),
+  amount_ustx: z.string(),
+  active: z.union([z.literal(0), z.literal(1)]),
+});
+
 export type ChainSourceInput = z.infer<typeof sourceInputSchema>;
 export type ChainCursorInput = z.infer<typeof cursorInputSchema>;
 export type ChainEventInput = z.infer<typeof eventInputSchema>;
@@ -176,6 +371,53 @@ export interface ChainCursor {
 export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
   firstSeenAt: string;
   updatedAt: string;
+}
+
+export type SignerStakerPositionInput = z.infer<typeof signerStakerPositionInputSchema>;
+export type SignerStakerPageItem = z.infer<typeof signerStakerPageItemSchema>;
+export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
+
+export interface SignerStakerRun {
+  runId: string;
+  sourceId: string;
+  managerPrincipal: string;
+  status: "running" | "completed";
+  cursor: string | null;
+  pagesProcessed: number;
+  itemsProcessed: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface StoredSignerStaker {
+  managerPrincipal: string;
+  stakerPrincipal: string;
+  hasStx: boolean;
+  hasBtc: boolean;
+  stxNodeVerified: boolean | null;
+  active: boolean;
+  sourceId: string;
+  verificationSourceId: string | null;
+  lastSeenRunId: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  position: null | {
+    signerPrincipal: string;
+    amountUstx: bigint;
+    firstRewardCycle: bigint;
+    numCycles: bigint;
+    unlockCycle: bigint;
+    active: boolean;
+  };
+}
+
+export interface StoredCycleMembership {
+  stakerPrincipal: string;
+  rewardCycle: bigint;
+  signerPrincipal: string;
+  amountUstx: bigint;
+  active: boolean;
 }
 
 function migrationChecksum(migration: Migration): string {
@@ -315,6 +557,30 @@ export function createChainSourceId(network: SidekickNetwork, baseUrl: string): 
   const normalized = new URL(baseUrl).toString().replace(/\/$/, "");
   const digest = createHash("sha256").update(`${network}\n${normalized}`).digest("hex");
   return `api:${network}:${digest}`;
+}
+
+export function createNodeSourceId(network: SidekickNetwork, baseUrl: string): string {
+  const normalized = new URL(baseUrl).toString().replace(/\/$/, "");
+  const digest = createHash("sha256").update(`${network}\n${normalized}`).digest("hex");
+  return `node:${network}:${digest}`;
+}
+
+const signerStakersStream = "signer-stakers";
+
+function toSignerStakerRun(row: unknown): SignerStakerRun {
+  const value = ingestionRunRowSchema.parse(row);
+  return {
+    runId: value.run_id,
+    sourceId: value.source_id,
+    managerPrincipal: value.manager_principal,
+    status: value.status,
+    cursor: value.cursor_next,
+    pagesProcessed: value.pages_processed,
+    itemsProcessed: value.items_processed,
+    startedAt: value.started_at,
+    updatedAt: value.updated_at,
+    completedAt: value.completed_at,
+  };
 }
 
 export class SidekickStore {
@@ -508,5 +774,338 @@ export class SidekickStore {
       )
       .run(parsedUpdatedAt, parsedChainId, parsedIndexBlockHash);
     return Number(result.changes);
+  }
+
+  startOrResumeSignerStakerRun(
+    sourceId: string,
+    managerPrincipal: string,
+    now: string,
+  ): SignerStakerRun {
+    const parsedSourceId = z.string().min(1).parse(sourceId);
+    const parsedManager = principalSchema.parse(managerPrincipal);
+    const parsedNow = z.iso.datetime().parse(now);
+    const selectRun = this.db.prepare(
+      `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
+        pages_processed, items_processed, started_at, updated_at, completed_at
+       FROM ingestion_runs
+       WHERE source_id = ? AND stream = ? AND manager_principal = ? AND status = 'running'`,
+    );
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = selectRun.get(parsedSourceId, signerStakersStream, parsedManager);
+      if (existing) {
+        const result = toSignerStakerRun(existing);
+        this.db.exec("COMMIT");
+        return result;
+      }
+
+      const runId = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO ingestion_runs (
+            run_id, source_id, stream, manager_principal, status, cursor_next,
+            pages_processed, items_processed, started_at, updated_at, completed_at
+          ) VALUES (?, ?, ?, ?, 'running', NULL, 0, 0, ?, ?, NULL)`,
+        )
+        .run(runId, parsedSourceId, signerStakersStream, parsedManager, parsedNow, parsedNow);
+      const created = selectRun.get(parsedSourceId, signerStakersStream, parsedManager);
+      if (!created) throw new Error("Created signer-staker run could not be read back");
+      const result = toSignerStakerRun(created);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  commitSignerStakerPage(input: SignerStakerPageInput): SignerStakerRun {
+    const value = signerStakerPageInputSchema.parse(input);
+    const uniqueStakers = new Set(value.items.map((item) => item.stakerPrincipal));
+    if (uniqueStakers.size !== value.items.length) {
+      throw new Error("Signer-staker API page contains duplicate staker principals");
+    }
+    for (const item of value.items) {
+      const position = item.position;
+      if (position && position.signerPrincipal !== value.managerPrincipal) {
+        throw new Error(
+          `Trusted position for ${item.stakerPrincipal} is assigned to a different signer`,
+        );
+      }
+      if (position) {
+        const cycles = position.cycleMemberships.map(({ rewardCycle }) => rewardCycle);
+        if (new Set(cycles.map(String)).size !== cycles.length) {
+          throw new Error(`Trusted position for ${item.stakerPrincipal} has duplicate cycles`);
+        }
+        if (
+          position.cycleMemberships.some(
+            ({ signerPrincipal }) => signerPrincipal !== value.managerPrincipal,
+          )
+        ) {
+          throw new Error(
+            `Trusted position for ${item.stakerPrincipal} has a cycle assigned to another signer`,
+          );
+        }
+        const unlockCycle = position.firstRewardCycle + position.numCycles;
+        if (
+          position.cycleMemberships.some(
+            ({ rewardCycle }) =>
+              rewardCycle < position.firstRewardCycle || rewardCycle >= unlockCycle,
+          )
+        ) {
+          throw new Error(`Trusted position for ${item.stakerPrincipal} has an out-of-range cycle`);
+        }
+      }
+    }
+
+    const selectRun = this.db.prepare(
+      `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
+        pages_processed, items_processed, started_at, updated_at, completed_at
+       FROM ingestion_runs WHERE run_id = ?`,
+    );
+    const upsertStaker = this.db.prepare(
+      `INSERT INTO stakers (
+        manager_principal, staker_principal, has_stx, has_btc, stx_node_verified,
+        active, source_id, verification_source_id, last_seen_run_id, first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
+        has_stx = excluded.has_stx,
+        has_btc = excluded.has_btc,
+        stx_node_verified = excluded.stx_node_verified,
+        active = 1,
+        source_id = excluded.source_id,
+        verification_source_id = excluded.verification_source_id,
+        last_seen_run_id = excluded.last_seen_run_id,
+        last_seen_at = excluded.last_seen_at`,
+    );
+    const deactivatePosition = this.db.prepare(
+      `UPDATE stake_positions SET active = 0, updated_at = ?
+       WHERE manager_principal = ? AND staker_principal = ? AND active = 1`,
+    );
+    const deactivateMemberships = this.db.prepare(
+      `UPDATE cycle_memberships SET active = 0, updated_at = ?
+       WHERE manager_principal = ? AND staker_principal = ? AND active = 1`,
+    );
+    const upsertPosition = this.db.prepare(
+      `INSERT INTO stake_positions (
+        manager_principal, staker_principal, signer_principal, amount_ustx,
+        first_reward_cycle, num_cycles, unlock_cycle, active, discovery_source_id,
+        verification_source_id, last_seen_run_id, observed_burn_block_height,
+        observed_stacks_tip_height, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
+        signer_principal = excluded.signer_principal,
+        amount_ustx = excluded.amount_ustx,
+        first_reward_cycle = excluded.first_reward_cycle,
+        num_cycles = excluded.num_cycles,
+        unlock_cycle = excluded.unlock_cycle,
+        active = 1,
+        discovery_source_id = excluded.discovery_source_id,
+        verification_source_id = excluded.verification_source_id,
+        last_seen_run_id = excluded.last_seen_run_id,
+        observed_burn_block_height = excluded.observed_burn_block_height,
+        observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        updated_at = excluded.updated_at`,
+    );
+    const upsertMembership = this.db.prepare(
+      `INSERT INTO cycle_memberships (
+        manager_principal, staker_principal, reward_cycle, signer_principal, amount_ustx, active,
+        discovery_source_id, verification_source_id, last_seen_run_id, observed_burn_block_height,
+        observed_stacks_tip_height, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (manager_principal, staker_principal, reward_cycle) DO UPDATE SET
+        amount_ustx = excluded.amount_ustx,
+        signer_principal = excluded.signer_principal,
+        active = 1,
+        discovery_source_id = excluded.discovery_source_id,
+        verification_source_id = excluded.verification_source_id,
+        last_seen_run_id = excluded.last_seen_run_id,
+        observed_burn_block_height = excluded.observed_burn_block_height,
+        observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        updated_at = excluded.updated_at`,
+    );
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = toSignerStakerRun(selectRun.get(value.runId));
+      if (
+        current.status !== "running" ||
+        current.sourceId !== value.sourceId ||
+        current.managerPrincipal !== value.managerPrincipal
+      ) {
+        throw new Error(
+          `Signer-staker run ${value.runId} is not active for this source and manager`,
+        );
+      }
+
+      for (const item of value.items) {
+        upsertStaker.run(
+          value.managerPrincipal,
+          item.stakerPrincipal,
+          item.hasStx ? 1 : 0,
+          item.hasBtc ? 1 : 0,
+          item.stxNodeVerified === null ? null : item.stxNodeVerified ? 1 : 0,
+          value.sourceId,
+          item.hasStx ? value.nodeSourceId : null,
+          value.runId,
+          value.observedAt,
+          value.observedAt,
+        );
+        deactivatePosition.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
+        deactivateMemberships.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
+
+        if (!item.position) continue;
+        const position = item.position;
+        const unlockCycle = position.firstRewardCycle + position.numCycles;
+        upsertPosition.run(
+          value.managerPrincipal,
+          item.stakerPrincipal,
+          position.signerPrincipal,
+          position.amountUstx.toString(),
+          position.firstRewardCycle.toString(),
+          position.numCycles.toString(),
+          unlockCycle.toString(),
+          value.sourceId,
+          value.nodeSourceId,
+          value.runId,
+          value.burnBlockHeight,
+          value.stacksTipHeight,
+          value.observedAt,
+        );
+        for (const membership of position.cycleMemberships) {
+          upsertMembership.run(
+            value.managerPrincipal,
+            item.stakerPrincipal,
+            membership.rewardCycle.toString(),
+            membership.signerPrincipal,
+            membership.amountUstx.toString(),
+            value.sourceId,
+            value.nodeSourceId,
+            value.runId,
+            value.burnBlockHeight,
+            value.stacksTipHeight,
+            value.observedAt,
+          );
+        }
+      }
+
+      const completed = value.nextCursor === null;
+      if (completed) {
+        this.db
+          .prepare(
+            `UPDATE stakers SET active = 0
+             WHERE manager_principal = ? AND active = 1 AND last_seen_run_id <> ?`,
+          )
+          .run(value.managerPrincipal, value.runId);
+        this.db
+          .prepare(
+            `UPDATE stake_positions SET active = 0, updated_at = ?
+             WHERE manager_principal = ? AND active = 1 AND last_seen_run_id <> ?`,
+          )
+          .run(value.observedAt, value.managerPrincipal, value.runId);
+        this.db
+          .prepare(
+            `UPDATE cycle_memberships SET active = 0, updated_at = ?
+             WHERE manager_principal = ? AND active = 1 AND last_seen_run_id <> ?`,
+          )
+          .run(value.observedAt, value.managerPrincipal, value.runId);
+      }
+      this.db
+        .prepare(
+          `UPDATE ingestion_runs SET
+            status = ?, cursor_next = ?, pages_processed = pages_processed + 1,
+            items_processed = items_processed + ?, updated_at = ?, completed_at = ?
+           WHERE run_id = ?`,
+        )
+        .run(
+          completed ? "completed" : "running",
+          value.nextCursor,
+          value.items.length,
+          value.observedAt,
+          completed ? value.observedAt : null,
+          value.runId,
+        );
+      const updated = selectRun.get(value.runId);
+      const result = toSignerStakerRun(updated);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listSignerStakers(managerPrincipal: string, activeOnly = true): StoredSignerStaker[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const rows = this.db
+      .prepare(
+        `SELECT s.manager_principal, s.staker_principal, s.has_stx, s.has_btc,
+          s.stx_node_verified, s.active, s.source_id, s.last_seen_run_id,
+          s.verification_source_id, s.first_seen_at, s.last_seen_at,
+          p.signer_principal, p.amount_ustx,
+          p.first_reward_cycle, p.num_cycles, p.unlock_cycle, p.active AS position_active
+         FROM stakers s
+         LEFT JOIN stake_positions p
+           ON p.manager_principal = s.manager_principal
+          AND p.staker_principal = s.staker_principal
+         WHERE s.manager_principal = ? AND (? = 0 OR s.active = 1)
+         ORDER BY s.staker_principal`,
+      )
+      .all(manager, activeOnly ? 1 : 0);
+    return rows.map((row) => {
+      const value = storedSignerStakerRowSchema.parse(row);
+      return {
+        managerPrincipal: value.manager_principal,
+        stakerPrincipal: value.staker_principal,
+        hasStx: value.has_stx === 1,
+        hasBtc: value.has_btc === 1,
+        stxNodeVerified: value.stx_node_verified === null ? null : value.stx_node_verified === 1,
+        active: value.active === 1,
+        sourceId: value.source_id,
+        verificationSourceId: value.verification_source_id,
+        lastSeenRunId: value.last_seen_run_id,
+        firstSeenAt: value.first_seen_at,
+        lastSeenAt: value.last_seen_at,
+        position:
+          value.signer_principal === null ||
+          value.amount_ustx === null ||
+          value.first_reward_cycle === null ||
+          value.num_cycles === null ||
+          value.unlock_cycle === null ||
+          value.position_active === null
+            ? null
+            : {
+                signerPrincipal: value.signer_principal,
+                amountUstx: BigInt(value.amount_ustx),
+                firstRewardCycle: BigInt(value.first_reward_cycle),
+                numCycles: BigInt(value.num_cycles),
+                unlockCycle: BigInt(value.unlock_cycle),
+                active: value.position_active === 1,
+              },
+      };
+    });
+  }
+
+  listCycleMemberships(managerPrincipal: string, activeOnly = true): StoredCycleMembership[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const rows = this.db
+      .prepare(
+        `SELECT staker_principal, reward_cycle, signer_principal, amount_ustx, active
+         FROM cycle_memberships
+         WHERE manager_principal = ? AND (? = 0 OR active = 1)
+         ORDER BY length(reward_cycle), reward_cycle, staker_principal`,
+      )
+      .all(manager, activeOnly ? 1 : 0);
+    return rows.map((row) => {
+      const value = cycleMembershipRowSchema.parse(row);
+      return {
+        stakerPrincipal: value.staker_principal,
+        rewardCycle: BigInt(value.reward_cycle),
+        signerPrincipal: value.signer_principal,
+        amountUstx: BigInt(value.amount_ustx),
+        active: value.active === 1,
+      };
+    });
   }
 }

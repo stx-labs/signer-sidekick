@@ -155,6 +155,61 @@ export function decodeOptionalPrincipal(value: ClarityValue, path = "value"): st
   return principal.value;
 }
 
+export interface Pox5StakerInfo {
+  amountUstx: bigint;
+  firstRewardCycle: bigint;
+  numCycles: bigint;
+  signer: string;
+}
+
+export function decodePox5StakerInfo(
+  value: ClarityValue,
+  path = "get-staker-info",
+): Pox5StakerInfo | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  const info = expectType(value, ClarityType.OptionalSome, path).value;
+  const signer = tupleField(info, "signer", path);
+  if (
+    signer.type !== ClarityType.PrincipalStandard &&
+    signer.type !== ClarityType.PrincipalContract
+  ) {
+    throw new ClarityCodecError(`expected principal, received ${signer.type}`, `${path}.signer`);
+  }
+  return {
+    amountUstx: decodeUInt(tupleField(info, "amount-ustx", path), `${path}.amount-ustx`),
+    firstRewardCycle: decodeUInt(
+      tupleField(info, "first-reward-cycle", path),
+      `${path}.first-reward-cycle`,
+    ),
+    numCycles: decodeUInt(tupleField(info, "num-cycles", path), `${path}.num-cycles`),
+    signer: signer.value,
+  };
+}
+
+export interface Pox5CycleMembership {
+  amountUstx: bigint;
+  signer: string;
+}
+
+export function decodePox5CycleMembership(
+  value: ClarityValue,
+  path = "get-signer-cycle-membership",
+): Pox5CycleMembership | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  const membership = expectType(value, ClarityType.OptionalSome, path).value;
+  const signer = tupleField(membership, "signer", path);
+  if (
+    signer.type !== ClarityType.PrincipalStandard &&
+    signer.type !== ClarityType.PrincipalContract
+  ) {
+    throw new ClarityCodecError(`expected principal, received ${signer.type}`, `${path}.signer`);
+  }
+  return {
+    amountUstx: decodeUInt(tupleField(membership, "amount-ustx", path), `${path}.amount-ustx`),
+    signer: signer.value,
+  };
+}
+
 export interface ClaimRewardsResult {
   totalRewards: bigint;
   bondTotals: bigint;

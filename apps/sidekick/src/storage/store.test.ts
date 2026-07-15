@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createChainSourceId, openSidekickStore, type SidekickStore } from "./store.js";
+import {
+  createChainSourceId,
+  createNodeSourceId,
+  openSidekickStore,
+  type SidekickStore,
+} from "./store.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const later = "2026-07-14T12:01:00.000Z";
@@ -11,6 +16,10 @@ const txId = `0x${"11".repeat(32)}`;
 const blockHash = `0x${"22".repeat(32)}`;
 const indexBlockHash = `0x${"33".repeat(32)}`;
 const sourceId = createChainSourceId("mainnet", "https://api.mainnet.hiro.so");
+const nodeSourceId = createNodeSourceId("mainnet", "http://127.0.0.1:20443");
+const manager = "SP000000000000000000002Q6VF78.signer-manager";
+const stakerOne = "SP000000000000000000002Q6VF78";
+const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
 const openStores: SidekickStore[] = [];
 const temporaryDirectories: string[] = [];
 
@@ -30,6 +39,16 @@ function registerSource(store: SidekickStore, id = sourceId): void {
   });
 }
 
+function registerNodeSource(store: SidekickStore): void {
+  store.upsertChainSource({
+    sourceId: nodeSourceId,
+    kind: "node",
+    network: "mainnet",
+    baseUrl: "http://127.0.0.1:20443",
+    observedAt,
+  });
+}
+
 afterEach(async () => {
   for (const store of openStores.splice(0)) store.close();
   for (const directory of temporaryDirectories.splice(0)) {
@@ -42,7 +61,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -172,6 +191,157 @@ describe("Sidekick SQLite store", () => {
     expect(store.getChainEvent(1, txId, 0)).toMatchObject({ canonical: false, updatedAt: later });
   });
 
+  it("projects node-verified positions into exact reward-cycle memberships", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    registerNodeSource(store);
+    const run = store.startOrResumeSignerStakerRun(sourceId, manager, observedAt);
+
+    const completed = store.commitSignerStakerPage({
+      runId: run.runId,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal: manager,
+      nextCursor: null,
+      items: [
+        {
+          stakerPrincipal: stakerOne,
+          hasStx: true,
+          hasBtc: false,
+          stxNodeVerified: true,
+          position: {
+            signerPrincipal: manager,
+            amountUstx: 50_000_000_000n,
+            firstRewardCycle: 141n,
+            numCycles: 3n,
+            cycleMemberships: [
+              { rewardCycle: 141n, signerPrincipal: manager, amountUstx: 49_000_000_000n },
+              { rewardCycle: 142n, signerPrincipal: manager, amountUstx: 50_000_000_000n },
+              { rewardCycle: 143n, signerPrincipal: manager, amountUstx: 50_000_000_000n },
+            ],
+          },
+        },
+      ],
+      observedAt,
+      burnBlockHeight: 960_240,
+      stacksTipHeight: 8_600_000,
+    });
+
+    expect(completed).toMatchObject({ status: "completed", pagesProcessed: 1 });
+    expect(store.listSignerStakers(manager)).toMatchObject([
+      {
+        stakerPrincipal: stakerOne,
+        stxNodeVerified: true,
+        position: {
+          amountUstx: 50_000_000_000n,
+          firstRewardCycle: 141n,
+          numCycles: 3n,
+          unlockCycle: 144n,
+          active: true,
+        },
+      },
+    ]);
+    expect(store.listCycleMemberships(manager)).toEqual([
+      {
+        stakerPrincipal: stakerOne,
+        rewardCycle: 141n,
+        signerPrincipal: manager,
+        amountUstx: 49_000_000_000n,
+        active: true,
+      },
+      {
+        stakerPrincipal: stakerOne,
+        rewardCycle: 142n,
+        signerPrincipal: manager,
+        amountUstx: 50_000_000_000n,
+        active: true,
+      },
+      {
+        stakerPrincipal: stakerOne,
+        rewardCycle: 143n,
+        signerPrincipal: manager,
+        amountUstx: 50_000_000_000n,
+        active: true,
+      },
+    ]);
+  });
+
+  it("resumes partial scans without deactivating unseen members until completion", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    registerNodeSource(store);
+    const seed = store.startOrResumeSignerStakerRun(sourceId, manager, observedAt);
+    store.commitSignerStakerPage({
+      runId: seed.runId,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal: manager,
+      nextCursor: null,
+      items: [
+        {
+          stakerPrincipal: stakerOne,
+          hasStx: true,
+          hasBtc: false,
+          stxNodeVerified: false,
+          position: null,
+        },
+        {
+          stakerPrincipal: stakerTwo,
+          hasStx: false,
+          hasBtc: true,
+          stxNodeVerified: null,
+          position: null,
+        },
+      ],
+      observedAt,
+      burnBlockHeight: 960_240,
+      stacksTipHeight: 8_600_000,
+    });
+
+    const partial = store.startOrResumeSignerStakerRun(sourceId, manager, later);
+    const checkpoint = store.commitSignerStakerPage({
+      runId: partial.runId,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal: manager,
+      nextCursor: stakerTwo,
+      items: [
+        {
+          stakerPrincipal: stakerOne,
+          hasStx: true,
+          hasBtc: false,
+          stxNodeVerified: false,
+          position: null,
+        },
+      ],
+      observedAt: later,
+      burnBlockHeight: 960_241,
+      stacksTipHeight: 8_600_001,
+    });
+
+    expect(checkpoint).toMatchObject({ status: "running", cursor: stakerTwo });
+    expect(store.listSignerStakers(manager)).toHaveLength(2);
+    expect(store.startOrResumeSignerStakerRun(sourceId, manager, later)).toEqual(checkpoint);
+
+    store.commitSignerStakerPage({
+      runId: partial.runId,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal: manager,
+      nextCursor: null,
+      items: [],
+      observedAt: later,
+      burnBlockHeight: 960_241,
+      stacksTipHeight: 8_600_001,
+    });
+
+    expect(store.listSignerStakers(manager)).toHaveLength(1);
+    expect(store.listSignerStakers(manager, false)).toMatchObject([
+      { stakerPrincipal: stakerOne, active: true },
+      { stakerPrincipal: stakerTwo, active: false },
+    ]);
+  });
+
   it("backs up an existing database before the first forward migration", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-store-"));
     temporaryDirectories.push(directory);
@@ -186,7 +356,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       journalMode: "wal",
     });
   });

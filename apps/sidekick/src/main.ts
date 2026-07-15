@@ -12,7 +12,8 @@ import { verifyManagerRegistration } from "./registration-verification.js";
 import { createServer } from "./server.js";
 import { readPoolSetupStatus } from "./setup-status.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
-import { openSidekickStore } from "./storage/store.js";
+import { syncSignerStakers } from "./signer-staker-sync.js";
+import { createChainSourceId, createNodeSourceId, openSidekickStore } from "./storage/store.js";
 import { createSupportBundle } from "./support-bundle.js";
 
 const [command = "help", ...arguments_] = process.argv.slice(2);
@@ -155,6 +156,72 @@ if (command === "serve") {
   );
   console.log(JSON.stringify(enrollment, null, 2));
   if (!enrollment.readiness.enrollmentReady) process.exitCode = 2;
+} else if (command === "pool" && arguments_[0] === "sync-stakers") {
+  const [, managerPrincipal] = arguments_;
+  if (!managerPrincipal) throw new Error("Usage: sidekick pool sync-stakers <manager-principal>");
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const [preflight, manager] = await Promise.all([
+    runOperatorPreflight(config, node, api),
+    inspectDeployedManager(node, config.network, managerPrincipal),
+  ]);
+  if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
+    throw new Error("Signer-staker sync requires a successful preflight with active PoX-5");
+  }
+  if (!manager.attachAllowed) {
+    throw new Error("Signer-staker sync requires a recognized or compatible manager contract");
+  }
+
+  const observedAt = new Date().toISOString();
+  const sourceId = createChainSourceId(config.network, config.apiUrl);
+  const nodeSourceId = createNodeSourceId(config.network, config.nodeRpcUrl);
+  const { store, backupPath } = await openSidekickStore(config.databasePath, observedAt);
+  try {
+    store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    store.upsertChainSource({
+      sourceId: nodeSourceId,
+      kind: "node",
+      network: config.network,
+      baseUrl: config.nodeRpcUrl,
+      observedAt,
+    });
+    const result = await syncSignerStakers({
+      store,
+      api,
+      node,
+      sourceId,
+      nodeSourceId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      observedAt,
+      burnBlockHeight: preflight.node.burnBlockHeight,
+      stacksTipHeight: preflight.node.stacksTipHeight,
+      currentRewardCycle: preflight.cycle.currentId,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          config: redactConfig(config),
+          migrationBackupCreated: backupPath,
+          observedAt: {
+            burnBlockHeight: preflight.node.burnBlockHeight,
+            stacksTipHeight: preflight.node.stacksTipHeight,
+          },
+          result,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    store.close();
+  }
 } else if (command === "setup" && arguments_[0] === "record") {
   const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
   if (!managerPrincipal || !poolConfigPath) {
@@ -321,6 +388,7 @@ Usage:
   sidekick setup status <manager>  Verify registration and current/next eligibility
   sidekick setup record <manager> <pool-config.json> [record-metadata.json]
   sidekick pool enrollment-info <manager> <pool-config.json>
+  sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
   sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
   sidekick manager render <admin> <name> <output-dir>
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
