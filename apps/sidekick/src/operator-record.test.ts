@@ -23,9 +23,17 @@ const manager = {
     profileId: "stacks-4.0.0-mainnet-reference-manager",
     sha256: "a".repeat(64),
     recognized: true,
+    tier: "reference-built-in",
+    origin: "built-in",
+  },
+  provenance: {
+    status: "built-in",
+    upstreamProfileId: "stacks-4.0.0-mainnet-reference-manager",
+    reason: "Built-in profile",
   },
   attachAllowed: true,
   automationEligible: false,
+  automationEligibilityReason: "Profile is not production-approved",
 } as ManagerVerificationReport;
 
 const registration = {
@@ -99,7 +107,7 @@ describe("operator record", () => {
       },
     });
     expect(record.remainingActions).toContain(
-      "Keep Sidekick in Observe mode until the manager profile is approved",
+      "Keep Sidekick in Observe mode until the matching built-in profile is production-approved",
     );
     expect(JSON.stringify(record)).not.toContain("signerSignature");
   });

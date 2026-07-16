@@ -10,7 +10,7 @@ import {
   buildManagerDeploymentArtifact,
   type ManagerDeploymentManifest,
 } from "./manager-render.js";
-import { inspectDeployedManager } from "./manager-verification.js";
+import { inspectDeployedManager, type ManagerVerificationContext } from "./manager-verification.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
@@ -175,6 +175,7 @@ export class OnboardingService {
       runtimeSettings: RuntimeSettingsController;
       managerPrincipal: string;
       contractsDirectory: string;
+      managerVerification?: ManagerVerificationContext;
     },
   ) {}
 
@@ -273,7 +274,12 @@ export class OnboardingService {
     const { config, node, api } = this.options.runtimeSettings.clients();
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
-      inspectDeployedManager(node, config.network, managerPrincipal),
+      inspectDeployedManager(
+        node,
+        config.network,
+        managerPrincipal,
+        this.options.managerVerification,
+      ),
     ]);
     const registration =
       manager.attachAllowed && preflight.pox.pox5ContractId
@@ -429,7 +435,12 @@ export class OnboardingService {
     const { config, node, api } = this.options.runtimeSettings.clients();
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
-      inspectDeployedManager(node, config.network, data.managerPrincipal),
+      inspectDeployedManager(
+        node,
+        config.network,
+        data.managerPrincipal,
+        this.options.managerVerification,
+      ),
     ]);
     const registration =
       manager.attachAllowed && preflight.pox.pox5ContractId

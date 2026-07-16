@@ -130,10 +130,18 @@ export async function readPoolSetupStatus(
     },
     {
       id: "manager-artifact",
-      status: manager.source.recognized ? "pass" : "warn",
-      message: manager.source.recognized
-        ? `Manager source matches profile ${manager.source.profileId}`
-        : "Manager source is ABI-compatible but is not a reviewed artifact",
+      status:
+        manager.source.tier === "reference-built-in" || manager.source.tier === "reference-render"
+          ? "pass"
+          : "warn",
+      message:
+        manager.source.tier === "reference-built-in"
+          ? `Manager source matches built-in profile ${manager.source.profileId}`
+          : manager.source.tier === "reference-render"
+            ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
+            : manager.source.tier === "custom-observe"
+              ? "Custom manager is operator-identified for attach and read-only monitoring; automation remains disabled"
+              : "Manager source is not recognized — attach and read-only monitoring work, but automation remains disabled",
     },
     {
       id: "signer-registration",

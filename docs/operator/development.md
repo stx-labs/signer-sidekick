@@ -86,6 +86,9 @@ hardened production Sidekick image. It then deploys the exact generated manager 
 the public JSON produced by the released signer command, registers the manager, creates and changes
 STX-only positions, crosses a reward-cycle boundary, and proves reconciliation replay, clean attach,
 restart recovery, pagination, browser navigation, API/node outages, rate limiting, and indexer lag.
+It also deploys an independently rendered manager with alternate Devnet sBTC principals, proves it
+starts as `Not recognized — read-only`, installs a generated profile, restarts an isolated
+production container, and exercises the same provenance/automation gate as built-ins.
 
 Recommended capacity is 4 CPU cores, 16 GB RAM, 25 GB free disk, and Docker with Compose support.
 The fixture-backed browser and ordinary test lanes remain suitable for smaller machines. First run
@@ -97,6 +100,7 @@ pnpm e2e:devnet:doctor
 pnpm e2e:devnet:up
 pnpm e2e:devnet:status
 pnpm e2e:devnet:scenario active-pool
+pnpm e2e:devnet:scenario trusted-manager-profile
 pnpm e2e:devnet:scenario failure-injection
 pnpm e2e:devnet:mine 1
 pnpm e2e:devnet:down
@@ -190,7 +194,9 @@ pnpm test:container:external
 Set `SIDEKICK_SMOKE_BUILD=0` and `SIDEKICK_SMOKE_IMAGE=signer-sidekick:local` to reuse an existing
 image. API credentials, when needed, are inherited from `STACKS_API_KEY` and
 `STACKS_API_KEY_HEADER`; the smoke runner asserts that the API key does not appear in its support
-bundle.
+bundle. To exercise an installed profile through the production container, set
+`SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR` to the host directory containing its JSON; the runner
+bind-mounts that directory read-only and uses the corresponding container path.
 
 ## Operator preflight
 

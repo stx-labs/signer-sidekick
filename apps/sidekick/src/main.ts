@@ -6,7 +6,16 @@ import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { renderManagerDeployment } from "./manager-render.js";
-import { inspectDeployedManager } from "./manager-verification.js";
+import {
+  createInstalledManagerProfile,
+  parseManagerTrustArguments,
+  writeInstalledManagerProfile,
+} from "./manager-trust.js";
+import {
+  createManagerVerificationContext,
+  inspectDeployedManager,
+  type ManagerVerificationContext,
+} from "./manager-verification.js";
 import { OnboardingService } from "./onboarding-service.js";
 import { createOperatorRecord } from "./operator-record.js";
 import { OperatorService } from "./operator-service.js";
@@ -36,12 +45,31 @@ function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
   };
 }
 
+function contractsDirectory(): string {
+  return process.env.SIDEKICK_CONTRACTS_DIR ?? resolve(import.meta.dirname, "../../../contracts");
+}
+
+let verificationContextPromise: Promise<ManagerVerificationContext> | null = null;
+function verificationContext(config: ReturnType<typeof loadConfig>) {
+  verificationContextPromise ??= createManagerVerificationContext({
+    contractsDirectory: contractsDirectory(),
+    ...(config.trustedManagerProfilesDirectory
+      ? { trustedProfilesDirectory: config.trustedManagerProfilesDirectory }
+      : {}),
+    ...(config.expectedNetworkId !== undefined
+      ? { expectedNetworkId: config.expectedNetworkId }
+      : {}),
+  });
+  return verificationContextPromise;
+}
+
 async function setupContext(managerPrincipal: string) {
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   const registration =
     manager.attachAllowed && preflight.pox.pox5ContractId
@@ -73,6 +101,7 @@ if (command === "serve") {
   const { store } = await openSidekickStore(config.databasePath);
   const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
   const { config: effectiveConfig, node, api } = runtimeSettings.clients();
+  const managerVerification = await verificationContext(config);
   const service = new OperatorService({
     config: effectiveConfig,
     managerPrincipal,
@@ -80,13 +109,14 @@ if (command === "serve") {
     node,
     api,
     runtimeSettings,
+    managerVerification,
   });
   const onboarding = new OnboardingService({
     store,
     runtimeSettings,
     managerPrincipal,
-    contractsDirectory:
-      process.env.SIDEKICK_CONTRACTS_DIR ?? resolve(import.meta.dirname, "../../../contracts"),
+    contractsDirectory: contractsDirectory(),
+    managerVerification,
   });
   const staticDirectory = process.env.SIDEKICK_STATIC_DIRECTORY;
   const server = createServer({
@@ -95,6 +125,20 @@ if (command === "serve") {
     authToken,
     ...(staticDirectory ? { staticDirectory: resolve(staticDirectory) } : {}),
   });
+  for (const issue of managerVerification.installedProfiles.issues) {
+    server.log.warn(
+      { code: issue.code, fileName: issue.fileName },
+      `Installed trusted-manager profile ignored: ${issue.message}`,
+    );
+  }
+  try {
+    await service.observeManagerTrustState();
+  } catch (error) {
+    server.log.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      "Could not record manager trust state during startup; the next synchronization or snapshot will retry",
+    );
+  }
   server.addHook("onClose", async () => store.close());
   await server.listen({ host, port });
 } else if (command === "config" && arguments_[0] === "validate") {
@@ -102,6 +146,7 @@ if (command === "serve") {
   console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));
 } else if (command === "doctor") {
   const config = loadConfig(process.env);
+  const managerVerification = await verificationContext(config);
   const { store, backupPath } = await openSidekickStore(config.databasePath);
   try {
     console.log(
@@ -110,6 +155,11 @@ if (command === "serve") {
           status: "ok",
           config: redactConfig(config),
           database: store.databaseStatus(),
+          managerProfiles: {
+            directory: managerVerification.installedProfiles.directory,
+            loaded: managerVerification.installedProfiles.profiles.length,
+            issues: managerVerification.installedProfiles.issues,
+          },
           migrationBackupCreated: backupPath,
         },
         null,
@@ -167,9 +217,10 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("Usage: sidekick attach <manager-contract-principal>");
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   const registration =
     manager.attachAllowed && preflight.pox.pox5ContractId
@@ -184,9 +235,56 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("Usage: sidekick manager verify <manager-principal>");
   const config = loadConfig(process.env);
   const { node } = clientsFromConfig(config);
-  const manager = await inspectDeployedManager(node, config.network, managerPrincipal);
+  const manager = await inspectDeployedManager(
+    node,
+    config.network,
+    managerPrincipal,
+    await verificationContext(config),
+  );
   console.log(JSON.stringify({ config: redactConfig(config), manager }, null, 2));
   if (!manager.attachAllowed) process.exitCode = 2;
+} else if (command === "manager" && arguments_[0] === "trust") {
+  const { managerPrincipal, outputPath, observeOnly } = parseManagerTrustArguments(
+    arguments_.slice(1),
+  );
+  const config = loadConfig(process.env);
+  const { node } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
+  if (!managerVerification.upstreamSource && !observeOnly) {
+    throw new Error(
+      managerVerification.upstreamSourceError ?? "Pinned reference-manager source is unavailable",
+    );
+  }
+  const [contractSource, contractInterface] = await Promise.all([
+    node.getContractSource(managerPrincipal),
+    node.getContractInterface(managerPrincipal),
+  ]);
+  const result = createInstalledManagerProfile({
+    config,
+    managerPrincipal,
+    contractSource,
+    contractInterface,
+    upstreamSource: managerVerification.upstreamSource,
+    observeOnly,
+  });
+  const writtenPath = result.profile
+    ? await writeInstalledManagerProfile(outputPath, result.profile)
+    : null;
+  console.log(
+    JSON.stringify(
+      {
+        status: result.status,
+        summary: result.summary,
+        outputPath: writtenPath,
+        profile: result.profile,
+        nextStep: result.profile
+          ? "Mount the containing directory read-only at SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR and restart Sidekick"
+          : "No installed profile is required",
+      },
+      null,
+      2,
+    ),
+  );
 } else if (command === "setup" && arguments_[0] === "status") {
   const [, managerPrincipal] = arguments_;
   if (!managerPrincipal) throw new Error("Usage: sidekick setup status <manager-principal>");
@@ -220,9 +318,10 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("Usage: sidekick pool sync-stakers <manager-principal>");
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
     throw new Error("Signer-staker sync requires a successful preflight with active PoX-5");
@@ -310,9 +409,10 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   if (preflight.status === "fail" || !manager.attachAllowed) {
     throw new Error("Event sync requires a healthy network and recognized manager contract");
@@ -346,9 +446,10 @@ if (command === "serve") {
   if (!managerPrincipal) throw new Error("Usage: sidekick pool status <manager-principal>");
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
     throw new Error("Pool status requires a successful preflight with active PoX-5");
@@ -423,9 +524,10 @@ if (command === "serve") {
   }
   const config = loadConfig(process.env);
   const { node, api } = clientsFromConfig(config);
+  const managerVerification = await verificationContext(config);
   const [preflight, manager] = await Promise.all([
     runOperatorPreflight(config, node, api),
-    inspectDeployedManager(node, config.network, managerPrincipal),
+    inspectDeployedManager(node, config.network, managerPrincipal, managerVerification),
   ]);
   if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
     throw new Error("Reward status requires a successful preflight with active PoX-5");
@@ -617,6 +719,7 @@ Usage:
   sidekick rewards status <manager> [cycle]  Read STX reward and payout state
   sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
   sidekick manager render <admin> <name> <output-dir>
+  sidekick manager trust <manager> --output <profile.json> [--observe-only]
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
   sidekick signer-grant verify <manager> <auth-id> <signer-output.json>
 
@@ -628,5 +731,6 @@ Environment:
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
   SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
   SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
-  SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory`);
+  SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory
+  SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR  Optional read-only installed profile directory`);
 }

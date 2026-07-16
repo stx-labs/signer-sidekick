@@ -83,6 +83,8 @@ describe("activation plans", () => {
       source: {
         recognized: true,
         profileId: "stacks-4.0.0-mainnet-reference-manager",
+        tier: "reference-built-in",
+        origin: "built-in",
       },
     } as ManagerVerificationReport;
     const registration = {

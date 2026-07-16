@@ -44,7 +44,7 @@ const eligibilitySchema = z
 
 export const operatorRecordSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     documentType: z.literal("signer-sidekick-operator-record"),
     mode: z.literal("observe"),
     network: z.enum(["mainnet", "testnet", "devnet", "regtest"]),
@@ -61,6 +61,14 @@ export const operatorRecordSchema = z
         profileId: z.string().nullable(),
         sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
         sourceRecognized: z.boolean(),
+        recognitionTier: z.enum([
+          "reference-built-in",
+          "reference-render",
+          "custom-observe",
+          "unrecognized",
+        ]),
+        profileOrigin: z.enum(["built-in", "operator-installed"]).nullable(),
+        provenanceStatus: z.enum(["built-in", "verified", "not-applicable", "failed"]),
         attachAllowed: z.boolean(),
       })
       .strict(),
@@ -91,6 +99,7 @@ export const operatorRecordSchema = z
     automation: z
       .object({
         productionEligible: z.boolean(),
+        eligibilityReason: z.string(),
         gasPayerPrincipal: standardPrincipalSchema.nullable(),
         signerKeyHeldBySidekick: z.literal(false),
         managerAdminKeyHeldBySidekick: z.literal(false),
@@ -151,12 +160,18 @@ export function createOperatorRecord(
     remainingActions.push("Configure a dedicated gas payer before enabling Assist or Automate");
   }
   if (!manager.automationEligible) {
-    remainingActions.push("Keep Sidekick in Observe mode until the manager profile is approved");
+    remainingActions.push(
+      manager.source.tier === "unrecognized"
+        ? "Keep Sidekick in Observe mode; install a provenance-verified profile if this is a reference render"
+        : manager.source.tier === "custom-observe"
+          ? "Keep this custom manager in Observe mode unless a separately reviewed adapter is installed"
+          : "Keep Sidekick in Observe mode until the matching built-in profile is production-approved",
+    );
   }
   if (!enrollment) remainingActions.push("Generate the pool enrollment information document");
 
   return operatorRecordSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     documentType: "signer-sidekick-operator-record",
     mode: "observe",
     network: preflight.network,
@@ -167,6 +182,9 @@ export function createOperatorRecord(
       profileId: manager.source.profileId,
       sourceSha256: manager.source.sha256,
       sourceRecognized: manager.source.recognized,
+      recognitionTier: manager.source.tier,
+      profileOrigin: manager.source.origin,
+      provenanceStatus: manager.provenance.status,
       attachAllowed: manager.attachAllowed,
     },
     signer: {
@@ -189,6 +207,7 @@ export function createOperatorRecord(
       : null,
     automation: {
       productionEligible: manager.automationEligible,
+      eligibilityReason: manager.automationEligibilityReason,
       gasPayerPrincipal: metadata.gasPayerPrincipal ?? null,
       signerKeyHeldBySidekick: false,
       managerAdminKeyHeldBySidekick: false,

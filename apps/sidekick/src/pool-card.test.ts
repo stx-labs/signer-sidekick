@@ -3,7 +3,7 @@ import type { PoolEnrollmentDocument } from "./enrollment-info.js";
 import { createPoolCardArtifact } from "./pool-card.js";
 
 const enrollment = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   documentType: "stx-only-pool-enrollment-info",
   pool: {
     displayName: "Operator <Pool>",
@@ -23,6 +23,9 @@ const enrollment = {
     sourceMatch: "exact",
     sourceSha256: "a".repeat(64),
     sourceRecognized: true,
+    recognitionTier: "reference-built-in",
+    profileOrigin: "built-in",
+    automationEligible: true,
   },
   signer: { publicKeyHex: `02${"a".repeat(64)}`, registered: true, grantValid: true },
   fee: {

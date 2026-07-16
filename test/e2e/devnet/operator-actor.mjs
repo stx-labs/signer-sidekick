@@ -147,26 +147,40 @@ export function createOperatorActor(options = {}) {
     return { txid: result.txid, confirmed };
   }
 
-  async function deployManager(source, account = DEVNET_ACCOUNTS.deployer) {
+  async function deployContract(
+    contractName,
+    source,
+    clarityVersion,
+    account = DEVNET_ACCOUNTS.deployer,
+  ) {
     const address = getAddressFromPrivateKey(account.privateKey, "testnet");
     if (address !== account.address)
-      throw new Error("Devnet deployer fixture does not derive correctly");
+      throw new Error("Devnet account fixture does not derive correctly");
+    const principal = `${account.address}.${contractName}`;
     const existing = await fetch(
-      `${nodeUrl}/v2/contracts/source/${account.address}/signer-manager?proof=0`,
+      `${nodeUrl}/v2/contracts/source/${account.address}/${contractName}?proof=0`,
     );
-    if (existing.ok) return { skipped: true, principal: DEVNET_MANAGER_PRINCIPAL };
+    if (existing.ok) return { skipped: true, principal };
     const nonce = await fetchNonce({ address: account.address, network });
     const transaction = await makeContractDeploy({
-      contractName: "signer-manager",
+      contractName,
       codeBody: source,
-      clarityVersion: ClarityVersion.Clarity6,
+      clarityVersion,
       senderKey: account.privateKey,
       fee,
       nonce,
       postConditionMode: PostConditionMode.Allow,
       network,
     });
-    return { ...(await submit(transaction)), principal: DEVNET_MANAGER_PRINCIPAL };
+    return { ...(await submit(transaction)), principal };
+  }
+
+  async function deployManager(
+    source,
+    account = DEVNET_ACCOUNTS.deployer,
+    contractName = "signer-manager",
+  ) {
+    return await deployContract(contractName, source, ClarityVersion.Clarity6, account);
   }
 
   async function registerManager(grant, account = DEVNET_ACCOUNTS.deployer) {
@@ -283,6 +297,7 @@ export function createOperatorActor(options = {}) {
 
   return {
     apiStatus,
+    deployContract,
     deployManager,
     mineBurnBlock,
     nodeInfo,

@@ -56,6 +56,69 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
+test("explains the manager trust tier on registration and settings", async ({ page }) => {
+  await login(page);
+  await openPage(page, "registration", "Registration");
+  await expect(page.getByText("Reference — built in")).toBeVisible();
+  await expect(page.getByText("Built into Sidekick")).toBeVisible();
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("Manager trust")).toBeVisible();
+  await expect(page.getByText("Installed profile store")).toBeVisible();
+});
+
+test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {
+  let tier: "unrecognized" | "custom-observe" | "reference-render" = "unrecognized";
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const response = structuredClone(responseFor(route.request().url()));
+    if (new URL(route.request().url()).pathname === "/api/v1/status") {
+      const status = response as typeof import("./large-pool-fixture.mjs").snapshot;
+      status.manager.source.tier = tier;
+      status.manager.source.recognized = tier !== "unrecognized";
+      status.manager.source.profileId = tier === "unrecognized" ? null : `operator-${tier}`;
+      status.manager.source.origin = tier === "unrecognized" ? null : "operator-installed";
+      status.manager.automationEligible = tier === "reference-render";
+      status.manager.automationEligibilityReason =
+        tier === "reference-render"
+          ? "Pinned reference render and network approval verified"
+          : "Reference-manager automation is disabled";
+      status.manager.provenance.status =
+        tier === "reference-render"
+          ? "verified"
+          : tier === "custom-observe"
+            ? "not-applicable"
+            : "failed";
+      status.manager.provenance.reason = status.manager.automationEligibilityReason;
+      status.manager.installedProfiles = {
+        directory: tier === "unrecognized" ? null : "/profiles",
+        loaded: tier === "unrecognized" ? 0 : 1,
+        issues: [],
+      };
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(response),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "registration", "Registration");
+  await expect(page.getByText("Not recognized — read-only")).toBeVisible();
+  await expect(page.getByText(/Attach and all data display work normally/)).toBeVisible();
+
+  tier = "custom-observe";
+  await page.reload();
+  await openPage(page, "registration", "Registration");
+  await expect(page.getByText("Custom — read-only")).toBeVisible();
+
+  tier = "reference-render";
+  await page.reload();
+  await openPage(page, "registration", "Registration");
+  await expect(page.getByText("Reference render — verified")).toBeVisible();
+  await expect(page.getByText("Operator-installed")).toBeVisible();
+});
+
 test("paginates and searches a pool with hundreds of stakers", async ({ page }) => {
   await login(page);
   await openPage(page, "pool", "Pool positions");

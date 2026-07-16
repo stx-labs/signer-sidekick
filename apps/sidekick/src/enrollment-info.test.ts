@@ -59,10 +59,19 @@ const manager = {
     sha256: "a".repeat(64),
     canonicalSha256: "b".repeat(64),
     recognized: true,
+    tier: "reference-built-in",
+    origin: "built-in",
+  },
+  provenance: {
+    status: "built-in",
+    upstreamProfileId: "stacks-4.0.0-mainnet-reference-manager",
+    reason: "Built-in profile",
   },
   interface: { compatible: true, missingFunctions: [] },
+  installedProfiles: { directory: null, loaded: 0, issues: [] },
   attachAllowed: true,
   automationEligible: false,
+  automationEligibilityReason: "Profile is not production-approved",
   recommendedMode: "observe",
   reasons: [],
 } satisfies ManagerVerificationReport;
@@ -126,7 +135,7 @@ describe("pool enrollment information", () => {
 
     expect(() => poolEnrollmentDocumentSchema.parse(document)).not.toThrow();
     expect(document).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       documentType: "stx-only-pool-enrollment-info",
       readiness: { enrollmentReady: true },
       fee: { currentConfiguredBips: 500, source: "operator-config" },

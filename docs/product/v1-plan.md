@@ -217,8 +217,9 @@ This is the lowest-risk and first implementation path.
 Attach rules:
 
 - Sidekick never redeploys or replaces a manager during attach. An already deployed and registered compatible reference manager is the expected case.
-- A manager deployed outside Sidekick can enter automation mode when its on-chain source is recognized as the supported reference implementation or a reviewed network-specific equivalent. Recognition is limited to a byte-exact rendered artifact, trivial lexical canonicalization of whitespace/comments, or an explicit allowlist of independently reviewed on-chain source hashes. General AST or semantic-equivalence matching is not an automation gate.
-- ABI similarity alone is not enough for automation because a custom contract can expose the same function names with different payout or authority behavior. A genuinely custom or unreviewed implementation remains read-only until a reviewed adapter/profile is installed.
+- A manager deployed outside Sidekick can enter automation mode when its on-chain source is recognized as the supported reference implementation or a provenance-verified network-specific render. Recognition is limited to a byte-exact rendered artifact or trivial lexical canonicalization of whitespace/comments. General AST or semantic-equivalence matching is not an automation gate.
+- Operators may install a strict data-only profile from a read-only directory. Sidekick re-fetches the deployed source from the configured node and independently reproduces any reference-render claim from the pinned upstream source; the file cannot self-declare production approval or transaction capabilities.
+- ABI similarity alone is not enough for automation because a custom contract can expose the same function names with different payout or authority behavior. Custom managers can be identified and attached for read-only operation, but custom automation requires a separately reviewed, code-backed adapter and remains outside V1.
 - A manager with active bond participants is flagged as outside v1. Bond-index automation remains disabled.
 - A PoX-4 operator without a PoX-5 manager follows the fresh-manager path; their existing node and signer can still be reused.
 
@@ -561,6 +562,8 @@ The `ManagerAdapter` interface owns:
 - Feature declaration, including STX-only and L1 payout support.
 
 Only the pinned reference-manager adapter ships enabled in v1. An unknown adapter cannot inherit transaction behavior merely because function names look similar.
+
+The reference adapter recognizes built-in artifacts and operator-installed reference renders. An installed render profile is data only: it pins one manager/network/source and names permitted principals, while Sidekick independently regenerates the expected source from the pinned upstream release. Eligibility also requires a matching built-in profile for the installed profile's own network to be production-approved; approval never crosses network profiles. Invalid or missing proof degrades safely to read-only. Installed custom profiles provide an operator-visible identity only and never select reference transaction behavior.
 
 ---
 
@@ -947,6 +950,9 @@ V1 requires a provider interface and ships file/Docker-secret or environment inj
 | Duplicate permissionless transaction | Durable idempotency + preflight read + post-confirmation reconciliation |
 | Nonce collision | Transactional reservation and mempool/account reconciliation |
 | Malicious/custom manager mimics ABI | Exact reviewed source/profile required for automation |
+| Forged or stale installed profile | Reproduce deployed source from pinned upstream; built-in approval remains authoritative |
+| Installed profile disappears or eligibility changes | Persist transition, alert operator, and degrade to read-only |
+| Compromised configured node | Node is the explicit root of trust for deployed source and actionable state |
 | Reorg changes an observed event | Canonical cursor/replay and reconciled job state |
 | Service compromise | No admin/signer keys; low gas balance; authenticated local API |
 | Secret leakage in logs/support | Central redaction, negative tests, no signed bytes in normal logs |

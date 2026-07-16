@@ -13,3 +13,4 @@ tmp/
 test-results/
 playwright-report/
 test/integration/regtest/.cache/
+trusted-managers/*.json

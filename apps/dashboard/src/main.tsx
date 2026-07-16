@@ -70,8 +70,26 @@ interface Snapshot {
   manager: {
     attachAllowed: boolean;
     automationEligible: boolean;
+    automationEligibilityReason: string;
     publishHeight: number;
-    source: { recognized: boolean; profileId: string | null; sha256: string; match: string };
+    source: {
+      recognized: boolean;
+      profileId: string | null;
+      sha256: string;
+      match: string;
+      tier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";
+      origin: "built-in" | "operator-installed" | null;
+    };
+    provenance: {
+      status: "built-in" | "verified" | "not-applicable" | "failed";
+      upstreamProfileId: string | null;
+      reason: string;
+    };
+    installedProfiles: {
+      directory: string | null;
+      loaded: number;
+      issues: Array<{ fileName: string | null; code: string; message: string }>;
+    };
     reasons: string[];
   };
   registration: null | {
@@ -600,6 +618,17 @@ function PipelineStage({
 
 function Registration({ data }: { data: Snapshot }) {
   const cycles = data.forecast?.cycles ?? [];
+  const recognitionLabel =
+    data.manager.source.tier === "reference-built-in"
+      ? "Reference — built in"
+      : data.manager.source.tier === "reference-render"
+        ? "Reference render — verified"
+        : data.manager.source.tier === "custom-observe"
+          ? "Custom — read-only"
+          : "Not recognized — read-only";
+  const referenceRecognized =
+    data.manager.source.tier === "reference-built-in" ||
+    data.manager.source.tier === "reference-render";
   return (
     <>
       <PageHead
@@ -617,15 +646,25 @@ function Registration({ data }: { data: Snapshot }) {
         <div className="card">
           <div className="card-head">
             <h2>Manager &amp; signer</h2>
-            <Badge state={data.manager.source.recognized ? "success" : "caution"}>
-              {data.manager.source.recognized ? "Recognized profile" : "Unreviewed source"}
-            </Badge>
+            <Badge state={referenceRecognized ? "success" : "caution"}>{recognitionLabel}</Badge>
           </div>
           <StatLine label="Manager principal">
             <span className="identifier">{short(data.managerPrincipal, 12, 9)}</span>
           </StatLine>
           <StatLine label="Source profile">
-            {data.manager.source.profileId ?? "ABI-compatible only"}
+            {data.manager.source.profileId ?? "No installed profile"}
+          </StatLine>
+          <StatLine label="Profile origin">
+            {data.manager.source.origin === "operator-installed"
+              ? "Operator-installed"
+              : data.manager.source.origin === "built-in"
+                ? "Built into Sidekick"
+                : "None"}
+          </StatLine>
+          <StatLine label="Automation">
+            <Badge state={data.manager.automationEligible ? "success" : "neutral"}>
+              {data.manager.automationEligible ? "Eligible" : "Read-only"}
+            </Badge>
           </StatLine>
           <StatLine label="Source hash">
             <span className="identifier src src-chain">
@@ -643,6 +682,26 @@ function Registration({ data }: { data: Snapshot }) {
               {data.registration?.registered ? "Confirmed" : "Missing"}
             </Badge>
           </StatLine>
+          <div
+            className={`callout ${referenceRecognized ? "callout-info" : "callout-caution"} grant-note`}
+          >
+            <ShieldCheck className="ic" />
+            <div className="body">
+              {data.manager.source.tier === "unrecognized"
+                ? `Attach and all data display work normally. Future automation will not broadcast against this source: ${data.manager.automationEligibilityReason}. If this is your own reference-manager render, generate and install a trusted profile.`
+                : data.manager.source.tier === "custom-observe"
+                  ? "This operator-installed custom profile is intentionally limited to attach, reconciliation, and monitoring. Custom automation requires a separately reviewed adapter."
+                  : data.manager.provenance.reason}
+            </div>
+          </div>
+          {data.manager.installedProfiles.directory ? (
+            <StatLine label="Installed profiles">
+              {data.manager.installedProfiles.loaded} loaded
+              {data.manager.installedProfiles.issues.length > 0
+                ? ` · ${data.manager.installedProfiles.issues.length} ignored issue(s)`
+                : ""}
+            </StatLine>
+          ) : null}
         </div>
         <div className="card">
           <div className="card-head">

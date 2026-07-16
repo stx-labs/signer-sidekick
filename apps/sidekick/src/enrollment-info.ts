@@ -73,7 +73,7 @@ const publicEligibilitySchema = z
 
 export const poolEnrollmentDocumentSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     documentType: z.literal("stx-only-pool-enrollment-info"),
     pool: z
       .object({
@@ -98,6 +98,14 @@ export const poolEnrollmentDocumentSchema = z
         sourceMatch: z.enum(["exact", "canonical", "unknown"]),
         sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
         sourceRecognized: z.boolean(),
+        recognitionTier: z.enum([
+          "reference-built-in",
+          "reference-render",
+          "custom-observe",
+          "unrecognized",
+        ]),
+        profileOrigin: z.enum(["built-in", "operator-installed"]).nullable(),
+        automationEligible: z.boolean(),
       })
       .strict(),
     signer: z
@@ -221,7 +229,7 @@ export function createPoolEnrollmentDocument(
       registration.signerKeyGrantValid,
   );
   const document = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     documentType: "stx-only-pool-enrollment-info" as const,
     pool: {
       displayName: config.displayName,
@@ -241,6 +249,9 @@ export function createPoolEnrollmentDocument(
       sourceMatch: manager.source.match,
       sourceSha256: manager.source.sha256,
       sourceRecognized: manager.source.recognized,
+      recognitionTier: manager.source.tier,
+      profileOrigin: manager.source.origin,
+      automationEligible: manager.automationEligible,
     },
     signer: {
       publicKeyHex: registration?.signerKeyHex ?? null,

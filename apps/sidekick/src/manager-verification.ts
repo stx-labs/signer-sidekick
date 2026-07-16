@@ -1,14 +1,21 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
+  parseManagerProfile,
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
 } from "@stx-labs/signer-sidekick-protocol";
-import { knownManagerArtifactsForNetwork } from "@stx-labs/signer-sidekick-protocol/known-managers";
+import {
+  KNOWN_MANAGER_ARTIFACTS,
+  knownManagerArtifactsForNetwork,
+} from "@stx-labs/signer-sidekick-protocol/known-managers";
 import {
   canonicalizeClaritySource,
   claritySourceSha256,
   createManagerAdapterFromHashes,
   type SourceMatch,
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
+import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import {
   type ContractInterface,
@@ -17,6 +24,16 @@ import {
   UpstreamHttpError,
 } from "./chain-clients.js";
 import type { SidekickNetwork } from "./config.js";
+import {
+  type InstalledManagerProfileStore,
+  loadInstalledManagerProfileStore,
+} from "./manager-profile-store.js";
+
+export type ManagerRecognitionTier =
+  | "reference-built-in"
+  | "reference-render"
+  | "custom-observe"
+  | "unrecognized";
 
 export interface ManagerVerificationReport {
   managerPrincipal: string;
@@ -30,15 +47,88 @@ export interface ManagerVerificationReport {
     sha256: string;
     canonicalSha256: string;
     recognized: boolean;
+    tier: ManagerRecognitionTier;
+    origin: "built-in" | "operator-installed" | null;
+  };
+  provenance: {
+    status: "built-in" | "verified" | "not-applicable" | "failed";
+    upstreamProfileId: string | null;
+    reason: string;
   };
   interface: {
     compatible: boolean;
     missingFunctions: string[];
   };
+  installedProfiles: {
+    directory: string | null;
+    loaded: number;
+    issues: Array<{ fileName: string | null; code: string; message: string }>;
+  };
   attachAllowed: boolean;
   automationEligible: boolean;
+  automationEligibilityReason: string;
   recommendedMode: "observe";
   reasons: string[];
+}
+
+interface CachedManagerContract {
+  contractSource: ContractSource;
+  contractInterface: ContractInterface;
+}
+
+export interface ManagerVerificationContext {
+  installedProfiles: InstalledManagerProfileStore;
+  upstreamSource: string | null;
+  upstreamSourceError: string | null;
+  expectedNetworkId?: number;
+  sourceCache: Map<string, CachedManagerContract>;
+}
+
+export async function createManagerVerificationContext(options: {
+  trustedProfilesDirectory?: string;
+  contractsDirectory: string;
+  expectedNetworkId?: number;
+}): Promise<ManagerVerificationContext> {
+  const installedProfiles = await loadInstalledManagerProfileStore(
+    options.trustedProfilesDirectory,
+  );
+  const upstreamPath = resolve(
+    options.contractsDirectory,
+    "reference-manager/upstream/signer-manager.clar",
+  );
+  let upstreamSource: string | null = null;
+  let upstreamSourceError: string | null = null;
+  try {
+    upstreamSource = await readFile(upstreamPath, "utf8");
+  } catch (error) {
+    const errorCode =
+      typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "unknown error";
+    upstreamSourceError = `Pinned reference-manager source is unavailable (${errorCode})`;
+  }
+  return {
+    installedProfiles,
+    upstreamSource,
+    upstreamSourceError,
+    ...(options.expectedNetworkId !== undefined
+      ? { expectedNetworkId: options.expectedNetworkId }
+      : {}),
+    sourceCache: new Map(),
+  };
+}
+
+export function invalidateManagerVerificationCache(
+  context: ManagerVerificationContext,
+  managerPrincipal?: string,
+): void {
+  if (!managerPrincipal) {
+    context.sourceCache.clear();
+    return;
+  }
+  for (const key of context.sourceCache.keys()) {
+    if (key.endsWith(`:${managerPrincipal}`)) context.sourceCache.delete(key);
+  }
 }
 
 function isExpectedNetwork(network: SidekickNetwork, principalNetwork: "mainnet" | "testnet") {
@@ -55,38 +145,282 @@ function missingManagerFunctions(contractInterface: ContractInterface): string[]
   ];
 }
 
+function emptyProfileStore(): InstalledManagerProfileStore {
+  return { directory: null, profiles: [], issues: [] };
+}
+
+function matchForHashes(
+  sourceSha256: string,
+  canonicalSha256: string,
+  expectedSourceSha256: string,
+  expectedCanonicalSha256: string,
+): SourceMatch {
+  if (sourceSha256 === expectedSourceSha256) return "exact";
+  if (canonicalSha256 === expectedCanonicalSha256) return "canonical";
+  return "unknown";
+}
+
+function proveReferenceRender(input: {
+  profile: Extract<
+    InstalledManagerProfileStore["profiles"][number]["profile"],
+    { tier: "reference-render" }
+  >;
+  source: string;
+  configuredNetwork: SidekickNetwork;
+  expectedNetworkId?: number;
+  upstreamSource: string | null;
+  upstreamSourceError: string | null;
+}): {
+  verified: boolean;
+  automationEligible: boolean;
+  reason: string;
+  upstreamProfileId: string;
+} {
+  const { profile } = input;
+  const upstreamArtifact = KNOWN_MANAGER_ARTIFACTS.find(
+    ({ profile: candidate }) => candidate.id === profile.reference.upstreamProfileId,
+  );
+  if (!upstreamArtifact) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason: `Unknown built-in upstream profile ${profile.reference.upstreamProfileId}`,
+      upstreamProfileId: profile.reference.upstreamProfileId,
+    };
+  }
+  if (
+    profile.reference.upstream.tag !== upstreamArtifact.profile.upstream.tag ||
+    profile.reference.upstream.commit !== upstreamArtifact.profile.upstream.commit ||
+    profile.reference.upstream.sourceSha256 !== upstreamArtifact.profile.upstream.sourceSha256
+  ) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason: `Installed profile provenance does not match built-in profile ${upstreamArtifact.profile.id}`,
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  }
+  if (profile.network !== input.configuredNetwork) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason: `Installed profile targets ${profile.network}, not ${input.configuredNetwork}`,
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  }
+  if (profile.networkId !== undefined && profile.networkId !== input.expectedNetworkId) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason:
+        input.expectedNetworkId === undefined
+          ? `Installed profile requires private network ID ${profile.networkId}, but SIDEKICK_NETWORK_ID is not configured`
+          : `Installed profile network ID ${profile.networkId} does not match configured network ID ${input.expectedNetworkId}`,
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  }
+  if (!input.upstreamSource) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason: input.upstreamSourceError ?? "Pinned reference-manager source is unavailable",
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  }
+
+  const approvedNetworkArtifact = KNOWN_MANAGER_ARTIFACTS.find(
+    ({ profile: candidate }) =>
+      candidate.network === profile.network &&
+      candidate.upstream.tag === upstreamArtifact.profile.upstream.tag &&
+      candidate.upstream.commit === upstreamArtifact.profile.upstream.commit &&
+      candidate.upstream.sourceSha256 === upstreamArtifact.profile.upstream.sourceSha256 &&
+      candidate.productionApproved,
+  );
+
+  if (profile.network === "mainnet") {
+    const mainnetArtifact = knownManagerArtifactsForNetwork("mainnet")[0];
+    if (
+      !mainnetArtifact ||
+      profile.reference.pox5 !== mainnetArtifact.profile.contracts.pox5 ||
+      profile.reference.sbtcDeployer !== mainnetArtifact.profile.contracts.sbtcDeployer
+    ) {
+      return {
+        verified: false,
+        automationEligible: false,
+        reason:
+          "Mainnet reference renders must use Sidekick's fixed canonical PoX-5 and sBTC principals",
+        upstreamProfileId: upstreamArtifact.profile.id,
+      };
+    }
+  }
+
+  try {
+    const renderProfile = parseManagerProfile({
+      id: profile.id,
+      network: profile.network,
+      upstream: upstreamArtifact.profile.upstream,
+      contracts: {
+        pox5: profile.reference.pox5,
+        sbtcDeployer: profile.reference.sbtcDeployer,
+      },
+      expectedReplacements: upstreamArtifact.profile.expectedReplacements,
+      productionApproved: false,
+    });
+    const rendered = generateManagerArtifact(input.upstreamSource, renderProfile);
+    const sourceSha256 = claritySourceSha256(input.source);
+    const canonicalSha256 = claritySourceSha256(canonicalizeClaritySource(input.source));
+    if (sourceSha256 !== profile.sourceSha256 || canonicalSha256 !== profile.canonicalSha256) {
+      return {
+        verified: false,
+        automationEligible: false,
+        reason: "Deployed source hashes do not match the installed profile",
+        upstreamProfileId: upstreamArtifact.profile.id,
+      };
+    }
+    const renderMatch = matchForHashes(
+      sourceSha256,
+      canonicalSha256,
+      rendered.metadata.outputSha256,
+      rendered.metadata.canonicalOutputSha256,
+    );
+    if (renderMatch === "unknown") {
+      return {
+        verified: false,
+        automationEligible: false,
+        reason: "Deployed source cannot be reproduced using the pinned reference generator",
+        upstreamProfileId: upstreamArtifact.profile.id,
+      };
+    }
+    const automationEligible = Boolean(approvedNetworkArtifact);
+    return {
+      verified: true,
+      automationEligible,
+      reason: automationEligible
+        ? `Reference render is reproducible and ${approvedNetworkArtifact?.profile.id} approves automation for ${profile.network}`
+        : `Reference render is reproducible, but no matching ${profile.network} built-in profile is production-approved`,
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  } catch (error) {
+    return {
+      verified: false,
+      automationEligible: false,
+      reason: `Reference-render proof failed: ${error instanceof Error ? error.message : String(error)}`,
+      upstreamProfileId: upstreamArtifact.profile.id,
+    };
+  }
+}
+
 export function verifyManagerArtifact(
   configuredNetwork: SidekickNetwork,
   managerPrincipal: string,
   contractSource: ContractSource,
   contractInterface: ContractInterface,
+  context?: ManagerVerificationContext,
 ): ManagerVerificationReport {
   const principal = parseContractPrincipal(managerPrincipal);
   const networkMatches = isExpectedNetwork(configuredNetwork, principal.network);
-  const candidates = knownManagerArtifactsForNetwork(configuredNetwork);
-  const recognitions = candidates.map((artifact) => ({
-    artifact,
-    recognition: createManagerAdapterFromHashes(artifact).recognizeSource(contractSource.source),
-  }));
-  const recognized =
-    recognitions.find(({ recognition }) => recognition.match === "exact") ??
-    recognitions.find(({ recognition }) => recognition.match === "canonical");
   const sourceSha256 = claritySourceSha256(contractSource.source);
   const canonicalSha256 = claritySourceSha256(canonicalizeClaritySource(contractSource.source));
+  const builtInRecognitions = knownManagerArtifactsForNetwork(configuredNetwork).map(
+    (artifact) => ({
+      artifact,
+      recognition: createManagerAdapterFromHashes(artifact).recognizeSource(contractSource.source),
+    }),
+  );
+  const builtIn =
+    builtInRecognitions.find(({ recognition }) => recognition.match === "exact") ??
+    builtInRecognitions.find(({ recognition }) => recognition.match === "canonical");
+  const profileStore = context?.installedProfiles ?? emptyProfileStore();
+  const installed = profileStore.profiles.find(
+    ({ profile }) =>
+      profile.managerPrincipal === managerPrincipal && profile.network === configuredNetwork,
+  );
+  const installedMatch = installed
+    ? matchForHashes(
+        sourceSha256,
+        canonicalSha256,
+        installed.profile.sourceSha256,
+        installed.profile.canonicalSha256,
+      )
+    : "unknown";
+  const installedNetworkIdFailure =
+    installed?.profile.networkId !== undefined &&
+    installed.profile.networkId !== context?.expectedNetworkId
+      ? context?.expectedNetworkId === undefined
+        ? `Installed profile requires private network ID ${installed.profile.networkId}, but SIDEKICK_NETWORK_ID is not configured`
+        : `Installed profile network ID ${installed.profile.networkId} does not match configured network ID ${context.expectedNetworkId}`
+      : null;
+  const proof =
+    installed?.profile.tier === "reference-render"
+      ? proveReferenceRender({
+          profile: installed.profile,
+          source: contractSource.source,
+          configuredNetwork,
+          ...(context?.expectedNetworkId !== undefined
+            ? { expectedNetworkId: context.expectedNetworkId }
+            : {}),
+          upstreamSource: context?.upstreamSource ?? null,
+          upstreamSourceError: context?.upstreamSourceError ?? null,
+        })
+      : null;
+  const installedRecognized = Boolean(
+    installed &&
+      ((installed.profile.tier === "custom-observe" && installedMatch !== "unknown") ||
+        proof?.verified) &&
+      !installedNetworkIdFailure,
+  );
+  const installedFailureReason =
+    installedNetworkIdFailure ??
+    (installed && installedMatch === "unknown"
+      ? "Deployed source hashes do not match the installed profile"
+      : null);
   const missingFunctions = missingManagerFunctions(contractInterface);
   const interfaceCompatible = missingFunctions.length === 0;
+  const tier: ManagerRecognitionTier = builtIn
+    ? "reference-built-in"
+    : installedRecognized
+      ? installed?.profile.tier === "reference-render"
+        ? "reference-render"
+        : "custom-observe"
+      : "unrecognized";
+  const recognized = Boolean(builtIn || installedRecognized);
   const automationEligible = Boolean(
-    networkMatches && interfaceCompatible && recognized?.recognition.automationAllowed,
+    networkMatches &&
+      interfaceCompatible &&
+      (builtIn?.recognition.automationAllowed ||
+        (tier === "reference-render" && proof?.automationEligible)),
   );
+  const automationEligibilityReason = automationEligible
+    ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for automation")
+    : !networkMatches
+      ? "Manager principal does not match the configured network"
+      : !interfaceCompatible
+        ? `Manager interface is missing ${missingFunctions.length} required function(s)`
+        : builtIn
+          ? `Profile ${builtIn.artifact.profile.id} is not production-approved`
+          : (proof?.reason ??
+            installedFailureReason ??
+            (tier === "custom-observe"
+              ? "Custom managers are supported for attach and read-only operation only"
+              : "Manager source is not recognized for reference-adapter automation"));
   const reasons: string[] = [];
-
   if (!networkMatches) reasons.push("Manager principal does not match the configured network");
-  if (!recognized) reasons.push("Manager source is not a reviewed artifact for this network");
-  if (recognized && !recognized.artifact.profile.productionApproved) {
-    reasons.push(`Profile ${recognized.artifact.profile.id} is not production-approved`);
-  }
   if (!interfaceCompatible) {
     reasons.push(`Manager interface is missing ${missingFunctions.length} required function(s)`);
+  }
+  if (!recognized) {
+    reasons.push(
+      proof?.reason ??
+        installedFailureReason ??
+        "Manager source is not recognized; attach and read-only monitoring remain available when the interface and network are compatible",
+    );
+  } else if (!automationEligible) {
+    reasons.push(automationEligibilityReason);
+  }
+  if (profileStore.issues.length > 0) {
+    reasons.push(
+      `${profileStore.issues.length} installed trusted-manager profile issue(s) were ignored`,
+    );
   }
 
   return {
@@ -96,18 +430,53 @@ export function verifyManagerArtifact(
     networkMatches,
     publishHeight: contractSource.publish_height,
     source: {
-      match: recognized?.recognition.match ?? "unknown",
-      profileId: recognized?.artifact.profile.id ?? null,
+      match: builtIn?.recognition.match ?? (installedRecognized ? installedMatch : "unknown"),
+      profileId:
+        builtIn?.artifact.profile.id ??
+        (installedRecognized ? (installed?.profile.id ?? null) : null),
       sha256: sourceSha256,
       canonicalSha256,
-      recognized: Boolean(recognized),
+      recognized,
+      tier,
+      origin: builtIn ? "built-in" : installedRecognized ? "operator-installed" : null,
     },
+    provenance: builtIn
+      ? {
+          status: "built-in",
+          upstreamProfileId: builtIn.artifact.profile.id,
+          reason: builtIn.recognition.reason,
+        }
+      : proof
+        ? {
+            status: proof.verified ? "verified" : "failed",
+            upstreamProfileId: proof.upstreamProfileId,
+            reason: proof.reason,
+          }
+        : {
+            status: installedFailureReason ? "failed" : "not-applicable",
+            upstreamProfileId: null,
+            reason: installedFailureReason
+              ? installedFailureReason
+              : tier === "custom-observe"
+                ? "Operator-installed custom profile is read-only"
+                : "No installed reference-render profile matched this manager",
+          },
     interface: {
       compatible: interfaceCompatible,
       missingFunctions,
     },
+    installedProfiles: {
+      directory: profileStore.directory,
+      loaded: profileStore.profiles.length,
+      issues: profileStore.issues.map(({ fileName, code, message }) => ({
+        fileName,
+        code,
+        message,
+      })),
+    },
     attachAllowed: networkMatches && interfaceCompatible,
     automationEligible,
+    automationEligibilityReason,
     recommendedMode: "observe",
     reasons,
   };
@@ -117,16 +486,24 @@ export async function inspectDeployedManager(
   node: StacksNodeClient,
   configuredNetwork: SidekickNetwork,
   managerPrincipal: string,
+  context?: ManagerVerificationContext,
 ): Promise<ManagerVerificationReport> {
-  const [contractSource, contractInterface] = await Promise.all([
-    node.getContractSource(managerPrincipal),
-    node.getContractInterface(managerPrincipal),
-  ]);
+  const cacheKey = `${configuredNetwork}:${managerPrincipal}`;
+  let contract = context?.sourceCache.get(cacheKey);
+  if (!contract) {
+    const [contractSource, contractInterface] = await Promise.all([
+      node.getContractSource(managerPrincipal),
+      node.getContractInterface(managerPrincipal),
+    ]);
+    contract = { contractSource, contractInterface };
+    context?.sourceCache.set(cacheKey, contract);
+  }
   return verifyManagerArtifact(
     configuredNetwork,
     managerPrincipal,
-    contractSource,
-    contractInterface,
+    contract.contractSource,
+    contract.contractInterface,
+    context,
   );
 }
 
@@ -134,13 +511,15 @@ export async function inspectManagerOrReportMissing(
   node: StacksNodeClient,
   configuredNetwork: SidekickNetwork,
   managerPrincipal: string,
+  context?: ManagerVerificationContext,
 ): Promise<ManagerVerificationReport> {
   try {
-    return await inspectDeployedManager(node, configuredNetwork, managerPrincipal);
+    return await inspectDeployedManager(node, configuredNetwork, managerPrincipal, context);
   } catch (error) {
     if (!(error instanceof UpstreamHttpError) || error.status !== 404) throw error;
     const principal = parseContractPrincipal(managerPrincipal);
     const networkMatches = isExpectedNetwork(configuredNetwork, principal.network);
+    const profileStore = context?.installedProfiles ?? emptyProfileStore();
     return {
       managerPrincipal,
       configuredNetwork,
@@ -153,6 +532,13 @@ export async function inspectManagerOrReportMissing(
         sha256: "",
         canonicalSha256: "",
         recognized: false,
+        tier: "unrecognized",
+        origin: null,
+      },
+      provenance: {
+        status: "not-applicable",
+        upstreamProfileId: null,
+        reason: "Manager contract is not deployed yet",
       },
       interface: {
         compatible: false,
@@ -161,8 +547,18 @@ export async function inspectManagerOrReportMissing(
           ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
         ],
       },
+      installedProfiles: {
+        directory: profileStore.directory,
+        loaded: profileStore.profiles.length,
+        issues: profileStore.issues.map(({ fileName, code, message }) => ({
+          fileName,
+          code,
+          message,
+        })),
+      },
       attachAllowed: false,
       automationEligible: false,
+      automationEligibilityReason: "Manager contract is not deployed yet",
       recommendedMode: "observe",
       reasons: [
         ...(networkMatches ? [] : ["Manager principal does not match the configured network"]),

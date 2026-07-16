@@ -17,10 +17,12 @@ const standardPrincipal = z
   );
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 
+export const sidekickProtocolNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
+
 export const managerProfileSchema = z
   .object({
     id: z.string().min(1),
-    network: z.enum(["mainnet", "testnet", "devnet", "regtest"]),
+    network: sidekickProtocolNetworkSchema,
     upstream: z.object({
       tag: z.string().min(1),
       commit: z.string().regex(/^[0-9a-f]{40}$/),

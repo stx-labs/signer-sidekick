@@ -55,6 +55,17 @@ describe("Sidekick configuration", () => {
     ).toBe(0);
   });
 
+  it("resolves an optional installed trusted-manager profile directory", () => {
+    const config = loadConfig({
+      STACKS_NODE_RPC_URL: "http://node:20443",
+      SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR: "./trusted-managers",
+    });
+    expect(config.trustedManagerProfilesDirectory).toMatch(/trusted-managers$/);
+    expect(redactConfig(config).trustedManagerProfilesDirectory).toBe(
+      config.trustedManagerProfilesDirectory,
+    );
+  });
+
   it.each([
     "-1",
     "1.5",

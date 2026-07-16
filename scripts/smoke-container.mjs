@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 
 const requiredEnvironment = [
   "SIDEKICK_NETWORK",
@@ -25,6 +26,9 @@ const volumeName = `signer-sidekick-smoke-${suffix}`;
 const containerName = `signer-sidekick-smoke-${suffix}`;
 const authToken = "sidekick-container-smoke-token-0001";
 const managerPrincipal = process.env.SIDEKICK_MANAGER_PRINCIPAL.trim();
+const trustedManagerProfilesDirectory = process.env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR?.trim()
+  ? resolve(process.env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR.trim())
+  : null;
 
 function dockerReachableUrl(value) {
   const url = new URL(value.trim());
@@ -87,6 +91,12 @@ for (const name of [
 ]) {
   if (process.env[name]?.trim()) runtimeEnvironment.push("--env", name);
 }
+if (trustedManagerProfilesDirectory) {
+  runtimeEnvironment.push(
+    "--env",
+    "SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR=/etc/sidekick/trusted-managers",
+  );
+}
 
 const hardenedRuntime = [
   "--add-host",
@@ -100,6 +110,12 @@ const hardenedRuntime = [
   "no-new-privileges:true",
   "--mount",
   `source=${volumeName},target=/data`,
+  ...(trustedManagerProfilesDirectory
+    ? [
+        "--mount",
+        `type=bind,source=${trustedManagerProfilesDirectory},target=/etc/sidekick/trusted-managers,readonly`,
+      ]
+    : []),
   ...runtimeEnvironment,
 ];
 
@@ -190,7 +206,7 @@ try {
     managerPrincipal,
   ]);
   const supportBundle = parseJson(supportBundleOutput, "export support-bundle");
-  invariant(supportBundle.schemaVersion === 1, "Support bundle schema mismatch");
+  invariant(supportBundle.schemaVersion === 2, "Support bundle schema mismatch");
   invariant(!supportBundleOutput.includes(authToken), "Support bundle exposed the auth token");
   if (process.env.STACKS_API_KEY) {
     invariant(

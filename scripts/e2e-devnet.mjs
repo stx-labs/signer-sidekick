@@ -152,7 +152,16 @@ async function waitForHttp(url, label, timeoutMs = 180_000) {
   );
 }
 
-function sidekickRuntimeArgs(state, volume = state.volumeName) {
+function sidekickRuntimeArgs(
+  state,
+  volume = state.volumeName,
+  {
+    manager = managerPrincipal,
+    publish = true,
+    trustedProfilesDirectory = null,
+    profileOutputDirectory = null,
+  } = {},
+) {
   return [
     "--read-only",
     "--tmpfs",
@@ -165,8 +174,7 @@ function sidekickRuntimeArgs(state, volume = state.volumeName) {
     "host.docker.internal:host-gateway",
     "--mount",
     `source=${volume},target=/data`,
-    "--publish",
-    "127.0.0.1:3998:3998",
+    ...(publish ? ["--publish", "127.0.0.1:3998:3998"] : []),
     "--env",
     "SIDEKICK_NETWORK=devnet",
     "--env",
@@ -174,7 +182,7 @@ function sidekickRuntimeArgs(state, volume = state.volumeName) {
     "--env",
     "STACKS_API_URL=http://host.docker.internal:13999",
     "--env",
-    `SIDEKICK_MANAGER_PRINCIPAL=${managerPrincipal}`,
+    `SIDEKICK_MANAGER_PRINCIPAL=${manager}`,
     "--env",
     `SIDEKICK_AUTH_TOKEN=${state.authToken}`,
     "--env",
@@ -183,12 +191,28 @@ function sidekickRuntimeArgs(state, volume = state.volumeName) {
     "SIDEKICK_STAKER_PAGE_LIMIT=1",
     "--env",
     "SIDEKICK_EVENT_PAGE_LIMIT=1",
+    ...(trustedProfilesDirectory
+      ? [
+          "--mount",
+          `type=bind,source=${trustedProfilesDirectory},target=/etc/sidekick/trusted-managers,readonly`,
+          "--env",
+          "SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR=/etc/sidekick/trusted-managers",
+        ]
+      : []),
+    ...(profileOutputDirectory
+      ? ["--mount", `type=bind,source=${profileOutputDirectory},target=/profiles`]
+      : []),
   ];
 }
 
 async function startSidekick(
   state,
-  { volume = state.volumeName, container = state.containerName } = {},
+  {
+    volume = state.volumeName,
+    container = state.containerName,
+    manager = managerPrincipal,
+    trustedProfilesDirectory = null,
+  } = {},
 ) {
   if (!skipBuild && !state.imageBuilt) {
     log(`Building production Sidekick image ${state.sidekickImage}`);
@@ -211,7 +235,7 @@ async function startSidekick(
     "--detach",
     "--name",
     container,
-    ...sidekickRuntimeArgs(state, volume),
+    ...sidekickRuntimeArgs(state, volume, { manager, trustedProfilesDirectory }),
     state.sidekickImage,
     "serve",
   ]);
@@ -520,6 +544,129 @@ async function restartSidekick(state) {
   return { managerPrincipal: status.managerPrincipal, rosterTotal: status.rosterTotal };
 }
 
+async function installedManagerProfileScenario(state) {
+  const actor = createOperatorActor();
+  const alternateSbtcDeployer = DEVNET_ACCOUNTS.staker1;
+  const alternateManagerAccount = DEVNET_ACCOUNTS.staker2;
+  const dependencyDeployments = [];
+  for (const contractName of ["sbtc-registry", "sbtc-token", "sbtc-withdrawal"]) {
+    const source = await readFile(
+      resolve(root, `contracts/upstream/sbtc-mainnet/${contractName}.clar`),
+      "utf8",
+    );
+    dependencyDeployments.push(
+      await actor.deployContract(contractName, source, 3, alternateSbtcDeployer),
+    );
+  }
+
+  const builtInSbtcDeployer = DEVNET_ACCOUNTS.deployer.address;
+  const builtInSource = await readFile(
+    resolve(root, "contracts/reference-manager/generated/devnet/signer-manager.clar"),
+    "utf8",
+  );
+  const replacementCount = builtInSource.split(builtInSbtcDeployer).length - 1;
+  if (replacementCount !== 13) {
+    throw new Error(`Expected 13 manager sBTC substitutions, found ${replacementCount}`);
+  }
+  const alternateSource = builtInSource.replaceAll(
+    builtInSbtcDeployer,
+    alternateSbtcDeployer.address,
+  );
+  const managerDeployment = await actor.deployManager(
+    alternateSource,
+    alternateManagerAccount,
+    "signer-manager-alt",
+  );
+  const alternateManager = managerDeployment.principal;
+  const unknown = JSON.parse(
+    run("docker", [
+      "run",
+      "--rm",
+      ...sidekickRuntimeArgs(state, state.volumeName, {
+        manager: alternateManager,
+        publish: false,
+      }),
+      state.sidekickImage,
+      "manager",
+      "verify",
+      alternateManager,
+    ]),
+  );
+  if (
+    unknown.manager?.source?.tier !== "unrecognized" ||
+    unknown.manager?.attachAllowed !== true ||
+    unknown.manager?.automationEligible !== false
+  ) {
+    throw new Error(
+      `Alternate manager did not begin read-only: ${JSON.stringify(unknown.manager)}`,
+    );
+  }
+
+  const profilesDirectory = resolve(runtimeDirectory, "trusted-manager-acceptance");
+  await rm(profilesDirectory, { recursive: true, force: true });
+  await mkdir(profilesDirectory, { recursive: true });
+  const generated = JSON.parse(
+    run("docker", [
+      "run",
+      "--rm",
+      ...sidekickRuntimeArgs(state, state.volumeName, {
+        manager: alternateManager,
+        publish: false,
+        profileOutputDirectory: profilesDirectory,
+      }),
+      state.sidekickImage,
+      "manager",
+      "trust",
+      alternateManager,
+      "--output",
+      "/profiles/alternate-manager.json",
+    ]),
+  );
+  if (generated.profile?.tier !== "reference-render") {
+    throw new Error(`Trust helper did not prove a reference render: ${JSON.stringify(generated)}`);
+  }
+
+  const originalContainer = state.containerName;
+  const profileContainer = `${originalContainer}-trusted-profile`;
+  const profileVolume = `${state.volumeName}-trusted-profile`;
+  await stopSidekick(originalContainer);
+  try {
+    await startSidekick(state, {
+      container: profileContainer,
+      volume: profileVolume,
+      manager: alternateManager,
+      trustedProfilesDirectory: profilesDirectory,
+    });
+    const status = await sidekickFetch(state, "/api/v1/status");
+    if (
+      status.manager?.source?.tier !== "reference-render" ||
+      status.manager?.source?.origin !== "operator-installed" ||
+      status.manager?.provenance?.status !== "verified" ||
+      status.manager?.automationEligible !== true
+    ) {
+      throw new Error(
+        `Installed reference render did not pass the built-in eligibility gate: ${JSON.stringify(status.manager)}`,
+      );
+    }
+    return {
+      managerPrincipal: alternateManager,
+      sourceSha256: status.manager.source.sha256,
+      profileId: status.manager.source.profileId,
+      beforeInstall: unknown.manager.source.tier,
+      afterInstall: status.manager.source.tier,
+      provenance: status.manager.provenance.status,
+      automationEligible: status.manager.automationEligible,
+      dependencyTxids: dependencyDeployments.map(({ txid }) => txid).filter(Boolean),
+      managerTxid: managerDeployment.txid ?? null,
+    };
+  } finally {
+    await stopSidekick(profileContainer);
+    run("docker", ["volume", "rm", "--force", profileVolume], { allowedExitCodes: [0, 1] });
+    await rm(profilesDirectory, { recursive: true, force: true });
+    await startSidekick(state, { container: originalContainer, volume: state.volumeName });
+  }
+}
+
 async function filesUnder(paths) {
   const files = [];
   const visit = async (path) => {
@@ -815,9 +962,10 @@ async function scenario(name) {
   if (name === "attach") return await attachWithCleanDatabase(state);
   if (name === "restart") return await restartSidekick(state);
   if (name === "event-resume") return await eventResumeScenario(state);
+  if (name === "trusted-manager-profile") return await installedManagerProfileScenario(state);
   if (name === "failure-injection") return await failureInjection(state);
   throw new Error(
-    `Unknown scenario ${name}; use fresh, active-pool, attach, restart, or failure-injection`,
+    `Unknown scenario ${name}; use fresh, active-pool, attach, restart, trusted-manager-profile, or failure-injection`,
   );
 }
 
@@ -950,6 +1098,11 @@ async function test() {
       return { status: "pass" };
     });
 
+    await recordScenario(
+      result,
+      "trustedManagerProfile",
+      async () => await installedManagerProfileScenario(state),
+    );
     await recordScenario(result, "failureInjection", async () => await failureInjection(state));
     result.status = "pass";
   } catch (error) {
@@ -1014,7 +1167,7 @@ if (command === "doctor") {
 Usage:
   pnpm e2e:devnet:doctor
   pnpm e2e:devnet:up [--no-build]
-  pnpm e2e:devnet:scenario fresh|active-pool|attach|restart|failure-injection|event-resume
+  pnpm e2e:devnet:scenario fresh|active-pool|attach|restart|trusted-manager-profile|failure-injection|event-resume
   pnpm e2e:devnet:mine [count]
   pnpm e2e:devnet:status
   pnpm e2e:devnet:reset

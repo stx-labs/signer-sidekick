@@ -4,7 +4,12 @@ import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
-import { inspectDeployedManager, inspectManagerOrReportMissing } from "./manager-verification.js";
+import {
+  inspectDeployedManager,
+  inspectManagerOrReportMissing,
+  invalidateManagerVerificationCache,
+  type ManagerVerificationContext,
+} from "./manager-verification.js";
 import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
@@ -30,7 +35,10 @@ export interface OperatorServiceOptions {
   api: StacksApiClient;
   cacheTtlMs?: number;
   runtimeSettings?: RuntimeSettingsController;
+  managerVerification?: ManagerVerificationContext;
 }
+
+type ManagerTrustTransition = NonNullable<ReturnType<SidekickStore["recordManagerTrustState"]>>;
 
 function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: string) {
   return store.listSignerStakers(managerPrincipal, true, sourceId).map((staker) => ({
@@ -55,6 +63,11 @@ export function buildAlerts(snapshot: {
   forecast: Awaited<ReturnType<typeof readPoolForecast>> | null;
   rewards: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
   activity: ReturnType<typeof readManagerActivity>;
+  trustTransition?: {
+    transition: "gained" | "lost" | "degraded";
+    reason: string;
+    changedAt: string;
+  } | null;
 }): OperatorAlert[] {
   const alerts: OperatorAlert[] = [];
   for (const check of snapshot.preflight.checks.filter(({ status }) => status !== "pass")) {
@@ -69,8 +82,48 @@ export function buildAlerts(snapshot: {
     alerts.push({
       id: "manager:unsupported",
       severity: "critical",
-      title: "Manager Is Not Supported",
-      detail: "The deployed manager source is not recognized for operator automation.",
+      title: "Manager Cannot Be Attached",
+      detail:
+        snapshot.manager.reasons[0] ??
+        "The manager network or required interface is incompatible with this deployment.",
+    });
+  } else if (snapshot.manager.source.tier === "unrecognized") {
+    alerts.push({
+      id: "manager:not-recognized-read-only",
+      severity: "warning",
+      title: "Manager Not Recognized — Read-only",
+      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager automation remains disabled: ${snapshot.manager.automationEligibilityReason}. Install a provenance-verified profile if this is a reference render.`,
+    });
+  } else if (snapshot.manager.source.tier === "custom-observe") {
+    alerts.push({
+      id: "manager:custom-read-only",
+      severity: "info",
+      title: "Custom Manager — Read-only",
+      detail:
+        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager transaction automation.",
+    });
+  }
+  if (snapshot.manager.installedProfiles.issues.length > 0) {
+    alerts.push({
+      id: "manager:profile-load-issues",
+      severity: "warning",
+      title: "Installed Manager Profile Needs Attention",
+      detail: `${snapshot.manager.installedProfiles.issues.length} profile issue(s) were ignored safely. Review Settings or the support bundle for details.`,
+    });
+  }
+  if (snapshot.trustTransition) {
+    const { transition } = snapshot.trustTransition;
+    const gained = transition === "gained";
+    const degraded = transition === "degraded";
+    alerts.push({
+      id: `manager:trust-transition-${transition}:${snapshot.trustTransition.changedAt}`,
+      severity: gained ? "info" : degraded ? "warning" : "critical",
+      title: gained
+        ? "Manager Automation Eligibility Gained"
+        : degraded
+          ? "Manager Recognition Degraded"
+          : "Manager Degraded to Read-only",
+      detail: snapshot.trustTransition.reason,
     });
   }
   if (snapshot.setup?.status === "blocked") {
@@ -141,6 +194,7 @@ export class OperatorService {
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
   > | null = null;
+  private pendingTrustTransition: ManagerTrustTransition | null = null;
 
   constructor(private readonly options: OperatorServiceOptions) {}
 
@@ -175,6 +229,21 @@ export class OperatorService {
       this.synchronization = null;
     });
     return this.synchronization;
+  }
+
+  async observeManagerTrustState() {
+    const { managerPrincipal } = this.options;
+    const { config, node } = this.runtimeContext();
+    const observedAt = new Date().toISOString();
+    const manager = await inspectManagerOrReportMissing(
+      node,
+      config.network,
+      managerPrincipal,
+      this.options.managerVerification,
+    );
+    const transition = this.recordManagerTrustState(manager, observedAt);
+    if (transition) this.pendingTrustTransition = transition;
+    return { manager, transition };
   }
 
   async summary() {
@@ -254,6 +323,9 @@ export class OperatorService {
   async updateSettings(input: unknown) {
     if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
     const result = await this.options.runtimeSettings.update(input);
+    if (this.options.managerVerification) {
+      invalidateManagerVerificationCache(this.options.managerVerification);
+    }
     this.cached = null;
     return result;
   }
@@ -291,8 +363,15 @@ export class OperatorService {
     const observedAt = new Date().toISOString();
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
-      inspectDeployedManager(node, config.network, managerPrincipal),
+      inspectDeployedManager(
+        node,
+        config.network,
+        managerPrincipal,
+        this.options.managerVerification,
+      ),
     ]);
+    const trustTransition = this.recordManagerTrustState(manager, observedAt);
+    if (trustTransition) this.pendingTrustTransition = trustTransition;
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
       throw new Error(
         "Synchronization requires healthy sources, active PoX-5, and a recognized manager",
@@ -337,6 +416,9 @@ export class OperatorService {
       observedAt,
       pageLimit: config.eventPageLimit,
     });
+    if (events.reorgedEvents > 0 && this.options.managerVerification) {
+      invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
+    }
     this.cached = null;
     return { observedAt, stakers, events };
   }
@@ -348,9 +430,27 @@ export class OperatorService {
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
-      inspectManagerOrReportMissing(node, config.network, managerPrincipal),
+      inspectManagerOrReportMissing(
+        node,
+        config.network,
+        managerPrincipal,
+        this.options.managerVerification,
+      ),
     ]);
     const pox5ContractId = preflight.pox.pox5ContractId;
+    const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
+    const trustAudit = store.listManagerTrustAudit(managerPrincipal);
+    const latestTrustTransition = trustAudit[0] ?? null;
+    const pendingTrustTransition = this.pendingTrustTransition;
+    this.pendingTrustTransition = null;
+    const trustTransition =
+      recordedTrustTransition ??
+      pendingTrustTransition ??
+      (latestTrustTransition &&
+      latestTrustTransition.transition !== "gained" &&
+      latestTrustTransition.currentTier === manager.source.tier
+        ? latestTrustTransition
+        : null);
     const registration =
       manager.attachAllowed && pox5ContractId
         ? await verifyManagerRegistration(node, pox5ContractId, managerPrincipal)
@@ -400,6 +500,7 @@ export class OperatorService {
       rewards,
       activity,
       roster,
+      trustTransition,
     };
     return {
       schemaVersion: 1,
@@ -411,6 +512,7 @@ export class OperatorService {
         : {}),
       managerPrincipal,
       ...partial,
+      trustAudit,
       alerts: buildAlerts(partial),
     };
   }
@@ -427,5 +529,22 @@ export class OperatorService {
         api: this.options.api,
       }
     );
+  }
+
+  private recordManagerTrustState(
+    manager: Awaited<ReturnType<typeof inspectDeployedManager>>,
+    observedAt: string,
+  ): ManagerTrustTransition | null {
+    return this.options.store.recordManagerTrustState({
+      managerPrincipal: this.options.managerPrincipal,
+      recognitionTier: manager.source.tier,
+      profileId: manager.source.profileId,
+      profileOrigin: manager.source.origin,
+      sourceSha256: manager.source.sha256 || null,
+      canonicalSourceSha256: manager.source.canonicalSha256 || null,
+      automationEligible: manager.automationEligible,
+      eligibilityReason: manager.automationEligibilityReason,
+      observedAt,
+    });
   }
 }

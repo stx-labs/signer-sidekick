@@ -11,6 +11,13 @@ are never stored there.
 Before any gas-payer automation is enabled, production key material must use the documented
 read-only Docker-secret mount rather than environment injection.
 
+The supplied Compose profile also mounts `./trusted-managers` at
+`/etc/sidekick/trusted-managers` read-only. Sidekick loads profile JSON only at startup. Anyone who
+can write the host directory controls trusted configuration, but a profile still cannot declare
+automation eligibility: Sidekick must reproduce its reference render from the pinned source and a
+matching built-in profile for the installed profile's own network that is already
+production-approved.
+
 ## Start
 
 Use a Stacks node RPC endpoint reachable from inside the container. On Docker Desktop and on the
@@ -33,6 +40,27 @@ loopback service.
 
 The container starts in Observe mode. It has no signer or manager-admin key and does not broadcast
 transactions.
+
+## Install a manager profile
+
+An interface-compatible unknown manager already supports attach, display, reconciliation, and
+monitoring. If it is a private/testnet render of the pinned reference manager, generate a profile
+from the deployed source:
+
+```sh
+pnpm --filter @stx-labs/signer-sidekick build
+pnpm --filter @stx-labs/signer-sidekick cli \
+  manager trust "$SIDEKICK_MANAGER_PRINCIPAL" \
+  --output trusted-managers/my-manager.json
+docker compose restart sidekick
+```
+
+The command uses the configured node and network. It refuses to describe a semantically different
+contract as a reference render. `--observe-only` may be used explicitly for a custom contract; that
+profile improves identification but remains ineligible for reference-manager automation. The
+dashboard and support bundle show the profile origin, proof result, load errors, and eligibility
+reason. Back up profile JSON with deployment configuration, but review it before sharing because it
+contains operationally identifying public principals.
 
 ## Upgrade
 

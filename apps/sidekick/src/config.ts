@@ -39,6 +39,7 @@ export interface SidekickConfig {
   eventPageLimit: number;
   databasePath: string;
   expectedNetworkId?: number;
+  trustedManagerProfilesDirectory?: string;
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -123,6 +124,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
         ? ":memory:"
         : resolve(env.SIDEKICK_DATABASE_PATH ?? "data/sidekick.sqlite"),
     ...(expectedNetworkId !== undefined ? { expectedNetworkId } : {}),
+    ...(env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR?.trim()
+      ? {
+          trustedManagerProfilesDirectory: resolve(
+            env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR.trim(),
+          ),
+        }
+      : {}),
   };
 }
 

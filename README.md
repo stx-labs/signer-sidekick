@@ -57,6 +57,7 @@ Sidekick container:
 pnpm e2e:devnet:doctor
 pnpm e2e:devnet:up
 pnpm e2e:devnet:scenario active-pool
+pnpm e2e:devnet:scenario trusted-manager-profile
 pnpm e2e:devnet:scenario failure-injection
 pnpm e2e:devnet:down
 
@@ -101,6 +102,8 @@ pnpm --filter @stx-labs/signer-sidekick cli \
 pnpm --filter @stx-labs/signer-sidekick cli init attach <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli \
+  manager trust <manager-principal> --output trusted-managers/my-manager.json
+pnpm --filter @stx-labs/signer-sidekick cli \
   pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json
 pnpm --filter @stx-labs/signer-sidekick cli pool sync-stakers <manager-principal>
 pnpm --filter @stx-labs/signer-sidekick cli events sync <manager-principal>
@@ -138,6 +141,15 @@ from the browser's perspective. Fresh Setup generates artifacts and external sig
 instructions, but Sidekick never accepts the manager-admin or signer private keys. See the
 [onboarding and settings architecture](docs/architecture/onboarding-and-settings.md) for the exact
 boundary and persistence model.
+
+An interface-compatible manager that does not match a built-in source remains fully attachable for
+display, reconciliation, and monitoring and is shown as **Not recognized — read-only**. Operators
+using a private/testnet render of the pinned reference manager can generate a strict profile with
+`sidekick manager trust`, mount its directory through
+`SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR`, and restart. Sidekick treats the file as a claim, fetches
+the deployed source from the configured node, and independently reproduces the render; profile JSON
+cannot approve custom code for reference-manager automation. Use `--observe-only` only to label a
+genuinely custom manager for read-only operation.
 
 The enrollment command writes a versioned public JSON document to standard output. Its fee is
 explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields

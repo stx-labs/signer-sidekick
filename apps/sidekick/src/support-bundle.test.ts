@@ -46,10 +46,21 @@ const manager = {
     match: "exact",
     profileId: "stacks-4.0.0-mainnet-reference-manager",
     sha256: "a".repeat(64),
+    canonicalSha256: "b".repeat(64),
+    recognized: true,
+    tier: "reference-built-in",
+    origin: "built-in",
   },
+  provenance: {
+    status: "built-in",
+    upstreamProfileId: "stacks-4.0.0-mainnet-reference-manager",
+    reason: "Built-in profile",
+  },
+  installedProfiles: { directory: null, loaded: 0, issues: [] },
   interface: { compatible: true },
   attachAllowed: true,
   automationEligible: false,
+  automationEligibilityReason: "Profile is not production-approved",
   reasons: ["Profile is not production-approved"],
 } as ManagerVerificationReport;
 
@@ -66,7 +77,7 @@ const setup = {
 } as PoolSetupStatus;
 
 const operatorRecord = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   documentType: "signer-sidekick-operator-record",
   mode: "observe",
   network: "mainnet",
@@ -77,6 +88,9 @@ const operatorRecord = {
     profileId: "stacks-4.0.0-mainnet-reference-manager",
     sourceSha256: "a".repeat(64),
     sourceRecognized: true,
+    recognitionTier: "reference-built-in",
+    profileOrigin: "built-in",
+    provenanceStatus: "built-in",
     attachAllowed: true,
   },
   signer: {
@@ -89,6 +103,7 @@ const operatorRecord = {
   pool: null,
   automation: {
     productionEligible: false,
+    eligibilityReason: "Profile is not production-approved",
     gasPayerPrincipal: null,
     signerKeyHeldBySidekick: false,
     managerAdminKeyHeldBySidekick: false,
@@ -120,6 +135,14 @@ describe("support bundle", () => {
     expect(bundle).toMatchObject({
       application: { version: "1.0.0-test" },
       configuration: { apiKeyConfigured: true },
+      diagnostics: {
+        manager: {
+          recognitionTier: "reference-built-in",
+          profileOrigin: "built-in",
+          automationEligible: false,
+          installedProfiles: { directoryConfigured: false, loaded: 0, issues: [] },
+        },
+      },
       safety: {
         construction: "explicit-allowlist",
         apiKeyIncluded: false,
@@ -149,5 +172,34 @@ describe("support bundle", () => {
         configuration: { ...bundle.configuration, apiKey: "secret" },
       }),
     ).toThrow();
+  });
+
+  it("redacts the configured profile directory from load errors", () => {
+    const privateDirectory = "/private/operator/config/trusted-managers";
+    const bundle = createSupportBundle(
+      config,
+      preflight,
+      {
+        ...manager,
+        installedProfiles: {
+          directory: privateDirectory,
+          loaded: 0,
+          issues: [
+            {
+              fileName: null,
+              code: "directory-unreadable",
+              message: `ENOENT: no such directory, scandir '${privateDirectory}'`,
+            },
+          ],
+        },
+      },
+      registration,
+      setup,
+      operatorRecord,
+      null,
+    );
+    const serialized = JSON.stringify(bundle);
+    expect(serialized).not.toContain(privateDirectory);
+    expect(serialized).toContain("<trusted-manager-profile-directory>");
   });
 });

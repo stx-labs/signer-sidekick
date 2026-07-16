@@ -101,4 +101,26 @@ describe("reference manager artifact generation", () => {
       }),
     ).toThrow("canonical mainnet PoX-5 boot contract");
   });
+
+  it("rejects drift in the pinned replacement counts", () => {
+    const source = `${UPSTREAM_POX5}\n${UPSTREAM_SBTC_DEPLOYER}\n${UPSTREAM_SBTC_DEPLOYER}`;
+    const profile = parseManagerProfile({
+      id: "wrong-replacement-count",
+      network: "mainnet",
+      upstream: {
+        tag: "test",
+        commit: "0".repeat(40),
+        sourceSha256: createHash("sha256").update(source).digest("hex"),
+      },
+      contracts: {
+        pox5: "SP000000000000000000002Q6VF78.pox-5",
+        sbtcDeployer: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4",
+      },
+      expectedReplacements: { pox5: 1, sbtcDeployer: 1 },
+      productionApproved: false,
+    });
+    expect(() => generateManagerArtifact(source, profile)).toThrow(
+      "Expected 1 sBTC replacements, found 2",
+    );
+  });
 });

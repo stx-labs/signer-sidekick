@@ -19,7 +19,7 @@ const checkSchema = z
 
 export const supportBundleSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     documentType: z.literal("signer-sidekick-support-bundle"),
     application: z
       .object({
@@ -76,9 +76,40 @@ export const supportBundleSchema = z
             sourceMatch: z.enum(["exact", "canonical", "unknown"]),
             profileId: z.string().nullable(),
             sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+            canonicalSourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+            recognitionTier: z.enum([
+              "reference-built-in",
+              "reference-render",
+              "custom-observe",
+              "unrecognized",
+            ]),
+            profileOrigin: z.enum(["built-in", "operator-installed"]).nullable(),
+            provenance: z
+              .object({
+                status: z.enum(["built-in", "verified", "not-applicable", "failed"]),
+                upstreamProfileId: z.string().nullable(),
+                reason: z.string(),
+              })
+              .strict(),
+            installedProfiles: z
+              .object({
+                directoryConfigured: z.boolean(),
+                loaded: z.number().int().nonnegative(),
+                issues: z.array(
+                  z
+                    .object({
+                      fileName: z.string().nullable(),
+                      code: z.string(),
+                      message: z.string(),
+                    })
+                    .strict(),
+                ),
+              })
+              .strict(),
             interfaceCompatible: z.boolean(),
             attachAllowed: z.boolean(),
             automationEligible: z.boolean(),
+            automationEligibilityReason: z.string(),
             reasons: z.array(z.string()),
           })
           .strict(),
@@ -126,7 +157,7 @@ export function createSupportBundle(
   applicationVersion = "0.0.0",
 ): SupportBundle {
   return supportBundleSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     documentType: "signer-sidekick-support-bundle",
     application: {
       version: applicationVersion,
@@ -160,9 +191,27 @@ export function createSupportBundle(
         sourceMatch: manager.source.match,
         profileId: manager.source.profileId,
         sourceSha256: manager.source.sha256,
+        canonicalSourceSha256: manager.source.canonicalSha256,
+        recognitionTier: manager.source.tier,
+        profileOrigin: manager.source.origin,
+        provenance: manager.provenance,
+        installedProfiles: {
+          directoryConfigured: manager.installedProfiles.directory !== null,
+          loaded: manager.installedProfiles.loaded,
+          issues: manager.installedProfiles.issues.map((issue) => ({
+            ...issue,
+            message: manager.installedProfiles.directory
+              ? issue.message.replaceAll(
+                  manager.installedProfiles.directory,
+                  "<trusted-manager-profile-directory>",
+                )
+              : issue.message,
+          })),
+        },
         interfaceCompatible: manager.interface.compatible,
         attachAllowed: manager.attachAllowed,
         automationEligible: manager.automationEligible,
+        automationEligibilityReason: manager.automationEligibilityReason,
         reasons: manager.reasons,
       },
       registration: registration

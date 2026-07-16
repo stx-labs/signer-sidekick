@@ -63,11 +63,116 @@ afterEach(async () => {
 });
 
 describe("Sidekick SQLite store", () => {
+  it("deduplicates durable manager automation-eligibility transitions", async () => {
+    const store = await memoryStore();
+    const base = {
+      managerPrincipal: "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ.signer-manager",
+      recognitionTier: "unrecognized" as const,
+      profileId: null,
+      profileOrigin: null,
+      sourceSha256: "a".repeat(64),
+      canonicalSourceSha256: "b".repeat(64),
+      automationEligible: false,
+      eligibilityReason: "Not recognized — read-only",
+      observedAt: "2026-07-16T12:00:00.000Z",
+    };
+    expect(store.recordManagerTrustState(base)).toBeNull();
+    expect(
+      store.recordManagerTrustState({ ...base, observedAt: "2026-07-16T12:01:00.000Z" }),
+    ).toBeNull();
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        recognitionTier: "reference-render",
+        profileId: "private-1",
+        profileOrigin: "operator-installed",
+        sourceSha256: "c".repeat(64),
+        canonicalSourceSha256: "d".repeat(64),
+        automationEligible: true,
+        eligibilityReason: "Reference render verified",
+        observedAt: "2026-07-16T12:02:00.000Z",
+      }),
+    ).toMatchObject({ transition: "gained", previousTier: "unrecognized" });
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        recognitionTier: "reference-render",
+        profileId: "private-1",
+        profileOrigin: "operator-installed",
+        sourceSha256: "c".repeat(64),
+        canonicalSourceSha256: "d".repeat(64),
+        automationEligible: true,
+        eligibilityReason: "Reference render verified",
+        observedAt: "2026-07-16T12:03:00.000Z",
+      }),
+    ).toBeNull();
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        eligibilityReason: "Installed profile is unavailable",
+        observedAt: "2026-07-16T12:04:00.000Z",
+      }),
+    ).toMatchObject({ transition: "lost", currentTier: "unrecognized" });
+    expect(store.listManagerTrustAudit(base.managerPrincipal)).toMatchObject([
+      {
+        transition: "lost",
+        previousSourceSha256: "c".repeat(64),
+        currentSourceSha256: "a".repeat(64),
+        reason: "Installed profile is unavailable",
+      },
+      {
+        transition: "gained",
+        previousCanonicalSourceSha256: "b".repeat(64),
+        currentCanonicalSourceSha256: "d".repeat(64),
+        reason: "Reference render verified",
+      },
+    ]);
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        managerPrincipal: "ST000000000000000000002AMW42H.second-manager",
+        recognitionTier: "reference-built-in",
+        profileId: "approved-devnet",
+        profileOrigin: "built-in",
+        automationEligible: true,
+        eligibilityReason: "Built-in profile is approved",
+      }),
+    ).toMatchObject({ transition: "gained", previousTier: "unobserved" });
+
+    const unapprovedManager = "ST000000000000000000002AMW42H.unapproved-manager";
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        managerPrincipal: unapprovedManager,
+        recognitionTier: "reference-render",
+        profileId: "unapproved-private-render",
+        profileOrigin: "operator-installed",
+        automationEligible: false,
+        eligibilityReason: "No production approval for this network",
+      }),
+    ).toBeNull();
+    expect(
+      store.recordManagerTrustState({
+        ...base,
+        managerPrincipal: unapprovedManager,
+        eligibilityReason: "Installed profile was removed",
+        observedAt: "2026-07-16T12:05:00.000Z",
+      }),
+    ).toMatchObject({ transition: "degraded", previousTier: "reference-render" });
+    expect(store.listManagerTrustAudit(unapprovedManager)).toMatchObject([
+      {
+        transition: "degraded",
+        previousTier: "reference-render",
+        currentTier: "unrecognized",
+      },
+    ]);
+  });
+
   it("applies explicit migrations with defensive runtime pragmas", async () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 10,
+      schemaVersion: 12,
       journalMode: "memory",
       foreignKeys: true,
     });
@@ -723,9 +828,59 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 10,
+      schemaVersion: 12,
       journalMode: "wal",
     });
+  });
+
+  it("upgrades a persisted migration 11 trust ledger without resetting it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v11-upgrade-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, observedAt);
+    const principal = "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ.signer-manager";
+    initial.store.recordManagerTrustState({
+      managerPrincipal: principal,
+      recognitionTier: "unrecognized",
+      profileId: null,
+      profileOrigin: null,
+      sourceSha256: "a".repeat(64),
+      canonicalSourceSha256: "b".repeat(64),
+      automationEligible: false,
+      eligibilityReason: "Not recognized — read-only",
+      observedAt,
+    });
+    initial.store.recordManagerTrustState({
+      managerPrincipal: principal,
+      recognitionTier: "reference-render",
+      profileId: "private-render",
+      profileOrigin: "operator-installed",
+      sourceSha256: "c".repeat(64),
+      canonicalSourceSha256: "d".repeat(64),
+      automationEligible: true,
+      eligibilityReason: "Reference render verified",
+      observedAt: later,
+    });
+    initial.store.close();
+
+    const version11 = new DatabaseSync(path);
+    version11.exec(`
+      DELETE FROM schema_migrations WHERE version = 12;
+      PRAGMA user_version = 11;
+    `);
+    version11.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(12);
+    expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
+      {
+        transition: "gained",
+        previousTier: "unrecognized",
+        currentTier: "reference-render",
+        reason: "Reference render verified",
+      },
+    ]);
   });
 
   it("creates and verifies an explicit online database backup", async () => {

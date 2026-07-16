@@ -141,8 +141,22 @@ export const snapshot = {
   manager: {
     attachAllowed: true,
     automationEligible: true,
+    automationEligibilityReason: "Source matches approved devnet reference profile",
     publishHeight: 9_100,
-    source: { recognized: true, profileId: "devnet", sha256: "ca97d964", match: "exact" },
+    source: {
+      recognized: true,
+      profileId: "devnet",
+      sha256: "ca97d964",
+      match: "exact",
+      tier: "reference-built-in",
+      origin: "built-in",
+    },
+    provenance: {
+      status: "built-in",
+      upstreamProfileId: "devnet",
+      reason: "Source matches approved devnet reference profile",
+    },
+    installedProfiles: { directory: null, loaded: 0, issues: [] },
     reasons: [],
   },
   registration: {

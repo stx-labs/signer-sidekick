@@ -139,6 +139,20 @@ export interface Phase3Snapshot {
     checks: Array<{ id: string; status: "pass" | "warn" | "fail"; message: string }>;
   };
   runtimeSettings?: RuntimeSettings;
+  manager?: {
+    automationEligible: boolean;
+    automationEligibilityReason: string;
+    source: {
+      profileId: string | null;
+      tier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";
+      origin: "built-in" | "operator-installed" | null;
+    };
+    installedProfiles: {
+      directory: string | null;
+      loaded: number;
+      issues: Array<{ fileName: string | null; code: string; message: string }>;
+    };
+  };
 }
 
 async function api<T>(token: string, url: string, init: RequestInit = {}): Promise<T> {
@@ -1373,6 +1387,52 @@ export function SettingsPage({
               <span className="k">Settings revision</span>
               <span className="v mono">{settings.revision}</span>
             </div>
+            {data.manager ? (
+              <>
+                <div className="statline">
+                  <span className="k">Manager trust</span>
+                  <span className="v">
+                    {data.manager.source.tier === "reference-built-in"
+                      ? "Reference — built in"
+                      : data.manager.source.tier === "reference-render"
+                        ? "Reference render — operator-installed"
+                        : data.manager.source.tier === "custom-observe"
+                          ? "Custom — read-only"
+                          : "Not recognized — read-only"}
+                  </span>
+                </div>
+                <div className="statline">
+                  <span className="k">Installed profile store</span>
+                  <span className="v">
+                    {data.manager.installedProfiles.directory
+                      ? `${data.manager.installedProfiles.loaded} loaded · ${data.manager.installedProfiles.issues.length} issue(s)`
+                      : "Not configured"}
+                  </span>
+                </div>
+                <div className="callout callout-info security-note">
+                  <ShieldCheck className="ic" />
+                  <div className="body">
+                    <strong>
+                      {data.manager.automationEligible
+                        ? "Reference automation eligible."
+                        : "Read-only operation."}
+                    </strong>{" "}
+                    {data.manager.automationEligibilityReason}
+                  </div>
+                </div>
+                {data.manager.installedProfiles.issues.map((issue) => (
+                  <div
+                    className="callout callout-caution security-note"
+                    key={`${issue.fileName ?? "directory"}-${issue.code}`}
+                  >
+                    <Warning className="ic" />
+                    <div className="body">
+                      <strong>{issue.fileName ?? "Profile directory"}:</strong> {issue.message}
+                    </div>
+                  </div>
+                ))}
+              </>
+            ) : null}
             <div className="callout callout-critical security-note">
               <Key className="ic" />
               <div className="body">

@@ -255,15 +255,19 @@ export function createAttachActivationPlan(
     {
       id: "verify-manager",
       status: manager.attachAllowed
-        ? manager.source.recognized
+        ? manager.source.tier === "reference-built-in" || manager.source.tier === "reference-render"
           ? "complete"
           : "attention"
         : "blocked",
       title: "Verify the deployed manager",
       detail: manager.attachAllowed
-        ? manager.source.recognized
-          ? `Manager source matches profile ${manager.source.profileId}`
-          : "Manager is ABI-compatible but its source is not a reviewed artifact"
+        ? manager.source.tier === "reference-built-in"
+          ? `Manager source matches built-in profile ${manager.source.profileId}`
+          : manager.source.tier === "reference-render"
+            ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
+            : manager.source.tier === "custom-observe"
+              ? "Custom manager is operator-identified for read-only use; reference-manager automation remains disabled"
+              : "Manager is compatible and can attach in read-only mode, but its source is not recognized"
         : "Manager network or interface is incompatible",
       command: `sidekick manager verify ${shellQuote(manager.managerPrincipal)}`,
       requires: ["preflight"],
