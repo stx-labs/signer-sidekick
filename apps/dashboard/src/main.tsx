@@ -51,14 +51,35 @@ interface Snapshot {
   runtimeSettings?: RuntimeSettings;
   preflight: {
     status: "pass" | "warn" | "fail";
-    node: { networkId: number; burnBlockHeight: number; stacksTipHeight: number };
+    node: {
+      networkId: number;
+      serverVersion: string | null;
+      version: string | null;
+      commit: string | null;
+      burnBlockHeight: number;
+      stacksTipHeight: number;
+    };
     api: {
       serverVersion: string;
       burnBlockHeight: number;
       stacksTipHeight: number;
       burnBlockLag: number;
     };
-    pox: { rewardCycleId: number; pox5Available: boolean; pox5ContractId: string | null };
+    pox: {
+      rewardCycleId: number;
+      activationState: "active" | "scheduled" | "unavailable";
+      blocksUntilActivation: number | null;
+      pox5Available: boolean;
+      pox5ContractId: string | null;
+    };
+    compatibility: {
+      status: "matched" | "unrecognized" | "inconsistent";
+      profileId: string | null;
+      profileRevision: number | null;
+      origin: "built-in" | "operator-provided" | null;
+      nodeBuildPreviouslyTested: boolean;
+      reason: string;
+    };
     cycle: {
       currentId: number;
       nextId: number | null;

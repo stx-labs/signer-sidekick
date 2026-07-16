@@ -1,4 +1,4 @@
-import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
+import { STACKS_CORE_4_0_0, STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import { z } from "zod";
 import type { SidekickConfig } from "./config.js";
 import type { PoolEnrollmentDocument } from "./enrollment-info.js";
@@ -26,6 +26,8 @@ export const supportBundleSchema = z
         version: z.string(),
         stacksCoreTag: z.string(),
         stacksCoreCommit: z.string().regex(/^[0-9a-f]{40}$/),
+        launchStacksCoreTag: z.string(),
+        launchStacksCoreCommit: z.string().regex(/^[0-9a-f]{40}$/),
       })
       .strict(),
     configuration: z
@@ -37,6 +39,7 @@ export const supportBundleSchema = z
         apiKeyConfigured: z.boolean(),
         maxApiBurnBlockLag: z.number().int().nonnegative(),
         forecastHorizonCycles: z.number().int().min(1).max(96),
+        compatibilityProfilesConfigured: z.boolean(),
       })
       .strict(),
     diagnostics: z
@@ -47,6 +50,10 @@ export const supportBundleSchema = z
             node: z
               .object({
                 networkId: z.number().int(),
+                parentNetworkId: z.number().int().nonnegative().nullable(),
+                serverVersion: z.string().nullable(),
+                version: z.string().nullable(),
+                commit: z.string().nullable(),
                 burnBlockHeight: z.number().int().nonnegative(),
                 stacksTipHeight: z.number().int().nonnegative(),
               })
@@ -62,8 +69,41 @@ export const supportBundleSchema = z
             pox5: z
               .object({
                 available: z.boolean(),
+                activationState: z.enum(["active", "scheduled", "unavailable"]),
                 contractId: z.string().nullable(),
+                scheduledContractId: z.string().nullable(),
+                sourceSha256: z
+                  .string()
+                  .regex(/^[0-9a-f]{64}$/)
+                  .nullable(),
+                sbtcTokenContract: z.string().nullable(),
+                sbtcRegistryContract: z.string().nullable(),
                 blocksUntilEpoch4: z.number().int().nonnegative().nullable(),
+              })
+              .strict(),
+            networkCompatibility: z
+              .object({
+                status: z.enum(["matched", "unrecognized", "inconsistent"]),
+                profileId: z.string().nullable(),
+                profileRevision: z.number().int().positive().nullable(),
+                profileLabel: z.string().nullable(),
+                origin: z.enum(["built-in", "operator-provided"]).nullable(),
+                managerProfileId: z.string().nullable(),
+                managerSourceSha256: z
+                  .string()
+                  .regex(/^[0-9a-f]{64}$/)
+                  .nullable(),
+                nodeBuildPreviouslyTested: z.boolean(),
+                reason: z.string(),
+                loadIssues: z.array(
+                  z
+                    .object({
+                      fileName: z.string().nullable(),
+                      code: z.string(),
+                      message: z.string(),
+                    })
+                    .strict(),
+                ),
               })
               .strict(),
             checks: z.array(checkSchema),
@@ -163,6 +203,8 @@ export function createSupportBundle(
       version: applicationVersion,
       stacksCoreTag: STACKS_CORE_4_0_0.tag,
       stacksCoreCommit: STACKS_CORE_4_0_0.commit,
+      launchStacksCoreTag: STACKS_CORE_4_0_1.tag,
+      launchStacksCoreCommit: STACKS_CORE_4_0_1.commit,
     },
     configuration: {
       network: config.network,
@@ -172,16 +214,41 @@ export function createSupportBundle(
       apiKeyConfigured: Boolean(config.apiKey),
       maxApiBurnBlockLag: config.maxApiBurnBlockLag,
       forecastHorizonCycles: config.forecastHorizonCycles,
+      compatibilityProfilesConfigured: Boolean(config.compatibilityProfilesDirectory),
     },
     diagnostics: {
       preflight: {
         status: preflight.status,
-        node: preflight.node,
+        node: {
+          networkId: preflight.node.networkId,
+          parentNetworkId: preflight.node.parentNetworkId,
+          serverVersion: preflight.node.serverVersion,
+          version: preflight.node.version,
+          commit: preflight.node.commit,
+          burnBlockHeight: preflight.node.burnBlockHeight,
+          stacksTipHeight: preflight.node.stacksTipHeight,
+        },
         api: preflight.api,
         pox5: {
           available: preflight.pox.pox5Available,
+          activationState: preflight.pox.activationState,
           contractId: preflight.pox.pox5ContractId,
+          scheduledContractId: preflight.pox.scheduledPox5ContractId,
+          sourceSha256: preflight.pox.sourceSha256,
+          sbtcTokenContract: preflight.pox.sbtcTokenContract,
+          sbtcRegistryContract: preflight.pox.sbtcRegistryContract,
           blocksUntilEpoch4: preflight.pox.blocksUntilEpoch4,
+        },
+        networkCompatibility: {
+          ...preflight.compatibility,
+          loadIssues: preflight.compatibility.loadIssues.map((issue) => ({
+            ...issue,
+            message: [config.compatibilityProfilesDirectory].reduce<string>(
+              (message, path) =>
+                path ? message.replaceAll(path, "<network-compatibility-configuration>") : message,
+              issue.message,
+            ),
+          })),
         },
         checks: preflight.checks,
       },

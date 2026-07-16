@@ -263,6 +263,46 @@ describe("Stacks API client", () => {
 });
 
 describe("Stacks node client", () => {
+  it("retains node build evidence and PoX-5 sBTC contract capabilities", async () => {
+    const responses = [
+      {
+        server_version: "stacks-node 9.9.9.0.0 (abcdef0, release build, linux [x86_64])",
+        network_id: 256,
+        parent_network_id: 3_669_344_250,
+        burn_block_height: 202,
+        stacks_tip_height: 500,
+      },
+      {
+        current_burnchain_block_height: 202,
+        reward_cycle_id: 11,
+        reward_cycle_length: 20,
+        prepare_cycle_length: 5,
+        contract_id: "ST000000000000000000002AMW42H.pox-5",
+        pox_5_sbtc_contract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-token",
+        pox_5_sbtc_registry_contract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-registry",
+        contract_versions: [],
+      },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getInfo()).resolves.toMatchObject({
+      server_version: expect.stringContaining("9.9.9"),
+      network_id: 256,
+      parent_network_id: 3_669_344_250,
+    });
+    await expect(client.getPoxInfo()).resolves.toMatchObject({
+      pox_5_sbtc_contract: expect.stringContaining(".sbtc-token"),
+      pox_5_sbtc_registry_contract: expect.stringContaining(".sbtc-registry"),
+    });
+  });
+
   it("rejects unsafe uSTX quantities at the PoX JSON boundary", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

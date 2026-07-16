@@ -96,12 +96,16 @@ The product may generate operator-facing values and instructions that a pool pub
 
 ## 3. Evidence baseline and protocol assumptions
 
-The v1 design is based on the released Stacks 4.0.0 implementation, not an earlier `develop` snapshot.
+The v1 contract model began from the pinned Stacks 4.0.0 tag and released Devnet, while launch
+network compatibility is based on the formal Stacks 4.0.1 node/signer release. The reference
+manager source is unchanged between those tags. Private-1 is a separate observed environment whose
+4.0.0-era commit and PoX-5 source do not equal the public 4.0.0 tag.
 
 ### 3.1 Primary sources
 
 - [SIP-045: PoX-5 / Bitcoin Staking](https://github.com/stacksgov/sips/blob/main/sips/sip-045/sip-045-pox-5-bitcoin-staking.md)
-- [stacks-core 4.0.0 release](https://github.com/stacks-network/stacks-core/releases/tag/4.0.0)
+- [stacks-core 4.0.0 tag](https://github.com/stacks-network/stacks-core/tree/4.0.0)
+- [stacks-core 4.0.1 launch release](https://github.com/stacks-network/stacks-core/releases/tag/4.0.1)
 - [`pox-5.clar` at the 4.0.0 tag](https://github.com/stacks-network/stacks-core/blob/4.0.0/stackslib/src/chainstate/stacks/boot/pox-5.clar)
 - [Reference `signer-manager.clar` at the 4.0.0 tag](https://github.com/stacks-network/stacks-core/blob/4.0.0/contrib/core-contract-tests/contracts/signer-manager.clar)
 - [Stacks Blockchain API v9.0.0 release](https://github.com/stx-labs/stacks-blockchain-api/releases/tag/v9.0.0)
@@ -113,24 +117,39 @@ The v1 design is based on the released Stacks 4.0.0 implementation, not an earli
 - [Draft stacks.js Bitcoin Staking package PR #1854](https://github.com/stx-labs/stacks.js/pull/1854)
 - [PoX-4 reference automation](https://github.com/degen-lab/stacker-flow-automation)
 
-### 3.2 Version pin
+### 3.2 Version and compatibility pins
 
-The initial protocol profile must pin to:
+The immutable reference-manager lineage remains pinned to:
 
 - `stacks-core` tag: `4.0.0`
 - Git commit: `5595f08a244362cefc316f95b398510a2b8cb791`
-- PoX-5 boot contract source and ABI from that tag
 - A reproducibly generated, network-correct reference manager artifact derived from the reference source at that tag
 
-Any later Stacks release or manager source change must create a new explicit protocol profile. It must not silently replace the v1 profile.
+Launch network profiles separately pin the live network ID, PoX-5 contract/source hash, sBTC token
+and registry principals, activation evidence, and provenance. Mainnet/public-testnet launch data is
+derived from Stacks 4.0.1; private-1 remains its own exact profile.
+
+Any later Stacks release or manager source change must create a new explicit profile and must not
+silently replace an earlier profile. A compatible node release or network activation must not,
+however, require a Sidekick release. Strict operator-provided compatibility data can be installed
+independently, and node version strings are diagnostic rather than an allowlist. V1 network profiles
+cannot authorize automation; authenticated compatibility attestations become a requirement before
+transaction automation ships. Sidekick code only needs to change when consumed API shapes or
+protocol/manager semantics are actually incompatible.
 
 ### 3.3 Activation facts and inference
 
-Stacks 4.0.0 configures activation at Bitcoin block `960,230`, estimated for July 29, 2026. PoX-5 becomes active in the following reward cycle. Based on `/v2/pox` cycle boundaries observed on July 14, the first active PoX-5 reward cycle is expected to be cycle 141. This cycle number is an inference and must be confirmed from live chain state; no runtime behavior may depend on a hard-coded calendar date or inferred cycle.
+Stacks 4.0.1 configures mainnet activation at Bitcoin block `960,230`, estimated for July 29,
+2026. PoX-5 becomes active in the following reward cycle. Based on `/v2/pox` cycle boundaries
+observed on July 14, the first active PoX-5 reward cycle is expected to be cycle 141. This cycle
+number is an inference and must be confirmed from live chain state; no runtime behavior may depend
+on a hard-coded calendar date or inferred cycle.
 
 The application must derive all cycle, prepare-phase, and distribution boundaries from the connected network's `/v2/pox` response and PoX-5 read-only functions.
 
-At the 4.0.0 tag, public testnet has no practical scheduled Epoch 4.0 activation; its configured height is a far-future placeholder. Regtest/devnet is therefore the required rehearsal environment until an activated public test network is announced. Testnet support must be profile-driven rather than assumed.
+Public testnet, private-1, Devnet, and mainnet are distinct network fingerprints even when they use
+testnet-format principals. Testnet support is profile-driven and must be finalized from the live
+post-activation node response rather than inferred from a calendar announcement.
 
 ### 3.4 Protocol behavior v1 must encode
 
@@ -565,6 +584,12 @@ Only the pinned reference-manager adapter ships enabled in v1. An unknown adapte
 
 The reference adapter recognizes built-in artifacts and operator-installed reference renders. An installed render profile is data only: it pins one manager/network/source and names permitted principals, while Sidekick independently regenerates the expected source from the pinned upstream release. Eligibility also requires a matching built-in profile for the installed profile's own network to be production-approved; approval never crosses network profiles. Invalid or missing proof degrades safely to read-only. Installed custom profiles provide an operator-visible identity only and never select reference transaction behavior.
 
+Network compatibility profiles are a separate V1 setup input. They identify a live deployment and
+may drive deterministic manager rendering from the pinned upstream source, but contain no deployment
+or automation policy and cannot make a transaction path eligible. Before Phase 4 broadcasting is
+enabled, replace this operator-config boundary with authenticated compatibility attestations,
+preferably published through the official network/core release process.
+
 ---
 
 ## 10. Persistent data model
@@ -869,7 +894,7 @@ sidekick worker
 sidekick all
 ```
 
-Stacks 4.0.0 ships `stacks-signer generate-staking-signature --config <file> --signer-manager <principal> --auth-id <uint> --json`. The wizard must present this command for execution on the signer host, validate its JSON output, independently derive the expected hash from the connected PoX-5 contract, and never read the signer config itself.
+Stacks 4.0.x ships `stacks-signer generate-staking-signature --config <file> --signer-manager <principal> --auth-id <uint> --json`. The wizard must present this command for execution on the signer host, validate its JSON output, independently derive the expected hash from the connected PoX-5 contract, and never read the signer config itself. The exact 4.0.1 output contract remains a release confirmation item.
 
 ### 13.2 Local API groups
 
@@ -950,7 +975,8 @@ V1 requires a provider interface and ships file/Docker-secret or environment inj
 | Duplicate permissionless transaction | Durable idempotency + preflight read + post-confirmation reconciliation |
 | Nonce collision | Transactional reservation and mempool/account reconciliation |
 | Malicious/custom manager mimics ABI | Exact reviewed source/profile required for automation |
-| Forged or stale installed profile | Reproduce deployed source from pinned upstream; built-in approval remains authoritative |
+| Forged or stale manager profile | Reproduce deployed source from pinned upstream; built-in adapter approval remains authoritative |
+| Incorrect operator network profile | Match live node contract fingerprints; expose principals/hashes; require external review; never grant automation |
 | Installed profile disappears or eligibility changes | Persist transition, alert operator, and degrade to read-only |
 | Compromised configured node | Node is the explicit root of trust for deployed source and actionable state |
 | Reorg changes an observed event | Canonical cursor/replay and reconciled job state |
@@ -1038,12 +1064,13 @@ Against the exact generated manager artifact and released PoX-5 contract:
 
 ### 15.5 Release gates
 
-- Protocol profile independently reviewed against stacks-core 4.0.0.
+- Reference-manager profile independently reviewed against stacks-core 4.0.0 and launch network
+  profile independently reviewed against stacks-core 4.0.1/live chain state.
 - Generated mainnet manager artifact source hash independently reproduced.
 - Earliest safe manager-claim condition and normal/fallback `calculate-rewards` timing confirmed or encoded through authoritative contract readiness checks.
 - Canonical Stacks/STX/Bitcoin assets needed by the UI are sourced with provenance and redistribution terms; no locally redrawn brand marks ship.
 - Design-system token use, light/dark behavior, responsive layouts, and WCAG 2.2 AA checks pass for all critical operator flows.
-- Exact Stacks 4.0.0 signer grant command and JSON output tested end to end.
+- Exact Stacks 4.0.1 signer grant command and JSON output tested end to end.
 - API v9 endpoints tested against a fully indexed PoX-5 environment.
 - Threat model and transaction/post-condition behavior reviewed.
 - At least one full reward and withdrawal lifecycle completed on regtest.
@@ -1278,7 +1305,7 @@ These are the remaining decisions that should be answered during review. Propose
 | Reference-manager production artifact | Reproducibly generate from 4.0.0 and verify hashes | **Yes, for fresh setup** |
 | Earliest manager-claim condition | Prefer authoritative `get-earned`/distribution state; confirm expected timing with core | Confirm before automation GA |
 | Global calculation caller | Race-tolerant fallback after a short grace/jitter; confirm expected primary operator | Confirm before automation GA |
-| Released signer command for SIP-018 grant | Use the 4.0.0 `generate-staking-signature` JSON command and test it end to end | Confirmed; test before GA |
+| Released signer command for SIP-018 grant | Reconfirm the 4.0.1 `generate-staking-signature` JSON command and test it end to end | Confirm before GA |
 | Default manager payout cadence | Evaluate after each manager claim; apply thresholds/budget | No |
 | Default direct-sBTC dust threshold | Zero at protocol layer; operator-configurable batching threshold | No |
 | Default L1 rule | Do not claim until net reward covers configured max fee | No |
@@ -1310,7 +1337,7 @@ A reviewer should explicitly mark each item accepted, changed, or unresolved:
 - [ ] Existing and fresh onboarding paths are complete enough for operators.
 - [ ] No v1 feature requires signer or manager-admin private keys.
 - [ ] The reference manager is the only automated manager profile.
-- [ ] Protocol profile is correctly pinned to stacks-core 4.0.0.
+- [ ] Reference-manager lineage is pinned to 4.0.0, launch PoX-5 compatibility is pinned to 4.0.1/live chain state, and both provenance verifiers pass.
 - [ ] Global calculation fallback and manager-claim readiness are represented accurately.
 - [ ] Fee snapshot behavior is represented accurately.
 - [ ] Balance and withdrawal liability reconciliation is represented accurately.

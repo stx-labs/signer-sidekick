@@ -18,6 +18,7 @@ services:
       STACKS_API_KEY_HEADER: ${STACKS_API_KEY_HEADER:-x-api-key}
       SIDEKICK_MANAGER_PRINCIPAL: ${SIDEKICK_MANAGER_PRINCIPAL:?Set SIDEKICK_MANAGER_PRINCIPAL in .env}
       SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR: /etc/sidekick/trusted-managers
+      SIDEKICK_COMPATIBILITY_PROFILES_DIR: /etc/sidekick/network-compatibility
       SIDEKICK_AUTH_TOKEN: ${SIDEKICK_AUTH_TOKEN:?Set SIDEKICK_AUTH_TOKEN in .env}
       SIDEKICK_FORECAST_HORIZON_CYCLES: ${SIDEKICK_FORECAST_HORIZON_CYCLES:-6}
     extra_hosts:
@@ -27,6 +28,7 @@ services:
     volumes:
       - sidekick-data:/data
       - ./trusted-managers:/etc/sidekick/trusted-managers:ro
+      - ./network-compatibility:/etc/sidekick/network-compatibility:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:

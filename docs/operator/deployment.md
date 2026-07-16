@@ -1,5 +1,10 @@
 # Container deployment
 
+This is the mainnet-first guide for installing and operating the Sidekick software. It does not
+install or configure a Stacks node or signer; use the current official Stacks guides for those
+network components. The public testnet activation exercise is deliberately isolated in its own
+[validation runbook](testnet-deployment.md).
+
 Signer Sidekick ships as one non-root OCI container with the dashboard embedded in the local
 operator API. The supplied Compose profile binds the application only to `127.0.0.1:3998`, drops
 all Linux capabilities, uses a read-only root filesystem, and keeps SQLite in a named volume.
@@ -17,6 +22,23 @@ can write the host directory controls trusted configuration, but a profile still
 automation eligibility: Sidekick must reproduce its reference render from the pinned source and a
 matching built-in profile for the installed profile's own network that is already
 production-approved.
+
+The Compose profile separately mounts `./network-compatibility` read-only. Node build strings are
+diagnostic and are not allowlisted. When a network activates PoX-5 or updates its reviewed contract
+fingerprint, an operator can install a strict compatibility profile without releasing a new
+Sidekick image. Put the plain profile JSON in that directory and restart Sidekick. Use
+`sidekick doctor` and `sidekick preflight` to inspect the selected profile and any rejected files.
+
+Sidekick ignores invalid, duplicate, ambiguous, oversized, or symlinked files. These profiles are
+operator configuration, not an authorization mechanism: they may guide read-only inspection and
+deterministic Fresh setup artifacts, but cannot enable transaction automation. Generated deployment
+manifests expose every substituted principal and source hash, require external review, and are
+signed and broadcast outside Sidekick. Protect the directory as configuration, and prefer profiles
+derived from official release source and live node evidence.
+
+Before transaction automation ships, Sidekick will add authenticated compatibility attestations.
+The preferred trust root is an official network/core release key and manifest if upstream publishes
+the required deployment facts; a separate Stacks Labs signing process is only the fallback.
 
 ## Start
 
@@ -40,6 +62,16 @@ loopback service.
 
 The container starts in Observe mode. It has no signer or manager-admin key and does not broadcast
 transactions.
+
+Run connected preflight before using any Fresh setup artifact:
+
+```sh
+docker compose exec -T sidekick node /app/dist/main.js preflight
+```
+
+On mainnet and public testnet, manager rendering refuses to proceed until the live network
+fingerprint matches an installed compatibility profile. Do not bypass a failed or inconsistent
+preflight by guessing release contracts or principals.
 
 ## Install a manager profile
 

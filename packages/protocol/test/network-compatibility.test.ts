@@ -1,0 +1,42 @@
+import { describe, expect, it } from "vitest";
+import {
+  MAINNET_4_0_1_COMPATIBILITY,
+  PRIVATE_1_COMPATIBILITY,
+} from "../src/known-network-compatibility.js";
+import { parseNetworkCompatibilityProfile } from "../src/network-compatibility.js";
+import { managerArtifactFromNetworkProfile } from "../src/network-manager-artifact.js";
+
+describe("network compatibility profiles", () => {
+  it("rejects cross-network contract principals and unknown fields", () => {
+    expect(() =>
+      parseNetworkCompatibilityProfile({
+        ...MAINNET_4_0_1_COMPATIBILITY,
+        sbtc: {
+          ...MAINNET_4_0_1_COMPATIBILITY.sbtc,
+          tokenContract: "ST000000000000000000002AMW42H.sbtc-token",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseNetworkCompatibilityProfile({ ...MAINNET_4_0_1_COMPATIBILITY, executableAdapter: true }),
+    ).toThrow();
+  });
+
+  it("derives immutable manager artifacts from network compatibility data", () => {
+    expect(managerArtifactFromNetworkProfile(MAINNET_4_0_1_COMPATIBILITY)).toMatchObject({
+      profile: {
+        id: "stacks-4.0.0-mainnet-reference-manager",
+        contracts: { sbtcDeployer: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4" },
+      },
+      sourceSha256: MAINNET_4_0_1_COMPATIBILITY.referenceManager.sourceSha256,
+    });
+    expect(managerArtifactFromNetworkProfile(PRIVATE_1_COMPATIBILITY)).toMatchObject({
+      profile: {
+        id: "hiro-private-1-pox5-c744bf5-reference-manager",
+        network: "testnet",
+        contracts: { sbtcDeployer: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS" },
+      },
+      sourceSha256: PRIVATE_1_COMPATIBILITY.referenceManager.sourceSha256,
+    });
+  });
+});

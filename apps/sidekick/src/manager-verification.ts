@@ -5,17 +5,16 @@ import {
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
 } from "@stx-labs/signer-sidekick-protocol";
-import {
-  KNOWN_MANAGER_ARTIFACTS,
-  knownManagerArtifactsForNetwork,
-} from "@stx-labs/signer-sidekick-protocol/known-managers";
+import { KNOWN_MANAGER_ARTIFACTS } from "@stx-labs/signer-sidekick-protocol/known-managers";
 import {
   canonicalizeClaritySource,
   claritySourceSha256,
   createManagerAdapterFromHashes,
+  type ReviewedManagerArtifact,
   type SourceMatch,
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
 import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
+import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import {
   type ContractInterface,
@@ -28,6 +27,7 @@ import {
   type InstalledManagerProfileStore,
   loadInstalledManagerProfileStore,
 } from "./manager-profile-store.js";
+import { loadNetworkCompatibilityProfiles } from "./network-compatibility-store.js";
 
 export type ManagerRecognitionTier =
   | "reference-built-in"
@@ -80,6 +80,8 @@ export interface ManagerVerificationContext {
   installedProfiles: InstalledManagerProfileStore;
   upstreamSource: string | null;
   upstreamSourceError: string | null;
+  managerArtifacts: readonly ReviewedManagerArtifact[];
+  operatorProvidedManagerProfileIds: ReadonlySet<string>;
   expectedNetworkId?: number;
   sourceCache: Map<string, CachedManagerContract>;
 }
@@ -88,10 +90,16 @@ export async function createManagerVerificationContext(options: {
   trustedProfilesDirectory?: string;
   contractsDirectory: string;
   expectedNetworkId?: number;
+  compatibilityProfilesDirectory?: string;
 }): Promise<ManagerVerificationContext> {
-  const installedProfiles = await loadInstalledManagerProfileStore(
-    options.trustedProfilesDirectory,
-  );
+  const [installedProfiles, compatibilityProfiles] = await Promise.all([
+    loadInstalledManagerProfileStore(options.trustedProfilesDirectory),
+    loadNetworkCompatibilityProfiles({
+      ...(options.compatibilityProfilesDirectory
+        ? { directory: options.compatibilityProfilesDirectory }
+        : {}),
+    }),
+  ]);
   const upstreamPath = resolve(
     options.contractsDirectory,
     "reference-manager/upstream/signer-manager.clar",
@@ -107,10 +115,41 @@ export async function createManagerVerificationContext(options: {
         : "unknown error";
     upstreamSourceError = `Pinned reference-manager source is unavailable (${errorCode})`;
   }
+  const managerArtifactsById = new Map(
+    KNOWN_MANAGER_ARTIFACTS.map((artifact) => [artifact.profile.id, artifact]),
+  );
+  const operatorProvidedManagerProfileIds = new Set<string>();
+  for (const loaded of compatibilityProfiles.profiles) {
+    const artifact = managerArtifactFromNetworkProfile(loaded.profile);
+    const existing = managerArtifactsById.get(artifact.profile.id);
+    if (existing && existing.profile.network !== artifact.profile.network) {
+      // Manager profile IDs are global identifiers. Never let an operator-provided network
+      // profile reinterpret an existing manager ID for the other address namespace.
+      continue;
+    }
+    if (loaded.origin === "operator-provided") {
+      if (!upstreamSource) continue;
+      try {
+        const generated = generateManagerArtifact(upstreamSource, artifact.profile);
+        if (
+          generated.metadata.outputSha256 !== artifact.sourceSha256 ||
+          generated.metadata.canonicalOutputSha256 !== artifact.canonicalSha256
+        ) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      operatorProvidedManagerProfileIds.add(artifact.profile.id);
+    }
+    managerArtifactsById.set(artifact.profile.id, artifact);
+  }
   return {
     installedProfiles,
     upstreamSource,
     upstreamSourceError,
+    managerArtifacts: [...managerArtifactsById.values()],
+    operatorProvidedManagerProfileIds,
     ...(options.expectedNetworkId !== undefined
       ? { expectedNetworkId: options.expectedNetworkId }
       : {}),
@@ -170,6 +209,7 @@ function proveReferenceRender(input: {
   expectedNetworkId?: number;
   upstreamSource: string | null;
   upstreamSourceError: string | null;
+  managerArtifacts: readonly ReviewedManagerArtifact[];
 }): {
   verified: boolean;
   automationEligible: boolean;
@@ -177,7 +217,7 @@ function proveReferenceRender(input: {
   upstreamProfileId: string;
 } {
   const { profile } = input;
-  const upstreamArtifact = KNOWN_MANAGER_ARTIFACTS.find(
+  const upstreamArtifact = input.managerArtifacts.find(
     ({ profile: candidate }) => candidate.id === profile.reference.upstreamProfileId,
   );
   if (!upstreamArtifact) {
@@ -228,7 +268,7 @@ function proveReferenceRender(input: {
     };
   }
 
-  const approvedNetworkArtifact = KNOWN_MANAGER_ARTIFACTS.find(
+  const approvedNetworkArtifact = input.managerArtifacts.find(
     ({ profile: candidate }) =>
       candidate.network === profile.network &&
       candidate.upstream.tag === upstreamArtifact.profile.upstream.tag &&
@@ -238,7 +278,9 @@ function proveReferenceRender(input: {
   );
 
   if (profile.network === "mainnet") {
-    const mainnetArtifact = knownManagerArtifactsForNetwork("mainnet")[0];
+    const mainnetArtifact = input.managerArtifacts.find(
+      ({ profile: candidate }) => candidate.network === "mainnet",
+    );
     if (
       !mainnetArtifact ||
       profile.reference.pox5 !== mainnetArtifact.profile.contracts.pox5 ||
@@ -321,15 +363,19 @@ export function verifyManagerArtifact(
   const networkMatches = isExpectedNetwork(configuredNetwork, principal.network);
   const sourceSha256 = claritySourceSha256(contractSource.source);
   const canonicalSha256 = claritySourceSha256(canonicalizeClaritySource(contractSource.source));
-  const builtInRecognitions = knownManagerArtifactsForNetwork(configuredNetwork).map(
-    (artifact) => ({
+  const managerArtifacts = context?.managerArtifacts ?? KNOWN_MANAGER_ARTIFACTS;
+  const builtInRecognitions = managerArtifacts
+    .filter(({ profile }) => profile.network === configuredNetwork)
+    .map((artifact) => ({
       artifact,
       recognition: createManagerAdapterFromHashes(artifact).recognizeSource(contractSource.source),
-    }),
-  );
+    }));
   const builtIn =
     builtInRecognitions.find(({ recognition }) => recognition.match === "exact") ??
     builtInRecognitions.find(({ recognition }) => recognition.match === "canonical");
+  const operatorProvidedArtifact = Boolean(
+    builtIn && context?.operatorProvidedManagerProfileIds?.has(builtIn.artifact.profile.id),
+  );
   const profileStore = context?.installedProfiles ?? emptyProfileStore();
   const installed = profileStore.profiles.find(
     ({ profile }) =>
@@ -361,6 +407,7 @@ export function verifyManagerArtifact(
             : {}),
           upstreamSource: context?.upstreamSource ?? null,
           upstreamSourceError: context?.upstreamSourceError ?? null,
+          managerArtifacts,
         })
       : null;
   const installedRecognized = Boolean(
@@ -377,7 +424,9 @@ export function verifyManagerArtifact(
   const missingFunctions = missingManagerFunctions(contractInterface);
   const interfaceCompatible = missingFunctions.length === 0;
   const tier: ManagerRecognitionTier = builtIn
-    ? "reference-built-in"
+    ? operatorProvidedArtifact
+      ? "reference-render"
+      : "reference-built-in"
     : installedRecognized
       ? installed?.profile.tier === "reference-render"
         ? "reference-render"
@@ -397,7 +446,9 @@ export function verifyManagerArtifact(
       : !interfaceCompatible
         ? `Manager interface is missing ${missingFunctions.length} required function(s)`
         : builtIn
-          ? `Profile ${builtIn.artifact.profile.id} is not production-approved`
+          ? operatorProvidedArtifact
+            ? "Operator-provided network profiles cannot authorize transaction automation"
+            : `Profile ${builtIn.artifact.profile.id} is not production-approved`
           : (proof?.reason ??
             installedFailureReason ??
             (tier === "custom-observe"
@@ -438,13 +489,21 @@ export function verifyManagerArtifact(
       canonicalSha256,
       recognized,
       tier,
-      origin: builtIn ? "built-in" : installedRecognized ? "operator-installed" : null,
+      origin: builtIn
+        ? operatorProvidedArtifact
+          ? "operator-installed"
+          : "built-in"
+        : installedRecognized
+          ? "operator-installed"
+          : null,
     },
     provenance: builtIn
       ? {
-          status: "built-in",
+          status: operatorProvidedArtifact ? "verified" : "built-in",
           upstreamProfileId: builtIn.artifact.profile.id,
-          reason: builtIn.recognition.reason,
+          reason: operatorProvidedArtifact
+            ? "Manager was independently reproduced from pinned upstream source using operator-provided network data"
+            : builtIn.recognition.reason,
         }
       : proof
         ? {

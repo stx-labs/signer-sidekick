@@ -40,6 +40,7 @@ export interface SidekickConfig {
   databasePath: string;
   expectedNetworkId?: number;
   trustedManagerProfilesDirectory?: string;
+  compatibilityProfilesDirectory?: string;
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -129,6 +130,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
           trustedManagerProfilesDirectory: resolve(
             env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR.trim(),
           ),
+        }
+      : {}),
+    ...(env.SIDEKICK_COMPATIBILITY_PROFILES_DIR?.trim()
+      ? {
+          compatibilityProfilesDirectory: resolve(env.SIDEKICK_COMPATIBILITY_PROFILES_DIR.trim()),
         }
       : {}),
   };

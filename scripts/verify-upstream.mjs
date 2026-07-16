@@ -10,6 +10,10 @@ const sources = new Map([
     "39c33b7e2cf9864e974e15b1d776045fcc46c583092330305293b97d2ae4135c",
   ],
   [
+    "contracts/upstream/stacks-core-4.0.1/pox-5.clar",
+    "ffad35ad181d85832ebd7b998f445204c92d5cd19549166e644fb1f3988fa385",
+  ],
+  [
     "contracts/reference-manager/upstream/signer-manager.clar",
     "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
   ],

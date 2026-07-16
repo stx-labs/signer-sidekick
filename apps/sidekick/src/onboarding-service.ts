@@ -7,10 +7,15 @@ import {
   createFreshActivationPlan,
 } from "./activation-plan.js";
 import {
+  assertManagerRenderPreflight,
   buildManagerDeploymentArtifact,
   type ManagerDeploymentManifest,
 } from "./manager-render.js";
 import { inspectDeployedManager, type ManagerVerificationContext } from "./manager-verification.js";
+import {
+  compatibilityProfileByIdentity,
+  loadNetworkCompatibilityProfiles,
+} from "./network-compatibility-store.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
@@ -320,6 +325,17 @@ export class OnboardingService {
     }
     const { config, node, api } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
+    assertManagerRenderPreflight(config.network, preflight);
+    const compatibilityStore = await loadNetworkCompatibilityProfiles({
+      ...(config.compatibilityProfilesDirectory
+        ? { directory: config.compatibilityProfilesDirectory }
+        : {}),
+    });
+    const compatibilityProfile = compatibilityProfileByIdentity(
+      compatibilityStore,
+      preflight.compatibility.profileId,
+      preflight.compatibility.profileRevision,
+    )?.profile;
     const activationPlan = createFreshActivationPlan({
       network: config.network,
       preflight,
@@ -334,6 +350,7 @@ export class OnboardingService {
       adminPrincipal: freshInput.adminPrincipal,
       contractName: freshInput.contractName,
       contractsDirectory: this.options.contractsDirectory,
+      ...(compatibilityProfile ? { compatibilityProfile } : {}),
     });
     const steps = activationPlan.steps.map((step) =>
       step.id === "render-manager" ? { ...step, status: "complete" as const } : step,

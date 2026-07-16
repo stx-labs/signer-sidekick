@@ -124,10 +124,16 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
   }
   const authId = parseAuthId(options.authId).toString(10);
   const artifacts = knownManagerArtifactsForNetwork(options.network);
-  if (artifacts.length !== 1 || !artifacts[0]) {
-    throw new Error(`Expected exactly one manager profile for ${options.network}`);
+  if (artifacts.length > 1) {
+    throw new Error(`Expected at most one built-in manager profile for ${options.network}`);
   }
-  const profile = artifacts[0].profile;
+  const compatibilityProfileId = options.preflight.compatibility?.managerProfileId;
+  const profileId = compatibilityProfileId ?? artifacts[0]?.profile.id;
+  if (!profileId) {
+    throw new Error(
+      `No reviewed manager artifact is available for ${options.network}; install an operator-provided network compatibility profile`,
+    );
+  }
   const preflightStatus =
     options.preflight.status === "fail"
       ? "blocked"
@@ -148,7 +154,7 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
       id: "render-manager",
       status: "ready",
       title: "Render the pinned manager artifact",
-      detail: `Render profile ${profile.id} and verify its immutable source hash`,
+      detail: `Render profile ${profileId} and verify its immutable source hash`,
       command: [
         "sidekick manager render",
         shellQuote(options.adminPrincipal),
@@ -159,11 +165,10 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     },
     {
       id: "deploy-manager",
-      status: profile.productionApproved ? "pending" : "blocked",
+      status: options.preflight.status === "fail" ? "blocked" : "pending",
       title: "Deploy the manager with the offline admin",
-      detail: profile.productionApproved
-        ? "Sign and submit the rendered Clarity 6 deployment outside Sidekick"
-        : `Profile ${profile.id} is not production-approved; do not deploy it`,
+      detail:
+        "Review the rendered principals and source hashes, then sign and submit the Clarity 6 deployment outside Sidekick",
       command: null,
       requires: ["render-manager"],
     },

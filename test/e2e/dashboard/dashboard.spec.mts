@@ -70,6 +70,7 @@ test("explains the manager trust tier on registration and settings", async ({ pa
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
+  await expect(page.getByText(/revision 1 is built into Sidekick/)).toBeVisible();
 });
 
 test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
@@ -81,7 +82,25 @@ test("recommends verified Hiro chainstate seeding for a fresh node", async ({ pa
     "href",
     "https://docs.hiro.so/en/resources/archive/stacks-blockchain",
   );
+  await expect(page.getByRole("link", { name: /Node setup/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/operate/readme/run-a-node-with-docker",
+  );
+  await expect(page.getByRole("link", { name: /Signer quickstart/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/operate/run-a-signer/signer-quickstart",
+  );
   await expect(page.getByText(/Verify the SHA-256 checksum/)).toBeVisible();
+
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("Network compatibility: matched")).toBeVisible();
+  await expect(
+    page.getByText(/compatible upgrades do not require a Sidekick release/),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: /Signer configuration/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/reference/node-operations/signer-configuration",
+  );
 });
 
 test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {

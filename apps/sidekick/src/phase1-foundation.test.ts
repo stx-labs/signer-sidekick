@@ -68,7 +68,6 @@ describe("Phase 1 fresh and attach foundation", () => {
       managerPrincipal,
       profile: {
         id: "stacks-4.0.0-regtest-reference-manager",
-        productionApproved: false,
       },
       contracts: {
         pox5: "ST000000000000000000002AMW42H.pox-5",
@@ -77,7 +76,7 @@ describe("Phase 1 fresh and attach foundation", () => {
       artifact: {
         sourceSha256: "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
       },
-      deploymentAllowed: false,
+      operatorReviewRequired: true,
     });
 
     const verification = verifyManagerArtifact(
@@ -112,7 +111,7 @@ describe("Phase 1 fresh and attach foundation", () => {
     });
     expect(fresh).toMatchObject({
       path: "fresh",
-      status: "blocked",
+      status: "ready",
       managerPrincipal,
       mode: "observe",
     });
@@ -120,7 +119,7 @@ describe("Phase 1 fresh and attach foundation", () => {
       status: "ready",
     });
     expect(fresh.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
-      status: "blocked",
+      status: "pending",
     });
 
     const attach = createAttachActivationPlan(

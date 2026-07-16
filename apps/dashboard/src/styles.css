@@ -790,3 +790,17 @@
     min-width: 0;
   }
 }
+.stacked-doc-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .stacked-doc-links {
+    align-items: flex-start;
+    white-space: normal;
+  }
+}

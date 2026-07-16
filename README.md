@@ -18,10 +18,13 @@ for unattended mainnet operation.
 - [initial independent plan review](docs/reviews/initial-spec-review.md)
 - [round 2 review and product-owner disposition](docs/reviews/round2-disposition.md)
 - [development setup](docs/operator/development.md)
+- [public testnet validation runbook](docs/operator/testnet-deployment.md)
+- [container deployment and operations](docs/operator/deployment.md)
 - [scale and longitudinal data design](docs/architecture/scaling.md)
 - [guided onboarding and runtime-settings design](docs/architecture/onboarding-and-settings.md)
 - [upstream source provenance](contracts/PROVENANCE.md)
 - [SQLite persistence decision](docs/architecture/decisions/0005-sqlite-persistence.md)
+- [release-independent network compatibility decision](docs/architecture/decisions/0007-release-independent-network-compatibility.md)
 
 ## Current scaffold
 
@@ -80,9 +83,20 @@ and optional deployed manager. `pnpm test:container:external` builds and exercis
 production image end to end, including repeated reconciliation, backup, dashboard, authentication,
 readiness, metrics, and HTTP sync. Both accept `SIDEKICK_NETWORK_ID` for private networks.
 
-See [the development guide](docs/operator/development.md) for the upstream refresh and
-regtest workflows. See [the container deployment guide](docs/operator/deployment.md) for the
-loopback-only Compose profile, upgrade, online backup, and offline restore procedure.
+Compatible stacks-node upgrades do not require a Sidekick release. Sidekick records the node
+version for diagnostics but gates compatibility on live network, PoX-5 source, sBTC contracts, and
+required API capabilities. Strict operator-provided compatibility data can be mounted independently
+of the application image; it can guide read-only/setup behavior but cannot authorize automation.
+Unknown networks degrade to observation, while a contradiction with an installed fingerprint fails
+closed.
+
+See [the development guide](docs/operator/development.md) for the upstream refresh and regtest
+workflows. Production operators should use the mainnet-first
+[container deployment guide](docs/operator/deployment.md) for the loopback-only Compose profile,
+upgrades, online backup, and offline restore. The upcoming activation exercise has a separate
+[public testnet validation runbook](docs/operator/testnet-deployment.md). Node and signer
+installation remain outside Sidekick; the operator guides link to the current official Stacks
+material instead of duplicating release-sensitive network instructions here.
 
 ### Activation CLI
 

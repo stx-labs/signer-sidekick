@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createAttachActivationPlan, createFreshActivationPlan } from "./activation-plan.js";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
-import { loadConfig, redactConfig, sidekickNetworkSchema } from "./config.js";
+import { loadConfig, redactConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
-import { renderManagerDeployment } from "./manager-render.js";
+import { assertManagerRenderPreflight, renderManagerDeployment } from "./manager-render.js";
 import {
   createInstalledManagerProfile,
   parseManagerTrustArguments,
@@ -16,6 +16,10 @@ import {
   inspectDeployedManager,
   type ManagerVerificationContext,
 } from "./manager-verification.js";
+import {
+  compatibilityProfileByIdentity,
+  loadNetworkCompatibilityProfiles,
+} from "./network-compatibility-store.js";
 import { OnboardingService } from "./onboarding-service.js";
 import { createOperatorRecord } from "./operator-record.js";
 import { OperatorService } from "./operator-service.js";
@@ -58,6 +62,9 @@ function verificationContext(config: ReturnType<typeof loadConfig>) {
       : {}),
     ...(config.expectedNetworkId !== undefined
       ? { expectedNetworkId: config.expectedNetworkId }
+      : {}),
+    ...(config.compatibilityProfilesDirectory
+      ? { compatibilityProfilesDirectory: config.compatibilityProfilesDirectory }
       : {}),
   });
   return verificationContextPromise;
@@ -102,6 +109,11 @@ if (command === "serve") {
   const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
   const { config: effectiveConfig, node, api } = runtimeSettings.clients();
   const managerVerification = await verificationContext(config);
+  const networkCompatibility = await loadNetworkCompatibilityProfiles({
+    ...(config.compatibilityProfilesDirectory
+      ? { directory: config.compatibilityProfilesDirectory }
+      : {}),
+  });
   const service = new OperatorService({
     config: effectiveConfig,
     managerPrincipal,
@@ -131,6 +143,12 @@ if (command === "serve") {
       `Installed trusted-manager profile ignored: ${issue.message}`,
     );
   }
+  for (const issue of networkCompatibility.issues) {
+    server.log.warn(
+      { code: issue.code, fileName: issue.fileName },
+      `Network compatibility profile ignored: ${issue.message}`,
+    );
+  }
   try {
     await service.observeManagerTrustState();
   } catch (error) {
@@ -146,7 +164,14 @@ if (command === "serve") {
   console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));
 } else if (command === "doctor") {
   const config = loadConfig(process.env);
-  const managerVerification = await verificationContext(config);
+  const [managerVerification, networkCompatibility] = await Promise.all([
+    verificationContext(config),
+    loadNetworkCompatibilityProfiles({
+      ...(config.compatibilityProfilesDirectory
+        ? { directory: config.compatibilityProfilesDirectory }
+        : {}),
+    }),
+  ]);
   const { store, backupPath } = await openSidekickStore(config.databasePath);
   try {
     console.log(
@@ -159,6 +184,15 @@ if (command === "serve") {
             directory: managerVerification.installedProfiles.directory,
             loaded: managerVerification.installedProfiles.profiles.length,
             issues: managerVerification.installedProfiles.issues,
+          },
+          networkCompatibility: {
+            directory: networkCompatibility.directory,
+            loaded: networkCompatibility.profiles.map(({ profile, origin }) => ({
+              id: profile.id,
+              revision: profile.revision,
+              origin,
+            })),
+            issues: networkCompatibility.issues,
           },
           migrationBackupCreated: backupPath,
         },
@@ -616,18 +650,31 @@ if (command === "serve") {
       "Usage: sidekick manager render <admin-principal> <contract-name> <output-directory>",
     );
   }
-  const network = sidekickNetworkSchema.parse(process.env.SIDEKICK_NETWORK ?? "mainnet");
+  const config = loadConfig(process.env);
+  const { node, api } = clientsFromConfig(config);
+  const preflight = await runOperatorPreflight(config, node, api);
+  assertManagerRenderPreflight(config.network, preflight);
+  const compatibilityStore = await loadNetworkCompatibilityProfiles({
+    ...(config.compatibilityProfilesDirectory
+      ? { directory: config.compatibilityProfilesDirectory }
+      : {}),
+  });
+  const compatibilityProfile = compatibilityProfileByIdentity(
+    compatibilityStore,
+    preflight.compatibility.profileId,
+    preflight.compatibility.profileRevision,
+  )?.profile;
   const contractsDirectory =
     process.env.SIDEKICK_CONTRACTS_DIR ?? resolve(import.meta.dirname, "../../../contracts");
   const rendered = await renderManagerDeployment({
-    network,
+    network: config.network,
     adminPrincipal,
     contractName,
     outputDirectory,
     contractsDirectory,
+    ...(compatibilityProfile ? { compatibilityProfile } : {}),
   });
-  console.log(JSON.stringify(rendered, null, 2));
-  if (!rendered.manifest.deploymentAllowed) process.exitCode = 3;
+  console.log(JSON.stringify({ preflight, ...rendered }, null, 2));
 } else if (command === "signer-grant" && arguments_[0] === "prepare") {
   const [, managerPrincipal, authId, signerConfigPath] = arguments_;
   if (!managerPrincipal || !authId) {

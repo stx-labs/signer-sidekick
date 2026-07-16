@@ -39,7 +39,7 @@ interface OnboardingState {
     sourceFile: string | null;
     manifestFile: string | null;
     manifest: null | {
-      deploymentAllowed: boolean;
+      operatorReviewRequired: true;
       warnings: string[];
       artifact: { sourceSha256: string; canonicalSourceSha256: string };
     };
@@ -138,6 +138,23 @@ export interface Phase3Snapshot {
   };
   preflight: {
     status: "pass" | "warn" | "fail";
+    node: {
+      serverVersion: string | null;
+      version: string | null;
+      commit: string | null;
+    };
+    pox: {
+      activationState: "active" | "scheduled" | "unavailable";
+      blocksUntilActivation: number | null;
+    };
+    compatibility: {
+      status: "matched" | "unrecognized" | "inconsistent";
+      profileId: string | null;
+      profileRevision: number | null;
+      origin: "built-in" | "operator-provided" | null;
+      nodeBuildPreviouslyTested: boolean;
+      reason: string;
+    };
     checks: Array<{ id: string; status: "pass" | "warn" | "fail"; message: string }>;
   };
   runtimeSettings?: RuntimeSettings;
@@ -672,13 +689,29 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                         up. Private networks should use their own network-specific bootstrap.
                       </p>
                     </div>
-                    <a
-                      href="https://docs.hiro.so/en/resources/archive/stacks-blockchain"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Hiro Archive guide <ArrowSquareOut aria-hidden="true" />
-                    </a>
+                    <div className="stacked-doc-links">
+                      <a
+                        href="https://docs.stacks.co/operate/readme/run-a-node-with-docker"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Node setup <ArrowSquareOut aria-hidden="true" />
+                      </a>
+                      <a
+                        href="https://docs.stacks.co/operate/run-a-signer/signer-quickstart"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Signer quickstart <ArrowSquareOut aria-hidden="true" />
+                      </a>
+                      <a
+                        href="https://docs.hiro.so/en/resources/archive/stacks-blockchain"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Hiro Archive guide <ArrowSquareOut aria-hidden="true" />
+                      </a>
+                    </div>
                   </div>
                   <Field
                     label="Manager admin principal"
@@ -1229,6 +1262,56 @@ export function SettingsPage({
                       : "Unavailable"
                 }
               />
+            </div>
+            <div className="archive-guidance" role="note">
+              <div>
+                <strong>
+                  Network compatibility: {data.preflight.compatibility.status.replace("-", " ")}
+                </strong>
+                <p>
+                  {data.preflight.compatibility.reason}.
+                  {data.preflight.compatibility.profileId ? (
+                    <>
+                      {" "}
+                      Profile <span className="mono">{data.preflight.compatibility.profileId}</span>{" "}
+                      revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
+                      {data.preflight.compatibility.origin === "operator-provided"
+                        ? "operator-provided setup data and cannot authorize automation"
+                        : "built into Sidekick"}
+                      .
+                    </>
+                  ) : null}{" "}
+                  Node build{" "}
+                  <span className="mono">
+                    {data.preflight.node.version ?? data.preflight.node.serverVersion ?? "unknown"}
+                    {data.preflight.node.commit ? ` (${data.preflight.node.commit})` : ""}
+                  </span>{" "}
+                  is diagnostic; compatible upgrades do not require a Sidekick release.
+                </p>
+              </div>
+              <div className="stacked-doc-links">
+                <a
+                  href="https://docs.stacks.co/operate/readme/run-a-node-with-docker"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Node setup <ArrowSquareOut aria-hidden="true" />
+                </a>
+                <a
+                  href="https://docs.stacks.co/operate/run-a-signer/signer-quickstart"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Signer quickstart <ArrowSquareOut aria-hidden="true" />
+                </a>
+                <a
+                  href="https://docs.stacks.co/reference/node-operations/signer-configuration"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Signer configuration <ArrowSquareOut aria-hidden="true" />
+                </a>
+              </div>
             </div>
             <Field
               label="Stacks node RPC URL"

@@ -33,6 +33,18 @@
       "types": "./dist/installed-manager-profile.d.ts",
       "default": "./dist/installed-manager-profile.js"
     },
+    "./network-compatibility": {
+      "types": "./dist/network-compatibility.d.ts",
+      "default": "./dist/network-compatibility.js"
+    },
+    "./network-manager-artifact": {
+      "types": "./dist/network-manager-artifact.d.ts",
+      "default": "./dist/network-manager-artifact.js"
+    },
+    "./known-network-compatibility": {
+      "types": "./dist/known-network-compatibility.d.ts",
+      "default": "./dist/known-network-compatibility.js"
+    },
     "./principals": {
       "types": "./dist/principals.d.ts",
       "default": "./dist/principals.js"

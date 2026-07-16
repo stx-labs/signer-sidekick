@@ -9,10 +9,21 @@ import {
 import { z } from "zod";
 
 const nodeInfoSchema = z.object({
+  server_version: z.string().min(1).optional(),
   network_id: z.number().int(),
+  parent_network_id: z.number().int().nonnegative().optional(),
   burn_block_height: z.number().int().nonnegative(),
   stacks_tip_height: z.number().int().nonnegative(),
 });
+
+const contractPrincipalSchema = z.string().refine((value) => {
+  try {
+    parseContractPrincipal(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, "Invalid contract principal");
 
 // stacks-core currently serializes these uSTX quantities as JSON numbers. The known STX supply is
 // below this boundary, but rejecting an unsafe value is essential because JSON.parse would
@@ -29,6 +40,8 @@ const poxInfoSchema = z.object({
   reward_cycle_length: z.number().int().positive(),
   prepare_cycle_length: z.number().int().nonnegative(),
   contract_id: z.string(),
+  pox_5_sbtc_contract: contractPrincipalSchema.optional(),
+  pox_5_sbtc_registry_contract: contractPrincipalSchema.optional(),
   current_cycle: z
     .object({
       id: z.number().int().nonnegative(),

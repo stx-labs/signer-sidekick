@@ -24,7 +24,15 @@ const config: SidekickConfig = {
 const preflight = {
   status: "pass",
   network: "mainnet",
-  node: { networkId: 1, burnBlockHeight: 960_240, stacksTipHeight: 8_600_000 },
+  node: {
+    networkId: 1,
+    parentNetworkId: null,
+    serverVersion: "stacks-node 4.0.1.0.0 (62e03cc, release build, linux [x86_64])",
+    version: "4.0.1.0.0",
+    commit: "62e03cc",
+    burnBlockHeight: 960_240,
+    stacksTipHeight: 8_600_000,
+  },
   api: {
     serverVersion: "stacks-blockchain-api v9.0.0",
     burnBlockHeight: 960_240,
@@ -32,9 +40,26 @@ const preflight = {
     burnBlockLag: 0,
   },
   pox: {
+    activationState: "active",
     pox5Available: true,
     pox5ContractId,
+    scheduledPox5ContractId: pox5ContractId,
+    sourceSha256: "c".repeat(64),
+    sbtcTokenContract: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token",
+    sbtcRegistryContract: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-registry",
     blocksUntilEpoch4: 0,
+  },
+  compatibility: {
+    status: "matched",
+    profileId: "stacks-mainnet-pox5-launch-4.0.1",
+    profileRevision: 1,
+    profileLabel: "Stacks mainnet PoX-5 launch",
+    origin: "built-in",
+    managerProfileId: "stacks-4.0.0-mainnet-reference-manager",
+    managerSourceSha256: "d".repeat(64),
+    nodeBuildPreviouslyTested: false,
+    reason: "Live network fingerprint matches the launch profile",
+    loadIssues: [],
   },
   checks: [{ id: "api-status", status: "pass", message: "API is ready" }],
 } as PreflightResult;
@@ -201,5 +226,36 @@ describe("support bundle", () => {
     const serialized = JSON.stringify(bundle);
     expect(serialized).not.toContain(privateDirectory);
     expect(serialized).toContain("<trusted-manager-profile-directory>");
+  });
+
+  it("redacts compatibility profile paths from load errors", () => {
+    const privateDirectory = "/private/operator/config/network-compatibility";
+    const bundle = createSupportBundle(
+      {
+        ...config,
+        compatibilityProfilesDirectory: privateDirectory,
+      },
+      {
+        ...preflight,
+        compatibility: {
+          ...preflight.compatibility,
+          loadIssues: [
+            {
+              fileName: null,
+              code: "directory-unavailable",
+              message: `Unable to open ${privateDirectory}`,
+            },
+          ],
+        },
+      },
+      manager,
+      registration,
+      setup,
+      operatorRecord,
+      null,
+    );
+    const serialized = JSON.stringify(bundle);
+    expect(serialized).not.toContain(privateDirectory);
+    expect(serialized).toContain("<network-compatibility-configuration>");
   });
 });

@@ -1,15 +1,34 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { PRIVATE_1_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import {
+  canonicalizeClaritySource,
+  claritySourceSha256,
+} from "@stx-labs/signer-sidekick-protocol/manager-adapter";
+import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
+import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   type ContractInterface,
   type StacksNodeClient,
   UpstreamHttpError,
 } from "./chain-clients.js";
-import { inspectManagerOrReportMissing, verifyManagerArtifact } from "./manager-verification.js";
+import {
+  createManagerVerificationContext,
+  inspectManagerOrReportMissing,
+  verifyManagerArtifact,
+} from "./manager-verification.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+  );
+});
 
 function compatibleInterface(): ContractInterface {
   const publicFunctions = [
@@ -88,6 +107,86 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
+  });
+
+  it("recognizes a reference manager derived from operator compatibility data", async () => {
+    const profilesDirectory = await mkdtemp(resolve(tmpdir(), "sidekick-network-profile-"));
+    temporaryDirectories.push(profilesDirectory);
+    const profile = {
+      ...PRIVATE_1_COMPATIBILITY,
+      revision: 2,
+      publishedAt: "2026-07-17T00:00:00.000Z",
+      referenceManager: {
+        ...PRIVATE_1_COMPATIBILITY.referenceManager,
+        profileId: "operator-private-1-reference-manager",
+      },
+    };
+    await writeFile(resolve(profilesDirectory, "private-1.json"), JSON.stringify(profile));
+    const upstreamSource = await readFile(
+      resolve(root, "contracts/reference-manager/upstream/signer-manager.clar"),
+      "utf8",
+    );
+    const artifact = managerArtifactFromNetworkProfile(profile);
+    const generated = generateManagerArtifact(upstreamSource, artifact.profile);
+    const context = await createManagerVerificationContext({
+      contractsDirectory: resolve(root, "contracts"),
+      compatibilityProfilesDirectory: profilesDirectory,
+      expectedNetworkId: 256,
+    });
+    const report = verifyManagerArtifact(
+      "testnet",
+      "ST000000000000000000002AMW42H.signer-manager",
+      { source: generated.source, publish_height: 202 },
+      compatibleInterface(),
+      context,
+    );
+
+    expect(report).toMatchObject({
+      source: {
+        match: "exact",
+        recognized: true,
+        tier: "reference-render",
+        profileId: profile.referenceManager.profileId,
+        origin: "operator-installed",
+      },
+      attachAllowed: true,
+      automationEligible: false,
+      recommendedMode: "observe",
+    });
+  });
+
+  it("does not recognize a manager hash merely asserted by operator network data", async () => {
+    const profilesDirectory = await mkdtemp(resolve(tmpdir(), "sidekick-network-profile-"));
+    temporaryDirectories.push(profilesDirectory);
+    const customSource = "(define-public (custom) (ok true))";
+    const profile = {
+      ...PRIVATE_1_COMPATIBILITY,
+      revision: 2,
+      publishedAt: "2026-07-17T00:00:00.000Z",
+      referenceManager: {
+        ...PRIVATE_1_COMPATIBILITY.referenceManager,
+        profileId: "operator-forged-reference-manager",
+        sourceSha256: claritySourceSha256(customSource),
+        canonicalSha256: claritySourceSha256(canonicalizeClaritySource(customSource)),
+      },
+    };
+    await writeFile(resolve(profilesDirectory, "forged.json"), JSON.stringify(profile));
+    const context = await createManagerVerificationContext({
+      contractsDirectory: resolve(root, "contracts"),
+      compatibilityProfilesDirectory: profilesDirectory,
+      expectedNetworkId: 256,
+    });
+
+    const report = verifyManagerArtifact(
+      "testnet",
+      "ST000000000000000000002AMW42H.signer-manager",
+      { source: customSource, publish_height: 202 },
+      compatibleInterface(),
+      context,
+    );
+
+    expect(report.source).toMatchObject({ recognized: false, tier: "unrecognized" });
+    expect(report.automationEligible).toBe(false);
   });
 
   it("rejects a manager principal from the wrong network", () => {

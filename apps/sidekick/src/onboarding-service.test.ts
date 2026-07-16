@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { MAINNET_4_0_1_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SidekickConfig } from "./config.js";
 import { OnboardingService } from "./onboarding-service.js";
@@ -15,6 +17,10 @@ afterEach(() => {
 async function service() {
   const { store } = await openSidekickStore(":memory:", "2026-07-15T12:00:00.000Z");
   stores.push(store);
+  const pox5Source = await readFile(
+    resolve(import.meta.dirname, "../../../contracts/upstream/stacks-core-4.0.1/pox-5.clar"),
+    "utf8",
+  );
   const config: SidekickConfig = {
     network: "mainnet",
     nodeRpcUrl: "http://127.0.0.1:20443",
@@ -36,6 +42,8 @@ async function service() {
       reward_cycle_length: 2_100,
       prepare_cycle_length: 100,
       contract_id: "SP000000000000000000002Q6VF78.pox-5",
+      pox_5_sbtc_contract: MAINNET_4_0_1_COMPATIBILITY.sbtc.tokenContract,
+      pox_5_sbtc_registry_contract: MAINNET_4_0_1_COMPATIBILITY.sbtc.registryContract,
       current_cycle: {
         id: 141,
         min_threshold_ustx: 120_000_000_000,
@@ -60,6 +68,7 @@ async function service() {
         },
       ],
     }),
+    getContractSource: async () => ({ source: pox5Source, publish_height: 8_500_000 }),
   };
   const api = {
     getNodeInfo: async () => ({

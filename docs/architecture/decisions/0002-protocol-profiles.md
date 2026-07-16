@@ -15,5 +15,7 @@ principals differ from the profile.
 
 ## Consequences
 
-Supporting a later stacks-core release or manager source requires a new profile. Sidekick will
-not silently reinterpret an existing deployment through a newer ABI or source file.
+Supporting a later stacks-core release or manager source requires a new profile. It does not
+necessarily require a Sidekick release: ADR 0007 allows strict, operator-provided network
+compatibility data to be installed independently. Sidekick will not silently reinterpret an existing
+deployment through a newer ABI or source file.

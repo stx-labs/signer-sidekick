@@ -113,7 +113,14 @@ export const snapshot = {
   runtimeSettings,
   preflight: {
     status: "pass",
-    node: { networkId: 256, burnBlockHeight: 9_240, stacksTipHeight: 14_200 },
+    node: {
+      networkId: 256,
+      serverVersion: "stacks-node 4.0.0.0.0 (c744bf5, release build, linux [x86_64])",
+      version: "4.0.0.0.0",
+      commit: "c744bf5",
+      burnBlockHeight: 9_240,
+      stacksTipHeight: 14_200,
+    },
     api: {
       serverVersion: "stacks-blockchain-api v9.0.1",
       burnBlockHeight: 9_240,
@@ -122,8 +129,18 @@ export const snapshot = {
     },
     pox: {
       rewardCycleId: 139,
+      activationState: "active",
+      blocksUntilActivation: 0,
       pox5Available: true,
       pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+    },
+    compatibility: {
+      status: "matched",
+      profileId: "hiro-private-1-pox5-c744bf5",
+      profileRevision: 1,
+      origin: "built-in",
+      nodeBuildPreviouslyTested: true,
+      reason: "Live network fingerprint matches hiro-private-1-pox5-c744bf5",
     },
     cycle: {
       currentId: 139,

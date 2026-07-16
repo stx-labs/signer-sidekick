@@ -12,6 +12,11 @@ const sources = [
     sha256: "39c33b7e2cf9864e974e15b1d776045fcc46c583092330305293b97d2ae4135c",
   },
   {
+    path: "contracts/upstream/stacks-core-4.0.1/pox-5.clar",
+    url: "https://raw.githubusercontent.com/stacks-network/stacks-core/4.0.1/stackslib/src/chainstate/stacks/boot/pox-5.clar",
+    sha256: "ffad35ad181d85832ebd7b998f445204c92d5cd19549166e644fb1f3988fa385",
+  },
+  {
     path: "contracts/reference-manager/upstream/signer-manager.clar",
     url: "https://raw.githubusercontent.com/stacks-network/stacks-core/4.0.0/contrib/core-contract-tests/contracts/signer-manager.clar",
     sha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",

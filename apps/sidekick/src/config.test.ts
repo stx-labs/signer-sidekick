@@ -66,6 +66,16 @@ describe("Sidekick configuration", () => {
     );
   });
 
+  it("resolves the operator-provided network compatibility directory", () => {
+    const config = loadConfig({
+      STACKS_NODE_RPC_URL: "http://node:20443",
+      SIDEKICK_COMPATIBILITY_PROFILES_DIR: "./network-compatibility",
+    });
+    expect(config).toMatchObject({
+      compatibilityProfilesDirectory: expect.stringMatching(/network-compatibility$/),
+    });
+  });
+
   it.each([
     "-1",
     "1.5",

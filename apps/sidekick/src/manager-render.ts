@@ -6,8 +6,11 @@ import {
   claritySourceSha256,
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
 import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
+import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
+import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import type { SidekickNetwork } from "./config.js";
+import type { PreflightResult } from "./preflight.js";
 
 export interface ManagerDeploymentManifest {
   schemaVersion: 1;
@@ -18,7 +21,8 @@ export interface ManagerDeploymentManifest {
     id: string;
     upstreamTag: string;
     upstreamCommit: string;
-    productionApproved: boolean;
+    compatibilityProfileId: string | null;
+    compatibilityProfileRevision: number | null;
   };
   contracts: {
     pox5: string;
@@ -41,7 +45,7 @@ export interface ManagerDeploymentManifest {
     postConditionMode: "deny";
     signingAuthority: "external-offline-admin";
   };
-  deploymentAllowed: boolean;
+  operatorReviewRequired: true;
   warnings: string[];
 }
 
@@ -51,6 +55,7 @@ export interface RenderManagerOptions {
   contractName: string;
   contractsDirectory: string;
   outputDirectory: string;
+  compatibilityProfile?: NetworkCompatibilityProfile;
 }
 
 export interface RenderedManagerDeployment {
@@ -64,10 +69,37 @@ export interface ManagerDeploymentArtifact {
   source: string;
 }
 
+export function assertManagerRenderPreflight(
+  network: SidekickNetwork,
+  preflight: Pick<PreflightResult, "status"> & {
+    compatibility: Pick<PreflightResult["compatibility"], "status">;
+  },
+): void {
+  if (preflight.status === "fail") {
+    throw new Error("Manager rendering requires a successful connected preflight");
+  }
+  if (
+    (network === "mainnet" || network === "testnet") &&
+    preflight.compatibility.status !== "matched"
+  ) {
+    throw new Error(
+      "Manager rendering on a public network requires a matched network compatibility profile",
+    );
+  }
+}
+
 export async function buildManagerDeploymentArtifact(
   options: Omit<RenderManagerOptions, "outputDirectory">,
 ): Promise<ManagerDeploymentArtifact> {
-  const artifacts = knownManagerArtifactsForNetwork(options.network);
+  if (
+    options.compatibilityProfile?.network !== undefined &&
+    options.compatibilityProfile.network !== options.network
+  ) {
+    throw new Error("Network compatibility profile does not match the selected network");
+  }
+  const artifacts = options.compatibilityProfile
+    ? [managerArtifactFromNetworkProfile(options.compatibilityProfile)]
+    : knownManagerArtifactsForNetwork(options.network);
   if (artifacts.length !== 1) {
     throw new Error(
       `Expected exactly one reviewed manager profile for ${options.network}; found ${artifacts.length}`,
@@ -98,9 +130,9 @@ export async function buildManagerDeploymentArtifact(
   }
 
   const sourceFile = `${options.contractName}.clar`;
-  const warnings = reviewed.profile.productionApproved
-    ? []
-    : [`Profile ${reviewed.profile.id} is not production-approved; do not deploy this artifact`];
+  const warnings = [
+    "Review the network, contract principals, and source hashes before signing externally; Sidekick does not sign or broadcast this deployment",
+  ];
   const manifest: ManagerDeploymentManifest = {
     schemaVersion: 1,
     network: options.network,
@@ -110,7 +142,8 @@ export async function buildManagerDeploymentArtifact(
       id: reviewed.profile.id,
       upstreamTag: reviewed.profile.upstream.tag,
       upstreamCommit: reviewed.profile.upstream.commit,
-      productionApproved: reviewed.profile.productionApproved,
+      compatibilityProfileId: options.compatibilityProfile?.id ?? null,
+      compatibilityProfileRevision: options.compatibilityProfile?.revision ?? null,
     },
     contracts: {
       pox5: reviewed.profile.contracts.pox5,
@@ -130,7 +163,7 @@ export async function buildManagerDeploymentArtifact(
       postConditionMode: "deny",
       signingAuthority: "external-offline-admin",
     },
-    deploymentAllowed: reviewed.profile.productionApproved,
+    operatorReviewRequired: true,
     warnings,
   };
 

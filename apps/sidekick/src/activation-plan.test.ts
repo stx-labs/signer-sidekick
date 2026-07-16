@@ -34,7 +34,7 @@ describe("activation plans", () => {
       path: "fresh",
       managerPrincipal,
       mode: "observe",
-      status: "blocked",
+      status: "ready",
       safety: {
         deploysContract: false,
         readsSignerConfig: false,
@@ -43,7 +43,7 @@ describe("activation plans", () => {
       },
     });
     expect(result.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
-      status: "blocked",
+      status: "pending",
       command: null,
     });
     expect(result.steps.find(({ id }) => id === "prepare-signer-grant")?.command).toContain(" 42 ");
@@ -73,6 +73,55 @@ describe("activation plans", () => {
     expect(result.steps.find(({ id }) => id === "prepare-signer-grant")).toMatchObject({
       status: "blocked",
       command: null,
+    });
+  });
+
+  it("uses an operator-provided compatibility artifact without a Sidekick release", () => {
+    const result = createFreshActivationPlan({
+      network: "testnet",
+      preflight: {
+        ...preflight,
+        network: "testnet",
+        pox: { ...preflight.pox, pox5ContractId: "ST000000000000000000002AMW42H.pox-5" },
+        compatibility: {
+          managerProfileId: "public-testnet-pox5-reference-manager",
+        },
+      } as PreflightResult,
+      adminPrincipal: "ST000000000000000000002AMW42H",
+      contractName: "signer-manager",
+      outputDirectory: "/tmp/manager",
+      authId: "1",
+    });
+
+    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toContain(
+      "public-testnet-pox5-reference-manager",
+    );
+    expect(result.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  it("lets an operator-provided mainnet profile supersede the compiled manager artifact", () => {
+    const result = createFreshActivationPlan({
+      network: "mainnet",
+      preflight: {
+        ...preflight,
+        compatibility: {
+          ...preflight.compatibility,
+          managerProfileId: "operator-mainnet-upgrade-reference-manager",
+        },
+      },
+      adminPrincipal: "SP000000000000000000002Q6VF78",
+      contractName: "signer-manager",
+      outputDirectory: "/tmp/manager",
+      authId: "1",
+    });
+
+    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toContain(
+      "operator-mainnet-upgrade-reference-manager",
+    );
+    expect(result.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
+      status: "pending",
     });
   });
 

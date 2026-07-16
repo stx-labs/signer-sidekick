@@ -33,8 +33,9 @@ Docker or a running Sidekick backend.
 
 ## Upstream contract sources
 
-The committed PoX-5 and signer-manager sources are pinned to stacks-core 4.0.0. To re-fetch
-the files from their canonical URLs and verify their hashes:
+The committed PoX-5 sources retain both the stacks-core 4.0.0 protocol-test baseline and the 4.0.1
+launch release. The unchanged reference-manager source remains pinned to 4.0.0. To re-fetch the
+files from their canonical URLs and verify their hashes:
 
 ```sh
 pnpm protocol:vendor
@@ -42,7 +43,9 @@ pnpm protocol:verify
 ```
 
 Changing a tag, commit, URL, expected hash, or contract principal requires a new protocol
-profile and an architecture review. Do not update a pinned source in place.
+profile and an architecture review. Do not update a pinned source in place. A compatible,
+operator-provided network profile can be installed independently of the Sidekick application release;
+stacks-node version strings are recorded for evidence rather than hardcoded as an allowlist.
 
 ## Generate the mainnet manager artifact
 
@@ -301,6 +304,7 @@ overwritten.
 pnpm --filter @stx-labs/signer-sidekick build
 
 SIDEKICK_NETWORK=mainnet \
+STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
 pnpm --filter @stx-labs/signer-sidekick cli -- \
   manager render \
   SP1234OFFLINEADMIN \
@@ -308,12 +312,12 @@ pnpm --filter @stx-labs/signer-sidekick cli -- \
   ./manager-deployment
 ```
 
-The manifest contains the expected manager principal, source hashes, substituted PoX-5 and sBTC
-principals, Clarity version, and external-signing instructions. It never asks for or stores an
-admin key. The current mainnet profile is not production-approved, so the command writes a review
-artifact, sets `deploymentAllowed` to `false`, emits a warning, and exits with status 3. That gate
-must be changed only by reviewing and updating the pinned profile—not by a CLI override. Stacks
-core's own PoX-5 test configuration declares both PoX-5 and the reference signer manager as
+Manager rendering first runs connected preflight. Public mainnet or testnet rendering requires a
+matched network-compatibility profile and refuses a failed or inconsistent network. The manifest
+contains the expected manager principal, source hashes, substituted PoX-5 and sBTC principals,
+Clarity version, and external-signing instructions. It never asks for or stores an admin key. Every
+artifact is marked `operatorReviewRequired`; Sidekick neither approves nor submits the deployment.
+Stacks core's own PoX-5 test configuration declares both PoX-5 and the reference signer manager as
 [Clarity 6 contracts in Epoch 4.0](https://github.com/stacks-network/stacks-core/blob/4.0.0/contrib/core-contract-tests/Clarinet.toml#L63-L76).
 
 ## Signer grant ceremony
