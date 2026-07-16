@@ -91,6 +91,7 @@ async function verifyPageItem(
         stakerPrincipal: item.staker,
         hasStx,
         hasBtc,
+        active: true,
         stxNodeVerified: null,
         position: null,
       },
@@ -111,6 +112,7 @@ async function verifyPageItem(
         stakerPrincipal: item.staker,
         hasStx,
         hasBtc,
+        active: true,
         stxNodeVerified: false,
         position: null,
       },
@@ -125,7 +127,21 @@ async function verifyPageItem(
     };
   }
   if (position.numCycles < 1n) {
-    throw new Error(`PoX-5 returned invalid num-cycles ${position.numCycles} for ${item.staker}`);
+    // PoX-5 retains a staker-info tuple after `unstake`, but clears num-cycles
+    // to zero. The signer API can continue returning that historical roster
+    // entry, so treat it as a node-verified absence of an active position
+    // instead of failing the entire reconciliation run.
+    return {
+      item: {
+        stakerPrincipal: item.staker,
+        hasStx,
+        hasBtc,
+        active: false,
+        stxNodeVerified: false,
+        position: null,
+      },
+      discrepancy: null,
+    };
   }
   const unlockCycle = position.firstRewardCycle + position.numCycles;
   const unlockBurnHeight = decodeUInt(
@@ -184,6 +200,7 @@ async function verifyPageItem(
           stakerPrincipal: item.staker,
           hasStx,
           hasBtc,
+          active: true,
           stxNodeVerified: false,
           position: null,
         },
@@ -211,6 +228,7 @@ async function verifyPageItem(
       stakerPrincipal: item.staker,
       hasStx,
       hasBtc,
+      active: true,
       stxNodeVerified: true,
       position: {
         signerPrincipal: position.signer,

@@ -1,0 +1,5 @@
+.runtime/
+deployments/
+artifacts/
+playwright-report/
+test-results/

@@ -70,8 +70,8 @@ function page(
     offset: 0,
     total: 2,
     cursor,
-    next_cursor: nextCursor,
-    prev_cursor: null,
+    next_cursor: null,
+    prev_cursor: nextCursor,
     results: [
       {
         event_index: eventIndex,

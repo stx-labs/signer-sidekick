@@ -26,6 +26,14 @@ const containerName = `signer-sidekick-smoke-${suffix}`;
 const authToken = "sidekick-container-smoke-token-0001";
 const managerPrincipal = process.env.SIDEKICK_MANAGER_PRINCIPAL.trim();
 
+function dockerReachableUrl(value) {
+  const url = new URL(value.trim());
+  if (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1") {
+    url.hostname = "host.docker.internal";
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
 function runDocker(args, options = {}) {
   const allowedExitCodes = options.allowedExitCodes ?? [0];
   const result = spawnSync("docker", args, {
@@ -60,9 +68,9 @@ const runtimeEnvironment = [
   "--env",
   `SIDEKICK_NETWORK=${process.env.SIDEKICK_NETWORK.trim()}`,
   "--env",
-  `STACKS_NODE_RPC_URL=${process.env.STACKS_NODE_RPC_URL.trim()}`,
+  `STACKS_NODE_RPC_URL=${dockerReachableUrl(process.env.STACKS_NODE_RPC_URL)}`,
   "--env",
-  `STACKS_API_URL=${process.env.STACKS_API_URL.trim()}`,
+  `STACKS_API_URL=${dockerReachableUrl(process.env.STACKS_API_URL)}`,
   "--env",
   `SIDEKICK_MANAGER_PRINCIPAL=${managerPrincipal}`,
   "--env",
@@ -74,11 +82,15 @@ for (const name of [
   "STACKS_API_KEY_HEADER",
   "SIDEKICK_FORECAST_HORIZON_CYCLES",
   "SIDEKICK_MAX_API_BURN_BLOCK_LAG",
+  "SIDEKICK_STAKER_PAGE_LIMIT",
+  "SIDEKICK_EVENT_PAGE_LIMIT",
 ]) {
   if (process.env[name]?.trim()) runtimeEnvironment.push("--env", name);
 }
 
 const hardenedRuntime = [
+  "--add-host",
+  "host.docker.internal:host-gateway",
   "--read-only",
   "--tmpfs",
   "/tmp:size=64m,mode=1777",
@@ -189,6 +201,27 @@ try {
 
   const backup = runCli(["database", "backup", "/data/smoke-backup.sqlite"]);
   invariant(backup.quickCheck === "ok", "SQLite backup quick_check failed");
+  const restoredDoctor = parseJson(
+    runDocker([
+      "run",
+      "--rm",
+      ...hardenedRuntime,
+      "--env",
+      "SIDEKICK_DATABASE_PATH=/data/smoke-backup.sqlite",
+      image,
+      "doctor",
+    ]),
+    "restored database doctor",
+  );
+  invariant(restoredDoctor.status === "ok", "Restored database doctor failed");
+  invariant(
+    restoredDoctor.database.schemaVersion === doctor.database.schemaVersion,
+    "Restored database schema version changed",
+  );
+  invariant(
+    restoredDoctor.database.foreignKeys === true,
+    "Restored database disabled foreign keys",
+  );
 
   runDocker(["run", "--detach", "--name", containerName, ...hardenedRuntime, image, "serve"]);
   containerCreated = true;
@@ -260,6 +293,7 @@ console.log(JSON.stringify({
         forecast: pool.forecast.status,
         rewards: rewards.rewards.status,
         backup: backup.quickCheck,
+        restore: restoredDoctor.status,
         http,
       },
       null,

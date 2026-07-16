@@ -4,7 +4,7 @@ import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
-import { inspectDeployedManager } from "./manager-verification.js";
+import { inspectDeployedManager, inspectManagerOrReportMissing } from "./manager-verification.js";
 import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
@@ -326,6 +326,7 @@ export class OperatorService {
       burnBlockHeight: preflight.node.burnBlockHeight,
       stacksTipHeight: preflight.node.stacksTipHeight,
       currentRewardCycle: preflight.cycle.currentId,
+      pageLimit: config.stakerPageLimit,
     });
     const events = await syncManagerEvents({
       store,
@@ -334,6 +335,7 @@ export class OperatorService {
       chainId: preflight.node.networkId,
       managerPrincipal,
       observedAt,
+      pageLimit: config.eventPageLimit,
     });
     this.cached = null;
     return { observedAt, stakers, events };
@@ -346,7 +348,7 @@ export class OperatorService {
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const [preflight, manager] = await Promise.all([
       runOperatorPreflight(config, node, api),
-      inspectDeployedManager(node, config.network, managerPrincipal),
+      inspectManagerOrReportMissing(node, config.network, managerPrincipal),
     ]);
     const pox5ContractId = preflight.pox.pox5ContractId;
     const registration =

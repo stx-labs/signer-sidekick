@@ -16,9 +16,20 @@ release happens to be installed globally.
 pnpm install
 pnpm protocol:verify
 pnpm check
-pnpm test
+pnpm test:coverage
+pnpm test:e2e:dashboard
 pnpm build
 ```
+
+Install the Playwright Chromium runtime once before running the browser suite:
+
+```sh
+pnpm exec playwright install chromium
+```
+
+The coverage lane enforces the current backend/protocol floor and emits LCOV plus JSON summaries.
+The browser lane uses generated large-pool fixtures at 1440px, 768px, and 390px; it does not need
+Docker or a running Sidekick backend.
 
 ## Upstream contract sources
 
@@ -66,6 +77,65 @@ rejections, and revoked-grant rejection. It also asserts representative print-ev
 against the actual Clarity 6 PoX-5 and manager sources.
 The deterministic development mnemonics under `test/integration/regtest/settings/` are public test
 fixtures and must never be used on any live network.
+
+## Released PoX-5 Devnet and interactive workbench
+
+The opt-in Devnet harness is the integration ceiling above the in-memory lifecycle tests. It
+starts digest-pinned Bitcoin regtest, Stacks 4.0.0 node and real signer, API v9, Postgres, and the
+hardened production Sidekick image. It then deploys the exact generated manager artifact, consumes
+the public JSON produced by the released signer command, registers the manager, creates and changes
+STX-only positions, crosses a reward-cycle boundary, and proves reconciliation replay, clean attach,
+restart recovery, pagination, browser navigation, API/node outages, rate limiting, and indexer lag.
+
+Recommended capacity is 4 CPU cores, 16 GB RAM, 25 GB free disk, and Docker with Compose support.
+The fixture-backed browser and ordinary test lanes remain suitable for smaller machines. First run
+time is dominated by downloading roughly 5–10 GB of pinned container layers and building Sidekick;
+later runs reuse the Docker cache.
+
+```sh
+pnpm e2e:devnet:doctor
+pnpm e2e:devnet:up
+pnpm e2e:devnet:status
+pnpm e2e:devnet:scenario active-pool
+pnpm e2e:devnet:scenario failure-injection
+pnpm e2e:devnet:mine 1
+pnpm e2e:devnet:down
+```
+
+`up` leaves a loopback dashboard at `http://127.0.0.1:3998` so an operator can click through the
+same instance the scenarios use. Runtime credentials are stored mode `0600` under the ignored
+`test/e2e/devnet/.runtime/` directory. Use `pnpm e2e:devnet:reset` for a clean workbench.
+The automated scenarios wait for the normal burn cadence. Use `e2e:devnet:mine` only for
+interactive exploration; rapidly mining through a prepare phase can outrun the signer and produce
+an invalid PoX anchor that would not represent normal network operation.
+
+The Devnet manager profile is intentionally marked `productionApproved` only for the isolated
+Devnet network so this harness exercises Sidekick's real automation-compatibility gate. Mainnet and
+regtest remain unapproved. The node/API failure proxies listen on all host interfaces because
+Docker Desktop and Linux `host-gateway` containers cannot portably reach a host-loopback listener;
+their control endpoint remains loopback-only. Run this public-fixture harness only on a trusted
+developer machine or firewall ports `13999` and `21443` while it is active.
+
+The one-command validation lane is disposable and writes a versioned `result.json`, scrubbed
+per-component logs, sampled per-container CPU/memory/disk-I/O peaks, JUnit output, and Playwright
+failure evidence under ignored `test/e2e/devnet/artifacts/` and report directories:
+
+```sh
+pnpm e2e:devnet:test
+pnpm e2e:devnet:test -- --keep-on-failure
+```
+
+Every released-binary run starts from genesis. Clarinet 3.21.1's embedded snapshot was produced
+with stacks-core 3.4 and cannot safely seed the pinned stacks-core 4.0 environment; using a clean
+chain also prevents cached state from concealing protocol-deployment drift. The weekly scheduled
+CI lane and manual workbench therefore exercise the same trustworthy startup path. The machine-readable
+`test/e2e/devnet/versions.lock.json` pins Clarinet archives, source commits, manager hashes, and
+container image digests. `pnpm devnet:verify` re-resolves remote digests; pull-request CI uses the
+offline verifier to remain deterministic.
+
+All accounts, mnemonics, and keys in this harness are public isolated-network fixtures. They never
+enter the Sidekick environment, database, browser API, or retained evidence. Do not reuse them on
+testnet, mainnet, or any network holding value.
 
 ## External regtest/devnet smoke harness
 

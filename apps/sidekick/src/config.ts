@@ -35,6 +35,8 @@ export interface SidekickConfig {
   apiKeyHeader: string;
   maxApiBurnBlockLag: number;
   forecastHorizonCycles: number;
+  stakerPageLimit: number;
+  eventPageLimit: number;
   databasePath: string;
   expectedNetworkId?: number;
 }
@@ -91,6 +93,20 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
   const expectedNetworkId = env.SIDEKICK_NETWORK_ID?.trim()
     ? z.coerce.number().int().nonnegative().max(0xffff_ffff).parse(env.SIDEKICK_NETWORK_ID)
     : undefined;
+  const stakerPageLimit = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(200)
+    .parse(env.SIDEKICK_STAKER_PAGE_LIMIT);
+  const eventPageLimit = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(100)
+    .parse(env.SIDEKICK_EVENT_PAGE_LIMIT);
 
   return {
     network,
@@ -100,6 +116,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     apiKeyHeader: env.STACKS_API_KEY_HEADER ?? "x-api-key",
     maxApiBurnBlockLag,
     forecastHorizonCycles,
+    stakerPageLimit,
+    eventPageLimit,
     databasePath:
       env.SIDEKICK_DATABASE_PATH === ":memory:"
         ? ":memory:"

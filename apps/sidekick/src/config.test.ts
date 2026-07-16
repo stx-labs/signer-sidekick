@@ -16,6 +16,8 @@ describe("Sidekick configuration", () => {
       apiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
       forecastHorizonCycles: 6,
+      stakerPageLimit: 200,
+      eventPageLimit: 100,
       databasePath: expect.stringMatching(/data\/sidekick\.sqlite$/),
     });
     expect(redactConfig(config)).not.toHaveProperty("apiKey");
@@ -90,6 +92,27 @@ describe("Sidekick configuration", () => {
       loadConfig({
         STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
         SIDEKICK_FORECAST_HORIZON_CYCLES: "97",
+      }),
+    ).toThrow();
+  });
+
+  it("allows bounded pagination sizes for deterministic reconciliation testing", () => {
+    const config = loadConfig({
+      STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+      SIDEKICK_STAKER_PAGE_LIMIT: "2",
+      SIDEKICK_EVENT_PAGE_LIMIT: "1",
+    });
+    expect(config).toMatchObject({ stakerPageLimit: 2, eventPageLimit: 1 });
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        SIDEKICK_STAKER_PAGE_LIMIT: "201",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        SIDEKICK_EVENT_PAGE_LIMIT: "0",
       }),
     ).toThrow();
   });

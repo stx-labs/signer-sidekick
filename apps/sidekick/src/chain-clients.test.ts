@@ -83,7 +83,7 @@ describe("Stacks API client", () => {
           offset: 0,
           total: 1,
           next_cursor: null,
-          prev_cursor: null,
+          prev_cursor: "8599999:2147483647:3:1",
           cursor,
           results: [
             {
@@ -105,6 +105,7 @@ describe("Stacks API client", () => {
 
     await expect(client.getSmartContractLogs(manager, cursor)).resolves.toMatchObject({
       cursor,
+      prev_cursor: "8599999:2147483647:3:1",
       results: [{ tx_id: txId }],
     });
     expect(fetchImpl).toHaveBeenCalledWith(

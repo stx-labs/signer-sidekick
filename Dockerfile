@@ -33,7 +33,8 @@ ENV NODE_ENV=production \
   SIDEKICK_HTTP_HOST=0.0.0.0 \
   SIDEKICK_HTTP_PORT=3998 \
   SIDEKICK_DATABASE_PATH=/data/sidekick.sqlite \
-  SIDEKICK_STATIC_DIRECTORY=/app/dashboard
+  SIDEKICK_STATIC_DIRECTORY=/app/dashboard \
+  SIDEKICK_CONTRACTS_DIR=/app/contracts
 
 RUN groupadd --system --gid 10001 sidekick \
   && useradd --system --uid 10001 --gid sidekick --home-dir /app --shell /usr/sbin/nologin sidekick \
@@ -42,6 +43,7 @@ RUN groupadd --system --gid 10001 sidekick \
 
 COPY --from=build --chown=sidekick:sidekick /opt/sidekick /app
 COPY --from=build --chown=sidekick:sidekick /workspace/apps/dashboard/dist /app/dashboard
+COPY --from=build --chown=sidekick:sidekick /workspace/contracts /app/contracts
 COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /usr/share/doc/signer-sidekick/
 COPY --from=build /workspace/design/fonts/OFL-1.1.txt /usr/share/doc/signer-sidekick/OFL-1.1.txt
 

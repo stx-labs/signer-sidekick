@@ -26,6 +26,34 @@ export const MAINNET_REFERENCE_MANAGER = {
   canonicalSha256: "7fd58a7591ff0ae1643eb7e71ea2867385bcac237a3ea819f52301310c0d2e27",
 } as const satisfies ReviewedManagerArtifact;
 
+const devnetProfile = {
+  id: "stacks-4.0.0-devnet-reference-manager",
+  network: "devnet",
+  upstream: {
+    tag: "4.0.0",
+    commit: "5595f08a244362cefc316f95b398510a2b8cb791",
+    sourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+  },
+  contracts: {
+    pox5: "ST000000000000000000002AMW42H.pox-5",
+    sbtcDeployer: "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM",
+  },
+  expectedReplacements: {
+    pox5: 8,
+    sbtcDeployer: 13,
+  },
+  // This approval is intentionally devnet-only: the released-environment harness must exercise
+  // the exact automation compatibility gate used by operators. Mainnet remains unapproved until
+  // the reviewed launch artifact is explicitly promoted.
+  productionApproved: true,
+} as const satisfies ManagerProfile;
+
+export const DEVNET_REFERENCE_MANAGER = {
+  profile: devnetProfile,
+  sourceSha256: "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
+  canonicalSha256: "3512163c9685e8d127322744655926d7e04d42afe5be13523637d7dc1ac478d8",
+} as const satisfies ReviewedManagerArtifact;
+
 const regtestProfile = {
   id: "stacks-4.0.0-regtest-reference-manager",
   network: "regtest",
@@ -53,6 +81,7 @@ export const REGTEST_REFERENCE_MANAGER = {
 
 export const KNOWN_MANAGER_ARTIFACTS: readonly ReviewedManagerArtifact[] = [
   MAINNET_REFERENCE_MANAGER,
+  DEVNET_REFERENCE_MANAGER,
   REGTEST_REFERENCE_MANAGER,
 ];
 

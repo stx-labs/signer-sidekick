@@ -126,7 +126,9 @@ export async function syncManagerEvents(
       cursor,
       pageLimit,
     );
-    if (page.next_cursor !== null && page.next_cursor === cursor) {
+    // The API returns logs newest-first. `prev_cursor` advances toward older events;
+    // `next_cursor` points back toward newer events and is null on the first page.
+    if (page.prev_cursor !== null && page.prev_cursor === cursor) {
       throw new Error(`Manager event API did not advance cursor ${cursor}`);
     }
     const knownEvents = page.results.map((event) =>
@@ -155,7 +157,7 @@ export async function syncManagerEvents(
         scannedBoundaryBlockHeight = Math.min(
           ...storedEvents.map(({ blockHeight }) => blockHeight),
         );
-        scannedBoundaryIsComplete = page.results.length < pageLimit || page.next_cursor === null;
+        scannedBoundaryIsComplete = page.results.length < pageLimit || page.prev_cursor === null;
       }
       pagesProcessed += 1;
       eventsProcessed += page.results.length;
@@ -205,7 +207,7 @@ export async function syncManagerEvents(
     options.store.putChainEventPage(storedEvents, {
       sourceId: options.sourceId,
       stream,
-      cursor: page.next_cursor,
+      cursor: page.prev_cursor,
       lastBlockHeight:
         storedEvents.length === 0
           ? (checkpoint?.lastBlockHeight ?? null)
@@ -223,12 +225,12 @@ export async function syncManagerEvents(
         scannedBoundaryBlockHeight === null
           ? pageBoundary
           : Math.min(scannedBoundaryBlockHeight, pageBoundary);
-      scannedBoundaryIsComplete = page.results.length < pageLimit || page.next_cursor === null;
+      scannedBoundaryIsComplete = page.results.length < pageLimit || page.prev_cursor === null;
     }
     pagesProcessed += 1;
     eventsProcessed += page.results.length;
-    if (page.next_cursor === null) break;
-    cursor = page.next_cursor;
+    if (page.prev_cursor === null) break;
+    cursor = page.prev_cursor;
   }
 
   // Reconcile only after the whole incremental window has been observed. Reconciling each page

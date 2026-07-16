@@ -1,0 +1,14 @@
+{
+  "profileId": "stacks-4.0.0-devnet-reference-manager",
+  "network": "devnet",
+  "upstreamTag": "4.0.0",
+  "upstreamCommit": "5595f08a244362cefc316f95b398510a2b8cb791",
+  "sourceSha256": "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+  "outputSha256": "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
+  "canonicalOutputSha256": "3512163c9685e8d127322744655926d7e04d42afe5be13523637d7dc1ac478d8",
+  "replacements": {
+    "pox5": 8,
+    "sbtcDeployer": 13
+  },
+  "productionApproved": true
+}

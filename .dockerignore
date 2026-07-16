@@ -9,5 +9,9 @@ coverage
 data
 backups
 tmp
+**/.runtime
+**/artifacts
+**/playwright-report
+**/test-results
 test-results
 playwright-report

@@ -634,6 +634,7 @@ const signerStakerPageItemSchema = z
     stakerPrincipal: principalSchema,
     hasStx: z.boolean(),
     hasBtc: z.boolean(),
+    active: z.boolean(),
     stxNodeVerified: z.boolean().nullable(),
     position: signerStakerPositionInputSchema.nullable(),
   })
@@ -2202,12 +2203,12 @@ export class SidekickStore {
       `INSERT INTO stakers (
         manager_principal, staker_principal, has_stx, has_btc, stx_node_verified,
         active, source_id, verification_source_id, last_seen_run_id, first_seen_at, last_seen_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
         has_stx = excluded.has_stx,
         has_btc = excluded.has_btc,
         stx_node_verified = excluded.stx_node_verified,
-        active = 1,
+        active = excluded.active,
         source_id = excluded.source_id,
         verification_source_id = excluded.verification_source_id,
         last_seen_run_id = excluded.last_seen_run_id,
@@ -2307,6 +2308,7 @@ export class SidekickStore {
           item.hasStx ? 1 : 0,
           item.hasBtc ? 1 : 0,
           item.stxNodeVerified === null ? null : item.stxNodeVerified ? 1 : 0,
+          item.active ? 1 : 0,
           value.sourceId,
           item.hasStx ? value.nodeSourceId : null,
           value.runId,

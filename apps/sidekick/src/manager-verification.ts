@@ -10,7 +10,12 @@ import {
   type SourceMatch,
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
-import type { ContractInterface, ContractSource, StacksNodeClient } from "./chain-clients.js";
+import {
+  type ContractInterface,
+  type ContractSource,
+  type StacksNodeClient,
+  UpstreamHttpError,
+} from "./chain-clients.js";
 import type { SidekickNetwork } from "./config.js";
 
 export interface ManagerVerificationReport {
@@ -123,4 +128,46 @@ export async function inspectDeployedManager(
     contractSource,
     contractInterface,
   );
+}
+
+export async function inspectManagerOrReportMissing(
+  node: StacksNodeClient,
+  configuredNetwork: SidekickNetwork,
+  managerPrincipal: string,
+): Promise<ManagerVerificationReport> {
+  try {
+    return await inspectDeployedManager(node, configuredNetwork, managerPrincipal);
+  } catch (error) {
+    if (!(error instanceof UpstreamHttpError) || error.status !== 404) throw error;
+    const principal = parseContractPrincipal(managerPrincipal);
+    const networkMatches = isExpectedNetwork(configuredNetwork, principal.network);
+    return {
+      managerPrincipal,
+      configuredNetwork,
+      principalNetwork: principal.network,
+      networkMatches,
+      publishHeight: 0,
+      source: {
+        match: "unknown",
+        profileId: null,
+        sha256: "",
+        canonicalSha256: "",
+        recognized: false,
+      },
+      interface: {
+        compatible: false,
+        missingFunctions: [
+          ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
+          ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
+        ],
+      },
+      attachAllowed: false,
+      automationEligible: false,
+      recommendedMode: "observe",
+      reasons: [
+        ...(networkMatches ? [] : ["Manager principal does not match the configured network"]),
+        "Manager contract is not deployed yet",
+      ],
+    };
+  }
 }

@@ -31,6 +31,7 @@ for unattended mainnet operation.
 - `packages/core`: protocol-independent domain and reconciliation boundaries
 - `contracts`: pinned upstream sources and reproducibly generated manager artifacts
 - `test/integration/regtest`: self-contained Epoch 4.0 contract lifecycle plus optional live-node smoke test
+- `test/e2e`: large-pool browser fixtures and a disposable released-binary PoX-5 Devnet
 
 ## Development
 
@@ -40,10 +41,38 @@ Use Node.js 24.18.0 and pnpm 10.32.1.
 pnpm install
 pnpm protocol:verify
 pnpm check
-pnpm test
+pnpm test:coverage
 pnpm test:regtest
+pnpm exec playwright install chromium
+pnpm test:e2e:dashboard
 pnpm build
 ```
+
+The fixture-backed browser suite renders all operator screens at desktop, tablet, and 390px mobile
+sizes with 237 participants and 48 historical reward cycles. The opt-in released Devnet suite adds
+a real `stacks-node`, `stacks-signer`, API indexer, Bitcoin regtest, Postgres, and the production
+Sidekick container:
+
+```sh
+pnpm e2e:devnet:doctor
+pnpm e2e:devnet:up
+pnpm e2e:devnet:scenario active-pool
+pnpm e2e:devnet:scenario failure-injection
+pnpm e2e:devnet:down
+
+# Complete disposable run, including cleanup and machine-readable evidence
+pnpm e2e:devnet:test
+```
+
+All released binaries and images are checksum/digest locked. The suite uses public test fixtures
+only, keeps actor and signer keys outside Sidekick, binds the dashboard to loopback, and scans its
+retained evidence for credentials. Its result records scenario/startup timings and sampled
+per-container CPU, memory, writable-layer, and block-I/O peaks; separate component logs and browser
+JUnit/HTML reports make failed scheduled runs diagnosable. It starts from genesis because Clarinet's
+embedded stacks-core 3.4 snapshot is not a trustworthy seed for the pinned stacks-core 4.0
+environment. See
+[the development guide](docs/operator/development.md) for resource expectations, workbench
+commands, CI cadence, and failure-injection coverage.
 
 For a connected PoX-5 environment, `pnpm test:regtest:external` validates the configured network
 and optional deployed manager. `pnpm test:container:external` builds and exercises the hardened

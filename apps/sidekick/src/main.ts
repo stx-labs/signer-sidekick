@@ -262,6 +262,7 @@ if (command === "serve") {
       burnBlockHeight: preflight.node.burnBlockHeight,
       stacksTipHeight: preflight.node.stacksTipHeight,
       currentRewardCycle: preflight.cycle.currentId,
+      pageLimit: config.stakerPageLimit,
     });
     const events = await syncManagerEvents({
       store,
@@ -270,6 +271,7 @@ if (command === "serve") {
       chainId: preflight.node.networkId,
       managerPrincipal,
       observedAt,
+      pageLimit: config.eventPageLimit,
     });
     const forecast = await readPoolForecast({
       store,
@@ -333,6 +335,7 @@ if (command === "serve") {
       chainId: preflight.node.networkId,
       managerPrincipal,
       observedAt,
+      pageLimit: config.eventPageLimit,
     });
     console.log(JSON.stringify({ migrationBackupCreated: backupPath, result }, null, 2));
   } finally {

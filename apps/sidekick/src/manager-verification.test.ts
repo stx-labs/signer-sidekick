@@ -1,8 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ContractInterface } from "./chain-clients.js";
-import { verifyManagerArtifact } from "./manager-verification.js";
+import {
+  type ContractInterface,
+  type StacksNodeClient,
+  UpstreamHttpError,
+} from "./chain-clients.js";
+import { inspectManagerOrReportMissing, verifyManagerArtifact } from "./manager-verification.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
@@ -122,5 +126,33 @@ describe("deployed manager verification", () => {
       missingFunctions: ["claim-staker-rewards"],
     });
     expect(report.attachAllowed).toBe(false);
+  });
+
+  it("reports an expected pre-deployment 404 without hiding other node failures", async () => {
+    const missingNode = {
+      getContractSource: async () => {
+        throw new UpstreamHttpError("not found", 404);
+      },
+      getContractInterface: async () => {
+        throw new UpstreamHttpError("not found", 404);
+      },
+    } as unknown as StacksNodeClient;
+    await expect(
+      inspectManagerOrReportMissing(missingNode, "mainnet", manager),
+    ).resolves.toMatchObject({
+      attachAllowed: false,
+      source: { recognized: false, sha256: "" },
+      reasons: ["Manager contract is not deployed yet"],
+    });
+
+    const failedNode = {
+      getContractSource: async () => {
+        throw new UpstreamHttpError("node failed", 500);
+      },
+      getContractInterface: async () => compatibleInterface(),
+    } as unknown as StacksNodeClient;
+    await expect(
+      inspectManagerOrReportMissing(failedNode, "mainnet", manager),
+    ).rejects.toMatchObject({ status: 500 });
   });
 });

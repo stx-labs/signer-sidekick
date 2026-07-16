@@ -47,6 +47,11 @@ const generatedManagers = [
     sha256: "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
   },
   {
+    network: "devnet",
+    profileId: "stacks-4.0.0-devnet-reference-manager",
+    sha256: "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
+  },
+  {
     network: "regtest",
     profileId: "stacks-4.0.0-regtest-reference-manager",
     sha256: "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
@@ -55,6 +60,12 @@ const generatedManagers = [
 
 for (const manager of generatedManagers) {
   const directory = resolve(root, `contracts/reference-manager/generated/${manager.network}`);
+  const profile = JSON.parse(
+    await readFile(
+      resolve(root, `contracts/reference-manager/profiles/${manager.network}.json`),
+      "utf8",
+    ),
+  );
   const metadata = JSON.parse(
     await readFile(resolve(directory, "signer-manager.metadata.json"), "utf8"),
   );
@@ -64,6 +75,16 @@ for (const manager of generatedManagers) {
     throw new Error(
       `Generated ${manager.network} manager profile mismatch: expected ${manager.profileId}, got ${metadata.profileId}`,
     );
+  }
+  if (
+    metadata.network !== profile.network ||
+    metadata.productionApproved !== profile.productionApproved ||
+    metadata.upstreamTag !== profile.upstream.tag ||
+    metadata.upstreamCommit !== profile.upstream.commit ||
+    metadata.sourceSha256 !== profile.upstream.sourceSha256 ||
+    JSON.stringify(metadata.replacements) !== JSON.stringify(profile.expectedReplacements)
+  ) {
+    throw new Error(`Generated ${manager.network} manager metadata does not match its profile`);
   }
   if (metadata.outputSha256 !== actual || actual !== manager.sha256) {
     throw new Error(

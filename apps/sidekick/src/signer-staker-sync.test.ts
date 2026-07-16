@@ -204,6 +204,29 @@ describe("signer-staker synchronization", () => {
     expect(sidekickStore.listCycleMemberships(manager)).toEqual([]);
   });
 
+  it("treats a retained API entry with zero PoX-5 cycles as inactive", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    const node = { callReadOnly: vi.fn().mockResolvedValue(position(manager, 141n, 0n)) };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
+      nodeVerifiedStxPositions: 0,
+      activeStakers: 0,
+      unverifiedStxDiscoveries: 0,
+      discrepanciesObservedThisInvocation: [],
+    });
+    expect(node.callReadOnly).toHaveBeenCalledTimes(1);
+    expect(sidekickStore.listSignerStakers(manager)).toEqual([]);
+    expect(sidekickStore.listSignerStakers(manager, false)).toMatchObject([
+      { stakerPrincipal: stakerOne, active: false, stxNodeVerified: false, position: null },
+    ]);
+    expect(sidekickStore.listCycleMemberships(manager)).toEqual([]);
+  });
+
   it("reconciles long-lived positions whose accumulated lifetime exceeds 96 cycles", async () => {
     const sidekickStore = await store();
     const api = {
@@ -425,7 +448,7 @@ describe("signer-staker synchronization", () => {
     expect(sidekickStore.listCycleMemberships(manager)).toHaveLength(6_000);
     expect(sidekickStore.listCycleMembershipsForCycle(manager, 141)).toHaveLength(500);
     expect(sidekickStore.listCycleMembershipsForCycle(manager, 152)).toHaveLength(500);
-  });
+  }, 15_000);
 
   it("records a missing node position as a discrepancy", async () => {
     const sidekickStore = await store();

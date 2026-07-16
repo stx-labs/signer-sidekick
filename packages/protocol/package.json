@@ -40,6 +40,7 @@
     "test": "vitest run",
     "generate:manager": "tsx src/generate-manager.ts",
     "generate:mainnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/mainnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/mainnet/signer-manager.clar",
+    "generate:devnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/devnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/devnet/signer-manager.clar",
     "generate:regtest": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/regtest.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/regtest/signer-manager.clar"
   },
   "dependencies": {
