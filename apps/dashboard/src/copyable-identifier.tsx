@@ -1,0 +1,89 @@
+import { Check, CopySimple } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Some browsers expose the API but deny it; use the local selection fallback below.
+    }
+  }
+
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.append(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("Clipboard copy is unavailable");
+}
+
+export function CopyIdentifierButton({
+  value,
+  label = "identifier",
+}: {
+  value: string | null | undefined;
+  label?: string | undefined;
+}) {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const action = copied ? `Copied ${label}` : `Copy ${label}`;
+  return (
+    <button
+      type="button"
+      className="copy-identifier-button"
+      disabled={!value}
+      aria-label={value && !copied ? `${action}: ${value}` : action}
+      title={action}
+      data-copy-state={copied ? "copied" : "idle"}
+      data-copy-value={value ?? undefined}
+      onClick={async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!value) return;
+        try {
+          await copyText(value);
+          setCopied(true);
+          if (resetTimer.current) clearTimeout(resetTimer.current);
+          resetTimer.current = setTimeout(() => setCopied(false), 1_600);
+        } catch {
+          setCopied(false);
+        }
+      }}
+    >
+      {copied ? <Check aria-hidden="true" /> : <CopySimple aria-hidden="true" />}
+    </button>
+  );
+}
+
+export function CopyableIdentifier({
+  value,
+  display,
+  label,
+  className = "",
+}: {
+  value: string | null | undefined;
+  display?: string;
+  label?: string | undefined;
+  className?: string;
+}) {
+  if (!value) return <span className={className}>—</span>;
+  return (
+    <span className={`copyable-identifier ${className}`.trim()} title={value}>
+      <span className="copyable-identifier-value">{display ?? value}</span>
+      <CopyIdentifierButton value={value} label={label} />
+    </span>
+  );
+}

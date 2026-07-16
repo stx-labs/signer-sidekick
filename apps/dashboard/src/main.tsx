@@ -25,6 +25,7 @@ import { createRoot } from "react-dom/client";
 import "../../../design/tokens/tokens.css";
 import "../../../design/screens/_app.css";
 import "./styles.css";
+import { CopyableIdentifier } from "./copyable-identifier.js";
 import { EnrollmentPage, type RuntimeSettings, SettingsPage, SetupPage } from "./phase3.js";
 
 type Page =
@@ -548,7 +549,12 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
             </Badge>
           </div>
           <StatLine label="Manager">
-            <span className="identifier">{short(data.managerPrincipal)}</span>
+            <CopyableIdentifier
+              value={data.managerPrincipal}
+              display={short(data.managerPrincipal)}
+              label="manager principal"
+              className="identifier"
+            />
           </StatLine>
           <StatLine label="Grant">
             <Badge state={data.registration?.signerKeyGrantValid ? "success" : "error"}>
@@ -561,7 +567,12 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
             </Badge>
           </StatLine>
           <StatLine label="Source hash">
-            <span className="identifier src src-chain">{short(data.manager.source.sha256)}</span>
+            <CopyableIdentifier
+              value={data.manager.source.sha256}
+              display={short(data.manager.source.sha256)}
+              label="manager source hash"
+              className="identifier src src-chain"
+            />
           </StatLine>
         </div>
         <div className="card">
@@ -573,10 +584,22 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
               <div className="ev ok" key={`${claim.txId}:${claim.eventIndex}`}>
                 <div className="t">Staker reward claimed</div>
                 <div className="m">
-                  {sbtc(claim.amountSats)} sBTC · {short(claim.stakerPrincipal)}
+                  {sbtc(claim.amountSats)} sBTC ·{" "}
+                  <CopyableIdentifier
+                    value={claim.stakerPrincipal}
+                    display={short(claim.stakerPrincipal)}
+                    label="staker principal"
+                    className="mono"
+                  />
                 </div>
                 <div className="h">
-                  {number(claim.blockHeight)} · {short(claim.txId)}
+                  {number(claim.blockHeight)} ·{" "}
+                  <CopyableIdentifier
+                    value={claim.txId}
+                    display={short(claim.txId)}
+                    label="transaction ID"
+                    className="mono"
+                  />
                 </div>
               </div>
             ))}
@@ -649,7 +672,12 @@ function Registration({ data }: { data: Snapshot }) {
             <Badge state={referenceRecognized ? "success" : "caution"}>{recognitionLabel}</Badge>
           </div>
           <StatLine label="Manager principal">
-            <span className="identifier">{short(data.managerPrincipal, 12, 9)}</span>
+            <CopyableIdentifier
+              value={data.managerPrincipal}
+              display={short(data.managerPrincipal, 12, 9)}
+              label="manager principal"
+              className="identifier"
+            />
           </StatLine>
           <StatLine label="Source profile">
             {data.manager.source.profileId ?? "No installed profile"}
@@ -667,15 +695,23 @@ function Registration({ data }: { data: Snapshot }) {
             </Badge>
           </StatLine>
           <StatLine label="Source hash">
-            <span className="identifier src src-chain">
-              {short(data.manager.source.sha256, 12, 8)}
-            </span>
+            <CopyableIdentifier
+              value={data.manager.source.sha256}
+              display={short(data.manager.source.sha256, 12, 8)}
+              label="manager source hash"
+              className="identifier src src-chain"
+            />
           </StatLine>
           <StatLine label="Published">
             <span className="mono">block {number(data.manager.publishHeight)}</span>
           </StatLine>
           <StatLine label="Signer public key">
-            <span className="identifier">{short(data.registration?.signerKeyHex, 12, 8)}</span>
+            <CopyableIdentifier
+              value={data.registration?.signerKeyHex}
+              display={short(data.registration?.signerKeyHex, 12, 8)}
+              label="signer public key"
+              className="identifier"
+            />
           </StatLine>
           <StatLine label="Registration">
             <Badge state={data.registration?.registered ? "success" : "error"}>
@@ -716,7 +752,12 @@ function Registration({ data }: { data: Snapshot }) {
             </span>
           </StatLine>
           <StatLine label="PoX-5 contract">
-            <span className="identifier">{short(data.preflight.pox.pox5ContractId, 12, 8)}</span>
+            <CopyableIdentifier
+              value={data.preflight.pox.pox5ContractId}
+              display={short(data.preflight.pox.pox5ContractId, 12, 8)}
+              label="PoX-5 contract principal"
+              className="identifier"
+            />
           </StatLine>
           <StatLine label="Observed at">
             <span className="mono">{number(data.preflight.node.burnBlockHeight)}</span>
@@ -953,7 +994,12 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
                   <td>
                     <div className="staker">
                       <span className="avatar">SP</span>
-                      <span className="mono">{short(entry.stakerPrincipal, 8, 5)}</span>
+                      <CopyableIdentifier
+                        value={entry.stakerPrincipal}
+                        display={short(entry.stakerPrincipal, 8, 5)}
+                        label="staker principal"
+                        className="mono"
+                      />
                     </div>
                   </td>
                   <td className="right mono">{stx(position?.amountUstx)}</td>
@@ -1218,7 +1264,14 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
           <tbody>
             {rewardStakers.map((entry) => (
               <tr key={entry.stakerPrincipal}>
-                <td className="mono">{short(entry.stakerPrincipal, 8, 5)}</td>
+                <td>
+                  <CopyableIdentifier
+                    value={entry.stakerPrincipal}
+                    display={short(entry.stakerPrincipal, 8, 5)}
+                    label="staker principal"
+                    className="mono"
+                  />
+                </td>
                 <td className="right mono">{sbtc(entry.rewards.grossSats)}</td>
                 <td className="right mono">{sbtc(entry.rewards.feeSats)}</td>
                 <td className="right mono">{sbtc(entry.rewards.earnedSats)}</td>
@@ -1282,7 +1335,14 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
             {activity.claims.map((claim) => (
               <tr key={`${claim.txId}:${claim.eventIndex}`}>
                 <td className="mono">{claim.rewardCycle}</td>
-                <td className="mono">{short(claim.stakerPrincipal)}</td>
+                <td>
+                  <CopyableIdentifier
+                    value={claim.stakerPrincipal}
+                    display={short(claim.stakerPrincipal)}
+                    label="staker principal"
+                    className="mono"
+                  />
+                </td>
                 <td className="right mono btc-value">{sbtc(claim.amountSats)}</td>
                 <td>
                   <Badge state="neutral">
@@ -1290,7 +1350,14 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
                   </Badge>
                 </td>
                 <td className="mono">{number(claim.blockHeight)}</td>
-                <td className="mono">{short(claim.txId)}</td>
+                <td>
+                  <CopyableIdentifier
+                    value={claim.txId}
+                    display={short(claim.txId)}
+                    label="transaction ID"
+                    className="mono"
+                  />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1322,7 +1389,14 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
             {withdrawals.map((entry) => (
               <tr key={entry.requestId}>
                 <td className="mono">#{entry.requestId}</td>
-                <td className="mono">{short(entry.stakerPrincipal)}</td>
+                <td>
+                  <CopyableIdentifier
+                    value={entry.stakerPrincipal}
+                    display={short(entry.stakerPrincipal)}
+                    label="staker principal"
+                    className="mono"
+                  />
+                </td>
                 <td className="right mono btc-value">{sbtc(entry.amountSats)}</td>
                 <td className="right mono">{sbtc(entry.maxFeeSats)}</td>
                 <td>

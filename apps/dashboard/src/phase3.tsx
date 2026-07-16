@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  ArrowSquareOut,
   Check,
   DownloadSimple,
   Key,
@@ -8,6 +9,7 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CopyableIdentifier, CopyIdentifierButton } from "./copyable-identifier.js";
 
 type StepStatus = "complete" | "ready" | "pending" | "attention" | "blocked";
 
@@ -628,7 +630,13 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                     label="Signer-manager principal"
                     help="Must match the manager configured for this Sidekick deployment."
                   >
-                    <input className="input mono" readOnly value={data.managerPrincipal} />
+                    <span className="copyable-input">
+                      <input className="input mono" readOnly value={data.managerPrincipal} />
+                      <CopyIdentifierButton
+                        value={data.managerPrincipal}
+                        label="manager principal"
+                      />
+                    </span>
                   </Field>
                   <button
                     type="button"
@@ -654,17 +662,41 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                 </>
               ) : (
                 <div className="form-grid">
+                  <div className="archive-guidance" role="note">
+                    <div>
+                      <strong>Starting a new mainnet or testnet node?</strong>
+                      <p>
+                        Seed its chainstate from the Hiro Archive before launch to avoid syncing
+                        from genesis. Verify the SHA-256 checksum, extract it into the node&apos;s
+                        <code> working_dir</code>, then confirm the local block height is catching
+                        up. Private networks should use their own network-specific bootstrap.
+                      </p>
+                    </div>
+                    <a
+                      href="https://docs.hiro.so/en/resources/archive/stacks-blockchain"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Hiro Archive guide <ArrowSquareOut aria-hidden="true" />
+                    </a>
+                  </div>
                   <Field
                     label="Manager admin principal"
                     help="Public principal only. No admin key is accepted."
                   >
-                    <input
-                      className="input mono"
-                      value={fresh.adminPrincipal}
-                      onChange={(event) =>
-                        setFresh({ ...fresh, adminPrincipal: event.target.value })
-                      }
-                    />
+                    <span className="copyable-input">
+                      <input
+                        className="input mono"
+                        value={fresh.adminPrincipal}
+                        onChange={(event) =>
+                          setFresh({ ...fresh, adminPrincipal: event.target.value })
+                        }
+                      />
+                      <CopyIdentifierButton
+                        value={fresh.adminPrincipal}
+                        label="manager admin principal"
+                      />
+                    </span>
                   </Field>
                   <Field label="Contract name">
                     <input
@@ -821,8 +853,12 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                       </pre>
                       <div className="statline">
                         <span className="k">SIP-018 grant hash</span>
-                        <span className="v identifier mono src src-chain">
-                          {onboarding.signerGrant.preparation.expectedMessageHashHex}
+                        <span className="v">
+                          <CopyableIdentifier
+                            value={onboarding.signerGrant.preparation.expectedMessageHashHex}
+                            label="SIP-018 grant hash"
+                            className="identifier mono src src-chain"
+                          />
                           <span className="sub">derived from live PoX-5</span>
                         </span>
                       </div>
@@ -1072,7 +1108,10 @@ export function SettingsPage({
               <span className="muted">shown in the dashboard and generated pool card</span>
             </div>
             <Field label="Manager principal">
-              <input className="input mono" readOnly value={data.managerPrincipal} />
+              <span className="copyable-input">
+                <input className="input mono" readOnly value={data.managerPrincipal} />
+                <CopyIdentifierButton value={data.managerPrincipal} label="manager principal" />
+              </span>
             </Field>
             <Field label="Display name">
               <input
@@ -1339,16 +1378,22 @@ export function SettingsPage({
               label="Dedicated gas-payer principal"
               help="Public principal only. Key custody is configured later through a read-only secret mount."
             >
-              <input
-                className="input mono"
-                value={settings.automation.gasPayerPrincipal}
-                onChange={(event) =>
-                  update("automation", {
-                    ...settings.automation,
-                    gasPayerPrincipal: event.target.value,
-                  })
-                }
-              />
+              <span className="copyable-input">
+                <input
+                  className="input mono"
+                  value={settings.automation.gasPayerPrincipal}
+                  onChange={(event) =>
+                    update("automation", {
+                      ...settings.automation,
+                      gasPayerPrincipal: event.target.value,
+                    })
+                  }
+                />
+                <CopyIdentifierButton
+                  value={settings.automation.gasPayerPrincipal}
+                  label="gas-payer principal"
+                />
+              </span>
             </Field>
             <Field
               label="Webhook URL"
@@ -1669,8 +1714,21 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
               <div className="preview-title">
                 <div>
                   <h2>{enrollment.pool.displayName}</h2>
-                  <p>{enrollment.manager.principal}</p>
-                  <p className="mono src src-chain">source {enrollment.manager.sourceSha256}</p>
+                  <p>
+                    <CopyableIdentifier
+                      value={enrollment.manager.principal}
+                      label="manager principal"
+                      className="mono"
+                    />
+                  </p>
+                  <p>
+                    source{" "}
+                    <CopyableIdentifier
+                      value={enrollment.manager.sourceSha256}
+                      label="manager source hash"
+                      className="mono src src-chain"
+                    />
+                  </p>
                 </div>
                 <StatusBadge
                   status={enrollment.signer.grantValid ? "Grant valid" : "Grant not verified"}

@@ -18,6 +18,93 @@
   min-width: 0;
 }
 
+.copyable-identifier,
+.copyable-input {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.copyable-identifier-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keep the value's right edge aligned in right-aligned stat rows. */
+.statline .v > .copyable-identifier,
+.right > .copyable-identifier {
+  flex-direction: row-reverse;
+}
+
+.copy-identifier-button {
+  display: inline-grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.copy-identifier-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.copyable-identifier:hover .copy-identifier-button,
+.copyable-identifier:focus-within .copy-identifier-button,
+.copyable-input:hover .copy-identifier-button,
+.copyable-input:focus-within .copy-identifier-button,
+.copy-identifier-button:focus-visible,
+.copy-identifier-button[data-copy-state="copied"] {
+  opacity: 1;
+}
+
+.copy-identifier-button:hover,
+.copy-identifier-button:focus-visible {
+  background: var(--surface-tertiary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.copy-identifier-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-weak);
+}
+
+.copy-identifier-button[data-copy-state="copied"] {
+  color: var(--status-success);
+}
+
+.copy-identifier-button:disabled {
+  visibility: hidden;
+}
+
+.copyable-input {
+  width: 100%;
+}
+
+.copyable-input .input {
+  min-width: 0;
+}
+
+@media (hover: none) {
+  .copy-identifier-button {
+    opacity: 1;
+  }
+}
+
 .main,
 .tbl-wrap {
   max-width: 100%;
@@ -253,6 +340,46 @@
 
 .manual-setup-card {
   max-width: 760px;
+}
+
+.archive-guidance {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+}
+
+.archive-guidance p {
+  max-width: 720px;
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.archive-guidance a {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.archive-guidance a svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 720px) {
+  .archive-guidance {
+    flex-direction: column;
+  }
 }
 
 .artifact-actions {

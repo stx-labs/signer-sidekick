@@ -61,9 +61,27 @@ test("explains the manager trust tier on registration and settings", async ({ pa
   await openPage(page, "registration", "Registration");
   await expect(page.getByText("Reference — built in")).toBeVisible();
   await expect(page.getByText("Built into Sidekick")).toBeVisible();
+  const managerRow = page.locator(".statline", { hasText: "Manager principal" });
+  const copyBox = await managerRow.locator(".copy-identifier-button").boundingBox();
+  const valueBox = await managerRow.locator(".copyable-identifier-value").boundingBox();
+  expect(copyBox).not.toBeNull();
+  expect(valueBox).not.toBeNull();
+  expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
+});
+
+test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await page.getByRole("button", { name: "Fresh setup" }).click();
+  await expect(page.getByText("Starting a new mainnet or testnet node?")).toBeVisible();
+  await expect(page.getByRole("link", { name: /Hiro Archive guide/ })).toHaveAttribute(
+    "href",
+    "https://docs.hiro.so/en/resources/archive/stacks-blockchain",
+  );
+  await expect(page.getByText(/Verify the SHA-256 checksum/)).toBeVisible();
 });
 
 test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {
@@ -127,6 +145,37 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   await expect(page.getByText(`51–100 of ${roster.length}`)).toBeVisible();
   await page.getByLabel("Search principal").fill(roster[122].stakerPrincipal);
   await expect(page.getByText("1–1 of 1")).toBeVisible();
+});
+
+test("copies the full principal from an abbreviated address", async ({ page }) => {
+  await login(page);
+  await openPage(page, "pool", "Pool positions");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-principal", value),
+      },
+    });
+  });
+
+  const principal = roster[0].stakerPrincipal;
+  const copy = page.locator(`button[data-copy-value="${principal}"]`);
+  const value = copy.locator("xpath=preceding-sibling::*[1]");
+  await expect(copy).toHaveCount(1);
+  const copyBox = await copy.boundingBox();
+  const valueBox = await value.boundingBox();
+  expect(copyBox).not.toBeNull();
+  expect(valueBox).not.toBeNull();
+  expect(copyBox?.x ?? 0).toBeGreaterThanOrEqual((valueBox?.x ?? 0) + (valueBox?.width ?? 0));
+  await expect(copy).toHaveCSS("opacity", "0");
+  await copy.hover();
+  await expect(copy).toHaveCSS("opacity", "1");
+  await copy.click();
+  await expect(copy).toHaveAttribute("aria-label", "Copied staker principal");
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("copied-principal")))
+    .toBe(principal);
 });
 
 test("paginates multi-year reward history", async ({ page }) => {
