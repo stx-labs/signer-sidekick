@@ -4,6 +4,7 @@ import { createAttachActivationPlan, createFreshActivationPlan } from "./activat
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { loadConfig, redactConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
+import { HealthMonitoringService } from "./health-monitoring.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { assertManagerRenderPreflight, renderManagerDeployment } from "./manager-render.js";
 import {
@@ -130,10 +131,15 @@ if (command === "serve") {
     contractsDirectory: contractsDirectory(),
     managerVerification,
   });
+  const health = new HealthMonitoringService({
+    getConfig: () => runtimeSettings.effectiveConfig(),
+    getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
+  });
   const staticDirectory = process.env.SIDEKICK_STATIC_DIRECTORY;
   const server = createServer({
     service,
     onboarding,
+    health,
     authToken,
     ...(staticDirectory ? { staticDirectory: resolve(staticDirectory) } : {}),
   });
@@ -149,8 +155,12 @@ if (command === "serve") {
       `Network compatibility profile ignored: ${issue.message}`,
     );
   }
-  server.addHook("onClose", async () => store.close());
+  server.addHook("onClose", async () => {
+    health.stop();
+    store.close();
+  });
   await server.listen({ host, port });
+  health.start();
   server.log.info("HTTP control plane is listening; initial manager observation is running");
   void service
     .observeManagerTrustState()

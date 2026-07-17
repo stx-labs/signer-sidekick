@@ -60,6 +60,11 @@ reports no failed checks.
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.
 
+The Signer Health page works with node RPC alone. For peer and signer-operation signals, configure
+the optional node Prometheus URL and signer monitoring base URL in Settings, then use each field's
+connection test. These endpoints must be reachable from the Sidekick container; no private keys are
+used. See the [Signer Health scope](../product/signer-health-v1-plan.md).
+
 For remote private access, keep the default loopback bind and tunnel it:
 
 ```sh

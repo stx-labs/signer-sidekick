@@ -5,6 +5,7 @@ import {
 import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
+import { validateHealthEndpointForSave } from "./health-http.js";
 import { runOperatorPreflight } from "./preflight.js";
 import type { SidekickStore } from "./storage/store.js";
 
@@ -62,6 +63,9 @@ const persistedRuntimeSettingsSchema = z
         apiUrl: z.string(),
         apiKeyHeader: z.string().regex(/^[A-Za-z0-9-]{1,100}$/),
         apiKeyMode: z.enum(["environment", "database", "none"]),
+        nodeMetricsUrl: optionalUrlSchema.default(""),
+        signerMonitoringUrl: optionalUrlSchema.default(""),
+        hiroReferenceApiUrl: optionalUrlSchema.default(""),
       })
       .strict(),
     forecast: z
@@ -174,6 +178,9 @@ function defaults(config: SidekickConfig): PersistedRuntimeSettings {
       apiUrl: config.apiUrl,
       apiKeyHeader: config.apiKeyHeader,
       apiKeyMode: config.apiKey ? "environment" : "none",
+      nodeMetricsUrl: config.nodeMetricsUrl ?? "",
+      signerMonitoringUrl: config.signerMonitoringUrl ?? "",
+      hiroReferenceApiUrl: config.hiroReferenceApiUrl ?? "",
     },
     forecast: { horizonCycles: config.forecastHorizonCycles },
     embed: { type: "live", publicApiUrl: publicApiDefault(config) },
@@ -267,6 +274,15 @@ export class RuntimeSettingsController {
       ...(apiKey ? { apiKey } : {}),
       apiKeyHeader: settings.dataSources.apiKeyHeader,
       forecastHorizonCycles: settings.forecast.horizonCycles,
+      ...(settings.dataSources.nodeMetricsUrl
+        ? { nodeMetricsUrl: settings.dataSources.nodeMetricsUrl }
+        : {}),
+      ...(settings.dataSources.signerMonitoringUrl
+        ? { signerMonitoringUrl: settings.dataSources.signerMonitoringUrl }
+        : {}),
+      ...(settings.dataSources.hiroReferenceApiUrl
+        ? { hiroReferenceApiUrl: settings.dataSources.hiroReferenceApiUrl }
+        : {}),
     };
   }
 
@@ -293,6 +309,9 @@ export class RuntimeSettingsController {
         apiKeyHeader: this.settings.dataSources.apiKeyHeader,
         apiKeyConfigured: Boolean(config.apiKey),
         apiKeySource: this.settings.dataSources.apiKeyMode,
+        nodeMetricsUrl: this.settings.dataSources.nodeMetricsUrl,
+        signerMonitoringUrl: this.settings.dataSources.signerMonitoringUrl,
+        hiroReferenceApiUrl: this.settings.dataSources.hiroReferenceApiUrl,
       },
       forecast: this.settings.forecast,
       embed: this.settings.embed,
@@ -325,6 +344,21 @@ export class RuntimeSettingsController {
     }
     const nodeRpcUrl = parseEndpointUrl(value.dataSources.nodeRpcUrl, "Stacks node RPC URL");
     const apiUrl = parseEndpointUrl(value.dataSources.apiUrl, "Stacks API URL");
+    const nodeMetricsUrl = value.dataSources.nodeMetricsUrl
+      ? await validateHealthEndpointForSave(value.dataSources.nodeMetricsUrl, "Node metrics URL")
+      : "";
+    const signerMonitoringUrl = value.dataSources.signerMonitoringUrl
+      ? await validateHealthEndpointForSave(
+          value.dataSources.signerMonitoringUrl,
+          "Signer monitoring URL",
+        )
+      : "";
+    const hiroReferenceApiUrl = value.dataSources.hiroReferenceApiUrl
+      ? await validateHealthEndpointForSave(
+          value.dataSources.hiroReferenceApiUrl,
+          "Hiro reference API URL",
+        )
+      : "";
     const publicApiUrl = parseEndpointUrl(value.embed.publicApiUrl, "Public embed API URL");
     const action = value.dataSources.apiKeyAction;
     const nextSecret =
@@ -347,6 +381,9 @@ export class RuntimeSettingsController {
         apiUrl,
         apiKeyHeader: value.dataSources.apiKeyHeader,
         apiKeyMode,
+        nodeMetricsUrl,
+        signerMonitoringUrl,
+        hiroReferenceApiUrl,
       },
       embed: { ...value.embed, publicApiUrl },
     });

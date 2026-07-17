@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { responseFor, roster, snapshot } from "./large-pool-fixture.mjs";
+import { health, responseFor, roster, snapshot } from "./large-pool-fixture.mjs";
 
 const credential = "fixture-operator-token-32-characters";
 const consoleErrors = new WeakMap<Page, string[]>();
@@ -33,7 +33,7 @@ async function login(page: Page) {
 async function openPage(page: Page, id: string, heading: string) {
   const picker = page.getByLabel("Dashboard page");
   if (await picker.isVisible()) await picker.selectOption(id);
-  else await page.locator(`a[href="#${id}"]`).click();
+  else await page.locator(`.sidebar a[href="#${id}"]`).click();
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
 }
 
@@ -150,6 +150,7 @@ function finalVerificationOnboarding() {
 test("renders every operator screen without leaking the credential", async ({ page }) => {
   await login(page);
   const screens = [
+    ["health", "Signer Health"],
     ["registration", "Registration"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],
@@ -164,6 +165,23 @@ test("renders every operator screen without leaking the credential", async ({ pa
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("summarizes the cycle clock and links health details", async ({ page }) => {
+  await login(page);
+  const cards = page.locator(".cycle-clock > *");
+  await expect(cards).toHaveCount(4);
+  await expect(cards.nth(0)).toContainText("Reward cycle");
+  await expect(cards.nth(1)).toContainText("Burn height");
+  await expect(cards.nth(2)).toContainText("Next prepare phase");
+  await expect(cards.nth(2)).toContainText("~10d 16h · 24h average");
+  await expect(cards.nth(3)).toContainText("Node & Signer Health");
+  await expect(cards.nth(3)).toContainText("Node");
+  await expect(cards.nth(3)).toContainText("Signer");
+  await expect(cards.nth(3).locator(".health-light.green")).toHaveCount(2);
+
+  await cards.nth(3).click();
+  await expect(page.getByRole("heading", { name: "Signer Health", exact: true })).toBeVisible();
 });
 
 test("required actions provide their resolving control and exclude informational notices", async ({
@@ -276,11 +294,47 @@ test("does not show first-time guidance after onboarding starts", async ({ page 
 
 test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await login(page);
-  await openPage(page, "operations", "Operations");
+  await openPage(page, "health", "Signer Health");
   await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
+});
+
+test("keeps sustained health findings on the Signer Health page", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/health"
+        ? {
+            ...health,
+            overallStatus: "needs-attention",
+            findings: [
+              {
+                id: "signer-node-heartbeat-failed",
+                severity: "critical",
+                title: "Signer cannot reach its Stacks node",
+                detail: "The signer heartbeat failed three consecutive checks.",
+                source: "signer",
+              },
+            ],
+          }
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await expect(page.getByText("Signer cannot reach its Stacks node")).not.toBeVisible();
+  await expect(page.getByLabel("Signer health: unavailable")).toBeVisible();
+  await openPage(page, "health", "Signer Health");
+  await expect(page.getByText("Signer cannot reach its Stacks node")).toBeVisible();
+  await openPage(page, "overview", "Overview");
+  await expect(page.getByText("Signer cannot reach its Stacks node")).not.toBeVisible();
 });
 
 test("explains the manager trust tier on registration and settings", async ({ page }) => {

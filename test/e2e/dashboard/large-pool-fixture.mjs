@@ -85,6 +85,9 @@ export const runtimeSettings = {
     apiKeyHeader: "x-api-key",
     apiKeyConfigured: true,
     apiKeySource: "environment",
+    nodeMetricsUrl: "http://stacks-node:9153",
+    signerMonitoringUrl: "http://stacks-signer:9153",
+    hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
   },
   forecast: { horizonCycles: 6 },
   embed: { type: "live", publicApiUrl: "https://pool.example/sidekick" },
@@ -295,6 +298,108 @@ export const onboarding = {
   wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
 };
 
+export const health = {
+  generatedAt: "2026-07-15T12:10:00.000Z",
+  overallStatus: "healthy",
+  coverage: { available: 22, total: 22 },
+  burnBlockTiming: {
+    averageSeconds: 600,
+    windowHours: 24,
+    sampleBlocks: 144,
+    sampledAt: "2026-07-15T12:09:42.000Z",
+  },
+  findings: [],
+  node: {
+    rpc: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 12,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    metrics: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 8,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    version: "stacks-node 4.0.1",
+    networkId: 2147483653,
+    stacksTipHeight: 12990,
+    burnBlockHeight: 13000,
+    lastTipAdvanceAt: "2026-07-15T12:09:42.000Z",
+    inboundPeers: 14,
+    outboundPeers: 8,
+    lastHour: { warnings: 2, errors: 0 },
+  },
+  hiro: {
+    source: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 90,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    stacksTipHeight: 12990,
+    burnBlockHeight: 13000,
+    localStacksDifference: 0,
+    localBurnDifference: 0,
+  },
+  signer: {
+    infoSource: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 5,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    heartbeat: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 4,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    metrics: {
+      configured: true,
+      status: "healthy",
+      checkedAt: "2026-07-15T12:10:00.000Z",
+      lastSuccessAt: "2026-07-15T12:10:00.000Z",
+      latencyMs: 6,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    version: "stacks-signer 4.0.1",
+    network: "testnet",
+    publicKey: "03b01234567890abcdef01234567890abcdef01234567890abcdef01234567890ab",
+    stxAddress: "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ",
+    observedNodeHeight: 12990,
+    nodeHeightDifference: 0,
+    rewardCycle: 141,
+    stxBalanceUstx: 125000000,
+    lastHour: {
+      proposals: 12,
+      accepted: 11,
+      rejected: 1,
+      rejectionPercent: 8.3,
+      responseP95Seconds: 1,
+      disagreements: 0,
+      collectingBaseline: false,
+    },
+  },
+};
+
 function page(items, offset, limit) {
   return items.slice(offset, offset + limit);
 }
@@ -305,6 +410,8 @@ export function responseFor(url) {
   const limit = Number(request.searchParams.get("limit") ?? 50);
   if (request.pathname === "/api/v1/status" || request.pathname === "/api/v1/sync") return snapshot;
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
+  if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
+    return health;
   if (request.pathname === "/api/v1/onboarding") return onboarding;
   if (request.pathname === "/api/v1/pool") {
     const query = (request.searchParams.get("query") ?? "").toLowerCase();

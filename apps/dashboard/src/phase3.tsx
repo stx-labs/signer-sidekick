@@ -107,6 +107,9 @@ export interface RuntimeSettings {
     apiKeyHeader: string;
     apiKeyConfigured: boolean;
     apiKeySource: "environment" | "database" | "none";
+    nodeMetricsUrl: string;
+    signerMonitoringUrl: string;
+    hiroReferenceApiUrl: string;
   };
   forecast: { horizonCycles: number };
   embed: { type: "live" | "static"; publicApiUrl: string };
@@ -1716,6 +1719,11 @@ export function SettingsPage({
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourceTest, setSourceTest] = useState<{
+    kind: "node-metrics" | "signer-monitoring" | "hiro-reference";
+    state: "testing" | "connected" | "failed";
+    detail: string;
+  } | null>(null);
   const [activeSection, setActiveSection] = useState("identity");
 
   useEffect(() => {
@@ -1745,6 +1753,9 @@ export function SettingsPage({
             nodeRpcUrl: editable.dataSources.nodeRpcUrl,
             apiUrl: editable.dataSources.apiUrl,
             apiKeyHeader: editable.dataSources.apiKeyHeader,
+            nodeMetricsUrl: editable.dataSources.nodeMetricsUrl,
+            signerMonitoringUrl: editable.dataSources.signerMonitoringUrl,
+            hiroReferenceApiUrl: editable.dataSources.hiroReferenceApiUrl,
             apiKeyAction:
               apiKeyAction === "replace"
                 ? { action: "replace", value: apiKey }
@@ -1767,6 +1778,30 @@ export function SettingsPage({
   if (!settings) return <div className="loading-state">Loading settings</div>;
   const update = <K extends keyof RuntimeSettings>(section: K, value: RuntimeSettings[K]) =>
     setSettings({ ...settings, [section]: value });
+  const testHealthSource = async (
+    kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
+    url: string,
+  ) => {
+    setSourceTest({ kind, state: "testing", detail: "Connecting…" });
+    try {
+      const result = await api<{ status: "connected"; signals: number }>(
+        token,
+        "/api/v1/health/test-source",
+        { method: "POST", body: JSON.stringify({ kind, url }) },
+      );
+      setSourceTest({
+        kind,
+        state: "connected",
+        detail: `Connected · ${result.signals} recognized signals`,
+      });
+    } catch (cause) {
+      setSourceTest({
+        kind,
+        state: "failed",
+        detail: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  };
 
   return (
     <>
@@ -2012,6 +2047,114 @@ export function SettingsPage({
                   update("dataSources", { ...settings.dataSources, nodeRpcUrl: event.target.value })
                 }
               />
+            </Field>
+            <Field label="Node metrics URL" help="Optional Prometheus endpoint from stacks-core.">
+              <div className="field-inline-action">
+                <input
+                  className="input mono"
+                  type="url"
+                  placeholder="http://stacks-node:9153"
+                  value={settings.dataSources.nodeMetricsUrl}
+                  onChange={(event) =>
+                    update("dataSources", {
+                      ...settings.dataSources,
+                      nodeMetricsUrl: event.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  disabled={!settings.dataSources.nodeMetricsUrl || sourceTest?.state === "testing"}
+                  onClick={() =>
+                    void testHealthSource("node-metrics", settings.dataSources.nodeMetricsUrl)
+                  }
+                >
+                  Test
+                </button>
+              </div>
+              {sourceTest?.kind === "node-metrics" ? (
+                <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
+                  {sourceTest.detail}
+                </span>
+              ) : null}
+            </Field>
+            <Field
+              label="Signer monitoring URL"
+              help="Optional signer base URL exposing /info, /heartbeat, and /metrics."
+            >
+              <div className="field-inline-action">
+                <input
+                  className="input mono"
+                  type="url"
+                  placeholder="http://stacks-signer:9153"
+                  value={settings.dataSources.signerMonitoringUrl}
+                  onChange={(event) =>
+                    update("dataSources", {
+                      ...settings.dataSources,
+                      signerMonitoringUrl: event.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  disabled={
+                    !settings.dataSources.signerMonitoringUrl || sourceTest?.state === "testing"
+                  }
+                  onClick={() =>
+                    void testHealthSource(
+                      "signer-monitoring",
+                      settings.dataSources.signerMonitoringUrl,
+                    )
+                  }
+                >
+                  Test
+                </button>
+              </div>
+              {sourceTest?.kind === "signer-monitoring" ? (
+                <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
+                  {sourceTest.detail}
+                </span>
+              ) : null}
+            </Field>
+            <Field
+              label="Hiro reference API URL"
+              help="Public comparison source. The network default normally needs no change."
+            >
+              <div className="field-inline-action">
+                <input
+                  className="input mono"
+                  type="url"
+                  value={settings.dataSources.hiroReferenceApiUrl}
+                  onChange={(event) =>
+                    update("dataSources", {
+                      ...settings.dataSources,
+                      hiroReferenceApiUrl: event.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  disabled={
+                    !settings.dataSources.hiroReferenceApiUrl || sourceTest?.state === "testing"
+                  }
+                  onClick={() =>
+                    void testHealthSource(
+                      "hiro-reference",
+                      settings.dataSources.hiroReferenceApiUrl,
+                    )
+                  }
+                >
+                  Test
+                </button>
+              </div>
+              {sourceTest?.kind === "hiro-reference" ? (
+                <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
+                  {sourceTest.detail}
+                </span>
+              ) : null}
             </Field>
             <Field
               label="Stacks API URL"

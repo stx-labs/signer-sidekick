@@ -9,6 +9,7 @@ import {
   FileCsv,
   Gauge,
   GearSix,
+  Heartbeat,
   ListChecks,
   Moon,
   SealCheck,
@@ -28,9 +29,11 @@ import "../../../design/screens/_app.css";
 import "./styles.css";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 import { EnrollmentPage, type RuntimeSettings, SettingsPage, SetupPage } from "./phase3.js";
+import { fetchHealthSnapshot, type HealthSnapshot, SignerHealthPage } from "./signer-health.js";
 
 type Page =
   | "overview"
+  | "health"
   | "registration"
   | "pool"
   | "rewards"
@@ -276,6 +279,7 @@ interface RewardCycleSummary {
 const nav: Array<{ group?: string; id?: Page; label?: string; icon?: typeof Gauge }> = [
   { group: "Operate" },
   { id: "overview", label: "Overview", icon: Gauge },
+  { id: "health", label: "Signer Health", icon: Heartbeat },
   { id: "registration", label: "Registration", icon: SealCheck },
   { id: "pool", label: "Pool", icon: UsersThree },
   { id: "rewards", label: "Rewards", icon: Coins },
@@ -305,6 +309,47 @@ function short(value: string | null | undefined, left = 7, right = 5): string {
 function number(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   return BigInt(value).toLocaleString("en-US");
+}
+
+function compactDuration(seconds: number): string {
+  if (seconds <= 0) return "now";
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  const days = Math.floor(minutes / (24 * 60));
+  const hours = Math.floor((minutes % (24 * 60)) / 60);
+  const remainingMinutes = minutes % 60;
+  if (days > 0) return `${days}d${hours > 0 ? ` ${hours}h` : ""}`;
+  if (hours > 0) return `${hours}h${remainingMinutes > 0 ? ` ${remainingMinutes}m` : ""}`;
+  return `${minutes}m`;
+}
+
+type HealthLight = "green" | "yellow" | "red";
+
+function sourceHealthLight(
+  snapshot: HealthSnapshot | null,
+  source: "node" | "signer",
+  unavailable: boolean,
+): HealthLight {
+  if (unavailable) return "red";
+  if (!snapshot) return "yellow";
+  const findings = snapshot.findings.filter((finding) => finding.source === source);
+  if (findings.some(({ severity }) => severity === "critical")) return "red";
+  if (findings.length > 0) return "yellow";
+  const states =
+    source === "node"
+      ? [snapshot.node.rpc, ...(snapshot.node.metrics.configured ? [snapshot.node.metrics] : [])]
+      : [snapshot.signer.infoSource, snapshot.signer.heartbeat, snapshot.signer.metrics];
+  if (
+    states.some(
+      ({ status, consecutiveFailures }) => status === "unavailable" && consecutiveFailures >= 3,
+    )
+  ) {
+    return "red";
+  }
+  return states.every(({ status }) => status === "healthy") ? "green" : "yellow";
+}
+
+function healthLightLabel(light: HealthLight): string {
+  return light === "green" ? "healthy" : light === "yellow" ? "needs attention" : "unavailable";
 }
 
 function stx(ustx: string | null | undefined): string {
@@ -445,21 +490,52 @@ function Pagination({
 
 function Overview({
   data,
+  token,
   sync,
   syncing,
   showSetupNotice,
   dismissSetupNotice,
 }: {
   data: Snapshot;
+  token: string;
   sync: () => void;
   syncing: boolean;
   showSetupNotice: boolean;
   dismissSetupNotice: () => void;
 }) {
+  const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [healthUnavailable, setHealthUnavailable] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const loadHealth = async () => {
+      try {
+        const snapshot = await fetchHealthSnapshot(token);
+        if (!active) return;
+        setHealth(snapshot);
+        setHealthUnavailable(false);
+      } catch {
+        if (active) setHealthUnavailable(true);
+      }
+    };
+    void loadHealth();
+    const interval = setInterval(() => void loadHealth(), 30_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [token]);
   const current = data.forecast?.cycles[0];
   const next = data.forecast?.cycles[1];
   const rewards = data.rewards;
   const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
+  const blocksUntilPrepare = data.preflight.cycle.blocksUntilPreparePhase;
+  const timing = health?.burnBlockTiming ?? null;
+  const prepareEta =
+    blocksUntilPrepare === null || !timing
+      ? null
+      : compactDuration(blocksUntilPrepare * timing.averageSeconds);
+  const nodeHealth = sourceHealthLight(health, "node", healthUnavailable);
+  const signerHealth = sourceHealthLight(health, "signer", healthUnavailable);
   return (
     <>
       <PageHead
@@ -521,29 +597,47 @@ function Overview({
       ) : null}
       <div className="cycle-clock card">
         <div>
-          <span>Burn height</span>
-          <strong>{number(data.preflight.node.burnBlockHeight)}</strong>
-          <small className="src src-chain">Stacks node tip</small>
-        </div>
-        <div>
           <span>Reward cycle</span>
           <strong>#{data.preflight.cycle.currentId}</strong>
           <small className="src src-chain">PoX-5 contract</small>
         </div>
         <div>
-          <span>API lag</span>
-          <strong>
-            {data.preflight.api.burnBlockLag} <em>blocks</em>
-          </strong>
-          <small className="src src-api">indexed tip</small>
+          <span>Burn height</span>
+          <strong>{number(data.preflight.node.burnBlockHeight)}</strong>
+          <small className="src src-chain">Stacks node tip</small>
         </div>
         <div>
           <span>Next prepare phase</span>
           <strong>
-            {number(data.preflight.cycle.blocksUntilPreparePhase)} <em>blocks</em>
+            {number(blocksUntilPrepare)} <em>blocks</em>
           </strong>
+          <small className="prepare-eta">
+            {prepareEta && timing
+              ? `~${prepareEta} · ${timing.windowHours}h average`
+              : "ETA unavailable"}
+          </small>
           <small>at {number(data.preflight.cycle.preparePhaseStartBurnHeight)}</small>
         </div>
+        <a className="cycle-health" href="#health" aria-label="Open Node and Signer Health">
+          <span>Node &amp; Signer Health</span>
+          <div className="cycle-health-states">
+            <span
+              role="img"
+              aria-label={`Node health: ${healthLightLabel(nodeHealth)}`}
+              title={healthLightLabel(nodeHealth)}
+            >
+              <i className={`health-light ${nodeHealth}`} aria-hidden="true" /> Node
+            </span>
+            <span
+              role="img"
+              aria-label={`Signer health: ${healthLightLabel(signerHealth)}`}
+              title={healthLightLabel(signerHealth)}
+            >
+              <i className={`health-light ${signerHealth}`} aria-hidden="true" /> Signer
+            </span>
+          </div>
+          <small>Open health details</small>
+        </a>
       </div>
       <div className="section-title">
         <WarningCircle color="var(--status-caution)" />
@@ -1630,56 +1724,6 @@ function Operations({
           </StatLine>
         </div>
       </div>
-      <div className="section-title">
-        Environment <span className="hint">polled live and verified</span>
-      </div>
-      <div className="grid cols-2">
-        <div className="card">
-          <div className="card-head">
-            <h2>Stacks node</h2>
-            <Badge state={data.preflight.status === "fail" ? "error" : "success"}>Live</Badge>
-          </div>
-          <StatLine label="Profile">
-            <span className="src src-chain">stacks-core 4.0.0</span>
-          </StatLine>
-          <StatLine label="Network">
-            <span className="mono">
-              {data.preflight.compatibility.profileLabel ?? data.network} · 0x
-              {data.preflight.node.networkId.toString(16).padStart(8, "0")}
-            </span>
-          </StatLine>
-          <StatLine label="Burn tip">
-            <span className="mono src src-chain">
-              {number(data.preflight.node.burnBlockHeight)}
-            </span>
-          </StatLine>
-          <StatLine label="RPC endpoint">
-            <span className="identifier">
-              {data.config?.nodeRpcUrl ?? "configured server-side"}
-            </span>
-          </StatLine>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <h2>stacks-signer</h2>
-            <Badge state="neutral">Endpoint not configured</Badge>
-          </div>
-          <StatLine label="Scope">
-            <span>version + liveness only</span>
-          </StatLine>
-          <StatLine label="Signing health">
-            <span className="muted">deferred to v2</span>
-          </StatLine>
-          <p className="tertiary signer-note">
-            The exact signer endpoint and version field remain a GA confirmation item. Sidekick does
-            not guess or probe signer internals.
-          </p>
-        </div>
-      </div>
-      <p className="tertiary environment-note">
-        Connected API: <span className="mono">{data.preflight.api.serverVersion}</span> ·{" "}
-        {data.preflight.api.burnBlockLag} block lag.
-      </p>
     </>
   );
 }
@@ -1842,6 +1886,7 @@ function App() {
         overview: (
           <Overview
             data={data}
+            token={token}
             sync={sync}
             syncing={syncing}
             showSetupNotice={onboardingStarted === false && !setupNoticeDismissed}
@@ -1851,6 +1896,17 @@ function App() {
         registration: <Registration data={data} />,
         pool: <Pool data={data} token={token} />,
         rewards: <Rewards data={data} token={token} />,
+        health: (
+          <SignerHealthPage
+            token={token}
+            context={{
+              network: data.preflight.compatibility.profileLabel ?? data.network,
+              currentCycle: data.preflight.cycle.currentId,
+              registration: data.registration,
+              eligibility: data.setup?.eligibility ?? null,
+            }}
+          />
+        ),
         operations: <Operations data={data} sync={sync} syncing={syncing} />,
         setup: <SetupPage data={data} token={token} onOnboardingStarted={markOnboardingStarted} />,
         enrollment: <EnrollmentPage data={data} token={token} />,

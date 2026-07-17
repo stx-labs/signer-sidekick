@@ -53,6 +53,51 @@ describe("local API", () => {
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
   });
 
+  it("protects and forwards signer health reads, refreshes, and source tests", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const health = {
+      current: vi.fn().mockResolvedValue({ overallStatus: "healthy" }),
+      refresh: vi.fn().mockResolvedValue({ overallStatus: "partial" }),
+      testSource: vi.fn().mockResolvedValue({ status: "connected", signals: 7 }),
+    };
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, health, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/health" })).statusCode).toBe(401);
+    expect((await server.inject({ method: "GET", url: "/api/v1/health", headers })).json()).toEqual(
+      { overallStatus: "healthy" },
+    );
+    expect(
+      (await server.inject({ method: "POST", url: "/api/v1/health/refresh", headers })).json(),
+    ).toEqual({ overallStatus: "partial" });
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/health/test-source",
+          headers,
+          payload: { kind: "signer-monitoring", url: "http://signer.internal:9153" },
+        })
+      ).json(),
+    ).toEqual({ status: "connected", signals: 7 });
+    expect(health.testSource).toHaveBeenCalledWith(
+      "signer-monitoring",
+      "http://signer.internal:9153",
+    );
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/health/test-source",
+          headers,
+          payload: { kind: "unknown", url: "http://signer.internal:9153" },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
   it("rejects the documented placeholder bearer token", () => {
     expect(() =>
       createServer({

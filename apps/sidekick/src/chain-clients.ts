@@ -114,6 +114,18 @@ const apiStatusSchema = z.object({
   }),
 });
 
+const burnBlockPageSchema = z.object({
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  results: z.array(
+    z.object({
+      burn_block_time: z.number().int().nonnegative(),
+      burn_block_height: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
 const signerStakersPageSchema = z
   .object({
     total: z.number().int().nonnegative(),
@@ -183,6 +195,7 @@ const transactionSummarySchema = z.object({
 export type NodeInfo = z.infer<typeof nodeInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
+export type BurnBlockPage = z.infer<typeof burnBlockPageSchema>;
 export type ContractSource = z.infer<typeof contractSourceSchema>;
 export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
@@ -438,6 +451,17 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v1/status`,
       apiStatusSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getBurnBlocks(limit = 200): Promise<BurnBlockPage> {
+    const parsedLimit = z.number().int().min(2).max(200).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit), offset: "0" });
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v2/burn-blocks?${query}`,
+      burnBlockPageSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }

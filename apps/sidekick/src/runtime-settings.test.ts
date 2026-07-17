@@ -100,6 +100,16 @@ describe("runtime settings", () => {
         },
       }),
     ).rejects.toThrow("must not contain credentials");
+    await expect(
+      runtime.update({
+        ...input,
+        dataSources: {
+          ...input.dataSources,
+          nodeMetricsUrl: "http://169.254.169.254/latest/meta-data",
+          apiKeyAction: { action: "keep" },
+        },
+      }),
+    ).rejects.toThrow("blocked address");
   });
 
   it("rejects the manager admin and wrong-network gas-payer principals", async () => {

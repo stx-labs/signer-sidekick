@@ -20,6 +20,11 @@ const defaults: Partial<Record<SidekickNetwork, string>> = {
   testnet: "https://api.testnet-pox5.hiro.so",
 };
 
+const hiroReferenceDefaults: Partial<Record<SidekickNetwork, string>> = {
+  mainnet: "https://api.mainnet.hiro.so",
+  testnet: "https://api.testnet-pox5.hiro.so",
+};
+
 const forbiddenKeyMaterialEnvironmentVariables = [
   "SIDEKICK_ADMIN_KEY",
   "SIDEKICK_ADMIN_PRIVATE_KEY",
@@ -52,6 +57,9 @@ export interface SidekickConfig {
   expectedNetworkId?: number;
   trustedManagerProfilesDirectory?: string;
   compatibilityProfilesDirectory?: string;
+  nodeMetricsUrl?: string;
+  signerMonitoringUrl?: string;
+  hiroReferenceApiUrl?: string;
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -146,6 +154,30 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     ...(env.SIDEKICK_COMPATIBILITY_PROFILES_DIR?.trim()
       ? {
           compatibilityProfilesDirectory: resolve(env.SIDEKICK_COMPATIBILITY_PROFILES_DIR.trim()),
+        }
+      : {}),
+    ...(env.STACKS_NODE_METRICS_URL?.trim()
+      ? {
+          nodeMetricsUrl: parseEndpointUrl(
+            env.STACKS_NODE_METRICS_URL.trim(),
+            "STACKS_NODE_METRICS_URL",
+          ),
+        }
+      : {}),
+    ...(env.STACKS_SIGNER_MONITORING_URL?.trim()
+      ? {
+          signerMonitoringUrl: parseEndpointUrl(
+            env.STACKS_SIGNER_MONITORING_URL.trim(),
+            "STACKS_SIGNER_MONITORING_URL",
+          ),
+        }
+      : {}),
+    ...(env.HIRO_REFERENCE_API_URL?.trim() || hiroReferenceDefaults[network]
+      ? {
+          hiroReferenceApiUrl: parseEndpointUrl(
+            env.HIRO_REFERENCE_API_URL?.trim() || hiroReferenceDefaults[network] || "",
+            "HIRO_REFERENCE_API_URL",
+          ),
         }
       : {}),
   };

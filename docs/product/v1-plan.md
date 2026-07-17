@@ -39,7 +39,9 @@ The product should answer:
 ### Explicitly out of scope
 
 - Installing or controlling `stacks-node` or `stacks-signer`.
-- Signer process, signing-performance, log, or host monitoring.
+- Host/process resource monitoring, log collection, durable health history, and notifications. V1
+  does include the direct node and signer signals described in
+  [Signer Health V1](signer-health-v1-plan.md).
 - End-user wallet connection, pool selection, or stake submission.
 - PoX-4 migration tracking.
 - sBTC bond pooling and bond-member operations.

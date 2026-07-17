@@ -77,6 +77,14 @@ export interface ServerOptions {
   logger?: boolean;
   staticDirectory?: string | null;
   onboarding?: OnboardingService;
+  health?: {
+    current(): Promise<unknown>;
+    refresh(): Promise<unknown>;
+    testSource(
+      kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
+      url: string,
+    ): Promise<unknown>;
+  };
 }
 
 function authorized(header: string | undefined, expected: string): boolean {
@@ -192,6 +200,30 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/status", async () =>
     options.service?.summary ? options.service.summary() : options.service?.snapshot(),
   );
+  server.get("/api/v1/health", async (_request, reply) => {
+    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
+    return await options.health.current();
+  });
+  server.post("/api/v1/health/refresh", async (_request, reply) => {
+    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
+    return await options.health.refresh();
+  });
+  server.post("/api/v1/health/test-source", async (request, reply) => {
+    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
+    const parsed = z
+      .object({
+        kind: z.enum(["node-metrics", "signer-monitoring", "hiro-reference"]),
+        url: z.string().min(1).max(500),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_health_source" });
+    try {
+      return await options.health.testSource(parsed.data.kind, parsed.data.url);
+    } catch {
+      return reply.code(400).send({ error: "health_source_unavailable" });
+    }
+  });
   server.get("/api/v1/registration", async () => {
     const snapshot = await options.service?.snapshot();
     return {

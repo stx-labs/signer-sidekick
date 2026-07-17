@@ -119,6 +119,7 @@ test("operator can inspect the live Devnet pool across every dashboard screen", 
   await login(page);
   await expect(page.locator(".app")).toHaveAttribute("data-network", "devnet");
   const screens = [
+    ["health", "Signer Health"],
     ["registration", "Registration"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],

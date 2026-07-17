@@ -32,6 +32,7 @@ Start from [`.env.mainnet.example`](.env.mainnet.example) or
 | `STACKS_NODE_RPC_URL` | Set an endpoint reachable from the Sidekick container |
 | `SIDEKICK_MANAGER_PRINCIPAL` | Set the existing or future manager contract |
 | `SIDEKICK_AUTH_TOKEN` | Generate a unique token |
+| Node metrics, signer monitoring, Hiro reference URL | Optional; configure in Settings for Signer Health |
 | API key/provider and publish address | Change only when needed |
 
 The built-in compatibility profile supplies public network IDs and contract metadata. Do not set
@@ -62,7 +63,8 @@ before starting the other unless you supply a Compose port override. See
 - Hiro or self-hosted Stacks API endpoints.
 - No manager-admin or signer key custody.
 - No public staking or wallet UI.
-- No signer-host health monitoring in V1.
+- Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
+  scope.
 - No sBTC bond pooling in V1.
 
 Unknown but interface-compatible managers can be observed. Only reproduced reference-manager

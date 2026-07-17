@@ -9,6 +9,37 @@ import {
 } from "./chain-clients.js";
 
 describe("Stacks API client", () => {
+  it("reads recent burn-block timestamps for empirical timing estimates", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          limit: 200,
+          offset: 0,
+          total: 2,
+          results: [
+            { burn_block_height: 910_000, burn_block_time: 1_784_000_000 },
+            { burn_block_height: 909_999, burn_block_time: 1_783_999_400 },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient(
+      "https://api.example.test",
+      "top-secret",
+      "x-api-key",
+      fetchImpl,
+    );
+
+    await expect(client.getBurnBlocks()).resolves.toMatchObject({
+      results: [{ burn_block_height: 910_000 }, { burn_block_height: 909_999 }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.example.test/extended/v2/burn-blocks?limit=200&offset=0",
+      expect.objectContaining({ headers: { "x-api-key": "top-secret" } }),
+    );
+  });
+
   it("sends a configured API key without putting it in the URL", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

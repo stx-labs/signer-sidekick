@@ -12,6 +12,7 @@ describe("Sidekick configuration", () => {
       network: "mainnet",
       nodeRpcUrl: "http://127.0.0.1:20443",
       apiUrl: "https://api.mainnet.hiro.so",
+      hiroReferenceApiUrl: "https://api.mainnet.hiro.so",
       apiKey: "secret-key",
       apiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
@@ -22,6 +23,21 @@ describe("Sidekick configuration", () => {
     });
     expect(redactConfig(config)).not.toHaveProperty("apiKey");
     expect(redactConfig(config)).toMatchObject({ apiKeyConfigured: true });
+  });
+
+  it("loads optional node and signer health endpoints", () => {
+    expect(
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://node:20443",
+        STACKS_NODE_METRICS_URL: "http://node:9153/metrics",
+        STACKS_SIGNER_MONITORING_URL: "http://signer:9153",
+        HIRO_REFERENCE_API_URL: "https://reference.example.com",
+      }),
+    ).toMatchObject({
+      nodeMetricsUrl: "http://node:9153/metrics",
+      signerMonitoringUrl: "http://signer:9153",
+      hiroReferenceApiUrl: "https://reference.example.com",
+    });
   });
 
   it("requires an explicit API URL for regtest", () => {
