@@ -1,122 +1,46 @@
-# Guided onboarding and runtime settings
+# Onboarding and runtime settings
 
-Phase 3 adds the authenticated web workflow around the activation foundation. It supports an
-operator who is attaching Sidekick to a running signer-manager and an operator preparing a new
-manager. Both paths use the same node/API verification code as the CLI and keep signing outside
-Sidekick.
+The dashboard wraps the same connected verification used by the CLI. It supports Attach Existing,
+Fresh Setup, and skipping the wizard without changing Sidekick's custody boundary.
 
 ## Safety boundary
 
-Sidekick never accepts a manager-admin key, signer private key, mnemonic, or transaction-signing
-request. It generates deterministic artifacts, signer-host commands, and a `register-self` call
-manifest. The operator deploys and broadcasts through their existing external tooling. Sidekick
-then verifies the resulting source, registration, grant, and signer-set eligibility through
-read-only node calls.
+Sidekick accepts public principals and public signer-grant output, but never a manager-admin key,
+signer key, mnemonic, or signing request. Deployment and `register-self` are reviewed and broadcast
+externally; Sidekick verifies their effects afterward.
 
-Every onboarding response declares these invariants explicitly:
+`SIDEKICK_MANAGER_PRINCIPAL` is the fixed identity of a deployment. Fresh inputs must resolve to
+that principal, and Attach cannot silently switch it.
 
-- `acceptsManagerAdminKey: false`
-- `acceptsSignerPrivateKey: false`
-- `signsTransactions: false`
-- `broadcastsTransactions: false`
+## Resumability
 
-The configured `SIDEKICK_MANAGER_PRINCIPAL` remains the deployment identity. Fresh setup therefore
-requires the proposed admin principal and contract name to produce that exact principal. This lets
-the operator choose the future contract principal before deploying it without allowing a running
-Sidekick instance to silently switch managers.
+The selected path, current step, generated public artifacts, grant verification, and an append-only
+action audit are stored in SQLite. Same-path restarts preserve progress; changing paths requires an
+explicit reset. Skipping the wizard changes only its visibility and does not mark checks complete.
 
-## Resumable workflows
+Polling failures never discard saved state. The operator can resume after the node or API recovers.
 
-SQLite migration 8 adds a singleton `onboarding_state` row. Migration 9 adds an append-only
-`onboarding_audit` that records action, path, step, status, and time without storing submitted
-payloads. Migration 10 stores the independent wizard-dismissal preference and its audit history.
-The state row stores the chosen path, current
-step, status, activation plan, generated public artifacts, and verified signer-grant output. Each
-transition is committed before its response is returned, so a browser reload or Sidekick restart
-resumes at the stored step.
+## Runtime settings
 
-Attach Existing runs the source/interface, registration, live signer grant, and eligibility checks
-against the configured manager. Fresh Setup provides eight operator-facing steps:
+Operators may change presentation, node/API endpoints, API credentials, forecast horizon, public
+pool metadata, payout policy, gas-budget policy, and alert policy. Candidate connectivity changes
+must pass preflight before becoming active.
 
-1. Prerequisites and connected-source preflight.
-2. Deterministic manager source and deployment-manifest generation.
-3. External manager deployment and read-only detection.
-4. Signer-host grant command, strict returned-JSON verification, and external ceremony guidance.
-5. External `register-self` call manifest and read-only registration detection.
-6. Pool and payout policy.
-7. Public gas-payer identity and Observe-mode boundary.
-8. Final verification and pool-information publishing.
+API keys are write-only in the browser and stored separately from public settings. They may be
+persisted in SQLite, so the database and backups are secret-bearing. Signer, manager-admin, and
+gas-payer private keys are forbidden from SQLite.
 
-Starting the same path is a no-op, and switching paths requires explicit confirmation before the
-saved progress is reset. Deployment and registration screens poll every 20 seconds while visible and also offer manual
-refresh. Poll failures are non-destructive: the stored step remains available and the operator can
-retry after their node or API recovers.
-
-The wizard is optional. An operator who configured the manager, node, and API directly can select
-**Skip guided setup** at any time. Sidekick records the dismissal separately from activation state,
-continues to expose every operator surface, and does not represent skipped checks as complete.
-Selecting **Open guided setup** later restores the saved path and step without discarding progress.
-
-## Runtime settings and secrets
-
-Migration 8 also adds `runtime_settings` and `settings_audit`. Settings are a single versioned
-document with a monotonically increasing revision. The audit table records only changed field
-names and timestamps; it does not retain old values or secret material.
-
-The operator can change:
-
-- pool name, website, support contact, and official Leather enrollment URL;
-- node RPC, Stacks API URL, API-key header, and API key;
-- forecast horizon and public-pool-card API source;
-- timezone, time/number format, and default theme;
-- payout and gas-budget policy values;
-- a dedicated public gas-payer principal; and
-- alert policy and the future webhook destination.
-
-URL validation rejects embedded credentials, query parameters, and fragments. A gas-payer
-principal must match the configured network and must not be the manager-admin address. Automation
-remains Observe-only in Phase 3; webhook delivery and transaction modes are Phase 4 work.
-
-The API key has explicit keep, replace, and clear actions. A replacement is stored separately from
-the public settings JSON in the local SQLite database and is never returned to the browser,
-snapshots, exports, or support bundles. The public API reports only whether a key exists and whether
-its source is the environment, database, or neither. Because the database can contain this API
-credential, its file and backups are secret-bearing and must be protected accordingly. This is an
-intentional V1 tradeoff to support operator-requested API-key replacement through the UI. API
-credentials are provider access tokens, not custody or transaction-signing keys; signer,
-manager-admin, and gas-payer keys remain forbidden from SQLite.
-
-Changing the node, API endpoint, key, or key header runs the normal network/API/PoX preflight
-against the candidate configuration before it is committed. A failed replacement leaves the prior
-revision active. Existing ingestion cursors
-remain scoped to the provider/source identity derived from the endpoint, so changing providers does
-not reuse another provider's cursor or erase its history.
-
-Once a settings revision exists, its node/API URLs, API-key mode/header, and forecast horizon take
-precedence over later environment changes. An API key whose recorded source is `environment`
-continues to read the current environment value. Use the Settings keep/replace/clear controls for
-intentional runtime changes rather than editing both sources independently.
+Settings revisions take precedence over later environment changes. Ingestion cursors remain scoped
+to their source endpoint, preventing one provider's checkpoint from being reused for another.
 
 ## Public pool artifacts
 
-The Public Pool Page screen generates versioned JSON plus a self-contained HTML file. Sidekick has
-no unauthenticated pool route; the operator downloads and hosts the artifact elsewhere.
+Sidekick generates versioned JSON and self-contained HTML for the operator to host elsewhere. It
+has no unauthenticated pool route.
 
-Static mode emits baked HTML plus the versioned JSON snapshot. Live mode emits HTML that may fetch only unauthenticated
-`/v2/pox` data from the configured public API to refresh reward-cycle and burn-height context. The
-verified manager source, registration, grant, fee, pool, and eligibility facts remain a generated
-snapshot until the operator regenerates the artifact. Neither mode includes API credentials, gas
-payer details, jobs, alerts, transaction history, or local database history.
+Static output contains a snapshot. Live output may refresh only public network context from an
+unauthenticated endpoint; manager verification and pool facts remain snapshots until regenerated.
+Artifacts exclude credentials, gas-payer details, jobs, alerts, and local history.
 
-## Backup, restore, and existing deployments
-
-All onboarding and settings state lives in the same SQLite database as the read-only control plane.
-The existing online backup and offline restore procedure therefore preserves wizard progress,
-settings revisions, and a database-stored API key. Protect and rotate backups as credentials.
-
-An existing deployment does not need to reinitialize its manager. Configure its manager principal,
-start Sidekick against the existing database or a new empty database, select Attach Existing, and
-let the read-only verification and history reconciliation populate local state.
-
-See [container deployment](../operator/deployment.md) for backup and restore commands and
-[development setup](../operator/development.md) for local testing.
+See [deployment](../operator/deployment.md) for backup and restore and source schemas/tests for the
+exact persisted and public formats.

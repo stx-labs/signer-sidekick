@@ -1,202 +1,67 @@
 # Signer Sidekick
 
-Signer Sidekick is an open-source operations suite for Stacks PoX-5 signer and STX pool
-operators. It is designed to attach to an existing compatible signer-manager deployment or
-guide a fresh operator through setup, then monitor and automate the pool lifecycle without
-holding the signer or manager-admin keys.
+Signer Sidekick is a self-hosted control plane for Stacks PoX-5 signer and STX pool operators. It
+attaches to an existing signer-manager or guides a new deployment, then reconciles registration,
+pool membership, rewards, and withdrawals from the operator's node and Stacks API.
 
-The repository now contains guided attach/fresh onboarding, editable runtime settings, the
-read-only v1 control plane, and a self-contained Epoch 4.0 lifecycle harness for the protocol
-foundation. Permissionless
-transaction automation and production-profile approval are still gated, so it is not yet ready
-for unattended mainnet operation.
+The current build supports setup and read-only operations. It does **not** yet broadcast recurring
+pool transactions and is not ready for unattended mainnet use. See
+[issue #2](https://github.com/stx-labs/signer-sidekick/issues/2) for live delivery status.
 
-## Start here
+## Documentation
 
-- [v1 product and architecture plan](docs/product/v1-plan.md)
-- [questions for protocol, API, signer, design, and security reviewers](docs/reviews/team-questions.md)
-- [initial independent plan review](docs/reviews/initial-spec-review.md)
-- [round 2 review and product-owner disposition](docs/reviews/round2-disposition.md)
-- [development setup](docs/operator/development.md)
-- [public testnet validation runbook](docs/operator/testnet-deployment.md)
-- [container deployment and operations](docs/operator/deployment.md)
-- [scale and longitudinal data design](docs/architecture/scaling.md)
-- [guided onboarding and runtime-settings design](docs/architecture/onboarding-and-settings.md)
-- [upstream source provenance](contracts/PROVENANCE.md)
-- [SQLite persistence decision](docs/architecture/decisions/0005-sqlite-persistence.md)
-- [release-independent network compatibility decision](docs/architecture/decisions/0007-release-independent-network-compatibility.md)
+Start with [the documentation index](docs/README.md).
 
-## Current scaffold
+- Operators: [container deployment](docs/operator/deployment.md)
+- Public testnet validation: [testnet runbook](docs/operator/testnet-deployment.md)
+- Contributors: [development guide](docs/operator/development.md)
+- Product and safety contract: [V1 scope](docs/product/v1-plan.md)
+- Open protocol questions: [review questions](docs/reviews/team-questions.md)
 
-- `apps/sidekick`: local API, reconciliation service, CLI, and static dashboard host
-- `apps/dashboard`: React operator interface using the vendored Stacks design system
-- `packages/protocol`: versioned PoX-5 and signer-manager profiles, types, and artifact generator
-- `packages/core`: protocol-independent domain and reconciliation boundaries
-- `contracts`: pinned upstream sources and reproducibly generated manager artifacts
-- `test/integration/regtest`: self-contained Epoch 4.0 contract lifecycle plus optional live-node smoke test
-- `test/e2e`: large-pool browser fixtures and a disposable released-binary PoX-5 Devnet
+Node and signer installation are intentionally outside Sidekick. Operator guides link to the
+current upstream Stacks documentation rather than copying release-sensitive instructions.
+
+## Boundaries
+
+- One network, signer-manager, and STX-only pool per deployment.
+- Existing and fresh manager workflows.
+- Hiro or self-hosted Stacks API endpoints.
+- No manager-admin or signer key custody.
+- No public staking or wallet UI.
+- No signer-host health monitoring in V1.
+- No sBTC bond pooling in V1.
+
+Unknown but interface-compatible managers can be observed. Only reproduced reference-manager
+source may become eligible for future automation; configuration files cannot grant that authority.
 
 ## Development
 
-Use Node.js 24.18.0 and pnpm 10.32.1.
+Requires Node.js 24.18.0 and pnpm 10.32.1.
 
 ```sh
 pnpm install
-pnpm protocol:verify
 pnpm check
 pnpm test:coverage
 pnpm test:regtest
-pnpm exec playwright install chromium
-pnpm test:e2e:dashboard
 pnpm build
 ```
 
-The fixture-backed browser suite renders all operator screens at desktop, tablet, and 390px mobile
-sizes with 237 participants and 48 historical reward cycles. The opt-in released Devnet suite adds
-a real `stacks-node`, `stacks-signer`, API indexer, Bitcoin regtest, Postgres, and the production
-Sidekick container:
+See [development](docs/operator/development.md) for browser tests, the released Devnet harness,
+live-node smoke tests, and upstream-source verification.
 
-```sh
-pnpm e2e:devnet:doctor
-pnpm e2e:devnet:up
-pnpm e2e:devnet:scenario active-pool
-pnpm e2e:devnet:scenario trusted-manager-profile
-pnpm e2e:devnet:scenario failure-injection
-pnpm e2e:devnet:down
+## Repository
 
-# Complete disposable run, including cleanup and machine-readable evidence
-pnpm e2e:devnet:test
-```
-
-All released binaries and images are checksum/digest locked. The suite uses public test fixtures
-only, keeps actor and signer keys outside Sidekick, binds the dashboard to loopback, and scans its
-retained evidence for credentials. Its result records scenario/startup timings and sampled
-per-container CPU, memory, writable-layer, and block-I/O peaks; separate component logs and browser
-JUnit/HTML reports make failed scheduled runs diagnosable. It starts from genesis because Clarinet's
-embedded stacks-core 3.4 snapshot is not a trustworthy seed for the pinned stacks-core 4.0
-environment. See
-[the development guide](docs/operator/development.md) for resource expectations, workbench
-commands, CI cadence, and failure-injection coverage.
-
-For a connected PoX-5 environment, `pnpm test:regtest:external` validates the configured network
-and optional deployed manager. `pnpm test:container:external` builds and exercises the hardened
-production image end to end, including repeated reconciliation, backup, dashboard, authentication,
-readiness, metrics, and HTTP sync. Both accept `SIDEKICK_NETWORK_ID` for private networks.
-
-Compatible stacks-node upgrades do not require a Sidekick release. Sidekick records the node
-version for diagnostics but gates compatibility on live network, PoX-5 source, sBTC contracts, and
-required API capabilities. Strict operator-provided compatibility data can be mounted independently
-of the application image; it can guide read-only/setup behavior but cannot authorize automation.
-Unknown networks degrade to observation, while a contradiction with an installed fingerprint fails
-closed.
-
-See [the development guide](docs/operator/development.md) for the upstream refresh and regtest
-workflows. Production operators should use the mainnet-first
-[container deployment guide](docs/operator/deployment.md) for the loopback-only Compose profile,
-upgrades, online backup, and offline restore. The upcoming activation exercise has a separate
-[public testnet validation runbook](docs/operator/testnet-deployment.md). Node and signer
-installation remain outside Sidekick; the operator guides link to the current official Stacks
-material instead of duplicating release-sensitive network instructions here.
-
-### Activation CLI
-
-Connected commands require `STACKS_NODE_RPC_URL`. Mainnet and testnet default to the matching
-Hiro API; `STACKS_API_URL`, `STACKS_API_KEY`, and `STACKS_API_KEY_HEADER` can point Sidekick at
-another hosted or self-managed API.
-
-```sh
-pnpm --filter @stx-labs/signer-sidekick build
-
-pnpm --filter @stx-labs/signer-sidekick cli config validate
-pnpm --filter @stx-labs/signer-sidekick cli doctor
-pnpm --filter @stx-labs/signer-sidekick cli database backup backups/sidekick.sqlite
-pnpm --filter @stx-labs/signer-sidekick cli preflight
-pnpm --filter @stx-labs/signer-sidekick cli \
-  init fresh <admin-principal> <contract-name> <output-directory> <auth-id>
-pnpm --filter @stx-labs/signer-sidekick cli init attach <manager-principal>
-pnpm --filter @stx-labs/signer-sidekick cli setup status <manager-principal>
-pnpm --filter @stx-labs/signer-sidekick cli \
-  manager trust <manager-principal> --output trusted-managers/my-manager.json
-pnpm --filter @stx-labs/signer-sidekick cli \
-  pool enrollment-info <manager-principal> docs/examples/pool-enrollment-config.example.json
-pnpm --filter @stx-labs/signer-sidekick cli pool sync-stakers <manager-principal>
-pnpm --filter @stx-labs/signer-sidekick cli events sync <manager-principal>
-pnpm --filter @stx-labs/signer-sidekick cli pool status <manager-principal>
-pnpm --filter @stx-labs/signer-sidekick cli rewards status <manager-principal> [reward-cycle]
-pnpm --filter @stx-labs/signer-sidekick cli \
-  setup record <manager-principal> \
-  docs/examples/pool-enrollment-config.example.json \
-  docs/examples/operator-record-metadata.example.json
-pnpm --filter @stx-labs/signer-sidekick cli \
-  export support-bundle <manager-principal> \
-  docs/examples/pool-enrollment-config.example.json \
-  docs/examples/operator-record-metadata.example.json
-```
-
-### Local operator dashboard
-
-Build the workspace, then run the loopback-only API and embedded dashboard with one manager and a high-entropy local credential:
-
-```sh
-pnpm build
-
-SIDEKICK_NETWORK=mainnet \
-STACKS_NODE_RPC_URL=http://127.0.0.1:20443 \
-SIDEKICK_MANAGER_PRINCIPAL=SP1234OFFLINEADMIN.my-signer-manager \
-SIDEKICK_AUTH_TOKEN='replace-with-at-least-24-random-characters' \
-pnpm --filter @stx-labs/signer-sidekick start
-```
-
-Open `http://127.0.0.1:3998`, enter the configured credential, and run **Reconcile now**. The app stays loopback-bound by default. It exposes authenticated operator APIs, the versioned compatibility endpoint `/healthz`, Kubernetes-style `/health/live` and `/health/ready`, and `/metrics`; it deliberately has no public pool route. The Public Pool Page screen generates live or static HTML plus versioned JSON for the operator to host elsewhere.
-
-Initial Setup provides resumable Attach Existing and Fresh Setup workflows. Settings can replace
-the node/API endpoints and API credential without restarting the process; API keys are write-only
-from the browser's perspective. Fresh Setup generates artifacts and external signing/broadcast
-instructions, but Sidekick never accepts the manager-admin or signer private keys. See the
-[onboarding and settings architecture](docs/architecture/onboarding-and-settings.md) for the exact
-boundary and persistence model.
-
-An interface-compatible manager that does not match a built-in source remains fully attachable for
-display, reconciliation, and monitoring and is shown as **Not recognized — read-only**. Operators
-using a private/testnet render of the pinned reference manager can generate a strict profile with
-`sidekick manager trust`, mount its directory through
-`SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR`, and restart. Sidekick treats the file as a claim, fetches
-the deployed source from the configured node, and independently reproduces the render; profile JSON
-cannot approve custom code for reference-manager automation. Use `--observe-only` only to label a
-genuinely custom manager for read-only operation.
-
-The enrollment command writes a versioned public JSON document to standard output. Its fee is
-explicitly operator-supplied, and its registration, grant, cycle, threshold, and signer-set fields
-come from the connected node. It does not collect staker inputs or connect, sign, or broadcast for
-a wallet.
-
-The signer-staker sync uses the configured API only to discover the manager's paginated roster.
-It verifies every STX entry against the connected node's PoX-5 `get-staker-info` result before
-storing a position, then reads `get-signer-cycle-membership` for the exact amount and signer in
-each active cycle. Page checkpoints are durable and scoped to the API provider, so an interrupted
-scan resumes without prematurely removing unseen members. API-discovery and node-verification
-provenance are stored separately.
-
-Manager contract-log ingestion is independently resumable, enriches events with canonical block identity, decodes Clarity hex structurally, and overlaps completed scans so displaced events are marked non-canonical after a reorg. The reward and withdrawal screens derive claim, pending, settled, and reclaimed histories from that evidence.
-
-Large operator collections are independently paginated. The dashboard status response carries
-totals rather than the full roster/ledger, while explicit authenticated CSV and JSON downloads
-remain available. Current projections are paired with append-only staker-position observations,
-per-cycle pool snapshots, and a normalized manager-activity ledger so dozens of historical cycles
-do not depend on a bounded in-memory event reduction. See the
-[scale design](docs/architecture/scaling.md) for tested fixtures and concurrency bounds.
-
-`SIDEKICK_FORECAST_HORIZON_CYCLES` controls how many cycles are reconciled and defaults to six.
-The forecast keeps enumerated STX-only membership, contract pending STX, eligible STX reward
-shares, and total delegated signer weight as separate values so bond weight or a roster mismatch
-cannot be mistaken for STX pool principal.
-
-The operator record metadata contains only public identifiers. Its strict schema rejects private
-key fields and keeps the gas payer distinct from the manager admin. The support bundle is built
-from an explicit diagnostic allowlist; it does not dump environment variables or signer-host
-health and never includes the configured API key.
+| Path | Purpose |
+| --- | --- |
+| `apps/sidekick` | API, CLI, reconciliation, persistence, and dashboard host |
+| `apps/dashboard` | React operator UI |
+| `packages/protocol` | PoX-5 and signer-manager codecs, profiles, and artifacts |
+| `packages/core` | Protocol-independent domain boundaries |
+| `contracts` | Pinned upstream sources and generated test artifacts |
+| `test` | Contract, browser, container, and released-Devnet validation |
+| `design` | Vendored tokens, components, examples, and local UI rules |
 
 ## License
 
-Signer Sidekick is licensed under GPL-3.0-only. Vendored upstream files retain their own
-copyright and provenance; see [contracts/PROVENANCE.md](contracts/PROVENANCE.md).
+GPL-3.0-only. Vendored sources retain their notices; see
+[contract provenance](contracts/PROVENANCE.md) and [NOTICE.md](NOTICE.md).
