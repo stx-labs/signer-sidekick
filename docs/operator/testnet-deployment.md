@@ -22,7 +22,7 @@ Use current upstream material for those steps:
 
 ## Start Sidekick
 
-Copy `.env.example` and set:
+Follow the main [install guide](deployment.md#install), then set:
 
 ```dotenv
 SIDEKICK_NETWORK=testnet
@@ -33,14 +33,10 @@ SIDEKICK_AUTH_TOKEN=replace-with-a-random-32-byte-value
 ```
 
 Leave `SIDEKICK_NETWORK_ID` unset for public testnet. For Fresh setup, the configured manager is the
-future `<admin>.<contract-name>`; for Attach, it is already deployed.
+future `<admin>.<contract-name>`; for Attach, it is already deployed. The node URL above is only an
+example; use the endpoint that passed the container-side check in the main guide.
 
-```sh
-docker compose build --pull
-docker compose up -d
-curl --fail http://127.0.0.1:3998/health/ready
-docker compose exec -T sidekick node /app/dist/main.js preflight
-```
+Complete the main guide through readiness and preflight before onboarding.
 
 Do not continue with Fresh setup unless PoX-5 is active, compatibility is `matched`, and no check
 fails. If the live network is unrecognized, review and install a profile under
@@ -48,7 +44,7 @@ fails. If the live network is unrecognized, review and install a profile under
 
 ## Attach an existing manager
 
-Use **Attach existing** in the dashboard, or:
+Use **Attach Existing Contracts** in the dashboard, or:
 
 ```sh
 docker compose exec -T sidekick node /app/dist/main.js \

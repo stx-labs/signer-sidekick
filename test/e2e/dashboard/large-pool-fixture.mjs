@@ -148,6 +148,8 @@ export const snapshot = {
       nextId: 140,
       blocksUntilPreparePhase: 1_540,
       preparePhaseStartBurnHeight: 10_780,
+      blocksUntilRewardPhase: 1_640,
+      rewardPhaseStartBurnHeight: 10_880,
       isPreparePhase: false,
     },
     checks: [
@@ -185,11 +187,17 @@ export const snapshot = {
   },
   setup: {
     status: "ready",
-    enrollmentWindow: { status: "open", targetCycleId: 140, blocksUntilPreparePhase: 1_540 },
+    enrollmentWindow: {
+      status: "open",
+      targetCycleId: 140,
+      preparePhaseStartBurnHeight: 10_780,
+      blocksUntilPreparePhase: 1_540,
+    },
     eligibility: {
       current: {
         cycleId: 139,
         delegatedUstx: "16800000000000",
+        thresholdUstx: "12600000000000",
         marginUstx: "4200000000000",
         meetsThreshold: true,
         inSignerSet: true,
@@ -197,6 +205,7 @@ export const snapshot = {
       next: {
         cycleId: 140,
         delegatedUstx: "17100000000000",
+        thresholdUstx: "12600000000000",
         marginUstx: "4500000000000",
         meetsThreshold: true,
         inSignerSet: true,

@@ -64,11 +64,13 @@ describe("operator service", () => {
           id: "manager:not-recognized-read-only",
           severity: "warning",
           title: "Manager Not Recognized — Read-only",
+          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
           title: "Manager Degraded to Read-only",
+          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
       ]),
     );
@@ -87,7 +89,40 @@ describe("operator service", () => {
         id: "manager:trust-transition-degraded:2026-07-16T12:00:00.000Z",
         severity: "warning",
         title: "Manager Recognition Degraded",
+        action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
       }),
+    );
+  });
+
+  it("routes connection and manager compatibility alerts to their repair screens", () => {
+    const input = alertInput({});
+    input.forecast = null;
+    input.preflight.checks = [
+      { id: "stacks-api", status: "fail", message: "Stacks API is unavailable" },
+    ] as typeof input.preflight.checks;
+    input.manager.attachAllowed = false;
+    input.manager.reasons = ["Manager network does not match"];
+    input.manager.installedProfiles.issues = [{}] as typeof input.manager.installedProfiles.issues;
+
+    expect(buildAlerts(input)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "preflight:stacks-api",
+          detail:
+            "Stacks API is unavailable. Open Settings to verify the configured node and API data sources.",
+          action: { kind: "navigate", label: "Open Settings", target: "settings" },
+        }),
+        expect.objectContaining({
+          id: "manager:unsupported",
+          detail:
+            "Manager network does not match. Open Initial Setup to review network compatibility and manager interface requirements.",
+          action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+        }),
+        expect.objectContaining({
+          id: "manager:profile-load-issues",
+          action: { kind: "navigate", label: "Review profile issues", target: "settings" },
+        }),
+      ]),
     );
   });
 
@@ -97,11 +132,17 @@ describe("operator service", () => {
       expect.objectContaining({
         id: "pool:forecast-attention",
         title: "Pool Below Signer-Set Threshold",
-        detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 144.",
+        detail:
+          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 144. Open Initial Setup → Activate your signer for the manager principal and enrollment cutoff.",
+        action: { kind: "navigate", label: "Open signer activation", target: "setup" },
       }),
     );
     expect(alerts).toContainEqual(
-      expect.objectContaining({ id: "setup:blocked", detail: "Grant is revoked" }),
+      expect.objectContaining({
+        id: "setup:blocked",
+        detail: "Grant is revoked. Open Initial Setup to review and resolve the blocked step.",
+        action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+      }),
     );
   });
 
@@ -109,9 +150,40 @@ describe("operator service", () => {
     expect(buildAlerts(alertInput({}))).toContainEqual(
       expect.objectContaining({
         title: "Pool Forecast Needs Attention",
-        detail: "Review reward cycle(s) 144.",
+        detail: "Open Pool positions to review the roster changes affecting reward cycle(s) 144.",
+        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
+  });
+
+  it("attaches the resolving control to roster and withdrawal alerts", () => {
+    const input = alertInput({});
+    input.forecast = null;
+    input.rewards = { status: "attention" } as typeof input.rewards;
+    input.activity.pendingWithdrawalTotal = 2;
+    expect(buildAlerts(input)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "rewards:incomplete",
+          detail:
+            "Sidekick has not synchronized the individual staker roster. Run Reconcile now before relying on payout totals.",
+          action: { kind: "reconcile", label: "Reconcile now" },
+        }),
+        expect.objectContaining({
+          id: "withdrawals:pending",
+          action: { kind: "navigate", label: "Review L1 withdrawals", target: "rewards" },
+        }),
+      ]),
+    );
+  });
+
+  it("does not classify informational manager modes as required actions", () => {
+    const input = alertInput({});
+    input.forecast = null;
+    input.manager.source.tier = "custom-observe";
+    const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-read-only");
+    expect(alert).toMatchObject({ severity: "info" });
+    expect(alert).not.toHaveProperty("action");
   });
 
   it("waits for an older load before starting a forced snapshot", async () => {

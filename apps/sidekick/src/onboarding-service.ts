@@ -16,10 +16,10 @@ import {
   compatibilityProfileByIdentity,
   loadNetworkCompatibilityProfiles,
 } from "./network-compatibility-store.js";
-import { runOperatorPreflight } from "./preflight.js";
+import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
 import { verifyManagerRegistration } from "./registration-verification.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { readPoolSetupStatus } from "./setup-status.js";
+import { type PoolSetupStatus, readPoolSetupStatus } from "./setup-status.js";
 import {
   prepareSignerGrant,
   type SignerGrantPreparation,
@@ -154,6 +154,12 @@ export interface PublicOnboardingWizardState {
     action: "dismissed" | "resumed";
     changedAt: string;
   }>;
+}
+
+export interface FreshOnboardingRefresh {
+  onboarding: PublicOnboardingState;
+  preflight: PreflightResult;
+  setup: PoolSetupStatus;
 }
 
 function statusFor(plan: ActivationPlan | null): PublicOnboardingState["status"] {
@@ -446,7 +452,7 @@ export class OnboardingService {
     return this.getOrThrow();
   }
 
-  async refreshFresh(observedAt = new Date().toISOString()): Promise<PublicOnboardingState> {
+  async refreshFresh(observedAt = new Date().toISOString()): Promise<FreshOnboardingRefresh> {
     const { data } = this.readData("fresh");
     if (!data.activationPlan) throw new Error("Prepare the fresh setup before refreshing it");
     const { config, node, api } = this.options.runtimeSettings.clients();
@@ -513,7 +519,11 @@ export class OnboardingService {
       observedAt,
       "chain-refreshed",
     );
-    return this.getOrThrow();
+    return {
+      onboarding: this.getOrThrow(),
+      preflight,
+      setup,
+    };
   }
 
   setCurrentStep(stepInput: unknown, observedAt = new Date().toISOString()): PublicOnboardingState {

@@ -41,13 +41,20 @@ interface OnboardingState {
     manifest: null | {
       operatorReviewRequired: true;
       warnings: string[];
+      network: string;
+      adminPrincipal: string;
       artifact: { sourceSha256: string; canonicalSourceSha256: string };
+      transaction: { contractName: string; clarityVersion: 6 };
     };
   };
   signerGrant: {
     preparation: null | { command: string; expectedMessageHashHex: string; authId: string };
     verified: null | {
+      managerPrincipal: string;
+      authId: string;
       signerKeyHex: string;
+      signerSignatureHex: string;
+      expectedMessageHashHex: string;
       registerSelfCall: {
         contract: string;
         functionName: string;
@@ -63,6 +70,12 @@ interface OnboardingState {
     status: string;
     changedAt: string;
   }>;
+}
+
+interface FreshRefreshResponse {
+  onboarding: OnboardingState;
+  preflight: Phase3Snapshot["preflight"];
+  setup: NonNullable<Phase3Snapshot["setup"]>;
 }
 
 interface OnboardingWizardState {
@@ -134,6 +147,28 @@ export interface Phase3Snapshot {
   network: string;
   setup: null | {
     status: "ready" | "attention" | "blocked";
+    enrollmentWindow: {
+      status: "open" | "prepare-phase" | "unknown";
+      targetCycleId: number | null;
+      preparePhaseStartBurnHeight: number | null;
+      blocksUntilPreparePhase: number | null;
+    };
+    eligibility: {
+      current: null | {
+        cycleId: number;
+        delegatedUstx: string;
+        thresholdUstx: string;
+        meetsThreshold: boolean;
+        inSignerSet: boolean;
+      };
+      next: null | {
+        cycleId: number;
+        delegatedUstx: string;
+        thresholdUstx: string;
+        meetsThreshold: boolean;
+        inSignerSet: boolean;
+      };
+    };
     checks: Array<{ id: string; status: "pass" | "warn" | "fail"; message: string }>;
   };
   preflight: {
@@ -142,10 +177,20 @@ export interface Phase3Snapshot {
       serverVersion: string | null;
       version: string | null;
       commit: string | null;
+      burnBlockHeight: number;
     };
     pox: {
       activationState: "active" | "scheduled" | "unavailable";
       blocksUntilActivation: number | null;
+    };
+    cycle: {
+      currentId: number | null;
+      nextId: number | null;
+      preparePhaseStartBurnHeight: number | null;
+      blocksUntilPreparePhase: number | null;
+      rewardPhaseStartBurnHeight: number | null;
+      blocksUntilRewardPhase: number | null;
+      isPreparePhase: boolean | null;
     };
     compatibility: {
       status: "matched" | "unrecognized" | "inconsistent";
@@ -220,9 +265,17 @@ function PageHead({
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
-  const state = ["complete", "ready", "pass", "connected", "grant valid", "eligible"].includes(
-    normalized,
-  )
+  const state = [
+    "complete",
+    "ready",
+    "pass",
+    "connected",
+    "grant valid",
+    "eligible",
+    "activation scheduled",
+    "signer active",
+    "setup complete",
+  ].includes(normalized)
     ? "b-success"
     : ["blocked", "fail", "unavailable", "grant not verified", "needs attention"].includes(
           normalized,
@@ -294,10 +347,120 @@ const freshLabels = [
   "Deploy manager",
   "Signer grant ceremony",
   "Register manager",
-  "Pool policy",
-  "Automation identity",
-  "Final verification",
+  "Activate your signer",
 ];
+
+function randomAuthId(): string {
+  const values = new Uint32Array(2);
+  globalThis.crypto.getRandomValues(values);
+  return ((BigInt(values[0] ?? 0) << 32n) | BigInt(values[1] ?? 0)).toString();
+}
+
+type SignerActivationKind =
+  | "stake-required"
+  | "membership-pending"
+  | "scheduled"
+  | "active"
+  | "window-closed"
+  | "blocked"
+  | "unknown";
+
+interface SignerActivationView {
+  kind: SignerActivationKind;
+  badge: string;
+  title: string;
+  message: string;
+  refreshLabel: string;
+}
+
+function signerActivationView(
+  setup: Phase3Snapshot["setup"],
+  preflight: Phase3Snapshot["preflight"],
+): SignerActivationView {
+  if (!setup) {
+    return {
+      kind: "unknown",
+      badge: "Verification required",
+      title: "Check signer activation",
+      message: "Refresh chain status to read the manager's stake and signer-set membership.",
+      refreshLabel: "Refresh chain status",
+    };
+  }
+  if (setup.status === "blocked") {
+    return {
+      kind: "blocked",
+      badge: "Activation blocked",
+      title: "Signer activation is blocked",
+      message:
+        setup.checks.find(({ status }) => status === "fail")?.message ??
+        "Resolve the failed setup check before continuing.",
+      refreshLabel: "Refresh chain status",
+    };
+  }
+
+  const current = setup.eligibility.current;
+  const next = setup.eligibility.next;
+  if (current?.meetsThreshold && current.inSignerSet) {
+    return {
+      kind: "active",
+      badge: "Signer active",
+      title: `Signer active for cycle ${current.cycleId}`,
+      message: `The manager is eligible and in the signer set for cycle ${current.cycleId}.`,
+      refreshLabel: "Refresh chain status",
+    };
+  }
+  if (next?.meetsThreshold && next.inSignerSet) {
+    const start = preflight.cycle.rewardPhaseStartBurnHeight;
+    return {
+      kind: "scheduled",
+      badge: "Activation scheduled",
+      title: `Activation scheduled for cycle ${next.cycleId}`,
+      message: start
+        ? `No action is required. Signing begins when cycle ${next.cycleId} starts at burn height ${start}.`
+        : `No action is required. Signing begins when cycle ${next.cycleId} starts.`,
+      refreshLabel: "Refresh chain status",
+    };
+  }
+  if (next?.meetsThreshold && !next.inSignerSet) {
+    return {
+      kind: "membership-pending",
+      badge: "Chain update pending",
+      title: `Signer-set confirmation pending for cycle ${next.cycleId}`,
+      message:
+        "The stake threshold is met, but signer-set membership has not updated at this chain tip. Wait for the chain to advance, then refresh.",
+      refreshLabel: "Refresh chain status",
+    };
+  }
+  if (setup.enrollmentWindow.status === "prepare-phase") {
+    const targetCycle = setup.enrollmentWindow.targetCycleId;
+    return {
+      kind: "window-closed",
+      badge: "Enrollment closed",
+      title: targetCycle ? `Cycle ${targetCycle} enrollment is closed` : "Enrollment is closed",
+      message: targetCycle
+        ? `Stake changes are closed for cycle ${targetCycle}. Target cycle ${targetCycle + 1} when enrollment reopens.`
+        : "Stake changes are closed during the prepare phase. Target the next cycle when enrollment reopens.",
+      refreshLabel: "Refresh chain status",
+    };
+  }
+  if (setup.enrollmentWindow.status === "open" && next) {
+    return {
+      kind: "stake-required",
+      badge: "Stake required",
+      title: `Stake required for cycle ${next.cycleId}`,
+      message: `Stake at least ${formatUstx(next.thresholdUstx)} STX total to this manager before the prepare phase begins.`,
+      refreshLabel: "Refresh after staking",
+    };
+  }
+  return {
+    kind: "unknown",
+    badge: "Window unknown",
+    title: "Signer activation needs attention",
+    message:
+      "The node did not report a usable enrollment window. Refresh after the chain advances.",
+    refreshLabel: "Refresh chain status",
+  };
+}
 
 function combinedStepStatus(steps: Array<ActivationStep | undefined>): StepStatus {
   const values = steps.filter((step): step is ActivationStep => Boolean(step));
@@ -309,10 +472,25 @@ function combinedStepStatus(steps: Array<ActivationStep | undefined>): StepStatu
   return "pending";
 }
 
-function freshWorkflowSteps(
-  raw: ActivationStep[],
-  settings: RuntimeSettings | undefined,
-): ActivationStep[] {
+function attachWorkflowSteps(raw: ActivationStep[]): ActivationStep[] {
+  const status = combinedStepStatus(raw);
+  return [
+    {
+      id: "attach-verification",
+      title: "Verify existing manager",
+      detail:
+        status === "complete" || status === "ready"
+          ? "Manager attached and operational checks passed"
+          : status === "attention"
+            ? "Manager attached; review the checks that need attention"
+            : "Review the manager verification results",
+      status,
+      command: null,
+    },
+  ];
+}
+
+function freshWorkflowSteps(raw: ActivationStep[]): ActivationStep[] {
   const byId = new Map(raw.map((step) => [step.id, step]));
   const mapped = (id: string, title: string): ActivationStep => {
     const step = byId.get(id);
@@ -337,26 +515,8 @@ function freshWorkflowSteps(
     },
     mapped("register-manager", "Register manager"),
     {
-      id: "pool-policy",
-      title: "Pool policy",
-      detail: settings?.revision
-        ? `Settings revision ${settings.revision} saved`
-        : "Configure fee, payout, display, and alert policy",
-      status: settings?.revision ? "complete" : "ready",
-      command: null,
-    },
-    {
-      id: "automation-identity",
-      title: "Automation identity",
-      detail: settings?.automation.gasPayerPrincipal
-        ? "Dedicated gas-payer principal recorded"
-        : "Record a dedicated gas-payer principal; key custody remains external",
-      status: settings?.automation.gasPayerPrincipal ? "complete" : "attention",
-      command: null,
-    },
-    {
       id: "final-verification",
-      title: "Final verification",
+      title: "Activate your signer",
       detail:
         verificationSteps.find((step) => step?.status !== "complete")?.detail ??
         "Setup and pool information are ready",
@@ -367,14 +527,22 @@ function freshWorkflowSteps(
 }
 
 function workflowStepId(path: "attach" | "fresh", rawStep: string): string {
-  if (path === "attach") return rawStep;
+  if (path === "attach") return "attach-verification";
   if (["prepare-signer-grant", "verify-signer-grant"].includes(rawStep))
     return "signer-grant-ceremony";
   if (["verify-setup", "publish-enrollment-info"].includes(rawStep)) return "final-verification";
   return rawStep;
 }
 
-export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string }) {
+export function SetupPage({
+  data,
+  token,
+  onOnboardingStarted,
+}: {
+  data: Phase3Snapshot;
+  token: string;
+  onOnboardingStarted: () => void;
+}) {
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [wizard, setWizard] = useState<OnboardingWizardState>({
     dismissed: false,
@@ -395,10 +563,26 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
   }, [data.managerPrincipal]);
   const [fresh, setFresh] = useState({
     ...managerParts,
-    authId: "0",
+    authId: randomAuthId(),
     signerConfigPath: "<SIGNER_CONFIG_PATH>",
   });
   const [signerOutput, setSignerOutput] = useState("");
+  const [activationSnapshot, setActivationSnapshot] = useState({
+    preflight: data.preflight,
+    setup: data.setup,
+  });
+
+  useEffect(() => {
+    setActivationSnapshot({ preflight: data.preflight, setup: data.setup });
+  }, [data.preflight, data.setup]);
+
+  const refreshFresh = useCallback(async () => {
+    const result = await api<FreshRefreshResponse>(token, "/api/v1/onboarding/fresh/refresh", {
+      method: "POST",
+    });
+    setActivationSnapshot({ preflight: result.preflight, setup: result.setup });
+    return result;
+  }, [token]);
 
   const load = useCallback(async () => {
     try {
@@ -408,6 +592,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
       }>(token, "/api/v1/onboarding");
       setWizard(result.wizard);
       if (result.onboarding) {
+        onOnboardingStarted();
         setOnboarding(result.onboarding);
         setPath(result.onboarding.path);
         setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
@@ -416,7 +601,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [token]);
+  }, [onOnboardingStarted, token]);
 
   useEffect(() => {
     void load();
@@ -431,9 +616,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
       return;
     }
     const interval = window.setInterval(() => {
-      void api<{ onboarding: OnboardingState }>(token, "/api/v1/onboarding/fresh/refresh", {
-        method: "POST",
-      })
+      void refreshFresh()
         .then((result) => {
           setOnboarding(result.onboarding);
         })
@@ -442,13 +625,14 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
         });
     }, 20_000);
     return () => window.clearInterval(interval);
-  }, [onboarding?.activationPlan, path, selectedStep, token]);
+  }, [onboarding?.activationPlan, path, refreshFresh, selectedStep]);
 
   const run = async (action: () => Promise<{ onboarding: OnboardingState }>) => {
     setBusy(true);
     setError(null);
     try {
       const result = await action();
+      onOnboardingStarted();
       setOnboarding(result.onboarding);
       setPath(result.onboarding.path);
       setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
@@ -485,22 +669,48 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
   const rawSteps = onboarding?.activationPlan?.steps ?? [];
   const steps = rawSteps.length
     ? path === "fresh"
-      ? freshWorkflowSteps(rawSteps, data.runtimeSettings)
-      : rawSteps
+      ? freshWorkflowSteps(rawSteps)
+      : attachWorkflowSteps(rawSteps)
     : [];
   const visibleLabels = path === "attach" ? attachLabels : freshLabels;
   const active = steps.find(({ id }) => id === selectedStep) ?? steps[0] ?? null;
+  const attachNeedsRepair = rawSteps.some(
+    ({ id, status }) =>
+      ["verify-registration", "verify-signer-grant"].includes(id) && status === "blocked",
+  );
+  const attachBlocked = rawSteps.some(({ status }) => status === "blocked");
+  const attachAttention = rawSteps.some(({ status }) => status === "attention");
+  const activation = signerActivationView(activationSnapshot.setup, activationSnapshot.preflight);
+  const activationSetup = activationSnapshot.setup;
+  const targetEligibility =
+    activation.kind === "active"
+      ? activationSetup?.eligibility.current
+      : (activationSetup?.eligibility.next ?? activationSetup?.eligibility.current);
+  const foundationChecks =
+    activationSetup?.checks.filter(({ id }) =>
+      ["manager-attachment", "manager-artifact", "signer-registration", "signer-grant"].includes(
+        id,
+      ),
+    ) ?? [];
+  const initialSetupComplete = Boolean(
+    activationSetup &&
+      (activationSetup.status === "ready" ||
+        (foundationChecks.length === 4 &&
+          foundationChecks.every(({ status }) => status === "pass"))),
+  );
+  const enrollmentCloseHeight =
+    activationSetup?.enrollmentWindow.preparePhaseStartBurnHeight ??
+    activationSnapshot.preflight.cycle.preparePhaseStartBurnHeight;
+  const blocksUntilEnrollmentClose =
+    activationSetup?.enrollmentWindow.blocksUntilPreparePhase ??
+    activationSnapshot.preflight.cycle.blocksUntilPreparePhase;
+  const signingStartHeight = activationSnapshot.preflight.cycle.rewardPhaseStartBurnHeight;
 
   const selectStep = async (step: ActivationStep) => {
     setSelectedStep(step.id);
     if (
       onboarding &&
-      ![
-        "signer-grant-ceremony",
-        "pool-policy",
-        "automation-identity",
-        "final-verification",
-      ].includes(step.id)
+      !["attach-verification", "signer-grant-ceremony", "final-verification"].includes(step.id)
     ) {
       try {
         const result = await api<{ onboarding: OnboardingState }>(
@@ -584,14 +794,14 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                 className={path === "attach" ? "on" : ""}
                 onClick={() => void start("attach")}
               >
-                Attach existing
+                Attach Existing Contracts
               </button>
               <button
                 type="button"
                 className={path === "fresh" ? "on" : ""}
                 onClick={() => void start("fresh")}
               >
-                Fresh setup
+                Deploy New Contracts
               </button>
             </div>
             <button
@@ -644,6 +854,14 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
               </div>
               {path === "attach" ? (
                 <>
+                  <div className="callout callout-info" role="note">
+                    <ShieldCheck className="ic" />
+                    <div className="body">
+                      Sidekick will read the configured manager and verify its source, PoX-5
+                      registration, signer grant, and next-cycle eligibility. This is read-only and
+                      does not change the manager or broadcast a transaction.
+                    </div>
+                  </div>
                   <Field
                     label="Signer-manager principal"
                     help="Must match the manager configured for this Sidekick deployment."
@@ -675,19 +893,30 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                       })
                     }
                   >
-                    <ShieldCheck /> Verify and attach
+                    <ShieldCheck /> Run attach checks
                   </button>
                 </>
               ) : (
-                <div className="form-grid">
+                <div className="form-grid setup-entry-form">
+                  <div className="callout callout-info" role="note">
+                    <ShieldCheck className="ic" />
+                    <div className="body">
+                      <strong>Prepare a new signer-manager</strong>
+                      <div>
+                        Sidekick generates the deployment files, verifies the resulting contract,
+                        and guides signer authorization. You sign and broadcast the deployment and
+                        registration transactions outside Sidekick.
+                      </div>
+                    </div>
+                  </div>
                   <div className="archive-guidance" role="note">
                     <div>
-                      <strong>Starting a new mainnet or testnet node?</strong>
+                      <strong>Node and signer setup stay outside Sidekick.</strong>
                       <p>
-                        Seed its chainstate from the Hiro Archive before launch to avoid syncing
-                        from genesis. Verify the SHA-256 checksum, extract it into the node&apos;s
-                        <code> working_dir</code>, then confirm the local block height is catching
-                        up. Private networks should use their own network-specific bootstrap.
+                        Before continuing, confirm that the node and API are synced, the signer is
+                        running, you know its configuration path, and the manager admin wallet is
+                        funded. A new public-network node can use the verified Hiro chainstate
+                        archive instead of syncing from genesis.
                       </p>
                     </div>
                     <div className="stacked-doc-links">
@@ -714,42 +943,67 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                       </a>
                     </div>
                   </div>
+                  {data.preflight.checks.some(({ status }) => status !== "pass") ? (
+                    <div
+                      className={`callout ${data.preflight.status === "fail" ? "callout-critical" : "callout-caution"}`}
+                    >
+                      <Warning className="ic" />
+                      <div className="body">
+                        <strong>Connected preflight needs attention.</strong>
+                        <ul className="compact-check-list">
+                          {data.preflight.checks
+                            .filter(({ status }) => status !== "pass")
+                            .map((check) => (
+                              <li key={check.id}>{check.message}</li>
+                            ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ) : null}
                   <Field
                     label="Manager admin principal"
-                    help="Public principal only. No admin key is accepted."
+                    help="The funded wallet that will deploy and administer this manager. Public address only."
                   >
                     <span className="copyable-input">
-                      <input
-                        className="input mono"
-                        value={fresh.adminPrincipal}
-                        onChange={(event) =>
-                          setFresh({ ...fresh, adminPrincipal: event.target.value })
-                        }
-                      />
+                      <input className="input mono" readOnly value={fresh.adminPrincipal} />
                       <CopyIdentifierButton
                         value={fresh.adminPrincipal}
                         label="manager admin principal"
                       />
                     </span>
                   </Field>
-                  <Field label="Contract name">
-                    <input
-                      className="input mono"
-                      value={fresh.contractName}
-                      onChange={(event) => setFresh({ ...fresh, contractName: event.target.value })}
-                    />
-                  </Field>
-                  <Field label="Signer grant auth ID">
-                    <input
-                      className="input mono"
-                      inputMode="numeric"
-                      value={fresh.authId}
-                      onChange={(event) => setFresh({ ...fresh, authId: event.target.value })}
-                    />
+                  <Field
+                    label="Contract name"
+                    help="Together with the admin address, this forms the configured manager principal."
+                  >
+                    <span className="copyable-input">
+                      <input className="input mono" readOnly value={fresh.contractName} />
+                      <CopyIdentifierButton value={fresh.contractName} label="contract name" />
+                    </span>
                   </Field>
                   <Field
-                    label="Signer config path in generated instruction"
-                    help="Sidekick does not open or read this path."
+                    label="Signer grant auth ID"
+                    help="A one-time ID for this signer authorization. Keep it unchanged through registration."
+                  >
+                    <div className="field-inline-action">
+                      <input
+                        className="input mono"
+                        inputMode="numeric"
+                        value={fresh.authId}
+                        onChange={(event) => setFresh({ ...fresh, authId: event.target.value })}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-tertiary"
+                        onClick={() => setFresh({ ...fresh, authId: randomAuthId() })}
+                      >
+                        <ArrowClockwise /> Regenerate
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Signer configuration path"
+                    help="Absolute path to the signer TOML on the signer host. Sidekick inserts it into the command but never reads it."
                   >
                     <input
                       className="input mono"
@@ -762,7 +1016,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                   <button
                     type="button"
                     className="btn btn-accent"
-                    disabled={busy}
+                    disabled={busy || data.preflight.status === "fail"}
                     onClick={() =>
                       void run(async () => {
                         if (onboarding?.path !== "fresh") {
@@ -778,7 +1032,7 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                       })
                     }
                   >
-                    Prepare manager artifact
+                    Generate deployment files
                   </button>
                 </div>
               )}
@@ -787,14 +1041,40 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
             <div className="card-standout phase3-action-card">
               <div className="card-head">
                 <h2>{active?.title ?? "Setup complete"}</h2>
-                <StatusBadge status={active?.status ?? onboarding.status} />
+                <StatusBadge
+                  status={
+                    active?.id === "final-verification"
+                      ? activation.badge
+                      : (active?.status ?? onboarding.status)
+                  }
+                />
               </div>
-              <p className="muted setup-copy">{active?.detail}</p>
-              {active?.command ? <pre className="code command-code">{active.command}</pre> : null}
-
+              {active?.id !== "final-verification" ? (
+                <p className="muted setup-copy">{active?.detail}</p>
+              ) : null}
               {path === "attach" ? (
                 <div className="checklist">
-                  {steps.map((step) => (
+                  <div
+                    className={`callout ${attachBlocked || attachAttention ? "callout-caution" : "callout-info"}`}
+                  >
+                    {attachBlocked || attachAttention ? (
+                      <Warning className="ic" />
+                    ) : (
+                      <Check className="ic" />
+                    )}
+                    <div className="body">
+                      <strong>
+                        {attachBlocked
+                          ? "Manager attached with operational blockers."
+                          : attachAttention
+                            ? "Manager attached with items to review."
+                            : "Manager attached and operational checks passed."}
+                      </strong>{" "}
+                      Sidekick is observing this manager without changing chain state. Attention
+                      items do not prevent monitoring; blocked items prevent an operational pool.
+                    </div>
+                  </div>
+                  {rawSteps.map((step) => (
                     <div className="check-item" key={step.id}>
                       <span
                         className={`box ${step.status === "complete" ? "ok" : step.status === "blocked" ? "bad" : "wait"}`}
@@ -802,89 +1082,333 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                         {step.status === "complete" ? <Check /> : <Warning />}
                       </span>
                       <div className="body">
-                        <strong>{step.title}</strong>
+                        <strong>
+                          {step.id === "publish-enrollment-info"
+                            ? "Public pool information (optional)"
+                            : step.title}
+                        </strong>
                         <div className="m">{step.detail}</div>
                       </div>
                     </div>
                   ))}
-                  <button
-                    type="button"
-                    className="btn btn-accent"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(() =>
-                        api(token, "/api/v1/onboarding/attach/verify", {
-                          method: "POST",
-                          body: JSON.stringify({ managerPrincipal: data.managerPrincipal }),
-                        }),
-                      )
-                    }
-                  >
-                    <ArrowClockwise /> Re-run verification
-                  </button>
-                </div>
-              ) : null}
-
-              {path === "fresh" && active?.id === "deploy-manager" ? (
-                <div className="artifact-actions">
-                  <button
-                    type="button"
-                    className="btn btn-accent"
-                    onClick={() =>
-                      void authenticatedDownload(token, "/api/v1/onboarding/artifacts/source")
-                    }
-                  >
-                    <DownloadSimple /> Download .clar
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() =>
-                      void authenticatedDownload(token, "/api/v1/onboarding/artifacts/manifest")
-                    }
-                  >
-                    <DownloadSimple /> Download manifest
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(() =>
-                        api(token, "/api/v1/onboarding/fresh/refresh", { method: "POST" }),
-                      )
-                    }
-                  >
-                    <ArrowClockwise /> Verify deployment
-                  </button>
-                  {onboarding.artifact.manifest ? (
-                    <p className="help mono src src-chain">
-                      source {onboarding.artifact.manifest.artifact.sourceSha256}
-                    </p>
+                  {attachNeedsRepair ? (
+                    <div className="callout callout-caution">
+                      <Warning className="ic" />
+                      <div className="body">
+                        <strong>Signer authorization must be repaired externally.</strong> The
+                        existing manager needs a new signer grant and{" "}
+                        <span className="mono">register-self</span> call. Guided repair for an
+                        existing manager is not yet available; Sidekick will continue read-only
+                        monitoring and can re-check the result afterward.
+                      </div>
+                    </div>
                   ) : null}
-                </div>
-              ) : null}
-
-              {path === "fresh" && active?.id === "signer-grant-ceremony" ? (
-                <div className="form-grid">
-                  {!onboarding.signerGrant.preparation ? (
+                  <div className="setup-result-actions">
                     <button
                       type="button"
                       className="btn btn-accent"
                       disabled={busy}
                       onClick={() =>
                         void run(() =>
-                          api(token, "/api/v1/onboarding/fresh/grant/prepare", { method: "POST" }),
+                          api(token, "/api/v1/onboarding/attach/verify", {
+                            method: "POST",
+                            body: JSON.stringify({ managerPrincipal: data.managerPrincipal }),
+                          }),
                         )
                       }
                     >
-                      Prepare signer-host instruction
+                      <ArrowClockwise /> Re-run verification
                     </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        location.hash = "enrollment";
+                      }}
+                    >
+                      Open Public Pool Page
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {path === "fresh" && active?.id === "preflight" ? (
+                <div className="setup-review-panel">
+                  <div className="callout callout-info">
+                    <ShieldCheck className="ic" />
+                    <div className="body">
+                      Sidekick checked the configured node, API, network identity, and active PoX-5
+                      contract. It cannot verify the external signer installation or admin-wallet
+                      funding.
+                    </div>
+                  </div>
+                  <div className="checklist">
+                    {data.preflight.checks.map((check) => (
+                      <div className="check-item" key={check.id}>
+                        <span
+                          className={`box ${check.status === "pass" ? "ok" : check.status === "fail" ? "bad" : "wait"}`}
+                        >
+                          {check.status === "pass" ? <Check /> : <Warning />}
+                        </span>
+                        <div className="body">
+                          <div className="m">{check.message}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      location.hash = "operations";
+                    }}
+                  >
+                    Open Operations
+                  </button>
+                  {active.command ? (
+                    <details className="setup-advanced">
+                      <summary>CLI equivalent (advanced)</summary>
+                      <pre className="code command-code">{active.command}</pre>
+                    </details>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {path === "fresh" && active?.id === "render-manager" ? (
+                <div className="setup-review-panel">
+                  <div className="callout callout-info">
+                    <ShieldCheck className="ic" />
+                    <div className="body">
+                      Sidekick generated the manager source from the approved network profile and
+                      recorded its immutable deployment values. Review and download the files before
+                      deploying the contract.
+                    </div>
+                  </div>
+                  <div className="artifact-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void authenticatedDownload(token, "/api/v1/onboarding/artifacts/source")
+                      }
+                    >
+                      <DownloadSimple /> Download .clar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void authenticatedDownload(token, "/api/v1/onboarding/artifacts/manifest")
+                      }
+                    >
+                      <DownloadSimple /> Download manifest
+                    </button>
+                    {onboarding.artifact.manifest ? (
+                      <p className="help mono src src-chain">
+                        source {onboarding.artifact.manifest.artifact.sourceSha256}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-accent"
+                    onClick={() => setSelectedStep("deploy-manager")}
+                  >
+                    Review deployment instructions
+                  </button>
+                  {active.command ? (
+                    <details className="setup-advanced">
+                      <summary>CLI equivalent (advanced)</summary>
+                      <pre className="code command-code">{active.command}</pre>
+                    </details>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {path === "fresh" && active?.id === "deploy-manager" ? (
+                <div className="deployment-handoff">
+                  <div className="artifact-actions">
+                    <button
+                      type="button"
+                      className="btn btn-accent"
+                      onClick={() =>
+                        void authenticatedDownload(token, "/api/v1/onboarding/artifacts/source")
+                      }
+                    >
+                      <DownloadSimple /> Download .clar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void authenticatedDownload(token, "/api/v1/onboarding/artifacts/manifest")
+                      }
+                    >
+                      <DownloadSimple /> Download manifest
+                    </button>
+                    {onboarding.artifact.manifest ? (
+                      <p className="help mono src src-chain">
+                        source {onboarding.artifact.manifest.artifact.sourceSha256}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  {onboarding.artifact.manifest ? (
+                    <div className="deploy-instructions">
+                      <h3>Deploy outside Sidekick</h3>
+                      <p>
+                        The <span className="mono">.clar</span> file is the contract source. The
+                        manifest records the values you must review; it is not an import file.
+                      </p>
+                      <div className="deployment-target">
+                        <span>
+                          From{" "}
+                          <CopyableIdentifier
+                            value={onboarding.artifact.manifest.adminPrincipal}
+                            label="manager admin principal"
+                            className="mono"
+                          />
+                        </span>
+                        <span>
+                          Contract{" "}
+                          <strong className="mono">
+                            {onboarding.artifact.manifest.transaction.contractName}
+                          </strong>
+                        </span>
+                        <span>
+                          Network <strong>{onboarding.artifact.manifest.network}</strong>
+                        </span>
+                        <span>
+                          Clarity{" "}
+                          <strong>{onboarding.artifact.manifest.transaction.clarityVersion}</strong>
+                        </span>
+                      </div>
+                      <div className="deployment-options">
+                        <div>
+                          <strong>Wallet / Explorer</strong>
+                          <p>
+                            Connect the funded admin wallet to the same network, open Deploy
+                            Contract, paste the <span className="mono">.clar</span> source, and copy
+                            the contract name from the manifest.
+                          </p>
+                          <a
+                            href="https://explorer.hiro.so/sandbox/deploy"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open Explorer Sandbox <ArrowSquareOut />
+                          </a>
+                        </div>
+                        <div>
+                          <strong>Clarinet CLI</strong>
+                          <p>
+                            Add the <span className="mono">.clar</span> file to a Clarinet project,
+                            configure the same network and deployer, then generate, review, and
+                            apply a deployment plan using the manifest values.
+                          </p>
+                          <a
+                            href="https://docs.stacks.co/clarinet/contract-deployment"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Clarinet deployment guide <ArrowSquareOut />
+                          </a>
+                        </div>
+                      </div>
+                      <p className="deploy-warning">
+                        Keep the admin key in your wallet or CLI. After the transaction confirms,
+                        return here and verify the deployed source before continuing.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-accent"
+                        disabled={busy}
+                        onClick={() => void run(refreshFresh)}
+                      >
+                        <ArrowClockwise /> Verify deployment
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="help mono src src-chain">
+                      Prepare the manager artifact before deploying.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              {path === "fresh" && active?.id === "signer-grant-ceremony" ? (
+                <div className="form-grid grant-ceremony">
+                  <div className="callout callout-info" role="note">
+                    <Key className="ic" />
+                    <div className="body">
+                      <strong>Authorize this manager with your signer</strong>
+                      <div>
+                        Your signer signs the live PoX-5 authorization for this manager. Sidekick
+                        verifies the public result and uses it to prepare the registration call in
+                        the next step; it never accesses the signer key or broadcasts a transaction.
+                      </div>
+                    </div>
+                  </div>
+                  {!onboarding.signerGrant.preparation ? (
+                    <>
+                      <ol className="ceremony-steps">
+                        <li>
+                          Click <strong>Generate signer command</strong>. Sidekick reads the live
+                          grant hash using the auth ID and signer config path entered earlier.
+                        </li>
+                        <li>
+                          Sidekick will then show the exact command to run on the signer host.
+                        </li>
+                      </ol>
+                      <button
+                        type="button"
+                        className="btn btn-accent"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(() =>
+                            api(token, "/api/v1/onboarding/fresh/grant/prepare", {
+                              method: "POST",
+                            }),
+                          )
+                        }
+                      >
+                        Generate signer command
+                      </button>
+                    </>
                   ) : (
                     <>
-                      <pre className="code command-code">
-                        {onboarding.signerGrant.preparation.command}
-                      </pre>
+                      <ol className="ceremony-steps">
+                        <li>
+                          Copy and run the command below on the machine running your signer. It must
+                          have <span className="mono">stacks-signer</span> and access to the listed
+                          signer configuration file.
+                        </li>
+                        <li>
+                          Copy the complete JSON object printed by the command. It contains only the
+                          public signer key, signature, manager, and auth ID.
+                        </li>
+                        <li>
+                          Paste that JSON below and click <strong>Verify signer output</strong>.
+                          Sidekick will reject output for a different manager, auth ID, or live
+                          grant hash.
+                        </li>
+                      </ol>
+                      <div className="ceremony-command">
+                        <div className="ceremony-command-head">
+                          <strong>Run on the signer host</strong>
+                          <CopyIdentifierButton
+                            value={onboarding.signerGrant.preparation.command}
+                            label="signer command"
+                          />
+                        </div>
+                        <pre className="code command-code">
+                          {onboarding.signerGrant.preparation.command}
+                        </pre>
+                      </div>
+                      <div className="statline">
+                        <span className="k">Auth ID</span>
+                        <span className="v mono">{onboarding.signerGrant.preparation.authId}</span>
+                      </div>
                       <div className="statline">
                         <span className="k">SIP-018 grant hash</span>
                         <span className="v">
@@ -901,12 +1425,13 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
                   {onboarding.signerGrant.preparation && !onboarding.signerGrant.verified ? (
                     <>
                       <Field
-                        label="Signer command JSON output"
-                        help="Contains a public signer key and signature, never the signer private key."
+                        label="JSON output from the signer command"
+                        help="Paste the complete JSON object. Never paste the signer configuration or private key."
                       >
                         <textarea
                           className="input code-input"
                           rows={10}
+                          placeholder="Paste the complete JSON object printed by stacks-signer"
                           value={signerOutput}
                           onChange={(event) => setSignerOutput(event.target.value)}
                         />
@@ -942,66 +1467,223 @@ export function SetupPage({ data, token }: { data: Phase3Snapshot; token: string
               {path === "fresh" &&
               active?.id === "register-manager" &&
               onboarding.signerGrant.verified ? (
-                <div className="form-grid">
-                  <p className="muted">
-                    Sign and broadcast this <span className="mono">register-self</span> call with
-                    the external manager admin wallet.
-                  </p>
-                  <pre className="code command-code">
-                    {JSON.stringify(onboarding.signerGrant.verified.registerSelfCall, null, 2)}
-                  </pre>
+                <div className="registration-handoff">
+                  <div className="callout callout-info">
+                    <ShieldCheck className="ic" />
+                    <div className="body">
+                      <strong>Register the manager with PoX-5.</strong> This call grants the
+                      verified signer key to the manager and registers the manager in one
+                      transaction. Sign and broadcast it with the manager admin wallet; Sidekick
+                      never receives the key or broadcasts the transaction.
+                    </div>
+                  </div>
+
+                  <ol className="ceremony-steps registration-instructions">
+                    <li>
+                      Open your preferred Stacks wallet, Explorer contract-call interface, or CLI on
+                      the same network as Sidekick.
+                    </li>
+                    <li>
+                      Call <span className="mono">register-self</span> on the manager contract using
+                      the values below, signed by the manager admin principal.
+                    </li>
+                    <li>Broadcast the transaction and wait for it to confirm.</li>
+                    <li>
+                      Return here and click <strong>Check registration</strong>.
+                    </li>
+                  </ol>
+
+                  <div className="registration-values">
+                    {[
+                      [
+                        "Manager contract",
+                        onboarding.signerGrant.verified.registerSelfCall.contract,
+                        "manager contract",
+                      ],
+                      [
+                        "Function",
+                        onboarding.signerGrant.verified.registerSelfCall.functionName,
+                        "function name",
+                      ],
+                      [
+                        "Signing principal",
+                        onboarding.signerGrant.verified.registerSelfCall.signingPrincipal,
+                        "signing principal",
+                      ],
+                      [
+                        "Signer manager",
+                        onboarding.signerGrant.verified.managerPrincipal,
+                        "signer manager",
+                      ],
+                      [
+                        "Signer key",
+                        `0x${onboarding.signerGrant.verified.signerKeyHex}`,
+                        "signer key",
+                      ],
+                      ["Auth ID", `u${onboarding.signerGrant.verified.authId}`, "auth ID"],
+                      [
+                        "Signer signature",
+                        `0x${onboarding.signerGrant.verified.signerSignatureHex}`,
+                        "signer signature",
+                      ],
+                    ].map(([label, value, copyLabel]) => (
+                      <div className="registration-value" key={label}>
+                        <span>{label}</span>
+                        <CopyableIdentifier value={value} label={copyLabel} className="mono" />
+                      </div>
+                    ))}
+                  </div>
+
+                  <details className="setup-advanced">
+                    <summary>Encoded transaction arguments (advanced)</summary>
+                    <div className="ceremony-command">
+                      <div className="ceremony-command-head">
+                        <span>Raw call payload</span>
+                        <CopyIdentifierButton
+                          value={JSON.stringify(
+                            onboarding.signerGrant.verified.registerSelfCall,
+                            null,
+                            2,
+                          )}
+                          label="raw call payload"
+                        />
+                      </div>
+                      <pre className="code command-code">
+                        {JSON.stringify(onboarding.signerGrant.verified.registerSelfCall, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
                   <button
                     type="button"
                     className="btn btn-accent"
                     disabled={busy}
-                    onClick={() =>
-                      void run(() =>
-                        api(token, "/api/v1/onboarding/fresh/refresh", { method: "POST" }),
-                      )
-                    }
+                    onClick={() => void run(refreshFresh)}
                   >
-                    <ArrowClockwise /> Verify registration
+                    <ArrowClockwise /> Check registration
                   </button>
                 </div>
               ) : null}
 
-              {path === "fresh" && active?.id === "pool-policy" ? (
-                <button
-                  type="button"
-                  className="btn btn-accent"
-                  onClick={() => {
-                    location.hash = "settings";
-                  }}
-                >
-                  Open Settings
-                </button>
-              ) : null}
-
-              {path === "fresh" && active?.id === "automation-identity" ? (
-                <button
-                  type="button"
-                  className="btn btn-accent"
-                  onClick={() => {
-                    location.hash = "settings";
-                  }}
-                >
-                  Configure automation identity
-                </button>
-              ) : null}
-
               {path === "fresh" && active?.id === "final-verification" ? (
-                <button
-                  type="button"
-                  className="btn btn-accent"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(() =>
-                      api(token, "/api/v1/onboarding/fresh/refresh", { method: "POST" }),
-                    )
-                  }
-                >
-                  <ArrowClockwise /> Refresh chain verification
-                </button>
+                <div className="signer-activation" data-activation-state={activation.kind}>
+                  <div
+                    className={`setup-completion ${initialSetupComplete ? "is-complete" : "needs-attention"}`}
+                  >
+                    {initialSetupComplete ? <Check /> : <Warning />}
+                    <div>
+                      <strong>
+                        {initialSetupComplete
+                          ? "Initial setup complete"
+                          : "Initial setup verification pending"}
+                      </strong>
+                      <p>
+                        {initialSetupComplete
+                          ? "Manager deployed · Signer registered · Grant valid"
+                          : "Resolve the failed setup checks before activating the signer."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="activation-card">
+                    <div className="activation-heading">
+                      <div>
+                        <span className="eyebrow">Signer activation</span>
+                        <h3>{activation.title}</h3>
+                      </div>
+                    </div>
+                    <p className="activation-message">{activation.message}</p>
+
+                    {activation.kind === "stake-required" && targetEligibility ? (
+                      <p className="activation-progress-copy">
+                        <strong>{formatUstx(targetEligibility.delegatedUstx)} STX</strong> of{" "}
+                        <strong>{formatUstx(targetEligibility.thresholdUstx)} STX</strong> required
+                      </p>
+                    ) : null}
+
+                    <div className="activation-stats">
+                      <div>
+                        <span>Stake assigned</span>
+                        <strong>{formatUstx(targetEligibility?.delegatedUstx)} STX</strong>
+                      </div>
+                      <div>
+                        <span>Required</span>
+                        <strong>{formatUstx(targetEligibility?.thresholdUstx)} STX</strong>
+                      </div>
+                      <div>
+                        <span>Target cycle</span>
+                        <strong>{targetEligibility?.cycleId ?? "Unavailable"}</strong>
+                      </div>
+                      <div>
+                        <span>Enrollment closes</span>
+                        <strong>
+                          {activationSetup?.enrollmentWindow.status === "prepare-phase"
+                            ? "Closed"
+                            : enrollmentCloseHeight
+                              ? `Burn height ${enrollmentCloseHeight}`
+                              : "Unavailable"}
+                        </strong>
+                        {activationSetup?.enrollmentWindow.status === "open" &&
+                        blocksUntilEnrollmentClose !== null ? (
+                          <small>{blocksUntilEnrollmentClose} blocks remaining</small>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="activation-manager">
+                      <span>Manager</span>
+                      <strong className="mono">{data.managerPrincipal}</strong>
+                    </div>
+
+                    {activation.kind === "stake-required" ? (
+                      <p className="activation-next-step">
+                        Have participants complete stake transactions through supported wallet or
+                        enrollment tools. Sidekick only verifies the resulting chain state.
+                      </p>
+                    ) : null}
+                    {activation.kind === "scheduled" && signingStartHeight ? (
+                      <p className="activation-next-step">
+                        Signing begins at burn height {signingStartHeight}. No further setup action
+                        is required.
+                      </p>
+                    ) : null}
+
+                    <div className="activation-actions">
+                      <CopyIdentifierButton
+                        value={data.managerPrincipal}
+                        label="manager principal"
+                        showLabel
+                      />
+                      {activation.kind === "stake-required" ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => {
+                            location.hash = "enrollment";
+                          }}
+                        >
+                          Open Public Pool Page
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn btn-accent"
+                        disabled={busy}
+                        onClick={() => void run(refreshFresh)}
+                      >
+                        <ArrowClockwise /> {activation.refreshLabel}
+                      </button>
+                    </div>
+
+                    {active.command ? (
+                      <details className="activation-advanced">
+                        <summary>Advanced</summary>
+                        <pre className="code command-code activation-command-code">
+                          {active.command}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
             </div>
           )}

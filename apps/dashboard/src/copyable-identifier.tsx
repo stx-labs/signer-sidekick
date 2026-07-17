@@ -25,9 +25,11 @@ async function copyText(value: string): Promise<void> {
 export function CopyIdentifierButton({
   value,
   label = "identifier",
+  showLabel = false,
 }: {
   value: string | null | undefined;
   label?: string | undefined;
+  showLabel?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -43,7 +45,7 @@ export function CopyIdentifierButton({
   return (
     <button
       type="button"
-      className="copy-identifier-button"
+      className={`copy-identifier-button${showLabel ? " copy-identifier-button-labeled" : ""}`}
       disabled={!value}
       aria-label={value && !copied ? `${action}: ${value}` : action}
       title={action}
@@ -64,6 +66,7 @@ export function CopyIdentifierButton({
       }}
     >
       {copied ? <Check aria-hidden="true" /> : <CopySimple aria-hidden="true" />}
+      {showLabel ? (copied ? `Copied ${label}` : `Copy ${label}`) : null}
     </button>
   );
 }

@@ -461,7 +461,7 @@ export function createServer(options: ServerOptions = {}) {
   server.post("/api/v1/onboarding/fresh/refresh", async (_request, reply) => {
     if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
     try {
-      return { onboarding: await options.onboarding.refreshFresh() };
+      return await options.onboarding.refreshFresh();
     } catch {
       return reply.code(400).send({ error: "fresh_setup_refresh_failed" });
     }

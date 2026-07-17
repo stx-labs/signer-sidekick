@@ -149,16 +149,18 @@ if (command === "serve") {
       `Network compatibility profile ignored: ${issue.message}`,
     );
   }
-  try {
-    await service.observeManagerTrustState();
-  } catch (error) {
-    server.log.warn(
-      { error: error instanceof Error ? error.message : String(error) },
-      "Could not record manager trust state during startup; the next synchronization or snapshot will retry",
-    );
-  }
   server.addHook("onClose", async () => store.close());
   await server.listen({ host, port });
+  server.log.info("HTTP control plane is listening; initial manager observation is running");
+  void service
+    .observeManagerTrustState()
+    .then(() => server.log.info("Initial manager observation completed"))
+    .catch((error: unknown) =>
+      server.log.warn(
+        { error: error instanceof Error ? error.message : String(error) },
+        "Initial manager observation failed; the next synchronization or snapshot will retry",
+      ),
+    );
 } else if (command === "config" && arguments_[0] === "validate") {
   const config = loadConfig(process.env);
   console.log(JSON.stringify({ valid: true, config: redactConfig(config) }, null, 2));

@@ -30,27 +30,32 @@ test("prepares Fresh Setup and downloads the exact manager artifact", async ({ p
   test.skip(phase !== "fresh-artifact", `live phase is ${phase}`);
   await login(page);
   await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Fresh setup" }).click();
-  const prepare = page.getByRole("button", { name: "Prepare manager artifact" });
+  await page.getByRole("button", { name: "Deploy New Contracts" }).click();
+  const prepare = page.getByRole("button", { name: "Generate deployment files" });
   const downloadButton = page.getByRole("button", { name: "Download .clar" });
   const laterStep = page
-    .getByRole("button", { name: "Prepare signer-host instruction" })
-    .or(page.getByRole("button", { name: "Verify registration" }));
+    .getByRole("button", { name: "Generate signer command" })
+    .or(page.getByRole("button", { name: "Check registration" }));
   await expect(prepare.or(downloadButton).or(laterStep)).toBeVisible();
   if (await laterStep.isVisible()) {
     await expect(page.locator("body")).not.toContainText(state.authToken);
     return;
   }
   if (await prepare.isVisible()) {
-    await page.getByLabel("Manager admin principal").fill(state.managerPrincipal.split(".")[0]);
-    await page.getByLabel("Contract name").fill("signer-manager");
     await page.getByLabel("Signer grant auth ID").fill("1");
-    await page
-      .getByLabel("Signer config path in generated instruction")
-      .fill("/src/stacks-signer/Signer-0.toml");
+    await page.getByLabel("Signer configuration path").fill("/src/stacks-signer/Signer-0.toml");
     await prepare.click();
   }
   await expect(page.getByRole("button", { name: "Download .clar" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Deploy outside Sidekick" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Explorer Sandbox/ })).toHaveAttribute(
+    "href",
+    "https://explorer.hiro.so/sandbox/deploy",
+  );
+  await expect(page.getByRole("link", { name: /Clarinet deployment guide/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/clarinet/contract-deployment",
+  );
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download .clar" }).click();
@@ -69,20 +74,21 @@ test("imports the released signer grant through Fresh Setup", async ({ page }) =
 
   await login(page);
   await openPage(page, "setup", "Initial Setup");
-  const verified = page.getByRole("button", { name: "Verify registration" });
+  const verified = page.getByRole("button", { name: "Check registration" });
   if (await verified.isVisible()) {
     await expect(page.locator("body")).not.toContainText(state.authToken);
     return;
   }
   const verifyDeployment = page.getByRole("button", { name: "Verify deployment" });
   if (await verifyDeployment.isVisible()) await verifyDeployment.click();
-  await page.getByRole("button", { name: "Prepare signer-host instruction" }).click();
+  await page.getByRole("button", { name: "Generate signer command" }).click();
+  await expect(page.getByText("Run on the signer host")).toBeVisible();
   await expect(
     page.getByText("stacks-signer generate-staking-signature", { exact: false }),
   ).toBeVisible();
-  await page.getByLabel("Signer command JSON output").fill(grant);
+  await page.getByLabel("JSON output from the signer command").fill(grant);
   await page.getByRole("button", { name: "Verify signer output" }).click();
-  await expect(page.getByRole("button", { name: "Verify registration" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check registration" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(state.authToken);
 });
 
@@ -90,7 +96,7 @@ test("attaches an existing manager through a clean dashboard", async ({ page }) 
   test.skip(phase !== "attach", `live phase is ${phase}`);
   await login(page);
   await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Verify and attach" }).click();
+  await page.getByRole("button", { name: "Run attach checks" }).click();
   await expect(page.getByRole("button", { name: "Re-run verification" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(state.authToken);
 });

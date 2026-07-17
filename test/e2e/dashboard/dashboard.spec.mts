@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { responseFor, roster } from "./large-pool-fixture.mjs";
+import { responseFor, roster, snapshot } from "./large-pool-fixture.mjs";
 
 const credential = "fixture-operator-token-32-characters";
 const consoleErrors = new WeakMap<Page, string[]>();
@@ -37,6 +37,116 @@ async function openPage(page: Page, id: string, heading: string) {
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
 }
 
+type FixtureStep = {
+  id: string;
+  status: "complete" | "ready" | "pending" | "attention" | "blocked";
+  title: string;
+  detail: string;
+  command: string | null;
+};
+
+function freshOnboardingResponse({
+  currentStep,
+  steps,
+  preparation = null,
+  verified = null,
+}: {
+  currentStep: string;
+  steps: FixtureStep[];
+  preparation?: null | { command: string; expectedMessageHashHex: string; authId: string };
+  verified?: null | {
+    managerPrincipal: string;
+    authId: string;
+    signerKeyHex: string;
+    signerSignatureHex: string;
+    expectedMessageHashHex: string;
+    registerSelfCall: {
+      contract: string;
+      functionName: string;
+      arguments: string[];
+      signingPrincipal: string;
+    };
+  };
+}) {
+  const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
+  return {
+    onboarding: {
+      path: "fresh",
+      status: "in-progress",
+      currentStep,
+      managerPrincipal: snapshot.managerPrincipal,
+      updatedAt: "2026-07-17T12:00:00.000Z",
+      activationPlan: { status: "ready", steps },
+      freshInput: {
+        adminPrincipal,
+        contractName: "signer-manager",
+        authId: "1",
+        signerConfigPath: "/path/to/Signer.toml",
+      },
+      artifact: {
+        available: true,
+        sourceFile: "signer-manager.clar",
+        manifestFile: "signer-manager.deployment.json",
+        manifest: {
+          operatorReviewRequired: true,
+          warnings: [],
+          network: "testnet",
+          adminPrincipal,
+          artifact: {
+            sourceSha256: snapshot.manager.source.sha256,
+            canonicalSourceSha256: snapshot.manager.source.sha256,
+          },
+          transaction: { contractName: "signer-manager", clarityVersion: 6 },
+        },
+      },
+      signerGrant: { preparation, verified },
+      audit: [],
+      safety: {
+        acceptsManagerAdminKey: false,
+        acceptsSignerPrivateKey: false,
+        signsTransactions: false,
+        broadcastsTransactions: false,
+      },
+    },
+    wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
+  };
+}
+
+function finalVerificationOnboarding() {
+  const complete = (id: string, title: string): FixtureStep => ({
+    id,
+    title,
+    status: "complete",
+    detail: `${title} complete`,
+    command: null,
+  });
+  return freshOnboardingResponse({
+    currentStep: "verify-setup",
+    steps: [
+      complete("preflight", "Prerequisites"),
+      complete("render-manager", "Manager artifact"),
+      complete("deploy-manager", "Deploy manager"),
+      complete("prepare-signer-grant", "Prepare signer grant"),
+      complete("verify-signer-grant", "Verify signer grant"),
+      complete("register-manager", "Register manager"),
+      {
+        id: "verify-setup",
+        title: "Verify setup",
+        status: "attention",
+        detail: "Manager is not yet eligible",
+        command: `sidekick setup status '${snapshot.managerPrincipal}'`,
+      },
+      {
+        id: "publish-enrollment-info",
+        title: "Publish enrollment information",
+        status: "pending",
+        detail: "Pending activation",
+        command: null,
+      },
+    ],
+  });
+}
+
 test("renders every operator screen without leaking the credential", async ({ page }) => {
   await login(page);
   const screens = [
@@ -54,6 +164,114 @@ test("renders every operator screen without leaking the credential", async ({ pa
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("required actions provide their resolving control and exclude informational notices", async ({
+  page,
+}) => {
+  const rewardsAlert = {
+    id: "rewards:incomplete",
+    severity: "warning",
+    title: "Reward Roster Is Incomplete",
+    detail:
+      "Sidekick has not synchronized the individual staker roster. Run Reconcile now before relying on payout totals.",
+    action: { kind: "reconcile", label: "Reconcile now" },
+  };
+  const withdrawalAlert = {
+    id: "withdrawals:pending",
+    severity: "info",
+    title: "L1 Withdrawals Await Resolution",
+    detail: "Open Rewards → L1 withdrawals to review each request's current state.",
+    action: { kind: "navigate", label: "Review L1 withdrawals", target: "rewards" },
+  };
+  const informationalAlert = {
+    id: "manager:custom-read-only",
+    severity: "info",
+    title: "Custom Manager — Read-only",
+    detail: "No action is required unless reference-manager automation is intended.",
+  };
+  const actionSnapshot = {
+    ...snapshot,
+    alerts: [rewardsAlert, withdrawalAlert, informationalAlert],
+  };
+  let syncRequests = 0;
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/status") {
+      body = actionSnapshot;
+    } else if (request.pathname === "/api/v1/sync") {
+      syncRequests += 1;
+      body = { snapshot: actionSnapshot };
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  const requiredActions = page.locator(".action-grid");
+  await expect(page.getByText("2 item(s) need attention")).toBeVisible();
+  await expect(requiredActions.getByText("Reward Roster Is Incomplete")).toBeVisible();
+  await expect(requiredActions.getByText("L1 Withdrawals Await Resolution")).toBeVisible();
+  await expect(requiredActions.getByText("Custom Manager — Read-only")).not.toBeVisible();
+
+  await requiredActions.getByRole("button", { name: "Reconcile now" }).click();
+  await expect.poll(() => syncRequests).toBe(1);
+
+  await requiredActions.getByRole("button", { name: "Review L1 withdrawals" }).click();
+  await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
+
+  await openPage(page, "operations", "Operations");
+  const informationalRow = page.locator(".alert-row", { hasText: "Custom Manager — Read-only" });
+  await expect(informationalRow).toBeVisible();
+  await expect(informationalRow.getByRole("button")).toHaveCount(0);
+});
+
+test("guides first-time operators to setup and remembers dismissal", async ({ page }) => {
+  await login(page);
+  const notice = page.getByRole("region", { name: "Start with Initial Setup" });
+  await expect(notice).toBeVisible();
+
+  await notice.getByRole("button", { name: "Open Initial Setup" }).click();
+  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deploy New Contracts" })).toBeVisible();
+
+  await openPage(page, "overview", "Overview");
+  await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(notice).not.toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+  await expect(notice).not.toBeVisible();
+});
+
+test("does not show first-time guidance after onboarding starts", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/onboarding"
+        ? {
+            onboarding: { path: "attach" },
+            wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
+          }
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await expect(page.getByRole("region", { name: "Start with Initial Setup" })).not.toBeVisible();
 });
 
 test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
@@ -85,8 +303,19 @@ test("explains the manager trust tier on registration and settings", async ({ pa
 test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
   await login(page);
   await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Fresh setup" }).click();
-  await expect(page.getByText("Starting a new mainnet or testnet node?")).toBeVisible();
+  await page.getByRole("button", { name: "Deploy New Contracts" }).click();
+  await expect(page.getByText("Node and signer setup stay outside Sidekick.")).toBeVisible();
+  await expect(page.getByText(/Sidekick generates the deployment files/)).toBeVisible();
+  await expect(page.getByRole("textbox", { name: /Manager admin principal/ })).toHaveAttribute(
+    "readonly",
+    "",
+  );
+  await expect(page.getByRole("textbox", { name: /Contract name/ })).toHaveAttribute(
+    "readonly",
+    "",
+  );
+  await expect(page.getByRole("button", { name: "Generate deployment files" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Hiro Archive guide/ })).toHaveAttribute(
     "href",
     "https://docs.hiro.so/en/resources/archive/stacks-blockchain",
@@ -99,7 +328,7 @@ test("recommends verified Hiro chainstate seeding for a fresh node", async ({ pa
     "href",
     "https://docs.stacks.co/operate/run-a-signer/signer-quickstart",
   );
-  await expect(page.getByText(/Verify the SHA-256 checksum/)).toBeVisible();
+  await expect(page.getByText(/verified Hiro chainstate archive/)).toBeVisible();
 
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Network compatibility: matched")).toBeVisible();
@@ -110,6 +339,430 @@ test("recommends verified Hiro chainstate seeding for a fresh node", async ({ pa
     "href",
     "https://docs.stacks.co/reference/node-operations/signer-configuration",
   );
+});
+
+test("explains how to deploy a generated manager outside Sidekick", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/onboarding"
+        ? freshOnboardingResponse({
+            currentStep: "deploy-manager",
+            steps: [
+              {
+                id: "preflight",
+                status: "complete",
+                title: "Prerequisites",
+                detail: "Node and API are ready.",
+                command: null,
+              },
+              {
+                id: "render-manager",
+                status: "complete",
+                title: "Manager artifact",
+                detail: "Manager artifact prepared.",
+                command: null,
+              },
+              {
+                id: "deploy-manager",
+                status: "ready",
+                title: "Deploy manager",
+                detail: "Deploy the generated manager contract.",
+                command: null,
+              },
+            ],
+          })
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByRole("heading", { name: "Deploy outside Sidekick" })).toBeVisible();
+  await expect(page.getByText(/manifest records the values you must review/)).toBeVisible();
+  await expect(page.getByText("signer-manager", { exact: true })).toBeVisible();
+  await expect(page.getByText("testnet", { exact: true })).toBeVisible();
+  await expect(page.locator(".deployment-target")).toContainText("Clarity 6");
+  await expect(page.getByRole("link", { name: /Explorer Sandbox/ })).toHaveAttribute(
+    "href",
+    "https://explorer.hiro.so/sandbox/deploy",
+  );
+  await expect(page.getByRole("link", { name: /Clarinet deployment guide/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/clarinet/contract-deployment",
+  );
+  await expect(page.locator("body")).not.toContainText(credential);
+});
+
+test("keeps setup commands behind advanced disclosure", async ({ page }) => {
+  const steps: FixtureStep[] = [
+    {
+      id: "preflight",
+      status: "ready",
+      title: "Prerequisites",
+      detail: "Review the connected environment.",
+      command: "sidekick preflight --json",
+    },
+    {
+      id: "render-manager",
+      status: "complete",
+      title: "Manager artifact",
+      detail: "Manager artifact prepared.",
+      command: "sidekick manager render --json",
+    },
+  ];
+  let currentStep = "preflight";
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/onboarding"
+        ? freshOnboardingResponse({ currentStep, steps })
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByText(/Sidekick checked the configured node/)).toBeVisible();
+  await expect(page.getByText("sidekick preflight --json")).not.toBeVisible();
+  await page.getByText("CLI equivalent (advanced)").click();
+  await expect(page.getByText("sidekick preflight --json")).toBeVisible();
+
+  currentStep = "render-manager";
+  await page.reload();
+  await expect(page.getByText(/generated the manager source/)).toBeVisible();
+  await expect(page.getByText("sidekick manager render --json")).not.toBeVisible();
+});
+
+test("hands manager registration to the external admin wallet", async ({ page }) => {
+  const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
+  const verified = {
+    managerPrincipal: snapshot.managerPrincipal,
+    authId: "42",
+    signerKeyHex: `02${"11".repeat(32)}`,
+    signerSignatureHex: "22".repeat(65),
+    expectedMessageHashHex: "33".repeat(32),
+    registerSelfCall: {
+      contract: snapshot.managerPrincipal,
+      functionName: "register-self",
+      arguments: ["0x0516", "0x0200000021", "0x01000000000000002a", "0x0200000041"],
+      signingPrincipal: adminPrincipal,
+    },
+  };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/onboarding"
+        ? freshOnboardingResponse({
+            currentStep: "register-manager",
+            steps: [
+              {
+                id: "register-manager",
+                status: "ready",
+                title: "Register manager",
+                detail: "Register the manager with PoX-5.",
+                command: null,
+              },
+            ],
+            verified,
+          })
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(
+    page.locator(".registration-handoff strong", { hasText: "Register the manager with PoX-5." }),
+  ).toBeVisible();
+  await expect(page.getByText(/Sidekick never receives the key or broadcasts/)).toBeVisible();
+  await expect(page.getByText("u42", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Copy signer key/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check registration" })).toBeVisible();
+  await expect(page.getByText(/0x0516/)).not.toBeVisible();
+  await page.getByText("Encoded transaction arguments (advanced)").click();
+  await expect(page.getByText(/0x0516/)).toBeVisible();
+});
+
+test("summarizes attach checks and explains external repair", async ({ page }) => {
+  const attachResponse = {
+    onboarding: {
+      path: "attach",
+      status: "blocked",
+      currentStep: "verify-signer-grant",
+      managerPrincipal: snapshot.managerPrincipal,
+      updatedAt: "2026-07-17T12:00:00.000Z",
+      activationPlan: {
+        status: "blocked",
+        steps: [
+          {
+            id: "verify-sources",
+            status: "complete",
+            title: "Verify sources",
+            detail: "Manager source recognized.",
+            command: null,
+          },
+          {
+            id: "verify-signer-grant",
+            status: "blocked",
+            title: "Verify signer grant",
+            detail: "Signer grant missing.",
+            command: null,
+          },
+        ],
+      },
+      freshInput: null,
+      artifact: { available: false, sourceFile: null, manifestFile: null, manifest: null },
+      signerGrant: { preparation: null, verified: null },
+      audit: [],
+    },
+    wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
+  };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const body =
+      new URL(route.request().url()).pathname === "/api/v1/onboarding"
+        ? attachResponse
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByRole("button", { name: /Verify existing manager/ })).toHaveCount(1);
+  await expect(page.getByText("Manager attached with operational blockers.")).toBeVisible();
+  await expect(
+    page.getByText(/Guided repair for an existing manager is not yet available/),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
+});
+
+test("guides the signer grant ceremony from command generation through verification", async ({
+  page,
+}) => {
+  const signerCommand =
+    `stacks-signer generate-staking-signature --config '/path/to/Signer.toml' ` +
+    `--signer-manager '${snapshot.managerPrincipal}' --auth-id 1 --json`;
+  let prepared = false;
+  const ceremonyResponse = () =>
+    freshOnboardingResponse({
+      currentStep: prepared ? "verify-signer-grant" : "prepare-signer-grant",
+      steps: [
+        {
+          id: "prepare-signer-grant",
+          status: prepared ? "complete" : "ready",
+          title: "Prepare signer grant",
+          detail: "Prepare the live PoX-5 signer grant.",
+          command: "sidekick signer-grant prepare",
+        },
+        {
+          id: "verify-signer-grant",
+          status: "ready",
+          title: "Verify signer grant",
+          detail: "Verify the public signer output.",
+          command: "sidekick signer-grant verify",
+        },
+      ],
+      preparation: prepared
+        ? {
+            command: signerCommand,
+            expectedMessageHashHex: "ab".repeat(32),
+            authId: "1",
+          }
+        : null,
+    });
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/onboarding/fresh/grant/prepare") {
+      prepared = true;
+      body = ceremonyResponse();
+    } else if (request.pathname === "/api/v1/onboarding") {
+      body = ceremonyResponse();
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByText("Authorize this manager with your signer")).toBeVisible();
+  await expect(page.getByText(/never accesses the signer key or broadcasts/)).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("sidekick signer-grant prepare");
+
+  await page.getByRole("button", { name: "Generate signer command" }).click();
+  await expect(page.getByText("Run on the signer host")).toBeVisible();
+  await expect(
+    page.locator("pre", { hasText: "stacks-signer generate-staking-signature" }),
+  ).toHaveText(signerCommand);
+  await expect(page.getByRole("button", { name: /Copy signer command/ })).toBeVisible();
+  await expect(page.getByLabel("JSON output from the signer command")).toHaveAttribute(
+    "placeholder",
+    "Paste the complete JSON object printed by stacks-signer",
+  );
+  await expect(page.getByText(/reject output for a different manager, auth ID/)).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(credential);
+});
+
+test("makes each signer activation state explicit and actionable", async ({ page }) => {
+  const thresholdUstx = "50000000000";
+  const eligibility = (cycleId: number, delegatedUstx: string, inSignerSet: boolean) => ({
+    cycleId,
+    delegatedUstx,
+    thresholdUstx,
+    marginUstx: (BigInt(delegatedUstx) - BigInt(thresholdUstx)).toString(),
+    meetsThreshold: BigInt(delegatedUstx) >= BigInt(thresholdUstx),
+    inSignerSet,
+  });
+  const foundationChecks = [
+    { id: "manager-attachment", status: "pass", message: "Manager compatible" },
+    { id: "manager-artifact", status: "pass", message: "Manager source verified" },
+    { id: "signer-registration", status: "pass", message: "Signer registered" },
+    { id: "signer-grant", status: "pass", message: "Signer grant valid" },
+  ];
+  let setup = {
+    status: "attention",
+    enrollmentWindow: {
+      status: "open",
+      targetCycleId: 140,
+      preparePhaseStartBurnHeight: 10_780,
+      blocksUntilPreparePhase: 1_540,
+    },
+    eligibility: {
+      current: eligibility(139, "0", false),
+      next: eligibility(140, "0", false),
+    },
+    checks: [
+      ...foundationChecks,
+      { id: "next-cycle-eligibility", status: "warn", message: "Stake required" },
+    ],
+  };
+  const onboardingResponse = finalVerificationOnboarding();
+  const preflight = {
+    ...snapshot.preflight,
+    cycle: {
+      ...snapshot.preflight.cycle,
+      currentId: 139,
+      nextId: 140,
+      preparePhaseStartBurnHeight: 10_780,
+      blocksUntilPreparePhase: 1_540,
+      rewardPhaseStartBurnHeight: 10_880,
+      blocksUntilRewardPhase: 1_640,
+      isPreparePhase: false,
+    },
+  };
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/status") {
+      body = { ...snapshot, preflight, setup };
+    } else if (request.pathname === "/api/v1/onboarding") {
+      body = onboardingResponse;
+    } else if (request.pathname === "/api/v1/onboarding/fresh/refresh") {
+      body = { onboarding: onboardingResponse.onboarding, preflight, setup };
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  const reloadSetup = async () => {
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
+  };
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByRole("heading", { name: "Activate your signer" })).toBeVisible();
+  await expect(page.getByText("Initial setup complete")).toBeVisible();
+  await expect(page.getByText("Manager deployed · Signer registered · Grant valid")).toBeVisible();
+  await expect(page.getByText("Stake required", { exact: true })).toBeVisible();
+  await expect(page.getByText("0 STX of 50,000 STX required")).toBeVisible();
+  await expect(page.getByText(/supported wallet or enrollment tools/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Copy manager principal/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh after staking" })).toBeVisible();
+  await expect(page.getByText(/sidekick setup status/)).not.toBeVisible();
+
+  setup = {
+    ...setup,
+    status: "ready",
+    eligibility: {
+      current: eligibility(139, "0", false),
+      next: eligibility(140, "55000000000", true),
+    },
+    checks: [
+      ...foundationChecks,
+      { id: "next-cycle-eligibility", status: "pass", message: "Ready" },
+    ],
+  };
+  await reloadSetup();
+  await expect(page.getByText("Activation scheduled", { exact: true })).toBeVisible();
+  await expect(page.getByText(/No action is required.*burn height 10880/)).toBeVisible();
+
+  setup = {
+    ...setup,
+    eligibility: {
+      current: eligibility(139, "55000000000", true),
+      next: eligibility(140, "55000000000", true),
+    },
+  };
+  await reloadSetup();
+  await expect(page.getByText("Signer active", { exact: true })).toBeVisible();
+  await expect(page.getByText("Signer active for cycle 139")).toBeVisible();
+
+  setup = {
+    ...setup,
+    status: "attention",
+    enrollmentWindow: {
+      ...setup.enrollmentWindow,
+      status: "prepare-phase",
+      blocksUntilPreparePhase: 0,
+    },
+    eligibility: {
+      current: eligibility(139, "0", false),
+      next: eligibility(140, "0", false),
+    },
+    checks: [
+      ...foundationChecks,
+      { id: "next-cycle-eligibility", status: "warn", message: "Enrollment closed" },
+    ],
+  };
+  await reloadSetup();
+  await expect(page.getByText("Enrollment closed", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Target cycle 141 when enrollment reopens/)).toBeVisible();
 });
 
 test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {

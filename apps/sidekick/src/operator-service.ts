@@ -25,6 +25,13 @@ export interface OperatorAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
+  action?:
+    | { kind: "reconcile"; label: string }
+    | {
+        kind: "navigate";
+        label: string;
+        target: "setup" | "settings" | "pool" | "rewards" | "operations";
+      };
 }
 
 export interface OperatorServiceOptions {
@@ -36,6 +43,11 @@ export interface OperatorServiceOptions {
   cacheTtlMs?: number;
   runtimeSettings?: RuntimeSettingsController;
   managerVerification?: ManagerVerificationContext;
+}
+
+function asSentence(value: string): string {
+  const trimmed = value.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 type ManagerTrustTransition = NonNullable<ReturnType<SidekickStore["recordManagerTrustState"]>>;
@@ -75,24 +87,28 @@ export function buildAlerts(snapshot: {
       id: `preflight:${check.id}`,
       severity: check.status === "fail" ? "critical" : "warning",
       title: check.status === "fail" ? "Connection Check Failed" : "Connection Needs Attention",
-      detail: check.message,
+      detail: `${asSentence(check.message)} Open Settings to verify the configured node and API data sources.`,
+      action: { kind: "navigate", label: "Open Settings", target: "settings" },
     });
   }
   if (!snapshot.manager.attachAllowed) {
+    const incompatibility =
+      snapshot.manager.reasons[0] ??
+      "The manager network or required interface is incompatible with this deployment.";
     alerts.push({
       id: "manager:unsupported",
       severity: "critical",
       title: "Manager Cannot Be Attached",
-      detail:
-        snapshot.manager.reasons[0] ??
-        "The manager network or required interface is incompatible with this deployment.",
+      detail: `${asSentence(incompatibility)} Open Initial Setup to review network compatibility and manager interface requirements.`,
+      action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
     alerts.push({
       id: "manager:not-recognized-read-only",
       severity: "warning",
       title: "Manager Not Recognized — Read-only",
-      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager automation remains disabled: ${snapshot.manager.automationEligibilityReason}. Install a provenance-verified profile if this is a reference render.`,
+      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager automation remains disabled: ${snapshot.manager.automationEligibilityReason}. Open Settings to install a provenance-verified profile if this is a reference render.`,
+      action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
@@ -100,7 +116,7 @@ export function buildAlerts(snapshot: {
       severity: "info",
       title: "Custom Manager — Read-only",
       detail:
-        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager transaction automation.",
+        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager transaction automation. No action is required unless you intend to use reference-manager automation.",
     });
   }
   if (snapshot.manager.installedProfiles.issues.length > 0) {
@@ -108,7 +124,8 @@ export function buildAlerts(snapshot: {
       id: "manager:profile-load-issues",
       severity: "warning",
       title: "Installed Manager Profile Needs Attention",
-      detail: `${snapshot.manager.installedProfiles.issues.length} profile issue(s) were ignored safely. Review Settings or the support bundle for details.`,
+      detail: `${snapshot.manager.installedProfiles.issues.length} profile issue(s) were ignored safely. Open Settings to review the rejected profile files and reasons.`,
+      action: { kind: "navigate", label: "Review profile issues", target: "settings" },
     });
   }
   if (snapshot.trustTransition) {
@@ -123,17 +140,30 @@ export function buildAlerts(snapshot: {
         : degraded
           ? "Manager Recognition Degraded"
           : "Manager Degraded to Read-only",
-      detail: snapshot.trustTransition.reason,
+      detail: gained
+        ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
+        : `${asSentence(snapshot.trustTransition.reason)} Review the installed manager profile before enabling automation.`,
+      ...(gained
+        ? {}
+        : {
+            action: {
+              kind: "navigate" as const,
+              label: "Review manager profiles",
+              target: "settings" as const,
+            },
+          }),
     });
   }
   if (snapshot.setup?.status === "blocked") {
+    const blockedReason =
+      snapshot.setup.checks.find(({ status }) => status === "fail")?.message ??
+      "A required manager setup check failed";
     alerts.push({
       id: "setup:blocked",
       severity: "critical",
       title: "Pool Setup Is Blocked",
-      detail:
-        snapshot.setup.checks.find(({ status }) => status === "fail")?.message ??
-        "Complete the required manager setup checks.",
+      detail: `${asSentence(blockedReason)} Open Initial Setup to review and resolve the blocked step.`,
+      action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   }
   if (snapshot.forecast?.status === "attention") {
@@ -153,10 +183,13 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
       detail: belowThreshold
-        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}.`
+        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}. Open Initial Setup → Activate your signer for the manager principal and enrollment cutoff.`
         : affected
-          ? `Review reward cycle(s) ${affected}.`
-          : "Pool roster evidence is incomplete.",
+          ? `Open Pool positions to review the roster changes affecting reward cycle(s) ${affected}.`
+          : "Open Pool positions to review the incomplete roster evidence.",
+      action: belowThreshold
+        ? { kind: "navigate", label: "Open signer activation", target: "setup" }
+        : { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }
   if (snapshot.rewards?.status === "attention") {
@@ -164,7 +197,9 @@ export function buildAlerts(snapshot: {
       id: "rewards:incomplete",
       severity: "warning",
       title: "Reward Roster Is Incomplete",
-      detail: "Complete a signer-staker synchronization before relying on payout totals.",
+      detail:
+        "Sidekick has not synchronized the individual staker roster. Run Reconcile now before relying on payout totals.",
+      action: { kind: "reconcile", label: "Reconcile now" },
     });
   }
   if (snapshot.activity.pendingWithdrawalTotal > 0) {
@@ -172,7 +207,8 @@ export function buildAlerts(snapshot: {
       id: "withdrawals:pending",
       severity: "info",
       title: "L1 Withdrawals Await Resolution",
-      detail: `${snapshot.activity.pendingWithdrawalTotal} withdrawal request(s) remain pending or require registry reconciliation.`,
+      detail: `${snapshot.activity.pendingWithdrawalTotal} withdrawal request(s) remain pending or require registry reconciliation. Open Rewards → L1 withdrawals to review each request's current state.`,
+      action: { kind: "navigate", label: "Review L1 withdrawals", target: "rewards" },
     });
   }
   return alerts;

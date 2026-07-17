@@ -19,6 +19,7 @@ import {
   UsersThree,
   Warning,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -37,6 +38,20 @@ type Page =
   | "setup"
   | "enrollment"
   | "settings";
+
+interface DashboardAlert {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  detail: string;
+  action?:
+    | { kind: "reconcile"; label: string }
+    | {
+        kind: "navigate";
+        label: string;
+        target: "setup" | "settings" | "pool" | "rewards" | "operations";
+      };
+}
 
 interface Snapshot {
   generatedAt: string;
@@ -86,6 +101,8 @@ interface Snapshot {
       nextId: number | null;
       blocksUntilPreparePhase: number | null;
       preparePhaseStartBurnHeight: number | null;
+      blocksUntilRewardPhase: number | null;
+      rewardPhaseStartBurnHeight: number | null;
       isPreparePhase: boolean | null;
     };
     checks: Array<{ id: string; status: "pass" | "warn" | "fail"; message: string }>;
@@ -124,8 +141,9 @@ interface Snapshot {
   setup: null | {
     status: "ready" | "attention" | "blocked";
     enrollmentWindow: {
-      status: string;
+      status: "open" | "prepare-phase" | "unknown";
       targetCycleId: number | null;
+      preparePhaseStartBurnHeight: number | null;
       blocksUntilPreparePhase: number | null;
     };
     eligibility: {
@@ -197,17 +215,13 @@ interface Snapshot {
   roster: RosterEntry[];
   rosterTotal?: number;
   rosterStats?: { deferredUnlocks: number };
-  alerts: Array<{
-    id: string;
-    severity: "critical" | "warning" | "info";
-    title: string;
-    detail: string;
-  }>;
+  alerts: DashboardAlert[];
 }
 
 interface CycleEligibility {
   cycleId: number;
   delegatedUstx: string;
+  thresholdUstx: string;
   marginUstx: string;
   meetsThreshold: boolean;
   inSignerSet: boolean;
@@ -354,6 +368,36 @@ function PageHead({
   );
 }
 
+function AlertActionButton({
+  alert,
+  sync,
+  syncing,
+}: {
+  alert: DashboardAlert;
+  sync: () => void;
+  syncing: boolean;
+}) {
+  if (!alert.action) return null;
+  if (alert.action.kind === "reconcile") {
+    return (
+      <button type="button" className="btn btn-tertiary sm" onClick={sync} disabled={syncing}>
+        <ArrowClockwise /> {syncing ? "Reconciling" : alert.action.label}
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-tertiary sm"
+      onClick={() => {
+        location.hash = alert.action?.kind === "navigate" ? alert.action.target : "overview";
+      }}
+    >
+      {alert.action.label}
+    </button>
+  );
+}
+
 function Pagination({
   page,
   pageSize,
@@ -399,10 +443,23 @@ function Pagination({
   );
 }
 
-function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; syncing: boolean }) {
+function Overview({
+  data,
+  sync,
+  syncing,
+  showSetupNotice,
+  dismissSetupNotice,
+}: {
+  data: Snapshot;
+  sync: () => void;
+  syncing: boolean;
+  showSetupNotice: boolean;
+  dismissSetupNotice: () => void;
+}) {
   const current = data.forecast?.cycles[0];
   const next = data.forecast?.cycles[1];
   const rewards = data.rewards;
+  const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
   return (
     <>
       <PageHead
@@ -425,6 +482,43 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
           </>
         }
       />
+      {showSetupNotice ? (
+        <section className="card-standout setup-notice" aria-labelledby="setup-notice-title">
+          <div className="setup-notice-icon" aria-hidden="true">
+            <SlidersHorizontal />
+          </div>
+          <div className="setup-notice-body">
+            <p className="eyebrow">GET STARTED</p>
+            <h2 id="setup-notice-title">Start with Initial Setup</h2>
+            <p>
+              Sidekick is connected, but setup has not been started. Deploy new contracts or attach
+              an existing deployment before operating this pool.
+            </p>
+            <div className="actions">
+              <button
+                type="button"
+                className="btn btn-accent"
+                onClick={() => {
+                  location.hash = "setup";
+                }}
+              >
+                Open Initial Setup
+              </button>
+              <button type="button" className="btn btn-tertiary" onClick={dismissSetupNotice}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="setup-notice-close"
+            aria-label="Dismiss initial setup notice"
+            onClick={dismissSetupNotice}
+          >
+            <X />
+          </button>
+        </section>
+      ) : null}
       <div className="cycle-clock card">
         <div>
           <span>Burn height</span>
@@ -454,11 +548,11 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
       <div className="section-title">
         <WarningCircle color="var(--status-caution)" />
         Required actions{" "}
-        <span className="hint">{data.alerts.length || "No"} item(s) need attention</span>
+        <span className="hint">{requiredAlerts.length || "No"} item(s) need attention</span>
       </div>
-      {data.alerts.length ? (
+      {requiredAlerts.length ? (
         <div className="grid cols-3 action-grid">
-          {data.alerts.slice(0, 3).map((alert) => (
+          {requiredAlerts.slice(0, 3).map((alert) => (
             <div
               className={`callout callout-${alert.severity === "critical" ? "critical" : alert.severity === "warning" ? "caution" : "info"}`}
               key={alert.id}
@@ -468,6 +562,9 @@ function Overview({ data, sync, syncing }: { data: Snapshot; sync: () => void; s
                 <strong>{alert.title}</strong>
                 <br />
                 {alert.detail}
+                <div className="actions">
+                  <AlertActionButton alert={alert} sync={sync} syncing={syncing} />
+                </div>
               </div>
             </div>
           ))}
@@ -1445,7 +1542,15 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
   );
 }
 
-function Operations({ data }: { data: Snapshot }) {
+function Operations({
+  data,
+  sync,
+  syncing,
+}: {
+  data: Snapshot;
+  sync: () => void;
+  syncing: boolean;
+}) {
   return (
     <>
       <PageHead
@@ -1492,6 +1597,11 @@ function Operations({ data }: { data: Snapshot }) {
               <div className="body">
                 <div className="t">{alert.title}</div>
                 <div className="m">{alert.detail}</div>
+                {alert.action ? (
+                  <div className="actions">
+                    <AlertActionButton alert={alert} sync={sync} syncing={syncing} />
+                  </div>
+                ) : null}
               </div>
               <div className="meta">{alert.severity}</div>
             </div>
@@ -1623,8 +1733,33 @@ function App() {
   );
   const settingsThemeApplied = useRef(false);
   const [data, setData] = useState<Snapshot | null>(null);
+  const [onboardingStarted, setOnboardingStarted] = useState<boolean | null>(null);
+  const [dismissedSetupNoticeKey, setDismissedSetupNoticeKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const loadOnboardingState = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await fetch("/api/v1/onboarding", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (response.status === 401) {
+        sessionStorage.removeItem("sidekick-token");
+        setToken("");
+        setOnboardingStarted(null);
+        return;
+      }
+      if (!response.ok) {
+        setOnboardingStarted(null);
+        return;
+      }
+      const result = (await response.json()) as { onboarding: unknown | null };
+      setOnboardingStarted(result.onboarding !== null);
+    } catch {
+      // Setup guidance is optional UI state; do not hide the operator dashboard if it is unavailable.
+      setOnboardingStarted(null);
+    }
+  }, [token]);
   const load = useCallback(
     async (force = false) => {
       if (!token) return;
@@ -1641,12 +1776,13 @@ function App() {
         if (!response.ok) throw new Error(`Sidekick API returned HTTP ${response.status}`);
         const json = (await response.json()) as Snapshot | { snapshot: Snapshot };
         setData("snapshot" in json ? json.snapshot : json);
+        await loadOnboardingState();
         setError(null);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },
-    [token],
+    [loadOnboardingState, token],
   );
   useEffect(() => {
     void load();
@@ -1688,14 +1824,35 @@ function App() {
     await load(true);
     setSyncing(false);
   };
+  const markOnboardingStarted = useCallback(() => setOnboardingStarted(true), []);
+  const setupNoticeKey = data
+    ? `sidekick-setup-notice:${data.network}:${data.managerPrincipal}`
+    : null;
+  const setupNoticeDismissed = setupNoticeKey
+    ? dismissedSetupNoticeKey === setupNoticeKey ||
+      localStorage.getItem(setupNoticeKey) === "dismissed"
+    : false;
+  const dismissSetupNotice = () => {
+    if (!setupNoticeKey) return;
+    localStorage.setItem(setupNoticeKey, "dismissed");
+    setDismissedSetupNoticeKey(setupNoticeKey);
+  };
   const content = data
     ? {
-        overview: <Overview data={data} sync={sync} syncing={syncing} />,
+        overview: (
+          <Overview
+            data={data}
+            sync={sync}
+            syncing={syncing}
+            showSetupNotice={onboardingStarted === false && !setupNoticeDismissed}
+            dismissSetupNotice={dismissSetupNotice}
+          />
+        ),
         registration: <Registration data={data} />,
         pool: <Pool data={data} token={token} />,
         rewards: <Rewards data={data} token={token} />,
-        operations: <Operations data={data} />,
-        setup: <SetupPage data={data} token={token} />,
+        operations: <Operations data={data} sync={sync} syncing={syncing} />,
+        setup: <SetupPage data={data} token={token} onOnboardingStarted={markOnboardingStarted} />,
         enrollment: <EnrollmentPage data={data} token={token} />,
         settings: <SettingsPage data={data} token={token} setTheme={setTheme} />,
       }[page]

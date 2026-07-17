@@ -17,30 +17,59 @@ The supplied Compose service is non-root, read-only, and loopback-bound. SQLite 
 volume; profile directories are mounted read-only.
 
 ```sh
+umask 077
 cp .env.example .env
-openssl rand -base64 32
+chmod 600 .env
+openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
+# Linux Wayland: replace pbcopy with wl-copy
 ```
 
-Set the node URL, manager principal, and generated `SIDEKICK_AUTH_TOKEN` in `.env`. Mainnet uses the
-Hiro API by default; set `STACKS_API_URL` and optional key fields for another provider. For Fresh
-setup, configure the future manager principal.
+Store the generated token in a password manager, then paste it into `.env`; avoid printing it in
+terminal history or logs. Set the node URL and manager principal. Mainnet uses the Hiro API by
+default; set `STACKS_API_URL` and optional key fields for another provider. For Fresh setup,
+configure the future manager principal.
+
+## Connect to the node
+
+`host.docker.internal` works only when the node RPC listener and host networking permit Docker
+bridge traffic. Choose the simplest endpoint that fits the deployment:
+
+| Node location | `STACKS_NODE_RPC_URL` and networking |
+| --- | --- |
+| Same Docker network | Use `http://<node-service>:20443` and attach Sidekick with a Compose override. |
+| Sidekick host | Use `http://host.docker.internal:20443` or a host address reachable from the container. |
+| Remote host | Use its private RPC URL and restrict ingress to the Sidekick host. |
+| Linux host networking | In an override, remove `ports`, set `network_mode: host`, `SIDEKICK_HTTP_HOST=127.0.0.1`, and use `http://127.0.0.1:20443`. |
+
+Build, then verify the node from the same container network before starting Sidekick:
 
 ```sh
 docker compose build --pull
+docker compose run --rm --no-deps --entrypoint node sidekick -e \
+  "fetch(new URL('/v2/info', process.env.STACKS_NODE_RPC_URL)).then(r => { if (!r.ok) throw new Error('Node RPC returned ' + r.status); console.log('Node RPC reachable') })"
 docker compose up -d
-curl --fail http://127.0.0.1:3998/health/ready
-```
-
-Open `http://127.0.0.1:3998` and enter the configured token. Do not publish port 3998 directly;
-remote access requires an authenticated TLS proxy or private network.
-
-The service starts in Observe mode and cannot broadcast.
-
-## Verify the connection
-
-```sh
+curl --fail "http://$(docker compose port sidekick 3998)/health/live"
+curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
 docker compose exec -T sidekick node /app/dist/main.js preflight
 ```
+
+Docker `healthy` checks liveness only: it means the control plane is listening, not that the node,
+API, or manager is ready. Do not begin onboarding until `/health/ready` succeeds and `preflight`
+reports no failed checks.
+
+Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
+cannot broadcast.
+
+For remote private access, keep the default loopback bind and tunnel it:
+
+```sh
+ssh -N -L 3998:127.0.0.1:3998 operator@sidekick-host
+```
+
+Alternatively, set `SIDEKICK_PUBLISH_ADDRESS` in `.env` to the host's Tailscale IPv4 address and
+keep port 3998 blocked on other interfaces. The `docker compose port` health commands above adapt
+to either bind. Use an authenticated TLS proxy for any non-private exposure; never publish the
+operator API directly to the internet.
 
 Fresh artifacts on a public network require a matched compatibility profile. A failed or
 inconsistent result is a stop condition.
