@@ -32,6 +32,8 @@ const signerInfoSchema = z.object({
   version: z.string().min(1),
 });
 
+const hiroStatusPath = "/extended";
+
 export type HealthSourceStatus = "healthy" | "unavailable" | "not-configured";
 
 export interface HealthSourceState {
@@ -463,7 +465,7 @@ export class HealthMonitoringService {
       };
     }
     if (kind === "hiro-reference") {
-      await readJson(endpoint(url, "/extended/v1/status"), hiroStatusSchema);
+      await readJson(endpoint(url, hiroStatusPath), hiroStatusSchema);
       return { status: "connected", signals: 2 };
     }
     const [, , metrics] = await Promise.all([
@@ -511,10 +513,9 @@ export class HealthMonitoringService {
             }))
           : null,
         config.hiroReferenceApiUrl
-          ? readJson(
-              endpoint(config.hiroReferenceApiUrl, "/extended/v1/status"),
-              hiroStatusSchema,
-            ).catch((error) => ({ source: sourceFailure(error), value: null }))
+          ? readJson(endpoint(config.hiroReferenceApiUrl, hiroStatusPath), hiroStatusSchema).catch(
+              (error) => ({ source: sourceFailure(error), value: null }),
+            )
           : null,
         config.signerMonitoringUrl
           ? readJson(endpoint(config.signerMonitoringUrl, "/info"), signerInfoSchema).catch(

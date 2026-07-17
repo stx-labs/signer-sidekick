@@ -348,6 +348,35 @@ test("keeps sustained health findings on the Signer Health page", async ({ page 
   await expect(page.getByText("Signer cannot reach its Stacks node")).not.toBeVisible();
 });
 
+test("refreshes signer health without declaring an empty JSON body", async ({ page }) => {
+  let refreshContentType: string | undefined;
+  let refreshBody: string | null | undefined;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/health/refresh"
+        ? (() => {
+            refreshContentType = route.request().headers()["content-type"];
+            refreshBody = route.request().postData();
+            return health;
+          })()
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "health", "Signer Health");
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect.poll(() => refreshBody).toBeNull();
+  expect(refreshContentType).toBeUndefined();
+  await expect(page.getByText(/Latest refresh failed/)).not.toBeVisible();
+});
+
 test("explains the manager trust tier on registration and settings", async ({ page }) => {
   await login(page);
   await openPage(page, "registration", "Registration");

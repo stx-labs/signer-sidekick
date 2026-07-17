@@ -54,7 +54,7 @@ describe("HealthMonitoringService", () => {
         );
         return;
       }
-      if (request.url === "/extended/v1/status") {
+      if (request.url === "/extended") {
         response.setHeader("content-type", "application/json");
         response.end(
           JSON.stringify({

@@ -92,11 +92,21 @@ export async function fetchHealthSnapshot(
   path = "/api/v1/health",
   init: RequestInit = {},
 ): Promise<HealthSnapshot> {
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${token}`);
+  if (init.body !== undefined && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   const response = await fetch(path, {
     ...init,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    headers,
   });
-  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+    const detail =
+      typeof body?.error === "string" ? body.error.replaceAll("_", " ") : `HTTP ${response.status}`;
+    throw new Error(`Request failed: ${detail}`);
+  }
   return (await response.json()) as HealthSnapshot;
 }
 
