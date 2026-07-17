@@ -149,6 +149,17 @@ function finalVerificationOnboarding() {
 
 test("renders every operator screen without leaking the credential", async ({ page }) => {
   await login(page);
+  const navigationTargets = await page
+    .locator(".sidebar nav a.item")
+    .evaluateAll((items) => items.map((item) => item.getAttribute("href")));
+  expect(navigationTargets.slice(0, 6)).toEqual([
+    "#overview",
+    "#registration",
+    "#pool",
+    "#rewards",
+    "#operations",
+    "#health",
+  ]);
   const screens = [
     ["health", "Signer Health"],
     ["registration", "Registration"],
@@ -352,6 +363,32 @@ test("explains the manager trust tier on registration and settings", async ({ pa
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
   await expect(page.getByText(/revision 1 is built into Sidekick/)).toBeVisible();
+});
+
+test("keeps desktop settings chrome visible while the form scrolls", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) <= 1080, "Desktop settings shell only");
+  await login(page);
+  await openPage(page, "settings", "Settings");
+
+  const settingsScroll = page.locator(".settings-scroll");
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  const settingsMenu = page.locator(".set-nav");
+  await expect(settingsScroll).toHaveCSS("overflow-y", "auto");
+  const saveBefore = await saveButton.boundingBox();
+  const menuBefore = await settingsMenu.boundingBox();
+
+  await settingsScroll.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect
+    .poll(() => settingsScroll.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+
+  const saveAfter = await saveButton.boundingBox();
+  const menuAfter = await settingsMenu.boundingBox();
+  expect(saveAfter?.y).toBe(saveBefore?.y);
+  expect(menuAfter?.y).toBe(menuBefore?.y);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
 });
 
 test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
@@ -765,7 +802,10 @@ test("makes each signer activation state explicit and actionable", async ({ page
   await expect(page.getByText("Stake required", { exact: true })).toBeVisible();
   await expect(page.getByText("0 STX of 50,000 STX required")).toBeVisible();
   await expect(page.getByText(/supported wallet or enrollment tools/)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Copy manager principal/ })).toBeVisible();
+  const copyManagerButton = page.getByRole("button", { name: /Copy manager principal/ });
+  await expect(copyManagerButton).toBeVisible();
+  await expect(copyManagerButton).toHaveCSS("flex-basis", "auto");
+  await expect(copyManagerButton).toHaveCSS("white-space", "nowrap");
   await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh after staking" })).toBeVisible();
   await expect(page.getByText(/sidekick setup status/)).not.toBeVisible();

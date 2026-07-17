@@ -279,11 +279,11 @@ interface RewardCycleSummary {
 const nav: Array<{ group?: string; id?: Page; label?: string; icon?: typeof Gauge }> = [
   { group: "Operate" },
   { id: "overview", label: "Overview", icon: Gauge },
-  { id: "health", label: "Signer Health", icon: Heartbeat },
   { id: "registration", label: "Registration", icon: SealCheck },
   { id: "pool", label: "Pool", icon: UsersThree },
   { id: "rewards", label: "Rewards", icon: Coins },
   { id: "operations", label: "Operations", icon: ListChecks },
+  { id: "health", label: "Signer Health", icon: Heartbeat },
   { group: "Configure" },
   { id: "setup", label: "Initial Setup", icon: SlidersHorizontal },
   { id: "settings", label: "Settings", icon: GearSix },
@@ -1957,7 +1957,7 @@ function App() {
           </div>
         </div>
       </aside>
-      <div className="content">
+      <div className={`content ${page === "settings" ? "content-settings" : ""}`}>
         <div className="topbar">
           <select
             aria-label="Dashboard page"
@@ -2012,7 +2012,7 @@ function App() {
             </span>
           </span>
         </div>
-        <main className="main">
+        <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
           {error ? (
             <div className="callout callout-critical error-banner">
               <WarningCircle className="ic" />

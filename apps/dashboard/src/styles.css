@@ -176,6 +176,7 @@
 
 .copy-identifier-button-labeled {
   display: inline-flex;
+  flex: 0 0 auto;
   width: auto;
   height: 36px;
   padding: 0 var(--space-3);
@@ -188,6 +189,7 @@
   font-size: 12px;
   font-weight: var(--fw-medium);
   opacity: 1;
+  white-space: nowrap;
 }
 
 .copy-identifier-button-labeled svg {
@@ -1055,6 +1057,49 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+@media (min-width: 1081px) {
+  .content-settings {
+    display: grid;
+    height: 100vh;
+    grid-template-rows: 64px auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .content-settings .main-settings {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    padding-bottom: var(--space-6);
+  }
+
+  .settings-page {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  .settings-grid {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    margin-bottom: 0;
+  }
+
+  .set-nav {
+    position: static;
+    align-self: start;
+  }
+
+  .settings-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: var(--space-1);
+    scrollbar-gutter: stable;
+  }
 }
 
 .embed-mode {

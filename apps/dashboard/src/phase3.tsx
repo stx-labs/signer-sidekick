@@ -1804,7 +1804,7 @@ export function SettingsPage({
   };
 
   return (
-    <>
+    <div className="settings-page">
       <PageHead
         title="Settings"
         lede="Configure the running deployment. Changes are validated, persisted, and audited; secrets are never returned to the browser."
@@ -1852,7 +1852,7 @@ export function SettingsPage({
             </button>
           ))}
         </nav>
-        <div>
+        <div className="settings-scroll">
           <section className="card-standout set-section form-grid" id="identity">
             <div className="card-head">
               <h2>Pool identity</h2>
@@ -2441,7 +2441,7 @@ export function SettingsPage({
           </section>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
