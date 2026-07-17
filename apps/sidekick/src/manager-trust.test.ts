@@ -403,7 +403,7 @@ describe("manager trust profiles", () => {
   it("does not inherit approval from an unrelated network profile", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
-      SIDEKICK_NETWORK: "testnet",
+      SIDEKICK_NETWORK: "pox5-testnet",
       SIDEKICK_NETWORK_ID: "256",
       STACKS_NODE_RPC_URL: "http://node:20443",
     });
@@ -445,7 +445,7 @@ describe("manager trust profiles", () => {
   it("cannot inherit devnet approval through a crafted testnet profile", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
-      SIDEKICK_NETWORK: "testnet",
+      SIDEKICK_NETWORK: "pox5-testnet",
       SIDEKICK_NETWORK_ID: "256",
       STACKS_NODE_RPC_URL: "http://node:20443",
     });

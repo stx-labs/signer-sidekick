@@ -32,12 +32,22 @@ describe("Sidekick configuration", () => {
 
   it("treats an empty Compose API override as absent", () => {
     const config = loadConfig({
-      SIDEKICK_NETWORK: "testnet",
+      SIDEKICK_NETWORK: "pox5-testnet",
       STACKS_NODE_RPC_URL: "http://node:20443",
       STACKS_API_URL: "",
     });
 
+    expect(config.network).toBe("testnet");
     expect(config.apiUrl).toBe("https://api.testnet-pox5.hiro.so");
+  });
+
+  it("rejects the PoX-4 Stacks testnet selector", () => {
+    expect(() =>
+      loadConfig({
+        SIDEKICK_NETWORK: "testnet",
+        STACKS_NODE_RPC_URL: "http://node:20443",
+      }),
+    ).toThrow("use pox5-testnet for the dedicated PoX-5 Testnet");
   });
 
   it("accepts a custom unsigned 32-bit network ID", () => {

@@ -13,13 +13,47 @@ pool transactions and is not ready for unattended mainnet use. See
 Start with [the documentation index](docs/README.md).
 
 - Operators: [container deployment](docs/operator/deployment.md)
-- Public testnet validation: [testnet runbook](docs/operator/testnet-deployment.md)
+- PoX-5 Testnet validation: [PoX-5 Testnet runbook](docs/operator/pox5-testnet-deployment.md)
 - Contributors: [development guide](docs/operator/development.md)
 - Product and safety contract: [V1 scope](docs/product/v1-plan.md)
 - Open protocol questions: [review questions](docs/reviews/team-questions.md)
 
 Node and signer installation are intentionally outside Sidekick. Operator guides link to the
 current upstream Stacks documentation rather than copying release-sensitive instructions.
+
+## Configure a deployment
+
+Start from [`.env.mainnet.example`](.env.mainnet.example) or
+[`.env.pox5-testnet.example`](.env.pox5-testnet.example).
+
+| Setting | What to do |
+| --- | --- |
+| Network, Hiro API URL, API header, forecast horizon | Use the supplied value |
+| `STACKS_NODE_RPC_URL` | Set an endpoint reachable from the Sidekick container |
+| `SIDEKICK_MANAGER_PRINCIPAL` | Set the existing or future manager contract |
+| `SIDEKICK_AUTH_TOKEN` | Generate a unique token |
+| API key/provider and publish address | Change only when needed |
+
+The built-in compatibility profile supplies public network IDs and contract metadata. Do not set
+`SIDEKICK_NETWORK_ID` for mainnet or PoX-5 Testnet.
+
+Use a separate Compose project and volume for each network:
+
+```sh
+cp .env.mainnet.example .env.mainnet
+chmod 600 .env.mainnet
+docker compose --env-file .env.mainnet -p signer-sidekick-mainnet up -d --build
+```
+
+```sh
+cp .env.pox5-testnet.example .env.pox5-testnet
+chmod 600 .env.pox5-testnet
+docker compose --env-file .env.pox5-testnet -p signer-sidekick-pox5-testnet up -d --build
+```
+
+Do not reuse a Sidekick database across networks. Both examples publish port `3998`, so stop one
+before starting the other unless you supply a Compose port override. See
+[container deployment](docs/operator/deployment.md) for credential generation and connectivity.
 
 ## Boundaries
 

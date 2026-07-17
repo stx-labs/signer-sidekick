@@ -26,6 +26,10 @@ const volumeName = `signer-sidekick-smoke-${suffix}`;
 const containerName = `signer-sidekick-smoke-${suffix}`;
 const authToken = "sidekick-container-smoke-token-0001";
 const managerPrincipal = process.env.SIDEKICK_MANAGER_PRINCIPAL.trim();
+const expectedInternalNetwork =
+  process.env.SIDEKICK_NETWORK.trim() === "pox5-testnet"
+    ? "testnet"
+    : process.env.SIDEKICK_NETWORK.trim();
 const trustedManagerProfilesDirectory = process.env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR?.trim()
   ? resolve(process.env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR.trim())
   : null;
@@ -137,7 +141,7 @@ try {
   const configuration = runCli(["config", "validate"]);
   invariant(configuration.valid === true, "Configuration validation failed");
   invariant(
-    configuration.config.network === process.env.SIDEKICK_NETWORK,
+    configuration.config.network === expectedInternalNetwork,
     "Container used the wrong network",
   );
   if (process.env.SIDEKICK_NETWORK_ID?.trim()) {

@@ -1,7 +1,7 @@
-# Public PoX-5 testnet validation
+# PoX-5 Testnet validation
 
-This runbook is only for the public-testnet activation exercise. Normal deployment documentation
-assumes mainnet.
+This runbook is only for the dedicated PoX-5 Testnet. Canonical Stacks testnet remains PoX-4 and is
+not supported by Sidekick. Normal deployment documentation assumes mainnet.
 
 Sidekick does not install the node or signer and never signs deployment or `register-self` calls.
 Use current upstream material for those steps:
@@ -14,27 +14,35 @@ Use current upstream material for those steps:
 
 ## Prerequisites
 
-- Synced public-testnet node and configured signer.
-- Funded testnet admin address.
+- Synced PoX-5 Testnet node and configured signer.
+- Funded PoX-5 Testnet admin address.
 - External tool approved for signing and broadcasting contract transactions.
 - Node RPC reachable from the Sidekick host/container.
 - Reviewed checkout of this repository.
 
 ## Start Sidekick
 
-Follow the main [install guide](deployment.md#install), then set:
+Follow the main [install guide](deployment.md#install), starting from
+`.env.pox5-testnet.example` instead of the mainnet example. These values are already correct:
 
 ```dotenv
-SIDEKICK_NETWORK=testnet
-STACKS_NODE_RPC_URL=http://host.docker.internal:20443
+SIDEKICK_NETWORK=pox5-testnet
 STACKS_API_URL=https://api.testnet-pox5.hiro.so
-SIDEKICK_MANAGER_PRINCIPAL=ST_REPLACE_WITH_ADMIN.signer-manager
-SIDEKICK_AUTH_TOKEN=replace-with-a-random-32-byte-value
+STACKS_API_KEY_HEADER=x-api-key
+SIDEKICK_FORECAST_HORIZON_CYCLES=6
 ```
 
-Leave `SIDEKICK_NETWORK_ID` unset for public testnet. For Fresh setup, the configured manager is the
-future `<admin>.<contract-name>`; for Attach, it is already deployed. The node URL above is only an
-example; use the endpoint that passed the container-side check in the main guide.
+Set the three deployment-specific values:
+
+```dotenv
+STACKS_NODE_RPC_URL=http://REPLACE_WITH_NODE_RPC:20443
+SIDEKICK_MANAGER_PRINCIPAL=ST_REPLACE_WITH_ADMIN.signer-manager
+SIDEKICK_AUTH_TOKEN=REPLACE_ME
+```
+
+Leave `SIDEKICK_NETWORK_ID` unset; the built-in profile supplies `0x80000005`. For Fresh setup, the
+configured manager is the future `<admin>.<contract-name>`; for Attach, it is already deployed. Use
+the node endpoint that passed the container-side check in the main guide.
 
 Complete the main guide through readiness and preflight before onboarding.
 

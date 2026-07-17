@@ -13,7 +13,8 @@ pnpm build
 ```
 
 Run `pnpm --filter @stx-labs/signer-sidekick cli help` after building for the current command
-surface. Configuration is defined by [`.env.example`](../../.env.example).
+surface. Configuration is defined by the [mainnet](../../.env.mainnet.example) and
+[PoX-5 Testnet](../../.env.pox5-testnet.example) examples.
 
 ## Test matrix
 
@@ -79,12 +80,12 @@ must follow [the local design contract](../../design/README.md).
 
 ## Connected environments
 
-Use environment variables from `.env.example`. Private networks may also need
+Use the environment variables from the matching example. Private networks may also need
 `SIDEKICK_NETWORK_ID`. Never put a signer key, admin key, mnemonic, or production credential in a
 fixture, command transcript, screenshot, or support bundle.
 
 For manual Attach or Fresh procedures, use the [operator deployment guide](deployment.md) or
-[public-testnet runbook](testnet-deployment.md) instead of duplicating them here.
+[PoX-5 Testnet runbook](pox5-testnet-deployment.md) instead of duplicating them here.
 
 ## Upstream contracts
 

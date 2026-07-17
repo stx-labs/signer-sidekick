@@ -18,7 +18,7 @@ volume; profile directories are mounted read-only.
 
 ```sh
 umask 077
-cp .env.example .env
+cp .env.mainnet.example .env
 chmod 600 .env
 openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
 # Linux Wayland: replace pbcopy with wl-copy
@@ -124,5 +124,5 @@ curl --fail http://127.0.0.1:3998/metrics
 Use the dashboard support bundle for escalation. Review it and logs before sharing because public
 principals are operationally identifying.
 
-For the current public-testnet exercise, use the separate
-[testnet runbook](testnet-deployment.md).
+For the dedicated PoX-5 Testnet exercise, use the separate
+[PoX-5 Testnet runbook](pox5-testnet-deployment.md).

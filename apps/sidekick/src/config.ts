@@ -4,6 +4,17 @@ import { z } from "zod";
 export const sidekickNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
 export type SidekickNetwork = z.infer<typeof sidekickNetworkSchema>;
 
+function parseConfiguredNetwork(value: string | undefined): SidekickNetwork {
+  const configured = value ?? "mainnet";
+  if (configured === "pox5-testnet") return "testnet";
+  if (configured === "testnet") {
+    throw new Error(
+      "SIDEKICK_NETWORK=testnet refers to the PoX-4 Stacks testnet, which Sidekick does not support; use pox5-testnet for the dedicated PoX-5 Testnet",
+    );
+  }
+  return sidekickNetworkSchema.parse(configured);
+}
+
 const defaults: Partial<Record<SidekickNetwork, string>> = {
   mainnet: "https://api.mainnet.hiro.so",
   testnet: "https://api.testnet-pox5.hiro.so",
@@ -72,7 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
       `${forbiddenName} is forbidden: Sidekick never accepts manager admin or signer key material`,
     );
   }
-  const network = sidekickNetworkSchema.parse(env.SIDEKICK_NETWORK ?? "mainnet");
+  const network = parseConfiguredNetwork(env.SIDEKICK_NETWORK);
   const nodeRpcUrl = env.STACKS_NODE_RPC_URL;
   if (!nodeRpcUrl) throw new Error("STACKS_NODE_RPC_URL is required");
 

@@ -774,8 +774,8 @@ Usage:
 
 Environment:
   STACKS_NODE_RPC_URL  Required node RPC base URL for connected commands
-  SIDEKICK_NETWORK     mainnet (default), testnet, devnet, or regtest
-  STACKS_API_URL       Optional for mainnet/testnet; defaults to Hiro
+  SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
+  STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
   SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6

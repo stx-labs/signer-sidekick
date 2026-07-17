@@ -5,14 +5,15 @@ Choose the shortest path for your task.
 | Audience | Start here | Use it for |
 | --- | --- | --- |
 | Mainnet operator | [Container deployment](operator/deployment.md) | Install, configure, upgrade, restore, diagnose |
-| Testnet evaluator | [Public testnet runbook](operator/testnet-deployment.md) | Exercise Attach and Fresh setup against public testnet |
+| PoX-5 Testnet evaluator | [PoX-5 Testnet runbook](operator/pox5-testnet-deployment.md) | Exercise Attach and Fresh setup against the dedicated PoX-5 network |
 | Contributor | [Development](operator/development.md) | Build, test, and run locally |
 | Product or security reviewer | [V1 scope](product/v1-plan.md) | Product boundary, trust model, architecture, acceptance |
 | Protocol reviewer | [Open questions](reviews/team-questions.md) | Decisions still needed from core, signer, API, and security teams |
 
 ## Source of truth
 
-- Runtime configuration: [`.env.example`](../.env.example) and `apps/sidekick/src/config.ts`.
+- Runtime configuration: [mainnet](../.env.mainnet.example),
+  [PoX-5 Testnet](../.env.pox5-testnet.example), and `apps/sidekick/src/config.ts`.
 - CLI commands: `node apps/sidekick/dist/main.js help` after building.
 - HTTP behavior: route schemas and tests under `apps/sidekick/src`.
 - Database structure: migrations and repositories under `apps/sidekick/src/storage`.
