@@ -115,9 +115,9 @@ export const snapshot = {
     status: "pass",
     node: {
       networkId: 0x80000005,
-      serverVersion: "stacks-node 4.0.0.0.0 (c744bf5, release build, linux [x86_64])",
-      version: "4.0.0.0.0",
-      commit: "c744bf5",
+      serverVersion: "stacks-node 4.0.1 (62e03cc, release build, linux [x86_64])",
+      version: "4.0.1",
+      commit: "62e03cc",
       burnBlockHeight: 9_240,
       stacksTipHeight: 14_200,
     },
@@ -136,7 +136,7 @@ export const snapshot = {
     },
     compatibility: {
       status: "matched",
-      profileId: "stacks-pox5-testnet-c744bf5",
+      profileId: "stacks-pox5-testnet-4.0.1",
       profileRevision: 1,
       profileLabel: "PoX-5 Testnet",
       origin: "built-in",

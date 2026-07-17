@@ -31,16 +31,16 @@ describe("network compatibility profiles", () => {
       sourceSha256: MAINNET_4_0_1_COMPATIBILITY.referenceManager.sourceSha256,
     });
     expect(POX5_TESTNET_COMPATIBILITY).toMatchObject({
-      id: "stacks-pox5-testnet-c744bf5",
+      id: "stacks-pox5-testnet-4.0.1",
       label: "PoX-5 Testnet",
       network: "testnet",
       networkId: 0x80000005,
     });
     expect(managerArtifactFromNetworkProfile(POX5_TESTNET_COMPATIBILITY)).toMatchObject({
       profile: {
-        id: "stacks-pox5-testnet-c744bf5-reference-manager",
+        id: "stacks-pox5-testnet-4.0.1-reference-manager",
         network: "testnet",
-        contracts: { sbtcDeployer: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS" },
+        contracts: { sbtcDeployer: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1" },
       },
       sourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
     });

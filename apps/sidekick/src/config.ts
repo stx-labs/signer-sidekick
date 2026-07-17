@@ -6,7 +6,7 @@ export type SidekickNetwork = z.infer<typeof sidekickNetworkSchema>;
 
 const defaults: Partial<Record<SidekickNetwork, string>> = {
   mainnet: "https://api.mainnet.hiro.so",
-  testnet: "https://api.testnet.hiro.so",
+  testnet: "https://api.testnet-pox5.hiro.so",
 };
 
 const forbiddenKeyMaterialEnvironmentVariables = [

@@ -150,7 +150,7 @@ export interface PublicRuntimeSettings {
 
 function publicApiDefault(config: SidekickConfig): string {
   if (config.network === "mainnet") return "https://api.mainnet.hiro.so";
-  if (config.network === "testnet") return "https://api.testnet.hiro.so";
+  if (config.network === "testnet") return "https://api.testnet-pox5.hiro.so";
   return config.apiUrl;
 }
 

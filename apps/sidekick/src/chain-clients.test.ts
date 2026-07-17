@@ -278,8 +278,8 @@ describe("Stacks node client", () => {
         reward_cycle_length: 20,
         prepare_cycle_length: 5,
         contract_id: "ST000000000000000000002AMW42H.pox-5",
-        pox_5_sbtc_contract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-token",
-        pox_5_sbtc_registry_contract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-registry",
+        pox_5_sbtc_contract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
+        pox_5_sbtc_registry_contract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-registry",
         contract_versions: [],
       },
     ];

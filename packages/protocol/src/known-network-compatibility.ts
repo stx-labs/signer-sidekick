@@ -43,41 +43,40 @@ export const MAINNET_4_0_1_COMPATIBILITY = {
 
 export const POX5_TESTNET_COMPATIBILITY = {
   schemaVersion: 1,
-  id: "stacks-pox5-testnet-c744bf5",
+  id: "stacks-pox5-testnet-4.0.1",
   revision: 1,
-  publishedAt: "2026-07-16T00:00:00.000Z",
+  publishedAt: "2026-07-17T00:00:00.000Z",
   label: "PoX-5 Testnet",
   network: "testnet",
   networkId: 0x80000005,
   pox5: {
     contractId: "ST000000000000000000002AMW42H.pox-5",
-    sourceSha256: "bc3f6467f14eaac1f79299f2e7389194d172a75b784b9808d6e783ced672fa69",
-    activationBurnHeight: 202,
-    firstRewardCycleId: 11,
+    sourceSha256: "44a424364cb3c115ec92d0a72ebd228645e65d8f92792d66695898904e14c734",
+    activationBurnHeight: 4_065,
+    firstRewardCycleId: 5,
   },
   sbtc: {
-    tokenContract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-token",
-    registryContract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-registry",
+    tokenContract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
+    registryContract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-registry",
   },
   referenceManager: {
-    profileId: "stacks-pox5-testnet-c744bf5-reference-manager",
+    profileId: "stacks-pox5-testnet-4.0.1-reference-manager",
     upstream: {
       tag: "4.0.0",
       commit: "5595f08a244362cefc316f95b398510a2b8cb791",
       sourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
     },
     expectedReplacements: { pox5: 8, sbtcDeployer: 13 },
-    sourceSha256: "920ec2b61853bd112f8b5470cc91ea94a00ffec7ca389bbab9705807054d94b9",
-    canonicalSha256: "9cc7192fb6ede0b355d0bff113a681980e4c489d1f9840be824d78b8f8da40cd",
+    sourceSha256: "28fd9b3dcb89c165723f54b5e61bfaa9e960cd6adfb69f87f2830d4c809aceb4",
+    canonicalSha256: "409e8cfa6a447e159062536aff677ca6df7e04e5c7ced92189b6dd90a4689c51",
   },
   capabilities: { pox5SbtcContractFields: true },
   provenance: {
-    stacksCoreTag: "4.0.0-private-1",
-    stacksCoreCommit: "c744bf5",
-    notes:
-      "Pinned to the live PoX-5 Testnet deployment; this is not the stacks-core 4.0.0 tag source.",
+    stacksCoreTag: "4.0.1",
+    stacksCoreCommit: "62e03cc5551bfc574223c2b78ce04ceca30cec37",
+    notes: "Pinned to the dedicated public PoX-5 testnet deployment.",
   },
-  testedNodeBuilds: ["stacks-node 4.0.0.0.0 (c744bf5, release build, linux [x86_64])"],
+  testedNodeBuilds: ["stacks-node 4.0.1 (62e03cc, release build, linux [x86_64])"],
 } as const satisfies NetworkCompatibilityProfile;
 
 export const BUILT_IN_NETWORK_COMPATIBILITY_PROFILES: readonly NetworkCompatibilityProfile[] = [

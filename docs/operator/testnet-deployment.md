@@ -27,7 +27,7 @@ Copy `.env.example` and set:
 ```dotenv
 SIDEKICK_NETWORK=testnet
 STACKS_NODE_RPC_URL=http://host.docker.internal:20443
-STACKS_API_URL=https://api.testnet.hiro.so
+STACKS_API_URL=https://api.testnet-pox5.hiro.so
 SIDEKICK_MANAGER_PRINCIPAL=ST_REPLACE_WITH_ADMIN.signer-manager
 SIDEKICK_AUTH_TOKEN=replace-with-a-random-32-byte-value
 ```

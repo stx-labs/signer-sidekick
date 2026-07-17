@@ -37,7 +37,7 @@ describe("Sidekick configuration", () => {
       STACKS_API_URL: "",
     });
 
-    expect(config.apiUrl).toBe("https://api.testnet.hiro.so");
+    expect(config.apiUrl).toBe("https://api.testnet-pox5.hiro.so");
   });
 
   it("accepts a custom unsigned 32-bit network ID", () => {

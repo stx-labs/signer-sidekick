@@ -112,7 +112,7 @@ describe("manager deployment rendering", () => {
 
     expect(rendered.manifest).toMatchObject({
       profile: {
-        id: "stacks-pox5-testnet-c744bf5-reference-manager",
+        id: "stacks-pox5-testnet-4.0.1-reference-manager",
         compatibilityProfileId: POX5_TESTNET_COMPATIBILITY.id,
         compatibilityProfileRevision: 1,
       },
