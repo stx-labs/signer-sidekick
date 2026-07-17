@@ -602,21 +602,21 @@ function Overview({
           <small className="src src-chain">PoX-5 contract</small>
         </div>
         <div>
-          <span>Burn height</span>
+          <span>Bitcoin block height</span>
           <strong>{number(data.preflight.node.burnBlockHeight)}</strong>
-          <small className="src src-chain">Stacks node tip</small>
+          <small className="src src-chain">Reported by Stacks node</small>
         </div>
         <div>
           <span>Next prepare phase</span>
           <strong>
-            {number(blocksUntilPrepare)} <em>blocks</em>
+            {number(blocksUntilPrepare)} <em>Bitcoin blocks</em>
           </strong>
           <small className="prepare-eta">
             {prepareEta && timing
               ? `~${prepareEta} · ${timing.windowHours}h average`
               : "ETA unavailable"}
           </small>
-          <small>at {number(data.preflight.cycle.preparePhaseStartBurnHeight)}</small>
+          <small>at Bitcoin block {number(data.preflight.cycle.preparePhaseStartBurnHeight)}</small>
         </div>
         <a className="cycle-health" href="#health" aria-label="Open Node and Signer Health">
           <span>Node &amp; Signer Health</span>
@@ -729,7 +729,7 @@ function Overview({
             value={
               rewards?.global.lastRewardComputeBurnHeight === "0"
                 ? "Waiting"
-                : `#${number(rewards?.global.lastRewardComputeBurnHeight)}`
+                : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
             }
             detail="contract read-only"
           />
@@ -806,7 +806,7 @@ function Overview({
                   />
                 </div>
                 <div className="h">
-                  {number(claim.blockHeight)} ·{" "}
+                  Stacks block {number(claim.blockHeight)} ·{" "}
                   <CopyableIdentifier
                     value={claim.txId}
                     display={short(claim.txId)}
@@ -916,7 +916,7 @@ function Registration({ data }: { data: Snapshot }) {
             />
           </StatLine>
           <StatLine label="Published">
-            <span className="mono">block {number(data.manager.publishHeight)}</span>
+            <span className="mono">Stacks block {number(data.manager.publishHeight)}</span>
           </StatLine>
           <StatLine label="Signer public key">
             <CopyableIdentifier
@@ -972,7 +972,7 @@ function Registration({ data }: { data: Snapshot }) {
               className="identifier"
             />
           </StatLine>
-          <StatLine label="Observed at">
+          <StatLine label="Observed at Bitcoin block">
             <span className="mono">{number(data.preflight.node.burnBlockHeight)}</span>
           </StatLine>
           <div className="callout callout-neutral grant-note">
@@ -1144,7 +1144,7 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
             {data.rosterStats?.deferredUnlocks ??
               data.roster.filter(({ position }) => position?.unlockBurnHeight).length}
           </div>
-          <div className="d">unlock burn height tracked</div>
+          <div className="d">unlock Bitcoin block tracked</div>
         </div>
       </div>
       <div className="section-title">
@@ -1194,7 +1194,7 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
               <th className="right">Amount</th>
               <th>First cycle</th>
               <th>Last cycle</th>
-              <th>Unlock burn height</th>
+              <th>Unlock Bitcoin block</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -1234,7 +1234,7 @@ function Pool({ data, token }: { data: Snapshot; token: string }) {
       </div>
       <p className="tertiary roster-note">
         An unstake shortens the position immediately, while STX stays locked until the recorded
-        unlock burn height.
+        unlock Bitcoin block.
       </p>
     </>
   );
@@ -1331,8 +1331,8 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
           <PipelineStage
             done={BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) > 0n}
             title="Global calculated"
-            value={`#${number(rewards?.global.lastRewardComputeBurnHeight)}`}
-            detail="last compute height"
+            value={`Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`}
+            detail="last reward calculation"
           />
           <PipelineStage
             done={BigInt(rewards?.global.signerEarnedBeforeManagerClaimSats ?? 0) === 0n}
@@ -1419,7 +1419,7 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
               <th className="right">Configured fee</th>
               <th className="right">Effective fee</th>
               <th className="right">Actionable</th>
-              <th>Observed burn block</th>
+              <th>Observed Bitcoin block</th>
             </tr>
           </thead>
           <tbody>
@@ -1540,7 +1540,7 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
               <th>Staker</th>
               <th className="right">Amount</th>
               <th>Destination</th>
-              <th>Block</th>
+              <th>Stacks block</th>
               <th>Transaction</th>
             </tr>
           </thead>
@@ -1595,7 +1595,7 @@ function Rewards({ data, token }: { data: Snapshot; token: string }) {
               <th className="right">Amount</th>
               <th className="right">Max fee</th>
               <th>Manager state</th>
-              <th>Initiated</th>
+              <th>Initiated at Stacks block</th>
             </tr>
           </thead>
           <tbody>
@@ -1712,7 +1712,7 @@ function Operations({
           <StatLine label="Manager events">
             <span className="src src-api">{data.activity.eventCount}</span>
           </StatLine>
-          <StatLine label="Latest event block">
+          <StatLine label="Latest event Stacks block">
             <span className="mono">{number(data.activity.latestBlockHeight)}</span>
           </StatLine>
           <StatLine label="Last roster sync">
@@ -2001,7 +2001,7 @@ function App() {
           <span className="sep">·</span>
           <span className="mono">
             {data
-              ? `chain tip ${number(data.preflight.node.burnBlockHeight)} · api lag ${data.preflight.api.burnBlockLag} · ${new Date(data.generatedAt).toLocaleTimeString()}`
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API difference ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${new Date(data.generatedAt).toLocaleTimeString()}`
               : "loading operator state"}
           </span>
           <span className="right">

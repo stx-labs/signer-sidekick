@@ -105,6 +105,10 @@ function pox5VersionFrom(info: PoxInfo) {
   return info.contract_versions.find((version) => version.contract_id.endsWith(".pox-5"));
 }
 
+function bitcoinBlockCount(count: number): string {
+  return `${count} Bitcoin ${count === 1 ? "block" : "blocks"}`;
+}
+
 export async function runOperatorPreflight(
   config: SidekickConfig,
   node: StacksNodeClient,
@@ -311,8 +315,8 @@ export function evaluatePreflight(
     status: burnBlockLag <= config.maxApiBurnBlockLag ? "pass" : "warn",
     message:
       burnBlockDifference === 0
-        ? "API burnchain tip is at the node tip"
-        : `API burnchain tip is ${burnBlockLag} block(s) ${apiTipPosition} the node`,
+        ? "API Bitcoin tip is at the node Bitcoin tip"
+        : `API Bitcoin tip is ${bitcoinBlockCount(burnBlockLag)} ${apiTipPosition} the node`,
   });
 
   const pox5Version = pox5VersionFrom(nodePoxInfo);
@@ -345,7 +349,7 @@ export function evaluatePreflight(
       activationState === "active"
         ? "PoX-5 is active on the connected node"
         : activationState === "scheduled"
-          ? `PoX-5 is scheduled at burn block ${activationBurnHeight}; ${blocksUntilActivation} block(s) remain`
+          ? `PoX-5 is scheduled at Bitcoin block ${activationBurnHeight}; ${bitcoinBlockCount(blocksUntilActivation ?? 0)} remain`
           : "The connected node does not advertise a PoX-5 contract or activation",
   });
 

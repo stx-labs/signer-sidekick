@@ -476,7 +476,7 @@ export class OnboardingService {
           ...step,
           status: manager.attachAllowed ? ("complete" as const) : ("blocked" as const),
           detail: manager.attachAllowed
-            ? `Manager source verified at Stacks height ${manager.publishHeight}`
+            ? `Manager source verified at Stacks block ${manager.publishHeight}`
             : manager.reasons.join("; "),
         };
       }

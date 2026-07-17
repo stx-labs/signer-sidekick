@@ -165,7 +165,7 @@ describe("operator preflight", () => {
     expect(result.api.burnBlockLag).toBe(20);
     expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
       status: "warn",
-      message: "API burnchain tip is 20 block(s) ahead of the node",
+      message: "API Bitcoin tip is 20 Bitcoin blocks ahead of the node",
     });
   });
 

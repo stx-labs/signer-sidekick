@@ -302,7 +302,7 @@ export function SignerHealthPage({
           <Metric label="Bitcoin tip">
             <span className="mono">{displayNumber(snapshot.node.burnBlockHeight)}</span>
           </Metric>
-          <Metric label="Last tip advance">
+          <Metric label="Last Stacks tip advance">
             <span className="mono">{displayTime(snapshot.node.lastTipAdvanceAt)}</span>
           </Metric>
           <Metric label="Peers">
@@ -380,10 +380,10 @@ export function SignerHealthPage({
                 "—"
               )}
             </Metric>
-            <Metric label="Observed node height">
+            <Metric label="Observed Stacks node height">
               <span className="mono">{displayNumber(snapshot.signer.observedNodeHeight)}</span>
             </Metric>
-            <Metric label="Node difference">
+            <Metric label="Stacks node difference">
               <span className="mono">
                 {displayDifference(snapshot.signer.nodeHeightDifference)}
               </span>
@@ -418,7 +418,7 @@ export function SignerHealthPage({
               <EligibilityState value={context.eligibility?.next ?? null} />
             </Metric>
             <div className="section-title health-window-title">Last hour</div>
-            <Metric label="Block proposals">
+            <Metric label="Stacks block proposals">
               {baseline ? "Collecting baseline" : displayNumber(snapshot.signer.lastHour.proposals)}
             </Metric>
             <Metric label="Responses">

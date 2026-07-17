@@ -27,7 +27,7 @@
 </head>
 <body data-page="enrollment" data-mode="assist"
       data-crumbs="<strong>Public Pool Page</strong> · Trust Machines Pool"
-      data-fresh="burn 962,184 · embed regenerated 12s ago">
+      data-fresh="Bitcoin block 962,184 · embed regenerated 12s ago">
 <div class="app">
   <div class="content">
     <main class="main">
@@ -181,7 +181,7 @@
               <button class="btn btn-secondary sm"><i class="ph ph-copy"></i> Copy manager principal</button>
             </div>
           </div>
-          <p class="tertiary" style="font-size:11px; margin:14px 0 0;">Data via public Stacks API · burn height 962,184. Rendered on your site — Sidekick is not in the request path.</p>
+          <p class="tertiary" style="font-size:11px; margin:14px 0 0;">Data via public Stacks API · Bitcoin block height 962,184. Rendered on your site — Sidekick is not in the request path.</p>
         </div>
       </div>
 
@@ -208,7 +208,7 @@
         dlLabel.textContent=isLive?'Download .html':'Download .json';
         note.innerHTML=isLive
           ? 'The snippet is fully self-contained — no external script host, no runtime dependency on Sidekick. An <span class="mono">&lt;iframe&gt;</span> variant pointing at a static file you host is also available.'
-          : 'Values are baked in at generation time (“as of burn height 962,184”). Re-generate to refresh — nothing is fetched at view time.';
+          : 'Values are baked in at generation time (“as of Bitcoin block 962,184”). Re-generate to refresh — nothing is fetched at view time.';
         desc.innerHTML=isLive
           ? '<span style="font-size:12px;"><strong>Live card</strong> — a self-contained snippet that fetches current cycle, pool size, and grant status from a public API each time the page loads. Always current; nothing to re-paste.</span>'
           : '<span style="font-size:12px;"><strong>Static snapshot</strong> — values frozen at generation time. No network calls at view time, but you must regenerate when anything changes.</span>';

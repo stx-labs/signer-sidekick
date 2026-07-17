@@ -23,7 +23,7 @@
 </head>
 <body data-page="operations" data-mode="assist"
       data-crumbs="<strong>Operations</strong> · Trust Machines Pool"
-      data-fresh="burn 962,184 · gas-payer nonce reconciled 12s ago">
+      data-fresh="Bitcoin block 962,184 · gas-payer nonce reconciled 12s ago">
 <div class="app">
   <div class="content">
     <main class="main">
@@ -71,7 +71,7 @@
           <div class="card-head"><h2>Jobs</h2><span class="muted" style="font-size:12px;">4 enabled · 1 gated</span></div>
           <div class="job-policy">
             <div class="ic"><i class="ph ph-radar"></i></div>
-            <div class="body"><div class="t">Global distribution watchdog</div><div class="m">observe + fallback crank after 40-block grace · jitter</div></div>
+            <div class="body"><div class="t">Global distribution watchdog</div><div class="m">observe + fallback crank after 40-Bitcoin-block grace · jitter</div></div>
             <div class="toggle on"></div>
           </div>
           <div class="job-policy">
@@ -134,7 +134,7 @@
   bond-index:  <span class="s">none</span>
 <span class="c">;; post-conditions: sBTC transfer, deny-by-default</span></div>
             <div class="statline" style="margin-top:12px;"><span class="k">Idempotency key</span><span class="v identifier" style="font-size:11px;">chain·mgr·SP4T8·141·none·rpt-8814</span></div>
-            <div class="statline"><span class="k">Trigger height</span><span class="v mono">962,152 <span class="sub">manager claim reconciled</span></span></div>
+            <div class="statline"><span class="k">Trigger Stacks block</span><span class="v mono">962,152 <span class="sub">manager claim reconciled</span></span></div>
           </div>
           <div>
             <div class="section-title" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-tertiary);">Simulation &amp; policy</div>
@@ -180,7 +180,7 @@
           <div class="section-title" style="font-size:13px; margin:0 0 8px;">Recent delivery</div>
           <div class="attempt"><span class="mono muted">962,120</span><span>Slack · gas low</span><span class="badge b-success" style="height:18px; margin-left:auto;">200</span></div>
           <div class="attempt"><span class="mono muted">961,980</span><span>Webhook · claim ok</span><span class="badge b-success" style="height:18px; margin-left:auto;">200</span></div>
-          <p class="tertiary" style="font-size:11px; margin-top:12px;">Deduplicated by key + height so repeated polling never spams a destination.</p>
+          <p class="tertiary" style="font-size:11px; margin-top:12px;">Deduplicated by key + Stacks block so repeated polling never spams a destination.</p>
         </div>
       </div>
 
@@ -192,7 +192,7 @@
           <div class="statline"><span class="k">Version</span><span class="v src src-chain">stacks-core 4.0.0 <span class="badge b-success" style="height:18px; margin-left:4px;">Supported</span> <a class="btn-ghost" style="font-size:12px; padding:0; margin-left:6px;" href="https://github.com/stacks-network/stacks-core/releases/tag/4.0.0" target="_blank" rel="noopener">release <i class="ph ph-arrow-square-out"></i></a></span></div>
           <div class="statline"><span class="k">Network</span><span class="v mono src src-chain">mainnet · chain 0x00000001</span></div>
           <div class="statline"><span class="k">Epoch</span><span class="v src src-chain">4.0 <span class="sub">PoX-5 active</span></span></div>
-          <div class="statline"><span class="k">Burn tip</span><span class="v mono src src-chain">962,184 <span class="sub">in sync with Sidekick</span></span></div>
+          <div class="statline"><span class="k">Bitcoin tip</span><span class="v mono src src-chain">962,184 <span class="sub">in sync with Sidekick</span></span></div>
           <div class="statline"><span class="k">RPC endpoint</span><span class="v identifier">http://127.0.0.1:20443 <i class="ph ph-copy copy"></i></span></div>
           <p class="tertiary" style="font-size:11px; margin:12px 0 0;">Polled from the node's <span class="mono">/v2/info</span> on an interval. <span class="mono">server_version</span> is checked against the versions this profile supports.</p>
         </div>

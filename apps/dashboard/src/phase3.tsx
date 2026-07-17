@@ -419,7 +419,7 @@ function signerActivationView(
       badge: "Activation scheduled",
       title: `Activation scheduled for cycle ${next.cycleId}`,
       message: start
-        ? `No action is required. Signing begins when cycle ${next.cycleId} starts at burn height ${start}.`
+        ? `No action is required. Signing begins when cycle ${next.cycleId} starts at Bitcoin block ${start}.`
         : `No action is required. Signing begins when cycle ${next.cycleId} starts.`,
       refreshLabel: "Refresh chain status",
     };
@@ -430,7 +430,7 @@ function signerActivationView(
       badge: "Chain update pending",
       title: `Signer-set confirmation pending for cycle ${next.cycleId}`,
       message:
-        "The stake threshold is met, but signer-set membership has not updated at this chain tip. Wait for the chain to advance, then refresh.",
+        "The stake threshold is met, but signer-set membership has not updated at this Stacks chain tip. Wait for the chain to advance, then refresh.",
       refreshLabel: "Refresh chain status",
     };
   }
@@ -1622,12 +1622,12 @@ export function SetupPage({
                           {activationSetup?.enrollmentWindow.status === "prepare-phase"
                             ? "Closed"
                             : enrollmentCloseHeight
-                              ? `Burn height ${enrollmentCloseHeight}`
+                              ? `Bitcoin block ${enrollmentCloseHeight}`
                               : "Unavailable"}
                         </strong>
                         {activationSetup?.enrollmentWindow.status === "open" &&
                         blocksUntilEnrollmentClose !== null ? (
-                          <small>{blocksUntilEnrollmentClose} blocks remaining</small>
+                          <small>{blocksUntilEnrollmentClose} Bitcoin blocks remaining</small>
                         ) : null}
                       </div>
                     </div>
@@ -1645,8 +1645,8 @@ export function SetupPage({
                     ) : null}
                     {activation.kind === "scheduled" && signingStartHeight ? (
                       <p className="activation-next-step">
-                        Signing begins at burn height {signingStartHeight}. No further setup action
-                        is required.
+                        Signing begins at Bitcoin block {signingStartHeight}. No further setup
+                        action is required.
                       </p>
                     ) : null}
 
@@ -1924,7 +1924,10 @@ export function SettingsPage({
                 <option value="dark">Dark</option>
               </select>
             </Field>
-            <Field label="Time zone" help="Formatting only. Scheduling remains burn-height-driven.">
+            <Field
+              label="Time zone"
+              help="Formatting only. Scheduling remains driven by Bitcoin block height."
+            >
               <input
                 className="input"
                 value={settings.display.timezone}
@@ -2557,7 +2560,7 @@ export function EnrollmentPage({ data: _data, token }: { data: Phase3Snapshot; t
         </div>
         <p className="tertiary">
           {mode === "live"
-            ? "Refreshes reward cycle and burn height from the configured unauthenticated public API. Verified pool identity and manager facts remain baked in."
+            ? "Refreshes reward cycle and Bitcoin block height from the configured unauthenticated public API. Verified pool identity and manager facts remain baked in."
             : "Baked HTML plus versioned JSON with current verified values and no runtime network request."}
         </p>
       </div>

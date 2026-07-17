@@ -190,7 +190,7 @@ export async function readPoolSetupStatus(
       checks.push({
         id: "next-cycle-eligibility-consistency",
         status: "warn",
-        message: `Cycle ${next.cycleId} threshold and signer-set membership do not agree at this tip`,
+        message: `Cycle ${next.cycleId} threshold and signer-set membership do not agree at this Stacks tip`,
       });
     }
   }
@@ -210,7 +210,7 @@ export async function readPoolSetupStatus(
       enrollmentWindowStatus === "open"
         ? `PoX-5 stake changes are open for cycle ${preflight.cycle.nextId ?? "unknown"}`
         : enrollmentWindowStatus === "prepare-phase"
-          ? "PoX-5 stake changes are closed during the prepare phase and its final pre-execution block"
+          ? "PoX-5 stake changes are closed during the prepare phase and its final pre-execution Bitcoin block"
           : "The current PoX-5 enrollment window is unknown",
   });
 

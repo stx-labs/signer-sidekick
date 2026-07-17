@@ -119,7 +119,7 @@ function cardHtml(
       <dt>Configured fee</dt><dd>${(enrollment.fee.currentConfiguredBips / 100).toFixed(2)}%</dd>
       <dt>Reward cycle</dt><dd data-sidekick-cycle>${enrollment.chain.rewardCycleId}</dd>
       <dt>Pool size</dt><dd>${html(poolStx)} STX</dd>
-      <dt>Burn height</dt><dd data-sidekick-burn>${enrollment.chain.burnBlockHeight}</dd>
+      <dt>Bitcoin block height</dt><dd data-sidekick-burn>${enrollment.chain.burnBlockHeight}</dd>
       <dt>Website</dt><dd>${website ? `<a href="${html(website)}">${html(website)}</a>` : "Not published"}</dd>
       <dt>Support</dt><dd>${html(supportLabel(enrollment))}</dd>
     </dl>
