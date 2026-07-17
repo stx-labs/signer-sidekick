@@ -119,6 +119,32 @@ describe("operator preflight", () => {
     });
   });
 
+  it("uses the PoX-5 Testnet network ID for testnet", () => {
+    const testnetConfig = { ...config, network: "testnet" as const };
+    const result = evaluatePreflight(
+      testnetConfig,
+      sources({
+        nodeInfo: {
+          network_id: 0x80000005,
+          burn_block_height: 5_636,
+          stacks_tip_height: 192_259,
+        },
+        apiNodeInfo: {
+          network_id: 0x80000005,
+          burn_block_height: 5_636,
+          stacks_tip_height: 192_259,
+        },
+      }),
+    );
+
+    expect(result.checks.find((check) => check.id === "node-network")).toMatchObject({
+      status: "pass",
+    });
+    expect(result.checks.find((check) => check.id === "api-network")).toMatchObject({
+      status: "pass",
+    });
+  });
+
   it("warns when the API is unexpectedly ahead of the configured node", () => {
     const result = evaluatePreflight(
       config,

@@ -153,7 +153,7 @@ export async function runOperatorPreflight(
 
 const networkIds: Record<SidekickConfig["network"], number> = {
   mainnet: 1,
-  testnet: 0x80000000,
+  testnet: 0x80000005,
   devnet: 0x80000000,
   regtest: 0x80000000,
 };
@@ -235,7 +235,7 @@ function selectCompatibilityProfile(
     status: "matched",
     selected,
     reason: selected
-      ? `Live network fingerprint matches ${selected.profile.id}`
+      ? `Live network fingerprint matches ${selected.profile.label}`
       : "Live network fingerprint matched",
   };
 }

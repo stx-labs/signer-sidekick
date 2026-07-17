@@ -56,6 +56,15 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
+test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
+
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
+});
+
 test("explains the manager trust tier on registration and settings", async ({ page }) => {
   await login(page);
   await openPage(page, "registration", "Registration");

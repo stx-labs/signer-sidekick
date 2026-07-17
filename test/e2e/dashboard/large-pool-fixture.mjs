@@ -114,7 +114,7 @@ export const snapshot = {
   preflight: {
     status: "pass",
     node: {
-      networkId: 256,
+      networkId: 0x80000005,
       serverVersion: "stacks-node 4.0.0.0.0 (c744bf5, release build, linux [x86_64])",
       version: "4.0.0.0.0",
       commit: "c744bf5",
@@ -136,11 +136,12 @@ export const snapshot = {
     },
     compatibility: {
       status: "matched",
-      profileId: "hiro-private-1-pox5-c744bf5",
+      profileId: "stacks-pox5-testnet-c744bf5",
       profileRevision: 1,
+      profileLabel: "PoX-5 Testnet",
       origin: "built-in",
       nodeBuildPreviouslyTested: true,
-      reason: "Live network fingerprint matches hiro-private-1-pox5-c744bf5",
+      reason: "Live network fingerprint matches PoX-5 Testnet",
     },
     cycle: {
       currentId: 139,

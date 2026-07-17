@@ -151,6 +151,7 @@ export interface Phase3Snapshot {
       status: "matched" | "unrecognized" | "inconsistent";
       profileId: string | null;
       profileRevision: number | null;
+      profileLabel: string | null;
       origin: "built-in" | "operator-provided" | null;
       nodeBuildPreviouslyTested: boolean;
       reason: string;
@@ -1273,7 +1274,11 @@ export function SettingsPage({
                   {data.preflight.compatibility.profileId ? (
                     <>
                       {" "}
-                      Profile <span className="mono">{data.preflight.compatibility.profileId}</span>{" "}
+                      Profile{" "}
+                      <span className="mono">
+                        {data.preflight.compatibility.profileLabel ??
+                          data.preflight.compatibility.profileId}
+                      </span>{" "}
                       revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
                       {data.preflight.compatibility.origin === "operator-provided"
                         ? "operator-provided setup data and cannot authorize automation"

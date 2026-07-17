@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { PRIVATE_1_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { afterEach, describe, expect, it } from "vitest";
 import { assertManagerRenderPreflight, renderManagerDeployment } from "./manager-render.js";
 
@@ -107,16 +107,16 @@ describe("manager deployment rendering", () => {
       contractName: "signer-manager",
       contractsDirectory,
       outputDirectory,
-      compatibilityProfile: PRIVATE_1_COMPATIBILITY,
+      compatibilityProfile: POX5_TESTNET_COMPATIBILITY,
     });
 
     expect(rendered.manifest).toMatchObject({
       profile: {
-        id: "hiro-private-1-pox5-c744bf5-reference-manager",
-        compatibilityProfileId: PRIVATE_1_COMPATIBILITY.id,
+        id: "stacks-pox5-testnet-c744bf5-reference-manager",
+        compatibilityProfileId: POX5_TESTNET_COMPATIBILITY.id,
         compatibilityProfileRevision: 1,
       },
-      artifact: { sourceSha256: PRIVATE_1_COMPATIBILITY.referenceManager.sourceSha256 },
+      artifact: { sourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256 },
       operatorReviewRequired: true,
     });
   });

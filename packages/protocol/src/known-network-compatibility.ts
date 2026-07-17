@@ -41,14 +41,14 @@ export const MAINNET_4_0_1_COMPATIBILITY = {
   testedNodeBuilds: [],
 } as const satisfies NetworkCompatibilityProfile;
 
-export const PRIVATE_1_COMPATIBILITY = {
+export const POX5_TESTNET_COMPATIBILITY = {
   schemaVersion: 1,
-  id: "hiro-private-1-pox5-c744bf5",
+  id: "stacks-pox5-testnet-c744bf5",
   revision: 1,
   publishedAt: "2026-07-16T00:00:00.000Z",
-  label: "Hiro private-1 PoX-5 test network",
+  label: "PoX-5 Testnet",
   network: "testnet",
-  networkId: 256,
+  networkId: 0x80000005,
   pox5: {
     contractId: "ST000000000000000000002AMW42H.pox-5",
     sourceSha256: "bc3f6467f14eaac1f79299f2e7389194d172a75b784b9808d6e783ced672fa69",
@@ -60,7 +60,7 @@ export const PRIVATE_1_COMPATIBILITY = {
     registryContract: "SN3R84XZYA63QS28932XQF3G1J8R9PC3W76P9CSQS.sbtc-registry",
   },
   referenceManager: {
-    profileId: "hiro-private-1-pox5-c744bf5-reference-manager",
+    profileId: "stacks-pox5-testnet-c744bf5-reference-manager",
     upstream: {
       tag: "4.0.0",
       commit: "5595f08a244362cefc316f95b398510a2b8cb791",
@@ -74,12 +74,13 @@ export const PRIVATE_1_COMPATIBILITY = {
   provenance: {
     stacksCoreTag: "4.0.0-private-1",
     stacksCoreCommit: "c744bf5",
-    notes: "Pinned to the live private-1 deployment; this is not the stacks-core 4.0.0 tag source.",
+    notes:
+      "Pinned to the live PoX-5 Testnet deployment; this is not the stacks-core 4.0.0 tag source.",
   },
   testedNodeBuilds: ["stacks-node 4.0.0.0.0 (c744bf5, release build, linux [x86_64])"],
 } as const satisfies NetworkCompatibilityProfile;
 
 export const BUILT_IN_NETWORK_COMPATIBILITY_PROFILES: readonly NetworkCompatibilityProfile[] = [
   MAINNET_4_0_1_COMPATIBILITY,
-  PRIVATE_1_COMPATIBILITY,
+  POX5_TESTNET_COMPATIBILITY,
 ];

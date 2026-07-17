@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { PRIVATE_1_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import {
   canonicalizeClaritySource,
   claritySourceSha256,
@@ -113,11 +113,11 @@ describe("deployed manager verification", () => {
     const profilesDirectory = await mkdtemp(resolve(tmpdir(), "sidekick-network-profile-"));
     temporaryDirectories.push(profilesDirectory);
     const profile = {
-      ...PRIVATE_1_COMPATIBILITY,
+      ...POX5_TESTNET_COMPATIBILITY,
       revision: 2,
       publishedAt: "2026-07-17T00:00:00.000Z",
       referenceManager: {
-        ...PRIVATE_1_COMPATIBILITY.referenceManager,
+        ...POX5_TESTNET_COMPATIBILITY.referenceManager,
         profileId: "operator-private-1-reference-manager",
       },
     };
@@ -131,7 +131,7 @@ describe("deployed manager verification", () => {
     const context = await createManagerVerificationContext({
       contractsDirectory: resolve(root, "contracts"),
       compatibilityProfilesDirectory: profilesDirectory,
-      expectedNetworkId: 256,
+      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
     });
     const report = verifyManagerArtifact(
       "testnet",
@@ -160,11 +160,11 @@ describe("deployed manager verification", () => {
     temporaryDirectories.push(profilesDirectory);
     const customSource = "(define-public (custom) (ok true))";
     const profile = {
-      ...PRIVATE_1_COMPATIBILITY,
+      ...POX5_TESTNET_COMPATIBILITY,
       revision: 2,
       publishedAt: "2026-07-17T00:00:00.000Z",
       referenceManager: {
-        ...PRIVATE_1_COMPATIBILITY.referenceManager,
+        ...POX5_TESTNET_COMPATIBILITY.referenceManager,
         profileId: "operator-forged-reference-manager",
         sourceSha256: claritySourceSha256(customSource),
         canonicalSha256: claritySourceSha256(canonicalizeClaritySource(customSource)),
@@ -174,7 +174,7 @@ describe("deployed manager verification", () => {
     const context = await createManagerVerificationContext({
       contractsDirectory: resolve(root, "contracts"),
       compatibilityProfilesDirectory: profilesDirectory,
-      expectedNetworkId: 256,
+      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
     });
 
     const report = verifyManagerArtifact(

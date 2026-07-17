@@ -76,6 +76,7 @@ interface Snapshot {
       status: "matched" | "unrecognized" | "inconsistent";
       profileId: string | null;
       profileRevision: number | null;
+      profileLabel: string | null;
       origin: "built-in" | "operator-provided" | null;
       nodeBuildPreviouslyTested: boolean;
       reason: string;
@@ -1533,7 +1534,8 @@ function Operations({ data }: { data: Snapshot }) {
           </StatLine>
           <StatLine label="Network">
             <span className="mono">
-              {data.network} · {data.preflight.node.networkId}
+              {data.preflight.compatibility.profileLabel ?? data.network} · 0x
+              {data.preflight.node.networkId.toString(16).padStart(8, "0")}
             </span>
           </StatLine>
           <StatLine label="Burn tip">
