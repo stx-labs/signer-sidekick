@@ -193,12 +193,15 @@ export function buildAlerts(snapshot: {
   if (snapshot.forecast?.status === "attention") {
     const affectedCycles = snapshot.forecast.cycles.filter(({ status }) => status === "attention");
     const affected = affectedCycles.map(({ cycleId }) => cycleId).join(", ");
-    const belowThreshold = affectedCycles
-      .filter(({ threshold }) => !threshold.meetsThreshold)
-      .map(({ cycleId }) => cycleId)
-      .join(", ");
-    const thresholdUstx = affectedCycles.find(({ threshold }) => !threshold.meetsThreshold)
-      ?.threshold.thresholdUstx;
+    const currentCycleId = snapshot.forecast.cycles[0]?.cycleId;
+    const belowThresholdCycles = affectedCycles.filter(
+      ({ cycleId, threshold }) =>
+        currentCycleId !== undefined &&
+        (cycleId === currentCycleId || cycleId === currentCycleId + 1) &&
+        !threshold.meetsThreshold,
+    );
+    const belowThreshold = belowThresholdCycles.map(({ cycleId }) => cycleId).join(", ");
+    const thresholdUstx = belowThresholdCycles[0]?.threshold.thresholdUstx;
     const thresholdStx = thresholdUstx
       ? `${(BigInt(thresholdUstx) / 1_000_000n).toLocaleString("en-US")} STX`
       : "the signer-set";
@@ -207,13 +210,11 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
       detail: belowThreshold
-        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}. Open Initial Setup → Activate your signer for the manager principal and enrollment cutoff.`
+        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}. Open Pool positions to review the delegated total and roster changes.`
         : affected
           ? `Open Pool positions to review the roster changes affecting reward cycle(s) ${affected}.`
           : "Open Pool positions to review the incomplete roster evidence.",
-      action: belowThreshold
-        ? { kind: "navigate", label: "Open signer activation", target: "setup" }
-        : { kind: "navigate", label: "Review pool positions", target: "pool" },
+      action: { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }
   if (snapshot.rewards?.status === "attention") {

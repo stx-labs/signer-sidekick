@@ -22,7 +22,16 @@ afterEach(() => {
   for (const store of stores.splice(0)) store.close();
 });
 
-function alertInput(options: { belowThreshold?: boolean; setupBlocked?: boolean }) {
+function alertInput(options: {
+  belowThreshold?: boolean;
+  setupBlocked?: boolean;
+  cycles?: Array<{
+    cycleId: number;
+    status: "ready" | "attention";
+    meetsThreshold: boolean;
+    thresholdUstx?: string;
+  }>;
+}) {
   const thresholdUstx = "75000000000";
   return {
     preflight: { checks: [] },
@@ -37,7 +46,13 @@ function alertInput(options: { belowThreshold?: boolean; setupBlocked?: boolean 
       : { status: "ready", checks: [] },
     forecast: {
       status: "attention",
-      cycles: [
+      cycles: options.cycles?.map(
+        ({ cycleId, status, meetsThreshold, thresholdUstx: cycleThreshold }) => ({
+          cycleId,
+          status,
+          threshold: { meetsThreshold, thresholdUstx: cycleThreshold ?? thresholdUstx },
+        }),
+      ) ?? [
         {
           cycleId: 144,
           status: "attention",
@@ -145,15 +160,15 @@ describe("operator service", () => {
     );
   });
 
-  it("uses the live threshold in below-threshold alerts and preserves setup alerts", () => {
+  it("uses the live threshold, routes to the pool, and preserves setup alerts", () => {
     const alerts = buildAlerts(alertInput({ belowThreshold: true, setupBlocked: true }));
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "pool:forecast-attention",
         title: "Pool Below Signer-Set Threshold",
         detail:
-          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 144. Open Initial Setup → Activate your signer for the manager principal and enrollment cutoff.",
-        action: { kind: "navigate", label: "Open signer activation", target: "setup" },
+          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 144. Open Pool positions to review the delegated total and roster changes.",
+        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
     expect(alerts).toContainEqual(
@@ -170,6 +185,52 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Forecast Needs Attention",
         detail: "Open Pool positions to review the roster changes affecting reward cycle(s) 144.",
+        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
+      }),
+    );
+  });
+
+  it("limits the signer-set threshold alert to the current and next cycles", () => {
+    const alerts = buildAlerts(
+      alertInput({
+        cycles: [
+          { cycleId: 144, status: "ready", meetsThreshold: true },
+          { cycleId: 145, status: "attention", meetsThreshold: false },
+          {
+            cycleId: 146,
+            status: "attention",
+            meetsThreshold: false,
+            thresholdUstx: "80000000000",
+          },
+        ],
+      }),
+    );
+
+    expect(alerts).toContainEqual(
+      expect.objectContaining({
+        title: "Pool Below Signer-Set Threshold",
+        detail:
+          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 145. Open Pool positions to review the delegated total and roster changes.",
+        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
+      }),
+    );
+  });
+
+  it("keeps later-cycle threshold shortfalls as generic forecast attention", () => {
+    expect(
+      buildAlerts(
+        alertInput({
+          cycles: [
+            { cycleId: 144, status: "ready", meetsThreshold: true },
+            { cycleId: 145, status: "ready", meetsThreshold: true },
+            { cycleId: 146, status: "attention", meetsThreshold: false },
+          ],
+        }),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        title: "Pool Forecast Needs Attention",
+        detail: "Open Pool positions to review the roster changes affecting reward cycle(s) 146.",
         action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
