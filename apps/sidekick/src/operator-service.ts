@@ -190,15 +190,14 @@ export function buildAlerts(snapshot: {
       action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   }
-  if (snapshot.forecast?.status === "attention") {
-    const affectedCycles = snapshot.forecast.cycles.filter(({ status }) => status === "attention");
+  const affectedCycles =
+    snapshot.forecast?.status === "attention"
+      ? snapshot.forecast.cycles.slice(0, 2).filter(({ status }) => status === "attention")
+      : [];
+  if (affectedCycles.length > 0) {
     const affected = affectedCycles.map(({ cycleId }) => cycleId).join(", ");
-    const currentCycleId = snapshot.forecast.cycles[0]?.cycleId;
     const belowThresholdCycles = affectedCycles.filter(
-      ({ cycleId, threshold }) =>
-        currentCycleId !== undefined &&
-        (cycleId === currentCycleId || cycleId === currentCycleId + 1) &&
-        !threshold.meetsThreshold,
+      ({ threshold }) => !threshold.meetsThreshold,
     );
     const belowThreshold = belowThresholdCycles.map(({ cycleId }) => cycleId).join(", ");
     const thresholdUstx = belowThresholdCycles[0]?.threshold.thresholdUstx;
@@ -211,9 +210,7 @@ export function buildAlerts(snapshot: {
       title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
       detail: belowThreshold
         ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}. Open Pool positions to review the delegated total and roster changes.`
-        : affected
-          ? `Open Pool positions to review the roster changes affecting reward cycle(s) ${affected}.`
-          : "Open Pool positions to review the incomplete roster evidence.",
+        : `Open Pool positions to review the roster changes affecting reward cycle(s) ${affected}.`,
       action: { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }

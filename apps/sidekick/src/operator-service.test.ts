@@ -190,14 +190,14 @@ describe("operator service", () => {
     );
   });
 
-  it("limits the signer-set threshold alert to the current and next cycles", () => {
+  it("limits the signer-set threshold alert to the next cycle", () => {
     const alerts = buildAlerts(
       alertInput({
         cycles: [
-          { cycleId: 144, status: "ready", meetsThreshold: true },
-          { cycleId: 145, status: "attention", meetsThreshold: false },
+          { cycleId: 5, status: "ready", meetsThreshold: true },
+          { cycleId: 6, status: "attention", meetsThreshold: false },
           {
-            cycleId: 146,
+            cycleId: 7,
             status: "attention",
             meetsThreshold: false,
             thresholdUstx: "80000000000",
@@ -210,30 +210,27 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Below Signer-Set Threshold",
         detail:
-          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 145. Open Pool positions to review the delegated total and roster changes.",
+          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 6. Open Pool positions to review the delegated total and roster changes.",
         action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
   });
 
-  it("keeps later-cycle threshold shortfalls as generic forecast attention", () => {
-    expect(
-      buildAlerts(
-        alertInput({
-          cycles: [
-            { cycleId: 144, status: "ready", meetsThreshold: true },
-            { cycleId: 145, status: "ready", meetsThreshold: true },
-            { cycleId: 146, status: "attention", meetsThreshold: false },
-          ],
-        }),
-      ),
-    ).toContainEqual(
-      expect.objectContaining({
-        title: "Pool Forecast Needs Attention",
-        detail: "Open Pool positions to review the roster changes affecting reward cycle(s) 146.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
+  it("does not alert for attention beyond the next cycle", () => {
+    const alerts = buildAlerts(
+      alertInput({
+        cycles: [
+          { cycleId: 5, status: "ready", meetsThreshold: true },
+          { cycleId: 6, status: "ready", meetsThreshold: true },
+          { cycleId: 7, status: "attention", meetsThreshold: false },
+          { cycleId: 8, status: "attention", meetsThreshold: false },
+          { cycleId: 9, status: "attention", meetsThreshold: false },
+          { cycleId: 10, status: "attention", meetsThreshold: false },
+        ],
       }),
     );
+
+    expect(alerts).not.toContainEqual(expect.objectContaining({ id: "pool:forecast-attention" }));
   });
 
   it("attaches the resolving control to roster and withdrawal alerts", () => {
