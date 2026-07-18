@@ -1,5 +1,6 @@
 import { bufferCV, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
+import type { ChainAnchor } from "./chain-anchor.js";
 import { type RewardStatusStore, readStxRewardStatus } from "./reward-status.js";
 import type { SignerStakerRun, StoredCycleMembership } from "./storage/store.js";
 
@@ -8,11 +9,25 @@ const pox5 = "SP000000000000000000002Q6VF78.pox-5";
 const sourceId = "api:mainnet:test";
 const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+const chainAnchor: ChainAnchor = {
+  stacksBlockHeight: 8_600_000,
+  indexBlockHash: `0x${"ab".repeat(32)}`,
+  burnBlockHeight: 960_240,
+  rewardCycle: 141,
+  rewardCycleLength: 2_100,
+  prepareCycleLength: 100,
+  cyclePosition: 240,
+  phase: "reward",
+  checkpoint: "first-half",
+};
 const completedRun: SignerStakerRun = {
   runId: "1f53f216-71c3-4b72-865d-53e81a426bc8",
   sourceId,
   managerPrincipal: manager,
   status: "completed",
+  authoritative: true,
+  reconciliationComplete: true,
+  chainAnchor,
   cursor: null,
   pagesProcessed: 1,
   itemsProcessed: 2,
@@ -41,7 +56,11 @@ function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
   };
 }
 
-function options(projectionStore: RewardStatusStore, callReadOnly: ReturnType<typeof vi.fn>) {
+function options(
+  projectionStore: RewardStatusStore,
+  callReadOnly: ReturnType<typeof vi.fn>,
+  anchor?: ChainAnchor,
+) {
   return {
     store: projectionStore,
     node: {
@@ -56,6 +75,7 @@ function options(projectionStore: RewardStatusStore, callReadOnly: ReturnType<ty
     observedAt: "2026-07-14T12:02:00.000Z",
     burnBlockHeight: 960_240,
     stacksTipHeight: 8_600_000,
+    ...(anchor ? { chainAnchor: anchor } : {}),
   };
 }
 
@@ -211,5 +231,31 @@ describe("STX-only reward status", () => {
     await expect(readStxRewardStatus(zeroOptions)).resolves.toMatchObject({
       manager: { configuredFeeBips: "500", feeSnapshotBips: "0" },
     });
+  });
+
+  it("pins every manager read and excludes membership from another anchor", async () => {
+    const projectionStore = store({
+      ...completedRun,
+      chainAnchor: { ...chainAnchor, indexBlockHash: `0x${"cd".repeat(32)}` },
+    });
+    const callReadOnly = vi.fn().mockResolvedValue(uintCV(0n));
+    const anchoredOptions = options(projectionStore, callReadOnly, chainAnchor);
+
+    const result = await readStxRewardStatus(anchoredOptions);
+
+    expect(result.ingestion).toBeNull();
+    expect(projectionStore.listCycleMembershipsForCycle).not.toHaveBeenCalled();
+    for (const call of callReadOnly.mock.calls) {
+      expect(call[4]).toEqual({ tip: chainAnchor.indexBlockHash });
+    }
+    expect(anchoredOptions.node.getDataVar).toHaveBeenCalledWith(manager, "fees-bips", {
+      tip: chainAnchor.indexBlockHash,
+    });
+    expect(anchoredOptions.node.getMapEntry).toHaveBeenCalledWith(
+      manager,
+      "fee-bips-for-cycle",
+      expect.any(String),
+      { tip: chainAnchor.indexBlockHash },
+    );
   });
 });

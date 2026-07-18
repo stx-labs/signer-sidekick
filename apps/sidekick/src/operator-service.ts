@@ -1,23 +1,24 @@
 import { z } from "zod";
+import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import {
-  inspectDeployedManager,
+  type inspectDeployedManager,
   inspectManagerOrReportMissing,
   invalidateManagerVerificationCache,
   type ManagerVerificationContext,
 } from "./manager-verification.js";
 import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
-import { runOperatorPreflight } from "./preflight.js";
-import { verifyManagerRegistration } from "./registration-verification.js";
-import { readStxRewardStatus } from "./reward-status.js";
+import type { runOperatorPreflight } from "./preflight.js";
+import { readStxRewardStatus, type StxRewardStatus } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { readPoolSetupStatus } from "./setup-status.js";
-import { syncSignerStakers } from "./signer-staker-sync.js";
+import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
+import type { readPoolSetupStatus } from "./setup-status.js";
+import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 
 export interface OperatorAlert {
@@ -43,6 +44,29 @@ export interface OperatorServiceOptions {
   cacheTtlMs?: number;
   runtimeSettings?: RuntimeSettingsController;
   managerVerification?: ManagerVerificationContext;
+  transactionEngineObservation?: TransactionEngineObservationHook;
+}
+
+export interface TransactionEngineObservationHook {
+  observe(input: {
+    setup: SetupSnapshot;
+    rewards: StxRewardStatus | null;
+    sourceId: string;
+    observedAt: string;
+  }): Promise<unknown>;
+  onError?(error: unknown): void;
+}
+
+export async function observeTransactionEngineSafely(
+  hook: TransactionEngineObservationHook | undefined,
+  input: Parameters<TransactionEngineObservationHook["observe"]>[0],
+): Promise<void> {
+  if (!hook) return;
+  try {
+    await hook.observe(input);
+  } catch (error) {
+    hook.onError?.(error);
+  }
 }
 
 function asSentence(value: string): string {
@@ -107,7 +131,7 @@ export function buildAlerts(snapshot: {
       id: "manager:not-recognized-read-only",
       severity: "warning",
       title: "Manager Not Recognized — Read-only",
-      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager automation remains disabled: ${snapshot.manager.automationEligibilityReason}. Open Settings to install a provenance-verified profile if this is a reference render.`,
+      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager Assist remains disabled: ${snapshot.manager.automationEligibilityReason}. Open Settings to install a provenance-verified profile if this is a reference render.`,
       action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
@@ -116,7 +140,7 @@ export function buildAlerts(snapshot: {
       severity: "info",
       title: "Custom Manager — Read-only",
       detail:
-        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager transaction automation. No action is required unless you intend to use reference-manager automation.",
+        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager Assist. No action is required unless you intend to enable Assist for a reference manager.",
     });
   }
   if (snapshot.manager.installedProfiles.issues.length > 0) {
@@ -136,13 +160,13 @@ export function buildAlerts(snapshot: {
       id: `manager:trust-transition-${transition}:${snapshot.trustTransition.changedAt}`,
       severity: gained ? "info" : degraded ? "warning" : "critical",
       title: gained
-        ? "Manager Automation Eligibility Gained"
+        ? "Manager Assist Eligibility Gained"
         : degraded
           ? "Manager Recognition Degraded"
           : "Manager Degraded to Read-only",
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
-        : `${asSentence(snapshot.trustTransition.reason)} Review the installed manager profile before enabling automation.`,
+        : `${asSentence(snapshot.trustTransition.reason)} Review the installed manager profile before enabling Assist.`,
       ...(gained
         ? {}
         : {
@@ -396,67 +420,83 @@ export class OperatorService {
   private async runSynchronization() {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
-    const observedAt = new Date().toISOString();
-    const [preflight, manager] = await Promise.all([
-      runOperatorPreflight(config, node, api),
-      inspectDeployedManager(
-        node,
-        config.network,
-        managerPrincipal,
-        this.options.managerVerification,
-      ),
-    ]);
-    const trustTransition = this.recordManagerTrustState(manager, observedAt);
-    if (trustTransition) this.pendingTrustTransition = trustTransition;
-    if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
-      throw new Error(
-        "Synchronization requires healthy sources, active PoX-5, and a recognized manager",
-      );
-    }
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const nodeSourceId = createNodeSourceId(config.network, config.nodeRpcUrl);
-    store.upsertChainSource({
-      sourceId,
-      kind: "api",
-      network: config.network,
-      baseUrl: config.apiUrl,
-      observedAt,
-    });
-    store.upsertChainSource({
-      sourceId: nodeSourceId,
-      kind: "node",
-      network: config.network,
-      baseUrl: config.nodeRpcUrl,
-      observedAt,
-    });
-    const stakers = await syncSignerStakers({
-      store,
-      api,
-      node,
-      sourceId,
-      nodeSourceId,
-      managerPrincipal,
-      pox5ContractId: preflight.pox.pox5ContractId,
-      observedAt,
-      burnBlockHeight: preflight.node.burnBlockHeight,
-      stacksTipHeight: preflight.node.stacksTipHeight,
-      currentRewardCycle: preflight.cycle.currentId,
-      pageLimit: config.stakerPageLimit,
-    });
+    let synchronized: {
+      observedAt: string;
+      chainId: number;
+      stakers: Awaited<ReturnType<typeof syncSignerStakers>>;
+    } | null = null;
+    const maxAnchorAttempts = 3;
+    for (let attempt = 1; attempt <= maxAnchorAttempts; attempt += 1) {
+      const observedAt = new Date().toISOString();
+      const { chainAnchor, preflight, manager } = await readSetupSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: this.options.managerVerification,
+      });
+      const trustTransition = this.recordManagerTrustState(manager, observedAt);
+      if (trustTransition) this.pendingTrustTransition = trustTransition;
+      if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
+        throw new Error(
+          "Synchronization requires healthy sources, active PoX-5, and a recognized manager",
+        );
+      }
+      store.upsertChainSource({
+        sourceId,
+        kind: "api",
+        network: config.network,
+        baseUrl: config.apiUrl,
+        observedAt,
+      });
+      store.upsertChainSource({
+        sourceId: nodeSourceId,
+        kind: "node",
+        network: config.network,
+        baseUrl: config.nodeRpcUrl,
+        observedAt,
+      });
+      try {
+        const stakers = await syncSignerStakers({
+          store,
+          api,
+          node,
+          sourceId,
+          nodeSourceId,
+          managerPrincipal,
+          pox5ContractId: preflight.pox.pox5ContractId,
+          observedAt,
+          burnBlockHeight: chainAnchor.burnBlockHeight,
+          stacksTipHeight: chainAnchor.stacksBlockHeight,
+          currentRewardCycle: chainAnchor.rewardCycle,
+          chainAnchor,
+          pageLimit: config.stakerPageLimit,
+        });
+        synchronized = { observedAt, chainId: preflight.node.networkId, stakers };
+        break;
+      } catch (error) {
+        if (!(error instanceof SignerStakerAnchorError) || attempt === maxAnchorAttempts) {
+          throw error;
+        }
+      }
+    }
+    if (!synchronized) throw new Error("Unable to synchronize at a stable chain anchor");
     const events = await syncManagerEvents({
       store,
       api,
       sourceId,
-      chainId: preflight.node.networkId,
+      chainId: synchronized.chainId,
       managerPrincipal,
-      observedAt,
+      observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
     });
     if (events.reorgedEvents > 0 && this.options.managerVerification) {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }
     this.cached = null;
-    return { observedAt, stakers, events };
+    return { observedAt: synchronized.observedAt, stakers: synchronized.stakers, events };
   }
 
   private async load() {
@@ -464,15 +504,15 @@ export class OperatorService {
     const { config, node, api } = this.runtimeContext();
     const generatedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
-    const [preflight, manager] = await Promise.all([
-      runOperatorPreflight(config, node, api),
-      inspectManagerOrReportMissing(
-        node,
-        config.network,
-        managerPrincipal,
-        this.options.managerVerification,
-      ),
-    ]);
+    const setupSnapshot = await readSetupSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+      reportMissingManager: true,
+    });
+    const { chainAnchor, preflight, manager, registration, setup } = setupSnapshot;
     const pox5ContractId = preflight.pox.pox5ContractId;
     const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
     const trustAudit = store.listManagerTrustAudit(managerPrincipal);
@@ -487,13 +527,7 @@ export class OperatorService {
       latestTrustTransition.currentTier === manager.source.tier
         ? latestTrustTransition
         : null);
-    const registration =
-      manager.attachAllowed && pox5ContractId
-        ? await verifyManagerRegistration(node, pox5ContractId, managerPrincipal)
-        : null;
-    const setup = registration
-      ? await readPoolSetupStatus(node, preflight, manager, registration)
-      : null;
+    const rewardCalculation = deriveRewardCalculationTarget(chainAnchor);
     const [forecast, rewards] =
       manager.attachAllowed && pox5ContractId
         ? await Promise.all([
@@ -503,25 +537,35 @@ export class OperatorService {
               sourceId,
               managerPrincipal,
               pox5ContractId,
-              currentRewardCycle: preflight.cycle.currentId,
+              currentRewardCycle: chainAnchor.rewardCycle,
               horizonCycles: config.forecastHorizonCycles,
               observedAt: generatedAt,
-              burnBlockHeight: preflight.node.burnBlockHeight,
-              stacksTipHeight: preflight.node.stacksTipHeight,
+              burnBlockHeight: chainAnchor.burnBlockHeight,
+              stacksTipHeight: chainAnchor.stacksBlockHeight,
+              chainAnchor,
             }),
-            readStxRewardStatus({
-              store,
-              node,
-              sourceId,
-              managerPrincipal,
-              pox5ContractId,
-              rewardCycle: preflight.cycle.currentId,
-              observedAt: generatedAt,
-              burnBlockHeight: preflight.node.burnBlockHeight,
-              stacksTipHeight: preflight.node.stacksTipHeight,
-            }),
+            rewardCalculation.status === "ready"
+              ? readStxRewardStatus({
+                  store,
+                  node,
+                  sourceId,
+                  managerPrincipal,
+                  pox5ContractId,
+                  rewardCycle: rewardCalculation.rewardCycle,
+                  observedAt: generatedAt,
+                  burnBlockHeight: chainAnchor.burnBlockHeight,
+                  stacksTipHeight: chainAnchor.stacksBlockHeight,
+                  chainAnchor,
+                })
+              : null,
           ])
         : [null, null];
+    await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
+      setup: setupSnapshot,
+      rewards,
+      sourceId,
+      observedAt: generatedAt,
+    });
     const activity = readManagerActivity(store, preflight.node.networkId, managerPrincipal, {
       claimLimit: 4,
       withdrawalLimit: 50,

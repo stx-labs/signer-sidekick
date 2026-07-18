@@ -7,6 +7,8 @@ import {
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { type ChainAnchor, chainAnchorsEqual } from "./chain-anchor.js";
+import type { ChainReadOptions } from "./chain-clients.js";
 import type {
   PoolCycleSnapshotInput,
   SignerStakerRun,
@@ -20,6 +22,7 @@ export interface PoolForecastNode {
     functionName: string,
     sender: string,
     args: readonly string[],
+    options?: ChainReadOptions,
   ): Promise<ClarityValue>;
 }
 
@@ -52,6 +55,7 @@ export interface PoolForecastOptions {
   observedAt: string;
   burnBlockHeight: number;
   stacksTipHeight: number;
+  chainAnchor?: ChainAnchor;
 }
 
 export interface PoolCycleForecast {
@@ -124,35 +128,59 @@ interface ContractCycleState {
   inSignerSet: boolean;
 }
 
+function callReadOnly(
+  node: PoolForecastNode,
+  principal: string,
+  functionName: string,
+  sender: string,
+  args: readonly string[],
+  options?: ChainReadOptions,
+): Promise<ClarityValue> {
+  return options
+    ? node.callReadOnly(principal, functionName, sender, args, options)
+    : node.callReadOnly(principal, functionName, sender, args);
+}
+
 async function readContractCycleState(
   node: PoolForecastNode,
   pox5ContractId: string,
   managerPrincipal: string,
   cycleId: number,
+  options?: ChainReadOptions,
 ): Promise<ContractCycleState> {
   const commonArgs = [encodePrincipalHex(managerPrincipal), encodeUIntHex(BigInt(cycleId))];
   const [pendingStx, eligibleStxShares, totalDelegated, signerSetMembership] = await Promise.all([
-    node.callReadOnly(
+    callReadOnly(
+      node,
       pox5ContractId,
       "get-signer-pending-staked-ustx-per-cycle",
       managerPrincipal,
       commonArgs,
+      options,
     ),
-    node.callReadOnly(pox5ContractId, "get-signer-shares-staked-for-cycle", managerPrincipal, [
-      ...commonArgs,
-      encodeOptionalUIntHex(null),
-    ]),
-    node.callReadOnly(
+    callReadOnly(
+      node,
+      pox5ContractId,
+      "get-signer-shares-staked-for-cycle",
+      managerPrincipal,
+      [...commonArgs, encodeOptionalUIntHex(null)],
+      options,
+    ),
+    callReadOnly(
+      node,
       pox5ContractId,
       "get-amount-delegated-for-signer",
       managerPrincipal,
       commonArgs,
+      options,
     ),
-    node.callReadOnly(
+    callReadOnly(
+      node,
       pox5ContractId,
       "signer-set-contains-for-cycle",
       managerPrincipal,
       commonArgs,
+      options,
     ),
   ]);
   return {
@@ -217,10 +245,18 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
     throw new Error("horizonCycles must be an integer from 1 through 96");
   }
 
-  const run = options.store.getLatestCompletedSignerStakerRun(
+  const candidateRun = options.store.getLatestCompletedSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
   );
+  const run =
+    candidateRun &&
+    (!options.chainAnchor ||
+      (candidateRun.authoritative &&
+        candidateRun.chainAnchor !== null &&
+        chainAnchorsEqual(candidateRun.chainAnchor, options.chainAnchor)))
+      ? candidateRun
+      : null;
   const stakers = run
     ? options.store.listSignerStakers(options.managerPrincipal, true, options.sourceId)
     : [];
@@ -235,6 +271,7 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
   let previousMemberships: Map<string, bigint> | null = null;
   const localByCycle = membershipsByCycle(memberships);
   const contractByCycle = new Map<number, ContractCycleState>();
+  const readOptions = options.chainAnchor ? { tip: options.chainAnchor.indexBlockHash } : undefined;
   for (let index = 0; index < cycleIds.length; index += 8) {
     const states = await Promise.all(
       cycleIds.slice(index, index + 8).map(async (cycleId) => ({
@@ -244,6 +281,7 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
           options.pox5ContractId,
           options.managerPrincipal,
           cycleId,
+          readOptions,
         ),
       })),
     );
@@ -342,6 +380,7 @@ export async function readPoolForecast(options: PoolForecastOptions): Promise<Po
     observedAt: options.observedAt,
     burnBlockHeight: options.burnBlockHeight,
     stacksTipHeight: options.stacksTipHeight,
+    ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
     cycles: cycles.map((cycle) => ({
       cycleId: cycle.cycleId,
       status: cycle.status,

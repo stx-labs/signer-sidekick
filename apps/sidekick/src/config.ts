@@ -15,14 +15,17 @@ function parseConfiguredNetwork(value: string | undefined): SidekickNetwork {
   return sidekickNetworkSchema.parse(configured);
 }
 
-const defaults: Partial<Record<SidekickNetwork, string>> = {
-  mainnet: "https://api.mainnet.hiro.so",
-  testnet: "https://api.testnet-pox5.hiro.so",
-};
-
-const hiroReferenceDefaults: Partial<Record<SidekickNetwork, string>> = {
-  mainnet: "https://api.mainnet.hiro.so",
-  testnet: "https://api.testnet-pox5.hiro.so",
+const networkDefaults: Partial<
+  Record<SidekickNetwork, { apiUrl: string; hiroReferenceApiUrl: string }>
+> = {
+  mainnet: {
+    apiUrl: "https://api.mainnet.hiro.so",
+    hiroReferenceApiUrl: "https://api.mainnet.hiro.so",
+  },
+  testnet: {
+    apiUrl: "https://api.testnet-pox5.hiro.so",
+    hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
+  },
 };
 
 const forbiddenKeyMaterialEnvironmentVariables = [
@@ -36,6 +39,9 @@ const forbiddenKeyMaterialEnvironmentVariables = [
   "STACKS_ADMIN_PRIVATE_KEY",
   "STACKS_PRIVATE_KEY",
   "STACKS_SIGNER_PRIVATE_KEY",
+  "SIDEKICK_GAS_PAYER_KEY",
+  "SIDEKICK_GAS_PAYER_PRIVATE_KEY",
+  "SIDEKICK_GAS_PAYER_MNEMONIC",
   "ADMIN_MNEMONIC",
   "SIGNER_MNEMONIC",
   "STACKS_MNEMONIC",
@@ -95,7 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
   const nodeRpcUrl = env.STACKS_NODE_RPC_URL;
   if (!nodeRpcUrl) throw new Error("STACKS_NODE_RPC_URL is required");
 
-  const apiUrl = env.STACKS_API_URL?.trim() || defaults[network];
+  const apiUrl = env.STACKS_API_URL?.trim() || networkDefaults[network]?.apiUrl;
   if (!apiUrl) throw new Error(`STACKS_API_URL is required for ${network}`);
 
   const maxApiBurnBlockLag = z.coerce
@@ -172,10 +178,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
           ),
         }
       : {}),
-    ...(env.HIRO_REFERENCE_API_URL?.trim() || hiroReferenceDefaults[network]
+    ...(env.HIRO_REFERENCE_API_URL?.trim() || networkDefaults[network]?.hiroReferenceApiUrl
       ? {
           hiroReferenceApiUrl: parseEndpointUrl(
-            env.HIRO_REFERENCE_API_URL?.trim() || hiroReferenceDefaults[network] || "",
+            env.HIRO_REFERENCE_API_URL?.trim() ||
+              networkDefaults[network]?.hiroReferenceApiUrl ||
+              "",
             "HIRO_REFERENCE_API_URL",
           ),
         }

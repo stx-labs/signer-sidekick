@@ -157,7 +157,7 @@ export function createOperatorRecord(
     .map((check) => check.message);
   if (!metadata.signerGrantAuthId) remainingActions.push("Record the signer grant auth ID");
   if (!metadata.gasPayerPrincipal) {
-    remainingActions.push("Configure a dedicated gas payer before enabling Assist or Automate");
+    remainingActions.push("Configure a dedicated gas payer before enabling Assist");
   }
   if (!manager.automationEligible) {
     remainingActions.push(

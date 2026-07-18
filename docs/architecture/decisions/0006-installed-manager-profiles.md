@@ -16,6 +16,6 @@ when their network and interface are compatible.
 
 ## Consequences
 
-Operators can identify private/testnet reference renders without forking Sidekick. Custom-manager
-automation remains out of V1 and requires a reviewed code-backed adapter. Profile changes require a
-restart so the trust set cannot change under a running worker.
+Operators can identify private/testnet reference renders without forking Sidekick. Custom managers
+remain Observe-only; Assist requires a separately reviewed code-backed adapter. Profile changes
+require a restart so the trust set cannot change under a running worker.

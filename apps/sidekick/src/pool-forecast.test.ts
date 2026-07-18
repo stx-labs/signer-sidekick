@@ -1,5 +1,6 @@
 import { falseCV, trueCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
+import type { ChainAnchor } from "./chain-anchor.js";
 import { type PoolForecastStore, readPoolForecast } from "./pool-forecast.js";
 import type {
   SignerStakerRun,
@@ -12,12 +13,26 @@ const pox5 = "SP000000000000000000002Q6VF78.pox-5";
 const sourceId = "api:mainnet:test";
 const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+const chainAnchor: ChainAnchor = {
+  stacksBlockHeight: 8_600_000,
+  indexBlockHash: `0x${"ab".repeat(32)}`,
+  burnBlockHeight: 960_240,
+  rewardCycle: 141,
+  rewardCycleLength: 2_100,
+  prepareCycleLength: 100,
+  cyclePosition: 240,
+  phase: "reward",
+  checkpoint: "first-half",
+};
 
 const completedRun: SignerStakerRun = {
   runId: "1f53f216-71c3-4b72-865d-53e81a426bc8",
   sourceId,
   managerPrincipal: manager,
   status: "completed",
+  authoritative: true,
+  reconciliationComplete: true,
+  chainAnchor,
   cursor: null,
   pagesProcessed: 2,
   itemsProcessed: 2,
@@ -72,6 +87,7 @@ function options(
   projectionStore: PoolForecastStore,
   callReadOnly: ReturnType<typeof vi.fn>,
   horizonCycles = 3,
+  anchor?: ChainAnchor,
 ) {
   return {
     store: projectionStore,
@@ -84,6 +100,7 @@ function options(
     observedAt: "2026-07-14T12:02:00.000Z",
     burnBlockHeight: 960_240,
     stacksTipHeight: 8_600_000,
+    ...(anchor ? { chainAnchor: anchor } : {}),
   };
 }
 
@@ -214,5 +231,27 @@ describe("pool cycle forecast", () => {
       localRosterSource: "unavailable",
     });
     expect(projectionStore.listCycleMemberships).not.toHaveBeenCalled();
+  });
+
+  it("pins every contract read and rejects a roster from another exact anchor", async () => {
+    const movedRun = {
+      ...completedRun,
+      chainAnchor: { ...chainAnchor, indexBlockHash: `0x${"cd".repeat(32)}` },
+    };
+    const projectionStore = store(movedRun, [membership(stakerOne, 141n, 50_000_000_000n)]);
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(uintCV(50_000_000_000n))
+      .mockResolvedValueOnce(uintCV(50_000_000_000n))
+      .mockResolvedValueOnce(uintCV(50_000_000_000n))
+      .mockResolvedValueOnce(trueCV());
+
+    const result = await readPoolForecast(options(projectionStore, callReadOnly, 1, chainAnchor));
+
+    expect(result.ingestion).toBeNull();
+    expect(projectionStore.listCycleMemberships).not.toHaveBeenCalled();
+    for (const call of callReadOnly.mock.calls) {
+      expect(call[4]).toEqual({ tip: chainAnchor.indexBlockHash });
+    }
   });
 });

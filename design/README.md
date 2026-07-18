@@ -1,19 +1,16 @@
 # Design system
 
-This directory vendors the Stacks Labs product design system used by Signer Sidekick. It contains
-tokens, fonts, assets, reference components, composition patterns, and full-page examples.
+This directory contains the vendored design tokens and licensed fonts used by the Signer Sidekick
+dashboard. The React implementation and browser tests are the source of truth for components,
+layouts, behavior, accessibility, and product copy.
 
 ## Use
 
-1. Use variables from [`tokens/tokens.css`](tokens/tokens.css); do not add duplicate color, type,
+1. Reuse variables from [`tokens/tokens.css`](tokens/tokens.css); do not duplicate color, type,
    spacing, radius, or elevation constants.
-2. Start from the closest file under `components/` or `patterns/`.
-3. Check full-page rhythm under `examples/` before introducing a new layout.
-4. Use brand SVGs from `assets/` and Phosphor for ordinary interface icons.
-5. Validate desktop, tablet, mobile, keyboard, dark mode, and reduced motion.
-
-Reference HTML and tokens are more authoritative than prose. App-specific behavior belongs in
-`apps/dashboard` and its browser tests.
+2. Implement product UI under `apps/dashboard` and use Phosphor for ordinary interface icons.
+3. Validate desktop, tablet, mobile, keyboard, dark mode, and reduced motion with the dashboard
+   browser suite.
 
 ## Local contract
 
@@ -29,15 +26,13 @@ Reference HTML and tokens are more authoritative than prose. App-specific behavi
 - Product copy is factual and concise. No exclamation marks.
 
 The implementation must meet WCAG 2.2 AA, preserve visible focus, provide 44px touch targets where
-appropriate, and avoid encoding state by color alone. Detailed examples live under `guidelines/`.
+appropriate, and avoid encoding state by color alone.
 
 ## Provenance
 
-Vendored on 2026-07-14 from the Stacks Labs Design System project maintained by Stacks Labs design.
-Its seed sources were the Stacks Explorer Figma system and
-[`hirosystems/explorer`](https://github.com/hirosystems/explorer). Matter and Matter Mono
-redistribution for Signer Sidekick was confirmed by Stacks Labs; bundled license files remain under
-`fonts/`.
+Vendored on 2026-07-14 from the Stacks Labs Design System, seeded by Stacks Explorer Figma and
+[`hirosystems/explorer`](https://github.com/hirosystems/explorer). Instrument Sans and Open Sauce Sans
+are covered by [`fonts/OFL-1.1.txt`](fonts/OFL-1.1.txt); Matter and Matter Mono redistribution for
+Signer Sidekick was separately confirmed by Stacks Labs.
 
-Re-sync the export as a unit rather than copying isolated rules. Record the source/date, review
-token and component changes, and run the dashboard browser suite afterward.
+Review token and font changes deliberately and run the dashboard browser suite afterward.

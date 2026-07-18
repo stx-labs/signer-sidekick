@@ -2,10 +2,34 @@ import { timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
+import {
+  type EngineApprovalRequest,
+  type EngineApprovalResponse,
+  type EngineDisableAdapterRequest,
+  type EngineDisableAdapterResponse,
+  type EngineForceObserveRequest,
+  type EngineForceObserveResponse,
+  type EngineInvalidateApprovalRequest,
+  type EngineInvalidateApprovalResponse,
+  type EngineJobDetail,
+  type EngineJobPage,
+  type EngineStatus,
+  engineApprovalRequestSchema,
+  engineDisableAdapterRequestSchema,
+  engineForceObserveRequestSchema,
+  engineInvalidateApprovalRequestSchema,
+  healthSourceTestRequestSchema,
+  onboardingAttachRequestSchema,
+  onboardingGrantVerifyRequestSchema,
+  onboardingProgressRequestSchema,
+  onboardingStartRequestSchema,
+  poolCardGenerateRequestSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
 import Fastify, { type FastifyError } from "fastify";
 import { z } from "zod";
 import type { OnboardingService } from "./onboarding-service.js";
+import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 
 async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -71,6 +95,33 @@ interface OperatorSnapshotService {
   poolCard?(mode: "live" | "static"): Promise<unknown>;
 }
 
+type ActivityOptions = Parameters<NonNullable<OperatorSnapshotService["activity"]>>[0];
+
+export interface TransactionEngineApiService {
+  status(): Promise<EngineStatus> | EngineStatus;
+  listJobs(options: { cursor: string | null; limit: number }): Promise<EngineJobPage>;
+  getJob(jobId: string): Promise<EngineJobDetail | null>;
+  approve(
+    jobId: string,
+    request: EngineApprovalRequest,
+    actor: string,
+  ): Promise<EngineApprovalResponse>;
+  invalidateApproval(
+    jobId: string,
+    request: EngineInvalidateApprovalRequest,
+    actor: string,
+  ): Promise<EngineInvalidateApprovalResponse>;
+  forceObserve(
+    request: EngineForceObserveRequest,
+    actor: string,
+  ): Promise<EngineForceObserveResponse>;
+  disableAdapter(
+    adapterId: string,
+    request: EngineDisableAdapterRequest,
+    actor: string,
+  ): Promise<EngineDisableAdapterResponse>;
+}
+
 export interface ServerOptions {
   service?: OperatorSnapshotService;
   authToken?: string;
@@ -85,6 +136,22 @@ export interface ServerOptions {
       url: string,
     ): Promise<unknown>;
   };
+  engine?: TransactionEngineApiService;
+}
+
+class OperatorApiError extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly responseCode: string,
+  ) {
+    super(responseCode);
+    this.name = "OperatorApiError";
+  }
+}
+
+function requireFeature<T>(value: T | undefined, responseCode: string): T {
+  if (value === undefined) throw new OperatorApiError(501, responseCode);
+  return value;
 }
 
 function authorized(header: string | undefined, expected: string): boolean {
@@ -123,6 +190,30 @@ function optionalUnsignedIntegerQuery(search: URLSearchParams, name: string): st
   return value;
 }
 
+function parsePagination(
+  requestUrl: string,
+  options: { invalidCode?: string; includeQuery?: boolean } = {},
+): { offset: number; limit: number; query?: string } {
+  try {
+    const search = new URL(requestUrl, "http://sidekick.local").searchParams;
+    const limit = integerQuery(search, "limit", 50, 200);
+    if (limit < 1) throw new OperatorApiError(400, "limit_must_be_positive");
+    const pagination: { offset: number; limit: number; query?: string } = {
+      offset: integerQuery(search, "offset", 0, 10_000_000),
+      limit,
+    };
+    if (options.includeQuery) pagination.query = search.get("query") ?? "";
+    return pagination;
+  } catch (error) {
+    if (error instanceof OperatorApiError) throw error;
+    throw new OperatorApiError(400, options.invalidCode ?? "invalid_pagination");
+  }
+}
+
+function engineActor(): string {
+  return "local-operator";
+}
+
 export function createServer(options: ServerOptions = {}) {
   if (
     options.service &&
@@ -138,6 +229,12 @@ export function createServer(options: ServerOptions = {}) {
   let syncFailureCount = 0;
 
   server.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error instanceof OperatorApiError) {
+      return reply.code(error.statusCode).send({ error: error.responseCode });
+    }
+    if (error instanceof TransactionEngineApiServiceError) {
+      return reply.code(error.statusCode).send({ error: error.responseCode });
+    }
     const statusCode = error.statusCode && error.statusCode < 500 ? error.statusCode : 500;
     if (statusCode >= 500) request.log.error({ err: error }, "operator API request failed");
     return reply
@@ -160,7 +257,7 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/healthz", async () => ({
     status: "ok",
     phase: "read-only-control-plane",
-    protocol: {
+    sourceLineage: {
       stacksCoreTag: STACKS_CORE_4_0_0.tag,
       stacksCoreCommit: STACKS_CORE_4_0_0.commit,
     },
@@ -200,26 +297,75 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/status", async () =>
     options.service?.summary ? options.service.summary() : options.service?.snapshot(),
   );
-  server.get("/api/v1/health", async (_request, reply) => {
-    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
-    return await options.health.current();
+  server.get("/api/v1/engine", async () => {
+    return await requireFeature(options.engine, "transaction_engine_unavailable").status();
   });
-  server.post("/api/v1/health/refresh", async (_request, reply) => {
-    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
-    return await options.health.refresh();
+  server.get("/api/v1/engine/jobs", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    let query: { cursor: string | null; limit: number };
+    try {
+      const search = new URL(request.url, "http://sidekick.local").searchParams;
+      const cursor = search.get("cursor");
+      if (cursor !== null && (cursor.length < 1 || cursor.length > 2_000)) throw new Error();
+      query = { cursor, limit: integerQuery(search, "limit", 20, 100) };
+      if (query.limit < 1) throw new Error();
+    } catch {
+      throw new OperatorApiError(400, "invalid_engine_pagination");
+    }
+    return await engine.listJobs(query);
+  });
+  server.get("/api/v1/engine/jobs/:jobId", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_engine_job_id");
+    const job = await engine.getJob(params.data.jobId);
+    if (!job) throw new OperatorApiError(404, "engine_job_not_found");
+    return job;
+  });
+  server.post("/api/v1/engine/jobs/:jobId/approval", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_engine_job_id");
+    const body = engineApprovalRequestSchema.safeParse(request.body);
+    if (!body.success) throw new OperatorApiError(400, "invalid_engine_approval");
+    return await engine.approve(params.data.jobId, body.data, engineActor());
+  });
+  server.post("/api/v1/engine/jobs/:jobId/approval/invalidate", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_engine_job_id");
+    const body = engineInvalidateApprovalRequestSchema.safeParse(request.body);
+    if (!body.success) throw new OperatorApiError(400, "invalid_engine_approval_invalidation");
+    return await engine.invalidateApproval(params.data.jobId, body.data, engineActor());
+  });
+  server.post("/api/v1/engine/force-observe", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    const body = engineForceObserveRequestSchema.safeParse(request.body);
+    if (!body.success) throw new OperatorApiError(400, "invalid_force_observe_request");
+    return await engine.forceObserve(body.data, engineActor());
+  });
+  server.post("/api/v1/engine/adapters/:adapterId/disable", async (request) => {
+    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
+    const params = z
+      .object({ adapterId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,99}$/) })
+      .safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_engine_adapter_id");
+    const body = engineDisableAdapterRequestSchema.safeParse(request.body);
+    if (!body.success) throw new OperatorApiError(400, "invalid_adapter_disable_request");
+    return await engine.disableAdapter(params.data.adapterId, body.data, engineActor());
+  });
+  server.get("/api/v1/health", async (_request, _reply) => {
+    return await requireFeature(options.health, "health_monitoring_unavailable").current();
+  });
+  server.post("/api/v1/health/refresh", async (_request, _reply) => {
+    return await requireFeature(options.health, "health_monitoring_unavailable").refresh();
   });
   server.post("/api/v1/health/test-source", async (request, reply) => {
-    if (!options.health) return reply.code(501).send({ error: "health_monitoring_unavailable" });
-    const parsed = z
-      .object({
-        kind: z.enum(["node-metrics", "signer-monitoring", "hiro-reference"]),
-        url: z.string().min(1).max(500),
-      })
-      .strict()
-      .safeParse(request.body);
+    const health = requireFeature(options.health, "health_monitoring_unavailable");
+    const parsed = healthSourceTestRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_health_source" });
     try {
-      return await options.health.testSource(parsed.data.kind, parsed.data.url);
+      return await health.testSource(parsed.data.kind, parsed.data.url);
     } catch {
       return reply.code(400).send({ error: "health_source_unavailable" });
     }
@@ -236,21 +382,9 @@ export function createServer(options: ServerOptions = {}) {
       setup: snapshot?.setup,
     };
   });
-  server.get("/api/v1/pool", async (request, reply) => {
+  server.get("/api/v1/pool", async (request, _reply) => {
     if (options.service?.poolPage) {
-      let pageOptions: { offset: number; limit: number; query: string };
-      try {
-        const search = new URL(request.url, "http://sidekick.local").searchParams;
-        const limit = integerQuery(search, "limit", 50, 200);
-        if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-        pageOptions = {
-          offset: integerQuery(search, "offset", 0, 10_000_000),
-          limit,
-          query: search.get("query") ?? "",
-        };
-      } catch {
-        return reply.code(400).send({ error: "invalid_pagination" });
-      }
+      const pageOptions = parsePagination(request.url, { includeQuery: true });
       return await options.service.poolPage(pageOptions);
     }
     const snapshot = await options.service?.snapshot();
@@ -283,23 +417,10 @@ export function createServer(options: ServerOptions = {}) {
     reply.header("content-disposition", 'attachment; filename="signer-sidekick-roster.csv"');
     return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
   });
-  server.get("/api/v1/pool/history", async (request, reply) => {
-    if (!options.service?.poolHistory) {
-      return reply.code(501).send({ error: "pool_history_unavailable" });
-    }
-    let pageOptions: { offset: number; limit: number };
-    try {
-      const search = new URL(request.url, "http://sidekick.local").searchParams;
-      const limit = integerQuery(search, "limit", 50, 200);
-      if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-      pageOptions = {
-        offset: integerQuery(search, "offset", 0, 10_000_000),
-        limit,
-      };
-    } catch {
-      return reply.code(400).send({ error: "invalid_pagination" });
-    }
-    return await options.service.poolHistory(pageOptions);
+  server.get("/api/v1/pool/history", async (request, _reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const poolHistory = requireFeature(service.poolHistory, "pool_history_unavailable");
+    return await poolHistory.call(service, parsePagination(request.url));
   });
   server.get("/api/v1/pool/roster.json", async (_request, reply) => {
     const snapshot = await options.service?.snapshot();
@@ -307,21 +428,9 @@ export function createServer(options: ServerOptions = {}) {
     reply.header("content-disposition", 'attachment; filename="signer-sidekick-roster.json"');
     return snapshot?.roster ?? [];
   });
-  server.get("/api/v1/rewards", async (request, reply) => {
+  server.get("/api/v1/rewards", async (request, _reply) => {
     if (options.service?.rewardsPage) {
-      let pageOptions: { offset: number; limit: number };
-      try {
-        const search = new URL(request.url, "http://sidekick.local").searchParams;
-        const limit = integerQuery(search, "limit", 50, 200);
-        if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-        pageOptions = {
-          offset: integerQuery(search, "offset", 0, 10_000_000),
-          limit,
-        };
-      } catch {
-        return reply.code(400).send({ error: "invalid_pagination" });
-      }
-      return await options.service.rewardsPage(pageOptions);
+      return await options.service.rewardsPage(parsePagination(request.url));
     }
     const snapshot = await options.service?.snapshot();
     return {
@@ -337,33 +446,19 @@ export function createServer(options: ServerOptions = {}) {
       withdrawals: snapshot?.activity?.withdrawals ?? [],
     };
   });
-  server.get("/api/v1/rewards/history", async (request, reply) => {
-    if (!options.service?.rewardsHistory) {
-      return reply.code(501).send({ error: "reward_history_unavailable" });
-    }
-    let pageOptions: { offset: number; limit: number };
-    try {
-      const search = new URL(request.url, "http://sidekick.local").searchParams;
-      const limit = integerQuery(search, "limit", 50, 200);
-      if (limit < 1) return reply.code(400).send({ error: "limit_must_be_positive" });
-      pageOptions = {
-        offset: integerQuery(search, "offset", 0, 10_000_000),
-        limit,
-      };
-    } catch {
-      return reply.code(400).send({ error: "invalid_pagination" });
-    }
-    return await options.service.rewardsHistory(pageOptions);
+  server.get("/api/v1/rewards/history", async (request, _reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const rewardsHistory = requireFeature(service.rewardsHistory, "reward_history_unavailable");
+    return await rewardsHistory.call(service, parsePagination(request.url));
   });
   server.get("/api/v1/alerts", async () => {
     const snapshot = await options.service?.snapshot();
     return { generatedAt: snapshot?.generatedAt, alerts: snapshot?.alerts ?? [] };
   });
   server.get("/api/v1/activity", async (request, reply) => {
-    if (!options.service?.activity) {
-      return reply.code(501).send({ error: "paginated_activity_unavailable" });
-    }
-    let activityOptions: NonNullable<Parameters<NonNullable<typeof options.service.activity>>[0]>;
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const activity = requireFeature(service.activity, "paginated_activity_unavailable");
+    let activityOptions: ActivityOptions;
     try {
       const search = new URL(request.url, "http://sidekick.local").searchParams;
       const claimLimit = integerQuery(search, "claimLimit", 50, 200);
@@ -386,7 +481,7 @@ export function createServer(options: ServerOptions = {}) {
     } catch {
       return reply.code(400).send({ error: "invalid_query" });
     }
-    return await options.service.activity(activityOptions);
+    return await activity.call(service, activityOptions);
   });
   server.get("/api/v1/setup", async () => {
     const snapshot = await options.service?.snapshot();
@@ -401,122 +496,110 @@ export function createServer(options: ServerOptions = {}) {
       onboarding: options.onboarding?.get() ?? null,
     };
   });
-  server.get("/api/v1/settings", async (_request, reply) => {
-    if (!options.service?.settings) {
-      return reply.code(501).send({ error: "runtime_settings_unavailable" });
-    }
-    return options.service.settings();
+  server.get("/api/v1/settings", async (_request, _reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    return requireFeature(service.settings, "runtime_settings_unavailable").call(service);
   });
   server.put("/api/v1/settings", async (request, reply) => {
-    if (!options.service?.updateSettings) {
-      return reply.code(501).send({ error: "runtime_settings_unavailable" });
-    }
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const updateSettings = requireFeature(service.updateSettings, "runtime_settings_unavailable");
     try {
-      return await options.service.updateSettings(request.body);
+      return await updateSettings.call(service, request.body);
     } catch {
       return reply.code(400).send({ error: "invalid_runtime_settings" });
     }
   });
-  server.get("/api/v1/onboarding", async (_request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+  server.get("/api/v1/onboarding", async (_request, _reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     return {
-      onboarding: options.onboarding.get(),
-      wizard: options.onboarding.wizardState(),
+      onboarding: onboarding.get(),
+      wizard: onboarding.wizardState(),
     };
   });
-  server.post("/api/v1/onboarding/dismiss", async (_request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+  server.post("/api/v1/onboarding/dismiss", async (_request, _reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     return {
-      onboarding: options.onboarding.get(),
-      wizard: options.onboarding.dismissWizard(),
+      onboarding: onboarding.get(),
+      wizard: onboarding.dismissWizard(),
     };
   });
-  server.post("/api/v1/onboarding/resume", async (_request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+  server.post("/api/v1/onboarding/resume", async (_request, _reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     return {
-      onboarding: options.onboarding.get(),
-      wizard: options.onboarding.resumeWizard(),
+      onboarding: onboarding.get(),
+      wizard: onboarding.resumeWizard(),
     };
   });
   server.post("/api/v1/onboarding/start", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
-    const parsed = z
-      .object({ path: z.enum(["attach", "fresh"]), reset: z.boolean().optional() })
-      .strict()
-      .safeParse(request.body);
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingStartRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_path" });
     try {
-      return { onboarding: options.onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
+      return { onboarding: onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
     } catch {
       return reply.code(409).send({ error: "onboarding_reset_confirmation_required" });
     }
   });
   server.post("/api/v1/onboarding/attach/verify", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
-    const parsed = z
-      .object({ managerPrincipal: z.string().min(1) })
-      .strict()
-      .safeParse(request.body);
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingAttachRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_manager_principal" });
     try {
-      return { onboarding: await options.onboarding.verifyAttach(parsed.data.managerPrincipal) };
+      return { onboarding: await onboarding.verifyAttach(parsed.data.managerPrincipal) };
     } catch {
       return reply.code(400).send({ error: "attach_verification_failed" });
     }
   });
   server.post("/api/v1/onboarding/fresh/prepare", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     try {
-      return { onboarding: await options.onboarding.prepareFresh(request.body) };
+      return { onboarding: await onboarding.prepareFresh(request.body) };
     } catch {
       return reply.code(400).send({ error: "fresh_setup_preparation_failed" });
     }
   });
   server.post("/api/v1/onboarding/fresh/grant/prepare", async (_request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     try {
-      return { onboarding: await options.onboarding.prepareGrant() };
+      return { onboarding: await onboarding.prepareGrant() };
     } catch {
       return reply.code(400).send({ error: "signer_grant_preparation_failed" });
     }
   });
   server.post("/api/v1/onboarding/fresh/grant/verify", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
-    const parsed = z.object({ signerOutput: z.unknown() }).strict().safeParse(request.body);
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
     try {
-      return { onboarding: await options.onboarding.verifyGrant(parsed.data.signerOutput) };
+      return { onboarding: await onboarding.verifyGrant(parsed.data.signerOutput) };
     } catch {
       return reply.code(400).send({ error: "signer_grant_verification_failed" });
     }
   });
   server.post("/api/v1/onboarding/fresh/refresh", async (_request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     try {
-      return await options.onboarding.refreshFresh();
+      return await onboarding.refreshFresh();
     } catch {
       return reply.code(400).send({ error: "fresh_setup_refresh_failed" });
     }
   });
   server.patch("/api/v1/onboarding/progress", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
-    const parsed = z
-      .object({ currentStep: z.string().min(1) })
-      .strict()
-      .safeParse(request.body);
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingProgressRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_step" });
     try {
-      return { onboarding: options.onboarding.setCurrentStep(parsed.data.currentStep) };
+      return { onboarding: onboarding.setCurrentStep(parsed.data.currentStep) };
     } catch {
       return reply.code(400).send({ error: "invalid_onboarding_step" });
     }
   });
   server.get("/api/v1/onboarding/artifacts/:kind", async (request, reply) => {
-    if (!options.onboarding) return reply.code(501).send({ error: "onboarding_unavailable" });
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = z.object({ kind: z.enum(["source", "manifest"]) }).safeParse(request.params);
     if (!parsed.success) return reply.code(404).send({ error: "artifact_not_found" });
     try {
-      const artifact = options.onboarding.artifact(parsed.data.kind);
+      const artifact = onboarding.artifact(parsed.data.kind);
       reply.type(artifact.contentType);
       reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
       return artifact.body;
@@ -525,16 +608,12 @@ export function createServer(options: ServerOptions = {}) {
     }
   });
   server.post("/api/v1/pool-card/generate", async (request, reply) => {
-    if (!options.service?.poolCard) {
-      return reply.code(501).send({ error: "pool_card_generation_unavailable" });
-    }
-    const parsed = z
-      .object({ mode: z.enum(["live", "static"]) })
-      .strict()
-      .safeParse(request.body);
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const poolCard = requireFeature(service.poolCard, "pool_card_generation_unavailable");
+    const parsed = poolCardGenerateRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_pool_card_mode" });
     try {
-      return await options.service.poolCard(parsed.data.mode);
+      return await poolCard.call(service, parsed.data.mode);
     } catch {
       return reply.code(400).send({ error: "pool_card_generation_failed" });
     }

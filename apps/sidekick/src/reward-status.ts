@@ -9,6 +9,8 @@ import {
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { type ChainAnchor, chainAnchorsEqual } from "./chain-anchor.js";
+import type { ChainReadOptions } from "./chain-clients.js";
 import type {
   RewardCycleSnapshotInput,
   SignerStakerRun,
@@ -21,9 +23,19 @@ export interface RewardStatusNode {
     functionName: string,
     sender: string,
     args: readonly string[],
+    options?: ChainReadOptions,
   ): Promise<ClarityValue>;
-  getDataVar(principal: string, variableName: string): Promise<ClarityValue>;
-  getMapEntry(principal: string, mapName: string, key: string): Promise<ClarityValue>;
+  getDataVar(
+    principal: string,
+    variableName: string,
+    options?: ChainReadOptions,
+  ): Promise<ClarityValue>;
+  getMapEntry(
+    principal: string,
+    mapName: string,
+    key: string,
+    options?: ChainReadOptions,
+  ): Promise<ClarityValue>;
 }
 
 export interface RewardStatusStore {
@@ -49,6 +61,7 @@ export interface RewardStatusOptions {
   observedAt: string;
   burnBlockHeight: number;
   stacksTipHeight: number;
+  chainAnchor?: ChainAnchor;
 }
 
 export interface StakerRewardStatus {
@@ -114,21 +127,70 @@ export interface StxRewardStatus {
   stakers: StakerRewardStatus[];
 }
 
+function callReadOnly(
+  node: RewardStatusNode,
+  principal: string,
+  functionName: string,
+  sender: string,
+  args: readonly string[],
+  options?: ChainReadOptions,
+): Promise<ClarityValue> {
+  return options
+    ? node.callReadOnly(principal, functionName, sender, args, options)
+    : node.callReadOnly(principal, functionName, sender, args);
+}
+
+function getDataVar(
+  node: RewardStatusNode,
+  principal: string,
+  variableName: string,
+  options?: ChainReadOptions,
+): Promise<ClarityValue> {
+  return options
+    ? node.getDataVar(principal, variableName, options)
+    : node.getDataVar(principal, variableName);
+}
+
+function getMapEntry(
+  node: RewardStatusNode,
+  principal: string,
+  mapName: string,
+  key: string,
+  options?: ChainReadOptions,
+): Promise<ClarityValue> {
+  return options
+    ? node.getMapEntry(principal, mapName, key, options)
+    : node.getMapEntry(principal, mapName, key);
+}
+
 async function readStakerReward(
   node: RewardStatusNode,
   managerPrincipal: string,
   stakerPrincipal: string,
   rewardCycle: number,
+  options?: ChainReadOptions,
 ): Promise<StakerRewardStatus> {
   const [rewardsValue, payoutValue] = await Promise.all([
-    node.callReadOnly(managerPrincipal, "get-earned-staker-rewards", managerPrincipal, [
-      encodePrincipalHex(stakerPrincipal),
-      encodeUIntHex(BigInt(rewardCycle)),
-      encodeOptionalUIntHex(null),
-    ]),
-    node.callReadOnly(managerPrincipal, "get-pox-addr", managerPrincipal, [
-      encodePrincipalHex(stakerPrincipal),
-    ]),
+    callReadOnly(
+      node,
+      managerPrincipal,
+      "get-earned-staker-rewards",
+      managerPrincipal,
+      [
+        encodePrincipalHex(stakerPrincipal),
+        encodeUIntHex(BigInt(rewardCycle)),
+        encodeOptionalUIntHex(null),
+      ],
+      options,
+    ),
+    callReadOnly(
+      node,
+      managerPrincipal,
+      "get-pox-addr",
+      managerPrincipal,
+      [encodePrincipalHex(stakerPrincipal)],
+      options,
+    ),
   ]);
   const rewards = decodeEarnedStakerRewards(rewardsValue);
   const payout = decodePoxAddressPreference(payoutValue);
@@ -163,10 +225,18 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
   if (!Number.isSafeInteger(options.rewardCycle) || options.rewardCycle < 0) {
     throw new Error("rewardCycle must be a non-negative safe integer");
   }
-  const run = options.store.getLatestCompletedSignerStakerRun(
+  const candidateRun = options.store.getLatestCompletedSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
   );
+  const run =
+    candidateRun &&
+    (!options.chainAnchor ||
+      (candidateRun.authoritative &&
+        candidateRun.chainAnchor !== null &&
+        chainAnchorsEqual(candidateRun.chainAnchor, options.chainAnchor)))
+      ? candidateRun
+      : null;
   const cycleMemberships = run
     ? options.store
         .listCycleMembershipsForCycle(
@@ -181,6 +251,7 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
   ];
   const cycleArgs = [encodeUIntHex(BigInt(options.rewardCycle)), encodeOptionalUIntHex(null)];
   const signerCycleArgs = [encodePrincipalHex(options.managerPrincipal), ...cycleArgs];
+  const readOptions = options.chainAnchor ? { tip: options.chainAnchor.indexBlockHash } : undefined;
   const [
     lastRewardComputeHeightValue,
     configuredFeeValue,
@@ -191,14 +262,17 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     rewardsPerTokenValue,
     signerEarnedValue,
   ] = await Promise.all([
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.pox5ContractId,
       "get-last-reward-compute-height",
       options.managerPrincipal,
       [],
+      readOptions,
     ),
-    options.node.getDataVar(options.managerPrincipal, "fees-bips"),
-    options.node.getMapEntry(
+    getDataVar(options.node, options.managerPrincipal, "fees-bips", readOptions),
+    getMapEntry(
+      options.node,
       options.managerPrincipal,
       "fee-bips-for-cycle",
       cvToHex(
@@ -207,36 +281,47 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
           "bond-index": noneCV(),
         }),
       ),
+      readOptions,
     ),
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.managerPrincipal,
       "get-earned-fees",
       options.managerPrincipal,
       [],
+      readOptions,
     ),
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.managerPrincipal,
       "get-withdrawal-liability",
       options.managerPrincipal,
       [],
+      readOptions,
     ),
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.managerPrincipal,
       "get-unclaimed-staker-rewards",
       options.managerPrincipal,
       [],
+      readOptions,
     ),
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.pox5ContractId,
       "get-rewards-per-token-for-cycle",
       options.managerPrincipal,
       cycleArgs,
+      readOptions,
     ),
-    options.node.callReadOnly(
+    callReadOnly(
+      options.node,
       options.pox5ContractId,
       "get-earned",
       options.managerPrincipal,
       signerCycleArgs,
+      readOptions,
     ),
   ]);
   const lastRewardComputeHeight = decodeUInt(
@@ -247,11 +332,13 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     lastRewardComputeHeight === 0n
       ? null
       : decodeUInt(
-          await options.node.callReadOnly(
+          await callReadOnly(
+            options.node,
             options.pox5ContractId,
             "burn-height-to-reward-cycle",
             options.managerPrincipal,
             [encodeUIntHex(lastRewardComputeHeight)],
+            readOptions,
           ),
           "burn-height-to-reward-cycle",
         );
@@ -268,6 +355,7 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
               options.managerPrincipal,
               stakerPrincipal,
               options.rewardCycle,
+              readOptions,
             ),
           ),
       )),
@@ -330,6 +418,7 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     observedAt: status.observedAt.timestamp,
     burnBlockHeight: status.observedAt.burnBlockHeight,
     stacksTipHeight: status.observedAt.stacksTipHeight,
+    ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
     global: status.global,
     manager: status.manager,
     totals: status.totals,

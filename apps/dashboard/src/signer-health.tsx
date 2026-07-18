@@ -1,78 +1,12 @@
 import { ArrowClockwise, GearSix, Pulse, WarningCircle } from "@phosphor-icons/react";
+import { type HealthSnapshot, healthSnapshotSchema } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useState } from "react";
+import { apiJson } from "./api-client.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 
+export type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
+
 type SourceStatus = "healthy" | "unavailable" | "not-configured";
-
-interface SourceState {
-  configured: boolean;
-  status: SourceStatus;
-  checkedAt: string | null;
-  lastSuccessAt: string | null;
-  latencyMs: number | null;
-  consecutiveFailures: number;
-  errorCode: string | null;
-}
-
-export interface HealthSnapshot {
-  generatedAt: string;
-  overallStatus: "healthy" | "needs-attention" | "partial" | "unavailable";
-  coverage: { available: number; total: number };
-  burnBlockTiming: null | {
-    averageSeconds: number;
-    windowHours: 12 | 24;
-    sampleBlocks: number;
-    sampledAt: string;
-  };
-  findings: Array<{
-    id: string;
-    severity: "critical" | "warning" | "info";
-    title: string;
-    detail: string;
-    source: "node" | "signer";
-  }>;
-  node: {
-    rpc: SourceState;
-    metrics: SourceState;
-    version: string | null;
-    networkId: number | null;
-    stacksTipHeight: number | null;
-    burnBlockHeight: number | null;
-    lastTipAdvanceAt: string | null;
-    inboundPeers: number | null;
-    outboundPeers: number | null;
-    lastHour: { warnings: number | null; errors: number | null };
-  };
-  hiro: {
-    source: SourceState;
-    stacksTipHeight: number | null;
-    burnBlockHeight: number | null;
-    localStacksDifference: number | null;
-    localBurnDifference: number | null;
-  };
-  signer: {
-    infoSource: SourceState;
-    heartbeat: SourceState;
-    metrics: SourceState;
-    version: string | null;
-    network: string | null;
-    publicKey: string | null;
-    stxAddress: string | null;
-    observedNodeHeight: number | null;
-    nodeHeightDifference: number | null;
-    rewardCycle: number | null;
-    stxBalanceUstx: number | null;
-    lastHour: {
-      proposals: number | null;
-      accepted: number | null;
-      rejected: number | null;
-      rejectionPercent: number | null;
-      responseP95Seconds: number | null;
-      disagreements: number | null;
-      collectingBaseline: boolean;
-    };
-  };
-}
 
 interface Eligibility {
   cycleId: number;
@@ -92,22 +26,7 @@ export async function fetchHealthSnapshot(
   path = "/api/v1/health",
   init: RequestInit = {},
 ): Promise<HealthSnapshot> {
-  const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${token}`);
-  if (init.body !== undefined && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-  const response = await fetch(path, {
-    ...init,
-    headers,
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
-    const detail =
-      typeof body?.error === "string" ? body.error.replaceAll("_", " ") : `HTTP ${response.status}`;
-    throw new Error(`Request failed: ${detail}`);
-  }
-  return (await response.json()) as HealthSnapshot;
+  return apiJson(token, path, healthSnapshotSchema, init);
 }
 
 function displayNumber(value: number | null): string {

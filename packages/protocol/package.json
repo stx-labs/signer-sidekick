@@ -17,6 +17,10 @@
       "types": "./dist/manager-adapter.d.ts",
       "default": "./dist/manager-adapter.js"
     },
+    "./manager-claim-rewards": {
+      "types": "./dist/manager-claim-rewards.d.ts",
+      "default": "./dist/manager-claim-rewards.js"
+    },
     "./manager-artifact": {
       "types": "./dist/manager-artifact.d.ts",
       "default": "./dist/manager-artifact.js"
@@ -36,6 +40,10 @@
     "./network-compatibility": {
       "types": "./dist/network-compatibility.d.ts",
       "default": "./dist/network-compatibility.js"
+    },
+    "./compatibility-attestation": {
+      "types": "./dist/compatibility-attestation.d.ts",
+      "default": "./dist/compatibility-attestation.js"
     },
     "./network-manager-artifact": {
       "types": "./dist/network-manager-artifact.d.ts",

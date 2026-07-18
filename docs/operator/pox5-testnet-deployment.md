@@ -1,7 +1,12 @@
 # PoX-5 Testnet validation
 
-This runbook is only for the dedicated PoX-5 Testnet. Canonical Stacks testnet remains PoX-4 and is
-not supported by Sidekick. Normal deployment documentation assumes mainnet.
+This runbook targets the dedicated PoX-5 Testnet profile. Do not substitute canonical Stacks testnet
+configuration; normal deployment documentation assumes mainnet.
+
+This procedure covers Attach, Fresh setup, and Observe validation. The first transaction-engine
+Assist canary remains a release gate and must follow the separate controls in
+[Transaction engine V1](../product/transaction-engine-v1.md) and
+[container deployment](deployment.md#transaction-engine-modes).
 
 Sidekick does not install the node or signer and never signs deployment or `register-self` calls.
 Use current upstream material for those steps:
@@ -61,8 +66,8 @@ docker compose exec -T sidekick node /app/dist/main.js \
   setup status ST_REPLACE_WITH_ADMIN.signer-manager
 ```
 
-An interface-compatible custom manager may attach read-only. A reference render can be identified
-with an installed manager profile; see [deployment](deployment.md#verify-the-connection).
+An interface-compatible custom manager may attach read-only. Reference renders require an installed
+[trusted-manager profile](../../trusted-managers/README.md).
 
 ## Create a manager
 

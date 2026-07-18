@@ -169,6 +169,30 @@ describe("operator preflight", () => {
     });
   });
 
+  it("reports a lagging API diagnostically without treating it as a coherent sync anchor", () => {
+    const result = evaluatePreflight(
+      config,
+      sources({
+        apiStatus: {
+          server_version: "stacks-blockchain-api v9.0.0",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_499_900,
+            block_hash: "0x01",
+            index_block_hash: "0x02",
+            burn_block_height: 958_080,
+          },
+        },
+      }),
+    );
+
+    expect(result.api.burnBlockLag).toBe(20);
+    expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
+      status: "warn",
+      message: "API Bitcoin tip is 20 Bitcoin blocks behind the node",
+    });
+  });
+
   it("requires PoX-5 once Epoch 4.0 has activated", () => {
     const baseline = sources();
     const result = evaluatePreflight(

@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     include: [
       "apps/sidekick/src/**/*.test.ts",
-      "packages/core/**/*.test.ts",
+      "packages/api-contracts/**/*.test.ts",
       "packages/protocol/**/*.test.ts",
     ],
     exclude: ["**/dist/**", "**/node_modules/**"],
@@ -12,7 +12,7 @@ export default defineConfig({
       provider: "v8",
       include: [
         "apps/sidekick/src/**/*.ts",
-        "packages/core/src/**/*.ts",
+        "packages/api-contracts/src/**/*.ts",
         "packages/protocol/src/**/*.ts",
       ],
       exclude: [

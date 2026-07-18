@@ -1,19 +1,25 @@
 import { cvToHex, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ChainAnchorError,
+  captureChainAnchor,
+  createChainAnchor,
   RateLimitedError,
   StacksApiClient,
   StacksNodeClient,
   UpstreamHttpError,
   UpstreamSchemaError,
+  UpstreamUnavailableError,
 } from "./chain-clients.js";
+
+const indexBlockHash = `0x${"ab".repeat(32)}`;
 
 describe("Stacks API client", () => {
   it("reads recent burn-block timestamps for empirical timing estimates", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          limit: 200,
+          limit: 30,
           offset: 0,
           total: 2,
           results: [
@@ -35,8 +41,42 @@ describe("Stacks API client", () => {
       results: [{ burn_block_height: 910_000 }, { burn_block_height: 909_999 }],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://api.example.test/extended/v2/burn-blocks?limit=200&offset=0",
+      "https://api.example.test/extended/v2/burn-blocks?limit=30&offset=0",
       expect.objectContaining({ headers: { "x-api-key": "top-secret" } }),
+    );
+  });
+
+  it("paginates within the API v9 burn-block page cap", async () => {
+    const blocks = Array.from({ length: 70 }, (_, index) => ({
+      burn_block_height: 910_000 - index,
+      burn_block_time: 1_784_000_000 - index * 600,
+    }));
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      const limit = Number(url.searchParams.get("limit"));
+      const offset = Number(url.searchParams.get("offset"));
+      return new Response(
+        JSON.stringify({
+          limit,
+          offset,
+          total: blocks.length,
+          results: blocks.slice(offset, offset + limit),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getBurnBlocks(70)).resolves.toMatchObject({
+      limit: 70,
+      total: 70,
+      results: blocks,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      "https://api.example.test/extended/v2/burn-blocks?limit=10&offset=60",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -75,8 +115,12 @@ describe("Stacks API client", () => {
         JSON.stringify({
           total: 2,
           limit: 1,
-          cursor: { next: cursor, previous: null, current: null },
-          results: [{ staker: "SP000000000000000000002Q6VF78", types: ["stx"] }],
+          cursor: {
+            next: null,
+            previous: "SP000000000000000000002Q6VF78",
+            current: cursor,
+          },
+          results: [{ staker: cursor, types: ["stx"] }],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
@@ -85,7 +129,8 @@ describe("Stacks API client", () => {
 
     await expect(client.getSignerStakers(signer, cursor, 1)).resolves.toMatchObject({
       total: 2,
-      results: [{ types: ["stx"] }],
+      cursor: { current: cursor },
+      results: [{ staker: cursor, types: ["stx"] }],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       `https://api.example.test/extended/v3/staking/signers/${signer}/stakers?limit=1&cursor=${cursor}`,
@@ -208,6 +253,543 @@ describe("Stacks API client", () => {
     });
   });
 
+  it("reads a bounded canonical block projection by height", async () => {
+    const blockHash = `0x${"12".repeat(32)}`;
+    const indexHash = `0x${"34".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          canonical: true,
+          height: 8_600_000,
+          hash: blockHash.toUpperCase().replace("0X", "0x"),
+          index_block_hash: indexHash,
+          parent_block_hash: `0x${"56".repeat(32)}`,
+          parent_index_block_hash: `0x${"78".repeat(32)}`,
+          burn_block_height: 960_240,
+          transactions: ["must-not-enter-the-trusted-projection"],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getBlock(8_600_000)).resolves.toEqual({
+      canonical: true,
+      height: 8_600_000,
+      hash: blockHash,
+      index_block_hash: indexHash,
+      parent_block_hash: `0x${"56".repeat(32)}`,
+      parent_index_block_hash: `0x${"78".repeat(32)}`,
+      burn_block_height: 960_240,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.example.test/extended/v2/blocks/8600000",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("enumerates same and higher origin nonces without treating unrelated rows as ownership", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const other = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+    const sameTxid = `0x${"11".repeat(32)}`;
+    const recipientTxid = `0x${"22".repeat(32)}`;
+    const higherTxid = `0x${"33".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            total: 3,
+            limit: 50,
+            cursor: { next: null, previous: null, current: `3000:${higherTxid}` },
+            results: [
+              {
+                tx_id: higherTxid,
+                sender: { address: principal, nonce: 9 },
+                sponsor: null,
+                status: "pending",
+                type: "contract_call",
+              },
+              {
+                // Global coverage includes unrelated rows. They count toward completeness without
+                // being reported as activity for the requested gas principal.
+                tx_id: recipientTxid,
+                sender: { address: other, nonce: 18 },
+                sponsor: null,
+                status: "pending",
+                type: "token_transfer",
+              },
+              {
+                tx_id: sameTxid,
+                sender: { address: principal, nonce: 7 },
+                sponsor: { address: other, nonce: 4 },
+                status: "pending",
+                type: "contract_call",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.enumerateGasPayerMempoolActivity(principal)).resolves.toEqual({
+      status: "complete",
+      principal,
+      pagesRead: 2,
+      observedTransactionCount: 3,
+      reportedTotal: 3,
+      nonceActivities: [
+        {
+          txid: higherTxid,
+          principal,
+          nonce: 9n,
+          role: "origin",
+          state: "mempool",
+          origin: { principal, nonce: 9n },
+          sponsor: null,
+        },
+        {
+          txid: sameTxid,
+          principal,
+          nonce: 7n,
+          role: "origin",
+          state: "mempool",
+          origin: { principal, nonce: 7n },
+          sponsor: { principal: other, nonce: 4n },
+        },
+      ],
+    });
+  });
+
+  it("follows every global mempool cursor in both stable scans", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const firstTxid = `0x${"44".repeat(32)}`;
+    const secondTxid = `0x${"55".repeat(32)}`;
+    const secondCursor = `2000:${secondTxid}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const secondPage = String(input).includes("cursor=");
+      return secondPage
+        ? new Response(
+            JSON.stringify({
+              total: 2,
+              limit: 1,
+              cursor: { next: null, previous: `3000:${firstTxid}`, current: secondCursor },
+              results: [
+                {
+                  tx_id: secondTxid,
+                  sender: { address: principal, nonce: 8 },
+                  sponsor: null,
+                  status: "pending",
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )
+        : new Response(
+            JSON.stringify({
+              total: 2,
+              limit: 1,
+              cursor: { next: secondCursor, previous: null, current: `3000:${firstTxid}` },
+              results: [
+                {
+                  tx_id: firstTxid,
+                  sender: { address: principal, nonce: 7 },
+                  sponsor: null,
+                  status: "pending",
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+    });
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(
+      client.enumerateGasPayerMempoolActivity(principal, { pageSize: 1 }),
+    ).resolves.toMatchObject({
+      status: "complete",
+      pagesRead: 4,
+      observedTransactionCount: 2,
+      reportedTotal: 2,
+      nonceActivities: [{ nonce: 7n }, { nonce: 8n }],
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.example.test/extended/v3/mempool/transactions?limit=1",
+      `https://api.example.test/extended/v3/mempool/transactions?limit=1&cursor=${encodeURIComponent(secondCursor)}`,
+      "https://api.example.test/extended/v3/mempool/transactions?limit=1",
+      `https://api.example.test/extended/v3/mempool/transactions?limit=1&cursor=${encodeURIComponent(secondCursor)}`,
+    ]);
+  });
+
+  it("reports global pagination and transaction caps instead of silently truncating", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const txid = `0x${"66".repeat(32)}`;
+    const nextCursor = `1000:${`0x${"77".repeat(32)}`}`;
+    const page = {
+      total: 51,
+      limit: 1,
+      cursor: { next: nextCursor, previous: null, current: `2000:${txid}` },
+      results: [
+        {
+          tx_id: txid,
+          sender: { address: principal, nonce: 7 },
+          sponsor: null,
+          status: "pending",
+        },
+      ],
+    };
+    const cappedByPages = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ...page, total: 2 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const cappedByTransactions = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(page), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        cappedByPages,
+      ).enumerateGasPayerMempoolActivity(principal, { pageSize: 1, maxPages: 1 }),
+    ).resolves.toMatchObject({
+      status: "incomplete",
+      reason: "page-limit",
+      pagesRead: 1,
+      observedTransactionCount: 1,
+      reportedTotal: 2,
+    });
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        cappedByTransactions,
+      ).enumerateGasPayerMempoolActivity(principal, {
+        pageSize: 1,
+        maxTransactions: 50,
+      }),
+    ).resolves.toMatchObject({
+      status: "incomplete",
+      reason: "transaction-limit",
+      pagesRead: 1,
+      observedTransactionCount: 1,
+      reportedTotal: 51,
+    });
+    expect(cappedByPages).toHaveBeenCalledOnce();
+    expect(cappedByTransactions).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on unavailable and incompatible global mempool responses", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const unavailable = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 503, headers: { "retry-after": "0" } }));
+    const incompatible = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ total: 0, private_detail: "must-not-leak" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        unavailable,
+      ).enumerateGasPayerMempoolActivity(principal),
+    ).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    const schemaError = await new StacksApiClient(
+      "https://api.example.test",
+      undefined,
+      undefined,
+      incompatible,
+    )
+      .enumerateGasPayerMempoolActivity(principal)
+      .catch((error: unknown) => error);
+    expect(schemaError).toBeInstanceOf(UpstreamSchemaError);
+    expect(String(schemaError)).not.toContain("private_detail");
+    expect(unavailable).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports an unsponsored origin nonce from complete global mempool coverage", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const txid = `0x${"81".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            total: 1,
+            limit: 50,
+            cursor: { next: null, previous: null, current: `2000:${txid}` },
+            results: [
+              {
+                tx_id: txid,
+                sender: { address: principal, nonce: 7 },
+                sponsor: null,
+                status: "pending",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        fetchImpl,
+      ).enumerateGasPayerMempoolActivity(principal),
+    ).resolves.toEqual({
+      status: "complete",
+      principal,
+      pagesRead: 2,
+      observedTransactionCount: 1,
+      reportedTotal: 1,
+      nonceActivities: [
+        {
+          txid,
+          principal,
+          nonce: 7n,
+          role: "origin",
+          state: "mempool",
+          origin: { principal, nonce: 7n },
+          sponsor: null,
+        },
+      ],
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.example.test/extended/v3/mempool/transactions?limit=50",
+      "https://api.example.test/extended/v3/mempool/transactions?limit=50",
+    ]);
+  });
+
+  it("finds sponsor-only nonce activity that the principal-scoped route omits", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const origin = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+    const txid = `0x${"82".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            total: 1,
+            limit: 50,
+            cursor: { next: null, previous: null, current: `2000:${txid}` },
+            results: [
+              {
+                tx_id: txid,
+                sender: { address: origin, nonce: 31 },
+                sponsor: { address: principal, nonce: 8 },
+                status: "pending",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        fetchImpl,
+      ).enumerateGasPayerMempoolActivity(principal),
+    ).resolves.toMatchObject({
+      status: "complete",
+      nonceActivities: [
+        {
+          txid,
+          principal,
+          nonce: 8n,
+          role: "sponsor",
+          state: "mempool",
+          origin: { principal: origin, nonce: 31n },
+          sponsor: { principal, nonce: 8n },
+        },
+      ],
+    });
+  });
+
+  it("fails global coverage closed at either the page or transaction bound", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const txid = `0x${"83".repeat(32)}`;
+    const nextCursor = `1000:${`0x${"84".repeat(32)}`}`;
+    const firstPage = {
+      total: 2,
+      limit: 1,
+      cursor: { next: nextCursor, previous: null, current: `2000:${txid}` },
+      results: [
+        {
+          tx_id: txid,
+          sender: { address: principal, nonce: 7 },
+          sponsor: null,
+          status: "pending",
+        },
+      ],
+    };
+    const pageBound = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(firstPage), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const transactionBound = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(firstPage), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        pageBound,
+      ).enumerateGasPayerMempoolActivity(principal, { pageSize: 1, maxPages: 1 }),
+    ).resolves.toMatchObject({
+      status: "incomplete",
+      reason: "page-limit",
+      observedTransactionCount: 1,
+      reportedTotal: 2,
+    });
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        transactionBound,
+      ).enumerateGasPayerMempoolActivity(principal, {
+        pageSize: 1,
+        maxTransactions: 1,
+      }),
+    ).resolves.toMatchObject({
+      status: "incomplete",
+      reason: "transaction-limit",
+      observedTransactionCount: 1,
+      reportedTotal: 2,
+    });
+    expect(pageBound).toHaveBeenCalledOnce();
+    expect(transactionBound).toHaveBeenCalledOnce();
+  });
+
+  it("rejects duplicate rows and total drift across global mempool pages", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const firstTxid = `0x${"85".repeat(32)}`;
+    const secondTxid = `0x${"86".repeat(32)}`;
+    const nextCursor = `1000:${secondTxid}`;
+    const page = (txid: string, total: number, next: string | null, current: string) => ({
+      total,
+      limit: 1,
+      cursor: { next, previous: null, current },
+      results: [
+        {
+          tx_id: txid,
+          sender: { address: principal, nonce: 7 },
+          sponsor: null,
+          status: "pending",
+        },
+      ],
+    });
+    const duplicate = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(page(firstTxid, 2, nextCursor, `2000:${firstTxid}`)), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(page(firstTxid, 2, null, nextCursor)), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const drift = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(page(firstTxid, 2, nextCursor, `2000:${firstTxid}`)), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(page(secondTxid, 3, null, nextCursor)), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        duplicate,
+      ).enumerateGasPayerMempoolActivity(principal, { pageSize: 1 }),
+    ).resolves.toMatchObject({ status: "incomplete", reason: "duplicate-transaction" });
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        drift,
+      ).enumerateGasPayerMempoolActivity(principal, { pageSize: 1 }),
+    ).resolves.toMatchObject({ status: "incomplete", reason: "total-changed" });
+  });
+
+  it("rejects a same-total mempool swap between consecutive complete scans", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const firstTxid = `0x${"87".repeat(32)}`;
+    const secondTxid = `0x${"88".repeat(32)}`;
+    const response = (txid: string, nonce: number) =>
+      new Response(
+        JSON.stringify({
+          total: 1,
+          limit: 50,
+          cursor: { next: null, previous: null, current: `2000:${txid}` },
+          results: [
+            {
+              tx_id: txid,
+              sender: { address: principal, nonce },
+              sponsor: null,
+              status: "pending",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response(firstTxid, 7))
+      .mockResolvedValueOnce(response(secondTxid, 8));
+
+    await expect(
+      new StacksApiClient(
+        "https://api.example.test",
+        undefined,
+        undefined,
+        fetchImpl,
+      ).enumerateGasPayerMempoolActivity(principal),
+    ).resolves.toMatchObject({
+      status: "incomplete",
+      reason: "snapshot-changed",
+      observedTransactionCount: 1,
+      reportedTotal: 1,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("honors Retry-After and retries a rate-limited request", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -294,6 +876,185 @@ describe("Stacks API client", () => {
 });
 
 describe("Stacks node client", () => {
+  it("pins every actionable node read to one exact index block", async () => {
+    const manager = "SP000000000000000000002Q6VF78.signer-manager";
+    const feeKey = cvToHex(tupleCV({ "reward-cycle": uintCV(141n), "bond-index": noneCV() }));
+    const pox = {
+      current_burnchain_block_height: 960_240,
+      reward_cycle_id: 141,
+      reward_cycle_length: 2_100,
+      prepare_cycle_length: 100,
+      contract_id: "SP000000000000000000002Q6VF78.pox-5",
+      contract_versions: [],
+    };
+    const responses = [
+      pox,
+      { okay: true, result: cvToHex(uintCV(141n)) },
+      { data: cvToHex(uintCV(500n)) },
+      { data: cvToHex(someCV(uintCV(0n))) },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+    const readOptions = { tip: indexBlockHash };
+
+    await client.getPoxInfo(readOptions);
+    await client.callReadOnly(
+      "SP000000000000000000002Q6VF78.pox-5",
+      "reward-cycle-to-burn-height",
+      "SP000000000000000000002Q6VF78",
+      [cvToHex(uintCV(141n))],
+      readOptions,
+    );
+    await client.getDataVar(manager, "fees-bips", readOptions);
+    await client.getMapEntry(manager, "fee-bips-for-cycle", feeKey, readOptions);
+
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      `http://127.0.0.1:20443/v2/pox?tip=${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v2/contracts/call-read/SP000000000000000000002Q6VF78/pox-5/reward-cycle-to-burn-height?tip=${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v2/data_var/SP000000000000000000002Q6VF78/signer-manager/fees-bips?proof=0&tip=${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v2/map_entry/SP000000000000000000002Q6VF78/signer-manager/fee-bips-for-cycle?proof=0&tip=${indexBlockHash.slice(2)}`,
+    ]);
+  });
+
+  it("rejects an invalid tip before issuing a node request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    expect(() => client.getPoxInfo({ tip: "0x12" })).toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      rewardCycleLength: 2_100,
+      prepareCycleLength: 100,
+      burnBlockHeight: 960_240,
+      nextCycleStart: 961_000,
+      phase: "reward",
+      checkpoint: "second-half",
+    },
+    {
+      rewardCycleLength: 1_050,
+      prepareCycleLength: 50,
+      burnBlockHeight: 960_990,
+      nextCycleStart: 961_000,
+      phase: "prepare",
+      checkpoint: "second-half",
+    },
+  ])("derives a typed anchor from runtime PoX boundaries ($rewardCycleLength blocks)", ({
+    rewardCycleLength,
+    prepareCycleLength,
+    burnBlockHeight,
+    nextCycleStart,
+    phase,
+    checkpoint,
+  }) => {
+    expect(
+      createChainAnchor(
+        {
+          network_id: 1,
+          burn_block_height: burnBlockHeight,
+          stacks_tip_height: 8_600_000,
+        },
+        {
+          server_version: "stacks-blockchain-api v9",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_600_000,
+            block_hash: `0x${"cd".repeat(32)}`,
+            index_block_hash: indexBlockHash,
+            burn_block_height: burnBlockHeight,
+          },
+        },
+        {
+          current_burnchain_block_height: burnBlockHeight,
+          reward_cycle_id: 141,
+          reward_cycle_length: rewardCycleLength,
+          prepare_cycle_length: prepareCycleLength,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+          next_cycle: {
+            id: 142,
+            min_threshold_ustx: 1,
+            min_increment_ustx: 1,
+            stacked_ustx: 1,
+            prepare_phase_start_block_height: nextCycleStart - prepareCycleLength,
+            blocks_until_prepare_phase: nextCycleStart - prepareCycleLength - burnBlockHeight,
+            reward_phase_start_block_height: nextCycleStart,
+            blocks_until_reward_phase: nextCycleStart - burnBlockHeight,
+          },
+        },
+      ),
+    ).toMatchObject({
+      rewardCycleLength,
+      prepareCycleLength,
+      burnBlockHeight,
+      phase,
+      checkpoint,
+      indexBlockHash,
+    });
+  });
+
+  it("discards an anchor when the API tip changes during capture", async () => {
+    const firstStatus = {
+      server_version: "stacks-blockchain-api v9",
+      status: "ready",
+      chain_tip: {
+        block_height: 8_600_000,
+        block_hash: `0x${"cd".repeat(32)}`,
+        index_block_hash: indexBlockHash,
+        burn_block_height: 960_240,
+      },
+    };
+    const movedStatus = {
+      ...firstStatus,
+      chain_tip: {
+        ...firstStatus.chain_tip,
+        index_block_hash: `0x${"ef".repeat(32)}`,
+      },
+    };
+    const api = {
+      getStatus: vi.fn().mockResolvedValueOnce(firstStatus).mockResolvedValueOnce(movedStatus),
+    } as unknown as StacksApiClient;
+    const node = {
+      getInfo: vi.fn().mockResolvedValue({
+        network_id: 1,
+        burn_block_height: 960_240,
+        stacks_tip_height: 8_600_000,
+      }),
+      getPoxInfo: vi.fn().mockResolvedValue({
+        current_burnchain_block_height: 960_240,
+        reward_cycle_id: 141,
+        reward_cycle_length: 2_100,
+        prepare_cycle_length: 100,
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        contract_versions: [],
+        next_cycle: {
+          id: 142,
+          min_threshold_ustx: 1,
+          min_increment_ustx: 1,
+          stacked_ustx: 1,
+          prepare_phase_start_block_height: 960_200,
+          blocks_until_prepare_phase: -40,
+          reward_phase_start_block_height: 960_300,
+          blocks_until_reward_phase: 60,
+        },
+      }),
+    } as unknown as StacksNodeClient;
+
+    await expect(captureChainAnchor(node, api)).rejects.toMatchObject({
+      name: ChainAnchorError.name,
+      retryable: true,
+    });
+    expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
+  });
+
   it("retains node build evidence and PoX-5 sBTC contract capabilities", async () => {
     const responses = [
       {

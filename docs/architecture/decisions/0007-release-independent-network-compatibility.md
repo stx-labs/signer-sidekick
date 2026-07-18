@@ -11,16 +11,18 @@ capabilities. The node build is diagnostic, not an allowlist.
 
 Sidekick ships bootstrap profiles and may load stricter revisions from a read-only directory.
 Profiles contain data only: they may guide observation and deterministic Fresh artifacts but cannot
-authorize automation. Unknown public networks degrade safely; contradictions with an installed
+authorize Assist. Unknown public networks degrade safely; contradictions with an installed
 fingerprint fail closed.
 
-Before broadcasting ships, an authenticated compatibility-attestation design must become the
-automation trust gate. Prefer an official release manifest/key; define a Stacks Labs process only
-if upstream cannot provide one. See
-[issue #6](https://github.com/stx-labs/signer-sidekick/issues/6).
+Assist broadcasting is gated by a current authenticated compatibility attestation, validated
+against configured read-only trust roots. The attestation binds reviewed network, PoX-5, sBTC, and
+manager identities to an existing code-backed adapter; it cannot add an adapter or authorize an
+arbitrary transaction. Issuance, rotation, revocation, and release availability are operational
+rollout requirements; see
+[the transaction-engine contract](../../product/transaction-engine-v1.md).
 
 ## Consequences
 
-Compatible deployments can be supported by installing reviewed data and restarting Sidekick.
-Semantic or API-shape changes still require code. Anyone who can write the profile directory can
-change setup guidance, but cannot make Sidekick sign, broadcast, or authorize automation.
+Compatible deployments can be supported by installing reviewed data and restarting Sidekick;
+semantic or API-shape changes still require code. Write access to profile or attestation directories
+cannot install executable behavior or bypass adapter, live-input, and trust-root validation.

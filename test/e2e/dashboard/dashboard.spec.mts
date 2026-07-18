@@ -147,6 +147,124 @@ function finalVerificationOnboarding() {
   });
 }
 
+function engineFixture() {
+  const jobId = "3ef4ee75-c4d9-4ee7-980d-4fdb2914ef28";
+  const approvalId = "7f8ff935-9cb4-4677-a167-17257625bd14";
+  const now = "2026-07-17T12:00:00.000Z";
+  const expiresAt = "2026-07-17T12:10:00.000Z";
+  const review = {
+    adapter: { id: "reference-manager-claim-rewards", revision: 1 },
+    network: "pox-5-testnet",
+    managerPrincipal: snapshot.managerPrincipal,
+    call: {
+      contract: snapshot.managerPrincipal,
+      functionName: "claim-rewards",
+      arguments: [{ name: "reward-cycle", clarityValue: "u95", displayValue: "95" }],
+    },
+    anchor: {
+      stacksBlockHeight: 1_000,
+      indexBlockHash: `0x${"1a".repeat(32)}`,
+      burnBlockHeight: 900,
+      rewardCycle: 95,
+      rewardCycleLength: 2_100,
+      prepareCycleLength: 100,
+      cyclePosition: 1_050,
+      phase: "reward",
+      checkpoint: "second-half",
+    },
+    checkpoint: {
+      rewardCycle: 95,
+      calculationCheckpoint: "first-half",
+      lastRewardComputeHeight: 1_000,
+      rewardsPerToken: "125000",
+    },
+    expectedEffect: {
+      recipient: { kind: "manager", principal: snapshot.managerPrincipal },
+      asset: {
+        assetId: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+        symbol: "sBTC",
+        maximumOutflow: "0",
+        unit: "sats",
+      },
+      postconditions: ["Deny unexpected asset outflows"],
+      reconciliationPredicate: "manager reward state records checkpoint 1000",
+    },
+    fee: {
+      snapshot: { state: "missing", feeBips: null, source: "manager read-only" },
+      estimatedFeeUstx: "1200",
+      maximumFeeUstx: "5000",
+      policyRevision: 1,
+    },
+    hashes: {
+      intentSha256: "a".repeat(64),
+      policySha256: "b".repeat(64),
+      attestationSha256: "c".repeat(64),
+    },
+    expectedPostState: "The manager stores the exact reward checkpoint and fee snapshot.",
+  };
+  const job = {
+    schemaVersion: 1,
+    jobId,
+    mode: "assist",
+    state: "awaiting_approval",
+    stateVersion: 3,
+    blockReason: null,
+    supersededByJobId: null,
+    review,
+    approvalWindow: { eligible: true, expiresAt, reason: null },
+    approval: null,
+    nonce: null,
+    attempts: [],
+    reconciliation: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const status = {
+    schemaVersion: 1,
+    mode: "assist",
+    forcedObserve: { active: false, reason: null, actor: null, forcedAt: null },
+    adapters: [
+      {
+        adapter: review.adapter,
+        label: "Reference manager claim rewards",
+        mode: "assist",
+        enabled: true,
+        availability: "available",
+        blockReason: null,
+      },
+    ],
+    jobs: { active: 1, awaitingApproval: 1, ambiguous: 0 },
+    generatedAt: now,
+  };
+  const summary = {
+    jobId,
+    mode: "assist",
+    state: "awaiting_approval",
+    blockReason: null,
+    adapter: review.adapter,
+    network: review.network,
+    managerPrincipal: review.managerPrincipal,
+    contract: review.call.contract,
+    functionName: review.call.functionName,
+    rewardCycle: 95,
+    approvalState: "awaiting",
+    updatedAt: now,
+  };
+  const approval = {
+    approvalId,
+    jobId,
+    review,
+    approvalSha256: "d".repeat(64),
+    actor: "operator-session",
+    createdAt: now,
+    expiresAt,
+    invalidatedAt: null,
+    invalidationReason: null,
+    version: 0,
+  };
+  return { approval, job, jobId, status, summary };
+}
+
 test("renders every operator screen without leaking the credential", async ({ page }) => {
   await login(page);
   const navigationTargets = await page
@@ -178,12 +296,160 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
+test("treats an HTTP 501 transaction engine as an unavailable Observe surface", async ({
+  page,
+}) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const unavailable = request.pathname.startsWith("/api/v1/engine");
+    await route.fulfill({
+      status: unavailable ? 501 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        unavailable ? { error: "engine_not_implemented" } : responseFor(route.request().url()),
+      ),
+    });
+  });
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  await expect(page.getByText("Observe unavailable", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Existing ingestion, reconciliation, and alerts remain available"),
+  ).toBeVisible();
+  consoleErrors.set(page, []);
+});
+
+test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
+  page,
+}) => {
+  const fixture = engineFixture();
+  let approvalRequests = 0;
+  let invalidationRequests = 0;
+  let forceObserveRequests = 0;
+  let disableRequests = 0;
+  let currentJob = fixture.job;
+  let currentStatus = fixture.status;
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/engine") {
+      body = currentStatus;
+    } else if (request.pathname === "/api/v1/engine/jobs") {
+      body = { schemaVersion: 1, items: [fixture.summary], nextCursor: null, total: 1 };
+    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}`) {
+      body = currentJob;
+    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval/invalidate`) {
+      invalidationRequests += 1;
+      const requestBody = route.request().postDataJSON();
+      expect(requestBody).toEqual({
+        decision: "invalidate",
+        reason: "Operator invalidated approval from the dashboard",
+      });
+      const invalidatedApproval = {
+        ...fixture.approval,
+        invalidatedAt: "2026-07-17T12:05:00.000Z",
+        invalidationReason: "Operator invalidated approval from the dashboard",
+        version: 1,
+      };
+      currentJob = { ...currentJob, approval: invalidatedApproval, stateVersion: 5 };
+      body = { approval: invalidatedApproval, job: currentJob };
+    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval`) {
+      approvalRequests += 1;
+      expect(route.request().postDataJSON()).toEqual({
+        decision: "approve",
+        intentSha256: "a".repeat(64),
+        policySha256: "b".repeat(64),
+        expiresAt: "2026-07-17T12:10:00.000Z",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      currentJob = {
+        ...currentJob,
+        state: "nonce_reserved",
+        stateVersion: 4,
+        approval: fixture.approval,
+      };
+      body = { approval: fixture.approval, job: currentJob, created: approvalRequests === 1 };
+    } else if (request.pathname === "/api/v1/engine/force-observe") {
+      forceObserveRequests += 1;
+      currentStatus = {
+        ...currentStatus,
+        mode: "observe",
+        forcedObserve: {
+          active: true,
+          reason: "Operator confirmed emergency force-Observe from the dashboard",
+          actor: "operator-session",
+          forcedAt: "2026-07-17T12:06:00.000Z",
+        },
+      };
+      body = { status: currentStatus };
+    } else if (
+      request.pathname === "/api/v1/engine/adapters/reference-manager-claim-rewards/disable"
+    ) {
+      disableRequests += 1;
+      const adapter = {
+        ...currentStatus.adapters[0],
+        enabled: false,
+        availability: "disabled",
+        blockReason: "Operator disabled adapter from the dashboard",
+      };
+      currentStatus = { ...currentStatus, adapters: [adapter] };
+      body = { adapter, status: currentStatus };
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  await expect(page.getByText("assist", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /claim-rewards/ }).click();
+  await expect(page.getByText("Exact transaction review", { exact: true })).toBeVisible();
+  await expect(page.getByText("Last reward compute height", { exact: true })).toBeVisible();
+  await expect(page.getByText("Maximum asset outflow", { exact: true })).toBeVisible();
+  await expect(page.getByText("Attestation hash", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Approve intent" }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => approvalRequests).toBe(1);
+  await expect(page.getByText("Approved", { exact: true })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Invalidate approval" }).click();
+  await expect.poll(() => invalidationRequests).toBe(1);
+  await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Force Observe" }).click();
+  await expect.poll(() => forceObserveRequests).toBe(1);
+  await expect(page.getByText("Forced Observe", { exact: true })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Disable adapter" }).click();
+  await expect.poll(() => disableRequests).toBe(1);
+  await expect(page.getByText("disabled", { exact: true })).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
 test("summarizes the cycle clock and links health details", async ({ page }) => {
   await login(page);
   const cards = page.locator(".cycle-clock > *");
   await expect(cards).toHaveCount(4);
   await expect(cards.nth(0)).toContainText("Reward cycle");
-  await expect(cards.nth(1)).toContainText("Burn height");
+  await expect(cards.nth(1)).toContainText("Bitcoin block height");
   await expect(cards.nth(2)).toContainText("Next prepare phase");
   await expect(cards.nth(2)).toContainText("~10d 16h · 24h average");
   await expect(cards.nth(3)).toContainText("Node & Signer Health");
@@ -217,7 +483,7 @@ test("required actions provide their resolving control and exclude informational
     id: "manager:custom-read-only",
     severity: "info",
     title: "Custom Manager — Read-only",
-    detail: "No action is required unless reference-manager automation is intended.",
+    detail: "No action is required unless reference-manager Assist is intended.",
   };
   const actionSnapshot = {
     ...snapshot,
@@ -517,6 +783,103 @@ test("explains how to deploy a generated manager outside Sidekick", async ({ pag
     "https://docs.stacks.co/clarinet/contract-deployment",
   );
   await expect(page.locator("body")).not.toContainText(credential);
+});
+
+test("advances fresh setup after a transient deployment refresh failure", async ({ page }) => {
+  await page.clock.install();
+  const complete = (id: string, title: string): FixtureStep => ({
+    id,
+    title,
+    status: "complete",
+    detail: `${title} complete`,
+    command: null,
+  });
+  const deploymentSteps: FixtureStep[] = [
+    complete("preflight", "Prerequisites"),
+    complete("render-manager", "Manager artifact"),
+    {
+      id: "deploy-manager",
+      status: "ready",
+      title: "Deploy manager",
+      detail: "Waiting for the deployed manager.",
+      command: null,
+    },
+  ];
+  const grantSteps: FixtureStep[] = [
+    complete("preflight", "Prerequisites"),
+    complete("render-manager", "Manager artifact"),
+    complete("deploy-manager", "Deploy manager"),
+    {
+      id: "prepare-signer-grant",
+      status: "ready",
+      title: "Prepare signer grant",
+      detail: "Prepare the live PoX-5 signer grant.",
+      command: null,
+    },
+  ];
+  const deploymentResponse = freshOnboardingResponse({
+    currentStep: "deploy-manager",
+    steps: deploymentSteps,
+  });
+  const grantResponse = freshOnboardingResponse({
+    currentStep: "prepare-signer-grant",
+    steps: grantSteps,
+  });
+  let refreshCalls = 0;
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/onboarding") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(deploymentResponse),
+      });
+      return;
+    }
+    if (request.pathname === "/api/v1/onboarding/fresh/refresh") {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        await route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "fresh_setup_refresh_failed" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          onboarding: grantResponse.onboarding,
+          preflight: snapshot.preflight,
+          setup: snapshot.setup,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(responseFor(route.request().url())),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await page.getByRole("button", { name: "Verify deployment" }).click();
+  await expect(page.getByText("Request failed: fresh setup refresh failed")).toBeVisible();
+
+  await page.clock.runFor(20_000);
+
+  await expect(page.getByRole("button", { name: "Generate signer command" })).toBeVisible();
+  await expect(page.getByText("Request failed: fresh setup refresh failed")).toHaveCount(0);
+  expect(refreshCalls).toBe(2);
+  expect(consoleErrors.get(page)).toEqual([
+    "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+  ]);
+  consoleErrors.set(page, []);
 });
 
 test("keeps setup commands behind advanced disclosure", async ({ page }) => {
@@ -853,7 +1216,7 @@ test("makes each signer activation state explicit and actionable", async ({ page
   };
   await reloadSetup();
   await expect(page.getByText("Activation scheduled", { exact: true })).toBeVisible();
-  await expect(page.getByText(/No action is required.*burn height 10880/)).toBeVisible();
+  await expect(page.getByText(/No action is required.*Bitcoin block 10880/)).toBeVisible();
 
   setup = {
     ...setup,
@@ -903,7 +1266,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
       status.manager.automationEligibilityReason =
         tier === "reference-render"
           ? "Pinned reference render and network approval verified"
-          : "Reference-manager automation is disabled";
+          : "Reference-manager Assist is disabled";
       status.manager.provenance.status =
         tier === "reference-render"
           ? "verified"

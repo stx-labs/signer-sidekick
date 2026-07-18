@@ -4,566 +4,10 @@ import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
+import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
 import type { SidekickNetwork } from "../config.js";
-
-interface Migration {
-  version: number;
-  name: string;
-  sql: string;
-}
-
-const migrations: readonly Migration[] = [
-  {
-    version: 1,
-    name: "chain_evidence_foundation",
-    sql: `
-      CREATE TABLE chain_sources (
-        source_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('api', 'node')),
-        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
-        base_url TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE TABLE chain_cursors (
-        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        stream TEXT NOT NULL,
-        cursor TEXT,
-        last_block_height INTEGER,
-        last_index_block_hash TEXT,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (source_id, stream),
-        CHECK (last_block_height IS NULL OR last_block_height >= 0)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE TABLE chain_events (
-        chain_id INTEGER NOT NULL,
-        tx_id TEXT NOT NULL,
-        event_index INTEGER NOT NULL CHECK (event_index >= 0),
-        block_height INTEGER NOT NULL CHECK (block_height >= 0),
-        block_hash TEXT NOT NULL,
-        index_block_hash TEXT NOT NULL,
-        microblock_hash TEXT,
-        microblock_sequence INTEGER CHECK (microblock_sequence IS NULL OR microblock_sequence >= 0),
-        canonical INTEGER NOT NULL CHECK (canonical IN (0, 1)),
-        microblock_canonical INTEGER NOT NULL CHECK (microblock_canonical IN (0, 1)),
-        contract_id TEXT,
-        topic TEXT,
-        raw_payload_json TEXT NOT NULL CHECK (json_valid(raw_payload_json)),
-        decoded_schema_version INTEGER CHECK (
-          decoded_schema_version IS NULL OR decoded_schema_version > 0
-        ),
-        decoded_payload_json TEXT CHECK (
-          decoded_payload_json IS NULL OR json_valid(decoded_payload_json)
-        ),
-        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        first_seen_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (chain_id, tx_id, event_index)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX chain_events_canonical_height
-        ON chain_events (chain_id, canonical, block_height, event_index);
-      CREATE INDEX chain_events_contract_topic
-        ON chain_events (contract_id, topic, block_height);
-      CREATE INDEX chain_events_index_block
-        ON chain_events (chain_id, index_block_hash);
-    `,
-  },
-  {
-    version: 2,
-    name: "signer_staker_projections",
-    sql: `
-      CREATE TABLE ingestion_runs (
-        run_id TEXT PRIMARY KEY,
-        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        stream TEXT NOT NULL,
-        manager_principal TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('running', 'completed')),
-        cursor_next TEXT,
-        pages_processed INTEGER NOT NULL DEFAULT 0 CHECK (pages_processed >= 0),
-        items_processed INTEGER NOT NULL DEFAULT 0 CHECK (items_processed >= 0),
-        started_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        completed_at TEXT
-      ) STRICT;
-
-      CREATE UNIQUE INDEX ingestion_runs_one_active_scan
-        ON ingestion_runs (source_id, stream, manager_principal)
-        WHERE status = 'running';
-
-      CREATE TABLE stakers (
-        manager_principal TEXT NOT NULL,
-        staker_principal TEXT NOT NULL,
-        has_stx INTEGER NOT NULL CHECK (has_stx IN (0, 1)),
-        has_btc INTEGER NOT NULL CHECK (has_btc IN (0, 1)),
-        stx_node_verified INTEGER CHECK (stx_node_verified IN (0, 1)),
-        active INTEGER NOT NULL CHECK (active IN (0, 1)),
-        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        verification_source_id TEXT REFERENCES chain_sources(source_id),
-        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        PRIMARY KEY (manager_principal, staker_principal)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX stakers_active_by_manager
-        ON stakers (manager_principal, active, staker_principal);
-
-      CREATE TABLE stake_positions (
-        manager_principal TEXT NOT NULL,
-        staker_principal TEXT NOT NULL,
-        signer_principal TEXT NOT NULL,
-        amount_ustx TEXT NOT NULL,
-        first_reward_cycle TEXT NOT NULL,
-        num_cycles TEXT NOT NULL,
-        unlock_cycle TEXT NOT NULL,
-        active INTEGER NOT NULL CHECK (active IN (0, 1)),
-        discovery_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        verification_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
-        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
-        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (manager_principal, staker_principal),
-        FOREIGN KEY (manager_principal, staker_principal)
-          REFERENCES stakers(manager_principal, staker_principal)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE TABLE cycle_memberships (
-        manager_principal TEXT NOT NULL,
-        staker_principal TEXT NOT NULL,
-        reward_cycle TEXT NOT NULL,
-        signer_principal TEXT NOT NULL,
-        amount_ustx TEXT NOT NULL,
-        active INTEGER NOT NULL CHECK (active IN (0, 1)),
-        discovery_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        verification_source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        last_seen_run_id TEXT NOT NULL REFERENCES ingestion_runs(run_id),
-        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
-        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (manager_principal, staker_principal, reward_cycle),
-        FOREIGN KEY (manager_principal, staker_principal)
-          REFERENCES stakers(manager_principal, staker_principal)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX cycle_memberships_active_by_cycle
-        ON cycle_memberships (manager_principal, reward_cycle, active, staker_principal);
-    `,
-  },
-  {
-    version: 3,
-    name: "deferred_stx_unlock_height",
-    sql: `
-      ALTER TABLE stake_positions ADD COLUMN unlock_burn_height TEXT;
-    `,
-  },
-  {
-    version: 4,
-    name: "normalized_manager_activity",
-    sql: `
-      CREATE TABLE manager_activity_events (
-        chain_id INTEGER NOT NULL,
-        tx_id TEXT NOT NULL,
-        event_index INTEGER NOT NULL CHECK (event_index >= 0),
-        manager_principal TEXT NOT NULL,
-        block_height INTEGER NOT NULL CHECK (block_height >= 0),
-        canonical INTEGER NOT NULL CHECK (canonical IN (0, 1)),
-        kind TEXT NOT NULL CHECK (kind IN (
-          'claim-staker-rewards',
-          'reclaim-failed-withdrawal',
-          'settle-accepted-withdrawal'
-        )),
-        staker_principal TEXT NOT NULL,
-        reward_cycle TEXT,
-        bond_index TEXT,
-        amount_sats TEXT NOT NULL,
-        request_id TEXT,
-        withdrawal_amount_sats TEXT,
-        max_fee_sats TEXT,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (chain_id, tx_id, event_index),
-        FOREIGN KEY (chain_id, tx_id, event_index)
-          REFERENCES chain_events(chain_id, tx_id, event_index)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX manager_activity_by_kind_height
-        ON manager_activity_events (
-          chain_id, manager_principal, canonical, kind, block_height DESC, event_index DESC
-        );
-      CREATE INDEX manager_activity_by_request
-        ON manager_activity_events (
-          chain_id, manager_principal, request_id, canonical, block_height
-        );
-
-      INSERT INTO manager_activity_events (
-        chain_id, tx_id, event_index, manager_principal, block_height, canonical, kind,
-        staker_principal, reward_cycle, bond_index, amount_sats, request_id,
-        withdrawal_amount_sats, max_fee_sats, updated_at
-      )
-      SELECT
-        chain_id,
-        tx_id,
-        event_index,
-        contract_id,
-        block_height,
-        canonical,
-        json_extract(decoded_payload_json, '$.event.kind'),
-        json_extract(decoded_payload_json, '$.event.stakerPrincipal'),
-        json_extract(decoded_payload_json, '$.event.rewardCycle'),
-        json_extract(decoded_payload_json, '$.event.bondIndex'),
-        COALESCE(
-          json_extract(decoded_payload_json, '$.event.amountSats'),
-          json_extract(decoded_payload_json, '$.event.liabilityReleasedSats')
-        ),
-        COALESCE(
-          json_extract(decoded_payload_json, '$.event.l1Withdrawal.requestId'),
-          json_extract(decoded_payload_json, '$.event.requestId')
-        ),
-        json_extract(decoded_payload_json, '$.event.l1Withdrawal.amountSats'),
-        json_extract(decoded_payload_json, '$.event.l1Withdrawal.maxFeeSats'),
-        updated_at
-      FROM chain_events
-      WHERE contract_id IS NOT NULL
-        AND decoded_payload_json IS NOT NULL
-        AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
-        AND json_extract(decoded_payload_json, '$.event.kind') IN (
-          'claim-staker-rewards',
-          'reclaim-failed-withdrawal',
-          'settle-accepted-withdrawal'
-        );
-    `,
-  },
-  {
-    version: 5,
-    name: "longitudinal_pool_evidence",
-    sql: `
-      CREATE TABLE staker_position_observations (
-        manager_principal TEXT NOT NULL,
-        staker_principal TEXT NOT NULL,
-        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
-        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
-        has_stx INTEGER NOT NULL CHECK (has_stx IN (0, 1)),
-        has_btc INTEGER NOT NULL CHECK (has_btc IN (0, 1)),
-        stx_node_verified INTEGER CHECK (stx_node_verified IN (0, 1)),
-        position_present INTEGER NOT NULL CHECK (position_present IN (0, 1)),
-        signer_principal TEXT,
-        amount_ustx TEXT,
-        first_reward_cycle TEXT,
-        num_cycles TEXT,
-        unlock_cycle TEXT,
-        unlock_burn_height TEXT,
-        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
-        verification_source_id TEXT REFERENCES chain_sources(source_id),
-        observed_at TEXT NOT NULL,
-        PRIMARY KEY (
-          manager_principal,
-          staker_principal,
-          observed_burn_block_height,
-          observed_stacks_tip_height
-        ),
-        CHECK (
-          (position_present = 0 AND signer_principal IS NULL AND amount_ustx IS NULL
-            AND first_reward_cycle IS NULL AND num_cycles IS NULL AND unlock_cycle IS NULL)
-          OR
-          (position_present = 1 AND signer_principal IS NOT NULL AND amount_ustx IS NOT NULL
-            AND first_reward_cycle IS NOT NULL AND num_cycles IS NOT NULL
-            AND unlock_cycle IS NOT NULL)
-        )
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX staker_position_observations_history
-        ON staker_position_observations (
-          manager_principal, staker_principal,
-          observed_burn_block_height DESC, observed_stacks_tip_height DESC
-        );
-
-      CREATE TABLE pool_cycle_snapshots (
-        manager_principal TEXT NOT NULL,
-        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
-        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
-        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
-        status TEXT NOT NULL CHECK (status IN ('ready', 'attention')),
-        roster_available INTEGER NOT NULL CHECK (roster_available IN (0, 1)),
-        staker_count INTEGER CHECK (staker_count IS NULL OR staker_count >= 0),
-        enumerated_stx_ustx TEXT,
-        enumeration_delta_ustx TEXT,
-        pending_stx_ustx TEXT NOT NULL,
-        eligible_stx_shares_ustx TEXT NOT NULL,
-        total_delegated_ustx TEXT NOT NULL,
-        non_stx_delegated_ustx TEXT,
-        in_signer_set INTEGER NOT NULL CHECK (in_signer_set IN (0, 1)),
-        threshold_ustx TEXT NOT NULL,
-        threshold_margin_ustx TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        PRIMARY KEY (
-          manager_principal,
-          reward_cycle,
-          observed_burn_block_height,
-          observed_stacks_tip_height
-        )
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX pool_cycle_snapshots_history
-        ON pool_cycle_snapshots (
-          manager_principal, reward_cycle DESC,
-          observed_burn_block_height DESC, observed_stacks_tip_height DESC
-        );
-    `,
-  },
-  {
-    version: 6,
-    name: "reward_cycle_ledger",
-    sql: `
-      CREATE TABLE reward_cycle_snapshots (
-        manager_principal TEXT NOT NULL,
-        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
-        status TEXT NOT NULL CHECK (status IN ('ready', 'attention')),
-        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
-        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
-        last_reward_compute_burn_height TEXT NOT NULL,
-        last_computed_reward_cycle TEXT,
-        rewards_per_token TEXT NOT NULL,
-        signer_earned_before_manager_claim_sats TEXT NOT NULL,
-        fee_snapshot_bips TEXT NOT NULL,
-        earned_fees_sats TEXT NOT NULL,
-        withdrawal_liability_sats TEXT NOT NULL,
-        unclaimed_staker_rewards_sats TEXT NOT NULL,
-        staker_count INTEGER NOT NULL CHECK (staker_count >= 0),
-        gross_sats TEXT NOT NULL,
-        earned_sats TEXT NOT NULL,
-        fee_sats TEXT NOT NULL,
-        actionable_claims INTEGER NOT NULL CHECK (actionable_claims >= 0),
-        l1_claims_waiting_for_fee_threshold INTEGER NOT NULL
-          CHECK (l1_claims_waiting_for_fee_threshold >= 0),
-        observed_at TEXT NOT NULL,
-        PRIMARY KEY (manager_principal, reward_cycle)
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE TABLE staker_reward_cycle_snapshots (
-        manager_principal TEXT NOT NULL,
-        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
-        staker_principal TEXT NOT NULL,
-        payout_kind TEXT NOT NULL CHECK (payout_kind IN ('direct-sbtc', 'bitcoin-l1')),
-        pox_address_version_hex TEXT,
-        pox_address_hashbytes_hex TEXT,
-        max_fee_sats TEXT,
-        earned_sats TEXT NOT NULL,
-        fee_sats TEXT NOT NULL,
-        gross_sats TEXT NOT NULL,
-        claimable_by_policy INTEGER NOT NULL CHECK (claimable_by_policy IN (0, 1)),
-        observed_at TEXT NOT NULL,
-        PRIMARY KEY (manager_principal, reward_cycle, staker_principal),
-        FOREIGN KEY (manager_principal, reward_cycle)
-          REFERENCES reward_cycle_snapshots(manager_principal, reward_cycle)
-          ON DELETE CASCADE
-      ) STRICT, WITHOUT ROWID;
-
-      CREATE INDEX reward_cycle_snapshots_history
-        ON reward_cycle_snapshots (manager_principal, reward_cycle DESC);
-      CREATE INDEX staker_reward_cycle_snapshots_page
-        ON staker_reward_cycle_snapshots (
-          manager_principal, reward_cycle, staker_principal
-        );
-    `,
-  },
-  {
-    version: 7,
-    name: "phase2_value_provenance",
-    sql: `
-      ALTER TABLE pool_cycle_snapshots
-        ADD COLUMN value_classification TEXT NOT NULL DEFAULT 'projected'
-        CHECK (value_classification IN ('authoritative', 'projected'));
-      ALTER TABLE pool_cycle_snapshots
-        ADD COLUMN contract_source TEXT NOT NULL DEFAULT 'pox5-read-only';
-      ALTER TABLE pool_cycle_snapshots
-        ADD COLUMN local_roster_source TEXT NOT NULL DEFAULT 'unavailable'
-        CHECK (local_roster_source IN ('api-indexed-node-verified', 'unavailable'));
-
-      ALTER TABLE reward_cycle_snapshots
-        ADD COLUMN fee_snapshot_present INTEGER NOT NULL DEFAULT 0
-        CHECK (fee_snapshot_present IN (0, 1));
-      ALTER TABLE reward_cycle_snapshots ADD COLUMN configured_fee_bips TEXT;
-
-      CREATE INDEX manager_activity_stable_order
-        ON manager_activity_events (
-          chain_id, manager_principal, canonical, kind,
-          block_height DESC, tx_id DESC, event_index DESC
-        );
-    `,
-  },
-  {
-    version: 8,
-    name: "phase3_onboarding_and_settings",
-    sql: `
-      CREATE TABLE runtime_settings (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        settings_json TEXT NOT NULL CHECK (json_valid(settings_json)),
-        api_key_secret TEXT,
-        revision INTEGER NOT NULL CHECK (revision >= 1),
-        updated_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE TABLE settings_audit (
-        audit_id TEXT PRIMARY KEY,
-        revision INTEGER NOT NULL CHECK (revision >= 1),
-        changed_fields_json TEXT NOT NULL CHECK (json_valid(changed_fields_json)),
-        changed_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE INDEX settings_audit_recent
-        ON settings_audit (changed_at DESC, audit_id DESC);
-
-      CREATE TABLE onboarding_state (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        path TEXT NOT NULL CHECK (path IN ('attach', 'fresh')),
-        current_step TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('in-progress', 'blocked', 'complete')),
-        state_json TEXT NOT NULL CHECK (json_valid(state_json)),
-        updated_at TEXT NOT NULL
-      ) STRICT;
-    `,
-  },
-  {
-    version: 9,
-    name: "onboarding_audit",
-    sql: `
-      CREATE TABLE onboarding_audit (
-        event_id TEXT PRIMARY KEY,
-        action TEXT NOT NULL,
-        path TEXT NOT NULL CHECK (path IN ('attach', 'fresh')),
-        current_step TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('in-progress', 'blocked', 'complete')),
-        changed_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE INDEX onboarding_audit_recent
-        ON onboarding_audit (changed_at DESC, event_id DESC);
-    `,
-  },
-  {
-    version: 10,
-    name: "onboarding_wizard_preference",
-    sql: `
-      CREATE TABLE onboarding_wizard_preference (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        dismissed_at TEXT,
-        updated_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE TABLE onboarding_wizard_audit (
-        event_id TEXT PRIMARY KEY,
-        action TEXT NOT NULL CHECK (action IN ('dismissed', 'resumed')),
-        changed_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE INDEX onboarding_wizard_audit_recent
-        ON onboarding_wizard_audit (changed_at DESC, event_id DESC);
-    `,
-  },
-  {
-    version: 11,
-    name: "manager_trust_transitions",
-    sql: `
-      CREATE TABLE manager_trust_state (
-        manager_principal TEXT PRIMARY KEY,
-        recognition_tier TEXT NOT NULL CHECK (recognition_tier IN (
-          'reference-built-in', 'reference-render', 'custom-observe', 'unrecognized'
-        )),
-        profile_id TEXT,
-        profile_origin TEXT CHECK (
-          profile_origin IS NULL OR profile_origin IN ('built-in', 'operator-installed')
-        ),
-        source_sha256 TEXT,
-        canonical_source_sha256 TEXT,
-        automation_eligible INTEGER NOT NULL CHECK (automation_eligible IN (0, 1)),
-        eligibility_reason TEXT NOT NULL,
-        observed_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE TABLE manager_trust_audit (
-        event_id TEXT PRIMARY KEY,
-        manager_principal TEXT NOT NULL,
-        transition TEXT NOT NULL CHECK (transition IN ('gained', 'lost')),
-        previous_tier TEXT NOT NULL,
-        current_tier TEXT NOT NULL,
-        previous_profile_id TEXT,
-        current_profile_id TEXT,
-        previous_source_sha256 TEXT,
-        current_source_sha256 TEXT,
-        previous_canonical_source_sha256 TEXT,
-        current_canonical_source_sha256 TEXT,
-        reason TEXT NOT NULL,
-        changed_at TEXT NOT NULL
-      ) STRICT;
-
-      CREATE INDEX manager_trust_audit_recent
-        ON manager_trust_audit (manager_principal, changed_at DESC, event_id DESC);
-    `,
-  },
-  {
-    version: 12,
-    name: "manager_trust_degraded_transitions",
-    sql: `
-      ALTER TABLE manager_trust_audit RENAME TO manager_trust_audit_v11;
-      DROP INDEX manager_trust_audit_recent;
-
-      CREATE TABLE manager_trust_audit (
-        event_id TEXT PRIMARY KEY,
-        manager_principal TEXT NOT NULL,
-        transition TEXT NOT NULL CHECK (transition IN ('gained', 'lost', 'degraded')),
-        previous_tier TEXT NOT NULL,
-        current_tier TEXT NOT NULL,
-        previous_profile_id TEXT,
-        current_profile_id TEXT,
-        previous_source_sha256 TEXT,
-        current_source_sha256 TEXT,
-        previous_canonical_source_sha256 TEXT,
-        current_canonical_source_sha256 TEXT,
-        reason TEXT NOT NULL,
-        changed_at TEXT NOT NULL
-      ) STRICT;
-
-      INSERT INTO manager_trust_audit (
-        event_id,
-        manager_principal,
-        transition,
-        previous_tier,
-        current_tier,
-        previous_profile_id,
-        current_profile_id,
-        previous_source_sha256,
-        current_source_sha256,
-        previous_canonical_source_sha256,
-        current_canonical_source_sha256,
-        reason,
-        changed_at
-      )
-      SELECT
-        event_id,
-        manager_principal,
-        transition,
-        previous_tier,
-        current_tier,
-        previous_profile_id,
-        current_profile_id,
-        previous_source_sha256,
-        current_source_sha256,
-        previous_canonical_source_sha256,
-        current_canonical_source_sha256,
-        reason,
-        changed_at
-      FROM manager_trust_audit_v11;
-
-      DROP TABLE manager_trust_audit_v11;
-
-      CREATE INDEX manager_trust_audit_recent
-        ON manager_trust_audit (manager_principal, changed_at DESC, event_id DESC);
-    `,
-  },
-];
+import { TransactionEngineRepository } from "../transaction-engine/repository.js";
+import { type Migration, migrations } from "./migrations.js";
 
 const sourceInputSchema = z
   .object({
@@ -736,6 +180,7 @@ const signerStakerPageItemSchema = z
     hasBtc: z.boolean(),
     active: z.boolean(),
     stxNodeVerified: z.boolean().nullable(),
+    reconciliationComplete: z.boolean().optional().default(true),
     position: signerStakerPositionInputSchema.nullable(),
   })
   .strict()
@@ -777,11 +222,34 @@ const signerStakerPageInputSchema = z
     managerPrincipal: principalSchema,
     nextCursor: principalSchema.nullable(),
     items: z.array(signerStakerPageItemSchema),
+    apiItemsProcessed: z.number().int().nonnegative().optional(),
+    authoritativeCompletion: z.boolean().optional(),
+    chainAnchor: chainAnchorSchema.optional(),
     observedAt: z.iso.datetime(),
     burnBlockHeight: z.number().int().nonnegative(),
     stacksTipHeight: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.chainAnchor &&
+      (value.chainAnchor.burnBlockHeight !== value.burnBlockHeight ||
+        value.chainAnchor.stacksBlockHeight !== value.stacksTipHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Stored heights must match the exact chain anchor",
+        path: ["chainAnchor"],
+      });
+    }
+    if (value.authoritativeCompletion && !value.chainAnchor) {
+      context.addIssue({
+        code: "custom",
+        message: "An authoritative completion requires an exact chain anchor",
+        path: ["authoritativeCompletion"],
+      });
+    }
+  });
 
 const ingestionRunRowSchema = z.object({
   run_id: z.string().uuid(),
@@ -795,6 +263,17 @@ const ingestionRunRowSchema = z.object({
   started_at: z.string(),
   updated_at: z.string(),
   completed_at: z.string().nullable(),
+  authoritative: z.union([z.literal(0), z.literal(1)]),
+  reconciliation_complete: z.union([z.literal(0), z.literal(1)]),
+  anchor_stacks_block_height: z.number().int().nonnegative().nullable(),
+  anchor_index_block_hash: hashSchema.nullable(),
+  anchor_burn_block_height: z.number().int().nonnegative().nullable(),
+  anchor_reward_cycle: z.number().int().nonnegative().nullable(),
+  anchor_reward_cycle_length: z.number().int().positive().nullable(),
+  anchor_prepare_cycle_length: z.number().int().nonnegative().nullable(),
+  anchor_cycle_position: z.number().int().nonnegative().nullable(),
+  anchor_phase: z.enum(["reward", "prepare"]).nullable(),
+  anchor_checkpoint: z.enum(["first-half", "second-half"]).nullable(),
 });
 
 const storedSignerStakerRowSchema = z.object({
@@ -831,6 +310,7 @@ const stakerPositionObservationRowSchema = z.object({
   staker_principal: z.string(),
   observed_burn_block_height: z.number().int().nonnegative(),
   observed_stacks_tip_height: z.number().int().nonnegative(),
+  observed_index_block_hash: hashSchema.nullable(),
   has_stx: z.union([z.literal(0), z.literal(1)]),
   has_btc: z.union([z.literal(0), z.literal(1)]),
   stx_node_verified: z.union([z.literal(0), z.literal(1)]).nullable(),
@@ -850,6 +330,7 @@ const poolCycleSnapshotInputSchema = z
     observedAt: z.iso.datetime(),
     burnBlockHeight: z.number().int().nonnegative(),
     stacksTipHeight: z.number().int().nonnegative(),
+    chainAnchor: chainAnchorSchema.optional(),
     cycles: z.array(
       z
         .object({
@@ -877,13 +358,31 @@ const poolCycleSnapshotInputSchema = z
         .strict(),
     ),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.chainAnchor === undefined) return;
+    if (value.chainAnchor.burnBlockHeight !== value.burnBlockHeight) {
+      context.addIssue({
+        code: "custom",
+        message: "chainAnchor burn height must match the snapshot burn height",
+        path: ["chainAnchor", "burnBlockHeight"],
+      });
+    }
+    if (value.chainAnchor.stacksBlockHeight !== value.stacksTipHeight) {
+      context.addIssue({
+        code: "custom",
+        message: "chainAnchor Stacks height must match the snapshot Stacks height",
+        path: ["chainAnchor", "stacksBlockHeight"],
+      });
+    }
+  });
 
 const poolCycleSnapshotRowSchema = z.object({
   manager_principal: z.string(),
   reward_cycle: z.number().int().nonnegative(),
   observed_burn_block_height: z.number().int().nonnegative(),
   observed_stacks_tip_height: z.number().int().nonnegative(),
+  chain_anchor_json: z.string().nullable(),
   status: z.enum(["ready", "attention"]),
   roster_available: z.union([z.literal(0), z.literal(1)]),
   staker_count: z.number().int().nonnegative().nullable(),
@@ -910,6 +409,7 @@ const rewardCycleSnapshotInputSchema = z
     observedAt: z.iso.datetime(),
     burnBlockHeight: z.number().int().nonnegative(),
     stacksTipHeight: z.number().int().nonnegative(),
+    chainAnchor: chainAnchorSchema.optional(),
     global: z
       .object({
         lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
@@ -965,7 +465,24 @@ const rewardCycleSnapshotInputSchema = z
         .strict(),
     ),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.chainAnchor === undefined) return;
+    if (value.chainAnchor.burnBlockHeight !== value.burnBlockHeight) {
+      context.addIssue({
+        code: "custom",
+        message: "chainAnchor burn height must match the snapshot burn height",
+        path: ["chainAnchor", "burnBlockHeight"],
+      });
+    }
+    if (value.chainAnchor.stacksBlockHeight !== value.stacksTipHeight) {
+      context.addIssue({
+        code: "custom",
+        message: "chainAnchor Stacks height must match the snapshot Stacks height",
+        path: ["chainAnchor", "stacksBlockHeight"],
+      });
+    }
+  });
 
 const rewardCycleSummaryRowSchema = z.object({
   manager_principal: z.string(),
@@ -973,6 +490,7 @@ const rewardCycleSummaryRowSchema = z.object({
   status: z.enum(["ready", "attention"]),
   observed_burn_block_height: z.number().int().nonnegative(),
   observed_stacks_tip_height: z.number().int().nonnegative(),
+  chain_anchor_json: z.string().nullable(),
   staker_count: z.number().int().nonnegative(),
   gross_sats: z.string(),
   earned_sats: z.string(),
@@ -1014,6 +532,9 @@ export interface SignerStakerRun {
   sourceId: string;
   managerPrincipal: string;
   status: "running" | "completed";
+  authoritative: boolean;
+  reconciliationComplete: boolean;
+  chainAnchor: ChainAnchor | null;
   cursor: string | null;
   pagesProcessed: number;
   itemsProcessed: number;
@@ -1058,6 +579,7 @@ export interface StoredStakerPositionObservation {
   stakerPrincipal: string;
   observedBurnBlockHeight: number;
   observedStacksTipHeight: number;
+  observedIndexBlockHash: string | null;
   hasStx: boolean;
   hasBtc: boolean;
   stxNodeVerified: boolean | null;
@@ -1077,6 +599,7 @@ export interface StoredPoolCycleSnapshot {
   cycleId: number;
   observedBurnBlockHeight: number;
   observedStacksTipHeight: number;
+  chainAnchor: ChainAnchor | null;
   status: "ready" | "attention";
   rosterAvailable: boolean;
   stakerCount: number | null;
@@ -1103,6 +626,7 @@ export interface StoredRewardCycleSummary {
   status: "ready" | "attention";
   observedBurnBlockHeight: number;
   observedStacksTipHeight: number;
+  chainAnchor: ChainAnchor | null;
   stakerCount: number;
   grossSats: string;
   earnedSats: string;
@@ -1359,8 +883,18 @@ export async function openSidekickStore(
   try {
     db.exec("PRAGMA foreign_keys = ON");
     db.exec("PRAGMA busy_timeout = 5000");
-    db.exec("PRAGMA synchronous = NORMAL");
-    if (!isMemory) db.exec("PRAGMA journal_mode = WAL");
+    if (isMemory) {
+      db.exec("PRAGMA synchronous = NORMAL");
+    } else {
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("PRAGMA synchronous = FULL");
+      const synchronous = db.prepare("PRAGMA synchronous").get() as
+        | { synchronous?: unknown }
+        | undefined;
+      if (synchronous?.synchronous !== 2) {
+        throw new Error("File-backed Sidekick storage requires SQLite synchronous=FULL");
+      }
+    }
 
     const before = currentSchemaVersion(db);
     const latest = migrations.at(-1)?.version ?? 0;
@@ -1391,6 +925,46 @@ export function createNodeSourceId(network: SidekickNetwork, baseUrl: string): s
 }
 
 const signerStakersStream = "signer-stakers";
+const signerStakerRunColumns = `run_id, source_id, stream, manager_principal, status, cursor_next,
+  pages_processed, items_processed, started_at, updated_at, completed_at, authoritative,
+  reconciliation_complete,
+  anchor_stacks_block_height, anchor_index_block_hash, anchor_burn_block_height,
+  anchor_reward_cycle, anchor_reward_cycle_length, anchor_prepare_cycle_length,
+  anchor_cycle_position, anchor_phase, anchor_checkpoint`;
+
+function runChainAnchor(value: z.infer<typeof ingestionRunRowSchema>): ChainAnchor | null {
+  const fields = [
+    value.anchor_stacks_block_height,
+    value.anchor_index_block_hash,
+    value.anchor_burn_block_height,
+    value.anchor_reward_cycle,
+    value.anchor_reward_cycle_length,
+    value.anchor_prepare_cycle_length,
+    value.anchor_cycle_position,
+    value.anchor_phase,
+    value.anchor_checkpoint,
+  ];
+  if (fields.every((field) => field === null)) return null;
+  if (fields.some((field) => field === null)) {
+    throw new Error(`Signer-staker run ${value.run_id} has an incomplete chain anchor`);
+  }
+  return chainAnchorSchema.parse({
+    stacksBlockHeight: value.anchor_stacks_block_height,
+    indexBlockHash: value.anchor_index_block_hash,
+    burnBlockHeight: value.anchor_burn_block_height,
+    rewardCycle: value.anchor_reward_cycle,
+    rewardCycleLength: value.anchor_reward_cycle_length,
+    prepareCycleLength: value.anchor_prepare_cycle_length,
+    cyclePosition: value.anchor_cycle_position,
+    phase: value.anchor_phase,
+    checkpoint: value.anchor_checkpoint,
+  });
+}
+
+function sameChainAnchor(left: ChainAnchor | null, right: ChainAnchor | null): boolean {
+  if (left === null || right === null) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 function toSignerStakerRun(row: unknown): SignerStakerRun {
   const value = ingestionRunRowSchema.parse(row);
@@ -1399,6 +973,9 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
     sourceId: value.source_id,
     managerPrincipal: value.manager_principal,
     status: value.status,
+    authoritative: value.authoritative === 1,
+    reconciliationComplete: value.reconciliation_complete === 1,
+    chainAnchor: runChainAnchor(value),
     cursor: value.cursor_next,
     pagesProcessed: value.pages_processed,
     itemsProcessed: value.items_processed,
@@ -1409,7 +986,11 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 }
 
 export class SidekickStore {
-  constructor(private readonly db: DatabaseSync) {}
+  readonly transactionEngine: TransactionEngineRepository;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.transactionEngine = new TransactionEngineRepository(db);
+  }
 
   close(): void {
     this.db.close();
@@ -1419,9 +1000,17 @@ export class SidekickStore {
     return currentSchemaVersion(this.db);
   }
 
-  databaseStatus(): { schemaVersion: number; journalMode: string; foreignKeys: boolean } {
+  databaseStatus(): {
+    schemaVersion: number;
+    journalMode: string;
+    synchronous: number;
+    foreignKeys: boolean;
+  } {
     const journal = this.db.prepare("PRAGMA journal_mode").get() as
       | { journal_mode?: unknown }
+      | undefined;
+    const synchronous = this.db.prepare("PRAGMA synchronous").get() as
+      | { synchronous?: unknown }
       | undefined;
     const foreignKeys = this.db.prepare("PRAGMA foreign_keys").get() as
       | { foreign_keys?: unknown }
@@ -1429,6 +1018,7 @@ export class SidekickStore {
     return {
       schemaVersion: this.schemaVersion(),
       journalMode: z.string().parse(journal?.journal_mode),
+      synchronous: z.number().int().min(0).max(3).parse(synchronous?.synchronous),
       foreignKeys: z.union([z.literal(0), z.literal(1)]).parse(foreignKeys?.foreign_keys) === 1,
     };
   }
@@ -2118,30 +1708,6 @@ export class SidekickStore {
     return toStoredChainEvent(row);
   }
 
-  listChainEventsForContract(
-    chainId: number,
-    contractId: string,
-    limit = 500,
-    canonicalOnly = true,
-  ): StoredChainEvent[] {
-    const parsedChainId = z.number().int().nonnegative().parse(chainId);
-    const parsedContractId = principalSchema.parse(contractId);
-    const parsedLimit = z.number().int().min(1).max(10_000).parse(limit);
-    const rows = this.db
-      .prepare(
-        `SELECT chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
-          microblock_hash, microblock_sequence, canonical, microblock_canonical,
-          contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, source_id, first_seen_at, updated_at
-         FROM chain_events
-         WHERE chain_id = ? AND contract_id = ? AND (? = 0 OR canonical = 1)
-         ORDER BY block_height DESC, tx_id DESC, event_index DESC
-         LIMIT ?`,
-      )
-      .all(parsedChainId, parsedContractId, canonicalOnly ? 1 : 0, parsedLimit);
-    return rows.map(toStoredChainEvent);
-  }
-
   listManagerClaims(
     chainId: number,
     managerPrincipal: string,
@@ -2426,13 +1992,14 @@ export class SidekickStore {
     sourceId: string,
     managerPrincipal: string,
     now: string,
+    chainAnchor?: ChainAnchor,
   ): SignerStakerRun {
     const parsedSourceId = z.string().min(1).parse(sourceId);
     const parsedManager = principalSchema.parse(managerPrincipal);
     const parsedNow = z.iso.datetime().parse(now);
+    const parsedAnchor = chainAnchor ? chainAnchorSchema.parse(chainAnchor) : null;
     const selectRun = this.db.prepare(
-      `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
-        pages_processed, items_processed, started_at, updated_at, completed_at
+      `SELECT ${signerStakerRunColumns}
        FROM ingestion_runs
        WHERE source_id = ? AND stream = ? AND manager_principal = ? AND status = 'running'`,
     );
@@ -2442,8 +2009,16 @@ export class SidekickStore {
       const existing = selectRun.get(parsedSourceId, signerStakersStream, parsedManager);
       if (existing) {
         const result = toSignerStakerRun(existing);
-        this.db.exec("COMMIT");
-        return result;
+        if (sameChainAnchor(result.chainAnchor, parsedAnchor)) {
+          this.db.exec("COMMIT");
+          return result;
+        }
+        this.db
+          .prepare(
+            `UPDATE ingestion_runs SET status = 'completed', authoritative = 0,
+              updated_at = ?, completed_at = ? WHERE run_id = ?`,
+          )
+          .run(parsedNow, parsedNow, result.runId);
       }
 
       const runId = randomUUID();
@@ -2451,10 +2026,33 @@ export class SidekickStore {
         .prepare(
           `INSERT INTO ingestion_runs (
             run_id, source_id, stream, manager_principal, status, cursor_next,
-            pages_processed, items_processed, started_at, updated_at, completed_at
-          ) VALUES (?, ?, ?, ?, 'running', NULL, 0, 0, ?, ?, NULL)`,
+            pages_processed, items_processed, started_at, updated_at, completed_at, authoritative,
+            reconciliation_complete,
+            anchor_stacks_block_height, anchor_index_block_hash, anchor_burn_block_height,
+            anchor_reward_cycle, anchor_reward_cycle_length, anchor_prepare_cycle_length,
+            anchor_cycle_position, anchor_phase, anchor_checkpoint
+          ) VALUES (
+            ?, ?, ?, ?, 'running', NULL, 0, 0, ?, ?, NULL, 0, 1,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?
+          )`,
         )
-        .run(runId, parsedSourceId, signerStakersStream, parsedManager, parsedNow, parsedNow);
+        .run(
+          runId,
+          parsedSourceId,
+          signerStakersStream,
+          parsedManager,
+          parsedNow,
+          parsedNow,
+          parsedAnchor?.stacksBlockHeight ?? null,
+          parsedAnchor?.indexBlockHash ?? null,
+          parsedAnchor?.burnBlockHeight ?? null,
+          parsedAnchor?.rewardCycle ?? null,
+          parsedAnchor?.rewardCycleLength ?? null,
+          parsedAnchor?.prepareCycleLength ?? null,
+          parsedAnchor?.cyclePosition ?? null,
+          parsedAnchor?.phase ?? null,
+          parsedAnchor?.checkpoint ?? null,
+        );
       const created = selectRun.get(parsedSourceId, signerStakersStream, parsedManager);
       if (!created) throw new Error("Created signer-staker run could not be read back");
       const result = toSignerStakerRun(created);
@@ -2474,11 +2072,6 @@ export class SidekickStore {
     }
     for (const item of value.items) {
       const position = item.position;
-      if (position && position.signerPrincipal !== value.managerPrincipal) {
-        throw new Error(
-          `Trusted position for ${item.stakerPrincipal} is assigned to a different signer`,
-        );
-      }
       if (position) {
         const cycles = position.cycleMemberships.map(({ rewardCycle }) => rewardCycle);
         if (new Set(cycles.map(String)).size !== cycles.length) {
@@ -2506,9 +2099,7 @@ export class SidekickStore {
     }
 
     const selectRun = this.db.prepare(
-      `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
-        pages_processed, items_processed, started_at, updated_at, completed_at
-       FROM ingestion_runs WHERE run_id = ?`,
+      `SELECT ${signerStakerRunColumns} FROM ingestion_runs WHERE run_id = ?`,
     );
     const upsertStaker = this.db.prepare(
       `INSERT INTO stakers (
@@ -2538,8 +2129,8 @@ export class SidekickStore {
         manager_principal, staker_principal, signer_principal, amount_ustx,
         first_reward_cycle, num_cycles, unlock_cycle, unlock_burn_height, active, discovery_source_id,
         verification_source_id, last_seen_run_id, observed_burn_block_height,
-        observed_stacks_tip_height, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        observed_stacks_tip_height, observed_index_block_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
         signer_principal = excluded.signer_principal,
         amount_ustx = excluded.amount_ustx,
@@ -2547,20 +2138,21 @@ export class SidekickStore {
         num_cycles = excluded.num_cycles,
         unlock_cycle = excluded.unlock_cycle,
         unlock_burn_height = excluded.unlock_burn_height,
-        active = 1,
+        active = excluded.active,
         discovery_source_id = excluded.discovery_source_id,
         verification_source_id = excluded.verification_source_id,
         last_seen_run_id = excluded.last_seen_run_id,
         observed_burn_block_height = excluded.observed_burn_block_height,
         observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        observed_index_block_hash = excluded.observed_index_block_hash,
         updated_at = excluded.updated_at`,
     );
     const upsertMembership = this.db.prepare(
       `INSERT INTO cycle_memberships (
         manager_principal, staker_principal, reward_cycle, signer_principal, amount_ustx, active,
         discovery_source_id, verification_source_id, last_seen_run_id, observed_burn_block_height,
-        observed_stacks_tip_height, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        observed_stacks_tip_height, observed_index_block_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, staker_principal, reward_cycle) DO UPDATE SET
         amount_ustx = excluded.amount_ustx,
         signer_principal = excluded.signer_principal,
@@ -2570,6 +2162,7 @@ export class SidekickStore {
         last_seen_run_id = excluded.last_seen_run_id,
         observed_burn_block_height = excluded.observed_burn_block_height,
         observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        observed_index_block_hash = excluded.observed_index_block_hash,
         updated_at = excluded.updated_at`,
     );
     const putPositionObservation = this.db.prepare(
@@ -2578,8 +2171,8 @@ export class SidekickStore {
         observed_stacks_tip_height, has_stx, has_btc, stx_node_verified,
         position_present, signer_principal, amount_ustx, first_reward_cycle,
         num_cycles, unlock_cycle, unlock_burn_height, source_id,
-        verification_source_id, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        verification_source_id, observed_index_block_hash, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (
         manager_principal, staker_principal,
         observed_burn_block_height, observed_stacks_tip_height
@@ -2596,6 +2189,7 @@ export class SidekickStore {
         unlock_burn_height = excluded.unlock_burn_height,
         source_id = excluded.source_id,
         verification_source_id = excluded.verification_source_id,
+        observed_index_block_hash = excluded.observed_index_block_hash,
         observed_at = excluded.observed_at`,
     );
 
@@ -2605,7 +2199,8 @@ export class SidekickStore {
       if (
         current.status !== "running" ||
         current.sourceId !== value.sourceId ||
-        current.managerPrincipal !== value.managerPrincipal
+        current.managerPrincipal !== value.managerPrincipal ||
+        !sameChainAnchor(current.chainAnchor, value.chainAnchor ?? null)
       ) {
         throw new Error(
           `Signer-staker run ${value.runId} is not active for this source and manager`,
@@ -2626,8 +2221,10 @@ export class SidekickStore {
           value.observedAt,
           value.observedAt,
         );
-        deactivatePosition.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
-        deactivateMemberships.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
+        if (item.reconciliationComplete) {
+          deactivatePosition.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
+          deactivateMemberships.run(value.observedAt, value.managerPrincipal, item.stakerPrincipal);
+        }
 
         const observedPosition = item.position;
         putPositionObservation.run(
@@ -2649,10 +2246,11 @@ export class SidekickStore {
           observedPosition?.unlockBurnHeight?.toString() ?? null,
           value.sourceId,
           item.hasStx ? value.nodeSourceId : null,
+          value.chainAnchor?.indexBlockHash ?? null,
           value.observedAt,
         );
 
-        if (!observedPosition) continue;
+        if (!item.reconciliationComplete || !observedPosition) continue;
         const position = observedPosition;
         const unlockCycle = position.firstRewardCycle + position.numCycles;
         upsertPosition.run(
@@ -2664,11 +2262,13 @@ export class SidekickStore {
           position.numCycles.toString(),
           unlockCycle.toString(),
           position.unlockBurnHeight?.toString() ?? null,
+          item.active ? 1 : 0,
           value.sourceId,
           value.nodeSourceId,
           value.runId,
           value.burnBlockHeight,
           value.stacksTipHeight,
+          value.chainAnchor?.indexBlockHash ?? null,
           value.observedAt,
         );
         for (const membership of position.cycleMemberships) {
@@ -2683,13 +2283,20 @@ export class SidekickStore {
             value.runId,
             value.burnBlockHeight,
             value.stacksTipHeight,
+            value.chainAnchor?.indexBlockHash ?? null,
             value.observedAt,
           );
         }
       }
 
       const completed = value.nextCursor === null;
-      if (completed) {
+      const pageReconciliationComplete = value.items.every((item) => item.reconciliationComplete);
+      const authoritative =
+        completed &&
+        current.reconciliationComplete &&
+        pageReconciliationComplete &&
+        (value.authoritativeCompletion ?? value.chainAnchor === undefined);
+      if (authoritative) {
         this.db
           .prepare(
             `UPDATE stakers SET active = 0
@@ -2713,13 +2320,17 @@ export class SidekickStore {
         .prepare(
           `UPDATE ingestion_runs SET
             status = ?, cursor_next = ?, pages_processed = pages_processed + 1,
-            items_processed = items_processed + ?, updated_at = ?, completed_at = ?
+            items_processed = items_processed + ?, authoritative = ?,
+            reconciliation_complete = reconciliation_complete AND ?,
+            updated_at = ?, completed_at = ?
            WHERE run_id = ?`,
         )
         .run(
           completed ? "completed" : "running",
           value.nextCursor,
-          value.items.length,
+          value.apiItemsProcessed ?? value.items.length,
+          authoritative ? 1 : 0,
+          pageReconciliationComplete ? 1 : 0,
           value.observedAt,
           completed ? value.observedAt : null,
           value.runId,
@@ -2854,6 +2465,18 @@ export class SidekickStore {
     });
   }
 
+  listSignerStakerPrincipalsSeenInRun(runId: string): string[] {
+    const parsedRunId = z.string().uuid().parse(runId);
+    const rows = this.db
+      .prepare(
+        `SELECT staker_principal FROM stakers
+         WHERE last_seen_run_id = ?
+         ORDER BY staker_principal`,
+      )
+      .all(parsedRunId) as Array<{ staker_principal: unknown }>;
+    return rows.map((row) => principalSchema.parse(row.staker_principal));
+  }
+
   listStakerPositionObservations(
     managerPrincipal: string,
     stakerPrincipal: string,
@@ -2865,7 +2488,8 @@ export class SidekickStore {
     const rows = this.db
       .prepare(
         `SELECT manager_principal, staker_principal, observed_burn_block_height,
-          observed_stacks_tip_height, has_stx, has_btc, stx_node_verified,
+          observed_stacks_tip_height, observed_index_block_hash,
+          has_stx, has_btc, stx_node_verified,
           position_present, signer_principal, amount_ustx, first_reward_cycle,
           num_cycles, unlock_cycle, unlock_burn_height, observed_at
          FROM staker_position_observations
@@ -2897,6 +2521,7 @@ export class SidekickStore {
         stakerPrincipal: value.staker_principal,
         observedBurnBlockHeight: value.observed_burn_block_height,
         observedStacksTipHeight: value.observed_stacks_tip_height,
+        observedIndexBlockHash: value.observed_index_block_hash,
         hasStx: value.has_stx === 1,
         hasBtc: value.has_btc === 1,
         stxNodeVerified: value.stx_node_verified === null ? null : value.stx_node_verified === 1,
@@ -2911,12 +2536,12 @@ export class SidekickStore {
     const upsert = this.db.prepare(
       `INSERT INTO pool_cycle_snapshots (
         manager_principal, reward_cycle, observed_burn_block_height,
-        observed_stacks_tip_height, status, roster_available, staker_count,
+        observed_stacks_tip_height, chain_anchor_json, status, roster_available, staker_count,
         enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
         eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
         in_signer_set, threshold_ustx, threshold_margin_ustx, value_classification,
         contract_source, local_roster_source, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (
         manager_principal, reward_cycle,
         observed_burn_block_height, observed_stacks_tip_height
@@ -2936,6 +2561,7 @@ export class SidekickStore {
         value_classification = excluded.value_classification,
         contract_source = excluded.contract_source,
         local_roster_source = excluded.local_roster_source,
+        chain_anchor_json = excluded.chain_anchor_json,
         observed_at = excluded.observed_at`,
     );
     this.db.exec("BEGIN IMMEDIATE");
@@ -2946,6 +2572,7 @@ export class SidekickStore {
           cycle.cycleId,
           value.burnBlockHeight,
           value.stacksTipHeight,
+          value.chainAnchor === undefined ? null : JSON.stringify(value.chainAnchor),
           cycle.status,
           cycle.rosterAvailable ? 1 : 0,
           cycle.stakerCount,
@@ -3004,7 +2631,7 @@ export class SidekickStore {
           WHERE manager_principal = ?
         )
         SELECT manager_principal, reward_cycle, observed_burn_block_height,
-          observed_stacks_tip_height, status, roster_available, staker_count,
+          observed_stacks_tip_height, chain_anchor_json, status, roster_available, staker_count,
           enumerated_stx_ustx, enumeration_delta_ustx, pending_stx_ustx,
           eligible_stx_shares_ustx, total_delegated_ustx, non_stx_delegated_ustx,
           in_signer_set, threshold_ustx, threshold_margin_ustx, value_classification,
@@ -3021,6 +2648,10 @@ export class SidekickStore {
           cycleId: value.reward_cycle,
           observedBurnBlockHeight: value.observed_burn_block_height,
           observedStacksTipHeight: value.observed_stacks_tip_height,
+          chainAnchor:
+            value.chain_anchor_json === null
+              ? null
+              : chainAnchorSchema.parse(JSON.parse(value.chain_anchor_json) as unknown),
           status: value.status,
           rosterAvailable: value.roster_available === 1,
           stakerCount: value.staker_count,
@@ -3052,18 +2683,19 @@ export class SidekickStore {
     const upsertCycle = this.db.prepare(
       `INSERT INTO reward_cycle_snapshots (
         manager_principal, reward_cycle, status, observed_burn_block_height,
-        observed_stacks_tip_height, last_reward_compute_burn_height,
+        observed_stacks_tip_height, chain_anchor_json, last_reward_compute_burn_height,
         last_computed_reward_cycle, rewards_per_token,
         signer_earned_before_manager_claim_sats, fee_snapshot_bips, fee_snapshot_present,
         configured_fee_bips,
         earned_fees_sats, withdrawal_liability_sats, unclaimed_staker_rewards_sats,
         staker_count, gross_sats, earned_sats, fee_sats, actionable_claims,
         l1_claims_waiting_for_fee_threshold, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, reward_cycle) DO UPDATE SET
         status = excluded.status,
         observed_burn_block_height = excluded.observed_burn_block_height,
         observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+        chain_anchor_json = excluded.chain_anchor_json,
         last_reward_compute_burn_height = excluded.last_reward_compute_burn_height,
         last_computed_reward_cycle = excluded.last_computed_reward_cycle,
         rewards_per_token = excluded.rewards_per_token,
@@ -3097,6 +2729,7 @@ export class SidekickStore {
         value.status,
         value.burnBlockHeight,
         value.stacksTipHeight,
+        value.chainAnchor === undefined ? null : JSON.stringify(value.chainAnchor),
         value.global.lastRewardComputeBurnHeight,
         value.global.lastComputedRewardCycle,
         value.global.rewardsPerToken,
@@ -3166,7 +2799,7 @@ export class SidekickStore {
     const rows = this.db
       .prepare(
         `SELECT manager_principal, reward_cycle, status, observed_burn_block_height,
-          observed_stacks_tip_height, staker_count, gross_sats, earned_sats,
+          observed_stacks_tip_height, chain_anchor_json, staker_count, gross_sats, earned_sats,
           fee_sats, fee_snapshot_bips, fee_snapshot_present, configured_fee_bips,
           actionable_claims, l1_claims_waiting_for_fee_threshold, observed_at
          FROM reward_cycle_snapshots WHERE manager_principal = ?
@@ -3182,6 +2815,10 @@ export class SidekickStore {
           status: value.status,
           observedBurnBlockHeight: value.observed_burn_block_height,
           observedStacksTipHeight: value.observed_stacks_tip_height,
+          chainAnchor:
+            value.chain_anchor_json === null
+              ? null
+              : chainAnchorSchema.parse(JSON.parse(value.chain_anchor_json) as unknown),
           stakerCount: value.staker_count,
           grossSats: value.gross_sats,
           earnedSats: value.earned_sats,
@@ -3207,10 +2844,10 @@ export class SidekickStore {
     const manager = principalSchema.parse(managerPrincipal);
     const row = this.db
       .prepare(
-        `SELECT run_id, source_id, stream, manager_principal, status, cursor_next,
-          pages_processed, items_processed, started_at, updated_at, completed_at
+        `SELECT ${signerStakerRunColumns}
          FROM ingestion_runs
-         WHERE source_id = ? AND stream = ? AND manager_principal = ? AND status = 'completed'
+         WHERE source_id = ? AND stream = ? AND manager_principal = ?
+           AND status = 'completed' AND authoritative = 1
          ORDER BY completed_at DESC, rowid DESC
          LIMIT 1`,
       )

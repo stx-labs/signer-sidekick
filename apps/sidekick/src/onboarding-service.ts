@@ -11,15 +11,15 @@ import {
   buildManagerDeploymentArtifact,
   type ManagerDeploymentManifest,
 } from "./manager-render.js";
-import { inspectDeployedManager, type ManagerVerificationContext } from "./manager-verification.js";
+import type { ManagerVerificationContext } from "./manager-verification.js";
 import {
   compatibilityProfileByIdentity,
   loadNetworkCompatibilityProfiles,
 } from "./network-compatibility-store.js";
 import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
-import { verifyManagerRegistration } from "./registration-verification.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { type PoolSetupStatus, readPoolSetupStatus } from "./setup-status.js";
+import { readSetupSnapshot } from "./setup-snapshot.js";
+import type { PoolSetupStatus } from "./setup-status.js";
 import {
   prepareSignerGrant,
   type SignerGrantPreparation,
@@ -283,20 +283,13 @@ export class OnboardingService {
       );
     }
     const { config, node, api } = this.options.runtimeSettings.clients();
-    const [preflight, manager] = await Promise.all([
-      runOperatorPreflight(config, node, api),
-      inspectDeployedManager(
-        node,
-        config.network,
-        managerPrincipal,
-        this.options.managerVerification,
-      ),
-    ]);
-    const registration =
-      manager.attachAllowed && preflight.pox.pox5ContractId
-        ? await verifyManagerRegistration(node, preflight.pox.pox5ContractId, managerPrincipal)
-        : null;
-    const setup = await readPoolSetupStatus(node, preflight, manager, registration);
+    const { preflight, manager, registration, setup } = await readSetupSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
     const activationPlan = createAttachActivationPlan(preflight, manager, registration, setup);
     const data: PersistedOnboardingData = {
       schemaVersion: 1,
@@ -456,20 +449,13 @@ export class OnboardingService {
     const { data } = this.readData("fresh");
     if (!data.activationPlan) throw new Error("Prepare the fresh setup before refreshing it");
     const { config, node, api } = this.options.runtimeSettings.clients();
-    const [preflight, manager] = await Promise.all([
-      runOperatorPreflight(config, node, api),
-      inspectDeployedManager(
-        node,
-        config.network,
-        data.managerPrincipal,
-        this.options.managerVerification,
-      ),
-    ]);
-    const registration =
-      manager.attachAllowed && preflight.pox.pox5ContractId
-        ? await verifyManagerRegistration(node, preflight.pox.pox5ContractId, data.managerPrincipal)
-        : null;
-    const setup = await readPoolSetupStatus(node, preflight, manager, registration);
+    const { preflight, manager, registration, setup } = await readSetupSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal: data.managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
     const steps = data.activationPlan.steps.map((step) => {
       if (step.id === "deploy-manager") {
         return {

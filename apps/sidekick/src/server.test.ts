@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createServer } from "./server.js";
+import { createServer, type TransactionEngineApiService } from "./server.js";
+import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -17,11 +18,12 @@ describe("local API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       status: "ok",
-      protocol: {
+      sourceLineage: {
         stacksCoreTag: "4.0.0",
         stacksCoreCommit: "5595f08a244362cefc316f95b398510a2b8cb791",
       },
     });
+    expect(response.json()).not.toHaveProperty("protocol");
   });
 
   it("protects operator data with a bearer token", async () => {
@@ -220,6 +222,119 @@ describe("local API", () => {
     ).toBe(400);
   });
 
+  it("validates and forwards the authenticated transaction-engine API", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const jobId = "00000000-0000-4000-8000-000000000001";
+    const hash = "a".repeat(64);
+    const engine = {
+      status: vi.fn().mockResolvedValue({ schemaVersion: 1, mode: "observe" }),
+      listJobs: vi
+        .fn()
+        .mockResolvedValue({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
+      getJob: vi.fn().mockResolvedValue({ schemaVersion: 1, jobId }),
+      approve: vi.fn().mockResolvedValue({ created: true }),
+      invalidateApproval: vi.fn().mockResolvedValue({}),
+      forceObserve: vi.fn().mockResolvedValue({}),
+      disableAdapter: vi.fn().mockResolvedValue({}),
+    } as unknown as TransactionEngineApiService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, engine, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/engine" })).statusCode).toBe(401);
+    expect(
+      (await server.inject({ method: "GET", url: "/api/v1/engine", headers })).statusCode,
+    ).toBe(200);
+    await server.inject({
+      method: "GET",
+      url: "/api/v1/engine/jobs?cursor=next-page&limit=20",
+      headers,
+    });
+    expect(engine.listJobs).toHaveBeenCalledWith({ cursor: "next-page", limit: 20 });
+
+    await server.inject({ method: "GET", url: `/api/v1/engine/jobs/${jobId}`, headers });
+    expect(engine.getJob).toHaveBeenCalledWith(jobId);
+
+    const approval = {
+      decision: "approve",
+      intentSha256: hash,
+      policySha256: hash,
+      expiresAt: "2026-07-17T19:00:00.000Z",
+    };
+    await server.inject({
+      method: "POST",
+      url: `/api/v1/engine/jobs/${jobId}/approval`,
+      headers,
+      payload: approval,
+    });
+    expect(engine.approve).toHaveBeenCalledWith(jobId, approval, "local-operator");
+
+    await server.inject({
+      method: "POST",
+      url: `/api/v1/engine/jobs/${jobId}/approval/invalidate`,
+      headers,
+      payload: { decision: "invalidate", reason: "Facts changed" },
+    });
+    expect(engine.invalidateApproval).toHaveBeenCalledWith(
+      jobId,
+      { decision: "invalidate", reason: "Facts changed" },
+      "local-operator",
+    );
+
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/engine/force-observe",
+      headers,
+      payload: { decision: "force-observe", reason: "Emergency stop" },
+    });
+    expect(engine.forceObserve).toHaveBeenCalledWith(
+      { decision: "force-observe", reason: "Emergency stop" },
+      "local-operator",
+    );
+
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/engine/adapters/reference-manager-claim-rewards/disable",
+      headers,
+      payload: { decision: "disable", reason: "Adapter review" },
+    });
+    expect(engine.disableAdapter).toHaveBeenCalledWith(
+      "reference-manager-claim-rewards",
+      { decision: "disable", reason: "Adapter review" },
+      "local-operator",
+    );
+
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: `/api/v1/engine/jobs/${jobId}/approval`,
+          headers,
+          payload: { decision: "broadcast", transaction: "arbitrary" },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(engine.approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an unavailable transaction engine without weakening the operator API", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const server = createServer({
+      service: { snapshot: async () => ({}), synchronize: async () => ({}) },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/engine",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(501);
+    expect(response.json()).toEqual({ error: "transaction_engine_unavailable" });
+  });
+
   it("returns a generic 500 body when an operator service rejects", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
@@ -242,7 +357,30 @@ describe("local API", () => {
     expect(response.body).not.toContain("must-not-leak");
   });
 
-  it("validates authenticated Phase 3 settings and pool-card actions", async () => {
+  it("maps typed transaction-engine conflicts and not-found errors without leaking details", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const conflict = new TransactionEngineApiServiceError(409, "engine_state_conflict");
+    Object.assign(conflict, { internalDetail: "must-not-leak" });
+    const notFound = new TransactionEngineApiServiceError(404, "engine_job_not_found");
+    const engine = {
+      status: vi.fn().mockRejectedValueOnce(conflict).mockRejectedValueOnce(notFound),
+    } as unknown as TransactionEngineApiService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, engine, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const conflicted = await server.inject({ method: "GET", url: "/api/v1/engine", headers });
+    expect(conflicted.statusCode).toBe(409);
+    expect(conflicted.json()).toEqual({ error: "engine_state_conflict" });
+    expect(conflicted.body).not.toContain("must-not-leak");
+
+    const missing = await server.inject({ method: "GET", url: "/api/v1/engine", headers });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "engine_job_not_found" });
+  });
+
+  it("validates authenticated runtime settings and pool-card actions", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
       snapshot: async () => ({ generatedAt: "2026-07-15T12:00:00.000Z" }),

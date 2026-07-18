@@ -1,6 +1,6 @@
 /* Stacks Labs Design System — Colors & Type tokens */
-/* Vendored from Claude Design project "Stacks Labs Design System" on 2026-07-14 and
-   mechanically formatted by the Signer Sidekick repository. See ../DESIGN.md for provenance.
+/* Vendored from the Stacks Labs Design System on 2026-07-14 and mechanically formatted by the
+   Signer Sidekick repository. See ../README.md for provenance.
    Matter and Matter Mono redistribution for this project has been confirmed. */
 
 /* ============ FONTS ============ */
@@ -11,7 +11,7 @@
   font-family: "Matter";
   src:
     url("../fonts/matter-regular.woff2") format("woff2"),
-    url("../fonts/matter-regular_explorer.woff") format("woff");
+    url("../fonts/matter-regular.woff") format("woff");
   font-weight: 400 500;
   font-style: normal;
   font-display: swap;

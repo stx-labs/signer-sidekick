@@ -166,7 +166,7 @@ export function createInstalledManagerProfile(input: {
       tier: "custom-observe",
     }),
     status: "created",
-    summary: `Custom manager profile created for attach and read-only monitoring only; reference-adapter automation remains disabled (${referenceFailure})`,
+    summary: `Custom manager profile created for attach and read-only monitoring only; reference-manager Assist remains disabled (${referenceFailure})`,
   };
 }
 

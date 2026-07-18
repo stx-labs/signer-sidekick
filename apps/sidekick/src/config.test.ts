@@ -169,6 +169,8 @@ describe("Sidekick configuration", () => {
     "MANAGER_ADMIN_KEY",
     "SIGNER_PRIVATE_KEY",
     "STACKS_PRIVATE_KEY",
+    "SIDEKICK_GAS_PAYER_PRIVATE_KEY",
+    "SIDEKICK_GAS_PAYER_MNEMONIC",
     "SIGNER_MNEMONIC",
     "SEED_PHRASE",
   ])("rejects forbidden key material supplied as %s", (name) => {

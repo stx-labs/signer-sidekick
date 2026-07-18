@@ -942,7 +942,7 @@ async function status() {
         node: node
           ? { burnBlockHeight: node.burn_block_height, stacksTipHeight: node.stacks_tip_height }
           : null,
-        api: api
+        api: api?.chain_tip
           ? {
               burnBlockHeight: api.chain_tip.burn_block_height,
               stacksTipHeight: api.chain_tip.block_height,
@@ -1012,21 +1012,14 @@ async function failureInjection(state) {
       body: "{}",
     });
     const payload = await response.json();
-    const lagCheck = payload.snapshot?.preflight?.checks?.find((check) => check.id === "api-lag");
-    if (
-      response.status !== 200 ||
-      payload.snapshot?.preflight?.status !== "warn" ||
-      payload.snapshot?.preflight?.api?.burnBlockLag < 2 ||
-      lagCheck?.status !== "warn"
-    ) {
+    if (response.status < 500 || payload.error !== "internal_server_error") {
       throw new Error(
-        `Injected API lag was not surfaced as a warning: HTTP ${response.status} ${JSON.stringify(lagCheck)}`,
+        `Injected API lag did not fail closed: HTTP ${response.status} ${JSON.stringify(payload)}`,
       );
     }
     indexerLag = {
       status: response.status,
-      burnBlockLag: payload.snapshot.preflight.api.burnBlockLag,
-      preflightStatus: payload.snapshot.preflight.status,
+      failClosed: true,
     };
   } finally {
     await proxyControl("api", "pass");

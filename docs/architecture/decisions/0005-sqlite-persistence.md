@@ -8,9 +8,9 @@
 Use Node's built-in `node:sqlite` behind `SidekickStore`. Database handles and SQL do not cross the
 storage-module boundary.
 
-File databases use WAL, foreign keys, a busy timeout, checksummed forward-only migrations, and an
-automatic pre-migration backup. The store separates raw chain evidence from projections and scopes
-ingestion cursors to their network/API source.
+File databases use WAL with `synchronous=FULL`, foreign keys, a busy timeout, checksummed
+forward-only migrations, and an automatic pre-migration backup. The store separates raw chain
+evidence from projections and scopes ingestion cursors to their network/API source.
 
 ## Consequences
 

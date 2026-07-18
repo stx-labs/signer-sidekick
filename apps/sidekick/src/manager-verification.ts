@@ -338,7 +338,7 @@ function proveReferenceRender(input: {
       verified: true,
       automationEligible,
       reason: automationEligible
-        ? `Reference render is reproducible and ${approvedNetworkArtifact?.profile.id} approves automation for ${profile.network}`
+        ? `Reference render is reproducible and ${approvedNetworkArtifact?.profile.id} approves Assist for ${profile.network}`
         : `Reference render is reproducible, but no matching ${profile.network} built-in profile is production-approved`,
       upstreamProfileId: upstreamArtifact.profile.id,
     };
@@ -440,20 +440,20 @@ export function verifyManagerArtifact(
         (tier === "reference-render" && proof?.automationEligible)),
   );
   const automationEligibilityReason = automationEligible
-    ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for automation")
+    ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for Assist")
     : !networkMatches
       ? "Manager principal does not match the configured network"
       : !interfaceCompatible
         ? `Manager interface is missing ${missingFunctions.length} required function(s)`
         : builtIn
           ? operatorProvidedArtifact
-            ? "Operator-provided network profiles cannot authorize transaction automation"
+            ? "Operator-provided network profiles cannot authorize Assist broadcasts"
             : `Profile ${builtIn.artifact.profile.id} is not production-approved`
           : (proof?.reason ??
             installedFailureReason ??
             (tier === "custom-observe"
               ? "Custom managers are supported for attach and read-only operation only"
-              : "Manager source is not recognized for reference-adapter automation"));
+              : "Manager source is not recognized for reference-manager Assist"));
   const reasons: string[] = [];
   if (!networkMatches) reasons.push("Manager principal does not match the configured network");
   if (!interfaceCompatible) {

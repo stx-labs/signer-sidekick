@@ -74,9 +74,6 @@ export const runtimeSettings = {
     leatherUrl: "https://earn.leather.io",
   },
   display: {
-    timezone: "America/Denver",
-    timeFormat: "both",
-    numberFormat: "1,234.5678",
     defaultTheme: "light",
   },
   dataSources: {
@@ -90,14 +87,7 @@ export const runtimeSettings = {
     hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
   },
   forecast: { horizonCycles: 6 },
-  embed: { type: "live", publicApiUrl: "https://pool.example/sidekick" },
-  payoutPolicy: {
-    minimumDirectSbtcSats: "10000",
-    maxTransactionFeeUstx: "500000",
-    rollingGasBudgetUstx: "5000000",
-  },
-  automation: { mode: "observe", gasPayerPrincipal: "" },
-  alerts: { webhookUrl: "", criticalOnly: true },
+  embed: { publicApiUrl: "https://pool.example/sidekick" },
   audit: [
     { revision: 12, changedFields: ["pool.displayName"], changedAt: "2026-07-15T12:00:00.000Z" },
   ],

@@ -14,15 +14,14 @@ pnpm build
 
 Run `pnpm --filter @stx-labs/signer-sidekick cli help` after building for the current command
 surface. Configuration is defined by the [mainnet](../../.env.mainnet.example) and
-[PoX-5 Testnet](../../.env.pox5-testnet.example) examples.
+[PoX-5 Testnet](../../.env.pox5-testnet.example) examples. Devnet or regtest Assist requires
+`SIDEKICK_NETWORK_ID`. Never place a signer or admin private key, mnemonic, or production credential
+in the repository, fixtures, commands, screenshots, or support bundles.
 
-## Test matrix
+## Additional validation
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm check` | Formatting and type checks |
-| `pnpm test:coverage` | Backend and protocol tests with coverage floors |
-| `pnpm test:regtest` | Deterministic PoX-5 and manager lifecycle |
 | `pnpm test:e2e:dashboard` | Responsive fixture-backed browser suite |
 | `pnpm protocol:verify` | Vendored source and generated-artifact hashes |
 | `pnpm devnet:verify:offline` | Released-Devnet lock without network access |
@@ -37,6 +36,43 @@ pnpm exec playwright install chromium
 
 The deterministic contract harness is documented in
 [`test/integration/regtest`](../../test/integration/regtest/README.md).
+
+## Transaction engine development
+
+The transaction engine starts in Observe when no engine variables are set. This exercises live
+observation, durable blockers, API mapping, and the Operations UI without loading a signer or
+reaching a broadcaster. Exact plans also require the public gas-payer identity and reviewed
+attestation/trust files described in the deployment guide; the private gas key remains unnecessary
+in Observe.
+
+Implementation boundaries:
+
+- fixed transaction vectors and compatibility-attestation schemas live in `packages/protocol`;
+- durable jobs, admission, signing, submission, observation, and recovery live under
+  `apps/sidekick/src/transaction-engine`;
+- strict browser-facing schemas live in `packages/api-contracts`;
+- approvals and emergency controls live in `apps/dashboard/src/features/operations`.
+
+Run the full checks before changing an adapter or authority boundary. A focused backend pass is also
+useful while iterating:
+
+```sh
+pnpm --filter @stx-labs/signer-sidekick test src/transaction-engine
+pnpm --filter @stx-labs/signer-sidekick-api-contracts test
+pnpm --filter @stx-labs/signer-sidekick-dashboard test
+```
+
+Manual Assist work is allowed only against an isolated test network and a disposable, dedicated,
+low-balance gas payer. Follow the exact variables and mounts in
+[Transaction engine modes](deployment.md#transaction-engine-modes). Keep raw keys outside the
+repository, fixtures, command line, environment, screenshots, and logs; pass only an absolute
+read-only file path and matching public identity. Use reviewed attestation/trust files rather than
+weakening verification for development.
+
+Use a dedicated database for emergency-control tests because Force Observe and adapter disable are
+one-way for that database. For restart or ambiguity tests, preserve the same database, WAL, mounted
+secret, and precomputed txid across the simulated crash. Deleting state between nonce reservation
+and reconciliation invalidates the recovery test.
 
 ## Released Devnet
 
@@ -54,8 +90,8 @@ pnpm e2e:devnet:down
 pnpm e2e:devnet:test
 ```
 
-Use `pnpm e2e:devnet:reset` after an interrupted run. Lock files under `test/e2e/devnet` define
-the released artifacts; issue #3 tracks the harness and its remaining hosted-run follow-up.
+Use `pnpm e2e:devnet:reset` after an interrupted run. Lock files under `test/e2e/devnet` define the
+released artifacts.
 
 ## Local dashboard
 
@@ -77,15 +113,6 @@ pnpm --filter @stx-labs/signer-sidekick-dashboard dev
 
 Open `http://127.0.0.1:5173`. The Vite server proxies operator API requests to port 3998. UI work
 must follow [the local design contract](../../design/README.md).
-
-## Connected environments
-
-Use the environment variables from the matching example. Private networks may also need
-`SIDEKICK_NETWORK_ID`. Never put a signer key, admin key, mnemonic, or production credential in a
-fixture, command transcript, screenshot, or support bundle.
-
-For manual Attach or Fresh procedures, use the [operator deployment guide](deployment.md) or
-[PoX-5 Testnet runbook](pox5-testnet-deployment.md) instead of duplicating them here.
 
 ## Upstream contracts
 

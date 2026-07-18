@@ -1,7 +1,3 @@
-import {
-  parseContractPrincipal,
-  validatePrincipal,
-} from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
@@ -14,20 +10,6 @@ const optionalUrlSchema = z
   .trim()
   .max(500)
   .refine((value) => value === "" || isHttpUrl(value), "Expected an HTTP(S) URL");
-
-const timeZoneSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(100)
-  .refine((value) => {
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0));
-      return true;
-    } catch {
-      return false;
-    }
-  }, "Expected an IANA time zone");
 
 const supportContactSchema = z
   .string()
@@ -51,9 +33,6 @@ const persistedRuntimeSettingsSchema = z
       .strict(),
     display: z
       .object({
-        timezone: timeZoneSchema,
-        timeFormat: z.enum(["relative", "absolute", "both"]),
-        numberFormat: z.enum(["1,234.5678", "1 234,5678"]),
         defaultTheme: z.enum(["light", "dark", "system"]),
       })
       .strict(),
@@ -75,34 +54,7 @@ const persistedRuntimeSettingsSchema = z
       .strict(),
     embed: z
       .object({
-        type: z.enum(["live", "static"]),
         publicApiUrl: z.string(),
-      })
-      .strict(),
-    payoutPolicy: z
-      .object({
-        minimumDirectSbtcSats: z.string().regex(/^(0|[1-9][0-9]*)$/),
-        maxTransactionFeeUstx: z.string().regex(/^(0|[1-9][0-9]*)$/),
-        rollingGasBudgetUstx: z.string().regex(/^(0|[1-9][0-9]*)$/),
-      })
-      .strict(),
-    automation: z
-      .object({
-        mode: z.literal("observe"),
-        gasPayerPrincipal: z
-          .string()
-          .trim()
-          .max(64)
-          .refine(
-            (value) => value === "" || (!value.includes(".") && validatePrincipal(value)),
-            "Expected a standard Stacks principal",
-          ),
-      })
-      .strict(),
-    alerts: z
-      .object({
-        webhookUrl: optionalUrlSchema,
-        criticalOnly: z.boolean(),
       })
       .strict(),
   })
@@ -146,10 +98,36 @@ export interface PublicRuntimeSettings {
   };
   forecast: PersistedRuntimeSettings["forecast"];
   embed: PersistedRuntimeSettings["embed"];
-  payoutPolicy: PersistedRuntimeSettings["payoutPolicy"];
-  automation: PersistedRuntimeSettings["automation"];
-  alerts: PersistedRuntimeSettings["alerts"];
   audit: Array<{ revision: number; changedFields: string[]; changedAt: string }>;
+}
+
+function withoutLegacySettings(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const {
+    payoutPolicy: _payoutPolicy,
+    automation: _automation,
+    alerts: _alerts,
+    ...settings
+  } = input as Record<string, unknown>;
+  const display = settings.display;
+  const embed = settings.embed;
+  return {
+    ...settings,
+    ...(display && typeof display === "object" && !Array.isArray(display)
+      ? {
+          display: {
+            defaultTheme: (display as Record<string, unknown>).defaultTheme,
+          },
+        }
+      : {}),
+    ...(embed && typeof embed === "object" && !Array.isArray(embed)
+      ? {
+          embed: {
+            publicApiUrl: (embed as Record<string, unknown>).publicApiUrl,
+          },
+        }
+      : {}),
+  };
 }
 
 function publicApiDefault(config: SidekickConfig): string {
@@ -168,9 +146,6 @@ function defaults(config: SidekickConfig): PersistedRuntimeSettings {
       leatherUrl: "https://earn.leather.io",
     },
     display: {
-      timezone: "UTC",
-      timeFormat: "relative",
-      numberFormat: "1,234.5678",
       defaultTheme: "system",
     },
     dataSources: {
@@ -183,14 +158,7 @@ function defaults(config: SidekickConfig): PersistedRuntimeSettings {
       hiroReferenceApiUrl: config.hiroReferenceApiUrl ?? "",
     },
     forecast: { horizonCycles: config.forecastHorizonCycles },
-    embed: { type: "live", publicApiUrl: publicApiDefault(config) },
-    payoutPolicy: {
-      minimumDirectSbtcSats: "0",
-      maxTransactionFeeUstx: "100000",
-      rollingGasBudgetUstx: "10000000",
-    },
-    automation: { mode: "observe", gasPayerPrincipal: "" },
-    alerts: { webhookUrl: "", criticalOnly: false },
+    embed: { publicApiUrl: publicApiDefault(config) },
   };
 }
 
@@ -200,16 +168,7 @@ function changedFields(
   secretChanged: boolean,
 ): string[] {
   const fields: string[] = [];
-  for (const section of [
-    "pool",
-    "display",
-    "dataSources",
-    "forecast",
-    "embed",
-    "payoutPolicy",
-    "automation",
-    "alerts",
-  ] as const) {
+  for (const section of ["pool", "display", "dataSources", "forecast", "embed"] as const) {
     const before = previous[section] as Record<string, unknown>;
     const after = next[section] as Record<string, unknown>;
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
@@ -230,7 +189,7 @@ export class RuntimeSettingsController {
   constructor(
     private readonly baseConfig: SidekickConfig,
     private readonly store: SidekickStore,
-    private readonly managerPrincipal: string,
+    _managerPrincipal: string,
     private readonly validateSources: RuntimeSettingsSourceValidator = async (
       config,
       node,
@@ -245,7 +204,7 @@ export class RuntimeSettingsController {
   ) {
     const stored = store.getRuntimeSettings();
     this.settings = stored
-      ? persistedRuntimeSettingsSchema.parse(stored.settings)
+      ? persistedRuntimeSettingsSchema.parse(withoutLegacySettings(stored.settings))
       : defaults(baseConfig);
     this.apiKeySecret = stored?.apiKeySecret ?? null;
     this.revision = stored?.revision ?? 0;
@@ -315,9 +274,6 @@ export class RuntimeSettingsController {
       },
       forecast: this.settings.forecast,
       embed: this.settings.embed,
-      payoutPolicy: this.settings.payoutPolicy,
-      automation: this.settings.automation,
-      alerts: this.settings.alerts,
       audit: this.store.listSettingsAudit(),
     };
   }
@@ -327,21 +283,6 @@ export class RuntimeSettingsController {
     observedAt = new Date().toISOString(),
   ): Promise<PublicRuntimeSettings> {
     const value = runtimeSettingsUpdateSchema.parse(input);
-    if (value.automation.gasPayerPrincipal) {
-      const manager = parseContractPrincipal(this.managerPrincipal);
-      const expectedNetwork = this.baseConfig.network === "mainnet" ? "mainnet" : "testnet";
-      const gasPayerNetwork =
-        value.automation.gasPayerPrincipal.startsWith("SP") ||
-        value.automation.gasPayerPrincipal.startsWith("SM")
-          ? "mainnet"
-          : "testnet";
-      if (gasPayerNetwork !== expectedNetwork) {
-        throw new Error("Gas-payer principal does not match the configured network");
-      }
-      if (value.automation.gasPayerPrincipal === manager.address) {
-        throw new Error("Gas-payer principal must not be the manager admin principal");
-      }
-    }
     const nodeRpcUrl = parseEndpointUrl(value.dataSources.nodeRpcUrl, "Stacks node RPC URL");
     const apiUrl = parseEndpointUrl(value.dataSources.apiUrl, "Stacks API URL");
     const nodeMetricsUrl = value.dataSources.nodeMetricsUrl
@@ -385,7 +326,7 @@ export class RuntimeSettingsController {
         signerMonitoringUrl,
         hiroReferenceApiUrl,
       },
-      embed: { ...value.embed, publicApiUrl },
+      embed: { publicApiUrl },
     });
     const fields = changedFields(this.settings, next, action.action !== "keep");
     if (fields.length === 0) return this.publicSettings();

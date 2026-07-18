@@ -39,10 +39,7 @@ describe("runtime settings", () => {
           apiKeyAction: { action: "replace", value: "database-secret" },
         },
         forecast: { horizonCycles: 24 },
-        embed: { type: "live", publicApiUrl: "https://public-api.example.com/" },
-        payoutPolicy: current.payoutPolicy,
-        automation: current.automation,
-        alerts: current.alerts,
+        embed: { publicApiUrl: "https://public-api.example.com/" },
       },
       "2026-07-15T12:01:00.000Z",
     );
@@ -84,9 +81,6 @@ describe("runtime settings", () => {
       },
       forecast: current.forecast,
       embed: current.embed,
-      payoutPolicy: current.payoutPolicy,
-      automation: current.automation,
-      alerts: current.alerts,
     };
     expect((await runtime.update(input)).dataSources.apiKeyConfigured).toBe(false);
     expect(runtime.effectiveConfig()).not.toHaveProperty("apiKey");
@@ -112,40 +106,92 @@ describe("runtime settings", () => {
     ).rejects.toThrow("blocked address");
   });
 
-  it("rejects the manager admin and wrong-network gas-payer principals", async () => {
-    const runtime = await controller();
+  it("loads legacy settings after stripping removed fields and drops them on the next save", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-15T12:00:00.000Z");
+    stores.push(store);
+    store.putRuntimeSettings({
+      settings: {
+        schemaVersion: 1,
+        pool: {
+          displayName: "Legacy pool",
+          websiteUrl: "",
+          supportContact: "",
+          leatherUrl: "https://earn.leather.io",
+        },
+        display: {
+          timezone: "America/Denver",
+          timeFormat: "both",
+          numberFormat: "1 234,5678",
+          defaultTheme: "dark",
+        },
+        dataSources: {
+          nodeRpcUrl: "http://127.0.0.1:20443",
+          apiUrl: "https://api.mainnet.hiro.so",
+          apiKeyHeader: "x-api-key",
+          apiKeyMode: "none",
+          nodeMetricsUrl: "",
+          signerMonitoringUrl: "",
+          hiroReferenceApiUrl: "",
+        },
+        forecast: { horizonCycles: 12 },
+        embed: { type: "static", publicApiUrl: "https://pool.example.com" },
+        payoutPolicy: {
+          minimumDirectSbtcSats: "10000",
+          maxTransactionFeeUstx: "100000",
+          rollingGasBudgetUstx: "10000000",
+        },
+        automation: { mode: "observe", gasPayerPrincipal: "" },
+        alerts: { webhookUrl: "https://hooks.example.com", criticalOnly: true },
+      },
+      apiKeySecret: null,
+      changedFields: ["pool.displayName"],
+      observedAt: "2026-07-15T12:00:00.000Z",
+    });
+    const runtime = new RuntimeSettingsController(
+      loadConfig({ STACKS_NODE_RPC_URL: "http://127.0.0.1:20443" }),
+      store,
+      "SP000000000000000000002Q6VF78.signer-manager",
+      async () => {},
+    );
+
     const current = runtime.publicSettings();
-    const input = {
-      pool: current.pool,
+    expect(current.display).toEqual({ defaultTheme: "dark" });
+    expect(current.embed).toEqual({ publicApiUrl: "https://pool.example.com" });
+    expect(current).not.toHaveProperty("payoutPolicy");
+    expect(current).not.toHaveProperty("automation");
+    expect(current).not.toHaveProperty("alerts");
+
+    await expect(
+      runtime.update({
+        pool: current.pool,
+        display: current.display,
+        dataSources: {
+          nodeRpcUrl: current.dataSources.nodeRpcUrl,
+          apiUrl: current.dataSources.apiUrl,
+          apiKeyHeader: current.dataSources.apiKeyHeader,
+          apiKeyAction: { action: "keep" },
+        },
+        forecast: current.forecast,
+        embed: current.embed,
+        alerts: { webhookUrl: "https://hooks.example.com", criticalOnly: true },
+      }),
+    ).rejects.toThrow();
+
+    await runtime.update({
+      pool: { ...current.pool, displayName: "Current pool" },
       display: current.display,
       dataSources: {
         nodeRpcUrl: current.dataSources.nodeRpcUrl,
         apiUrl: current.dataSources.apiUrl,
         apiKeyHeader: current.dataSources.apiKeyHeader,
-        apiKeyAction: { action: "keep" as const },
+        apiKeyAction: { action: "keep" },
       },
       forecast: current.forecast,
       embed: current.embed,
-      payoutPolicy: current.payoutPolicy,
-      automation: {
-        ...current.automation,
-        gasPayerPrincipal: "SP000000000000000000002Q6VF78",
-      },
-      alerts: current.alerts,
-    };
-
-    await expect(runtime.update(input)).rejects.toThrow(
-      "Gas-payer principal must not be the manager admin principal",
+    });
+    expect(JSON.stringify(store.getRuntimeSettings()?.settings)).not.toMatch(
+      /payoutPolicy|automation|alerts|timezone|timeFormat|numberFormat|"type"/,
     );
-    await expect(
-      runtime.update({
-        ...input,
-        automation: {
-          ...input.automation,
-          gasPayerPrincipal: "ST000000000000000000002AMW42H",
-        },
-      }),
-    ).rejects.toThrow("Gas-payer principal does not match the configured network");
   });
 
   it("validates changed node and API sources before committing them", async () => {
@@ -176,9 +222,6 @@ describe("runtime settings", () => {
         },
         forecast: current.forecast,
         embed: current.embed,
-        payoutPolicy: current.payoutPolicy,
-        automation: current.automation,
-        alerts: current.alerts,
       }),
     ).rejects.toThrow("Candidate sources are unavailable");
     expect(candidates).toEqual(["https://api.example.com"]);
@@ -203,9 +246,6 @@ describe("runtime settings", () => {
         },
         forecast: current.forecast,
         embed: current.embed,
-        payoutPolicy: current.payoutPolicy,
-        automation: current.automation,
-        alerts: current.alerts,
       }),
     ).rejects.toThrow("Expected an HTTP(S) URL");
   });

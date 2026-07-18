@@ -4,7 +4,7 @@ import {
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
 } from "@stx-labs/signer-sidekick-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import {
@@ -12,6 +12,7 @@ import {
   classifySupportContact,
   OperatorService,
   type OperatorServiceOptions,
+  observeTransactionEngineSafely,
 } from "./operator-service.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
@@ -50,6 +51,24 @@ function alertInput(options: { belowThreshold?: boolean; setupBlocked?: boolean 
 }
 
 describe("operator service", () => {
+  it("contains transaction-engine failures at the optional observation boundary", async () => {
+    const failure = new Error("engine unavailable");
+    const onError = vi.fn();
+
+    await expect(
+      observeTransactionEngineSafely(
+        { observe: async () => await Promise.reject(failure), onError },
+        {
+          setup: {} as never,
+          rewards: null,
+          sourceId: "api:mainnet:test",
+          observedAt: "2026-07-17T12:00:00.000Z",
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(failure);
+  });
+
   it("uses calm read-only language and stable eligibility-transition alert IDs", () => {
     const input = alertInput({});
     input.manager.source.tier = "unrecognized";

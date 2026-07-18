@@ -271,7 +271,7 @@ export function createAttachActivationPlan(
           : manager.source.tier === "reference-render"
             ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager is operator-identified for read-only use; reference-manager automation remains disabled"
+              ? "Custom manager is operator-identified for read-only use; reference-manager Assist remains disabled"
               : "Manager is compatible and can attach in read-only mode, but its source is not recognized"
         : "Manager network or interface is incompatible",
       command: `sidekick manager verify ${shellQuote(manager.managerPrincipal)}`,

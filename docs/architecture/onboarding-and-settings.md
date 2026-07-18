@@ -5,9 +5,11 @@ Fresh Setup, and skipping the wizard without changing Sidekick's custody boundar
 
 ## Safety boundary
 
-Sidekick accepts public principals and public signer-grant output, but never a manager-admin key,
-signer key, mnemonic, or signing request. Deployment and `register-self` are reviewed and broadcast
-externally; Sidekick verifies their effects afterward.
+Sidekick accepts public principals and public signer-grant output, but never a signer private key,
+manager-admin private key, mnemonic, or arbitrary signing request. In Assist it may hold a
+dedicated, low-balance gas-payer key and sign only the fixed code-backed
+`reference-manager-claim-rewards` transaction vector. Deployment and `register-self` remain
+externally reviewed, signed, and broadcast; Sidekick verifies their effects afterward.
 
 `SIDEKICK_MANAGER_PRINCIPAL` is the fixed identity of a deployment. Fresh inputs must resolve to
 that principal, and Attach cannot silently switch it.
@@ -22,9 +24,11 @@ Polling failures never discard saved state. The operator can resume after the no
 
 ## Runtime settings
 
-Operators may change presentation, node/API endpoints, API credentials, forecast horizon, public
-pool metadata, payout policy, gas-budget policy, and alert policy. Candidate connectivity changes
-must pass preflight before becoming active.
+Operators may change the default theme; Stacks API, node RPC, node metrics, signer-monitoring, and
+Hiro reference endpoints; API credentials; forecast horizon; public pool metadata; and the public
+embed URL. Candidate endpoint changes must pass preflight before becoming active.
+Transaction-engine policy and gas-payer identity are deployment-only configuration, not general
+runtime settings.
 
 API keys are write-only in the browser and stored separately from public settings. They may be
 persisted in SQLite, so the database and backups are secret-bearing. Signer, manager-admin, and

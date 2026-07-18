@@ -128,7 +128,7 @@ describe("operator record", () => {
     });
     expect(record.remainingActions).toContain("Record the signer grant auth ID");
     expect(record.remainingActions).toContain(
-      "Configure a dedicated gas payer before enabling Assist or Automate",
+      "Configure a dedicated gas payer before enabling Assist",
     );
   });
 

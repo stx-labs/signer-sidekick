@@ -28,6 +28,17 @@ const authoritativeProvenance = {
   contractSource: "pox5-read-only" as const,
   localRosterSource: "api-indexed-node-verified" as const,
 };
+const chainAnchor = {
+  stacksBlockHeight: 8_600_000,
+  indexBlockHash,
+  burnBlockHeight: 960_240,
+  rewardCycle: 141,
+  rewardCycleLength: 2_100,
+  prepareCycleLength: 100,
+  cyclePosition: 1_049,
+  phase: "reward" as const,
+  checkpoint: "first-half" as const,
+};
 
 async function memoryStore(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
@@ -53,6 +64,23 @@ function registerNodeSource(store: SidekickStore): void {
     baseUrl: "http://127.0.0.1:20443",
     observedAt,
   });
+}
+
+function revertMigration14(database: DatabaseSync): void {
+  database.exec(`
+    DROP TABLE engine_force_observe_control;
+    DROP TABLE engine_adapter_disable_controls;
+    DROP TABLE transaction_reconciliation_observations;
+    DROP TABLE transaction_approvals;
+    DROP TABLE transaction_attempts;
+    DROP TABLE gas_payer_nonce_reservations;
+    DROP TABLE transaction_jobs;
+    DROP TABLE accepted_compatibility_attestations;
+    ALTER TABLE pool_cycle_snapshots DROP COLUMN chain_anchor_json;
+    ALTER TABLE reward_cycle_snapshots DROP COLUMN chain_anchor_json;
+    DELETE FROM schema_migrations WHERE version >= 14;
+    PRAGMA user_version = 13;
+  `);
 }
 
 afterEach(async () => {
@@ -172,8 +200,9 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 12,
+      schemaVersion: 15,
       journalMode: "memory",
+      synchronous: 1,
       foreignKeys: true,
     });
   });
@@ -610,6 +639,7 @@ describe("Sidekick SQLite store", () => {
       observedAt,
       burnBlockHeight: 960_240,
       stacksTipHeight: 8_600_000,
+      chainAnchor,
       cycles: [141, 142].map((cycleId) => ({
         cycleId,
         status: "ready" as const,
@@ -665,6 +695,7 @@ describe("Sidekick SQLite store", () => {
           cycleId: 142,
           status: "ready",
           stakerCount: 500,
+          chainAnchor,
           provenance: { classification: "projected" },
         },
       ],
@@ -684,6 +715,7 @@ describe("Sidekick SQLite store", () => {
       observedAt,
       burnBlockHeight: 960_240,
       stacksTipHeight: 8_600_000,
+      chainAnchor,
       global: {
         lastRewardComputeBurnHeight: "960200",
         lastComputedRewardCycle: "140",
@@ -726,6 +758,7 @@ describe("Sidekick SQLite store", () => {
           earnedSats: "11000",
           configuredFeeBips: "750",
           feeSnapshotBips: "500",
+          chainAnchor,
         },
       ],
     });
@@ -828,12 +861,210 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 12,
+      schemaVersion: 15,
       journalMode: "wal",
+      synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 11 trust ledger without resetting it", async () => {
+  it("upgrades a persisted migration 13 database through migrations 14 and 15 once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, observedAt);
+    initial.store.putRuntimeSettings({
+      settings: { schemaVersion: 1, displayName: "Preserved through forward migrations" },
+      apiKeySecret: null,
+      changedFields: ["pool.displayName"],
+      observedAt,
+    });
+    initial.store.close();
+
+    const version13 = new DatabaseSync(path);
+    revertMigration14(version13);
+    version13.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.backupPath).not.toBeNull();
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
+    expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
+      displayName: "Preserved through forward migrations",
+    });
+
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspection.prepare("SELECT name FROM schema_migrations WHERE version = 14").get(),
+    ).toEqual({ name: "transaction_engine_persistence" });
+    expect(
+      inspection
+        .prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 14")
+        .get(),
+    ).toEqual({ count: 1 });
+    expect(
+      inspection.prepare("SELECT name FROM schema_migrations WHERE version = 15").get(),
+    ).toEqual({ name: "reusable_resolved_gas_payer_nonces" });
+    expect(
+      inspection.prepare("SELECT name FROM sqlite_master WHERE name = 'transaction_jobs'").get(),
+    ).toEqual({ name: "transaction_jobs" });
+    expect(
+      inspection
+        .prepare("SELECT name FROM pragma_table_info('pool_cycle_snapshots') WHERE name = ?")
+        .get("chain_anchor_json"),
+    ).toEqual({ name: "chain_anchor_json" });
+    inspection.close();
+  });
+
+  it("upgrades migration 14 nonce history without losing attempts or foreign keys", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v14-upgrade-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, observedAt);
+    initial.store.close();
+
+    const version14 = new DatabaseSync(path);
+    version14.exec(`
+      PRAGMA foreign_keys = ON;
+      INSERT INTO transaction_jobs (
+        job_id, idempotency_key, operation_scope_key, adapter_id, adapter_revision,
+        manager_principal, intent_sha256, policy_sha256, intent_json, policy_json,
+        chain_anchor_json, attestation_issuer, attestation_revision,
+        attestation_payload_sha256, state, state_version, block_reason,
+        supersession_reason, superseded_by_job_id, created_at, updated_at
+      ) VALUES (
+        'migration-15-job', 'migration-15-idempotency', 'migration-15-scope',
+        'manager-claim-staker-rewards', 1, 'migration-15-gas-payer',
+        lower(hex(zeroblob(32))), lower(hex(zeroblob(32))), '{}', '{}', '{}',
+        'stacks-labs', 1, lower(hex(zeroblob(32))), 'blocked', 4,
+        'broadcast-rejected:test', NULL, NULL, '${observedAt}', '${later}'
+      );
+      INSERT INTO gas_payer_nonce_reservations (
+        reservation_id, gas_payer_principal, job_id, nonce, observed_account_nonce,
+        state, state_version, foreign_activity, created_at, updated_at, resolved_at
+      ) VALUES (
+        'migration-15-reservation', 'migration-15-gas-payer', 'migration-15-job',
+        '7', '7', 'resolved', 1, 0, '${observedAt}', '${later}', '${later}'
+      );
+      INSERT INTO transaction_attempts (
+        attempt_id, job_id, attempt_number, nonce_reservation_id, fee_ustx,
+        fee_policy_revision, signed_transaction_ref, precomputed_txid,
+        state, state_version, submission_result_json, inclusion_record_json,
+        submitted_at, resolved_at, created_at, updated_at
+      ) VALUES (
+        'migration-15-attempt', 'migration-15-job', 1, 'migration-15-reservation',
+        '1000', 1, 'migration-15-signed-reference',
+        '0x' || lower(hex(zeroblob(32))), 'rejected', 1,
+        '{"status":"deterministic-rejection"}', NULL, NULL, '${later}',
+        '${observedAt}', '${later}'
+      );
+      CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
+        ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DELETE FROM schema_migrations WHERE version = 15;
+      PRAGMA user_version = 14;
+    `);
+    version14.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.backupPath).not.toBeNull();
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
+
+    const postUpgrade = new DatabaseSync(path);
+    postUpgrade.exec(`
+      PRAGMA foreign_keys = ON;
+      INSERT INTO transaction_jobs (
+        job_id, idempotency_key, operation_scope_key, adapter_id, adapter_revision,
+        manager_principal, intent_sha256, policy_sha256, intent_json, policy_json,
+        chain_anchor_json, attestation_issuer, attestation_revision,
+        attestation_payload_sha256, state, state_version, block_reason,
+        supersession_reason, superseded_by_job_id, created_at, updated_at
+      )
+      SELECT
+        'migration-15-retry-job', 'migration-15-retry-idempotency',
+        'migration-15-retry-scope', adapter_id, adapter_revision, manager_principal,
+        intent_sha256, policy_sha256, intent_json, policy_json, chain_anchor_json,
+        attestation_issuer, attestation_revision, attestation_payload_sha256,
+        state, state_version, block_reason, supersession_reason, superseded_by_job_id,
+        created_at, updated_at
+      FROM transaction_jobs WHERE job_id = 'migration-15-job';
+      INSERT INTO gas_payer_nonce_reservations (
+        reservation_id, gas_payer_principal, job_id, nonce, observed_account_nonce,
+        state, state_version, foreign_activity, created_at, updated_at, resolved_at
+      ) VALUES (
+        'migration-15-retry-reservation', 'migration-15-gas-payer',
+        'migration-15-retry-job', '7', '7', 'resolved', 1, 0,
+        '${later}', '${later}', '${later}'
+      );
+    `);
+    postUpgrade.close();
+
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    const reservationTable = inspection
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gas_payer_nonce_reservations'",
+      )
+      .get() as { sql: string };
+    expect(reservationTable.sql).not.toContain("UNIQUE (gas_payer_principal, nonce)");
+    expect(
+      inspection.prepare("PRAGMA index_list('gas_payer_nonce_reservations')").all(),
+    ).toContainEqual(
+      expect.objectContaining({ name: "gas_payer_nonce_one_unresolved", unique: 1, partial: 1 }),
+    );
+    expect(
+      inspection
+        .prepare(
+          `SELECT a.state AS attempt_state, a.submission_result_json,
+             a.signed_transaction_ref, a.precomputed_txid,
+             r.state AS reservation_state, r.nonce
+           FROM transaction_attempts a
+           JOIN gas_payer_nonce_reservations r
+             ON r.reservation_id = a.nonce_reservation_id
+           WHERE a.attempt_id = 'migration-15-attempt'`,
+        )
+        .get(),
+    ).toEqual({
+      attempt_state: "rejected",
+      submission_result_json: '{"status":"deterministic-rejection"}',
+      signed_transaction_ref: "migration-15-signed-reference",
+      precomputed_txid: `0x${"00".repeat(32)}`,
+      reservation_state: "resolved",
+      nonce: "7",
+    });
+    expect(
+      inspection
+        .prepare(
+          `SELECT count(*) AS count FROM gas_payer_nonce_reservations
+           WHERE gas_payer_principal = 'migration-15-gas-payer' AND nonce = '7'`,
+        )
+        .get(),
+    ).toEqual({ count: 2 });
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      inspection.prepare("PRAGMA foreign_key_list('transaction_attempts')").all(),
+    ).toContainEqual(
+      expect.objectContaining({
+        table: "gas_payer_nonce_reservations",
+        from: "nonce_reservation_id",
+        to: "reservation_id",
+      }),
+    );
+    expect(
+      inspection
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger' AND name IN (
+             'gas_payer_nonce_immutable_binding', 'transaction_attempts_immutable_binding'
+           ) ORDER BY name`,
+        )
+        .all(),
+    ).toEqual([
+      { name: "gas_payer_nonce_immutable_binding" },
+      { name: "transaction_attempts_immutable_binding" },
+    ]);
+    inspection.close();
+  });
+
+  it("upgrades a persisted migration 12 trust ledger without resetting it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v11-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -863,16 +1094,31 @@ describe("Sidekick SQLite store", () => {
     });
     initial.store.close();
 
-    const version11 = new DatabaseSync(path);
-    version11.exec(`
-      DELETE FROM schema_migrations WHERE version = 12;
-      PRAGMA user_version = 11;
+    const version12 = new DatabaseSync(path);
+    revertMigration14(version12);
+    version12.exec(`
+      ALTER TABLE ingestion_runs DROP COLUMN authoritative;
+      ALTER TABLE ingestion_runs DROP COLUMN reconciliation_complete;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_stacks_block_height;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_index_block_hash;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_burn_block_height;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_reward_cycle;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_reward_cycle_length;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_prepare_cycle_length;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_cycle_position;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_phase;
+      ALTER TABLE ingestion_runs DROP COLUMN anchor_checkpoint;
+      ALTER TABLE stake_positions DROP COLUMN observed_index_block_hash;
+      ALTER TABLE cycle_memberships DROP COLUMN observed_index_block_hash;
+      ALTER TABLE staker_position_observations DROP COLUMN observed_index_block_hash;
+      DELETE FROM schema_migrations WHERE version = 13;
+      PRAGMA user_version = 12;
     `);
-    version11.close();
+    version12.close();
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(12);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",

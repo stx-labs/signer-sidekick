@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 const root = resolve(import.meta.dirname, "../../..");
 const deployer = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
 const managerId = `${deployer}.signer-manager`;
+const managerTwoId = `${deployer}.signer-manager-two`;
 const pox5Id = "ST000000000000000000002AMW42H.pox-5";
 const deploymentPlanPox5Id = `${deployer}.pox-5`;
 const sbtcDeployer = "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT";
@@ -82,7 +83,10 @@ function initializePox5(): void {
   expectOk(configured.result, Cl.bool(true));
 }
 
-function registerManager(): { signerKey: string; signerPrincipal: string } {
+function registerManagerContract(managerContractId: string): {
+  signerKey: string;
+  signerPrincipal: string;
+} {
   const authId = 1n;
   const publicKey = privateKeyToPublic(signerPrivateKey);
   const signerKey =
@@ -91,17 +95,17 @@ function registerManager(): { signerKey: string; signerPrincipal: string } {
     simnet.callReadOnlyFn(
       pox5Id,
       "get-signer-grant-message-hash",
-      [Cl.principal(managerId), Cl.uint(authId)],
+      [Cl.principal(managerContractId), Cl.uint(authId)],
       deployer,
     ).result,
   );
   const vrsSignature = signWithKey(signerPrivateKey, messageHash);
   const rsvSignature = `${vrsSignature.slice(2)}${vrsSignature.slice(0, 2)}`;
   const registration = simnet.callPublicFn(
-    managerId,
+    managerContractId,
     "register-self",
     [
-      Cl.principal(managerId),
+      Cl.principal(managerContractId),
       Cl.bufferFromHex(signerKey),
       Cl.uint(authId),
       Cl.bufferFromHex(rsvSignature),
@@ -110,12 +114,17 @@ function registerManager(): { signerKey: string; signerPrincipal: string } {
   );
   expect(registration.result.type).toBe("ok");
   expect(
-    simnet.callReadOnlyFn(pox5Id, "get-signer-info", [Cl.principal(managerId)], deployer).result,
+    simnet.callReadOnlyFn(pox5Id, "get-signer-info", [Cl.principal(managerContractId)], deployer)
+      .result,
   ).toBeSome(Cl.bufferFromHex(signerKey));
   return {
     signerKey,
     signerPrincipal: getAddressFromPublicKey(signerKey, "testnet"),
   };
+}
+
+function registerManager(): { signerKey: string; signerPrincipal: string } {
+  return registerManagerContract(managerId);
 }
 
 function stake(staker: string, signerCalldata: ClarityValue = Cl.none()) {
@@ -561,6 +570,72 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         deployer,
       ).result,
     ).toBeBool(false);
+  });
+
+  it("keeps the current cycle with the old signer when stake-update switches signers", () => {
+    initializePox5();
+    registerManager();
+    simnet.deployContract("signer-manager-two", managerSource, { clarityVersion: 6 }, deployer);
+    registerManagerContract(managerTwoId);
+    const staker = simnet.getAccounts().get("wallet_1");
+    if (!staker) throw new Error("Clarinet wallet fixture is missing");
+
+    stake(staker);
+    const firstCycleStart = uintValue(
+      simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
+    );
+    simnet.mineEmptyBurnBlocks(Number(firstCycleStart - BigInt(simnet.burnBlockHeight)));
+
+    expect(
+      simnet.callPublicFn(
+        pox5Id,
+        "stake-update",
+        [
+          Cl.principal(managerTwoId),
+          Cl.principal(managerId),
+          Cl.uint(1),
+          Cl.uint(1_000_000),
+          Cl.none(),
+        ],
+        staker,
+      ).result.type,
+    ).toBe("ok");
+    expect(
+      simnet.callReadOnlyFn(pox5Id, "get-staker-info", [Cl.principal(staker)], deployer).result,
+    ).toBeSome(
+      Cl.tuple({
+        "amount-ustx": Cl.uint(minimumStake + 1_000_000n),
+        "first-reward-cycle": Cl.uint(1),
+        "num-cycles": Cl.uint(3),
+        signer: Cl.principal(managerTwoId),
+      }),
+    );
+    expect(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "get-signer-cycle-membership",
+        [Cl.principal(staker), Cl.uint(1)],
+        deployer,
+      ).result,
+    ).toBeSome(
+      Cl.tuple({
+        "amount-ustx": Cl.uint(minimumStake),
+        signer: Cl.principal(managerId),
+      }),
+    );
+    expect(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "get-signer-cycle-membership",
+        [Cl.principal(staker), Cl.uint(2)],
+        deployer,
+      ).result,
+    ).toBeSome(
+      Cl.tuple({
+        "amount-ustx": Cl.uint(minimumStake + 1_000_000n),
+        signer: Cl.principal(managerTwoId),
+      }),
+    );
   });
 
   it("calculates both half-cycle distributions and rejects permissionless duplicate races", () => {

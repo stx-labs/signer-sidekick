@@ -1,8 +1,9 @@
 # Scaling and retained evidence
 
 V1 targets one pool with hundreds of participants and many years of reward cycles on SQLite. The
-test suite exercises 500 active stakers, 96 forecast cycles, thousands of claims, and hundreds of
-withdrawals. These are fixtures, not hard limits.
+test suite exercises 500 active stakers across 12 cycles and more than 2,000 persisted claims;
+browser fixtures cover hundreds of claims and dozens of withdrawals. These are fixtures, not hard
+limits.
 
 ## Bounded work
 
@@ -10,7 +11,8 @@ withdrawals. These are fixtures, not hard limits.
 - Node verification and transaction enrichment use fixed concurrency limits.
 - Forecast reads are processed in cycle batches.
 - Reconciliation and operator snapshots are single-flight.
-- Dashboard collections are independently paginated and exportable.
+- Dashboard roster, reward, withdrawal, and job collections paginate independently; roster data is
+  exportable as CSV or JSON.
 
 The exact limits and accepted query parameters live with their configuration and route schemas.
 
@@ -22,7 +24,8 @@ Current projections are separate from historical evidence:
 - Append-only observations preserve what the node reported at each tip.
 - Per-cycle snapshots distinguish authoritative current state from projections.
 - Canonical chain events retain reorg-aware source evidence.
-- Normalized manager activity supports unbounded claim and withdrawal history.
+- Normalized manager activity retains paginated claim and withdrawal history without the former
+  in-memory ceiling.
 - Reward snapshots are replaced within a cycle rather than appended on every read.
 
 Historical rewards use membership retained for the requested cycle, not the current active roster.
