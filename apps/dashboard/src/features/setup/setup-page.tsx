@@ -24,6 +24,7 @@ import { dashboardHash } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { formatUstx } from "../../shared/format.js";
+import { operatorActionError } from "../../shared/operator-error.js";
 import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
 import {
   attachLabels,
@@ -122,7 +123,7 @@ export function SetupPage({
     } catch (cause) {
       if (generation !== initialLoadGeneration.current) return;
       setInitialLoaded(false);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(operatorActionError(cause, "Could not load setup progress", "Retrying is safe"));
     } finally {
       if (generation === initialLoadGeneration.current) setBusy(false);
     }
@@ -203,11 +204,21 @@ export function SetupPage({
         await onOperatorStateChanged?.();
       } catch (cause) {
         setError(
-          `Setup advanced, but operator state could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          operatorActionError(
+            cause,
+            "Setup advanced, but dashboard status could not be refreshed",
+            "The setup change is saved; use Refresh in the status bar",
+          ),
         );
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(
+        operatorActionError(
+          cause,
+          "Could not update setup",
+          "Refresh setup progress before retrying; it may already have updated",
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -292,8 +303,15 @@ export function SetupPage({
           { method: "PATCH", body: JSON.stringify({ currentStep: step.id }) },
         );
         setOnboarding(result.onboarding);
-      } catch {
-        // Selection remains useful even if persistence is temporarily unavailable.
+        setError(null);
+      } catch (cause) {
+        setError(
+          operatorActionError(
+            cause,
+            "Could not save the selected setup step",
+            "The step is open but may reset after reload; select it again to retry",
+          ),
+        );
       }
     }
   };
@@ -323,7 +341,9 @@ export function SetupPage({
           kind === "source" ? "signer-manager.clar" : "signer-manager.deployment.json",
       });
     } catch (cause) {
-      setError(`Download failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      setError(
+        operatorActionError(cause, `Could not download the manager ${kind}`, "Retrying is safe"),
+      );
     }
   };
 
@@ -344,7 +364,13 @@ export function SetupPage({
         setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(
+        operatorActionError(
+          cause,
+          `Could not ${dismissed ? "dismiss" : "resume"} setup guidance`,
+          "Refresh setup progress before retrying",
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -353,10 +379,7 @@ export function SetupPage({
   if (!initialLoaded) {
     return (
       <>
-        <PageHead
-          title="Initial Setup"
-          lede="Load saved setup progress before starting or changing the guided workflow."
-        />
+        <PageHead title="Initial Setup" lede="Load saved setup progress." />
         <ErrorCallout error={error} />
         {busy ? (
           <div className="loading-state">Loading setup progress</div>
@@ -372,10 +395,7 @@ export function SetupPage({
   if (wizard.dismissed) {
     return (
       <>
-        <PageHead
-          title="Initial Setup"
-          lede="Guided setup is optional. Sidekick can operate from configuration supplied directly by the operator."
-        />
+        <PageHead title="Initial Setup" lede="Guided setup is currently skipped." />
         <ErrorCallout error={error} />
         <div className="card-standout setup-action-card manual-setup-card">
           <div className="card-head">
@@ -383,8 +403,7 @@ export function SetupPage({
             <StatusBadge status="Wizard skipped" />
           </div>
           <p className="muted">
-            Sidekick will continue using the configured manager principal, node, and API. Skipping
-            does not mark activation checks complete and does not erase saved wizard progress.
+            Sidekick will continue using the configured manager, node, and API.
           </p>
           {wizard.dismissedAt ? (
             <p className="help">Skipped {new Date(wizard.dismissedAt).toLocaleString()}</p>
@@ -406,7 +425,7 @@ export function SetupPage({
     <>
       <PageHead
         title="Initial Setup"
-        lede="Attach a running manager or prepare a fresh PoX-5 deployment. Sidekick verifies the result; keys and signing stay in the external wallet or signer."
+        lede="Connect an existing manager or deploy a new one."
         actions={
           <div className="setup-head-actions">
             <div className="seg">
@@ -416,7 +435,7 @@ export function SetupPage({
                 disabled={busy}
                 onClick={() => void start("attach")}
               >
-                Attach Existing Contracts
+                Attach Existing Manager
               </button>
               <button
                 type="button"
@@ -424,7 +443,7 @@ export function SetupPage({
                 disabled={busy}
                 onClick={() => void start("fresh")}
               >
-                Deploy New Contracts
+                Deploy New Manager
               </button>
             </div>
             <button
@@ -481,9 +500,8 @@ export function SetupPage({
                   <div className="callout callout-info" role="note">
                     <ShieldCheck className="ic" />
                     <div className="body">
-                      Sidekick will read the configured manager and verify its source, PoX-5
-                      registration, signer grant, and next-cycle eligibility. This is read-only and
-                      does not change the manager or broadcast a transaction.
+                      Verify the configured manager, signer registration, and eligibility without
+                      making changes.
                     </div>
                   </div>
                   <Field
@@ -534,22 +552,17 @@ export function SetupPage({
                     <div className="body">
                       <strong>Prepare a new signer-manager</strong>
                       <div>
-                        Sidekick generates the deployment files, verifies the resulting contract,
-                        and guides signer authorization. You can hand the exact prepared deployment
-                        and registration transactions to a wallet using the configured network key.
-                        Private-network wallet support is version-dependent; the manual path always
-                        remains available. PoX-5 Testnet uses pox5-testnet, never ordinary testnet.
+                        Sidekick prepares the manager deployment and signer registration. Sign with
+                        a browser wallet or use the manual transaction details.
                       </div>
                     </div>
                   </div>
                   <div className="archive-guidance" role="note">
                     <div>
-                      <strong>Node and signer setup stay outside Sidekick.</strong>
+                      <strong>Check prerequisites.</strong>
                       <p>
-                        Before continuing, confirm that the node and API are synced, the signer is
-                        running, you know its configuration path, and the manager admin wallet is
-                        funded. A new public-network node can use the verified Hiro chainstate
-                        archive instead of syncing from genesis.
+                        Confirm the node, API, and signer are running and the manager-admin wallet
+                        is funded.
                       </p>
                     </div>
                     <div className="stacked-doc-links">
@@ -628,7 +641,7 @@ export function SetupPage({
                   </Field>
                   <Field
                     label="Signer configuration path"
-                    help="Absolute path to the signer TOML on the signer host. Sidekick inserts it into the command but never reads it."
+                    help="Absolute path to the signer configuration file."
                   >
                     <input
                       className="input mono"
@@ -699,8 +712,7 @@ export function SetupPage({
                             ? "Manager attached with items to review."
                             : "Manager attached and operational checks passed."}
                       </strong>{" "}
-                      Sidekick is observing this manager without changing chain state. Attention
-                      items do not prevent monitoring; blocked items prevent an operational pool.
+                      Review items allow monitoring; blocked items prevent pool operation.
                     </div>
                   </div>
                   {rawSteps.map((step) => (
@@ -780,9 +792,8 @@ export function SetupPage({
                   <div className="callout callout-info">
                     <ShieldCheck className="ic" />
                     <div className="body">
-                      Sidekick checked the configured node, API, network identity, and active PoX-5
-                      contract. It cannot verify the external signer installation or admin-wallet
-                      funding.
+                      Node, API, network, and PoX-5 checks are complete. Confirm the signer and
+                      admin wallet separately.
                     </div>
                   </div>
                   <div className="checklist">
@@ -822,9 +833,7 @@ export function SetupPage({
                   <div className="callout callout-info">
                     <ShieldCheck className="ic" />
                     <div className="body">
-                      Sidekick generated the manager source from the approved network profile and
-                      recorded its immutable deployment values. Review and download the files before
-                      deploying the contract.
+                      Review and download the generated contract source and deployment manifest.
                     </div>
                   </div>
                   <div className="artifact-actions">
@@ -899,7 +908,7 @@ export function SetupPage({
                         token={token}
                       />
                       <div className="deploy-instructions">
-                        <h3>Deploy outside Sidekick</h3>
+                        <h3>Manual deployment</h3>
                         <p>
                           The <span className="mono">.clar</span> file is the contract source. The
                           manifest records the values you must review; it is not an import file.
@@ -958,8 +967,7 @@ export function SetupPage({
                           </div>
                         </div>
                         <p className="deploy-warning">
-                          Keep the admin key in your wallet or CLI. After the transaction confirms,
-                          return here and verify the deployed source before continuing.
+                          After the transaction confirms, return here to verify the deployment.
                         </p>
                         <button
                           type="button"
@@ -986,23 +994,14 @@ export function SetupPage({
                     <div className="body">
                       <strong>Authorize this manager with your signer</strong>
                       <div>
-                        Your signer signs the live PoX-5 authorization for this manager. Sidekick
-                        verifies the public result and uses it to prepare the registration call in
-                        the next step; it never accesses the signer key or broadcasts a transaction.
+                        Run the generated authorization command on the signer host. Sidekick
+                        verifies its output before preparing registration.
                       </div>
                     </div>
                   </div>
                   {!onboarding.signerGrant.preparation ? (
                     <>
-                      <ol className="ceremony-steps">
-                        <li>
-                          Click <strong>Generate signer command</strong>. Sidekick reads the live
-                          grant hash using the auth ID and signer config path entered earlier.
-                        </li>
-                        <li>
-                          Sidekick will then show the exact command to run on the signer host.
-                        </li>
-                      </ol>
+                      <p>Generate the command to run on the signer host.</p>
                       <button
                         type="button"
                         className="btn btn-accent"
@@ -1024,19 +1023,10 @@ export function SetupPage({
                   ) : (
                     <>
                       <ol className="ceremony-steps">
+                        <li>Run the command below on the signer host.</li>
                         <li>
-                          Copy and run the command below on the machine running your signer. It must
-                          have <span className="mono">stacks-signer</span> and access to the listed
-                          signer configuration file.
-                        </li>
-                        <li>
-                          Copy the complete JSON object printed by the command. It contains only the
-                          public signer key, signature, manager, and auth ID.
-                        </li>
-                        <li>
-                          Paste that JSON below and click <strong>Verify signer output</strong>.
-                          Sidekick will reject output for a different manager, auth ID, or live
-                          grant hash.
+                          Paste its complete JSON output below and click{" "}
+                          <strong>Verify signer output</strong>.
                         </li>
                       </ol>
                       <div className="ceremony-command">
@@ -1110,10 +1100,8 @@ export function SetupPage({
                   <div className="callout callout-info">
                     <ShieldCheck className="ic" />
                     <div className="body">
-                      <strong>Register the manager with PoX-5.</strong> This call grants the
-                      verified signer key to the manager and registers the manager in one
-                      transaction. Sign with a browser wallet below or use the manual values.
-                      Sidekick never receives the key or broadcasts the transaction itself.
+                      <strong>Register the manager with PoX-5.</strong> This transaction also
+                      registers the signer key. Sign below or use the manual transaction details.
                     </div>
                   </div>
 
@@ -1126,6 +1114,7 @@ export function SetupPage({
                     token={token}
                   />
 
+                  <h3>Manual registration</h3>
                   <ol className="ceremony-steps registration-instructions">
                     <li>
                       Open your preferred Stacks wallet, Explorer contract-call interface, or CLI on
@@ -1284,8 +1273,7 @@ export function SetupPage({
 
                     {activation.kind === "stake-required" ? (
                       <p className="activation-next-step">
-                        Have participants complete stake transactions through supported wallet or
-                        enrollment tools. Sidekick only verifies the resulting chain state.
+                        Have participants delegate enough STX before enrollment closes.
                       </p>
                     ) : null}
                     {activation.kind === "scheduled" && signingStartHeight ? (
@@ -1335,14 +1323,6 @@ export function SetupPage({
               ) : null}
             </div>
           )}
-          <div className="callout callout-neutral setup-note">
-            <ShieldCheck className="ic" />
-            <div className="body">
-              <strong>External authority stays external.</strong> Sidekick never accepts the manager
-              admin key or signer private key, never signs these setup transactions, and never
-              broadcasts them.
-            </div>
-          </div>
         </div>
       </div>
     </>

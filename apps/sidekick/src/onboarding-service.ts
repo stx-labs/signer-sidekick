@@ -364,13 +364,23 @@ export class OnboardingService {
     observedAt = new Date().toISOString(),
   ): Promise<PublicOnboardingState> {
     const parsed = freshInputSchema.safeParse(input);
-    if (!parsed.success) throw new OperatorWorkflowError(400, "invalid_fresh_setup_input");
+    if (!parsed.success) {
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_fresh_setup_input",
+        "Enter a valid admin principal, contract name, authorization ID, and signer configuration path",
+      );
+    }
     const freshInput = parsed.data;
     const managerPrincipal = `${freshInput.adminPrincipal}.${freshInput.contractName}`;
     try {
       parseContractPrincipal(managerPrincipal);
     } catch {
-      throw new OperatorWorkflowError(400, "invalid_fresh_setup_input");
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_fresh_setup_input",
+        "The admin principal is invalid for the selected network",
+      );
     }
     if (managerPrincipal !== this.options.managerPrincipal) {
       throw new OperatorWorkflowError(
@@ -384,7 +394,11 @@ export class OnboardingService {
     try {
       assertManagerRenderPreflight(config.network, preflight);
     } catch {
-      throw new OperatorWorkflowError(422, "fresh_setup_sources_incompatible");
+      throw new OperatorWorkflowError(
+        422,
+        "fresh_setup_sources_incompatible",
+        "Fresh setup is blocked by node, API, PoX-5, or network compatibility checks. Review preflight, resolve the failures, and retry",
+      );
     }
     const compatibilityStore = await loadNetworkCompatibilityProfiles({
       ...(config.compatibilityProfilesDirectory
@@ -451,7 +465,11 @@ export class OnboardingService {
     const { config, node, api } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new OperatorWorkflowError(422, "signer_grant_sources_incompatible");
+      throw new OperatorWorkflowError(
+        422,
+        "signer_grant_sources_incompatible",
+        "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry",
+      );
     }
     const preparation = await prepareSignerGrant(
       node,
@@ -524,7 +542,11 @@ export class OnboardingService {
     const { node, api, config } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new OperatorWorkflowError(422, "signer_grant_sources_incompatible");
+      throw new OperatorWorkflowError(
+        422,
+        "signer_grant_sources_incompatible",
+        "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry",
+      );
     }
     const preparation = await prepareSignerGrant(
       node,
@@ -665,7 +687,11 @@ export class OnboardingService {
     const step = z.string().min(1).parse(stepInput);
     const { stored, data } = this.readData();
     if (step !== "complete" && !data.activationPlan?.steps.some(({ id }) => id === step)) {
-      throw new OperatorWorkflowError(400, "invalid_onboarding_step");
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_onboarding_step",
+        "The selected setup step is not part of the current onboarding plan. Refresh setup and retry",
+      );
     }
     this.save(stored.path, step, stored.status, data, observedAt, "step-selected");
     return this.getOrThrow();
@@ -673,7 +699,13 @@ export class OnboardingService {
 
   artifact(kind: "source" | "manifest"): { filename: string; contentType: string; body: string } {
     const { data } = this.readData("fresh");
-    if (!data.managerArtifact) throw new OperatorWorkflowError(404, "artifact_not_found");
+    if (!data.managerArtifact) {
+      throw new OperatorWorkflowError(
+        404,
+        "artifact_not_found",
+        "The manager deployment files have not been generated. Prepare fresh setup first",
+      );
+    }
     if (kind === "source") {
       return {
         filename: data.managerArtifact.manifest.artifact.sourceFile,
@@ -693,9 +725,19 @@ export class OnboardingService {
     data: PersistedOnboardingData;
   } {
     const stored = this.options.store.getOnboardingState();
-    if (!stored) throw new OperatorWorkflowError(409, "onboarding_not_started");
+    if (!stored) {
+      throw new OperatorWorkflowError(
+        409,
+        "onboarding_not_started",
+        "Setup has not started. Choose an onboarding path first",
+      );
+    }
     if (expectedPath && stored.path !== expectedPath) {
-      throw new OperatorWorkflowError(409, "onboarding_path_conflict");
+      throw new OperatorWorkflowError(
+        409,
+        "onboarding_path_conflict",
+        "This action belongs to the other onboarding path. Return to Initial Setup and choose the intended path",
+      );
     }
     const data = persistedOnboardingDataSchema.safeParse(stored.state);
     if (!data.success) throw new Error("Stored onboarding state is invalid; restart onboarding");

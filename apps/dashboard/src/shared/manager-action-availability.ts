@@ -14,7 +14,7 @@ export function managerActionAvailability(
     return {
       available: false,
       reason:
-        "Sidekick does not have a recent authoritative operator snapshot. Refresh operator state before preparing a manager action.",
+        "Manager actions are paused because the displayed data is stale. Refresh to continue.",
       warning: null,
     };
   }
@@ -47,9 +47,9 @@ export function managerActionAvailability(
       data.manager.provenance.status === "verified");
   return {
     available: true,
-    reason: "The configured manager exposes the required interface on this network.",
+    reason: "Manager actions are available.",
     warning: referenceVerified
       ? null
-      : "Sidekick cannot attest this manager's behavior. Verify the contract, function, arguments, and postconditions in your wallet or signing tool before signing. Assist remains unavailable.",
+      : "Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable. Review each transaction carefully before signing.",
   };
 }

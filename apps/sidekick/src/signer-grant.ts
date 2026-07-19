@@ -143,7 +143,13 @@ export async function verifySignerGrantOutput(
   input: unknown,
 ): Promise<VerifiedSignerGrant> {
   const parsed = signerGrantOutputSchema.safeParse(input);
-  if (!parsed.success) throw new OperatorWorkflowError(400, "invalid_signer_output");
+  if (!parsed.success) {
+    throw new OperatorWorkflowError(
+      400,
+      "invalid_signer_output",
+      "Paste the complete JSON object printed by the signer command",
+    );
+  }
   const output = parsed.data;
   const manager = parseContractPrincipal(expectedManagerPrincipal);
   const expectedAuthId = parseAuthId(expectedAuthIdInput);

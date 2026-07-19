@@ -457,7 +457,8 @@ export class ManagerClaimAssistCoordinator {
     at: string,
   ): DurableAssistContext | ManagerClaimAssistExecutionResult {
     const job = this.#repository.getLogicalJob(jobId);
-    if (job === null) return blocked("job-not-found", "Assist logical job does not exist");
+    if (job === null)
+      return blocked("job-not-found", "This transaction job no longer exists. Refresh Operations");
     const attempts = this.#repository.listAttempts(job.jobId);
     const existing = attempts.at(-1);
     if (existing) {
@@ -471,13 +472,22 @@ export class ManagerClaimAssistCoordinator {
         job.state === "nonce_reserved"
       )
     ) {
-      return blocked("job-not-executable", `Logical job state ${job.state} cannot begin execution`);
+      if (job.state === "blocked") {
+        return blocked(
+          "job-not-executable",
+          "This job is blocked and cannot start Assist. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+        );
+      }
+      return blocked(
+        "job-not-executable",
+        `This job is ${job.state.replaceAll("_", " ")} and cannot start Assist. Refresh Operations`,
+      );
     }
     if (
       job.adapterId !== MANAGER_CLAIM_REWARDS_ADAPTER_ID ||
       job.adapterRevision !== MANAGER_CLAIM_REWARDS_ADAPTER_REVISION
     ) {
-      return blocked("job-not-executable", "Logical job is not the fixed manager-claim adapter");
+      return blocked("job-not-executable", "This job is not a supported manager-claim transaction");
     }
     const intent = parseManagerClaimIntentRecord(job.intent);
     const policy = parseManagerClaimPolicyRecord(job.policy);
@@ -488,20 +498,20 @@ export class ManagerClaimAssistCoordinator {
       !policy.signingAllowed ||
       !policy.broadcastAllowed
     ) {
-      return blocked(
-        "assist-policy-required",
-        "Durable job policy does not permit Assist execution",
-      );
+      return blocked("assist-policy-required", "This job does not permit Assist execution");
     }
     const approval = this.#repository.getActiveApproval(job.jobId, at);
     if (approval === null) {
       return blocked(
         "approval-missing-or-expired",
-        "An exact unexpired durable approval is required",
+        "Approval is missing or expired. Sync chain data to prepare a new current job, then review and approve it",
       );
     }
     if (!exactApproval(job, approval)) {
-      return blocked("approval-mismatch", "The current approval does not exactly bind this job");
+      return blocked(
+        "approval-mismatch",
+        "Approval no longer matches this job. Sync chain data to prepare a new current job, then review and approve it",
+      );
     }
     return { job, approval, intent, policy };
   }
@@ -520,7 +530,7 @@ export class ManagerClaimAssistCoordinator {
     if (!admission.admitted) {
       return blocked(
         "admission-denied",
-        "Fresh broadcast admission did not pass",
+        `Assist checks failed: ${admission.blocks.map(({ message }) => message).join("; ")}`,
         admission.blocks,
       );
     }
@@ -531,10 +541,13 @@ export class ManagerClaimAssistCoordinator {
       input.admission.liveAnchor.indexBlockHash,
     );
     if (account.status !== "observed") {
-      return blocked(
-        "account-observation-unavailable",
-        `Anchored account observation is ${account.status}`,
-      );
+      const message =
+        account.status === "schema-invalid"
+          ? "The gas-payer account response is incompatible with Sidekick. Check node compatibility"
+          : account.reason === "http-error"
+            ? "The node rejected the gas-payer account request. Check its URL and access settings"
+            : "Gas-payer account state is unavailable. Check node connectivity and try again";
+      return blocked("account-observation-unavailable", message);
     }
     const sealedNonce = BigInt(plan.material.transaction.nonce);
     if (
@@ -544,7 +557,7 @@ export class ManagerClaimAssistCoordinator {
     ) {
       return blocked(
         "anchored-nonce-mismatch",
-        "The sealed nonce is not the exact anchored account nonce",
+        "The gas-payer nonce changed. Sync chain data and prepare a new job",
       );
     }
     let mempool: GasPayerMempoolActivityResult;
@@ -553,7 +566,7 @@ export class ManagerClaimAssistCoordinator {
     } catch {
       return blocked(
         "mempool-observation-unavailable",
-        "Complete gas-payer mempool activity is unavailable",
+        "Gas-payer mempool activity could not be read. Check Reference API connectivity and compatibility",
       );
     }
     if (mempool.status !== "complete") {
@@ -565,7 +578,7 @@ export class ManagerClaimAssistCoordinator {
     if (mempool.nonceActivities.some(({ nonce }) => nonce >= sealedNonce)) {
       return blocked(
         "foreign-nonce-activity",
-        "Foreign same-or-higher gas-payer nonce activity is present in the mempool",
+        "Another transaction is using this gas-payer nonce. Resolve it before using Assist",
       );
     }
     const nonceDecision = evaluateNonceOwnership({
@@ -583,14 +596,14 @@ export class ManagerClaimAssistCoordinator {
     if (!nonceDecision.allowed || nonceDecision.action !== "reserve-initial") {
       return blocked(
         "nonce-policy-denied",
-        "Exclusive nonce policy did not admit the anchored nonce",
+        "Sidekick cannot safely reserve the gas-payer nonce. Resolve existing nonce activity first",
       );
     }
 
     if (durable.job.state === "preflighted") {
       return blocked(
         "approval-missing-or-expired",
-        "The approved logical job has not entered awaiting-approval state",
+        "This job is not ready for its approval. Refresh Operations",
       );
     }
 
@@ -638,7 +651,7 @@ export class ManagerClaimAssistCoordinator {
       }
       return blocked(
         "approval-missing-or-expired",
-        "The durable approval was no longer current at broadcast commitment",
+        "Approval changed before broadcast. Sync chain data to prepare a new current job, then review and approve it",
         commitmentAdmission.blocks,
       );
     }
@@ -1221,7 +1234,7 @@ export class ManagerClaimAssistCoordinator {
         jobId: job.jobId,
         attemptId: attempt.attemptId,
         txid: attempt.precomputedTxid,
-        reason: "Complete gas-payer mempool activity is unavailable",
+        reason: "Gas-payer mempool activity is unavailable",
       };
     }
     if (mempool.status !== "complete") {
@@ -1342,7 +1355,7 @@ export class ManagerClaimAssistCoordinator {
           jobId: job.jobId,
           attemptId: attempt.attemptId,
           txid: attempt.precomputedTxid,
-          reason: "Stacks API execution status is unavailable for the indexed transaction",
+          reason: "Reference API execution status is unavailable for the indexed transaction",
         };
       }
       if (
@@ -1355,7 +1368,7 @@ export class ManagerClaimAssistCoordinator {
           jobId: job.jobId,
           attemptId: attempt.attemptId,
           txid: attempt.precomputedTxid,
-          reason: "Core and Stacks API transaction inclusion facts disagree",
+          reason: "Node and Reference API transaction inclusion facts disagree",
         };
       }
       const inclusion = this.#inclusion(attempt, summary, true, at);

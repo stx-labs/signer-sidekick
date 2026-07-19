@@ -111,6 +111,7 @@ export class ManagerClaimWalletIntentError extends Error {
   constructor(
     readonly code: "unavailable" | "invalid" | "superseded",
     message: string,
+    readonly retryable = false,
   ) {
     super(message);
     this.name = "ManagerClaimWalletIntentError";
@@ -224,7 +225,7 @@ function publicNetwork(input: ManagerClaimWalletLiveIdentity["network"]): {
   transactionVersion: 0 | 0x80;
 } {
   if (!Number.isInteger(input.chainId) || input.chainId < 0 || input.chainId > 0xffff_ffff) {
-    return unavailable("Wallet manager claims require an exact uint32 chain ID");
+    return unavailable("The claim transaction has an invalid chain ID");
   }
   if (input.name === "mainnet" && input.kind === "mainnet" && input.chainId === mainnetChainId) {
     return { network: "mainnet", chainId: mainnetChainId, transactionVersion: 0 };
@@ -243,18 +244,16 @@ function publicNetwork(input: ManagerClaimWalletLiveIdentity["network"]): {
   if ((input.name === "devnet" || input.name === "regtest") && input.kind === "testnet") {
     return { network: input.name, chainId: input.chainId, transactionVersion: 0x80 };
   }
-  return unavailable(
-    "The manager-claim network name, transaction class, and chain ID do not match",
-  );
+  return unavailable("The claim job does not match Sidekick's configured network");
 }
 
 function assertActorNetwork(actorPrincipal: string, network: BrowserWalletIntentNetwork): void {
   if (!validateStacksAddress(actorPrincipal)) {
-    invalid("The claim wallet actor must be a valid standard Stacks principal");
+    invalid("Connect a valid Stacks account to pay for this claim");
   }
   const isMainnet = actorPrincipal.startsWith("SP") || actorPrincipal.startsWith("SM");
   if (isMainnet !== (network === "mainnet")) {
-    invalid("The claim wallet actor does not match the prepared job network");
+    invalid("The connected account is for a different network");
   }
 }
 
@@ -264,14 +263,14 @@ function exactJob(
   binding?: ManagerClaimWalletJobBinding,
 ) {
   const job = repository.getLogicalJob(jobId);
-  if (job === null) invalid("The selected manager-claim job does not exist");
+  if (job === null) invalid("This claim job no longer exists. Refresh Operations");
   if (
     job.adapterId !== MANAGER_CLAIM_REWARDS_ADAPTER_ID ||
     job.adapterRevision !== MANAGER_CLAIM_REWARDS_ADAPTER_REVISION ||
     transactionEngineDocumentSha256(job.intent) !== job.intentSha256 ||
     transactionEngineDocumentSha256(job.policy) !== job.policySha256
   ) {
-    invalid("The selected manager-claim job failed its immutable adapter binding");
+    invalid("This claim job failed its integrity check. Do not sign it");
   }
   if (
     binding &&
@@ -280,7 +279,7 @@ function exactJob(
       job.intentSha256 !== binding.intentSha256 ||
       job.policySha256 !== binding.policySha256)
   ) {
-    invalid("The selected manager-claim job no longer matches the sealed wallet request");
+    invalid("This claim job changed. Prepare the transaction again");
   }
   return job;
 }
@@ -304,7 +303,7 @@ async function assertCurrentEligibility(input: {
     input.observation.job.attestation.revision !== job.attestation.revision ||
     input.observation.job.attestation.payloadSha256 !== job.attestation.payloadSha256
   ) {
-    unavailable("The selected manager-claim job is not the current authoritative observation");
+    unavailable("This claim job changed. Sync chain data and select the current job");
   }
   const accepted = await input.repository.get(job.attestation.issuer);
   if (
@@ -313,13 +312,13 @@ async function assertCurrentEligibility(input: {
     accepted.acceptedState.payloadSha256 !== job.attestation.payloadSha256 ||
     Date.parse(accepted.document.payload.expiresAt) <= observedAt
   ) {
-    unavailable("The selected manager-claim job does not use the current unexpired attestation");
+    unavailable("This claim job's compatibility attestation expired or changed. Sync chain data");
   }
   if (input.repository.getDisabledAdapterControl(MANAGER_CLAIM_REWARDS_ADAPTER_ID) !== null) {
     unavailable("The manager-claim adapter is disabled");
   }
   if (input.repository.getForceObserveControl() !== null) {
-    unavailable("Emergency Force Observe blocks new browser-wallet claims");
+    unavailable("Emergency Observe mode blocks new browser-wallet claims");
   }
 }
 
@@ -337,7 +336,7 @@ function resolveManagerClaimWalletIntent(input: {
   requirePrepared: boolean;
 }): ManagerClaimWalletIntentFacts {
   if (input.requirePrepared && input.live.requestedMode !== "observe") {
-    unavailable("Browser-wallet manager claims are disabled while Assist mode is configured");
+    unavailable("Browser-wallet claims require Observe mode. Use Assist or switch modes");
   }
   const job = exactJob(input.repository, input.jobId);
   const intent = parseManagerClaimIntentRecord(job.intent);
@@ -351,12 +350,12 @@ function resolveManagerClaimWalletIntent(input: {
     !policy.adapterEnabled ||
     policy.rewardsPaused
   ) {
-    unavailable("The selected manager-claim job is not an executable Observe-only plan");
+    unavailable("This claim job is not ready for browser-wallet execution. Refresh Operations");
   }
   if (input.requirePrepared && job.state !== "preflighted") {
     throw new ManagerClaimWalletIntentError(
       "superseded",
-      "The selected manager-claim job is no longer awaiting external execution",
+      "This claim job is no longer ready for browser-wallet execution. Refresh Operations",
     );
   }
   if (
@@ -366,11 +365,12 @@ function resolveManagerClaimWalletIntent(input: {
     input.repository.getNonceReservationForJob(job.jobId) !== null ||
     input.repository.listAttempts(job.jobId).length !== 0
   ) {
-    unavailable("The selected manager-claim job has competing Assist or transaction state");
+    unavailable("This claim job already has Assist or transaction activity. Refresh Operations");
   }
 
   const planResult = sealedPlanSchema.safeParse(intent.sealedPlan);
-  if (!planResult.success) invalid("The selected manager-claim job has an invalid sealed plan");
+  if (!planResult.success)
+    invalid("This claim job failed its sealed-plan integrity check. Do not sign it");
   const plan = planResult.data;
   const network = publicNetwork(input.live.network);
   assertActorNetwork(input.actorPrincipal, network.network);
@@ -388,20 +388,20 @@ function resolveManagerClaimWalletIntent(input: {
     plan.material.call.contract !== job.managerPrincipal ||
     plan.material.expectedEffect.recipient !== job.managerPrincipal
   ) {
-    invalid("The selected manager-claim job does not match the trusted live manager identity");
+    invalid("This claim job no longer matches the verified manager. Do not sign it");
   }
   if (
     plan.material.transaction.unsignedTransactionSha256 !== plan.unsignedTransactionSha256 ||
     sha256Hex(plan.unsignedTransactionHex) !== plan.unsignedTransactionSha256
   ) {
-    invalid("The selected manager-claim transaction failed its sealed byte digest");
+    invalid("The claim transaction failed its byte-integrity check. Do not sign it");
   }
 
   let transaction: ReturnType<typeof deserializeTransaction>;
   try {
     transaction = deserializeTransaction(plan.unsignedTransactionHex);
   } catch {
-    return invalid("The selected manager-claim transaction is not decodable");
+    return invalid("The claim transaction cannot be decoded. Do not sign it");
   }
   if (
     Buffer.from(transaction.serializeBytes()).toString("hex") !== plan.unsignedTransactionHex ||
@@ -411,7 +411,7 @@ function resolveManagerClaimWalletIntent(input: {
     transaction.postConditions.values.length !== 1 ||
     transaction.payload.payloadType !== PayloadType.ContractCall
   ) {
-    invalid("The selected manager-claim transaction does not preserve its network and deny mode");
+    invalid("The claim transaction failed its network or postcondition-mode check. Do not sign it");
   }
   const payload = transaction.payload;
   const contract = `${addressToString(payload.contractAddress)}.${payload.contractName.content}`;
@@ -425,10 +425,11 @@ function resolveManagerClaimWalletIntent(input: {
     payload.functionArgs[1]?.type !== ClarityType.UInt ||
     payload.functionArgs[1].value.toString() !== plan.material.call.rewardCycle
   ) {
-    invalid("The selected manager-claim transaction does not preserve the sealed call");
+    invalid("The claim transaction does not match the sealed contract call. Do not sign it");
   }
   const condition = transaction.postConditions.values[0];
-  if (condition === undefined) invalid("The selected manager-claim postcondition is missing");
+  if (condition === undefined)
+    invalid("The claim transaction is missing its postcondition. Do not sign it");
   const decodedCondition = wireToPostCondition(condition);
   if (
     decodedCondition.type !== "ft-postcondition" ||
@@ -453,7 +454,7 @@ function resolveManagerClaimWalletIntent(input: {
     intent.reconciliation.expectedEffect.recipient !== plan.material.expectedEffect.recipient ||
     intent.reconciliation.expectedEffect.amountSats !== decodedCondition.amount
   ) {
-    invalid("The selected manager-claim transaction does not preserve its exact sBTC effect");
+    invalid("The claim transaction does not match the exact sBTC effect. Do not sign it");
   }
   const [assetContract, assetName, extraAssetPart] = decodedCondition.asset.split("::");
   if (
@@ -462,7 +463,7 @@ function resolveManagerClaimWalletIntent(input: {
     !assetContract?.endsWith(".sbtc-token") ||
     !decodedCondition.address.endsWith(".pox-5")
   ) {
-    invalid("The selected manager-claim postcondition is not the exact PoX-5 sBTC asset effect");
+    invalid("The claim postcondition does not match the PoX-5 sBTC asset effect. Do not sign it");
   }
   const postCondition = serializePostConditionWire(condition);
   const reconciliationSha256 = transactionEngineDocumentSha256(intent.reconciliation);
@@ -516,9 +517,8 @@ function resolveManagerClaimWalletIntent(input: {
     },
     review: {
       title: "Claim signer rewards",
-      summary: `Run the exact reviewed reward claim for cycle ${plan.material.call.rewardCycle}.`,
-      expectedPostState:
-        "The canonical transaction succeeds, then the existing engine job reconciles the exact claim effect.",
+      summary: `Claim signer rewards for cycle ${plan.material.call.rewardCycle}.`,
+      expectedPostState: "The claim is confirmed on-chain and the transaction job is updated.",
       fields: [
         { label: "Job ID", value: job.jobId },
         { label: "Manager", value: job.managerPrincipal },

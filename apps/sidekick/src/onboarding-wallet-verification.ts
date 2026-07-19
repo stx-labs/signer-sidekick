@@ -97,7 +97,9 @@ export interface VerifiedWalletTransaction {
 
 export class WalletTransactionMismatchError extends Error {
   constructor(readonly reason: string) {
-    super(`Wallet transaction does not match the prepared intent: ${reason}`);
+    super(
+      `The submitted transaction does not match the prepared request (${reason}). Do not retry it; prepare a new transaction.`,
+    );
     this.name = "WalletTransactionMismatchError";
   }
 }

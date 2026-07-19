@@ -10,6 +10,22 @@ import {
 const admin = "SP000000000000000000002Q6VF78";
 const managerPrincipal = `${admin}.signer-manager`;
 
+function renderPanel(
+  createRequest: { action: "deploy-manager" } | { action: "register-self"; actorPrincipal: string },
+  chainId = 1,
+  network = "mainnet",
+): string {
+  return renderToStaticMarkup(
+    <BrowserWalletActionPanel
+      chainId={chainId}
+      createRequest={createRequest}
+      managerPrincipal={managerPrincipal}
+      network={network}
+      token="test-token"
+    />,
+  );
+}
+
 class MemoryStorage {
   readonly values = new Map<string, string>();
 
@@ -37,6 +53,30 @@ class MemoryStorage {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("BrowserWalletActionPanel recovery", () => {
+  it("derives concise signing guidance from the supported providers", () => {
+    const leatherOnly = renderPanel({ action: "deploy-manager" });
+    expect(leatherOnly).toContain("Supported wallet: Leather.");
+
+    const multipleWallets = renderPanel({ action: "register-self", actorPrincipal: admin });
+    expect(multipleWallets).toContain("Supported wallets: Leather or Xverse.");
+
+    for (const html of [leatherOnly, multipleWallets]) {
+      expect(html).not.toContain("Clarity 6");
+      expect(html).not.toContain("chain ID");
+      expect(html).not.toContain("network key");
+    }
+  });
+
+  it("renders an unsupported-network fallback once", () => {
+    const html = renderPanel({ action: "deploy-manager" }, 0x80000005);
+    expect(
+      html.match(
+        /Browser wallet signing is unavailable for this network\. Use another signing tool\./g,
+      ),
+    ).toHaveLength(1);
+    expect(html).not.toContain("Supported wallet");
+  });
+
   it("renders every same-scope pending intent and blocks new preparation and signing", () => {
     const storage = new MemoryStorage();
     const firstIntentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";

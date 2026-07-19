@@ -153,8 +153,8 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "render-manager",
       status: "ready",
-      title: "Render the pinned manager artifact",
-      detail: `Render profile ${profileId} and verify its immutable source hash`,
+      title: "Generate manager files",
+      detail: `Generate the manager contract and deployment manifest from profile ${profileId}`,
       command: [
         "sidekick manager render",
         shellQuote(options.adminPrincipal),
@@ -166,18 +166,17 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "deploy-manager",
       status: options.preflight.status === "fail" ? "blocked" : "pending",
-      title: "Deploy the manager with the external admin wallet",
-      detail:
-        "Review the rendered principals and source hashes, then sign and submit the Clarity 6 deployment outside Sidekick",
+      title: "Deploy manager",
+      detail: "Review and submit the manager deployment",
       command: null,
       requires: ["render-manager"],
     },
     {
       id: "prepare-signer-grant",
       status: options.preflight.pox.pox5ContractId ? "ready" : "blocked",
-      title: "Prepare the live PoX-5 signer grant",
+      title: "Generate signer authorization",
       detail: options.preflight.pox.pox5ContractId
-        ? `Use auth ID ${authId}; Sidekick reads the live grant hash but never reads the signer key`
+        ? `Authorization ID ${authId}`
         : "Wait until the connected node exposes the active PoX-5 contract",
       command: options.preflight.pox.pox5ContractId
         ? [
@@ -192,9 +191,8 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "verify-signer-grant",
       status: options.preflight.pox.pox5ContractId ? "ready" : "blocked",
-      title: "Verify signer output and prepare register-self",
-      detail:
-        "Sidekick verifies the signer key, signature, manager, auth ID, and live PoX-5 hash before emitting register-self arguments",
+      title: "Verify signer authorization",
+      detail: "Verify the signer output before preparing registration",
       command: options.preflight.pox.pox5ContractId
         ? [
             "sidekick signer-grant verify",
@@ -208,8 +206,8 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "register-manager",
       status: "pending",
-      title: "Register the manager with the external admin wallet",
-      detail: "Sign and submit the generated register-self call outside Sidekick",
+      title: "Register manager",
+      detail: "Review and submit the register-self transaction",
       command: null,
       requires: ["deploy-manager", "verify-signer-grant"],
     },
@@ -217,7 +215,7 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
       id: "verify-setup",
       status: "pending",
       title: "Verify registration, grant, and pool eligibility",
-      detail: "Re-read PoX-5 state directly after register-self confirms",
+      detail: "Check registration, signer authorization, and eligibility after confirmation",
       command: `sidekick setup status ${shellQuote(managerPrincipal)}`,
       requires: ["register-manager"],
     },
@@ -225,7 +223,7 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
       id: "publish-enrollment-info",
       status: "pending",
       title: "Generate pool enrollment information",
-      detail: "Publish only the reviewed, provider-neutral public fields",
+      detail: "Generate public pool information",
       command: `sidekick pool enrollment-info ${shellQuote(managerPrincipal)} <POOL_CONFIG_JSON>`,
       requires: ["verify-setup"],
     },
@@ -267,12 +265,12 @@ export function createAttachActivationPlan(
       title: "Verify the deployed manager",
       detail: manager.attachAllowed
         ? manager.source.tier === "reference-built-in"
-          ? `Manager source matches built-in profile ${manager.source.profileId}`
+          ? `Manager source matches trusted profile ${manager.source.profileId}`
           : manager.source.tier === "reference-render"
-            ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
+            ? `Manager source matches trusted profile ${manager.source.profileId}`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager source is recorded; fixed external actions remain available, but reference-manager Assist is disabled"
-              : "Manager source is unrecognized; fixed external actions remain available, but Assist is disabled"
+              ? "Custom manager attached for monitoring; Assist is unavailable"
+              : "Manager source is unrecognized; Assist is unavailable"
         : "Manager network or interface is incompatible",
       command: `sidekick manager verify ${shellQuote(manager.managerPrincipal)}`,
       requires: ["preflight"],
@@ -312,7 +310,7 @@ export function createAttachActivationPlan(
       id: "publish-enrollment-info",
       status: manager.attachAllowed && registrationValid && grantValid ? "ready" : "blocked",
       title: "Generate pool enrollment information",
-      detail: "Publish only the reviewed, provider-neutral public fields",
+      detail: "Generate public pool information",
       command: `sidekick pool enrollment-info ${shellQuote(manager.managerPrincipal)} <POOL_CONFIG_JSON>`,
       requires: ["verify-manager", "verify-registration", "verify-signer-grant"],
     },

@@ -576,7 +576,14 @@ describe("live manager-claim observation", () => {
       status: "blocked",
       disposition: "invalidated",
       code,
+      message: expect.stringContaining(
+        "Sync chain data to prepare a new current job, then review and approve it",
+      ),
       job: { state: "blocked" },
+    });
+    expect(store.transactionEngine.getLogicalJob(fresh.job.jobId)).toMatchObject({
+      state: "blocked",
+      blockReason: `approval-revalidation:${code}`,
     });
     expect(store.transactionEngine.getActiveApproval(fresh.job.jobId)).toBeNull();
   });
@@ -589,7 +596,13 @@ describe("live manager-claim observation", () => {
       status: "blocked",
       disposition: "invalidated",
       code: "gas-nonce-changed",
+      message:
+        "The gas-payer nonce changed after approval. Sync chain data to prepare a new current job, then review and approve it",
       job: { state: "blocked" },
+    });
+    expect(store.transactionEngine.getLogicalJob(fresh.job.jobId)).toMatchObject({
+      state: "blocked",
+      blockReason: "approval-revalidation:gas-nonce-changed",
     });
     expect(store.transactionEngine.getActiveApproval(fresh.job.jobId)).toBeNull();
   });
@@ -858,7 +871,58 @@ describe("live manager-claim observation", () => {
     ).observe(input(attestation));
     expect(missingAccount).toMatchObject({
       status: "blocked",
-      blocks: [{ code: "node-read-unavailable" }],
+      blocks: [
+        {
+          code: "node-read-unavailable",
+          message:
+            "The node rejected the gas-payer account request. Check its URL and access settings",
+        },
+      ],
+    });
+
+    const incompatibleAccount = await service(
+      store,
+      evidenceStore(),
+      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
+      reader({
+        readAnchoredAccount: vi.fn().mockResolvedValue({
+          status: "schema-invalid",
+          httpStatus: 200,
+          reason: "unexpected-response",
+        }),
+      }),
+    ).observe(input(attestation));
+    expect(incompatibleAccount).toMatchObject({
+      status: "blocked",
+      blocks: [
+        {
+          code: "node-read-unavailable",
+          message:
+            "The gas-payer account response is incompatible with Sidekick. Check node compatibility",
+        },
+      ],
+    });
+
+    const incompatibleFee = await service(
+      store,
+      evidenceStore(),
+      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
+      reader({
+        estimateUnsignedTransactionFee: vi.fn().mockResolvedValue({
+          status: "schema-invalid",
+          httpStatus: 200,
+          reason: "unexpected-response",
+        }),
+      }),
+    ).observe(input(attestation));
+    expect(incompatibleFee).toMatchObject({
+      status: "blocked",
+      blocks: [
+        {
+          code: "fee-estimate-unavailable",
+          message: "The claim fee response is incompatible with Sidekick. Check node compatibility",
+        },
+      ],
     });
 
     const cappedInput = input(attestation);

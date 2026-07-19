@@ -303,6 +303,7 @@ export class OnboardingWalletIntentError extends Error {
       | "wallet_intent_expired"
       | "wallet_transaction_mismatch",
     message: string,
+    readonly retryable = false,
   ) {
     super(message);
     this.name = "OnboardingWalletIntentError";
@@ -329,7 +330,10 @@ function nowPlusLifetime(observedAt: string): string {
 function normalizedTxid(txid: string): `0x${string}` {
   const value = txid.toLowerCase();
   if (!/^0x[0-9a-f]{64}$/.test(value)) {
-    throw new OnboardingWalletIntentError("wallet_intent_invalid", "Invalid transaction ID");
+    throw new OnboardingWalletIntentError(
+      "wallet_intent_invalid",
+      "Transaction ID must be 0x followed by 64 hexadecimal characters",
+    );
   }
   return value as `0x${string}`;
 }
@@ -487,7 +491,7 @@ export class OnboardingWalletIntentService {
     }
     throw new OnboardingWalletIntentError(
       "wallet_intent_conflict",
-      "Setup state changed while preparing the wallet request; review it and try again",
+      "Setup state changed while preparing the transaction. Review the latest state and try again",
     );
   }
 
@@ -518,7 +522,7 @@ export class OnboardingWalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "Wallet reported the transaction ID; independent chain verification is pending",
+          detail: "Transaction submitted. Waiting for on-chain verification",
         });
       }
       return this.publicIntent(submitted);
@@ -554,7 +558,7 @@ export class OnboardingWalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "An earlier transaction for this action may still take effect",
+          detail: "An earlier transaction may still complete. Do not submit another one yet",
         });
         return this.publicIntent(superseded);
       }
@@ -599,7 +603,7 @@ export class OnboardingWalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "The authoritative setup state is no longer valid for this wallet request",
+          detail: "Setup state changed. Prepare a new transaction",
         });
         return this.publicIntent(superseded);
       }
@@ -617,7 +621,7 @@ export class OnboardingWalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "Authoritative setup facts changed before wallet signing",
+          detail: "Setup state changed before signing. Prepare a new transaction",
         });
         return this.publicIntent(superseded);
       }
@@ -631,7 +635,7 @@ export class OnboardingWalletIntentService {
       this.recordUnavailable(
         stored,
         observedAt,
-        `Network-bound verification is unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+        `Verification paused: ${error instanceof Error ? error.message : "network check failed"}`,
       );
       return this.publicIntent(stored);
     }
@@ -644,7 +648,11 @@ export class OnboardingWalletIntentService {
       return await this.refreshIndexed(stored, manifest, indexed.value, observedAt, clients);
     }
     if (indexed.status !== "not-found") {
-      this.recordUnavailable(stored, observedAt, `Indexed transaction lookup: ${indexed.reason}`);
+      this.recordUnavailable(
+        stored,
+        observedAt,
+        `Confirmed transaction lookup is unavailable (${indexed.reason}). Sidekick will retry`,
+      );
       return this.publicIntent(stored);
     }
 
@@ -653,7 +661,11 @@ export class OnboardingWalletIntentService {
       return this.refreshPending(stored, manifest, pending.value, observedAt);
     }
     if (pending.status !== "not-found") {
-      this.recordUnavailable(stored, observedAt, `Pending transaction lookup: ${pending.reason}`);
+      this.recordUnavailable(
+        stored,
+        observedAt,
+        `Pending transaction lookup is unavailable (${pending.reason}). Sidekick will retry`,
+      );
       return this.publicIntent(stored);
     }
 
@@ -666,7 +678,8 @@ export class OnboardingWalletIntentService {
       canonical: null,
       blockHeight: null,
       indexBlockHash: null,
-      detail: "Transaction is not currently indexed or pending",
+      detail:
+        "Transaction is not visible in pending or confirmed node state. Wait and retry; replacement is available after 15 minutes",
     });
     return this.publicIntent(stored);
   }
@@ -676,7 +689,7 @@ export class OnboardingWalletIntentService {
     if (before.state !== "reobserve" || !before.submittedAt) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_conflict",
-        "Only a submitted transaction awaiting reobservation can be replaced",
+        "This transaction is not eligible for replacement",
       );
     }
     if (Date.parse(observedAt) < Date.parse(before.submittedAt) + replacementGraceMs) {
@@ -689,7 +702,7 @@ export class OnboardingWalletIntentService {
     if (refreshed.status !== "reobserve" || refreshed.verification?.outcome !== "not-found") {
       throw new OnboardingWalletIntentError(
         "wallet_intent_conflict",
-        "The transaction must be absent from both indexed and pending node state before replacement",
+        "The transaction is still visible to the node. Wait before replacing it",
       );
     }
     const stored = this.requireStored(id);
@@ -703,7 +716,7 @@ export class OnboardingWalletIntentService {
       canonical: null,
       blockHeight: null,
       indexBlockHash: null,
-      detail: "Operator requested a replacement after the transaction remained absent",
+      detail: "Transaction remained absent after 15 minutes and was replaced",
     });
     return await this.prepare(request, observedAt, superseded.id);
   }
@@ -742,7 +755,7 @@ export class OnboardingWalletIntentService {
     } catch {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "Fresh onboarding state is no longer active",
+        "Initial Setup is no longer active. Restart setup and prepare the transaction again",
       );
     }
   }
@@ -753,7 +766,7 @@ export class OnboardingWalletIntentService {
     } catch {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "Manager state is unavailable; attach or complete setup before preparing this action",
+        "Manager state is unavailable. Attach a manager or complete Initial Setup, then try again",
       );
     }
   }
@@ -785,14 +798,16 @@ export class OnboardingWalletIntentService {
   ): Promise<void> {
     const current = this.walletNetwork(clients.config);
     if (current.network !== manifest.network || current.chainId !== manifest.chainId) {
-      throw new Error("the current Sidekick network no longer matches the sealed wallet intent");
+      throw new Error("Sidekick's configured network changed. Prepare a new transaction");
     }
     const [nodeInfo, apiInfo] = await Promise.all([
       clients.node.getInfo(),
       clients.api.getNodeInfo(),
     ]);
     if (nodeInfo.network_id !== manifest.chainId || apiInfo.network_id !== manifest.chainId) {
-      throw new Error("the configured node and API do not match the sealed wallet chain ID");
+      throw new Error(
+        "The node or Reference API no longer matches this transaction's network. Check Settings, then retry",
+      );
     }
   }
 
@@ -816,7 +831,7 @@ export class OnboardingWalletIntentService {
     ) {
       throw new OnboardingWalletIntentError(
         "wallet_execution_unavailable",
-        "This operation requires a verified reference manager/profile on the matched live network",
+        "This action requires a verified reference manager on the configured network",
       );
     }
   }
@@ -833,7 +848,7 @@ export class OnboardingWalletIntentService {
     ) {
       throw new OnboardingWalletIntentError(
         "wallet_execution_unavailable",
-        "Wallet actions require the configured manager to expose the supported interface on the live network",
+        "The configured manager is unavailable or incompatible on this network",
       );
     }
   }
@@ -1000,7 +1015,7 @@ export class OnboardingWalletIntentService {
       if (this.freshStateSha256(action, latest) !== stateSha256) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_conflict",
-          "Manager or signer-grant state changed while validating the wallet request",
+          "Manager or signer authorization changed. Review the latest state and prepare again",
         );
       }
     };
@@ -1009,7 +1024,7 @@ export class OnboardingWalletIntentService {
       if (!state.freshInput || !state.managerArtifact) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "Prepare the fresh manager artifact before creating a deployment intent",
+          "Generate the manager files before preparing the deployment transaction",
         );
       }
       const artifact = state.managerArtifact;
@@ -1053,10 +1068,9 @@ export class OnboardingWalletIntentService {
             },
           },
           review: {
-            title: "Deploy the reviewed signer manager",
-            summary: `Deploy ${state.managerPrincipal} using the exact reviewed Clarity 6 source.`,
-            expectedPostState:
-              "The exact reviewed manager source is canonical on the bound network.",
+            title: "Deploy signer manager",
+            summary: `Deploy ${state.managerPrincipal}.`,
+            expectedPostState: "The reviewed manager contract source is confirmed on-chain.",
             fields: [
               { label: "Manager", value: state.managerPrincipal },
               { label: "Sender", value: state.freshInput.adminPrincipal },
@@ -1085,7 +1099,7 @@ export class OnboardingWalletIntentService {
     if (snapshot.preflight.node.networkId !== network.chainId) {
       throw new OnboardingWalletIntentError(
         "wallet_execution_unavailable",
-        "The live node chain ID does not match the wallet network",
+        "The node does not match the selected wallet network. Check Settings and try again",
       );
     }
     if (setupRequest && state.managerArtifact) {
@@ -1103,7 +1117,7 @@ export class OnboardingWalletIntentService {
       ) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "The exact reviewed manager deployment must be canonical before registration",
+          "The deployed manager must match the reviewed source before registration",
         );
       }
     } else if (setupRequest || action === "claim-rewards") {
@@ -1116,7 +1130,7 @@ export class OnboardingWalletIntentService {
       if (!verified) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "Prepare and verify a new signer grant before registration",
+          "Generate and verify a signer authorization before registration",
         );
       }
       if (
@@ -1126,7 +1140,7 @@ export class OnboardingWalletIntentService {
       ) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "The exact signer key is already registered with a valid grant",
+          "This signer key is already registered and authorized",
         );
       }
     }
@@ -1136,7 +1150,7 @@ export class OnboardingWalletIntentService {
     if (!actorPrincipal || !validateStacksAddress(actorPrincipal)) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "Wallet actions require a valid standard-principal actor",
+        "Connect a valid Stacks account for this network",
       );
     }
     this.assertActionPrincipal(actorPrincipal, network.network);
@@ -1152,12 +1166,16 @@ export class OnboardingWalletIntentService {
         );
       }
       try {
-        const observation = await this.options.observeManagerClaimWalletJob?.(request.jobId);
-        if (!observation) {
-          throw new ManagerClaimWalletIntentError(
-            "unavailable",
-            "The transaction engine cannot refresh this manager-claim job",
+        const observeManagerClaimWalletJob = this.options.observeManagerClaimWalletJob;
+        if (!observeManagerClaimWalletJob) {
+          throw new OnboardingWalletIntentError(
+            "wallet_execution_unavailable",
+            "Browser-wallet claims are unavailable because the transaction engine is not running",
           );
+        }
+        const observation = await observeManagerClaimWalletJob(request.jobId);
+        if (!observation) {
+          throw new Error("Manager-claim wallet observation returned no result");
         }
         const prepared = await prepareManagerClaimWalletIntent({
           repository: this.options.store.transactionEngine,
@@ -1188,18 +1206,10 @@ export class OnboardingWalletIntentService {
               ? "wallet_execution_unavailable"
               : "wallet_intent_conflict",
             error.message,
+            error.retryable,
           );
         }
-        const staleSelection =
-          error instanceof Error &&
-          error.message ===
-            "The selected manager-claim job is not the current actionable observation";
-        throw new OnboardingWalletIntentError(
-          staleSelection ? "wallet_intent_conflict" : "wallet_execution_unavailable",
-          staleSelection
-            ? "The selected manager-claim job is no longer the current actionable observation"
-            : "The transaction engine could not refresh current manager-claim eligibility",
-        );
+        throw error;
       }
     }
     const isAdmin = decodeBoolean(
@@ -1215,7 +1225,7 @@ export class OnboardingWalletIntentService {
     if (!isAdmin) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "The selected wallet actor is not a current manager admin",
+        "Connect a current manager-admin account",
       );
     }
     const commonFields = [
@@ -1259,13 +1269,13 @@ export class OnboardingWalletIntentService {
       if (!verified) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "Prepare and verify a new signer grant before registration",
+          "Generate and verify a signer authorization before registration",
         );
       }
       if (snapshot.preflight.pox.pox5ContractId !== verified.pox5ContractId) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_conflict",
-          "The active PoX-5 contract changed; repeat the signer grant ceremony",
+          "The active PoX-5 contract changed. Generate and verify a new signer authorization",
         );
       }
       if (
@@ -1275,7 +1285,7 @@ export class OnboardingWalletIntentService {
       ) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "The exact signer key is already registered with a valid grant",
+          "This signer key is already registered and authorized",
         );
       }
       const currentGrant = await verifySignerGrantOutput(
@@ -1309,7 +1319,7 @@ export class OnboardingWalletIntentService {
       ) {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
-          "The verified signer grant has already been consumed; prepare a new grant",
+          "This signer authorization has already been used. Generate and verify a new one",
         );
       }
       assertStateUnchanged();
@@ -1372,8 +1382,8 @@ export class OnboardingWalletIntentService {
         throw new OnboardingWalletIntentError(
           "wallet_intent_invalid",
           enabled
-            ? "The target principal is already an admin"
-            : "The target principal is not an admin",
+            ? "This account is already a manager admin"
+            : "This account is not a manager admin",
         );
       }
       assertStateUnchanged();
@@ -1540,7 +1550,7 @@ export class OnboardingWalletIntentService {
     if (sweepable === 0n) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "There are no sweepable fee refunds at the current chain position",
+        "No fee refunds are currently available to sweep",
       );
     }
     const postCondition = postConditionToHex(
@@ -1605,8 +1615,8 @@ export class OnboardingWalletIntentService {
           blockHeight: hasSafeHeight ? blockHeight : null,
           indexBlockHash: hasSafeHeight ? indexed.indexBlockHash : null,
           detail: indexed.isCanonical
-            ? "The indexed transaction does not have an anchored block height"
-            : "The node reports a noncanonical transaction inclusion",
+            ? "The confirmed transaction has no anchored block height. Sidekick will retry"
+            : "The transaction is no longer canonical. Sidekick will keep checking",
         },
         decoded,
       );
@@ -1641,7 +1651,8 @@ export class OnboardingWalletIntentService {
             canonical: false,
             blockHeight,
             indexBlockHash: indexed.indexBlockHash,
-            detail: "Node and API do not agree on a canonical transaction inclusion",
+            detail:
+              "The node and Reference API disagree on the transaction's canonical inclusion. Sidekick will keep checking",
           },
           decoded,
         );
@@ -1657,7 +1668,7 @@ export class OnboardingWalletIntentService {
             canonical: true,
             blockHeight,
             indexBlockHash: indexed.indexBlockHash,
-            detail: `Canonical transaction ${summary.status.replaceAll("_", " ")}`,
+            detail: `Transaction failed on-chain: ${summary.status.replaceAll("_", " ")}. Prepare a new transaction if the action is still needed`,
           },
           decoded,
         );
@@ -1779,7 +1790,7 @@ export class OnboardingWalletIntentService {
                 blockHeight,
                 indexBlockHash: indexed.indexBlockHash,
                 detail:
-                  "The exact wallet transaction is canonical, but its bound engine job was superseded",
+                  "Transaction confirmed, but its claim job was superseded. Refresh Operations",
               },
               decoded,
             );
@@ -1860,10 +1871,10 @@ export class OnboardingWalletIntentService {
           blockHeight,
           indexBlockHash: indexed.indexBlockHash,
           detail: complete
-            ? "Canonical transaction and exact expected on-chain state are verified"
+            ? "Transaction and expected on-chain state verified"
             : customAssetSemanticsUnattested && decoded.postConditionCount === 1
-              ? "Canonical exact call and asset/amount postcondition are verified; custom manager recipient and state semantics are not attested"
-              : "Canonical success is verified; the expected on-chain state is not yet visible",
+              ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
+              : "Transaction confirmed. Waiting for the expected on-chain state",
         },
         decoded,
       );
@@ -1873,7 +1884,7 @@ export class OnboardingWalletIntentService {
       this.recordUnavailable(
         current,
         observedAt,
-        `Canonical verification is temporarily unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+        `Post-state verification is temporarily unavailable: ${error instanceof Error ? error.message : "the verifier returned no diagnostic detail"}. Sidekick will retry`,
       );
       return this.publicIntent(current);
     }
@@ -1904,8 +1915,8 @@ export class OnboardingWalletIntentService {
         indexBlockHash: null,
         detail:
           pending.location.kind === "mempool"
-            ? "Exact prepared transaction is pending in the node mempool"
-            : "Exact prepared transaction is pending in a microblock",
+            ? "Transaction is pending in the node mempool"
+            : "Transaction is pending in a microblock",
       },
       decoded,
     );
@@ -2047,7 +2058,7 @@ export class OnboardingWalletIntentService {
       canonical: null,
       blockHeight: null,
       indexBlockHash: null,
-      detail: "Failed transaction retired before reviewing replacement work",
+      detail: "Failed transaction retired before preparing a replacement",
     });
     return superseded;
   }
@@ -2064,7 +2075,7 @@ export class OnboardingWalletIntentService {
         canonical: null,
         blockHeight: null,
         indexBlockHash: null,
-        detail: "An earlier equivalent transaction completed canonically",
+        detail: "An earlier equivalent transaction completed on-chain",
       });
     }
   }
@@ -2107,7 +2118,7 @@ export class OnboardingWalletIntentService {
     ) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
-        "Stored wallet intent failed its integrity check",
+        "Stored transaction request failed its integrity check. Prepare a new transaction",
       );
     }
     return manifest.data;

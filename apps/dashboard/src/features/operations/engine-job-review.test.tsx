@@ -100,7 +100,7 @@ describe("EngineJobReview", () => {
     expect(markup).toContain(hash("a"));
     expect(markup).toContain(hash("b"));
     expect(markup).toContain(hash("c"));
-    expect(markup).toContain("Approve intent");
+    expect(markup).toContain("Approve transaction");
     expect(markup).not.toContain("private key");
     expect(markup).not.toContain("signed transaction");
   });
@@ -116,6 +116,6 @@ describe("EngineJobReview", () => {
       />,
     );
     expect(markup).toContain("Action controls are disabled");
-    expect(markup).not.toContain("Approve intent");
+    expect(markup).not.toContain("Approve transaction");
   });
 });

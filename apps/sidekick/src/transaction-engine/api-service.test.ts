@@ -252,6 +252,7 @@ describe("repository transaction-engine API service", () => {
     await expect(api.listJobs({ cursor: "not-a-cursor", limit: 1 })).rejects.toMatchObject({
       statusCode: 400,
       responseCode: "invalid_engine_cursor",
+      message: "The transaction job cursor is invalid. Refresh Operations",
     });
   });
 
@@ -271,6 +272,60 @@ describe("repository transaction-engine API service", () => {
     ]);
   });
 
+  it.each([
+    [
+      "manager-source-mismatch,rewards-paused",
+      "Manager source does not match its verified profile; Manager rewards are paused",
+    ],
+    [
+      "approval-revalidation:attestation-expired",
+      "The approval or compatibility attestation expired. Sync chain data to prepare a new current job, then review and approve it",
+    ],
+    [
+      "approval-invalid-before-broadcast-commitment",
+      "Approval changed before broadcast. Sync chain data to prepare a new current job, then review and approve it",
+    ],
+    [
+      "broadcast-rejected:node-rejection",
+      "Broadcast was rejected by the node. Review the rejection. If the claim is still needed, sync chain data to prepare a new current job, then review and approve it",
+    ],
+    [
+      "foreign-gas-payer-nonce-activity",
+      "Another transaction used the Assist gas-payer nonce. Resolve the nonce conflict. Sync chain data to prepare a new current job, then review and approve it",
+    ],
+    [
+      "canonical-transaction-abort_by_response",
+      "The transaction failed on-chain: abort by response. Review the failure. If the claim is still needed, sync chain data to prepare a new current job, then review and approve it",
+    ],
+  ])("preserves durable block classification %s while displaying recovery guidance", async (blockReason, displayReason) => {
+    const { store, digest } = await memoryStore();
+    const { job } = await awaitingJob(store, digest);
+    const api = service(store, { value: initialNow });
+    await api.approve(job.jobId, approvalRequest(job), "operator:test");
+    const blocked = store.transactionEngine.transitionLogicalJob({
+      jobId: job.jobId,
+      expectedState: "awaiting_approval",
+      expectedStateVersion: job.stateVersion,
+      nextState: "blocked",
+      blockReason,
+      changedAt: initialNow,
+    });
+    expect(blocked.blockReason).toBe(blockReason);
+
+    await expect(api.getJob(job.jobId)).resolves.toMatchObject({
+      state: "blocked",
+      blockReason: displayReason,
+      approvalWindow: {
+        eligible: false,
+        reason:
+          "This job is blocked. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+      },
+    });
+    await expect(api.listJobs({ cursor: null, limit: 1 })).resolves.toMatchObject({
+      items: [{ state: "blocked", blockReason: displayReason }],
+    });
+  });
+
   it("creates one exact hash-and-expiry-bound approval and invalidates it idempotently", async () => {
     const { store, digest } = await memoryStore();
     const { job } = await awaitingJob(store, digest);
@@ -282,6 +337,8 @@ describe("repository transaction-engine API service", () => {
     ).rejects.toMatchObject({
       statusCode: 409,
       responseCode: "engine_approval_expiry_invalid",
+      message:
+        "Approval expiry is outside the current window. Refresh the job and submit a valid expiry",
     });
     const request = approvalRequest(job);
     const created = await api.approve(job.jobId, request, "operator:a");
@@ -314,6 +371,7 @@ describe("repository transaction-engine API service", () => {
     ).rejects.toMatchObject({
       statusCode: 409,
       responseCode: "engine_approval_hash_mismatch",
+      message: "The transaction job changed. Refresh it before approving",
     });
 
     const invalidation = {
@@ -483,7 +541,11 @@ describe("repository transaction-engine API service", () => {
         { decision: "disable", reason: "Unknown" },
         "operator:a",
       ),
-    ).rejects.toMatchObject({ statusCode: 404, responseCode: "engine_adapter_not_found" });
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      responseCode: "engine_adapter_not_found",
+      message: "This transaction adapter no longer exists. Refresh Operations",
+    });
     const disabled = await api.disableAdapter(
       MANAGER_CLAIM_REWARDS_ADAPTER_ID,
       { decision: "disable", reason: "Adapter circuit breaker" },

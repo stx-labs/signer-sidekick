@@ -22,6 +22,7 @@ import { dashboardHash, type ManagerActionId } from "../../dashboard-route.js";
 import { Badge, Field, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { number, short, stx } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
+import { operatorActionError } from "../../shared/operator-error.js";
 import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
 import {
   managerActionRecipient,
@@ -36,38 +37,40 @@ type SignerGrantState = OnboardingState["signerGrant"];
 
 const actionCopy: Record<ManagerActionId, { title: string; detail: string; manual: string }> = {
   "register-self": {
-    title: "Repair or rotate signer authorization",
-    detail:
-      "Register the verified signer key and grant through the manager’s authorized admin wallet.",
+    title: "Register or rotate signer",
+    detail: "Register the signer key and grant with a manager-admin wallet.",
     manual:
-      "Use the exact register-self contract, serialized arguments, and required sender from the prepared review.",
+      "Call the manager contract’s register-self function with the serialized arguments and required sender shown in the transaction details.",
   },
   "add-admin": {
     title: "Add manager admin",
     detail: "Authorize another principal to administer this manager.",
     manual:
-      "Call update-admin with the reviewed principal and true from an existing manager admin.",
+      "From an existing manager admin, call the manager contract’s update-admin function with the target principal and true.",
   },
   "remove-admin": {
     title: "Remove manager admin",
     detail: "Remove a principal’s manager administration authority.",
     manual:
-      "Call update-admin with the reviewed principal and false from an existing manager admin.",
+      "From an existing manager admin, call the manager contract’s update-admin function with the target principal and false.",
   },
   "update-fees": {
     title: "Update manager fee",
-    detail: "Set the fee used when a reward cycle or bond fee is first snapshotted.",
-    manual: "Call update-fees with the reviewed basis-point value from a manager admin.",
+    detail: "Set the fee used when a reward cycle or bond fee is first recorded.",
+    manual:
+      "From a manager admin, call the manager contract’s update-fees function with the basis-point value.",
   },
   "withdraw-fees": {
     title: "Withdraw earned fees",
     detail: "Transfer accrued manager fees to the selected recipient.",
-    manual: "Call withdraw-fees with the exact amount and recipient shown in the prepared review.",
+    manual:
+      "From a manager admin, call the manager contract’s withdraw-fees function with the amount and recipient shown in the transaction details.",
   },
   "sweep-fee-refunds": {
     title: "Sweep fee-refund dust",
     detail: "Transfer only the manager balance that remains after all reserved amounts.",
-    manual: "Call sweep-fee-refunds with the reviewed recipient from a manager admin.",
+    manual:
+      "From a manager admin, call the manager contract’s sweep-fee-refunds function with the recipient.",
   },
 };
 
@@ -118,7 +121,14 @@ function SignerGrantCeremony({
       setSignerGrant(result.onboarding.signerGrant);
       setSignerOutput("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to prepare the signer command.");
+      setError(
+        operatorActionError(
+          cause,
+          "Could not prepare the signer command",
+          "No wallet transaction was created; check the auth ID and configuration path, then retry",
+          "Sidekick returned no error detail",
+        ),
+      );
     } finally {
       setBusy(null);
     }
@@ -143,7 +153,14 @@ function SignerGrantCeremony({
       );
       setSignerGrant(result.onboarding.signerGrant);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to verify the signer output.");
+      setError(
+        operatorActionError(
+          cause,
+          "Could not verify the signer output",
+          "No wallet transaction was created; check the pasted JSON, then retry",
+          "Sidekick returned no error detail",
+        ),
+      );
     } finally {
       setBusy(null);
     }
@@ -154,10 +171,8 @@ function SignerGrantCeremony({
       <div className="callout callout-info" role="note">
         <Key className="ic" />
         <div className="body">
-          <strong>Create a fresh signer authorization first.</strong> Sidekick prepares the public
-          signer command and verifies its output. The signer key remains on the signer host; the
-          manager-admin key remains in your wallet. If this page reloads, restart with a new
-          authorization ID; saved onboarding state never unlocks this wallet action.
+          Generate a signer authorization, run it on the signer host, then verify the public output
+          here. If this page reloads, start with a new authorization ID.
         </div>
       </div>
 
@@ -165,14 +180,14 @@ function SignerGrantCeremony({
         <div className="manager-step-heading">
           <span>1</span>
           <div>
-            <h3>Prepare the signer command</h3>
-            <p>Use a new one-time authorization ID and the signer configuration path.</p>
+            <h3>Generate signer command</h3>
+            <p>Enter a new authorization ID and the signer configuration path.</p>
           </div>
         </div>
         <div className="form-grid manager-action-form">
           <Field
             label="Authorization ID"
-            help="A new unsigned integer for this signer authorization. Do not reuse an earlier grant."
+            help="A non-negative whole number that has not been used for this signer."
           >
             <input
               className="input mono"
@@ -186,10 +201,7 @@ function SignerGrantCeremony({
               <span className="field-error">Enter zero or a positive whole number.</span>
             ) : null}
           </Field>
-          <Field
-            label="Signer configuration path"
-            help="Path on the signer host. Sidekick puts it in the command but never reads that file."
-          >
+          <Field label="Signer configuration path" help="Path to the signer configuration file.">
             <input
               className="input mono"
               autoComplete="off"
@@ -220,7 +232,7 @@ function SignerGrantCeremony({
             <span>2</span>
             <div>
               <h3>Run and verify on the signer host</h3>
-              <p>Run the command, then paste only the public JSON it prints.</p>
+              <p>Run the command, then paste its complete JSON output.</p>
             </div>
           </div>
           <div className="ceremony-command">
@@ -256,10 +268,7 @@ function SignerGrantCeremony({
           </div>
           {!signerGrant.verified ? (
             <>
-              <Field
-                label="JSON output from the signer command"
-                help="Never paste the signer configuration, mnemonic, or private key."
-              >
+              <Field label="Signer command output" help="Do not paste a mnemonic or private key.">
                 <textarea
                   className="input code-input"
                   rows={8}
@@ -295,8 +304,8 @@ function SignerGrantCeremony({
             <div className="callout callout-info" role="status">
               <CheckCircle className="ic" />
               <div className="body">
-                <strong>Fresh signer grant verified.</strong> Review the exact registration
-                transaction before connecting the admin wallet.
+                <strong>Signer authorization verified.</strong> Review the registration transaction
+                before connecting the admin wallet.
               </div>
             </div>
           )}
@@ -316,13 +325,13 @@ function SignerGrantCeremony({
             <span>3</span>
             <div>
               <h3>Review and sign registration</h3>
-              <p>Enter the public address of the current manager-admin wallet.</p>
+              <p>Enter the public address of the manager-admin wallet.</p>
             </div>
           </div>
           <div className="form-grid manager-action-form manager-actor-form">
             <Field
               label="Signing manager admin"
-              help="Sidekick verifies live is-admin state and requires this exact wallet sender."
+              help="Public address of the admin wallet that will sign."
             >
               <input
                 className="input mono"
@@ -352,10 +361,7 @@ function SignerGrantCeremony({
               />
               <div className="manager-manual-path">
                 <strong>Use another signing tool</strong>
-                <p>
-                  Use the exact contract, serialized arguments, and required sender from the
-                  prepared review.
-                </p>
+                <p>{actionCopy["register-self"].manual}</p>
               </div>
             </>
           ) : (
@@ -422,7 +428,7 @@ function ManagerActionWorkspace({
     <section className="card-standout manager-action-workspace" id="manager-action-workspace">
       <div className="card-head">
         <div>
-          <p className="eyebrow">EXTERNAL WALLET ACTION</p>
+          <p className="eyebrow">MANAGER ACTION</p>
           <h2>{copy.title}</h2>
           <p className="muted manager-action-detail">{copy.detail}</p>
         </div>
@@ -449,7 +455,7 @@ function ManagerActionWorkspace({
         <div className="form-grid manager-action-form manager-actor-form">
           <Field
             label="Signing manager admin"
-            help="Public address of the external wallet that will sign. Sidekick verifies live is-admin state and requires this exact sender."
+            help="Public address of the admin wallet that will sign."
           >
             <input
               className="input mono"
@@ -471,7 +477,11 @@ function ManagerActionWorkspace({
         <div className="form-grid manager-action-form">
           <Field
             label={action === "add-admin" ? "New admin principal" : "Admin principal to remove"}
-            help="Public Stacks account only. Sidekick verifies current admin authority before preparing the call."
+            help={
+              action === "add-admin"
+                ? "Public Stacks account to authorize."
+                : "Public Stacks account to remove."
+            }
           >
             <input
               className="input mono"
@@ -487,15 +497,15 @@ function ManagerActionWorkspace({
             ) : action === "remove-admin" &&
               adminPrincipal.trim() === actorPrincipal.trim() &&
               standardManagerActionPrincipal(adminPrincipal, data.network) ? (
-              <span className="field-error">V1 does not allow an admin to remove itself.</span>
+              <span className="field-error">An admin cannot remove itself.</span>
             ) : null}
           </Field>
           {action === "remove-admin" ? (
             <div className="callout callout-caution" role="note">
               <WarningCircle className="ic" />
               <div className="body">
-                To rotate control, first add the new admin, verify access by signing with that
-                wallet, then use the new admin to remove the old one. V1 blocks self-removal.
+                Add and verify the new admin before using it to remove the old one. Self-removal is
+                unavailable.
               </div>
             </div>
           ) : null}
@@ -519,14 +529,14 @@ function ManagerActionWorkspace({
               <span className="field-error">Enter a whole number from 0 through 9,999.</span>
             ) : null}
             {createRequest ? (
-              <span className="muted">Reviewed rate: {Number(feeBips) / 100}%</span>
+              <span className="muted">New rate: {Number(feeBips) / 100}%</span>
             ) : null}
           </Field>
           <div className="callout callout-caution" role="note">
             <WarningCircle className="ic" />
             <div className="body">
-              A change can affect rewards earned before it was submitted if their cycle or bond fee
-              has not yet been snapshotted. Existing snapshots do not change.
+              The new fee applies to any reward cycle or bond whose fee has not yet been recorded.
+              Existing fee records do not change.
             </div>
           </div>
         </div>
@@ -569,11 +579,9 @@ function ManagerActionWorkspace({
           <div className="callout callout-info" role="note">
             <ShieldCheck className="ic" />
             <div className="body">
-              The manager calculates the sweepable amount after reserving earned fees, outstanding
-              withdrawal liability ({data.rewards?.manager.withdrawalLiabilitySats ?? "0"} sats),
-              and unclaimed staker rewards (
-              {data.rewards?.manager.unclaimedStakerRewardsSats ?? "0"}
-              sats). Sidekick verifies the exact effect before completion.
+              Only funds remaining after the manager reserves accrued fees, withdrawal liability (
+              {data.rewards?.manager.withdrawalLiabilitySats ?? "0"} sats), and unpaid staker
+              rewards ({data.rewards?.manager.unclaimedStakerRewardsSats ?? "0"} sats) can be swept.
             </div>
           </div>
           <Field label="Recipient" help="Stacks account or contract principal receiving the sBTC.">
@@ -605,15 +613,13 @@ function ManagerActionWorkspace({
           />
           <div className="manager-manual-path">
             <strong>Use another signing tool</strong>
-            <p>{copy.manual} The prepared review remains the source of truth.</p>
+            <p>{copy.manual}</p>
           </div>
         </>
       ) : action !== "register-self" ? (
         <div className="callout callout-neutral manager-action-incomplete" role="status">
           <ArrowRight className="ic" />
-          <div className="body">
-            Complete the action details to prepare a wallet or manual review.
-          </div>
+          <div className="body">Complete the fields to prepare the transaction.</div>
         </div>
       ) : null}
     </section>
@@ -636,12 +642,12 @@ export function Manager({
   const cycles = data.forecast?.cycles ?? [];
   const recognitionLabel =
     data.manager.source.tier === "reference-built-in"
-      ? "Reference — built in"
+      ? "Built-in reference"
       : data.manager.source.tier === "reference-render"
-        ? "Reference render — verified"
+        ? "Verified reference"
         : data.manager.source.tier === "custom-observe"
-          ? "Custom — external signing"
-          : "Not recognized — external signing";
+          ? "Custom manager"
+          : "Unverified manager";
   const referenceRecognized =
     data.manager.source.tier === "reference-built-in" ||
     data.manager.source.tier === "reference-render";
@@ -660,22 +666,12 @@ export function Manager({
 
   return (
     <>
-      <PageHead
-        title="Manager"
-        lede="Canonical manager identity, signer authorization, eligibility, and externally signed administration."
-      />
-      <div className="callout callout-info intro-callout">
-        <ShieldCheck className="ic" />
-        <div className="body">
-          Sidekick prepares and verifies exact actions. The browser wallet or manual signing tool
-          retains the manager-admin key, chooses the fee and nonce, signs, and broadcasts.
-        </div>
-      </div>
+      <PageHead title="Manager" lede="Manager status, signer authorization, and administration." />
       {actionAvailability.warning ? (
         <div className="callout callout-caution manager-required-state" role="status">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Unverified manager source.</strong>
+            <strong>Assist unavailable.</strong>
             <br />
             {actionAvailability.warning}
           </div>
@@ -685,7 +681,7 @@ export function Manager({
         <div className="callout callout-caution manager-required-state" role="status">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Guided manager actions are unavailable.</strong>
+            <strong>Manager actions are unavailable.</strong>
             <br />
             {actionAvailability.reason}
           </div>
@@ -697,9 +693,9 @@ export function Manager({
         <div className="callout callout-neutral manager-required-state">
           <CheckCircle className="ic" />
           <div className="body">
-            <strong>No manager action required</strong>
+            <strong>Signer registered</strong>
             <br />
-            The configured signer is registered and its PoX-5 grant is valid at the current tip.
+            The signer is registered and its grant is valid.
           </div>
         </div>
       ) : (
@@ -708,12 +704,12 @@ export function Manager({
           <div className="body">
             <strong>
               {data.registration?.registered
-                ? "Signer authorization must be repaired or rotated"
-                : "Signer registration must be completed"}
+                ? "Update signer authorization"
+                : "Register the signer"}
             </strong>
             <br />
-            Prepare a fresh signer grant, then have an authorized manager admin submit the exact
-            registration call.
+            Generate a signer authorization, then have a manager admin submit the registration
+            transaction.
             <div className="actions">
               <button
                 type="button"
@@ -721,7 +717,7 @@ export function Manager({
                 disabled={!canPrepareAdminActions}
                 onClick={() => openManagerAction("register-self")}
               >
-                Review repair ceremony
+                Review signer registration
               </button>
             </div>
           </div>
@@ -740,14 +736,14 @@ export function Manager({
         <div className="callout callout-caution manager-required-state" role="alert">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Guided manager actions are unavailable.</strong>
+            <strong>Manager actions are unavailable.</strong>
             <br />
             {actionAvailability.reason}
           </div>
         </div>
       ) : null}
 
-      <div className="section-title">Canonical status</div>
+      <div className="section-title">Manager status</div>
       <div className="grid cols-2 manager-status-grid">
         <div className="card">
           <div className="card-head">
@@ -772,9 +768,9 @@ export function Manager({
                 ? "Built into Sidekick"
                 : "None"}
           </StatLine>
-          <StatLine label="Assist eligibility">
+          <StatLine label="Assist">
             <Badge state={data.manager.automationEligible ? "success" : "neutral"}>
-              {data.manager.automationEligible ? "Eligible for Assist" : "Not eligible for Assist"}
+              {data.manager.automationEligible ? "Available" : "Unavailable"}
             </Badge>
           </StatLine>
           <StatLine label="Source hash">
@@ -801,23 +797,11 @@ export function Manager({
               {data.registration?.registered ? "Confirmed" : "Missing"}
             </Badge>
           </StatLine>
-          <div
-            className={`callout ${referenceRecognized ? "callout-info" : "callout-caution"} grant-note`}
-          >
-            <ShieldCheck className="ic" />
-            <div className="body">
-              {data.manager.source.tier === "unrecognized"
-                ? "Sidekick can monitor this manager and prepare fixed externally signed actions, but cannot attest its source or enable Assist. Verify every wallet or manual signing request."
-                : data.manager.source.tier === "custom-observe"
-                  ? "Sidekick can monitor this custom manager and prepare fixed externally signed actions. Assist remains limited to verified reference managers."
-                  : data.manager.provenance.reason}
-            </div>
-          </div>
           {data.manager.installedProfiles.directory ? (
             <StatLine label="Installed profiles">
               {data.manager.installedProfiles.loaded} loaded
               {data.manager.installedProfiles.issues.length > 0
-                ? ` · ${data.manager.installedProfiles.issues.length} ignored issue(s)`
+                ? ` · ${data.manager.installedProfiles.issues.length} ${data.manager.installedProfiles.issues.length === 1 ? "issue" : "issues"}`
                 : ""}
             </StatLine>
           ) : null}
@@ -829,11 +813,6 @@ export function Manager({
               {data.registration?.signerKeyGrantValid ? "Valid" : "Invalid"}
             </Badge>
           </div>
-          <StatLine label="verify-signer-key-grant">
-            <span className="src src-chain mono">
-              {String(data.registration?.signerKeyGrantValid ?? false)}
-            </span>
-          </StatLine>
           <StatLine label="PoX-5 contract">
             <CopyableIdentifier
               value={data.preflight.pox.pox5ContractId}
@@ -938,7 +917,7 @@ export function Manager({
         </button>
       </div>
 
-      <div className="section-title">Signer-set membership &amp; weight</div>
+      <div className="section-title">Signer-set eligibility</div>
       <div className="tbl-wrap">
         <table>
           <thead>
@@ -960,7 +939,7 @@ export function Manager({
                 <td className="right mono">{stx(cycle.threshold.marginUstx)}</td>
                 <td>
                   <Badge state={cycle.contract.inSignerSet ? "success" : "error"}>
-                    {cycle.contract.inSignerSet ? "Eligible" : "Below 50k"}
+                    {cycle.contract.inSignerSet ? "Eligible" : "Below threshold"}
                   </Badge>
                 </td>
                 <td>
@@ -972,8 +951,8 @@ export function Manager({
                     }
                   >
                     {cycle.provenance.classification === "authoritative"
-                      ? "authoritative contract state"
-                      : "contract-backed projection"}
+                      ? "Confirmed"
+                      : "Projection"}
                   </span>
                 </td>
               </tr>

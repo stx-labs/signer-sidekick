@@ -161,7 +161,7 @@ export function buildAlerts(snapshot: {
       id: `preflight:${check.id}`,
       severity: check.status === "fail" ? "critical" : "warning",
       title: check.status === "fail" ? "Connection Check Failed" : "Connection Needs Attention",
-      detail: `${asSentence(check.message)} Open Settings to verify the configured node and API data sources.`,
+      detail: asSentence(check.message),
       action: { kind: "navigate", label: "Open Settings", target: "settings" },
     });
   }
@@ -173,7 +173,7 @@ export function buildAlerts(snapshot: {
       id: "manager:unsupported",
       severity: "critical",
       title: "Manager Cannot Be Attached",
-      detail: `${asSentence(incompatibility)} Open Initial Setup to review network compatibility and manager interface requirements.`,
+      detail: asSentence(incompatibility),
       action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
@@ -181,7 +181,7 @@ export function buildAlerts(snapshot: {
       id: "manager:not-recognized-read-only",
       severity: "warning",
       title: "Manager Source Not Recognized",
-      detail: `Monitoring continues, and fixed external actions remain available when technical checks pass. Assist is disabled: ${snapshot.manager.automationEligibilityReason}. Install a provenance-verified profile only if this is a reference render.`,
+      detail: `Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable: ${snapshot.manager.automationEligibilityReason}.`,
       action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
@@ -190,15 +190,16 @@ export function buildAlerts(snapshot: {
       severity: "info",
       title: "Custom Manager",
       detail:
-        "Monitoring and fixed external actions remain available when technical checks pass. Reference-manager Assist is disabled.",
+        "Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable.",
     });
   }
-  if (snapshot.manager.installedProfiles.issues.length > 0) {
+  const profileIssueCount = snapshot.manager.installedProfiles.issues.length;
+  if (profileIssueCount > 0) {
     alerts.push({
       id: "manager:profile-load-issues",
       severity: "warning",
       title: "Installed Manager Profile Needs Attention",
-      detail: `${snapshot.manager.installedProfiles.issues.length} profile issue(s) were ignored safely. Open Settings to review the rejected profile files and reasons.`,
+      detail: `${profileIssueCount} manager profile${profileIssueCount === 1 ? "" : "s"} could not be loaded.`,
       action: { kind: "navigate", label: "Review profile issues", target: "settings" },
     });
   }
@@ -216,7 +217,7 @@ export function buildAlerts(snapshot: {
           : "Manager Assist Eligibility Lost",
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
-        : `${asSentence(snapshot.trustTransition.reason)} Review the installed manager profile before enabling Assist.`,
+        : asSentence(snapshot.trustTransition.reason),
       ...(gained
         ? {}
         : {
@@ -237,9 +238,7 @@ export function buildAlerts(snapshot: {
       id: "setup:blocked",
       severity: "critical",
       title: "Pool Setup Is Blocked",
-      detail: signerRepair
-        ? `${asSentence(blockedReason)} Open Manager to prepare a fresh signer authorization and registration.`
-        : `${asSentence(blockedReason)} Open Initial Setup to review and resolve the blocked step.`,
+      detail: asSentence(blockedReason),
       action: signerRepair
         ? {
             kind: "navigate",
@@ -269,8 +268,8 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: belowThreshold ? "Pool Below Signer-Set Threshold" : "Pool Forecast Needs Attention",
       detail: belowThreshold
-        ? `The pool is below the ${thresholdStx} signer-set threshold in reward cycle(s) ${belowThreshold}. Open Pool positions to review the delegated total and roster changes.`
-        : `Open Pool positions to review the roster changes affecting reward cycle(s) ${affected}.`,
+        ? `The pool is below the ${thresholdStx} signer-set threshold in ${belowThresholdCycles.length === 1 ? "reward cycle" : "reward cycles"} ${belowThreshold}.`
+        : `Pool checks need attention for ${affectedCycles.length === 1 ? "reward cycle" : "reward cycles"} ${affected}.`,
       action: { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }
@@ -279,18 +278,17 @@ export function buildAlerts(snapshot: {
       id: "rewards:incomplete",
       severity: "warning",
       title: "Reward Roster Is Incomplete",
-      detail:
-        "Sidekick has not synchronized the individual staker roster. Run Reconcile now before relying on payout totals.",
-      action: { kind: "reconcile", label: "Reconcile now" },
+      detail: "The individual staker roster has not been synced.",
+      action: { kind: "reconcile", label: "Sync now" },
     });
   }
   if (snapshot.activity.pendingWithdrawalTotal > 0) {
     alerts.push({
       id: "withdrawals:pending",
       severity: "info",
-      title: "L1 Withdrawals Await Resolution",
-      detail: `${snapshot.activity.pendingWithdrawalTotal} withdrawal request(s) remain pending or require registry reconciliation. Open Rewards → L1 withdrawals to review each request's current state.`,
-      action: { kind: "navigate", label: "Review L1 withdrawals", target: "rewards" },
+      title: "Bitcoin Withdrawals Await Resolution",
+      detail: `${snapshot.activity.pendingWithdrawalTotal} Bitcoin withdrawal ${snapshot.activity.pendingWithdrawalTotal === 1 ? "request remains" : "requests remain"} pending.`,
+      action: { kind: "navigate", label: "Review Bitcoin withdrawals", target: "rewards" },
     });
   }
   return alerts;
@@ -464,7 +462,13 @@ export class OperatorService {
   async poolCard(mode: PoolCardMode) {
     if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
     const snapshot = await this.snapshot(true);
-    if (!snapshot.setup) throw new OperatorWorkflowError(409, "pool_setup_not_complete");
+    if (!snapshot.setup) {
+      throw new OperatorWorkflowError(
+        409,
+        "pool_setup_not_complete",
+        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry",
+      );
+    }
     const settings = this.options.runtimeSettings.publicSettings();
     const support = classifySupportContact(settings.pool.supportContact);
     const enrollment = createPoolEnrollmentDocument(
@@ -515,7 +519,7 @@ export class OperatorService {
         throw new OperatorWorkflowError(
           422,
           "synchronization_sources_incompatible",
-          "Synchronization requires healthy sources, active PoX-5, and a compatible manager",
+          "Sync is blocked by node, API, PoX-5, or manager compatibility checks. Review preflight and manager verification, then retry",
         );
       }
       store.upsertChainSource({
@@ -572,7 +576,7 @@ export class OperatorService {
       phase: "events",
       completed: 0,
       total: null,
-      message: "Synchronizing manager events",
+      message: "Syncing manager events",
     });
     const events = await syncManagerEvents({
       store,
@@ -589,7 +593,7 @@ export class OperatorService {
           phase: "events",
           completed: progress.completed,
           total: progress.total,
-          message: `Synchronized ${progress.eventsProcessed} manager events`,
+          message: `Synced ${progress.eventsProcessed} manager events`,
         });
       },
     });

@@ -415,10 +415,10 @@ export function reconciliationResponse(status = "idle") {
         itemsCompleted: null,
         itemsTotal: null,
         message: completed
-          ? "Reconciliation complete"
+          ? "Chain data sync complete"
           : running
-            ? "Synchronizing manager events"
-            : "No reconciliation has run",
+            ? "Syncing manager events"
+            : "No chain data sync has run",
       },
       result: completed
         ? {

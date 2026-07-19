@@ -8,6 +8,11 @@ import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { Badge, PageHead, Pagination } from "../../shared/dashboard-ui.js";
 import { number, short, stx } from "../../shared/format.js";
+import {
+  operatorActionError,
+  operatorErrorDetail,
+  operatorErrorSentence,
+} from "../../shared/operator-error.js";
 
 type Snapshot = DashboardSnapshot;
 
@@ -50,7 +55,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
-        setRosterError(cause instanceof Error ? cause.message : String(cause));
+        setRosterError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
       })
       .finally(() => {
         if (!controller.signal.aborted && !correctingPage) setRosterLoading(false);
@@ -66,7 +71,13 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         fallbackFilename: `signer-sidekick-roster.${format}`,
       });
     } catch (cause) {
-      setDownloadError(cause instanceof Error ? cause.message : String(cause));
+      setDownloadError(
+        operatorActionError(
+          cause,
+          `Could not download the ${format.toUpperCase()} roster`,
+          "Retrying is safe",
+        ),
+      );
     } finally {
       setDownloadBusy(null);
     }
@@ -77,7 +88,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
     <>
       <PageHead
         title="Pool positions"
-        lede="Every STX-only staker assigned to this manager, which cycles they count in, and when their STX unlocks. No wallet connection or stake submission here."
+        lede="STX-only stakers assigned to this manager, their eligible cycles, and unlock timing."
         actions={
           <>
             <button
@@ -103,14 +114,14 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       />
       {downloadError ? (
         <div className="callout callout-critical" role="alert">
-          Download failed: {downloadError}
+          {downloadError}
         </div>
       ) : null}
       <div className="kpi">
         <div className="tile hero">
           <div className="l">Stakers</div>
           <div className="v">{data.rosterTotal ?? data.roster.length}</div>
-          <div className="d">node-verified API roster</div>
+          <div className="d">assigned to this manager</div>
         </div>
         <div className="tile">
           <div className="l">
@@ -130,7 +141,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
               .slice(1)
               .reduce((sum, cycle) => sum + (cycle.changesFromPrevious?.joiningStakers ?? 0), 0)}
           </div>
-          <div className="d">within configured horizon</div>
+          <div className="d">across displayed cycles</div>
         </div>
         <div className="tile">
           <div className="l">Deferred unlocks</div>
@@ -138,15 +149,12 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
             {data.rosterStats?.deferredUnlocks ??
               data.roster.filter(({ position }) => position?.unlockBurnHeight).length}
           </div>
-          <div className="d">unlock Bitcoin block tracked</div>
+          <div className="d">recorded unlock heights</div>
         </div>
       </div>
       <div className="section-title">
         Pool total by cycle{" "}
-        <span className="hint">
-          current cycle is authoritative; future cycles remain labeled projections pending core
-          confirmation
-        </span>
+        <span className="hint">Current cycle confirmed; future cycles may change.</span>
       </div>
       <div className="card forecast-card">
         <div className="barchart">
@@ -169,7 +177,8 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       {rosterError ? (
         <div className="callout callout-critical" role="alert">
           <div className="body">
-            <strong>Could not refresh the staker roster.</strong> {rosterError}
+            <strong>Could not refresh the staker roster.</strong>{" "}
+            {operatorErrorSentence(rosterError)}
             <div className="actions">
               <button
                 type="button"
@@ -240,7 +249,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
                       <td className="mono">{number(position?.unlockBurnHeight)}</td>
                       <td>
                         <Badge state={entry.stxNodeVerified ? "success" : "caution"}>
-                          {entry.stxNodeVerified ? "Verified" : "API only"}
+                          {entry.stxNodeVerified ? "Verified" : "Not node-verified"}
                         </Badge>
                       </td>
                     </tr>

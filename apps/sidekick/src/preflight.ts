@@ -373,7 +373,7 @@ export function evaluatePreflight(
       status: pox5SourceSha256 ? "pass" : "fail",
       message: pox5SourceSha256
         ? `Read active PoX-5 source from the configured node (${pox5SourceSha256})`
-        : `Could not read active PoX-5 source from the configured node${sources.pox5SourceError ? ": node request failed" : ""}`,
+        : "Could not read active PoX-5 source from the configured node; check Node RPC connectivity and compatibility",
     });
   }
 

@@ -10,6 +10,13 @@ import { apiJson } from "../../api-client.js";
 import { CopyIdentifierButton } from "../../copyable-identifier.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
+import { operatorActionError } from "../../shared/operator-error.js";
+
+const healthSourceLabels = {
+  "node-metrics": "node metrics",
+  "signer-monitoring": "signer monitoring",
+  "hiro-reference": "reference API",
+} as const;
 
 export function SettingsPage({
   data,
@@ -54,7 +61,7 @@ export function SettingsPage({
       if (settingsLoadController.current === controller) setSettings(result);
     } catch (cause) {
       if (controller.signal.aborted || settingsLoadController.current !== controller) return;
-      setLoadError(cause instanceof Error ? cause.message : String(cause));
+      setLoadError(operatorActionError(cause, "Could not load settings", "Retrying is safe"));
     } finally {
       if (settingsLoadController.current === controller) {
         settingsLoadController.current = null;
@@ -118,11 +125,21 @@ export function SettingsPage({
         await onSaved?.();
       } catch (cause) {
         setError(
-          `Settings were saved, but operator state could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          operatorActionError(
+            cause,
+            "Settings were saved, but dashboard status could not be refreshed",
+            "The settings are saved; use Refresh in the status bar",
+          ),
         );
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(
+        operatorActionError(
+          cause,
+          "Could not save settings",
+          "Review the fields, then retry; saving again is safe",
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -131,10 +148,7 @@ export function SettingsPage({
   if (!settings) {
     return (
       <>
-        <PageHead
-          title="Settings"
-          lede="Configure the running deployment. Settings remain available when chain-derived operator state is temporarily unavailable."
-        />
+        <PageHead title="Settings" lede="Configure this Sidekick deployment." />
         <ErrorCallout error={loadError} />
         {loading ? <div className="loading-state">Loading settings</div> : null}
         {!loading && loadError ? (
@@ -178,7 +192,11 @@ export function SettingsPage({
       setSourceTest({
         kind,
         state: "failed",
-        detail: cause instanceof Error ? cause.message : String(cause),
+        detail: operatorActionError(
+          cause,
+          `Could not connect to ${healthSourceLabels[kind]}`,
+          "Check the URL, then retry; this test does not save settings",
+        ),
       });
     } finally {
       if (sourceTestController.current === controller) sourceTestController.current = null;
@@ -189,7 +207,7 @@ export function SettingsPage({
     <div className="settings-page">
       <PageHead
         title="Settings"
-        lede="Configure the running deployment. Changes are validated, persisted, and audited; secrets are never returned to the browser."
+        lede="Configure this Sidekick deployment."
         actions={
           <button
             type="button"
@@ -216,7 +234,7 @@ export function SettingsPage({
       {saved ? (
         <div className="callout callout-info settings-saved">
           <Check className="ic" />
-          <div className="body">Settings revision {settings.revision} is active.</div>
+          <div className="body">Settings saved.</div>
         </div>
       ) : null}
       <div className="grid cols-1-2 settings-grid">
@@ -344,31 +362,28 @@ export function SettingsPage({
                   <strong>
                     Network compatibility: {data.preflight.compatibility.status.replace("-", " ")}
                   </strong>
-                  <p>
-                    {data.preflight.compatibility.reason}.
-                    {data.preflight.compatibility.profileId ? (
-                      <>
-                        {" "}
-                        Profile{" "}
-                        <span className="mono">
-                          {data.preflight.compatibility.profileLabel ??
-                            data.preflight.compatibility.profileId}
-                        </span>{" "}
-                        revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
-                        {data.preflight.compatibility.origin === "operator-provided"
-                          ? "operator-provided compatibility data; source proof and Assist gates apply separately"
-                          : "built into Sidekick"}
-                        .
-                      </>
-                    ) : null}{" "}
-                    Node build{" "}
+                  <p>{data.preflight.compatibility.reason}</p>
+                  {data.preflight.compatibility.profileId ? (
+                    <p className="help">
+                      Profile{" "}
+                      <span className="mono">
+                        {data.preflight.compatibility.profileLabel ??
+                          data.preflight.compatibility.profileId}
+                      </span>{" "}
+                      revision {data.preflight.compatibility.profileRevision ?? "unknown"} ·{" "}
+                      {data.preflight.compatibility.origin === "operator-provided"
+                        ? "operator-installed"
+                        : "built in"}
+                    </p>
+                  ) : null}
+                  <p className="help">
+                    Node{" "}
                     <span className="mono">
                       {data.preflight.node.version ??
                         data.preflight.node.serverVersion ??
                         "unknown"}
                       {data.preflight.node.commit ? ` (${data.preflight.node.commit})` : ""}
-                    </span>{" "}
-                    is diagnostic; compatible upgrades do not require a Sidekick release.
+                    </span>
                   </p>
                 </div>
                 <div className="stacked-doc-links">
@@ -385,14 +400,11 @@ export function SettingsPage({
               </div>
             ) : (
               <div className="callout callout-caution" role="status">
-                Chain-derived compatibility details are temporarily unavailable. You can still
-                review or correct data-source URLs here, then retry operator state above.
+                Compatibility details are temporarily unavailable. You can still update data
+                sources.
               </div>
             )}
-            <Field
-              label="Stacks node RPC URL"
-              help="Changing provider creates a separate node evidence identity."
-            >
+            <Field label="Stacks node RPC URL" help="Stacks node used by Sidekick.">
               <input
                 className="input mono"
                 type="url"
@@ -433,10 +445,7 @@ export function SettingsPage({
                 </span>
               ) : null}
             </Field>
-            <Field
-              label="Signer monitoring URL"
-              help="Optional signer base URL exposing /info, /heartbeat, and /metrics."
-            >
+            <Field label="Signer monitoring URL" help="Optional signer monitoring endpoint.">
               <div className="field-inline-action">
                 <input
                   className="input mono"
@@ -472,10 +481,7 @@ export function SettingsPage({
                 </span>
               ) : null}
             </Field>
-            <Field
-              label="Hiro reference API URL"
-              help="Public comparison source. The network default normally needs no change."
-            >
+            <Field label="Reference API URL" help="Public API used to compare chain height.">
               <div className="field-inline-action">
                 <input
                   className="input mono"
@@ -510,10 +516,7 @@ export function SettingsPage({
                 </span>
               ) : null}
             </Field>
-            <Field
-              label="Stacks API URL"
-              help="Changing provider preserves the old cursor and starts a provider-specific cursor."
-            >
+            <Field label="Stacks API URL" help="Stacks API used for chain data.">
               <input
                 className="input mono"
                 type="url"
@@ -537,7 +540,7 @@ export function SettingsPage({
             </Field>
             <Field
               label="API key"
-              help={`Currently ${settings.dataSources.apiKeyConfigured ? `configured from ${settings.dataSources.apiKeySource}` : "not configured"}. The value is never returned.`}
+              help={`Status: ${settings.dataSources.apiKeyConfigured ? `configured from ${settings.dataSources.apiKeySource}` : "not configured"}.`}
             >
               <select
                 className="input"
@@ -591,8 +594,8 @@ export function SettingsPage({
               <h2>Access &amp; security</h2>
             </div>
             <div className="statline">
-              <span className="k">HTTP surface</span>
-              <span className="v mono">loopback · authenticated</span>
+              <span className="k">HTTP access</span>
+              <span className="v">Authenticated</span>
             </div>
             <div className="statline">
               <span className="k">Settings revision</span>
@@ -604,19 +607,19 @@ export function SettingsPage({
                   <span className="k">Manager trust</span>
                   <span className="v">
                     {data.manager.source.tier === "reference-built-in"
-                      ? "Reference — built in"
+                      ? "Built-in reference"
                       : data.manager.source.tier === "reference-render"
-                        ? "Reference render — operator-installed"
+                        ? "Verified reference"
                         : data.manager.source.tier === "custom-observe"
-                          ? "Custom — external signing"
-                          : "Not recognized — external signing"}
+                          ? "Custom manager"
+                          : "Unverified manager"}
                   </span>
                 </div>
                 <div className="statline">
                   <span className="k">Installed profile store</span>
                   <span className="v">
                     {data.manager.installedProfiles.directory
-                      ? `${data.manager.installedProfiles.loaded} loaded · ${data.manager.installedProfiles.issues.length} issue(s)`
+                      ? `${data.manager.installedProfiles.loaded} loaded · ${data.manager.installedProfiles.issues.length} ${data.manager.installedProfiles.issues.length === 1 ? "issue" : "issues"}`
                       : "Not configured"}
                   </span>
                 </div>
@@ -625,10 +628,12 @@ export function SettingsPage({
                   <div className="body">
                     <strong>
                       {data.manager.automationEligible
-                        ? "Reference-manager Assist eligible."
-                        : "Observe mode; fixed external actions remain available when technically compatible."}
-                    </strong>{" "}
-                    {data.manager.automationEligibilityReason}
+                        ? "Assist available."
+                        : "Assist unavailable."}
+                    </strong>
+                    {!data.manager.automationEligible ? (
+                      <> {data.manager.automationEligibilityReason}</>
+                    ) : null}
                   </div>
                 </div>
                 {data.manager.installedProfiles.issues.map((issue) => (
@@ -644,11 +649,10 @@ export function SettingsPage({
                 ))}
               </>
             ) : null}
-            <div className="callout callout-critical security-note">
+            <div className="callout callout-neutral security-note">
               <Key className="ic" />
               <div className="body">
-                <strong>Never configurable here.</strong> Manager admin and signer private keys are
-                rejected. The generated pool card does not expose Sidekick.
+                Sidekick does not store manager-admin or signer private keys.
               </div>
             </div>
             {settings.audit.length ? (
@@ -668,7 +672,6 @@ export function SettingsPage({
           <section className="card set-section" id="maintenance">
             <div className="card-head">
               <h2>About &amp; maintenance</h2>
-              <span className="badge b-neutral">schema-managed</span>
             </div>
             <div className="statline">
               <span className="k">Backup</span>

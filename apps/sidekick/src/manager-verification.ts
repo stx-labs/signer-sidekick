@@ -111,10 +111,10 @@ export async function createManagerVerificationContext(options: {
     upstreamSource = await readFile(upstreamPath, "utf8");
   } catch (error) {
     const errorCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? String(error.code)
-        : "unknown error";
-    upstreamSourceError = `Pinned reference-manager source is unavailable (${errorCode})`;
+      typeof error === "object" && error !== null && "code" in error ? String(error.code) : null;
+    upstreamSourceError = errorCode
+      ? `Pinned reference-manager source is unavailable (${errorCode})`
+      : "Pinned reference-manager source is unavailable";
   }
   const managerArtifactsById = new Map(
     KNOWN_MANAGER_ARTIFACTS.map((artifact) => [artifact.profile.id, artifact]),
@@ -446,12 +446,14 @@ export function verifyManagerArtifact(
       (builtIn?.recognition.automationAllowed ||
         (tier === "reference-render" && proof?.automationEligible)),
   );
+  const missingFunctionReason = `Manager interface is missing ${missingFunctions.length} required ${missingFunctions.length === 1 ? "function" : "functions"}`;
+  const profileIssueReason = `${profileStore.issues.length} installed trusted-manager profile ${profileStore.issues.length === 1 ? "issue was" : "issues were"} ignored`;
   const automationEligibilityReason = automationEligible
     ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for Assist")
     : !networkMatches
       ? "Manager principal does not match the configured network"
       : !interfaceCompatible
-        ? `Manager interface is missing ${missingFunctions.length} required function(s)`
+        ? missingFunctionReason
         : builtIn
           ? operatorProvidedArtifact
             ? "Operator-provided network profiles cannot authorize Assist broadcasts"
@@ -459,26 +461,20 @@ export function verifyManagerArtifact(
           : (proof?.reason ??
             installedFailureReason ??
             (tier === "custom-observe"
-              ? "Custom managers do not qualify for reference-manager Assist; fixed external actions remain available"
-              : "Manager source is not recognized for reference-manager Assist; fixed external actions remain available"));
+              ? "Manager uses a custom contract"
+              : "Manager source is unverified"));
   const reasons: string[] = [];
   if (!networkMatches) reasons.push("Manager principal does not match the configured network");
   if (!interfaceCompatible) {
-    reasons.push(`Manager interface is missing ${missingFunctions.length} required function(s)`);
+    reasons.push(missingFunctionReason);
   }
   if (!recognized) {
-    reasons.push(
-      proof?.reason ??
-        installedFailureReason ??
-        "Manager source is not recognized for Assist; monitoring and fixed external actions remain available when technical checks pass",
-    );
+    reasons.push(proof?.reason ?? installedFailureReason ?? "Manager source is unverified");
   } else if (!automationEligible) {
     reasons.push(automationEligibilityReason);
   }
   if (profileStore.issues.length > 0) {
-    reasons.push(
-      `${profileStore.issues.length} installed trusted-manager profile issue(s) were ignored`,
-    );
+    reasons.push(profileIssueReason);
   }
 
   return {

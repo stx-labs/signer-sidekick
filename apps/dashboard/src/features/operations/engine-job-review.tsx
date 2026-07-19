@@ -47,7 +47,7 @@ export function EngineJobReview({
     <section className="engine-job-detail" aria-label="Transaction job detail">
       <div className="card-head engine-job-heading">
         <div>
-          <span className="eyebrow">Exact transaction review</span>
+          <span className="eyebrow">Transaction review</span>
           <h2>{review.call.functionName}</h2>
           <CopyableIdentifier value={job.jobId} label="job ID" className="identifier mono" />
         </div>
@@ -160,13 +160,13 @@ export function EngineJobReview({
             <p>{review.expectedPostState}</p>
           </div>
           <div className="engine-review-copy">
-            <span>Reconciliation predicate</span>
+            <span>Expected result</span>
             <p className="mono">{review.expectedEffect.reconciliationPredicate}</p>
           </div>
         </div>
 
         <div className="engine-review-card">
-          <h3>Fee and immutable hashes</h3>
+          <h3>Fees and approval hashes</h3>
           <StatLine label="Fee snapshot">
             {review.fee.snapshot.state}
             {review.fee.snapshot.feeBips === null ? "" : ` · ${review.fee.snapshot.feeBips} bips`}
@@ -186,7 +186,7 @@ export function EngineJobReview({
       </div>
 
       <div className="engine-review-card engine-arguments">
-        <h3>Exact arguments</h3>
+        <h3>Arguments</h3>
         <div className="table-wrap">
           <table>
             <thead>
@@ -257,7 +257,8 @@ export function EngineJobReview({
               disabled={action !== null}
               onClick={onApprove}
             >
-              <ShieldCheck /> {action === "approve" ? "Approving exact intent" : "Approve intent"}
+              <ShieldCheck />{" "}
+              {action === "approve" ? "Approving transaction" : "Approve transaction"}
             </button>
           ) : null}
           {canInvalidate ? (
@@ -315,7 +316,7 @@ export function EngineJobReview({
         </div>
 
         <div className="engine-review-card">
-          <h3>Authoritative reconciliation</h3>
+          <h3>Result verification</h3>
           {job.reconciliation ? (
             <>
               <div className="callout callout-info">
@@ -334,7 +335,7 @@ export function EngineJobReview({
               ))}
             </>
           ) : (
-            <p className="muted">No reconciliation observation has been recorded.</p>
+            <p className="muted">No result verification has been recorded.</p>
           )}
         </div>
       </div>

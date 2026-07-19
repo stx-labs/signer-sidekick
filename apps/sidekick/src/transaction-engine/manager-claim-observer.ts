@@ -459,7 +459,7 @@ function operationScopeKey(value: ParsedManagerClaimObserveFacts): string {
 function blocksFor(value: ParsedManagerClaimObserveFacts): ManagerClaimObserveBlock[] {
   const blocks: ManagerClaimObserveBlock[] = [];
   if (!value.controls.adapterEnabled) {
-    blocks.push({ code: "adapter-disabled", message: "Manager-claim adapter is disabled" });
+    blocks.push({ code: "adapter-disabled", message: "Manager-claim transactions are disabled" });
   }
   if (
     value.manager.profile.recognitionTier !== "reference-built-in" &&
@@ -467,19 +467,19 @@ function blocksFor(value: ParsedManagerClaimObserveFacts): ManagerClaimObserveBl
   ) {
     blocks.push({
       code: "manager-profile-ineligible",
-      message: "Manager claim requires a verified reference-manager profile",
+      message: "Reward claims require a verified reference manager",
     });
   }
   if (value.manager.profile.sourceSha256 !== value.manager.observedSourceSha256) {
     blocks.push({
       code: "manager-source-mismatch",
-      message: "Observed manager source does not match the verified profile",
+      message: "Manager source does not match its verified profile",
     });
   }
   if (!value.acceptedAttestation.current) {
     blocks.push({
       code: "attestation-not-current",
-      message: "Accepted compatibility attestation is not current",
+      message: "Compatibility attestation expired. Install a current attestation",
     });
   }
   if (value.controls.rewardsPaused) {
@@ -488,7 +488,7 @@ function blocksFor(value: ParsedManagerClaimObserveFacts): ManagerClaimObserveBl
   if (value.gasPayer.estimatedFeeUstx > value.gasPayer.maximumFeeUstx) {
     blocks.push({
       code: "fee-cap-exceeded",
-      message: "Estimated transaction fee exceeds the configured Observe cap",
+      message: "Estimated claim fee exceeds the configured cap",
     });
   }
   return blocks;

@@ -98,7 +98,7 @@ export function signerActivationView(
       badge: "Chain update pending",
       title: `Signer-set confirmation pending for cycle ${next.cycleId}`,
       message:
-        "The stake threshold is met, but signer-set membership has not updated at this Stacks chain tip. Wait for the chain to advance, then refresh.",
+        "The stake threshold is met, but signer-set membership is not yet confirmed. Wait for the chain to advance, then refresh.",
       refreshLabel: "Refresh chain status",
     };
   }

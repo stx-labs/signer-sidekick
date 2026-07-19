@@ -107,7 +107,7 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
-    expect(report.automationEligibilityReason).toContain("fixed external actions remain available");
+    expect(report.automationEligibilityReason).toBe("Manager source is unverified");
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {

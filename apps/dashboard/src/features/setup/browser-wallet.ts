@@ -115,6 +115,16 @@ export function browserWalletProviderIds(
     : [LEATHER_PROVIDER_ID];
 }
 
+export function browserWalletProviderNames(
+  providerIds: readonly BrowserWalletProviderId[],
+): string {
+  const names = providerIds.map((providerId) =>
+    providerId === LEATHER_PROVIDER_ID ? "Leather" : "Xverse",
+  );
+  if (names.length === 0) return "a supported wallet";
+  return names.length === 1 ? (names[0] ?? "a supported wallet") : names.join(" or ");
+}
+
 export function isBrowserWalletProviderSupported(
   providerId: unknown,
   action: BrowserWalletAction,
@@ -149,43 +159,23 @@ export function browserWalletSupport(
   chainId: number,
 ): {
   available: boolean;
-  detail: string;
+  providerIds: BrowserWalletProviderId[];
+  unavailableReason: string | null;
 } {
   const walletNetwork = browserWalletIntentNetwork(network);
   if (!walletNetwork || !validChainId(walletNetwork, chainId)) {
     return {
       available: false,
-      detail:
-        "Browser-wallet execution is unavailable for this network binding. Use the manual instructions instead.",
+      providerIds: [],
+      unavailableReason:
+        "Browser wallet signing is unavailable for this network. Use another signing tool.",
     };
   }
-  const providerIds = browserWalletProviderIds(action, walletNetwork);
-  if (walletNetwork === POX5_TESTNET_CONNECT_NETWORK) {
-    return {
-      available: providerIds.length > 0,
-      detail:
-        "Sidekick's testnet profile requires Leather's exact pox5-testnet custom-network key; ordinary Stacks testnet is never used. Sidekick verifies the broadcast against chain ID 0x80000005 afterward.",
-    };
-  }
-  if (walletNetwork === "devnet" || walletNetwork === "regtest") {
-    return {
-      available: true,
-      detail: `Use Leather with its exact ${walletNetwork} wallet network selected and verify chain ID 0x${chainId.toString(16).padStart(8, "0")}. Wallet support for private networks is version-dependent; the manual path remains available.`,
-    };
-  }
-  return !providerIds.includes(XVERSE_PROVIDER_ID)
-    ? {
-        available: true,
-        detail:
-          action === "deploy-manager"
-            ? "Manager deployment requires Leather because Xverse does not preserve the required Clarity 6 setting."
-            : "This operation requires Leather because it includes asset postconditions.",
-      }
-    : {
-        available: true,
-        detail:
-          "Use Leather or Xverse. Your wallet holds the admin key and broadcasts the reviewed transaction.",
-      };
+  return {
+    available: true,
+    providerIds: browserWalletProviderIds(action, walletNetwork),
+    unavailableReason: null,
+  };
 }
 
 export function canPrepareBrowserWalletIntent(
@@ -237,7 +227,10 @@ function canonicalJson(value: unknown): string {
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;
   }
-  throw new BrowserWalletError("invalid-intent", "The wallet request is not canonical JSON.");
+  throw new BrowserWalletError(
+    "invalid-intent",
+    "The transaction request is invalid. Prepare it again.",
+  );
 }
 
 function normalizedContractPrincipal(value: string): string | null {
@@ -337,7 +330,7 @@ function walletNetworkBinding(intent: BrowserWalletIntent): WalletNetworkBinding
   }
   throw new BrowserWalletError(
     "unsupported-network",
-    "The wallet request is not bound to an exact supported Sidekick network and chain ID. Use the manual path.",
+    "This transaction's network does not match Sidekick's configured network. Prepare it again or use the manual transaction details.",
   );
 }
 
@@ -382,7 +375,7 @@ async function assertSealedRequest(intent: BrowserWalletIntent): Promise<WalletN
   ) {
     throw new BrowserWalletError(
       "invalid-intent",
-      "The prepared wallet request does not match its sealed transaction policy. Prepare it again.",
+      "The transaction request failed validation. Prepare it again.",
     );
   }
   if ((await browserWalletManifestSha256(intent)) !== intent.seal.manifestSha256) {
@@ -476,7 +469,7 @@ function sanitizedWalletFailure(cause: unknown, requestInvoked: boolean): Browse
   }
   return new BrowserWalletError(
     "request-failed",
-    "The wallet request did not complete. No transaction was submitted to Sidekick; try again or use the manual path.",
+    "The wallet request did not complete. No transaction was submitted; try again or use the manual path.",
   );
 }
 
@@ -519,15 +512,12 @@ export async function executeBrowserWalletIntent(
       !isBrowserWalletProviderSupported(providerId, action, network.sidekickNetwork) ||
       !provider
     ) {
+      const supportedWallets = browserWalletProviderNames(approvedProviderIds);
       throw new BrowserWalletError(
         "unsupported-wallet",
         approvedProviderIds.length === 1
-          ? network.sidekickNetwork !== "mainnet"
-            ? `Use Leather with its exact ${network.connectNetwork} network selected, or follow the manual instructions.`
-            : action === "deploy-manager"
-              ? "Use Leather for this Clarity 6 deployment, or follow the manual instructions."
-              : "Use Leather for this asset-moving transaction, or follow the manual instructions."
-          : "Use Leather or Xverse for this transaction, or follow the manual instructions.",
+          ? `This transaction supports ${supportedWallets} only. Select ${supportedWallets} or use the manual transaction details.`
+          : `This transaction supports ${supportedWallets}. Select one or use the manual transaction details.`,
       );
     }
     const current = revalidateBeforeRequest ? await revalidateBeforeRequest() : intent;

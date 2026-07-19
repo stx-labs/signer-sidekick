@@ -66,16 +66,15 @@ export function EngineWalletClaim({
   return (
     <section className="engine-wallet-claim" aria-label="External wallet claim">
       <div>
-        <h3>Execute with a browser wallet</h3>
+        <h3>Claim with browser wallet</h3>
         <p className="muted">
-          Any standard Stacks account can pay for this public claim call. Sidekick binds the exact
-          Observe job and verifies the transaction independently; Leather signs because the claim
-          includes an asset post-condition.
+          Any Stacks account can pay for this claim. Enter the signing account, then review the
+          transaction.
         </p>
       </div>
       <Field
-        label="Wallet payer"
-        help="This address pays the STX transaction fee. It does not need manager-admin authority."
+        label="Signing account"
+        help="This account pays the transaction fee; manager-admin authority is not required."
       >
         <input
           className="input mono"
@@ -100,8 +99,7 @@ export function EngineWalletClaim({
         />
       ) : null}
       <p className="muted">
-        You may instead use the exact contract call, arguments, and post-condition shown in the
-        reviewed job with another signing tool.
+        You can also use the reviewed transaction details with another signing tool.
       </p>
     </section>
   );

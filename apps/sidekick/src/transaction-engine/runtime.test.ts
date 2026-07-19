@@ -16,6 +16,7 @@ import type { SetupSnapshot } from "../setup-snapshot.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "../storage/store.js";
 import { GasPayerSigner } from "./gas-payer-signer.js";
 import type { ManagerClaimObservationInput } from "./manager-claim-observation-service.js";
+import { ManagerClaimWalletIntentError } from "./manager-claim-wallet-intent.js";
 import type { StoredTransactionJob } from "./repository.js";
 import {
   createSidekickTransactionEngineRuntime,
@@ -306,6 +307,28 @@ describe("transaction engine runtime composition", () => {
     await runtime.close();
   });
 
+  it("rejects browser-wallet claims in Assist mode as a non-retryable policy failure", async () => {
+    const freshReads = vi.fn();
+    const base = observeComposition({ freshAnchor: anchor(101), seen: [], freshReads });
+    const runtime = new SidekickTransactionEngineRuntime({
+      ...base,
+      runtimeConfig: { ...base.runtimeConfig, requestedMode: "assist" },
+    });
+
+    const error = await runtime
+      .observeManagerClaimWalletJob("00000000-0000-4000-8000-000000000001")
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ManagerClaimWalletIntentError);
+    expect(error).toMatchObject({
+      code: "unavailable",
+      message: "Browser-wallet claims require Observe mode. Use Assist or switch modes",
+      retryable: false,
+    });
+    expect(freshReads).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
   it("executes a planned approval only after the callback's fresh observation and anchor read", async () => {
     const jobId = "00000000-0000-4000-8000-000000000001";
     const freshAnchor = anchor(102);
@@ -478,8 +501,11 @@ describe("transaction engine runtime composition", () => {
     const transitionLogicalJob = vi.fn(() => ({ ...job, state: "blocked" }));
     const repository = {
       listLogicalJobs: vi.fn(() => ({ items: [], nextCursor: null, total: 0 })),
+      logicalJobStats: vi.fn(() => ({ active: 0, awaitingApproval: 0, ambiguous: 0 })),
       getLogicalJob: vi.fn(() => job),
       getActiveApproval: vi.fn(() => approval),
+      getForceObserveControl: vi.fn(() => null),
+      getDisabledAdapterControl: vi.fn(() => null),
       transitionLogicalJob,
     };
     const attestation = {
@@ -511,7 +537,8 @@ describe("transaction engine runtime composition", () => {
     const clock = vi
       .fn<() => Date>()
       .mockReturnValueOnce(new Date("2026-07-17T12:01:00.000Z"))
-      .mockReturnValueOnce(new Date("2026-07-17T12:31:00.000Z"));
+      .mockReturnValueOnce(new Date("2026-07-17T12:31:00.000Z"))
+      .mockReturnValue(new Date("2026-07-17T12:31:00.000Z"));
     const base = observeComposition({ freshAnchor: valueAnchor, seen: [], freshReads: vi.fn() });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
@@ -560,6 +587,9 @@ describe("transaction engine runtime composition", () => {
       blockReason: "approval-revalidation:attestation-expired",
       changedAt: "2026-07-17T12:31:00.000Z",
     });
+    expect(runtime.api.status().adapters[0]?.blockReason).toBe(
+      "Assist unavailable: approval or compatibility attestation expired. Sync chain data to prepare a new current job, then review and approve it",
+    );
     expect(buildAdmission).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
     await runtime.close();

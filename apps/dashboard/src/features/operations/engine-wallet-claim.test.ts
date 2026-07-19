@@ -1,6 +1,8 @@
 import type { EngineJobDetail, EngineStatus } from "@stx-labs/signer-sidekick-api-contracts";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { isWalletClaimJobEligible } from "./engine-wallet-claim.js";
+import { EngineWalletClaim, isWalletClaimJobEligible } from "./engine-wallet-claim.js";
 
 const job = {
   mode: "observe",
@@ -31,6 +33,24 @@ const status = {
 } as EngineStatus;
 
 describe("Observe claim wallet eligibility", () => {
+  it("explains the signing-account flow without provider or implementation details", () => {
+    const html = renderToStaticMarkup(
+      createElement(EngineWalletClaim, {
+        chainId: 0x80000005,
+        job,
+        network: "testnet",
+        status,
+        token: "test-token",
+      }),
+    );
+
+    expect(html).toContain("Claim with browser wallet");
+    expect(html).toContain("Any Stacks account can pay for this claim.");
+    expect(html).toContain("Signing account");
+    expect(html).not.toContain("Leather signs");
+    expect(html).not.toContain("exact Observe job");
+  });
+
   it("exposes only an untouched current Observe claim job", () => {
     expect(isWalletClaimJobEligible(job, status)).toBe(true);
     expect(isWalletClaimJobEligible({ ...job, mode: "assist" }, status)).toBe(false);

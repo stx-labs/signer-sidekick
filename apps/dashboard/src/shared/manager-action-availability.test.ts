@@ -50,7 +50,7 @@ describe("managerActionAvailability", () => {
     expect(value.manager.automationEligible).toBe(false);
     expect(managerActionAvailability(value)).toEqual({
       available: true,
-      reason: "The configured manager exposes the required interface on this network.",
+      reason: "Manager actions are available.",
       warning: null,
     });
   });
@@ -74,7 +74,8 @@ describe("managerActionAvailability", () => {
 
     expect(managerActionAvailability(value)).toEqual({
       available: false,
-      reason: expect.stringContaining("recent authoritative operator snapshot"),
+      reason:
+        "Manager actions are paused because the displayed data is stale. Refresh to continue.",
       warning: null,
     });
   });
@@ -119,7 +120,7 @@ describe("managerActionAvailability", () => {
     custom.manager.provenance.status = "not-applicable";
     expect(managerActionAvailability(custom)).toMatchObject({
       available: true,
-      warning: expect.stringContaining("cannot attest this manager's behavior"),
+      warning: expect.stringContaining("wallet or manual signing"),
     });
 
     const unverified = context();
@@ -130,7 +131,7 @@ describe("managerActionAvailability", () => {
     unverified.manager.provenance.reason = "Reference-render proof failed";
     expect(managerActionAvailability(unverified)).toMatchObject({
       available: true,
-      warning: expect.stringContaining("Assist remains unavailable"),
+      warning: expect.stringContaining("Assist is unavailable"),
     });
   });
 

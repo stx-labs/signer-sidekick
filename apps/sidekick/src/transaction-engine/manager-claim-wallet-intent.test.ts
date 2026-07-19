@@ -513,7 +513,7 @@ describe("manager-claim browser-wallet binding", () => {
           },
         },
       }),
-    ).rejects.toThrow("trusted live manager identity");
+    ).rejects.toThrow("no longer matches the verified manager");
   });
 
   it("rejects claim preparation when node and API network routing do not agree", async () => {
@@ -572,7 +572,7 @@ describe("manager-claim browser-wallet binding", () => {
         observation: observation(assist.result),
         live: live(),
       }),
-    ).rejects.toThrow("not an executable Observe-only plan");
+    ).rejects.toThrow("not ready for browser-wallet execution");
 
     await expect(
       prepareManagerClaimWalletIntent({
@@ -585,7 +585,7 @@ describe("manager-claim browser-wallet binding", () => {
           network: { name: "pox5-testnet", kind: "testnet", chainId: 0x8000_0000 },
         },
       }),
-    ).rejects.toThrow("do not match");
+    ).rejects.toThrow("does not match");
 
     await expect(
       prepareManagerClaimWalletIntent({
@@ -598,7 +598,7 @@ describe("manager-claim browser-wallet binding", () => {
           network: { name: "devnet", kind: "mainnet", chainId: 0x8000_0005 },
         },
       }),
-    ).rejects.toThrow("do not match");
+    ).rejects.toThrow("does not match");
 
     const mainnet = await plannedMainnet();
     await expect(
@@ -612,7 +612,7 @@ describe("manager-claim browser-wallet binding", () => {
           network: { name: "mainnet", kind: "mainnet", chainId: 2 },
         },
       }),
-    ).rejects.toThrow("do not match");
+    ).rejects.toThrow("does not match");
 
     await expect(
       prepareManagerClaimWalletIntent({
@@ -625,25 +625,54 @@ describe("manager-claim browser-wallet binding", () => {
           network: { name: "devnet", kind: "testnet", chainId: 0x1_0000_0000 },
         },
       }),
-    ).rejects.toThrow("uint32 chain ID");
+    ).rejects.toThrow("invalid chain ID");
   });
 
   it.each([
     {
       name: "stale selection",
-      runtimeError: new Error(
-        "The selected manager-claim job is not the current actionable observation",
+      runtimeError: new ManagerClaimWalletIntentError(
+        "superseded",
+        "This claim job changed. Refresh Operations and select the current job",
       ),
       code: "wallet_intent_conflict",
-      message: "The selected manager-claim job is no longer the current actionable observation",
+      message: "This claim job changed. Refresh Operations and select the current job",
+      retryable: false,
     },
     {
-      name: "runtime failure",
-      runtimeError: new Error("RPC failed with secret upstream details"),
+      name: "permanent claim policy failure",
+      runtimeError: new ManagerClaimWalletIntentError(
+        "unavailable",
+        "Browser-wallet claims require Observe mode",
+      ),
       code: "wallet_execution_unavailable",
-      message: "The transaction engine could not refresh current manager-claim eligibility",
+      message: "Browser-wallet claims require Observe mode",
+      retryable: false,
     },
-  ])("maps a $name to a controlled wallet error", async ({ runtimeError, code, message }) => {
+    {
+      name: "temporary claim observation failure",
+      runtimeError: new ManagerClaimWalletIntentError(
+        "unavailable",
+        "Claim chain data is temporarily unavailable",
+        true,
+      ),
+      code: "wallet_execution_unavailable",
+      message: "Claim chain data is temporarily unavailable",
+      retryable: true,
+    },
+    {
+      name: "unknown claim observation failure",
+      runtimeError: new Error("RPC failed with secret upstream details"),
+      code: null,
+      message: null,
+      retryable: null,
+    },
+  ])("classifies a $name without widening retryability", async ({
+    runtimeError,
+    code,
+    message,
+    retryable,
+  }) => {
     const { store } = await openSidekickStore(":memory:", observedAt);
     stores.push(store);
     readSetupSnapshotMock.mockResolvedValue({
@@ -712,8 +741,11 @@ describe("manager-claim browser-wallet binding", () => {
         jobId: "10000000-0000-4000-8000-000000000007",
       })
       .catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code, message });
-    expect(String(error)).not.toContain("secret upstream details");
+    if (code === null) {
+      expect(error).toBe(runtimeError);
+      return;
+    }
+    expect(error).toMatchObject({ code, message, retryable });
   });
 
   it("waits for and then trusts only the existing job's authoritative reconciliation", async () => {
@@ -987,7 +1019,7 @@ describe("manager-claim browser-wallet binding", () => {
         observation: observation(rotated.result),
         live: live(),
       }),
-    ).rejects.toThrow("current unexpired attestation");
+    ).rejects.toThrow("compatibility attestation expired or changed");
   });
 
   it("blocks new preparation after emergency Force Observe without invalidating reads", async () => {
@@ -1013,7 +1045,7 @@ describe("manager-claim browser-wallet binding", () => {
         observation: observation(result),
         live: live(),
       }),
-    ).rejects.toThrow("Force Observe");
+    ).rejects.toThrow("Emergency Observe mode");
     expect(
       readManagerClaimWalletIntent({
         repository: store.transactionEngine,

@@ -13,6 +13,7 @@ import { dashboardHash } from "../../dashboard-route.js";
 import { Badge, PageHead, Pagination, StatLine } from "../../shared/dashboard-ui.js";
 import { number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
+import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
 
 type Snapshot = DashboardSnapshot;
@@ -32,7 +33,7 @@ function RequestState({
     return (
       <div className="callout callout-critical" role="alert">
         <div className="body">
-          <strong>Could not refresh {label}.</strong> {error}
+          <strong>Could not refresh {label}.</strong> {operatorErrorSentence(error)}
           <div className="actions">
             <button type="button" className="btn btn-secondary sm" onClick={retry}>
               Retry
@@ -113,7 +114,7 @@ export function Rewards({
       })
       .catch((cause) => {
         if (!controller.signal.aborted) {
-          setStakersError(cause instanceof Error ? cause.message : String(cause));
+          setStakersError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
         }
       })
       .finally(() => {
@@ -151,7 +152,7 @@ export function Rewards({
       })
       .catch((cause) => {
         if (!controller.signal.aborted) {
-          setActivityError(cause instanceof Error ? cause.message : String(cause));
+          setActivityError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
         }
       })
       .finally(() => {
@@ -185,7 +186,7 @@ export function Rewards({
       })
       .catch((cause) => {
         if (!controller.signal.aborted) {
-          setHistoryError(cause instanceof Error ? cause.message : String(cause));
+          setHistoryError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
         }
       })
       .finally(() => {
@@ -197,14 +198,18 @@ export function Rewards({
     <>
       <PageHead
         title="Rewards"
-        lede={`The sBTC pipeline for cycle ${rewards?.rewardCycle ?? data.preflight.cycle.currentId} — calculate, claim into the manager, pay stakers, settle L1 withdrawals.`}
+        lede={`sBTC rewards and Bitcoin withdrawals for cycle ${rewards?.rewardCycle ?? data.preflight.cycle.currentId}.`}
       />
       <div className="card-standout pipeline-wrap">
         <div className="pipeline">
           <PipelineStage
             done={BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) > 0n}
             title="Global calculated"
-            value={`Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`}
+            value={
+              BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) === 0n
+                ? "Waiting"
+                : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
+            }
             detail="last reward calculation"
           />
           <PipelineStage
@@ -221,9 +226,9 @@ export function Rewards({
           />
           <PipelineStage
             done={activity.pendingWithdrawalTotal === 0}
-            title="L1 settled"
+            title="Bitcoin withdrawals"
             value={`${activity.withdrawalTotal - activity.pendingWithdrawalTotal} / ${activity.withdrawalTotal}`}
-            detail="event-derived"
+            detail="completed requests"
           />
         </div>
       </div>
@@ -259,14 +264,11 @@ export function Rewards({
           <StatLine label={`Effective fee · cycle ${rewards?.rewardCycle ?? "—"}`}>
             <span className="mono src src-chain">
               {rewards?.manager.feeSnapshotBips === null || !rewards
-                ? "Not snapshotted"
+                ? "Not recorded"
                 : `${Number(rewards.manager.feeSnapshotBips) / 100}%`}
             </span>
           </StatLine>
-          <p className="tertiary balance-note">
-            The effective cycle fee is fixed on the manager's first claim. A real 0% snapshot is
-            shown as 0%; a missing snapshot is shown separately.
-          </p>
+          <p className="tertiary balance-note">A cycle’s fee is set by its first manager claim.</p>
           <div className="reward-admin-actions">
             <button
               type="button"
@@ -283,7 +285,6 @@ export function Rewards({
         <div className="card">
           <div className="card-head">
             <h2>Balance &amp; liability</h2>
-            <Badge state="neutral">contract state</Badge>
           </div>
           <StatLine label="Unclaimed staker rewards">
             <span className="mono">{sbtc(rewards?.manager.unclaimedStakerRewardsSats)} sBTC</span>
@@ -291,12 +292,11 @@ export function Rewards({
           <StatLine label="Earned fees">
             <span className="mono">{sbtc(rewards?.manager.earnedFeesSats)} sBTC</span>
           </StatLine>
-          <StatLine label="Withdrawal liability">
+          <StatLine label="Bitcoin withdrawal liability">
             <span className="mono">{sbtc(rewards?.manager.withdrawalLiabilitySats)} sBTC</span>
           </StatLine>
           <p className="tertiary balance-note">
-            Pending L1 withdrawals have already left the manager. Liability is tracked separately
-            and is not added to expected cash.
+            Pending Bitcoin withdrawals are shown separately and excluded from expected balance.
           </p>
           <div className="reward-admin-actions">
             <button
@@ -369,7 +369,7 @@ export function Rewards({
                     </td>
                     <td className="right mono">
                       {cycle.feeSnapshotBips === null
-                        ? "Not snapshotted"
+                        ? "Not recorded"
                         : `${Number(cycle.feeSnapshotBips) / 100}%`}
                     </td>
                     <td className="right mono">{number(cycle.actionableClaims)}</td>
@@ -379,7 +379,7 @@ export function Rewards({
               </tbody>
             </table>
             {cycleHistory.length === 0 ? (
-              <div className="empty-table">No retained reward cycle snapshots yet</div>
+              <div className="empty-table">No reward cycle history yet</div>
             ) : null}
             <Pagination
               page={cycleHistoryPage}
@@ -537,12 +537,12 @@ export function Rewards({
           </>
         ) : null}
       </div>
-      <div className="section-title">L1 withdrawal queue</div>
+      <div className="section-title">Bitcoin withdrawal queue</div>
       {activityLoading || activityError ? (
         <p className={activityError ? "field-error" : "muted"} role="status">
           {activityLoading
             ? "Refreshing the withdrawal queue…"
-            : "The withdrawal queue is unavailable because the shared activity refresh failed. Retry above."}
+            : "Withdrawal history is temporarily unavailable. Retry above."}
         </p>
       ) : null}
       <div className="tbl-wrap" aria-busy={activityLoading}>
@@ -584,7 +584,7 @@ export function Rewards({
               </tbody>
             </table>
             {withdrawals.length === 0 ? (
-              <div className="empty-table">No L1 withdrawal requests indexed</div>
+              <div className="empty-table">No Bitcoin withdrawal requests found</div>
             ) : null}
             <Pagination
               page={withdrawalPage}

@@ -402,11 +402,7 @@ function staticBlocks(
   const blocks: ManagerClaimObservationBlock[] = [];
   const kind = networkKind(input.setup);
   if (!kind) {
-    block(
-      blocks,
-      "unsupported-network",
-      "The manager-claim adapter could not classify the configured Stacks network",
-    );
+    block(blocks, "unsupported-network", "This network is not supported for manager claims");
   }
   const { preflight, manager } = input.setup;
   if (
@@ -418,7 +414,7 @@ function staticBlocks(
     block(
       blocks,
       "network-fingerprint-mismatch",
-      "Live PoX-5 and sBTC identity is not an exact installed compatibility match",
+      "PoX-5 and sBTC contracts do not match the active compatibility profile",
     );
   }
   if (
@@ -426,39 +422,35 @@ function staticBlocks(
     (manager.source.tier !== "reference-built-in" && manager.source.tier !== "reference-render") ||
     !manager.source.profileId
   ) {
-    block(
-      blocks,
-      "manager-ineligible",
-      "The deployed manager is not eligible for the fixed reference-manager adapter",
-    );
+    block(blocks, "manager-ineligible", "Reward claims require a verified reference manager");
   }
   if (!manager.source.sha256 || manager.source.match === "unknown") {
-    block(
-      blocks,
-      "manager-fingerprint-mismatch",
-      "The deployed manager source fingerprint is not exact",
-    );
+    block(blocks, "manager-fingerprint-mismatch", "Manager source could not be verified");
   }
   if (!input.rewards) {
-    block(blocks, "reward-status-unavailable", "Anchored manager reward status is unavailable");
+    block(
+      blocks,
+      "reward-status-unavailable",
+      "Reward data is unavailable. Sync chain data and try again",
+    );
   } else if (!checkpoint) {
     block(
       blocks,
       "reward-checkpoint-mismatch",
-      "Reward status does not match the exact current calculation checkpoint",
+      "Reward data is stale. Sync chain data and try again",
     );
   }
   if (rosterProof?.status === "incomplete") {
     block(
       blocks,
       "roster-proof-incomplete",
-      "A complete authoritative roster at the same chain anchor is required",
+      "The staker roster is incomplete at the current chain tip. Sync chain data",
     );
   } else if (rosterProof?.status === "bond-present") {
     block(
       blocks,
       "bond-participation-present",
-      "The V1 empty-bond vector cannot be used by a manager with bond participation",
+      "This claim path does not support pools with Bitcoin bond participation",
     );
   }
   return blocks;
@@ -523,6 +515,12 @@ export class ManagerClaimObservationService {
     code: ManagerClaimApprovalRevalidationCode,
     message: string,
   ): ManagerClaimApprovalRevalidationOutcome {
+    const operatorMessage =
+      disposition === "invalidated"
+        ? code === "adapter-disabled"
+          ? "Assist or manager-claim transactions were disabled. This job cannot continue. If Assist becomes available later, sync chain data to prepare a new current job, then review and approve it"
+          : `${message}. Sync chain data to prepare a new current job, then review and approve it`
+        : message;
     let job = input.job;
     if (disposition === "invalidated" && job.state === "awaiting_approval") {
       job = this.options.repository.transitionLogicalJob({
@@ -534,7 +532,7 @@ export class ManagerClaimObservationService {
         changedAt: input.observedAt,
       });
     }
-    return { status: "blocked", disposition, code, message, job };
+    return { status: "blocked", disposition, code, message: operatorMessage, job };
   }
 
   /**
@@ -560,7 +558,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "approval-binding-changed",
-        "The durable approval no longer binds the immutable job",
+        "Approval no longer matches this job",
       );
     }
 
@@ -569,7 +567,7 @@ export class ManagerClaimObservationService {
         input,
         "retained",
         "canonical-proof-unavailable",
-        "Canonical ancestry is temporarily unavailable",
+        "Canonical ancestry is temporarily unavailable. Wait for the Reference API and retry",
       );
     }
     if (
@@ -581,7 +579,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "planned-anchor-noncanonical",
-        "The approved chain anchor is not a canonical ancestor of the live anchor",
+        "The approved chain anchor is no longer canonical",
       );
     }
 
@@ -594,7 +592,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "runtime-mode-changed",
-        "The runtime is no longer in Assist mode",
+        "The runtime is no longer in Assist mode; restore Assist first if intended",
       );
     }
     if (
@@ -608,7 +606,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "adapter-disabled",
-        "Assist authority or the fixed manager-claim adapter was disabled",
+        "Assist or manager-claim transactions were disabled",
       );
     }
 
@@ -621,7 +619,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "network-identity-changed",
-        "The live Stacks network no longer matches the approved job",
+        "The configured network changed",
       );
     }
     const pox5 = input.setup.preflight.pox.pox5ContractId;
@@ -643,7 +641,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "contract-identity-changed",
-        "The live PoX-5 or sBTC contract identity changed",
+        "The PoX-5 or sBTC contract changed",
       );
     }
     const liveManager = input.setup.manager;
@@ -670,7 +668,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "manager-identity-changed",
-        "The deployed manager identity, profile, or source changed",
+        "The manager identity or source changed",
       );
     }
 
@@ -696,7 +694,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "attestation-changed",
-        "The current compatibility attestation no longer matches the approved identity",
+        "The compatibility attestation changed",
       );
     }
     if (
@@ -708,7 +706,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "attestation-expired",
-        "The approval or compatibility attestation expired before execution",
+        "The approval or compatibility attestation expired",
       );
     }
     if (!attestationMatches(input)) {
@@ -716,7 +714,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "attestation-changed",
-        "The current compatibility attestation no longer matches the approved identity",
+        "The compatibility attestation changed",
       );
     }
 
@@ -734,7 +732,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "reward-checkpoint-changed",
-        "The live reward calculation no longer matches the approved checkpoint",
+        "The reward calculation changed",
       );
     }
     if (
@@ -755,7 +753,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "reward-checkpoint-changed",
-        "The target cycle, calculation checkpoint, compute height, or rewards-per-token changed",
+        "The reward checkpoint changed",
       );
     }
     const feeSnapshotMatches =
@@ -769,7 +767,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "fee-snapshot-changed",
-        "The manager fee snapshot state or effective fee changed",
+        "The manager fee changed",
       );
     }
 
@@ -790,7 +788,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "claim-amount-changed",
-        "The exact positive earned amount or approved no-bond predicate changed",
+        "The claim amount or no-bond proof changed",
       );
     }
 
@@ -815,7 +813,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "rewards-paused",
-        "PoX-5 rewards were paused after approval",
+        "PoX-5 rewards were paused after approval; wait until rewards resume",
       );
     }
 
@@ -828,7 +826,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "gas-payer-changed",
-        "The configured public gas-payer identity changed",
+        "The configured gas-payer identity changed; check Assist configuration first",
       );
     }
     const account = await this.options.liveReader.readAnchoredAccount(
@@ -851,7 +849,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "gas-nonce-changed",
-        "The anchored gas-payer nonce changed after approval",
+        "The gas-payer nonce changed after approval",
       );
     }
     const sealedFee = BigInt(plan.material.transaction.fee);
@@ -860,7 +858,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "gas-balance-insufficient",
-        "The anchored gas-payer balance no longer covers the sealed fee",
+        "The gas-payer balance no longer covers the approved fee; fund the gas payer first",
       );
     }
     if (
@@ -873,7 +871,7 @@ export class ManagerClaimObservationService {
         input,
         "invalidated",
         "fee-policy-changed",
-        "The Assist fee policy no longer matches the sealed transaction fee",
+        "The Assist fee policy changed; review configuration first",
       );
     }
 
@@ -924,7 +922,7 @@ export class ManagerClaimObservationService {
     if (
       this.options.repository.getDisabledAdapterControl(MANAGER_CLAIM_REWARDS_ADAPTER_ID) !== null
     ) {
-      block(blocks, "adapter-disabled", "The manager-claim adapter is irreversibly disabled");
+      block(blocks, "adapter-disabled", "Manager-claim transactions are disabled");
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
@@ -985,17 +983,17 @@ export class ManagerClaimObservationService {
       block(
         blocks,
         "attestation-unavailable",
-        "A current signed compatibility attestation is required",
+        "Assist requires a current compatibility attestation",
       );
     } else if (!attestationMatches(input)) {
       block(
         blocks,
         "attestation-fingerprint-mismatch",
-        "The signed compatibility attestation does not match live network and manager identity",
+        "The compatibility attestation does not match the current network and manager",
       );
     }
     if (!input.gasPayer) {
-      block(blocks, "gas-payer-unavailable", "A dedicated public gas-payer identity is required");
+      block(blocks, "gas-payer-unavailable", "Assist requires a configured gas-payer identity");
     }
     if (input.maximumFeeUstx <= 0n) {
       block(blocks, "fee-cap-exceeded", "The manager-claim fee cap must be positive");
@@ -1017,7 +1015,11 @@ export class ManagerClaimObservationService {
         "rewards-paused",
       );
     } catch {
-      block(blocks, "node-read-unavailable", "Anchored PoX-5 rewards-paused state is unavailable");
+      block(
+        blocks,
+        "node-read-unavailable",
+        "PoX-5 reward status could not be read. Check node connectivity and compatibility, then retry",
+      );
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
@@ -1032,7 +1034,13 @@ export class ManagerClaimObservationService {
       input.setup.chainAnchor.indexBlockHash,
     );
     if (account.status !== "observed") {
-      block(blocks, "node-read-unavailable", "Anchored gas-payer account state is unavailable");
+      const message =
+        account.status === "schema-invalid"
+          ? "The gas-payer account response is incompatible with Sidekick. Check node compatibility"
+          : account.reason === "http-error"
+            ? "The node rejected the gas-payer account request. Check its URL and access settings"
+            : "Gas-payer account state is unavailable. Check node connectivity and try again";
+      block(blocks, "node-read-unavailable", message);
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
@@ -1063,19 +1071,28 @@ export class ManagerClaimObservationService {
       nonce: account.value.nonce,
       fee: 1n,
     });
-    const estimate = observedFee(
-      await this.options.liveReader.estimateUnsignedTransactionFee(basePlan.unsignedTransactionHex),
+    const feeObservation = await this.options.liveReader.estimateUnsignedTransactionFee(
+      basePlan.unsignedTransactionHex,
     );
+    const estimate = observedFee(feeObservation);
     if (estimate === null || estimate <= 0n) {
+      const message =
+        feeObservation.status === "schema-invalid"
+          ? "The claim fee response is incompatible with Sidekick. Check node compatibility"
+          : feeObservation.status === "unavailable" && feeObservation.reason === "http-error"
+            ? "The node rejected claim fee estimation. Check its URL and access settings"
+            : feeObservation.status === "unavailable"
+              ? "Claim fee estimation is unavailable. Check node connectivity and try again"
+              : "The node returned no usable claim fee estimate. Check fee-estimation support";
+      block(blocks, "fee-estimate-unavailable", message);
+    } else if (estimate > input.maximumFeeUstx) {
+      block(blocks, "fee-cap-exceeded", "Estimated claim fee exceeds the configured Assist cap");
+    } else if (estimate > account.value.balanceUstx) {
       block(
         blocks,
-        "fee-estimate-unavailable",
-        "Exact manager-claim fee estimation is unavailable",
+        "gas-balance-insufficient",
+        `Gas-payer balance cannot cover the estimated fee. Fund ${input.gasPayer.principal}`,
       );
-    } else if (estimate > input.maximumFeeUstx) {
-      block(blocks, "fee-cap-exceeded", "Estimated manager-claim fee exceeds the configured cap");
-    } else if (estimate > account.value.balanceUstx) {
-      block(blocks, "gas-balance-insufficient", "Gas-payer balance is below the estimated fee");
     }
     if (blocks.length > 0 || estimate === null) {
       this.#latest = { status: "blocked", blocks };

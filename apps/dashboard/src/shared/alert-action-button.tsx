@@ -15,7 +15,7 @@ export function AlertActionButton({
   if (alert.action.kind === "reconcile") {
     return (
       <button type="button" className="btn btn-tertiary sm" onClick={sync} disabled={syncing}>
-        <ArrowClockwise /> {syncing ? "Reconciling" : alert.action.label}
+        <ArrowClockwise /> {syncing ? "Syncing" : alert.action.label}
       </button>
     );
   }

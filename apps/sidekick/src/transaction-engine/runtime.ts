@@ -45,7 +45,10 @@ import {
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
 } from "./manager-claim-observer.js";
-import type { ManagerClaimWalletAuthoritativeObservation } from "./manager-claim-wallet-intent.js";
+import {
+  type ManagerClaimWalletAuthoritativeObservation,
+  ManagerClaimWalletIntentError,
+} from "./manager-claim-wallet-intent.js";
 import type { StoredTransactionJob } from "./repository.js";
 import {
   loadTransactionEngineRuntimeConfig,
@@ -317,7 +320,10 @@ export class SidekickTransactionEngineRuntime {
     const jobId = z.string().uuid().parse(jobIdInput);
     return await this.#exclusive(async () => {
       if (this.#composition.runtimeConfig.requestedMode !== "observe") {
-        throw new Error("Browser-wallet manager claims require configured Observe mode");
+        throw new ManagerClaimWalletIntentError(
+          "unavailable",
+          "Browser-wallet claims require Observe mode. Use Assist or switch modes",
+        );
       }
       const context = this.#composition.runtimeContext();
       const fresh = await this.#composition.readFreshObservation(context);
@@ -330,7 +336,10 @@ export class SidekickTransactionEngineRuntime {
           outcome.result.job.operationScopeKey,
         )?.jobId !== jobId
       ) {
-        throw new Error("The selected manager-claim job is not the current actionable observation");
+        throw new ManagerClaimWalletIntentError(
+          "superseded",
+          "This claim job changed. Refresh Operations and select the current job",
+        );
       }
       const job = outcome.result.job;
       return {
@@ -460,7 +469,7 @@ export class SidekickTransactionEngineRuntime {
           samePassConfirmedJobIds: [],
         });
         if (revalidation.status === "blocked") {
-          this.#runtimeBlockReason = `Assist revalidation blocked: ${revalidation.code}`;
+          this.#runtimeBlockReason = `Assist unavailable: ${revalidation.message} (${revalidation.code})`;
           return;
         }
         if (revalidation.status === "completed") {
@@ -493,7 +502,10 @@ export class SidekickTransactionEngineRuntime {
               changedAt: exactNow(this.#composition.now).toISOString(),
             });
           }
-          this.#runtimeBlockReason = `Assist revalidation blocked: ${executionAnchorProof.reason}`;
+          this.#runtimeBlockReason =
+            executionAnchorProof.status === "invalid"
+              ? "Assist unavailable: the approved chain anchor is no longer canonical. Sync chain data to prepare a new current job, then review and approve it"
+              : `Assist unavailable: ${executionAnchorProof.reason}`;
           return;
         }
         const executionNow = exactNow(this.#composition.now);
@@ -509,7 +521,8 @@ export class SidekickTransactionEngineRuntime {
             blockReason: "approval-revalidation:attestation-expired",
             changedAt: executionNow.toISOString(),
           });
-          this.#runtimeBlockReason = "Assist revalidation blocked: attestation-expired";
+          this.#runtimeBlockReason =
+            "Assist unavailable: approval or compatibility attestation expired. Sync chain data to prepare a new current job, then review and approve it";
           return;
         }
         const admission = this.#composition.buildAdmission(
@@ -527,7 +540,9 @@ export class SidekickTransactionEngineRuntime {
           admission,
         });
         this.#runtimeBlockReason =
-          result.status === "blocked" ? `Assist execution blocked: ${result.code}` : null;
+          result.status === "blocked"
+            ? `Assist unavailable: ${result.message} (${result.code})`
+            : null;
       });
     } catch (error) {
       // The approval is already durable. Keep it visible for inspection/retry and fail closed

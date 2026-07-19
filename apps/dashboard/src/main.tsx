@@ -37,6 +37,7 @@ import { Rewards } from "./features/rewards/rewards-page.js";
 import { SettingsPage } from "./features/settings/settings-page.js";
 import { SetupPage } from "./features/setup/setup-page.js";
 import { number } from "./shared/format.js";
+import { operatorActionError, operatorErrorDetail } from "./shared/operator-error.js";
 import { SignerHealthPage } from "./signer-health.js";
 
 type Snapshot = DashboardSnapshot;
@@ -67,6 +68,18 @@ const STATUS_POLL_MS = 30_000;
 const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
 
+function syncOperationError(operation: ReconciliationOperation): string {
+  const authoritative = operation.error?.message?.trim();
+  if (authoritative) return /[.!?]$/.test(authoritative) ? authoritative : `${authoritative}.`;
+  const detail = operation.error?.error.replaceAll("_", " ") || "Unknown sync error";
+  const sentence = /[.!?]$/.test(detail) ? detail : `${detail}.`;
+  return `${sentence} ${
+    operation.error?.retryable
+      ? "Retry when the chain sources are available."
+      : "Review Settings and the operator logs before retrying."
+  }`;
+}
+
 function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const finish = () => {
@@ -91,7 +104,7 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
         <p className="eyebrow">SIGNER SIDEKICK</p>
         <h1>Operator access</h1>
         <p>
-          Enter the local bootstrap credential configured as{" "}
+          Enter the operator credential configured as{" "}
           <span className="mono">SIDEKICK_AUTH_TOKEN</span>.
         </p>
         {error ? (
@@ -117,7 +130,7 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
             Open console
           </button>
         </form>
-        <small>Stored in this browser tab only. Sidekick remains loopback-bound.</small>
+        <small>Stored in this browser tab only.</small>
       </div>
     </main>
   );
@@ -180,7 +193,7 @@ function App() {
               }
             : current,
         );
-        setStatusError(cause instanceof Error ? cause.message : String(cause));
+        setStatusError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
         return false;
       } finally {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
@@ -268,7 +281,7 @@ function App() {
       setSyncOperation(operation);
       const operationId = operation.operationId;
       if (operation.status === "running" && !operationId) {
-        setSyncError("Reconciliation tracking is missing an operation ID. Retry reconciliation.");
+        setSyncError("Chain data sync is missing an operation ID. Retry.");
         return;
       }
       while (operation.status === "running" && !controller.signal.aborted) {
@@ -282,7 +295,7 @@ function App() {
         if (next.status === "idle" || (operationId !== null && next.operationId !== operationId)) {
           setSyncOperation(next);
           setSyncError(
-            "Reconciliation tracking was reset, likely because Sidekick restarted. Start reconciliation again.",
+            "Chain data sync was reset, likely because Sidekick restarted. Start it again.",
           );
           return;
         }
@@ -296,10 +309,7 @@ function App() {
         return;
       }
       if (operation.status === "failed") {
-        const code = operation.error?.error.replaceAll("_", " ") ?? "unknown error";
-        setSyncError(
-          `Reconciliation failed: ${code}.${operation.error?.retryable ? " Retry when the chain sources are available." : " Review Settings and the operator logs before retrying."}`,
-        );
+        setSyncError(syncOperationError(operation));
       }
     },
     [load, token],
@@ -320,13 +330,19 @@ function App() {
       ).operation;
       if (operation.status === "idle") {
         setSyncOperation(operation);
-        setSyncError("Reconciliation did not start. Retry the operation.");
+        setSyncError("Chain data sync did not start. Retry.");
         return;
       }
       await monitorSync(operation, controller);
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setSyncError(cause instanceof Error ? cause.message : String(cause));
+        setSyncError(
+          operatorActionError(
+            cause,
+            "Could not start or confirm chain data sync",
+            "Check the current sync status before starting it again; the request may already be running",
+          ),
+        );
       }
     } finally {
       if (syncController.current === controller) setSyncing(false);
@@ -346,7 +362,13 @@ function App() {
           await monitorSync(operation, controller);
         } catch (cause) {
           if (!controller.signal.aborted) {
-            setSyncError(cause instanceof Error ? cause.message : String(cause));
+            setSyncError(
+              operatorActionError(
+                cause,
+                "Could not continue monitoring chain data sync",
+                "Refresh dashboard status before starting another sync",
+              ),
+            );
           }
         } finally {
           if (syncController.current === controller) setSyncing(false);
@@ -354,7 +376,13 @@ function App() {
       })
       .catch((cause) => {
         if (!controller.signal.aborted) {
-          setSyncError(cause instanceof Error ? cause.message : String(cause));
+          setSyncError(
+            operatorActionError(
+              cause,
+              "Could not read chain data sync status",
+              "Refresh dashboard status before starting a sync",
+            ),
+          );
         }
       });
     return () => controller.abort();
@@ -544,7 +572,7 @@ function App() {
             {!data
               ? "Connecting"
               : stale
-                ? "Last successful state"
+                ? "Data may be stale"
                 : data.preflight.status === "fail"
                   ? "Chain sources need attention"
                   : "Live"}
@@ -552,19 +580,19 @@ function App() {
           <span className="sep">·</span>
           <span className="mono">
             {data
-              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API difference ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
-              : "loading operator state"}
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node/API gap ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
+              : "loading status"}
           </span>
           {stale ? (
             <button type="button" className="btn btn-tertiary sm" onClick={() => void load()}>
-              Refresh state
+              Refresh
             </button>
           ) : null}
           <span className="right">
             <span className="hint-dot-legend">
-              <span className="src src-chain">contract read-only</span>
+              <span className="src src-chain">on-chain</span>
               <span className="src src-api">indexed / estimated</span>
-              <span className="src src-local">locally derived</span>
+              <span className="src src-local">calculated</span>
             </span>
           </span>
         </div>
@@ -573,7 +601,7 @@ function App() {
             <div className="callout callout-info" role="status" aria-live="polite">
               <ArrowClockwise className="ic spin" />
               <div className="body">
-                <strong>Reconciliation in progress</strong>
+                <strong>Syncing chain data</strong>
                 <br />
                 {syncOperation.progress.message} · step {syncOperation.progress.completedSteps + 1}
                 of {syncOperation.progress.totalSteps}
@@ -594,12 +622,9 @@ function App() {
             <div className="callout callout-critical" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Reconciliation failed</strong>
+                <strong>Chain data sync failed</strong>
                 <br />
-                {(syncOperation.error?.error ?? "unknown error").replaceAll("_", " ")}.{" "}
-                {syncOperation.error?.retryable
-                  ? "Retry when the chain sources are available."
-                  : "Review Settings and the operator logs before retrying."}
+                {syncOperationError(syncOperation)}
               </div>
             </div>
           ) : null}
@@ -607,7 +632,7 @@ function App() {
             <div className="callout callout-critical" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Reconciliation needs attention</strong>
+                <strong>Chain data sync needs attention</strong>
                 <br />
                 {syncError}
               </div>
@@ -617,16 +642,13 @@ function App() {
             <div className="callout callout-critical error-banner">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>
-                  {data ? "Latest operator-state refresh failed" : "Unable to load operator state"}
-                </strong>
+                <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>
                 <br />
                 {statusError}
                 {data ? (
                   <>
                     <br />
-                    Showing the last successful snapshot from{" "}
-                    {new Date(data.generatedAt).toLocaleString()}.
+                    Showing data from {new Date(data.generatedAt).toLocaleString()}.
                   </>
                 ) : null}
                 <div className="actions">
@@ -645,12 +667,12 @@ function App() {
             (!statusError ? (
               <div className="loading-state">
                 <ArrowClockwise />
-                <p>Loading operator state</p>
+                <p>Loading status</p>
               </div>
             ) : (
               <div className="callout callout-neutral">
                 <div className="body">
-                  Settings and Signer Health remain available while operator state recovers.
+                  Settings and Signer Health remain available while status recovers.
                   <div className="actions">
                     <button
                       type="button"

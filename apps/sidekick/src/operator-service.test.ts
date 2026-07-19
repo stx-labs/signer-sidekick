@@ -142,7 +142,7 @@ describe("operator service", () => {
           id: "manager:not-recognized-read-only",
           severity: "warning",
           title: "Manager Source Not Recognized",
-          detail: expect.stringContaining("fixed external actions remain available"),
+          detail: expect.stringContaining("wallet or manual signing"),
           action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
         expect.objectContaining({
@@ -187,18 +187,17 @@ describe("operator service", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "preflight:stacks-api",
-          detail:
-            "Stacks API is unavailable. Open Settings to verify the configured node and API data sources.",
+          detail: "Stacks API is unavailable.",
           action: { kind: "navigate", label: "Open Settings", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:unsupported",
-          detail:
-            "Manager network does not match. Open Initial Setup to review network compatibility and manager interface requirements.",
+          detail: "Manager network does not match.",
           action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
         }),
         expect.objectContaining({
           id: "manager:profile-load-issues",
+          detail: "1 manager profile could not be loaded.",
           action: { kind: "navigate", label: "Review profile issues", target: "settings" },
         }),
       ]),
@@ -211,16 +210,14 @@ describe("operator service", () => {
       expect.objectContaining({
         id: "pool:forecast-attention",
         title: "Pool Below Signer-Set Threshold",
-        detail:
-          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 144. Open Pool positions to review the delegated total and roster changes.",
+        detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 144.",
         action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "setup:blocked",
-        detail:
-          "Grant is revoked. Open Manager to prepare a fresh signer authorization and registration.",
+        detail: "Grant is revoked.",
         action: {
           kind: "navigate",
           label: "Repair signer authorization",
@@ -235,7 +232,7 @@ describe("operator service", () => {
     expect(buildAlerts(alertInput({}))).toContainEqual(
       expect.objectContaining({
         title: "Pool Forecast Needs Attention",
-        detail: "Open Pool positions to review the roster changes affecting reward cycle(s) 144.",
+        detail: "Pool checks need attention for reward cycle 144.",
         action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
@@ -260,8 +257,7 @@ describe("operator service", () => {
     expect(alerts).toContainEqual(
       expect.objectContaining({
         title: "Pool Below Signer-Set Threshold",
-        detail:
-          "The pool is below the 75,000 STX signer-set threshold in reward cycle(s) 6. Open Pool positions to review the delegated total and roster changes.",
+        detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 6.",
         action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
@@ -293,13 +289,18 @@ describe("operator service", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "rewards:incomplete",
-          detail:
-            "Sidekick has not synchronized the individual staker roster. Run Reconcile now before relying on payout totals.",
-          action: { kind: "reconcile", label: "Reconcile now" },
+          detail: "The individual staker roster has not been synced.",
+          action: { kind: "reconcile", label: "Sync now" },
         }),
         expect.objectContaining({
           id: "withdrawals:pending",
-          action: { kind: "navigate", label: "Review L1 withdrawals", target: "rewards" },
+          title: "Bitcoin Withdrawals Await Resolution",
+          detail: "2 Bitcoin withdrawal requests remain pending.",
+          action: {
+            kind: "navigate",
+            label: "Review Bitcoin withdrawals",
+            target: "rewards",
+          },
         }),
       ]),
     );
@@ -313,7 +314,7 @@ describe("operator service", () => {
     expect(alert).toMatchObject({
       severity: "info",
       title: "Custom Manager",
-      detail: expect.stringContaining("fixed external actions remain available"),
+      detail: expect.stringContaining("wallet or manual signing"),
     });
     expect(alert).not.toHaveProperty("action");
   });

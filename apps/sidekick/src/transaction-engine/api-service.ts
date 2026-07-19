@@ -87,12 +87,25 @@ export type TransactionEngineApiServiceErrorCode =
   | "invalid_engine_cursor"
   | "invalid_engine_pagination";
 
+const transactionEngineApiErrorMessages: Record<TransactionEngineApiServiceErrorCode, string> = {
+  engine_adapter_not_found: "This transaction adapter no longer exists. Refresh Operations",
+  engine_approval_expiry_invalid:
+    "Approval expiry is outside the current window. Refresh the job and submit a valid expiry",
+  engine_approval_hash_mismatch: "The transaction job changed. Refresh it before approving",
+  engine_approval_not_available: "Approval is no longer available for this job. Refresh it",
+  engine_approval_not_found: "This job has no approval to invalidate. Refresh it",
+  engine_job_not_found: "This transaction job no longer exists. Refresh Operations",
+  engine_state_conflict: "Transaction state changed. Refresh and try again",
+  invalid_engine_cursor: "The transaction job cursor is invalid. Refresh Operations",
+  invalid_engine_pagination: "The transaction job page is invalid. Refresh Operations",
+};
+
 export class TransactionEngineApiServiceError extends Error {
   constructor(
     readonly statusCode: ApiErrorStatus,
     readonly responseCode: TransactionEngineApiServiceErrorCode,
   ) {
-    super(responseCode);
+    super(transactionEngineApiErrorMessages[responseCode]);
     this.name = "TransactionEngineApiServiceError";
   }
 }
@@ -121,6 +134,78 @@ const managerClaimAdapterLabel = "Reference manager claim rewards";
 
 function boundedReason(value: string | null): string | null {
   return value === null ? null : value.slice(0, 1_000);
+}
+
+const observedBlockMessages: Readonly<Record<string, string>> = {
+  "adapter-disabled": "Manager-claim transactions are disabled",
+  "manager-profile-ineligible": "Reward claims require a verified reference manager",
+  "manager-source-mismatch": "Manager source does not match its verified profile",
+  "attestation-not-current": "Compatibility attestation expired. Install a current attestation",
+  "rewards-paused": "Manager rewards are paused",
+  "fee-cap-exceeded": "Estimated claim fee exceeds the configured cap",
+  "external-completion-mismatch":
+    "External completion evidence does not bind the active manager claim",
+};
+
+const approvalRevalidationMessages: Readonly<Record<string, string>> = {
+  "approval-binding-changed": "Approval no longer matches this job",
+  "planned-anchor-noncanonical": "The approved chain anchor is no longer canonical",
+  "runtime-mode-changed":
+    "The runtime is no longer in Assist mode; restore Assist first if intended",
+  "network-identity-changed": "The configured network changed",
+  "contract-identity-changed": "The PoX-5 or sBTC contract changed",
+  "manager-identity-changed": "The manager identity or source changed",
+  "attestation-changed": "The compatibility attestation changed",
+  "attestation-expired": "The approval or compatibility attestation expired",
+  "reward-checkpoint-changed": "The reward checkpoint changed",
+  "claim-amount-changed": "The claim amount or no-bond proof changed",
+  "fee-snapshot-changed": "The manager fee changed",
+  "rewards-paused": "PoX-5 rewards were paused after approval; wait until rewards resume",
+  "gas-payer-changed":
+    "The configured gas-payer identity changed; check Assist configuration first",
+  "gas-nonce-changed": "The gas-payer nonce changed after approval",
+  "gas-balance-insufficient":
+    "The gas-payer balance no longer covers the approved fee; fund the gas payer first",
+  "fee-policy-changed": "The Assist fee policy changed; review configuration first",
+};
+
+const newCurrentJobGuidance =
+  "Sync chain data to prepare a new current job, then review and approve it";
+
+function operatorJobBlockReason(value: string | null): string | null {
+  const reason = boundedReason(value);
+  if (reason === null) return null;
+
+  const observedCodes = reason.split(",");
+  if (observedCodes.every((code) => observedBlockMessages[code] !== undefined)) {
+    return observedCodes.map((code) => observedBlockMessages[code]).join("; ");
+  }
+
+  if (reason.startsWith("approval-revalidation:")) {
+    const code = reason.slice("approval-revalidation:".length);
+    if (code === "adapter-disabled") {
+      return "Assist or manager-claim transactions were disabled. This job cannot continue. If Assist becomes available later, sync chain data to prepare a new current job, then review and approve it";
+    }
+    const cause = approvalRevalidationMessages[code] ?? "The approved job failed revalidation";
+    return boundedReason(`${cause}. ${newCurrentJobGuidance}`);
+  }
+
+  if (reason === "approval-invalid-before-broadcast-commitment") {
+    return `Approval changed before broadcast. ${newCurrentJobGuidance}`;
+  }
+  if (reason.startsWith("broadcast-rejected:")) {
+    return `Broadcast was rejected by the node. Review the rejection. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`;
+  }
+  if (reason === "foreign-gas-payer-nonce-activity") {
+    return `Another transaction used the Assist gas-payer nonce. Resolve the nonce conflict. ${newCurrentJobGuidance}`;
+  }
+  if (reason.startsWith("canonical-transaction-")) {
+    const executionStatus = reason.slice("canonical-transaction-".length).replaceAll("_", " ");
+    return boundedReason(
+      `The transaction failed on-chain: ${executionStatus}. Review the failure. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`,
+    );
+  }
+  return reason;
 }
 
 function storedStateFailure(): never {
@@ -456,7 +541,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
       jobId: job.jobId,
       mode: material.policy.mode,
       state: job.state,
-      blockReason: boundedReason(job.blockReason),
+      blockReason: operatorJobBlockReason(job.blockReason),
       adapter: material.review.adapter,
       network: material.review.network,
       managerPrincipal: material.review.managerPrincipal,
@@ -478,6 +563,14 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
     approval: EngineApproval | null,
     now: Date,
   ): EngineJobDetail["approvalWindow"] {
+    if (job.state === "blocked") {
+      return {
+        eligible: false,
+        expiresAt: approval?.expiresAt ?? null,
+        reason:
+          "This job is blocked. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+      };
+    }
     if (approval !== null) {
       return {
         eligible: false,
@@ -485,48 +578,56 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         reason:
           approval.invalidatedAt === null
             ? now.getTime() >= Date.parse(approval.expiresAt)
-              ? "The existing approval has expired"
-              : "The job already has an active approval"
-            : "The approval was invalidated",
+              ? `Approval expired. ${newCurrentJobGuidance}`
+              : "This job is already approved"
+            : "Approval was invalidated",
       };
     }
     if (job.state !== "awaiting_approval") {
       return {
         eligible: false,
         expiresAt: null,
-        reason: "The job is not awaiting approval",
+        reason: "This job is not awaiting approval",
       };
     }
     if (material.policy.mode !== "assist" || !material.policy.approvalRequired) {
       return {
         eligible: false,
         expiresAt: null,
-        reason: "The sealed policy does not use approval",
+        reason: "This job does not require approval",
       };
     }
     if (!material.policy.adapterEnabled) {
-      return { eligible: false, expiresAt: null, reason: "The sealed adapter policy is disabled" };
+      return { eligible: false, expiresAt: null, reason: "This transaction adapter is disabled" };
     }
     if (material.policy.rewardsPaused) {
       return { eligible: false, expiresAt: null, reason: "Manager rewards are paused" };
     }
     const forced = this.#repository.getForceObserveControl();
     if (forced !== null) {
-      return { eligible: false, expiresAt: null, reason: "The engine is forced to Observe mode" };
+      return {
+        eligible: false,
+        expiresAt: null,
+        reason: "Assist is paused by emergency Observe mode",
+      };
     }
     if (this.#requestedMode !== "assist") {
       return {
         eligible: false,
         expiresAt: null,
-        reason: "The engine is configured for Observe mode",
+        reason: "Assist is unavailable in Observe mode",
       };
     }
     if (this.#repository.getDisabledAdapterControl(job.adapterId) !== null) {
-      return { eligible: false, expiresAt: null, reason: "The adapter is irreversibly disabled" };
+      return { eligible: false, expiresAt: null, reason: "This transaction adapter is disabled" };
     }
     const expiresAt = this.#approvalDeadline(job);
     if (now.getTime() >= Date.parse(expiresAt)) {
-      return { eligible: false, expiresAt, reason: "The approval window has expired" };
+      return {
+        eligible: false,
+        expiresAt,
+        reason: `Approval window expired. ${newCurrentJobGuidance}`,
+      };
     }
     return { eligible: true, expiresAt, reason: null };
   }
@@ -552,7 +653,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
       mode: material.policy.mode,
       state: job.state,
       stateVersion: job.stateVersion,
-      blockReason: boundedReason(job.blockReason),
+      blockReason: operatorJobBlockReason(job.blockReason),
       supersededByJobId: job.supersededByJobId,
       review: material.review,
       approvalWindow: this.#approvalWindow(job, material, approval, now),

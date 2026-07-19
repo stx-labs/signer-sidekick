@@ -537,7 +537,12 @@ describe("manager-claim Assist execution coordinator", () => {
         }),
       },
     });
-    expect(result).toMatchObject({ status: "blocked", code: "approval-missing-or-expired" });
+    expect(result).toMatchObject({
+      status: "blocked",
+      code: "approval-missing-or-expired",
+      message:
+        "Approval is missing or expired. Sync chain data to prepare a new current job, then review and approve it",
+    });
     expect(unread.readAnchoredAccount).not.toHaveBeenCalled();
     expect(unsigned).not.toHaveBeenCalled();
 
@@ -552,11 +557,35 @@ describe("manager-claim Assist execution coordinator", () => {
     expect(denied).toMatchObject({ status: "blocked", code: "admission-denied" });
     expect(denied.status === "blocked" ? denied.admissionBlocks : []).toContainEqual({
       code: "anchor-mismatch",
-      message: "The live anchor is not a proven canonical descendant",
+      message:
+        "The live chain cannot yet be proven from the planned anchor. Wait for the Reference API to catch up",
     });
     expect(
       value.store.transactionEngine.getNonceReservationForJob(value.planned.job.jobId),
     ).toBeNull();
+  });
+
+  it("directs a blocked job to a newly prepared current job", async () => {
+    const value = await fixture();
+    const current = value.store.transactionEngine.getLogicalJob(value.planned.job.jobId);
+    if (current === null) throw new Error("Approved fixture is missing its job");
+    value.store.transactionEngine.transitionLogicalJob({
+      jobId: current.jobId,
+      expectedState: "awaiting_approval",
+      expectedStateVersion: current.stateVersion,
+      nextState: "blocked",
+      blockReason: "approval-revalidation:attestation-expired",
+      changedAt: executionAt,
+    });
+
+    await expect(
+      coordinator(value).execute({ jobId: current.jobId, admission: admission(value) }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      code: "job-not-executable",
+      message:
+        "This job is blocked and cannot start Assist. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+    });
   });
 
   it("refuses nonce drift at the sealed anchor before reserving or signing", async () => {
@@ -591,7 +620,12 @@ describe("manager-claim Assist execution coordinator", () => {
       now: () => new Date("2026-07-17T13:00:00.000Z"),
     }).execute({ jobId: value.planned.job.jobId, admission: staleAdmission });
 
-    expect(result).toMatchObject({ status: "blocked", code: "approval-missing-or-expired" });
+    expect(result).toMatchObject({
+      status: "blocked",
+      code: "approval-missing-or-expired",
+      message:
+        "Approval is missing or expired. Sync chain data to prepare a new current job, then review and approve it",
+    });
     expect(live.readAnchoredAccount).not.toHaveBeenCalled();
   });
 
@@ -618,7 +652,12 @@ describe("manager-claim Assist execution coordinator", () => {
       admission: admission(value),
     });
 
-    expect(result).toMatchObject({ status: "blocked", code: "approval-missing-or-expired" });
+    expect(result).toMatchObject({
+      status: "blocked",
+      code: "approval-missing-or-expired",
+      message:
+        "Approval changed before broadcast. Sync chain data to prepare a new current job, then review and approve it",
+    });
     expect(send.broadcast).not.toHaveBeenCalled();
     expect(value.store.transactionEngine.listAttempts(value.planned.job.jobId)).toEqual([]);
     expect(value.store.transactionEngine.getLogicalJob(value.planned.job.jobId)).toMatchObject({
@@ -750,6 +789,7 @@ describe("manager-claim Assist execution coordinator", () => {
       job: "blocked",
       attempt: "rejected",
       reservation: "resolved",
+      blockReason: "broadcast-rejected:invalid-signed-attempt",
     },
   ])("durably classifies $label without retry", async (expected) => {
     const value = await fixture();
@@ -769,6 +809,11 @@ describe("manager-claim Assist execution coordinator", () => {
     expect(
       value.store.transactionEngine.getNonceReservationForJob(value.planned.job.jobId)?.state,
     ).toBe(expected.reservation);
+    if ("blockReason" in expected) {
+      expect(
+        value.store.transactionEngine.getLogicalJob(value.planned.job.jobId)?.blockReason,
+      ).toBe(expected.blockReason);
+    }
   });
 
   it.each([
@@ -803,6 +848,7 @@ describe("manager-claim Assist execution coordinator", () => {
       attempt: "rejected",
       job: "blocked",
       reservation: "resolved",
+      blockReason: "broadcast-rejected:durable-attempt-result",
     },
   ])("finishes a persisted $label outcome after a crash without rebroadcast", async (expected) => {
     const value = await fixture();
@@ -847,6 +893,11 @@ describe("manager-claim Assist execution coordinator", () => {
     expect(
       value.store.transactionEngine.getNonceReservationForJob(value.planned.job.jobId)?.state,
     ).toBe(expected.reservation);
+    if ("blockReason" in expected) {
+      expect(
+        value.store.transactionEngine.getLogicalJob(value.planned.job.jobId)?.blockReason,
+      ).toBe(expected.blockReason);
+    }
   });
 
   it("leaves no partial nonce ownership when the atomic signed commitment fails", async () => {
@@ -1013,6 +1064,44 @@ describe("manager-claim Assist execution coordinator", () => {
     ).resolves.toMatchObject({
       status: "blocked",
       code: "mempool-observation-unavailable",
+      message:
+        "Gas-payer mempool activity could not be read. Check Reference API connectivity and compatibility",
+    });
+  });
+
+  it.each([
+    {
+      label: "rejected",
+      account: { status: "unavailable" as const, httpStatus: 403, reason: "http-error" as const },
+      message: "The node rejected the gas-payer account request. Check its URL and access settings",
+    },
+    {
+      label: "incompatible",
+      account: {
+        status: "schema-invalid" as const,
+        httpStatus: 200,
+        reason: "unexpected-response" as const,
+      },
+      message:
+        "The gas-payer account response is incompatible with Sidekick. Check node compatibility",
+    },
+  ])("reports a $label account read without calling it a catch-up delay", async ({
+    account,
+    message,
+  }) => {
+    const value = await fixture();
+    const live = reader();
+    live.readAnchoredAccount = vi.fn(async () => account);
+
+    await expect(
+      coordinator(value, { reader: live }).execute({
+        jobId: value.planned.job.jobId,
+        admission: admission(value),
+      }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      code: "account-observation-unavailable",
+      message,
     });
   });
 });
@@ -1304,7 +1393,7 @@ describe("manager-claim Assist recovery coordinator", () => {
       }),
     ).resolves.toMatchObject({
       status: "observation-unavailable",
-      reason: "Core and Stacks API transaction inclusion facts disagree",
+      reason: "Node and Reference API transaction inclusion facts disagree",
     });
     expect(value.store.transactionEngine.getAttempt(executed.attempt.attemptId)?.state).toBe(
       "submitted",

@@ -96,6 +96,18 @@ async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(resolve(path), "utf8")) as unknown;
 }
 
+function preflightBlocked(action: string): Error {
+  return new Error(
+    `${action} is blocked by failed node, API, or PoX-5 checks. Run sidekick preflight, resolve failures, then retry.`,
+  );
+}
+
+function managerCompatibilityBlocked(action: string): Error {
+  return new Error(
+    `${action} is blocked because the manager principal does not match the configured network or its interface is missing required functions. Run sidekick manager verify <manager-principal>, correct the network or manager deployment, then retry.`,
+  );
+}
+
 export async function executeCliCommand({
   command,
   arguments: arguments_,
@@ -414,11 +426,11 @@ export async function executeCliCommand({
       env,
     );
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Signer-staker sync requires a successful preflight with active PoX-5");
+      throw preflightBlocked("Signer-staker sync");
     }
     const pox5ContractId = preflight.pox.pox5ContractId;
     if (!manager.attachAllowed) {
-      throw new Error("Signer-staker sync requires a recognized or compatible manager contract");
+      throw managerCompatibilityBlocked("Signer-staker sync");
     }
 
     const observedAt = new Date().toISOString();
@@ -496,9 +508,8 @@ export async function executeCliCommand({
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
     const { config, api, preflight, manager } = await setupContext(managerPrincipal, env);
-    if (preflight.status === "fail" || !manager.attachAllowed) {
-      throw new Error("Event sync requires a healthy network and recognized manager contract");
-    }
+    if (preflight.status === "fail") throw preflightBlocked("Event sync");
+    if (!manager.attachAllowed) throw managerCompatibilityBlocked("Event sync");
     const observedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     await withStore(
@@ -531,11 +542,11 @@ export async function executeCliCommand({
       env,
     );
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Pool status requires a successful preflight with active PoX-5");
+      throw preflightBlocked("Pool status");
     }
     const pox5ContractId = preflight.pox.pox5ContractId;
     if (!manager.attachAllowed) {
-      throw new Error("Pool status requires a recognized or compatible manager contract");
+      throw managerCompatibilityBlocked("Pool status");
     }
     const observedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
@@ -602,11 +613,11 @@ export async function executeCliCommand({
       env,
     );
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Reward status requires a successful preflight with active PoX-5");
+      throw preflightBlocked("Reward status");
     }
     const pox5ContractId = preflight.pox.pox5ContractId;
     if (!manager.attachAllowed) {
-      throw new Error("Reward status requires a recognized or compatible manager contract");
+      throw managerCompatibilityBlocked("Reward status");
     }
     const defaultRewardCalculation = deriveRewardCalculationTarget(chainAnchor);
     if (!rewardCycleArgument && defaultRewardCalculation.status === "invalid") {
@@ -730,7 +741,7 @@ export async function executeCliCommand({
     const { node, api } = clientsFromConfig(config);
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Signer grant preparation requires a successful preflight with active PoX-5");
+      throw preflightBlocked("Signer grant preparation");
     }
     const preparation = await prepareSignerGrant(
       node,
@@ -758,9 +769,7 @@ export async function executeCliCommand({
     const { node, api } = clientsFromConfig(config);
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error(
-        "Signer grant verification requires a successful preflight with active PoX-5",
-      );
+      throw preflightBlocked("Signer grant verification");
     }
     const signerOutput = JSON.parse(await readFile(resolve(signerOutputPath), "utf8")) as unknown;
     const verified = await verifySignerGrantOutput(

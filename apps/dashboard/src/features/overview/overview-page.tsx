@@ -107,12 +107,12 @@ export function Overview({
     <>
       <PageHead
         title="Overview"
-        lede="One signer-manager. This screen answers a single question — does the pool need you right now?"
+        lede="Current pool status and required actions."
         actions={
           <>
             <button type="button" className="btn btn-tertiary sm" onClick={sync} disabled={syncing}>
               <ArrowClockwise />
-              {syncing ? "Reconciling" : "Reconcile now"}
+              {syncing ? "Syncing" : "Sync now"}
             </button>
             <button
               type="button"
@@ -133,10 +133,7 @@ export function Overview({
           <div className="setup-notice-body">
             <p className="eyebrow">GET STARTED</p>
             <h2 id="setup-notice-title">Start with Initial Setup</h2>
-            <p>
-              Sidekick is connected, but setup has not been started. Deploy new contracts or attach
-              an existing deployment before operating this pool.
-            </p>
+            <p>Complete Initial Setup before operating this pool.</p>
             <div className="actions">
               <button
                 type="button"
@@ -207,7 +204,13 @@ export function Overview({
       <div className="section-title">
         <WarningCircle color="var(--status-caution)" />
         Required actions{" "}
-        <span className="hint">{requiredAlerts.length || "No"} item(s) need attention</span>
+        <span className="hint">
+          {requiredAlerts.length === 0
+            ? "No items need attention"
+            : requiredAlerts.length === 1
+              ? "1 item needs attention"
+              : `${requiredAlerts.length} items need attention`}
+        </span>
       </div>
       {requiredAlerts.length ? (
         <div className="grid cols-3 action-grid">
@@ -232,9 +235,7 @@ export function Overview({
         <div className="callout callout-neutral">
           <CheckCircle className="ic" />
           <div className="body">
-            <strong>No active operator actions</strong>
-            <br />
-            All current read-only checks agree at this tip.
+            <strong>No action is required right now.</strong>
           </div>
         </div>
       )}
@@ -250,7 +251,7 @@ export function Overview({
           <div className={current?.threshold.meetsThreshold ? "d up" : "d down"}>
             {current
               ? `${stx(current.threshold.marginUstx)} STX threshold margin`
-              : "Roster not synchronized"}
+              : "Roster not synced"}
           </div>
         </div>
         <div className="tile">
@@ -296,7 +297,7 @@ export function Overview({
                 ? "Waiting"
                 : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
             }
-            detail="contract read-only"
+            detail="last calculation"
           />
           <PipelineStage
             done={BigInt(rewards?.global.signerEarnedBeforeManagerClaimSats ?? 0) === 0n}
@@ -312,9 +313,9 @@ export function Overview({
           />
           <PipelineStage
             done={data.activity.withdrawals.every(({ state }) => state !== "pending")}
-            title="L1 settled"
+            title="Bitcoin withdrawals"
             value={`${data.activity.withdrawalTotal - data.activity.pendingWithdrawalTotal} / ${data.activity.withdrawalTotal}`}
-            detail="manager event history"
+            detail="completed requests"
           />
         </div>
       </div>
@@ -383,8 +384,8 @@ export function Overview({
             ))}
             {data.activity.claims.length === 0 ? (
               <div className="ev">
-                <div className="t">No manager claims indexed yet</div>
-                <div className="m">Run reconciliation to update event history.</div>
+                <div className="t">No manager claims yet</div>
+                <div className="m">Sync chain data to update event history.</div>
               </div>
             ) : null}
           </div>

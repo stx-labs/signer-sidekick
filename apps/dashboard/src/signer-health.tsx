@@ -3,6 +3,7 @@ import { type HealthSnapshot, healthSnapshotSchema } from "@stx-labs/signer-side
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "./api-client.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
+import { operatorErrorDetail, operatorErrorSentence } from "./shared/operator-error.js";
 
 export type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 
@@ -110,7 +111,7 @@ export function SignerHealthPage({
         setError(null);
       } catch (cause) {
         if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
       } finally {
         if (activeRequest.current === controller) {
           activeRequest.current = null;
@@ -143,7 +144,7 @@ export function SignerHealthPage({
         <div className={`callout ${error ? "callout-critical" : "callout-neutral"}`}>
           <div className="body">
             {error
-              ? `Could not load signer health: ${error}`
+              ? `Could not load signer health: ${operatorErrorSentence(error)}`
               : "Collecting the first health sample…"}
             {error ? (
               <div className="actions">
@@ -195,7 +196,11 @@ export function SignerHealthPage({
         </div>
       </div>
 
-      {error ? <div className="callout callout-info">Latest refresh failed: {error}</div> : null}
+      {error ? (
+        <div className="callout callout-info">
+          Could not refresh signer health: {operatorErrorSentence(error)} Showing the last sample.
+        </div>
+      ) : null}
       {!signerConfigured || !nodeMetricsConfigured ? (
         <div className="callout callout-neutral health-setup-note">
           <GearSix className="ic" />
@@ -274,24 +279,23 @@ export function SignerHealthPage({
 
         <section className="card">
           <div className="card-head">
-            <h2>Hiro public API</h2>
+            <h2>Reference API</h2>
             <StateBadge state={snapshot.hiro.source.status} />
           </div>
-          <Metric label="Hiro Stacks tip">
+          <Metric label="Reference Stacks tip">
             <span className="mono">{displayNumber(snapshot.hiro.stacksTipHeight)}</span>
           </Metric>
           <Metric label="Local difference">
             <span className="mono">{displayDifference(snapshot.hiro.localStacksDifference)}</span>
           </Metric>
-          <Metric label="Hiro Bitcoin tip">
+          <Metric label="Reference Bitcoin tip">
             <span className="mono">{displayNumber(snapshot.hiro.burnBlockHeight)}</span>
           </Metric>
           <Metric label="Local difference">
             <span className="mono">{displayDifference(snapshot.hiro.localBurnDifference)}</span>
           </Metric>
           <p className="tertiary health-card-note">
-            Differences are observations, not alerts. A short-lived mismatch can be normal while
-            sources update.
+            Brief differences are normal while sources update.
           </p>
         </section>
       </div>
@@ -413,7 +417,7 @@ export function SignerHealthPage({
             [
               ["Node RPC", snapshot.node.rpc],
               ["Node metrics", snapshot.node.metrics],
-              ["Hiro API", snapshot.hiro.source],
+              ["Reference API", snapshot.hiro.source],
               ["Signer info", snapshot.signer.infoSource],
               ["Signer heartbeat", snapshot.signer.heartbeat],
               ["Signer metrics", snapshot.signer.metrics],

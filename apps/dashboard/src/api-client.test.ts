@@ -182,6 +182,36 @@ describe("dashboard API client", () => {
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("reports transport timeouts with the method and endpoint", async () => {
+    const timeout = AbortSignal.abort(new DOMException("timed out", "TimeoutError"));
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout.reason));
+
+    await expect(
+      apiJson(token, "/api/v1/settings?include=audit", unknownSchema, {
+        method: "PUT",
+        body: "{}",
+        timeoutMs: 5,
+      }),
+    ).rejects.toMatchObject({
+      name: "ApiRequestError",
+      kind: "transport",
+      status: null,
+      message: "Sidekick timed out during PUT /api/v1/settings.",
+    });
+  });
+
+  it("reports an unreachable Sidekick without exposing the browser fetch error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    await expect(apiJson(token, "/api/v1/status", unknownSchema)).rejects.toMatchObject({
+      name: "ApiRequestError",
+      kind: "transport",
+      status: null,
+      message: "Could not reach Sidekick during GET /api/v1/status. Check that it is running.",
+    });
+  });
+
   it("never saves a non-2xx download response", async () => {
     const createElement = vi.fn();
     vi.stubGlobal("document", { createElement });

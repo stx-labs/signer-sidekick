@@ -3,7 +3,7 @@ import { type ApiError, apiErrorSchema } from "@stx-labs/signer-sidekick-api-con
 export const AUTH_REJECTED_EVENT = "sidekick-auth-rejected";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-export type ApiErrorKind = "authentication" | "http" | "content";
+export type ApiErrorKind = "authentication" | "transport" | "http" | "content";
 
 export class ApiRequestError extends Error {
   readonly kind: ApiErrorKind;
@@ -55,9 +55,9 @@ function authenticatedHeaders(token: string, init: RequestInit): Headers {
   return headers;
 }
 
-function requestSignal(signal: AbortSignal | null | undefined, timeoutMs: number): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+function requestLabel(url: string, init: RequestInit): string {
+  const endpoint = url.split(/[?#]/, 1)[0] || url;
+  return `${(init.method ?? "GET").toUpperCase()} ${endpoint}`;
 }
 
 function rejectAuthentication(): never {
@@ -100,11 +100,33 @@ async function authenticatedFetch(
   init: RequestInit,
   timeoutMs: number,
 ): Promise<Response> {
-  const response = await fetch(url, {
-    ...init,
-    headers: authenticatedHeaders(token, init),
-    signal: requestSignal(init.signal, timeoutMs),
-  });
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+  const headers = authenticatedHeaders(token, init);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+      signal,
+    });
+  } catch (cause) {
+    if (init.signal?.aborted) throw cause;
+    const label = requestLabel(url, init);
+    if (timeoutSignal.aborted) {
+      throw new ApiRequestError(`Sidekick timed out during ${label}.`, {
+        kind: "transport",
+        cause,
+      });
+    }
+    throw new ApiRequestError(
+      `Could not reach Sidekick during ${label}. Check that it is running.`,
+      {
+        kind: "transport",
+        cause,
+      },
+    );
+  }
   if (response.status === 401) rejectAuthentication();
   if (!response.ok) {
     const { code, detail, body } = await errorDetail(response);

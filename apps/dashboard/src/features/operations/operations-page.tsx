@@ -26,8 +26,7 @@ class EngineChunkBoundary extends Component<{ children: ReactNode }, { failed: b
           <Badge state="caution">Interface unavailable</Badge>
         </div>
         <p className="muted">
-          The transaction-engine interface could not be loaded. Observation data below remains
-          available.
+          Transaction controls could not be loaded. Monitoring remains available.
         </p>
         <button type="button" className="btn btn-secondary" onClick={() => location.reload()}>
           Reload dashboard
@@ -54,7 +53,7 @@ export function Operations({
     <>
       <PageHead
         title="Operations"
-        lede="Review durable transaction jobs, exact approvals, ingestion, alerts, and authoritative reconciliation evidence."
+        lede="Monitor transaction jobs, chain data, alerts, and verification results."
       />
       <EngineChunkBoundary>
         <Suspense fallback={<div className="loading-state">Loading transaction engine</div>}>
@@ -67,7 +66,7 @@ export function Operations({
       </EngineChunkBoundary>
       <div className="card-standout operation-mode">
         <div>
-          <span className="muted">Observation</span>
+          <span className="muted">Monitoring</span>
           <h2>
             <Eye /> Monitoring active
           </h2>
@@ -81,17 +80,15 @@ export function Operations({
           </p>
         </div>
         <div>
-          <span className="muted">Ingestion</span>
+          <span className="muted">Pool roster</span>
           <p>
             <Badge state={data.forecast?.ingestion ? "success" : "caution"}>
-              {data.forecast?.ingestion ? "Synchronized" : "Not run"}
+              {data.forecast?.ingestion ? "Synced" : "Not synced"}
             </Badge>
           </p>
         </div>
         <p className="tertiary">
-          Monitoring ingests, reconciles, displays, and alerts independently of transaction-engine
-          availability. Sidekick never holds or signs with admin keys; calls may be signed manually
-          or by an external browser wallet.
+          Monitoring and alerts remain available if transaction execution is unavailable.
         </p>
       </div>
       <div className="grid cols-2 operation-grid">
@@ -119,7 +116,7 @@ export function Operations({
         </div>
         <div className="card">
           <div className="card-head">
-            <h2>Ingestion evidence</h2>
+            <h2>Chain data</h2>
           </div>
           <StatLine label="Roster">
             <span className="src src-api">{data.rosterTotal ?? data.roster.length} stakers</span>

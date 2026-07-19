@@ -4,17 +4,58 @@ import {
   poolCardResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson } from "../../api-client.js";
+import { ApiRequestError, apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
 import { dashboardHash } from "../../dashboard-route.js";
-import { ErrorCallout, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
+import { PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { formatUstx } from "../../shared/format.js";
+import { operatorActionError } from "../../shared/operator-error.js";
+
+export function poolCardSetupRequired(cause: unknown): boolean {
+  return cause instanceof ApiRequestError && cause.code === "pool_setup_not_complete";
+}
+
+export function PoolCardError({
+  error,
+  setupRequired,
+  onRetry,
+}: {
+  error: string | null;
+  setupRequired: boolean;
+  onRetry: () => void;
+}) {
+  if (!error) return null;
+  return (
+    <div className="callout callout-critical" role="alert">
+      <div className="body">
+        {error}
+        <div className="actions">
+          {setupRequired ? (
+            <button
+              type="button"
+              className="btn btn-accent sm"
+              onClick={() => {
+                location.hash = dashboardHash("setup");
+              }}
+            >
+              Open Initial Setup
+            </button>
+          ) : null}
+          <button type="button" className="btn btn-secondary sm" onClick={onRetry}>
+            Retry
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function EnrollmentPage({ token }: { token: string }) {
   const [mode, setMode] = useState<"live" | "static">("live");
   const [artifact, setArtifact] = useState<PoolCardArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupRequired, setSetupRequired] = useState(false);
   const generationController = useRef<AbortController | null>(null);
 
   const generate = useCallback(async () => {
@@ -23,6 +64,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     generationController.current = controller;
     setBusy(true);
     setError(null);
+    setSetupRequired(false);
     try {
       const result = await apiJson(token, "/api/v1/pool-card/generate", poolCardResponseSchema, {
         method: "POST",
@@ -32,7 +74,10 @@ export function EnrollmentPage({ token }: { token: string }) {
       if (!controller.signal.aborted) setArtifact(result);
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setSetupRequired(poolCardSetupRequired(cause));
+        setError(
+          operatorActionError(cause, "Could not generate the pool card", "Retrying is safe"),
+        );
       }
     } finally {
       if (!controller.signal.aborted) setBusy(false);
@@ -61,7 +106,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     <>
       <PageHead
         title="Public Pool Page"
-        lede="Generate an embeddable pool card for a website you already run. Sidekick hosts nothing and opens no public route."
+        lede="Generate a pool card to publish on your website."
         actions={
           <>
             <button
@@ -91,40 +136,7 @@ export function EnrollmentPage({ token }: { token: string }) {
           </>
         }
       />
-      <ErrorCallout error={error} />
-      {error ? (
-        <div className="callout callout-neutral" role="note">
-          <div className="body">
-            Pool card generation requires verified manager setup. If setup is incomplete, finish it
-            before retrying.
-            <div className="actions">
-              <button
-                type="button"
-                className="btn btn-accent sm"
-                onClick={() => {
-                  location.hash = dashboardHash("setup");
-                }}
-              >
-                Open Initial Setup
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary sm"
-                onClick={() => void generate()}
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      <div className="callout callout-info intro-callout">
-        <ShieldCheck className="ic" />
-        <div className="body">
-          <strong>No public surface on this app.</strong> The artifact contains reviewed public pool
-          facts only—never the API key, gas payer, jobs, alerts, or Sidekick database state.
-        </div>
-      </div>
+      <PoolCardError error={error} setupRequired={setupRequired} onRetry={() => void generate()} />
       <div className="card-standout embed-mode">
         <div>
           <span className="muted">Embed type</span>
@@ -149,21 +161,21 @@ export function EnrollmentPage({ token }: { token: string }) {
         </div>
         <p className="tertiary">
           {mode === "live"
-            ? "Refreshes reward cycle and Bitcoin block height from the configured unauthenticated public API. Verified pool identity and manager facts remain baked in."
-            : "Baked HTML plus versioned JSON with current verified values and no runtime network request."}
+            ? "Updates reward cycle and Bitcoin height when the page loads."
+            : "Uses the values generated now and makes no network requests."}
         </p>
       </div>
       <div className="grid cols-3-2 embed-grid">
         <div className="card">
           <div className="card-head">
-            <h2>{mode === "live" ? "Self-contained live HTML" : "Self-contained static HTML"}</h2>
+            <h2>{mode === "live" ? "Live pool card" : "Static pool card"}</h2>
             <CopyIdentifierButton value={artifact?.body} label="pool card HTML" showLabel />
           </div>
-          <pre className="code">{artifact?.body ?? "Generating artifact"}</pre>
+          <pre className="code">{artifact?.body ?? "Generating pool card"}</pre>
         </div>
         <div className="card">
           <div className="card-head">
-            <h2>Artifact boundary</h2>
+            <h2>Included in the download</h2>
           </div>
           <div className="actions-list">
             <div className="action-item">
@@ -171,8 +183,8 @@ export function EnrollmentPage({ token }: { token: string }) {
                 <Check />
               </div>
               <div className="body">
-                <div className="t">Operator-maintained</div>
-                <div className="m">Name, website, support, official enrollment link.</div>
+                <div className="t">Pool information</div>
+                <div className="m">Name, website, support, and enrollment link.</div>
               </div>
             </div>
             <div className="action-item">
@@ -180,10 +192,8 @@ export function EnrollmentPage({ token }: { token: string }) {
                 <Check />
               </div>
               <div className="body">
-                <div className="t">Verified public state</div>
-                <div className="m">
-                  Manager, signer public key, grant, fee, cycle, eligibility, source hash.
-                </div>
+                <div className="t">On-chain information</div>
+                <div className="m">Manager, signer public key, fee, cycle, and eligibility.</div>
               </div>
             </div>
             <div className="action-item">
@@ -191,11 +201,8 @@ export function EnrollmentPage({ token }: { token: string }) {
                 <ShieldCheck />
               </div>
               <div className="body">
-                <div className="t">Excluded</div>
-                <div className="m">
-                  Secrets, gas payer, transaction-engine jobs, transactions, alerts, and local
-                  history.
-                </div>
+                <div className="t">Not included</div>
+                <div className="m">Credentials and local operational data.</div>
               </div>
             </div>
           </div>

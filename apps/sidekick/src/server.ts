@@ -161,9 +161,10 @@ class OperatorApiError extends Error {
   constructor(
     readonly statusCode: number,
     readonly responseCode: string,
-    readonly retryable?: boolean,
+    readonly retryable = false,
+    message = safeOperatorApiMessage(statusCode, responseCode),
   ) {
-    super(responseCode);
+    super(message);
     this.name = "OperatorApiError";
   }
 }
@@ -172,6 +173,134 @@ interface SafeErrorClassification {
   statusCode: number;
   body: ApiError & Record<string, unknown>;
   retryAfterSeconds?: number;
+}
+
+const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
+  operator_service_unavailable:
+    "The operator service is unavailable. Restart Sidekick and review the startup logs.",
+  unauthorized:
+    "The operator credential is missing or invalid. Enter the configured credential and retry.",
+  invalid_health_source: "Choose a supported health source and enter a valid URL.",
+  invalid_pagination: "Pagination values are invalid. Correct the request and retry.",
+  limit_must_be_positive:
+    "Pagination limits must be positive whole numbers. Correct the request and retry.",
+  limits_must_be_positive:
+    "Activity page limits must be positive whole numbers. Correct the request and retry.",
+  invalid_withdrawal_state: "Choose a pending, settled, or reclaimed withdrawal state.",
+  invalid_query: "The activity query is invalid. Correct its filters and retry.",
+  invalid_onboarding_path: "Choose attach or fresh setup, then retry.",
+  invalid_fresh_setup_input:
+    "Enter a valid admin principal, contract name, authorization ID, and signer configuration path.",
+  fresh_setup_sources_incompatible:
+    "Fresh setup is blocked by node, API, PoX-5, or network compatibility checks. Review preflight, resolve the failures, and retry.",
+  signer_grant_sources_incompatible:
+    "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
+  pool_setup_not_complete:
+    "Pool information is unavailable until setup completes. Finish Initial Setup, then retry.",
+  onboarding_not_started: "Setup has not started. Choose an onboarding path first.",
+  onboarding_path_conflict:
+    "This action belongs to the other onboarding path. Return to Initial Setup and choose the intended path.",
+  invalid_manager_principal: "Enter a valid manager contract principal and retry.",
+  invalid_signer_output: "Signer output is invalid. Paste the complete JSON output and retry.",
+  invalid_signer_grant_input:
+    "Enter a valid authorization ID and signer configuration path, then retry.",
+  invalid_wallet_intent_action:
+    "The wallet transaction request is invalid. Review the action fields and retry.",
+  wallet_intent_not_found:
+    "The wallet transaction request was not found. Prepare a new transaction.",
+  invalid_wallet_intent_submission:
+    "The transaction submission is invalid. Enter a valid transaction ID and retry.",
+  invalid_wallet_intent_refresh:
+    "The wallet transaction request is invalid. Prepare a new transaction.",
+  invalid_wallet_intent_replacement:
+    "The wallet transaction request is invalid. Prepare a new transaction.",
+  invalid_onboarding_step: "The setup step is invalid. Refresh setup and retry.",
+  artifact_not_found: "The setup artifact was not found. Generate deployment files and retry.",
+  invalid_pool_card_mode: "Choose live or static pool card mode.",
+  invalid_engine_pagination: "The transaction job page is invalid. Refresh Operations.",
+  invalid_engine_job_id: "The transaction job ID is invalid. Refresh Operations and retry.",
+  engine_job_not_found: "This transaction job no longer exists. Refresh Operations.",
+  invalid_engine_approval: "The approval request is invalid. Review the job and retry.",
+  invalid_engine_approval_invalidation:
+    "The approval reset request is invalid. Refresh the job and retry.",
+  invalid_force_observe_request:
+    "The emergency Observe request is invalid. Confirm the decision and reason, then retry.",
+  invalid_engine_adapter_id: "The transaction adapter ID is invalid. Refresh Operations.",
+  invalid_adapter_disable_request:
+    "The adapter disable request is invalid. Confirm the decision and reason, then retry.",
+  chain_sources_out_of_sync:
+    "The node and API are temporarily out of sync. Retry when their Stacks and Bitcoin heights match.",
+  chain_anchor_unstable: "Chain data changed while Sidekick was reading it. Retry in a moment.",
+  chain_anchor_invalid:
+    "Node, API, or PoX data is inconsistent. Check the configured chain sources before retrying.",
+  signer_staker_anchor_unstable:
+    "Signer roster data changed during synchronization. Retry the chain data sync.",
+  upstream_rate_limited:
+    "A configured chain source is rate limiting Sidekick. Retry after the indicated delay.",
+  upstream_temporarily_unavailable:
+    "A configured chain source is unavailable. Check node and API connectivity, then retry.",
+  upstream_response_invalid:
+    "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+  health_source_not_allowed:
+    "The health source is not allowed. Use an endpoint permitted by Sidekick's health-source policy.",
+  health_source_temporarily_unavailable:
+    "The health source could not be reached. Check the endpoint, then retry.",
+  health_source_response_invalid:
+    "The health source returned data Sidekick could not validate. Check the endpoint type and version.",
+  operator_request_temporarily_unavailable:
+    "The operator request timed out. Retry; if it repeats, check the node, API, and Sidekick logs.",
+  invalid_request: "The request is invalid. Correct it and retry.",
+  request_error: "The request is invalid. Correct it and retry.",
+  internal_server_error:
+    "Sidekick could not complete the request. Review the operator logs before retrying.",
+};
+
+function safeOperatorApiMessage(statusCode: number, responseCode: string): string {
+  const message = SAFE_OPERATOR_API_MESSAGES[responseCode];
+  if (message) return message;
+  if (statusCode === 404) {
+    return "The requested resource was not found. Refresh and retry.";
+  }
+  if (statusCode === 409) {
+    return "The request conflicts with current Sidekick state. Refresh before retrying.";
+  }
+  if (statusCode === 422) {
+    return "The request is not available for the current configuration. Review Settings and retry.";
+  }
+  if (statusCode === 501) {
+    return "The requested feature is unavailable in this Sidekick deployment.";
+  }
+  return "The request is invalid. Correct it and retry.";
+}
+
+function safeErrorBody(error: string, message: string, retryable = false): ApiError {
+  return { error, message, retryable };
+}
+
+function safeClassification(
+  statusCode: number,
+  error: string,
+  options: {
+    message?: string;
+    retryable?: boolean;
+    retryAfterSeconds?: number;
+    details?: Record<string, unknown>;
+  } = {},
+): SafeErrorClassification {
+  return {
+    statusCode,
+    body: {
+      ...safeErrorBody(
+        error,
+        options.message ?? safeOperatorApiMessage(statusCode, error),
+        options.retryable,
+      ),
+      ...options.details,
+    },
+    ...(options.retryAfterSeconds === undefined
+      ? {}
+      : { retryAfterSeconds: options.retryAfterSeconds }),
+  };
 }
 
 function chainSourcesDiffer(error: ChainAnchorError): boolean {
@@ -186,135 +315,123 @@ function chainSourcesDiffer(error: ChainAnchorError): boolean {
 
 function classifySafeOperatorError(error: unknown): SafeErrorClassification {
   if (error instanceof OperatorApiError) {
-    return {
-      statusCode: error.statusCode,
-      body: {
-        error: error.responseCode,
-        ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
-      },
-    };
+    return safeClassification(error.statusCode, error.responseCode, {
+      message: error.message,
+      retryable: error.retryable,
+    });
   }
   if (error instanceof OperatorWorkflowError) {
-    return {
-      statusCode: error.statusCode,
-      body: { error: error.responseCode, message: error.message, retryable: false },
-    };
+    return safeClassification(error.statusCode, error.responseCode, {
+      ...(error.message === error.responseCode ? {} : { message: error.message }),
+    });
   }
   if (error instanceof TransactionEngineApiServiceError) {
-    return { statusCode: error.statusCode, body: { error: error.responseCode } };
+    return safeClassification(error.statusCode, error.responseCode, {
+      ...(error.message === error.responseCode ? {} : { message: error.message }),
+    });
+  }
+  if (error instanceof OnboardingWalletIntentError) {
+    return safeClassification(error.retryable ? 503 : walletIntentHttpStatus(error), error.code, {
+      message: error.message,
+      retryable: error.retryable,
+      ...(error.retryable ? { retryAfterSeconds: 1 } : {}),
+    });
   }
   if (error instanceof ChainAnchorError) {
     if (error.retryable) {
       if (error.tips && chainSourcesDiffer(error)) {
-        return {
-          statusCode: 503,
+        return safeClassification(503, "chain_sources_out_of_sync", {
+          retryable: true,
           retryAfterSeconds: 1,
-          body: {
-            error: "chain_sources_out_of_sync",
-            retryable: true,
+          details: {
             node: error.tips.node,
             api: error.tips.api,
             poxBurnBlockHeight: error.tips.poxBurnBlockHeight,
           },
-        };
+        });
       }
-      return {
-        statusCode: 503,
+      return safeClassification(503, "chain_anchor_unstable", {
+        retryable: true,
         retryAfterSeconds: 1,
-        body: { error: "chain_anchor_unstable", retryable: true },
-      };
+      });
     }
-    return {
-      statusCode: 502,
-      body: { error: "chain_anchor_invalid", retryable: false },
-    };
+    return safeClassification(502, "chain_anchor_invalid");
   }
   if (error instanceof SignerStakerAnchorError) {
-    return {
-      statusCode: 503,
+    return safeClassification(503, "signer_staker_anchor_unstable", {
+      retryable: true,
       retryAfterSeconds: 1,
-      body: { error: "signer_staker_anchor_unstable", retryable: true },
-    };
+    });
   }
   if (error instanceof RateLimitedError) {
-    return {
-      statusCode: 429,
+    return safeClassification(429, "upstream_rate_limited", {
+      retryable: true,
       retryAfterSeconds: Math.min(
         30,
         Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
       ),
-      body: { error: "upstream_rate_limited", retryable: true },
-    };
+    });
   }
   if (error instanceof UpstreamUnavailableError) {
-    return {
-      statusCode: 503,
+    return safeClassification(503, "upstream_temporarily_unavailable", {
+      retryable: true,
       retryAfterSeconds: 1,
-      body: { error: "upstream_temporarily_unavailable", retryable: true },
-    };
+    });
   }
   if (error instanceof UpstreamSchemaError) {
-    return {
-      statusCode: 502,
-      body: { error: "upstream_response_invalid", retryable: false },
-    };
+    return safeClassification(502, "upstream_response_invalid");
   }
   if (error instanceof UpstreamHttpError) {
-    return {
-      statusCode: 502,
-      body: { error: "upstream_request_rejected", retryable: false },
-    };
+    if (error.status === 408 || error.status === 425) {
+      return safeClassification(503, "upstream_temporarily_unavailable", {
+        message: `A configured chain source returned HTTP ${error.status}. Retry in a moment.`,
+        retryable: true,
+        retryAfterSeconds: 1,
+      });
+    }
+    return safeClassification(502, "upstream_request_rejected", {
+      message: `A configured chain source rejected the request with HTTP ${error.status}. Verify its URL and access settings.`,
+    });
   }
   if (error instanceof HealthSourceError) {
     if (error.code === "invalid-url") {
-      return { statusCode: 400, body: { error: "invalid_health_source", retryable: false } };
+      return safeClassification(400, "invalid_health_source");
     }
     if (error.code === "unsafe-address") {
-      return {
-        statusCode: 422,
-        body: { error: "health_source_not_allowed", retryable: false },
-      };
+      return safeClassification(422, "health_source_not_allowed");
     }
     if (
       error.code === "dns-unavailable" ||
       error.code === "connection-failed" ||
       error.code === "timeout"
     ) {
-      return {
-        statusCode: 503,
+      return safeClassification(503, "health_source_temporarily_unavailable", {
+        retryable: true,
         retryAfterSeconds: 1,
-        body: { error: "health_source_temporarily_unavailable", retryable: true },
-      };
+      });
     }
-    return {
-      statusCode: 502,
-      body: { error: "health_source_response_invalid", retryable: false },
-    };
+    return safeClassification(502, "health_source_response_invalid");
   }
   if (
     error instanceof InteractiveRequestDeadlineError ||
     error instanceof InteractiveRequestCancelledError
   ) {
-    return {
-      statusCode: 503,
+    return safeClassification(503, "operator_request_temporarily_unavailable", {
+      retryable: true,
       retryAfterSeconds: 1,
-      body: { error: "operator_request_temporarily_unavailable", retryable: true },
-    };
+    });
   }
   if (error instanceof z.ZodError) {
-    return { statusCode: 400, body: { error: "invalid_request", retryable: false } };
+    return safeClassification(400, "invalid_request");
   }
   if (
     error instanceof Error &&
     typeof (error as FastifyError).statusCode === "number" &&
     ((error as FastifyError).statusCode ?? 500) < 500
   ) {
-    return {
-      statusCode: (error as FastifyError).statusCode ?? 400,
-      body: { error: "request_error", retryable: false },
-    };
+    return safeClassification((error as FastifyError).statusCode ?? 400, "request_error");
   }
-  return { statusCode: 500, body: { error: "internal_server_error" } };
+  return safeClassification(500, "internal_server_error");
 }
 
 function sendClassifiedError(
@@ -323,6 +440,14 @@ function sendClassifiedError(
   error: unknown,
 ): FastifyReply {
   const classified = classifySafeOperatorError(error);
+  const body =
+    classified.statusCode === 500
+      ? {
+          ...classified.body,
+          message: `Sidekick could not complete the request. Check operator logs for request ${request.id}.`,
+          requestId: request.id,
+        }
+      : classified.body;
   if (classified.retryAfterSeconds !== undefined) {
     reply.header("retry-after", String(classified.retryAfterSeconds));
   }
@@ -339,7 +464,7 @@ function sendClassifiedError(
       );
     }
   }
-  return reply.code(classified.statusCode).send(classified.body);
+  return reply.code(classified.statusCode).send(body);
 }
 
 function requireFeature<T>(value: T | undefined, responseCode: string): T {
@@ -517,7 +642,7 @@ export function createServer(options: ServerOptions = {}) {
       totalSteps: 4,
       itemsCompleted: null,
       itemsTotal: null,
-      message: "No reconciliation has run in this process",
+      message: "No chain data sync has run in this process",
     },
     result: null,
     error: null,
@@ -572,7 +697,7 @@ export function createServer(options: ServerOptions = {}) {
             ? "Discovering indexed signer delegations"
             : verification
               ? "Verifying signer delegations against the node"
-              : "Synchronizing manager events"),
+              : "Syncing manager events"),
       },
     };
   }
@@ -624,7 +749,7 @@ export function createServer(options: ServerOptions = {}) {
             totalSteps: 4,
             itemsCompleted: null,
             itemsTotal: null,
-            message: "Refreshing operator state from the reconciled database",
+            message: "Refreshing operator state from synced chain data",
           },
         };
         const snapshot = await withInteractiveRequestDeadline(
@@ -644,7 +769,7 @@ export function createServer(options: ServerOptions = {}) {
             totalSteps: 4,
             itemsCompleted: null,
             itemsTotal: null,
-            message: "Reconciliation complete",
+            message: "Chain data sync complete",
           },
           result: {
             reconciliation: reconciliationSummary(reconciliation),
@@ -668,7 +793,7 @@ export function createServer(options: ServerOptions = {}) {
           completedAt: failedAt,
           progress: {
             ...reconciliationOperation.progress,
-            message: "Reconciliation failed",
+            message: "Chain data sync failed",
           },
           result: null,
           error: { ...classified.body, retryable: classified.body.retryable ?? false },
@@ -693,12 +818,10 @@ export function createServer(options: ServerOptions = {}) {
   server.addHook("onRequest", async (request, reply) => {
     requestCount += 1;
     if (!request.url.startsWith("/api/")) return;
-    if (!options.service) {
-      return reply.code(503).send({ error: "operator_service_unavailable" });
-    }
+    if (!options.service) throw new OperatorApiError(503, "operator_service_unavailable");
     if (!authorized(request.headers.authorization, options.authToken ?? "")) {
       reply.header("www-authenticate", "Bearer");
-      return reply.code(401).send({ error: "unauthorized" });
+      throw new OperatorApiError(401, "unauthorized");
     }
   });
 
@@ -820,10 +943,10 @@ export function createServer(options: ServerOptions = {}) {
       requireFeature(options.health, "health_monitoring_unavailable").refresh(),
     );
   });
-  server.post("/api/v1/health/test-source", async (request, reply) => {
+  server.post("/api/v1/health/test-source", async (request) => {
     const health = requireFeature(options.health, "health_monitoring_unavailable");
     const parsed = healthSourceTestRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_health_source" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_health_source");
     return await interactive(request, async () =>
       health.testSource(parsed.data.kind, parsed.data.url),
     );
@@ -919,7 +1042,7 @@ export function createServer(options: ServerOptions = {}) {
     const snapshot = await interactive(request, async () => options.service?.snapshot());
     return { generatedAt: snapshot?.generatedAt, alerts: snapshot?.alerts ?? [] };
   });
-  server.get("/api/v1/activity", async (request, reply) => {
+  server.get("/api/v1/activity", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const activity = requireFeature(service.activity, "paginated_activity_unavailable");
     let activityOptions: ActivityOptions;
@@ -928,11 +1051,11 @@ export function createServer(options: ServerOptions = {}) {
       const claimLimit = integerQuery(search, "claimLimit", 50, 200);
       const withdrawalLimit = integerQuery(search, "withdrawalLimit", 50, 200);
       if (claimLimit < 1 || withdrawalLimit < 1) {
-        return reply.code(400).send({ error: "limits_must_be_positive" });
+        throw new OperatorApiError(400, "limits_must_be_positive");
       }
       const state = search.get("withdrawalState");
       if (state !== null && !["pending", "settled", "reclaimed"].includes(state)) {
-        return reply.code(400).send({ error: "invalid_withdrawal_state" });
+        throw new OperatorApiError(400, "invalid_withdrawal_state");
       }
       activityOptions = {
         claimLimit,
@@ -942,8 +1065,9 @@ export function createServer(options: ServerOptions = {}) {
         withdrawalOffset: integerQuery(search, "withdrawalOffset", 0, 10_000_000),
         withdrawalState: state as "pending" | "settled" | "reclaimed" | null,
       };
-    } catch {
-      return reply.code(400).send({ error: "invalid_query" });
+    } catch (error) {
+      if (error instanceof OperatorApiError) throw error;
+      throw new OperatorApiError(400, "invalid_query");
     }
     return await interactive(request, async () => activity.call(service, activityOptions));
   });
@@ -990,16 +1114,16 @@ export function createServer(options: ServerOptions = {}) {
       wizard: onboarding.resumeWizard(),
     };
   });
-  server.post("/api/v1/onboarding/start", async (request, reply) => {
+  server.post("/api/v1/onboarding/start", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingStartRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_path" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_onboarding_path");
     return { onboarding: onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
   });
-  server.post("/api/v1/onboarding/attach/verify", async (request, reply) => {
+  server.post("/api/v1/onboarding/attach/verify", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingAttachRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_manager_principal" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_manager_principal");
     return {
       onboarding: await interactive(request, async () =>
         onboarding.verifyAttach(parsed.data.managerPrincipal),
@@ -1018,30 +1142,30 @@ export function createServer(options: ServerOptions = {}) {
       onboarding: await interactive(request, async () => onboarding.prepareGrant()),
     };
   });
-  server.post("/api/v1/onboarding/fresh/grant/verify", async (request, reply) => {
+  server.post("/api/v1/onboarding/fresh/grant/verify", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_output");
     return {
       onboarding: await interactive(request, async () =>
         onboarding.verifyGrant(parsed.data.signerOutput),
       ),
     };
   });
-  server.post("/api/v1/manager/signer-grant/prepare", async (request, reply) => {
+  server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = managerSignerGrantPrepareRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_grant_input" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_grant_input");
     return {
       onboarding: await interactive(request, async () =>
         onboarding.prepareManagerSignerGrant(parsed.data),
       ),
     };
   });
-  server.post("/api/v1/manager/signer-grant/verify", async (request, reply) => {
+  server.post("/api/v1/manager/signer-grant/verify", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_output");
     return {
       onboarding: await interactive(request, async () =>
         onboarding.verifyManagerSignerGrant(parsed.data.signerOutput),
@@ -1051,7 +1175,7 @@ export function createServer(options: ServerOptions = {}) {
   server.post("/api/v1/onboarding/wallet-intents", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_wallet_intent_action");
     try {
       return {
         intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
@@ -1062,7 +1186,7 @@ export function createServer(options: ServerOptions = {}) {
       });
       if (anchorReply) return anchorReply;
       if (error instanceof OnboardingWalletIntentError) {
-        return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        return sendClassifiedError(request, reply, error);
       }
       throw error;
     }
@@ -1070,7 +1194,7 @@ export function createServer(options: ServerOptions = {}) {
   server.post("/api/v1/wallet-intents", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = browserWalletIntentCreateRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_wallet_intent_action");
     try {
       return {
         intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
@@ -1081,7 +1205,7 @@ export function createServer(options: ServerOptions = {}) {
       });
       if (anchorReply) return anchorReply;
       if (error instanceof OnboardingWalletIntentError) {
-        return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        return sendClassifiedError(request, reply, error);
       }
       throw error;
     }
@@ -1090,12 +1214,12 @@ export function createServer(options: ServerOptions = {}) {
     server.get(`${prefix}/:id`, async (request, reply) => {
       const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
       const parsed = z.object({ id: z.uuid() }).strict().safeParse(request.params);
-      if (!parsed.success) return reply.code(404).send({ error: "wallet_intent_not_found" });
+      if (!parsed.success) throw new OperatorApiError(404, "wallet_intent_not_found");
       try {
         return { intent: onboarding.wallet.get(parsed.data.id) };
       } catch (error) {
         if (error instanceof OnboardingWalletIntentError) {
-          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+          return sendClassifiedError(request, reply, error);
         }
         throw error;
       }
@@ -1105,7 +1229,7 @@ export function createServer(options: ServerOptions = {}) {
       const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
       const body = browserWalletIntentSubmissionRequestSchema.safeParse(request.body);
       if (!params.success || !body.success) {
-        return reply.code(400).send({ error: "invalid_wallet_intent_submission" });
+        throw new OperatorApiError(400, "invalid_wallet_intent_submission");
       }
       try {
         return {
@@ -1115,7 +1239,7 @@ export function createServer(options: ServerOptions = {}) {
         };
       } catch (error) {
         if (error instanceof OnboardingWalletIntentError) {
-          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+          return sendClassifiedError(request, reply, error);
         }
         throw error;
       }
@@ -1128,7 +1252,7 @@ export function createServer(options: ServerOptions = {}) {
         .strict()
         .safeParse(request.body ?? {});
       if (!params.success || !body.success) {
-        return reply.code(400).send({ error: "invalid_wallet_intent_refresh" });
+        throw new OperatorApiError(400, "invalid_wallet_intent_refresh");
       }
       try {
         return {
@@ -1141,7 +1265,7 @@ export function createServer(options: ServerOptions = {}) {
         });
         if (anchorReply) return anchorReply;
         if (error instanceof OnboardingWalletIntentError) {
-          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+          return sendClassifiedError(request, reply, error);
         }
         throw error;
       }
@@ -1154,7 +1278,7 @@ export function createServer(options: ServerOptions = {}) {
         .strict()
         .safeParse(request.body ?? {});
       if (!params.success || !body.success) {
-        return reply.code(400).send({ error: "invalid_wallet_intent_replacement" });
+        throw new OperatorApiError(400, "invalid_wallet_intent_replacement");
       }
       try {
         return {
@@ -1167,7 +1291,7 @@ export function createServer(options: ServerOptions = {}) {
         });
         if (anchorReply) return anchorReply;
         if (error instanceof OnboardingWalletIntentError) {
-          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+          return sendClassifiedError(request, reply, error);
         }
         throw error;
       }
@@ -1181,26 +1305,26 @@ export function createServer(options: ServerOptions = {}) {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     return await interactive(request, async () => onboarding.refreshFresh());
   });
-  server.patch("/api/v1/onboarding/progress", async (request, reply) => {
+  server.patch("/api/v1/onboarding/progress", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingProgressRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_step" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_onboarding_step");
     return { onboarding: onboarding.setCurrentStep(parsed.data.currentStep) };
   });
   server.get("/api/v1/onboarding/artifacts/:kind", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = z.object({ kind: z.enum(["source", "manifest"]) }).safeParse(request.params);
-    if (!parsed.success) return reply.code(404).send({ error: "artifact_not_found" });
+    if (!parsed.success) throw new OperatorApiError(404, "artifact_not_found");
     const artifact = onboarding.artifact(parsed.data.kind);
     reply.type(artifact.contentType);
     reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
     return artifact.body;
   });
-  server.post("/api/v1/pool-card/generate", async (request, reply) => {
+  server.post("/api/v1/pool-card/generate", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const poolCard = requireFeature(service.poolCard, "pool_card_generation_unavailable");
     const parsed = poolCardGenerateRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_pool_card_mode" });
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_pool_card_mode");
     return await interactive(request, async () => poolCard.call(service, parsed.data.mode));
   });
   server.post("/api/v1/sync", async (request, reply) => {

@@ -8,6 +8,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../api-client.js";
 import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
+import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
 import {
   approveEngineJob,
   disableEngineAdapter,
@@ -29,7 +30,13 @@ function errorMessage(error: unknown): string {
   if (error instanceof ApiRequestError && error.kind === "authentication") {
     return "The operator credential was rejected. Approval controls were invalidated.";
   }
-  return error instanceof Error ? error.message : String(error);
+  return operatorErrorDetail(error, "Sidekick returned no error detail");
+}
+
+function engineActionError(error: unknown, summary: string, recovery: string): string {
+  const cause =
+    error instanceof ApiRequestError && error.kind === "http" ? error : errorMessage(error);
+  return operatorActionError(cause, summary, recovery);
 }
 
 function stateLabel(value: string): string {
@@ -111,7 +118,13 @@ export function EngineOperations({
         if (controller.signal.aborted) return;
         setStatus(null);
         setJobs(null);
-        setError(errorMessage(cause));
+        setError(
+          engineActionError(
+            cause,
+            "Could not load transaction engine status and jobs",
+            "Retrying is safe",
+          ),
+        );
         setSurface("error");
       }
     },
@@ -139,7 +152,9 @@ export function EngineOperations({
     } catch (cause) {
       if (controller.signal.aborted) return;
       setSelectedJob(null);
-      setError(errorMessage(cause));
+      setError(
+        engineActionError(cause, `Could not load transaction job ${jobId}`, "Retrying is safe"),
+      );
     }
   };
 
@@ -165,7 +180,13 @@ export function EngineOperations({
       })
       .catch((cause) => {
         invalidateActions();
-        setError(errorMessage(cause));
+        setError(
+          engineActionError(
+            cause,
+            `Could not confirm approval for job ${jobId}`,
+            "Refresh the job before approving again; the approval may already be recorded",
+          ),
+        );
       })
       .finally(() => {
         setAction(null);
@@ -177,11 +198,12 @@ export function EngineOperations({
   const invalidateApproval = async () => {
     if (!actionsEnabled || !selectedJob?.approval || action) return;
     if (!window.confirm("Invalidate this exact approval? It cannot be restored.")) return;
+    const jobId = selectedJob.jobId;
     setAction("invalidate");
     setActionsEnabled(false);
     setError(null);
     try {
-      const result = await invalidateEngineApproval(token, selectedJob.jobId, {
+      const result = await invalidateEngineApproval(token, jobId, {
         decision: "invalidate",
         reason: "Operator invalidated approval from the dashboard",
       });
@@ -190,7 +212,13 @@ export function EngineOperations({
       setActionsEnabled(true);
     } catch (cause) {
       invalidateActions();
-      setError(errorMessage(cause));
+      setError(
+        engineActionError(
+          cause,
+          `Could not confirm approval invalidation for job ${jobId}`,
+          "Refresh the job before trying again; the approval may already be invalidated",
+        ),
+      );
     } finally {
       setAction(null);
     }
@@ -200,7 +228,7 @@ export function EngineOperations({
     if (!status || action) return;
     if (
       !window.confirm(
-        "Force the transaction engine into Observe mode? New signing and broadcasts will stop while reconciliation continues.",
+        "Force the transaction engine into Observe mode? New signing and broadcasts will stop while result verification continues.",
       )
     ) {
       return;
@@ -219,11 +247,21 @@ export function EngineOperations({
         setJobs(await loadEngineJobs(token, cursor));
       } catch (cause) {
         setError(
-          `Forced Observe succeeded, but durable jobs could not be refreshed: ${errorMessage(cause)}`,
+          engineActionError(
+            cause,
+            "Force Observe succeeded, but transaction jobs could not be refreshed",
+            "Observe mode is active; retry the engine refresh",
+          ),
         );
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(
+        engineActionError(
+          cause,
+          "Could not confirm Force Observe",
+          "Refresh engine status before trying again; Observe mode may already be active",
+        ),
+      );
     } finally {
       setAction(null);
     }
@@ -252,11 +290,21 @@ export function EngineOperations({
         setJobs(await loadEngineJobs(token, cursor));
       } catch (cause) {
         setError(
-          `${adapterId} was disabled, but durable jobs could not be refreshed: ${errorMessage(cause)}`,
+          engineActionError(
+            cause,
+            `${adapterId} was disabled, but transaction jobs could not be refreshed`,
+            "The adapter is disabled; retry the engine refresh",
+          ),
         );
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(
+        engineActionError(
+          cause,
+          `Could not confirm that ${adapterId} was disabled`,
+          "Refresh engine status before trying again; the adapter may already be disabled",
+        ),
+      );
     } finally {
       setAction(null);
     }
@@ -267,11 +315,10 @@ export function EngineOperations({
       <section className="card engine-unavailable" aria-label="Transaction engine">
         <div className="card-head">
           <h2>Transaction engine</h2>
-          <Badge state="neutral">Observe unavailable</Badge>
+          <Badge state="neutral">Unavailable</Badge>
         </div>
         <p className="muted">
-          This Sidekick build does not expose the Observe transaction engine. Existing ingestion,
-          reconciliation, and alerts remain available below.
+          Transaction execution is unavailable. Monitoring, chain data, and alerts remain available.
         </p>
       </section>
     );
@@ -281,8 +328,8 @@ export function EngineOperations({
     <section className="engine-operations" aria-label="Transaction engine">
       <div className="card-head engine-surface-head">
         <div>
-          <span className="eyebrow">Code-backed transaction engine</span>
-          <h2>Reviewed operations</h2>
+          <span className="eyebrow">Transaction engine</span>
+          <h2>Transaction jobs</h2>
         </div>
         <button
           type="button"
@@ -309,10 +356,10 @@ export function EngineOperations({
               </h3>
               <p className="muted">
                 {status.mode === "observe"
-                  ? "Plans and reconciles only; signing and broadcast are unreachable."
+                  ? "Plans transactions but cannot sign or submit them."
                   : status.mode === "assist"
-                    ? "Every broadcast requires a fresh exact approval."
-                    : "Only separately enabled and capped adapters may broadcast."}
+                    ? "Each submission requires approval."
+                    : "Only enabled, capped operations can submit transactions."}
               </p>
             </div>
             <div className="card engine-job-counts">
@@ -399,7 +446,7 @@ export function EngineOperations({
           <div className="engine-workspace">
             <div className="card engine-job-list">
               <div className="card-head">
-                <h3>Durable jobs</h3>
+                <h3>Transaction jobs</h3>
                 <span className="muted">{jobs?.total ?? 0} total</span>
               </div>
               {jobs?.items.map((job) => (
@@ -422,7 +469,7 @@ export function EngineOperations({
                   </span>
                 </button>
               ))}
-              {jobs?.items.length === 0 ? <p className="muted">No durable jobs yet.</p> : null}
+              {jobs?.items.length === 0 ? <p className="muted">No transaction jobs yet.</p> : null}
               {jobs ? (
                 <div className="pagination engine-pagination">
                   <button
@@ -477,10 +524,10 @@ export function EngineOperations({
               ) : (
                 <div className="engine-empty-detail">
                   <ShieldWarning />
-                  <h3>Select a durable job</h3>
+                  <h3>Select a transaction job</h3>
                   <p className="muted">
-                    Approval controls appear only after the current job detail is fetched and
-                    validated. Refreshing or losing authentication clears the actionable view.
+                    Sidekick validates the current details before showing approval controls.
+                    Refreshing or signing out clears them.
                   </p>
                 </div>
               )}

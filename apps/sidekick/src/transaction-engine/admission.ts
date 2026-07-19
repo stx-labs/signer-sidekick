@@ -95,41 +95,65 @@ function block(blocks: AdmissionBlock[], code: AdmissionBlockCode, message: stri
 
 function evaluateCommonAdmission(input: TransactionAdmissionInput, blocks: AdmissionBlock[]): void {
   if (!input.attestation) {
-    block(blocks, "attestation-missing", "No authenticated compatibility attestation is loaded");
+    block(blocks, "attestation-missing", "Assist requires a current compatibility attestation");
   } else {
     if (!input.attestation.current) {
-      block(blocks, "attestation-not-current", "The compatibility attestation is not current");
+      block(
+        blocks,
+        "attestation-not-current",
+        "The compatibility attestation expired. Install a current attestation",
+      );
     }
     if (input.attestation.payloadSha256 !== input.expectedAttestationSha256) {
-      block(blocks, "attestation-mismatch", "The attestation does not match the planned intent");
+      block(
+        blocks,
+        "attestation-mismatch",
+        "The compatibility attestation does not match this transaction. Sync chain data to prepare a new current job, then review and approve it",
+      );
     }
   }
   if (!input.liveFingerprintMatches) {
     block(
       blocks,
       "live-fingerprint-mismatch",
-      "The live network or contract fingerprint does not match the attestation",
+      "The manager or network identity changed. Sync chain data to prepare a new current job, then review and approve it",
     );
   }
   if (!input.adapter) {
-    block(blocks, "adapter-unavailable", "The code-backed adapter is unavailable");
+    block(blocks, "adapter-unavailable", "The transaction adapter is unavailable");
   } else if (
     input.adapter.id !== input.expectedAdapter.id ||
     input.adapter.revision !== input.expectedAdapter.revision
   ) {
-    block(blocks, "adapter-revision-mismatch", "The installed adapter differs from the intent");
+    block(
+      blocks,
+      "adapter-revision-mismatch",
+      "The transaction adapter changed. Prepare a new job",
+    );
   }
   if (!input.anchorCanonical) {
-    block(blocks, "anchor-noncanonical", "The planned chain anchor is no longer canonical");
+    block(
+      blocks,
+      "anchor-noncanonical",
+      "The planned chain anchor is no longer canonical. Sync chain data to prepare a new current job, then review and approve it",
+    );
   }
   if (!input.anchorDescendant) {
-    block(blocks, "anchor-mismatch", "The live anchor is not a proven canonical descendant");
+    block(
+      blocks,
+      "anchor-mismatch",
+      "The live chain cannot yet be proven from the planned anchor. Wait for the Reference API to catch up",
+    );
   }
   if (!input.prerequisitesComplete) {
-    block(blocks, "prerequisites-incomplete", "Authoritative adapter prerequisites are incomplete");
+    block(blocks, "prerequisites-incomplete", "Transaction prerequisites are incomplete");
   }
   if (!input.fee.stateMatches) {
-    block(blocks, "fee-state-mismatch", "The authoritative fee state changed after planning");
+    block(
+      blocks,
+      "fee-state-mismatch",
+      "Manager fee state changed. Sync chain data to prepare a new current job, then review and approve it",
+    );
   }
   if (input.fee.transactionFeeUstx > input.fee.maximumFeeUstx) {
     block(blocks, "fee-cap-exceeded", "The transaction fee exceeds the approved cap");
@@ -151,29 +175,45 @@ function evaluateBroadcastAdmission(
     block(blocks, "observe-mode", "Observe mode cannot sign or broadcast");
   } else if (input.mode === "assist") {
     if (!input.approval) {
-      block(blocks, "approval-missing", "Assist mode requires an exact durable approval");
+      block(blocks, "approval-missing", "Review and approve this transaction job");
     } else {
       if (
         input.approval.intentHash !== input.intentHash ||
         input.approval.policyHash !== input.policyHash ||
         input.approval.invalidatedAt !== null
       ) {
-        block(blocks, "approval-invalid", "The approval is stale or does not bind this intent");
+        block(
+          blocks,
+          "approval-invalid",
+          "The approval no longer matches this transaction. Sync chain data to prepare a new current job, then review and approve it",
+        );
       }
       if (
         !Number.isFinite(input.now.getTime()) ||
         !Number.isFinite(Date.parse(input.approval.expiresAt)) ||
         input.now.getTime() >= Date.parse(input.approval.expiresAt)
       ) {
-        block(blocks, "approval-expired", "The approval has expired");
+        block(
+          blocks,
+          "approval-expired",
+          "The approval expired. Sync chain data to prepare a new current job, then review and approve it",
+        );
       }
     }
   }
 
   if (!input.signer?.available) {
-    block(blocks, "signer-unavailable", "The isolated gas-payer signer is unavailable");
+    block(
+      blocks,
+      "signer-unavailable",
+      "The Assist gas-payer signer is unavailable. Check its configuration",
+    );
   } else if (input.signer.principal !== input.signer.expectedPrincipal) {
-    block(blocks, "signer-identity-mismatch", "The gas-payer identity differs from configuration");
+    block(
+      blocks,
+      "signer-identity-mismatch",
+      "The Assist gas-payer identity does not match its configuration",
+    );
   }
   if (!input.nonce) {
     block(blocks, "nonce-not-owned", "Gas-payer nonce ownership has not been established");

@@ -11,9 +11,11 @@ import { ApiRequestError, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { StatusBadge } from "../../shared/dashboard-ui.js";
 import { number } from "../../shared/format.js";
+import { operatorErrorDetail } from "../../shared/operator-error.js";
 import {
   BrowserWalletError,
   browserWalletIntentNetwork,
+  browserWalletProviderNames,
   browserWalletRecoveryScope,
   browserWalletSupport,
   canPrepareBrowserWalletIntent,
@@ -58,7 +60,7 @@ function walletIntentErrorMessage(cause: unknown): string {
       return "The chain position changed while Sidekick checked the request. Sidekick retried. This attempt did not send a new transaction to the wallet or submit one. Wait a moment, then review again.";
     }
   }
-  return cause instanceof Error ? cause.message : "Unable to prepare the wallet request.";
+  return operatorErrorDetail(cause, "Could not prepare the wallet request");
 }
 
 function requestTarget(intent: BrowserWalletIntent): string {
@@ -360,8 +362,7 @@ export function BrowserWalletActionPanel({
     } catch (cause) {
       const canClear = cause instanceof ApiRequestError && cause.status === 404;
       setRecoveryCanClear(canClear && walletResults.length === 1);
-      const detail =
-        cause instanceof Error ? cause.message : "Unable to record the transaction ID.";
+      const detail = operatorErrorDetail(cause, "Could not record the transaction ID");
       if (walletResults.length > 1) {
         setRecoveryMessages((current) => ({
           ...current,
@@ -440,7 +441,12 @@ export function BrowserWalletActionPanel({
       <div className="browser-wallet-heading">
         <div>
           <h3>Sign with browser wallet</h3>
-          <p>{support.detail}</p>
+          {support.available ? (
+            <p>
+              Supported {support.providerIds.length === 1 ? "wallet" : "wallets"}:{" "}
+              {browserWalletProviderNames(support.providerIds)}.
+            </p>
+          ) : null}
         </div>
         {intent ? <StatusBadge status={intent.status} /> : null}
       </div>
@@ -448,29 +454,19 @@ export function BrowserWalletActionPanel({
       {!support.available ? (
         <div className="callout callout-caution" role="note">
           <Warning className="ic" />
-          <div className="body">{support.detail}</div>
+          <div className="body">{support.unavailableReason}</div>
         </div>
       ) : (
         <>
-          {!intent && ambiguousWalletResults.length === 0 ? (
-            <div className="callout callout-info" role="note">
-              <ShieldCheck className="ic" />
-              <div className="body">
-                Sidekick prepares a sealed, expiring request from authoritative state. Review it
-                first; connecting a wallet is a separate action.
-              </div>
-            </div>
-          ) : null}
-
           {ambiguousWalletResults.length > 0 ? (
             <div className="callout callout-critical" role="alert">
               <Warning className="ic" />
               <div className="body">
                 <strong>Multiple saved wallet broadcasts need review.</strong>
                 <p>
-                  Sidekick will not prepare or sign another transaction for this action until each
-                  saved record is recorded or cleared. Clearing a local recovery record does not
-                  cancel its broadcast; save its transaction ID first.
+                  Sidekick will not prepare another transaction for this action until each saved
+                  record is recorded or cleared. Clearing a local recovery record does not cancel
+                  its broadcast; save its transaction ID first.
                 </p>
                 <div className="wallet-recovery-list">
                   {ambiguousWalletResults.map((pending) => {
@@ -536,10 +532,10 @@ export function BrowserWalletActionPanel({
                   Network <strong>{intent.network}</strong>
                 </span>
                 <span>
-                  Required signer{" "}
+                  Signing account{" "}
                   <CopyableIdentifier
                     value={intent.requiredSender}
-                    label="required wallet address"
+                    label="signing account"
                     className="mono"
                   />
                 </span>
@@ -577,11 +573,11 @@ export function BrowserWalletActionPanel({
               <div className="callout callout-neutral" role="note">
                 <Check className="ic" />
                 <div className="body">
-                  <strong>Verified completion requires:</strong> {intent.review.expectedPostState}
+                  <strong>Expected result:</strong> {intent.review.expectedPostState}
                 </div>
               </div>
               <details className="setup-advanced">
-                <summary>Sealed request fingerprints</summary>
+                <summary>Request fingerprints</summary>
                 <div className="wallet-intent-seals">
                   <CopyableIdentifier
                     value={intent.seal.factsSha256}
@@ -596,7 +592,7 @@ export function BrowserWalletActionPanel({
                 </div>
               </details>
               <details className="setup-advanced">
-                <summary>Exact transaction payload</summary>
+                <summary>Transaction details</summary>
                 <div className="wallet-intent-payload">
                   <div>
                     <strong>Sponsored</strong> No
@@ -624,12 +620,12 @@ export function BrowserWalletActionPanel({
                   ) : null}
                   {intent.transaction.method === "stx_deployContract" ? (
                     <div>
-                      <strong>Exact contract source</strong>
+                      <strong>Contract source</strong>
                       <pre className="code">{intent.transaction.params.clarityCode}</pre>
                     </div>
                   ) : (
                     <div>
-                      <strong>Exact serialized arguments</strong>
+                      <strong>Serialized arguments</strong>
                       <ol>
                         {intent.transaction.params.functionArgs.map((argument, index) => (
                           <li key={argument}>
@@ -653,7 +649,7 @@ export function BrowserWalletActionPanel({
             <div className="callout callout-info" role="status">
               <ArrowClockwise className="ic" />
               <div className="body">
-                <strong>Broadcast recorded; Sidekick is verifying it independently.</strong>
+                <strong>Transaction submitted.</strong>
                 <div>
                   Transaction{" "}
                   <CopyableIdentifier value={intent.txid} label="transaction ID" className="mono" />
@@ -724,10 +720,7 @@ export function BrowserWalletActionPanel({
                 disabled={busy !== null}
                 onClick={() => void sign()}
               >
-                <Wallet />{" "}
-                {action === "deploy-manager"
-                  ? "Connect Leather and sign"
-                  : "Connect wallet and sign"}
+                <Wallet /> Connect wallet and sign
               </button>
             ) : null}
             {pendingNeedsRecording ? (
@@ -783,8 +776,7 @@ export function BrowserWalletActionPanel({
             </p>
           ) : null}
           <p className="help">
-            The wallet controls its key, fee, nonce, signing, and broadcast. Sidekick’s backend
-            receives only the transaction ID and never treats a wallet callback as confirmation.
+            Your wallet signs and submits the transaction. Sidekick verifies it on-chain.
           </p>
         </>
       )}

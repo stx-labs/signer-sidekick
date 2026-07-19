@@ -838,31 +838,49 @@ describe("browser wallet execution", () => {
     expect(deps.call).not.toHaveBeenCalled();
   });
 
-  it("returns concise support boundaries and sanitized cancellation errors", async () => {
-    expect(browserWalletSupport("deploy-manager", "testnet", POX5_TESTNET_CHAIN_ID)).toMatchObject({
+  it("returns provider capabilities for each supported network binding", () => {
+    expect(browserWalletSupport("deploy-manager", "testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
       available: true,
+      providerIds: [LEATHER_PROVIDER_ID],
+      unavailableReason: null,
     });
-    expect(
-      browserWalletSupport("deploy-manager", "testnet", POX5_TESTNET_CHAIN_ID).detail,
-    ).toContain("ordinary Stacks testnet is never used");
-    expect(
-      browserWalletSupport("update-fees", "pox5-testnet", POX5_TESTNET_CHAIN_ID),
-    ).toMatchObject({
+    expect(browserWalletSupport("update-fees", "pox5-testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
       available: true,
+      providerIds: [LEATHER_PROVIDER_ID],
+      unavailableReason: null,
     });
-    expect(
-      browserWalletSupport("update-fees", "pox5-testnet", POX5_TESTNET_CHAIN_ID).detail,
-    ).toContain("0x80000005");
-    expect(browserWalletSupport("update-fees", "devnet", 0x80000000)).toMatchObject({
+    expect(browserWalletSupport("update-fees", "devnet", 0x80000000)).toEqual({
       available: true,
+      providerIds: [LEATHER_PROVIDER_ID],
+      unavailableReason: null,
     });
-    expect(browserWalletSupport("update-fees", "regtest", 0x80000001).detail).toContain(
-      "version-dependent",
-    );
-    expect(browserWalletSupport("deploy-manager", "mainnet", MAINNET_CHAIN_ID).detail).toContain(
-      "Leather",
-    );
+    expect(browserWalletSupport("update-fees", "regtest", 0x80000001)).toEqual({
+      available: true,
+      providerIds: [LEATHER_PROVIDER_ID],
+      unavailableReason: null,
+    });
+    expect(browserWalletSupport("update-fees", "mainnet", MAINNET_CHAIN_ID)).toEqual({
+      available: true,
+      providerIds: [LEATHER_PROVIDER_ID, XVERSE_PROVIDER_ID],
+      unavailableReason: null,
+    });
+    expect(browserWalletSupport("deploy-manager", "mainnet", MAINNET_CHAIN_ID)).toEqual({
+      available: true,
+      providerIds: [LEATHER_PROVIDER_ID],
+      unavailableReason: null,
+    });
+  });
 
+  it("returns one manual fallback for unsupported network bindings", () => {
+    expect(browserWalletSupport("update-fees", "mainnet", POX5_TESTNET_CHAIN_ID)).toEqual({
+      available: false,
+      providerIds: [],
+      unavailableReason:
+        "Browser wallet signing is unavailable for this network. Use another signing tool.",
+    });
+  });
+
+  it("returns sanitized cancellation errors", async () => {
     const deps = dependencies();
     vi.mocked(deps.connectWallet).mockRejectedValue({
       code: -31001,

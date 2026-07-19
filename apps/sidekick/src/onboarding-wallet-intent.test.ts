@@ -1119,9 +1119,7 @@ describe("onboarding wallet intent reconciliation", () => {
       readFreshState: () => state,
     });
 
-    await expect(wallet.prepare({ action: "register-self" })).rejects.toThrow(
-      "already been consumed",
-    );
+    await expect(wallet.prepare({ action: "register-self" })).rejects.toThrow("already been used");
   });
 
   it("does not prepare register-self when the exact signer key and grant are already active", async () => {
@@ -1401,7 +1399,8 @@ describe("onboarding wallet intent reconciliation", () => {
       verification: {
         outcome: "abort",
         canonical: true,
-        detail: "Canonical transaction abort by response",
+        detail:
+          "Transaction failed on-chain: abort by response. Prepare a new transaction if the action is still needed",
       },
     });
     expect(readSetupSnapshotMock).not.toHaveBeenCalled();
@@ -2165,7 +2164,7 @@ describe("manager wallet action preparation", () => {
       status: "submitted",
       verification: {
         outcome: "unavailable",
-        detail: expect.stringContaining("current Sidekick network"),
+        detail: expect.stringContaining("configured network changed"),
       },
     });
     expect(readerFactory).not.toHaveBeenCalled();
@@ -2248,6 +2247,6 @@ describe("manager wallet action preparation", () => {
 
     await expect(
       wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
-    ).rejects.toThrow("already been consumed");
+    ).rejects.toThrow("already been used");
   });
 });

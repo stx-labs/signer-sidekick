@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChainAnchorError, RateLimitedError, UpstreamSchemaError } from "./chain-clients.js";
+import {
+  ChainAnchorError,
+  RateLimitedError,
+  UpstreamHttpError,
+  UpstreamSchemaError,
+} from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
+import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -18,6 +24,8 @@ const walletIntentAnchorMismatch = {
   api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
   poxBurnBlockHeight: 4_819,
 } as const;
+const chainSourcesOutOfSyncMessage =
+  "The node and API are temporarily out of sync. Retry when their Stacks and Bitcoin heights match.";
 
 function retryableWalletIntentAnchorError(): ChainAnchorError {
   return new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -136,6 +144,34 @@ describe("local API", () => {
     expect(response.json()).toEqual({
       error: "onboarding_reset_confirmation_required",
       message: "Switching onboarding paths requires explicit reset confirmation",
+      retryable: false,
+    });
+  });
+
+  it("replaces code-only workflow messages with safe operator guidance", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      synchronize: async () => ({}),
+      poolCard: async () => {
+        throw new OperatorWorkflowError(409, "pool_setup_not_complete");
+      },
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/pool-card/generate",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { mode: "live" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "pool_setup_not_complete",
+      message:
+        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry.",
       retryable: false,
     });
   });
@@ -360,7 +396,12 @@ describe("local API", () => {
       payload,
     });
     expect(generic.statusCode).toBe(500);
-    expect(generic.json()).toEqual({ error: "internal_server_error" });
+    expect(generic.json()).toMatchObject({
+      error: "internal_server_error",
+      message: expect.stringContaining("Check operator logs for request"),
+      requestId: expect.any(String),
+      retryable: false,
+    });
   });
 
   it("returns the same retryable mismatch while revalidating or replacing an intent", async () => {
@@ -413,7 +454,11 @@ describe("local API", () => {
     const invalidRead = await server.inject({ method: "GET", url: `${prefix}/invalid`, headers });
     expect([invalidRead.statusCode, invalidRead.json()]).toEqual([
       404,
-      { error: "wallet_intent_not_found" },
+      {
+        error: "wallet_intent_not_found",
+        message: "The wallet transaction request was not found. Prepare a new transaction.",
+        retryable: false,
+      },
     ]);
     expect(wallet.get).not.toHaveBeenCalled();
     expect(
@@ -429,7 +474,11 @@ describe("local API", () => {
     });
     expect([invalidSubmission.statusCode, invalidSubmission.json()]).toEqual([
       400,
-      { error: "invalid_wallet_intent_submission" },
+      {
+        error: "invalid_wallet_intent_submission",
+        message: "The transaction submission is invalid. Enter a valid transaction ID and retry.",
+        retryable: false,
+      },
     ]);
     expect(wallet.submit).not.toHaveBeenCalled();
     await server.inject({
@@ -448,7 +497,11 @@ describe("local API", () => {
     });
     expect([invalidRefresh.statusCode, invalidRefresh.json()]).toEqual([
       400,
-      { error: "invalid_wallet_intent_refresh" },
+      {
+        error: "invalid_wallet_intent_refresh",
+        message: "The wallet transaction request is invalid. Prepare a new transaction.",
+        retryable: false,
+      },
     ]);
     expect(wallet.refresh).not.toHaveBeenCalled();
     await server.inject({
@@ -467,7 +520,11 @@ describe("local API", () => {
     });
     expect([invalidReplacement.statusCode, invalidReplacement.json()]).toEqual([
       400,
-      { error: "invalid_wallet_intent_replacement" },
+      {
+        error: "invalid_wallet_intent_replacement",
+        message: "The wallet transaction request is invalid. Prepare a new transaction.",
+        retryable: false,
+      },
     ]);
     expect(wallet.replace).not.toHaveBeenCalled();
     await server.inject({
@@ -477,6 +534,106 @@ describe("local API", () => {
       payload: {},
     });
     expect(wallet.replace).toHaveBeenCalledWith(intentId);
+  });
+
+  it.each(
+    walletIntentPrefixes,
+  )("returns safe wallet-intent guidance at %s without internal details", async (prefix) => {
+    const token = "test-operator-token-with-32-chars";
+    const error = new OnboardingWalletIntentError(
+      "wallet_intent_conflict",
+      "The wallet transaction changed. Prepare a new transaction.",
+    );
+    Object.assign(error, { internalDetail: "must-not-leak" });
+    const onboarding = {
+      wallet: { prepare: vi.fn().mockRejectedValue(error) },
+    } as unknown as OnboardingService;
+    const server = createServer({
+      service: { snapshot: async () => ({}), synchronize: async () => ({}) },
+      onboarding,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const payload =
+      prefix === "/api/v1/onboarding/wallet-intents"
+        ? { action: "deploy-manager" }
+        : {
+            action: "update-fees",
+            actorPrincipal: "SP000000000000000000002Q6VF78",
+            feeBips: "250",
+          };
+
+    const response = await server.inject({
+      method: "POST",
+      url: prefix,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "wallet_intent_conflict",
+      message: "The wallet transaction changed. Prepare a new transaction.",
+      retryable: false,
+    });
+    expect(response.body).not.toContain("must-not-leak");
+  });
+
+  it("uses explicit wallet-intent retryability for transient and permanent failures", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const wallet = {
+      prepare: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new OnboardingWalletIntentError(
+            "wallet_execution_unavailable",
+            "Claim eligibility could not be refreshed. Retry in a moment.",
+            true,
+          ),
+        )
+        .mockRejectedValueOnce(
+          new OnboardingWalletIntentError(
+            "wallet_execution_unavailable",
+            "This claim is not eligible for browser-wallet execution.",
+          ),
+        ),
+    };
+    const server = createServer({
+      service: { snapshot: async () => ({}), synchronize: async () => ({}) },
+      onboarding: { wallet } as unknown as OnboardingService,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const request = {
+      method: "POST" as const,
+      url: "/api/v1/wallet-intents",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        action: "update-fees",
+        actorPrincipal: "SP000000000000000000002Q6VF78",
+        feeBips: "250",
+      },
+    };
+
+    const transient = await server.inject(request);
+    expect(transient.statusCode).toBe(503);
+    expect(transient.headers["retry-after"]).toBe("1");
+    expect(transient.json()).toEqual({
+      error: "wallet_execution_unavailable",
+      message: "Claim eligibility could not be refreshed. Retry in a moment.",
+      retryable: true,
+    });
+
+    const permanent = await server.inject(request);
+    expect(permanent.statusCode).toBe(422);
+    expect(permanent.headers["retry-after"]).toBeUndefined();
+    expect(permanent.json()).toEqual({
+      error: "wallet_execution_unavailable",
+      message: "This claim is not eligible for browser-wallet execution.",
+      retryable: false,
+    });
   });
 
   it("rejects the documented placeholder bearer token", () => {
@@ -601,6 +758,7 @@ describe("local API", () => {
       .operation;
     expect(operation.error).toEqual({
       error: "chain_sources_out_of_sync",
+      message: chainSourcesOutOfSyncMessage,
       retryable: true,
       node: walletIntentAnchorMismatch.node,
       api: walletIntentAnchorMismatch.api,
@@ -665,6 +823,7 @@ describe("local API", () => {
       "1",
       {
         error: "chain_sources_out_of_sync",
+        message: chainSourcesOutOfSyncMessage,
         retryable: true,
         node: walletIntentAnchorMismatch.node,
         api: walletIntentAnchorMismatch.api,
@@ -682,7 +841,15 @@ describe("local API", () => {
       unavailable.statusCode,
       unavailable.headers["retry-after"],
       unavailable.json(),
-    ]).toEqual([503, "1", { error: "health_source_temporarily_unavailable", retryable: true }]);
+    ]).toEqual([
+      503,
+      "1",
+      {
+        error: "health_source_temporarily_unavailable",
+        message: "The health source could not be reached. Check the endpoint, then retry.",
+        retryable: true,
+      },
+    ]);
 
     const limited = await server.inject({
       method: "PUT",
@@ -693,7 +860,12 @@ describe("local API", () => {
     expect([limited.statusCode, limited.headers["retry-after"], limited.json()]).toEqual([
       429,
       "3",
-      { error: "upstream_rate_limited", retryable: true },
+      {
+        error: "upstream_rate_limited",
+        message:
+          "A configured chain source is rate limiting Sidekick. Retry after the indicated delay.",
+        retryable: true,
+      },
     ]);
 
     const invalidContent = await server.inject({
@@ -704,7 +876,12 @@ describe("local API", () => {
     });
     expect([invalidContent.statusCode, invalidContent.json()]).toEqual([
       502,
-      { error: "upstream_response_invalid", retryable: false },
+      {
+        error: "upstream_response_invalid",
+        message:
+          "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+        retryable: false,
+      },
     ]);
 
     const malformed = await server.inject({
@@ -715,15 +892,56 @@ describe("local API", () => {
     });
     expect([malformed.statusCode, malformed.json()]).toEqual([
       400,
-      { error: "invalid_health_source" },
+      {
+        error: "invalid_health_source",
+        message: "Choose a supported health source and enter a valid URL.",
+        retryable: false,
+      },
     ]);
 
     const unexpected = await server.inject({ method: "GET", url: "/api/v1/status", headers });
-    expect([unexpected.statusCode, unexpected.json()]).toEqual([
-      500,
-      { error: "internal_server_error" },
-    ]);
+    expect(unexpected.statusCode).toBe(500);
+    expect(unexpected.json()).toMatchObject({
+      error: "internal_server_error",
+      message: expect.stringContaining("Check operator logs for request"),
+      requestId: expect.any(String),
+      retryable: false,
+    });
     expect(unexpected.body).not.toContain("must-not-leak");
+  });
+
+  it("classifies retryable and rejected upstream HTTP responses without leaking bodies", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      summary: vi
+        .fn()
+        .mockRejectedValueOnce(new UpstreamHttpError("temporary body must-not-leak", 425))
+        .mockRejectedValueOnce(new UpstreamHttpError("auth body must-not-leak", 401)),
+      synchronize: async () => ({}),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const retryable = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(retryable.statusCode).toBe(503);
+    expect(retryable.headers["retry-after"]).toBe("1");
+    expect(retryable.json()).toEqual({
+      error: "upstream_temporarily_unavailable",
+      message: "A configured chain source returned HTTP 425. Retry in a moment.",
+      retryable: true,
+    });
+
+    const rejected = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(rejected.statusCode).toBe(502);
+    expect(rejected.json()).toEqual({
+      error: "upstream_request_rejected",
+      message:
+        "A configured chain source rejected the request with HTTP 401. Verify its URL and access settings.",
+      retryable: false,
+    });
+    expect(`${retryable.body}${rejected.body}`).not.toContain("must-not-leak");
   });
 
   it("validates and forwards bounded pagination for large operator datasets", async () => {
@@ -927,7 +1145,11 @@ describe("local API", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.statusCode).toBe(501);
-    expect(response.json()).toEqual({ error: "transaction_engine_unavailable" });
+    expect(response.json()).toEqual({
+      error: "transaction_engine_unavailable",
+      message: "The requested feature is unavailable in this Sidekick deployment.",
+      retryable: false,
+    });
   });
 
   it("returns a generic 500 body when an operator service rejects", async () => {
@@ -948,7 +1170,14 @@ describe("local API", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({ error: "internal_server_error" });
+    const body = response.json();
+    expect(body).toMatchObject({
+      error: "internal_server_error",
+      message: expect.stringContaining("Check operator logs for request"),
+      requestId: expect.any(String),
+      retryable: false,
+    });
+    expect(body.message).toContain(body.requestId);
     expect(response.body).not.toContain("must-not-leak");
   });
 
@@ -967,12 +1196,20 @@ describe("local API", () => {
 
     const conflicted = await server.inject({ method: "GET", url: "/api/v1/engine", headers });
     expect(conflicted.statusCode).toBe(409);
-    expect(conflicted.json()).toEqual({ error: "engine_state_conflict" });
+    expect(conflicted.json()).toEqual({
+      error: "engine_state_conflict",
+      message: "Transaction state changed. Refresh and try again",
+      retryable: false,
+    });
     expect(conflicted.body).not.toContain("must-not-leak");
 
     const missing = await server.inject({ method: "GET", url: "/api/v1/engine", headers });
     expect(missing.statusCode).toBe(404);
-    expect(missing.json()).toEqual({ error: "engine_job_not_found" });
+    expect(missing.json()).toEqual({
+      error: "engine_job_not_found",
+      message: "This transaction job no longer exists. Refresh Operations",
+      retryable: false,
+    });
   });
 
   it("validates authenticated runtime settings and pool-card actions", async () => {
