@@ -30,6 +30,7 @@ const config = { network: "mainnet" } as never;
 const node = {} as never;
 const api = {} as never;
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
+const waitBeforeRetry = vi.fn(async () => {});
 const chainAnchor = {
   stacksBlockHeight: 10,
   indexBlockHash: `0x${"ab".repeat(32)}`,
@@ -147,12 +148,14 @@ describe("setup snapshot", () => {
         api,
         managerPrincipal,
         managerVerification: undefined,
+        waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
     expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledTimes(2);
     expect(mocks.readPoolSetupStatus).toHaveBeenCalledTimes(2);
+    expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
   it("retries the whole setup snapshot when anchor capture observes a moving tip", async () => {
@@ -174,10 +177,45 @@ describe("setup snapshot", () => {
         api,
         managerPrincipal,
         managerVerification: undefined,
+        waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
     expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(3);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
+    expect(waitBeforeRetry).toHaveBeenCalledOnce();
+  });
+
+  it("uses 250ms and 500ms backoff before exhausting three anchor attempts", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.captureChainAnchor.mockRejectedValue(
+        new ChainAnchorError("tip moved", { retryable: true }),
+      );
+      const outcome = readSetupSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: undefined,
+      }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(mocks.captureChainAnchor).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(outcome).resolves.toMatchObject({ name: ChainAnchorError.name });
+      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries when preflight facts do not match the snapshot anchor", async () => {
@@ -202,10 +240,12 @@ describe("setup snapshot", () => {
         api,
         managerPrincipal,
         managerVerification: undefined,
+        waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
     expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
+    expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
   it("fails closed after three incoherent setup snapshot attempts", async () => {
@@ -232,9 +272,11 @@ describe("setup snapshot", () => {
         api,
         managerPrincipal,
         managerVerification: undefined,
+        waitBeforeRetry,
       }),
     ).rejects.toThrow("Chain position moved");
     expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(6);
+    expect(waitBeforeRetry).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry non-coherence failures", async () => {

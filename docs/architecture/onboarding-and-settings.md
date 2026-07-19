@@ -36,9 +36,11 @@ and append-only action evidence are stored in SQLite. Same-path restarts preserv
 paths requires an explicit reset. Skipping the wizard changes only its visibility and does not mark
 checks complete.
 
-Polling failures never discard saved state. The operator can resume after the node or API recovers.
-A transaction absent from both indexed and pending node state may be explicitly superseded after a
-15-minute grace period; replacement always creates a new sealed intent.
+Polling failures never discard saved state. The dashboard marks retained state stale, keeps Settings
+and Health available for recovery, and blocks action preparation until authoritative state returns.
+The operator can then retry without restarting the flow. A transaction absent from both indexed and
+pending node state may be explicitly superseded after a 15-minute grace period; replacement always
+creates a new sealed intent.
 
 ## Runtime settings
 

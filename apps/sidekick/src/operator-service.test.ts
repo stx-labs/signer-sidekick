@@ -87,6 +87,47 @@ describe("operator service", () => {
     expect(onError).toHaveBeenCalledWith(failure);
   });
 
+  it("contains synchronous engine failures and coalesces slow observations", async () => {
+    const syncError = new Error("sync engine failure");
+    const throwingOnError = vi.fn(() => {
+      throw new Error("reporter failure");
+    });
+    await expect(
+      observeTransactionEngineSafely(
+        {
+          observe: () => {
+            throw syncError;
+          },
+          onError: throwingOnError,
+        },
+        {
+          setup: {} as never,
+          rewards: null,
+          sourceId: "api:mainnet:test",
+          observedAt: "2026-07-17T12:00:00.000Z",
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(throwingOnError).toHaveBeenCalledWith(syncError);
+
+    let release: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hook = { observe: vi.fn(async () => pending) };
+    const input = {
+      setup: {} as never,
+      rewards: null,
+      sourceId: "api:mainnet:test",
+      observedAt: "2026-07-17T12:00:00.000Z",
+    };
+    await observeTransactionEngineSafely(hook, input, 1);
+    await observeTransactionEngineSafely(hook, input, 1);
+    expect(hook.observe).toHaveBeenCalledOnce();
+    release?.();
+    await pending;
+  });
+
   it("separates external signing from Assist and keeps stable transition IDs", () => {
     const input = alertInput({});
     input.manager.source.tier = "unrecognized";
@@ -315,6 +356,79 @@ describe("operator service", () => {
     await expect(stale).resolves.toEqual({ version: 1 });
     await expect(forced).resolves.toEqual({ version: 2 });
     expect(calls).toBe(2);
+  });
+
+  it("serves last-good summary metadata after a refresh failure", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 0,
+    });
+    const generatedAt = "2026-07-19T18:00:00.000Z";
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({
+        generatedAt,
+        roster: [],
+        rewards: null,
+        activity: { withdrawals: [] },
+      })
+      .mockRejectedValueOnce(new Error("upstream unavailable"));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await expect(service.summary()).resolves.toMatchObject({
+      freshness: { status: "current", snapshotGeneratedAt: generatedAt, reason: null },
+    });
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt,
+      freshness: {
+        status: "stale",
+        snapshotGeneratedAt: generatedAt,
+        reason: "refresh-failed",
+      },
+    });
+  });
+
+  it("reads stored activity without requiring a live chain snapshot", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const service = new OperatorService({
+      config: {
+        network: "testnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.testnet-pox5.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "ST000000000000000000002AMW42H.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+    });
+    const load = vi.fn().mockRejectedValue(new Error("live sources must not be read"));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await expect(service.activity()).resolves.toMatchObject({
+      eventCount: 0,
+      claims: [],
+      withdrawals: [],
+    });
+    expect(load).not.toHaveBeenCalled();
   });
 
   it("records trust at startup without requiring a dashboard snapshot", async () => {

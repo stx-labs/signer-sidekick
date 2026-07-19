@@ -94,7 +94,9 @@ export const runtimeSettings = {
 };
 
 export const snapshot = {
-  generatedAt: "2026-07-15T12:10:00.000Z",
+  get generatedAt() {
+    return new Date().toISOString();
+  },
   network: "testnet",
   managerPrincipal,
   config: {
@@ -394,11 +396,72 @@ function page(items, offset, limit) {
   return items.slice(offset, offset + limit);
 }
 
+export function reconciliationResponse(status = "idle") {
+  const completed = status === "succeeded";
+  const running = status === "running";
+  return {
+    operation: {
+      schemaVersion: 1,
+      operationId: status === "idle" ? null : "8c665428-04e4-4801-87aa-d6dcff225af1",
+      status,
+      phase: completed ? "complete" : running ? "reconciling-events" : "idle",
+      processLocal: true,
+      startedAt: completed || running ? "2026-07-19T16:00:00.000Z" : null,
+      updatedAt: completed || running ? "2026-07-19T16:00:01.000Z" : null,
+      completedAt: completed ? "2026-07-19T16:00:01.000Z" : null,
+      progress: {
+        completedSteps: completed ? 4 : running ? 2 : 0,
+        totalSteps: 4,
+        itemsCompleted: null,
+        itemsTotal: null,
+        message: completed
+          ? "Reconciliation complete"
+          : running
+            ? "Synchronizing manager events"
+            : "No reconciliation has run",
+      },
+      result: completed
+        ? {
+            reconciliation: {
+              observedAt: snapshot.generatedAt,
+              stakers: {
+                resumed: false,
+                status: "completed",
+                authoritative: true,
+                pagesProcessed: 2,
+                itemsProcessed: roster.length,
+                activeStakers: roster.length,
+                nodeVerifiedStxPositions: roster.filter(({ stxNodeVerified }) => stxNodeVerified)
+                  .length,
+                unverifiedStxDiscoveries: roster.filter(({ stxNodeVerified }) => !stxNodeVerified)
+                  .length,
+                discrepanciesObserved: 0,
+              },
+              events: {
+                resumed: false,
+                pagesProcessed: 1,
+                eventsProcessed: claims.length + withdrawals.length,
+                newEvents: 0,
+                replayedEvents: claims.length + withdrawals.length,
+                decodeFailures: 0,
+                reorgedEvents: 0,
+                stoppedAtKnownOverlap: true,
+              },
+            },
+            snapshotGeneratedAt: snapshot.generatedAt,
+          }
+        : null,
+      error: null,
+    },
+  };
+}
+
 export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
   const limit = Number(request.searchParams.get("limit") ?? 50);
-  if (request.pathname === "/api/v1/status" || request.pathname === "/api/v1/sync") return snapshot;
+  if (request.pathname === "/api/v1/status") return snapshot;
+  if (request.pathname === "/api/v1/sync") return reconciliationResponse();
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
   if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
     return health;

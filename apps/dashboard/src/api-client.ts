@@ -1,4 +1,4 @@
-import { apiErrorSchema } from "@stx-labs/signer-sidekick-api-contracts";
+import { type ApiError, apiErrorSchema } from "@stx-labs/signer-sidekick-api-contracts";
 
 export const AUTH_REJECTED_EVENT = "sidekick-auth-rejected";
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -9,16 +9,24 @@ export class ApiRequestError extends Error {
   readonly kind: ApiErrorKind;
   readonly status: number | null;
   readonly code: string | null;
+  readonly body: ApiError | null;
 
   constructor(
     message: string,
-    options: { kind: ApiErrorKind; status?: number; code?: string; cause?: unknown },
+    options: {
+      kind: ApiErrorKind;
+      status?: number;
+      code?: string;
+      body?: ApiError;
+      cause?: unknown;
+    },
   ) {
     super(message, { cause: options.cause });
     this.name = "ApiRequestError";
     this.kind = options.kind;
     this.status = options.status ?? null;
     this.code = options.code ?? null;
+    this.body = options.body ?? null;
   }
 }
 
@@ -70,14 +78,20 @@ function isJsonMediaType(value: string): boolean {
   return value === "application/json" || value.endsWith("+json");
 }
 
-async function errorDetail(response: Response): Promise<{ code: string | null; detail: string }> {
+async function errorDetail(
+  response: Response,
+): Promise<{ code: string | null; detail: string; body: ApiError | null }> {
   if (isJsonMediaType(mediaType(response))) {
     const parsed = apiErrorSchema.safeParse(await response.json().catch(() => null));
     if (parsed.success) {
-      return { code: parsed.data.error, detail: parsed.data.error.replaceAll("_", " ") };
+      return {
+        code: parsed.data.error,
+        detail: parsed.data.message?.trim() || parsed.data.error.replaceAll("_", " "),
+        body: parsed.data,
+      };
     }
   }
-  return { code: null, detail: `HTTP ${response.status}` };
+  return { code: null, detail: `HTTP ${response.status}`, body: null };
 }
 
 async function authenticatedFetch(
@@ -93,11 +107,12 @@ async function authenticatedFetch(
   });
   if (response.status === 401) rejectAuthentication();
   if (!response.ok) {
-    const { code, detail } = await errorDetail(response);
+    const { code, detail, body } = await errorDetail(response);
     throw new ApiRequestError(`Request failed: ${detail}`, {
       kind: "http",
       status: response.status,
       ...(code ? { code } : {}),
+      ...(body ? { body } : {}),
     });
   }
   return response;

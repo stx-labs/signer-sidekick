@@ -4,6 +4,7 @@ import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
 import { validateHealthEndpointForSave } from "./health-http.js";
 import { runOperatorPreflight } from "./preflight.js";
 import type { SidekickStore } from "./storage/store.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 const optionalUrlSchema = z
   .string()
@@ -198,7 +199,11 @@ export class RuntimeSettingsController {
       const preflight = await runOperatorPreflight(config, node, api);
       if (preflight.status === "fail") {
         const reason = preflight.checks.find(({ status }) => status === "fail")?.message;
-        throw new Error(reason ?? "Candidate node and API failed preflight");
+        throw new OperatorWorkflowError(
+          422,
+          "runtime_settings_sources_rejected",
+          reason ?? "Candidate node and API failed preflight",
+        );
       }
     },
   ) {
@@ -282,9 +287,29 @@ export class RuntimeSettingsController {
     input: unknown,
     observedAt = new Date().toISOString(),
   ): Promise<PublicRuntimeSettings> {
-    const value = runtimeSettingsUpdateSchema.parse(input);
-    const nodeRpcUrl = parseEndpointUrl(value.dataSources.nodeRpcUrl, "Stacks node RPC URL");
-    const apiUrl = parseEndpointUrl(value.dataSources.apiUrl, "Stacks API URL");
+    const parsed = runtimeSettingsUpdateSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_runtime_settings",
+        parsed.error.issues[0]?.message ?? "Invalid runtime settings",
+      );
+    }
+    const value = parsed.data;
+    let nodeRpcUrl: string;
+    let apiUrl: string;
+    let publicApiUrl: string;
+    try {
+      nodeRpcUrl = parseEndpointUrl(value.dataSources.nodeRpcUrl, "Stacks node RPC URL");
+      apiUrl = parseEndpointUrl(value.dataSources.apiUrl, "Stacks API URL");
+      publicApiUrl = parseEndpointUrl(value.embed.publicApiUrl, "Public embed API URL");
+    } catch (error) {
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_runtime_settings",
+        error instanceof Error ? error.message : "Invalid runtime settings",
+      );
+    }
     const nodeMetricsUrl = value.dataSources.nodeMetricsUrl
       ? await validateHealthEndpointForSave(value.dataSources.nodeMetricsUrl, "Node metrics URL")
       : "";
@@ -300,7 +325,6 @@ export class RuntimeSettingsController {
           "Hiro reference API URL",
         )
       : "";
-    const publicApiUrl = parseEndpointUrl(value.embed.publicApiUrl, "Public embed API URL");
     const action = value.dataSources.apiKeyAction;
     const nextSecret =
       action.action === "replace"

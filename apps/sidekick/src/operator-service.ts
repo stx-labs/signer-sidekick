@@ -20,6 +20,7 @@ import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import type { readPoolSetupStatus } from "./setup-status.js";
 import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 export interface OperatorAlert {
   id: string;
@@ -53,6 +54,18 @@ export interface OperatorServiceOptions {
   transactionEngineObservation?: TransactionEngineObservationHook;
 }
 
+export interface OperatorSynchronizationProgress {
+  phase: "stakers-discovery" | "stakers-verification" | "events";
+  completed: number;
+  total: number | null;
+  message?: string;
+}
+
+export interface OperatorSynchronizationOptions {
+  signal?: AbortSignal;
+  onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
+}
+
 export interface TransactionEngineObservationHook {
   observe(input: {
     setup: SetupSnapshot;
@@ -63,15 +76,46 @@ export interface TransactionEngineObservationHook {
   onError?(error: unknown): void;
 }
 
+const pendingTransactionEngineObservations = new WeakMap<
+  TransactionEngineObservationHook,
+  Promise<void>
+>();
+
 export async function observeTransactionEngineSafely(
   hook: TransactionEngineObservationHook | undefined,
   input: Parameters<TransactionEngineObservationHook["observe"]>[0],
+  timeoutMs = 2_000,
 ): Promise<void> {
   if (!hook) return;
+  let observation = pendingTransactionEngineObservations.get(hook);
+  if (observation) return;
+  if (!observation) {
+    observation = Promise.resolve()
+      .then(() => hook.observe(input))
+      .then(() => undefined)
+      .catch((error) => {
+        try {
+          hook.onError?.(error);
+        } catch {
+          // The optional error reporter cannot make operator status unavailable.
+        }
+      })
+      .finally(() => {
+        pendingTransactionEngineObservations.delete(hook);
+      });
+    pendingTransactionEngineObservations.set(hook, observation);
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await hook.observe(input);
-  } catch (error) {
-    hook.onError?.(error);
+    await Promise.race([
+      observation,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -297,9 +341,9 @@ export class OperatorService {
     return this.loading;
   }
 
-  async synchronize() {
+  async synchronize(options: OperatorSynchronizationOptions = {}) {
     if (this.synchronization) return this.synchronization;
-    this.synchronization = this.runSynchronization().finally(() => {
+    this.synchronization = this.runSynchronization(options).finally(() => {
       this.synchronization = null;
     });
     return this.synchronization;
@@ -321,9 +365,24 @@ export class OperatorService {
   }
 
   async summary() {
-    const snapshot = await this.snapshot();
+    let snapshot: Awaited<ReturnType<OperatorService["load"]>>;
+    let stale = false;
+    try {
+      snapshot = await this.snapshot();
+    } catch (error) {
+      if (!this.cached) throw error;
+      snapshot = this.cached.value;
+      stale = true;
+    }
+    const servedAt = new Date().toISOString();
     return {
       ...snapshot,
+      freshness: {
+        status: stale ? ("stale" as const) : ("current" as const),
+        snapshotGeneratedAt: snapshot.generatedAt,
+        servedAt,
+        reason: stale ? ("refresh-failed" as const) : null,
+      },
       rosterTotal: snapshot.roster.length,
       rosterStats: {
         deferredUnlocks: snapshot.roster.filter(({ position }) => position?.unlockBurnHeight)
@@ -380,13 +439,11 @@ export class OperatorService {
   }
 
   async activity(options: Parameters<typeof readManagerActivity>[3] = {}) {
-    const snapshot = await this.snapshot();
-    return readManagerActivity(
-      this.options.store,
-      snapshot.preflight.node.networkId,
-      this.options.managerPrincipal,
-      options,
-    );
+    const config = this.runtimeContext().config;
+    const chainId =
+      config.expectedNetworkId ??
+      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    return readManagerActivity(this.options.store, chainId, this.options.managerPrincipal, options);
   }
 
   settings() {
@@ -407,7 +464,7 @@ export class OperatorService {
   async poolCard(mode: PoolCardMode) {
     if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
     const snapshot = await this.snapshot(true);
-    if (!snapshot.setup) throw new Error("Pool card generation requires completed manager setup");
+    if (!snapshot.setup) throw new OperatorWorkflowError(409, "pool_setup_not_complete");
     const settings = this.options.runtimeSettings.publicSettings();
     const support = classifySupportContact(settings.pool.supportContact);
     const enrollment = createPoolEnrollmentDocument(
@@ -431,7 +488,7 @@ export class OperatorService {
     return createPoolCardArtifact(enrollment, mode, settings.embed.publicApiUrl);
   }
 
-  private async runSynchronization() {
+  private async runSynchronization(options: OperatorSynchronizationOptions) {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
@@ -443,6 +500,7 @@ export class OperatorService {
     } | null = null;
     const maxAnchorAttempts = 3;
     for (let attempt = 1; attempt <= maxAnchorAttempts; attempt += 1) {
+      options.signal?.throwIfAborted();
       const observedAt = new Date().toISOString();
       const { chainAnchor, preflight, manager } = await readSetupSnapshot({
         config,
@@ -454,8 +512,10 @@ export class OperatorService {
       const trustTransition = this.recordManagerTrustState(manager, observedAt);
       if (trustTransition) this.pendingTrustTransition = trustTransition;
       if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
-        throw new Error(
-          "Synchronization requires healthy sources, active PoX-5, and a recognized manager",
+        throw new OperatorWorkflowError(
+          422,
+          "synchronization_sources_incompatible",
+          "Synchronization requires healthy sources, active PoX-5, and a compatible manager",
         );
       }
       store.upsertChainSource({
@@ -487,6 +547,16 @@ export class OperatorService {
           currentRewardCycle: chainAnchor.rewardCycle,
           chainAnchor,
           pageLimit: config.stakerPageLimit,
+          ...(options.signal ? { signal: options.signal } : {}),
+          onProgress: async (progress) => {
+            options.signal?.throwIfAborted();
+            await options.onProgress?.({
+              phase:
+                progress.phase === "discovering" ? "stakers-discovery" : "stakers-verification",
+              completed: progress.completed,
+              total: progress.total,
+            });
+          },
         });
         synchronized = { observedAt, chainId: preflight.node.networkId, stakers };
         break;
@@ -497,6 +567,13 @@ export class OperatorService {
       }
     }
     if (!synchronized) throw new Error("Unable to synchronize at a stable chain anchor");
+    options.signal?.throwIfAborted();
+    await options.onProgress?.({
+      phase: "events",
+      completed: 0,
+      total: null,
+      message: "Synchronizing manager events",
+    });
     const events = await syncManagerEvents({
       store,
       api,
@@ -505,7 +582,18 @@ export class OperatorService {
       managerPrincipal,
       observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
+      ...(options.signal ? { signal: options.signal } : {}),
+      onProgress: async (progress) => {
+        options.signal?.throwIfAborted();
+        await options.onProgress?.({
+          phase: "events",
+          completed: progress.completed,
+          total: progress.total,
+          message: `Synchronized ${progress.eventsProcessed} manager events`,
+        });
+      },
     });
+    options.signal?.throwIfAborted();
     if (events.reorgedEvents > 0 && this.options.managerVerification) {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }

@@ -7,7 +7,12 @@ import {
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import type { ChainAnchor } from "./chain-anchor.js";
-import type { ApiStatus, ChainReadOptions, SignerStakersPage } from "./chain-clients.js";
+import type {
+  ApiStatus,
+  ChainReadOptions,
+  SignerStakersPage,
+  StacksBlockSummary,
+} from "./chain-clients.js";
 import type { SidekickStore, SignerStakerPageItem } from "./storage/store.js";
 
 const maxStxFutureStackingCycles = 96n;
@@ -19,6 +24,7 @@ export interface SignerStakerApi {
     limit?: number,
   ): Promise<SignerStakersPage>;
   getStatus?(): Promise<ApiStatus>;
+  getBlock?(heightOrHash: number | string): Promise<StacksBlockSummary>;
 }
 
 export interface SignerStakerNode {
@@ -64,6 +70,14 @@ export interface SyncSignerStakersOptions {
   transitionCandidatePrincipals?: readonly string[];
   pageLimit?: number;
   stakerConcurrency?: number;
+  onProgress?: (progress: SyncSignerStakersProgress) => void | Promise<void>;
+  signal?: AbortSignal;
+}
+
+export interface SyncSignerStakersProgress {
+  phase: "discovering" | "verifying";
+  completed: number;
+  total: number | null;
 }
 
 export interface SyncSignerStakersResult {
@@ -80,9 +94,12 @@ export interface SyncSignerStakersResult {
 }
 
 export class SignerStakerAnchorError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly invalidatesSealedRun: boolean;
+
+  constructor(message: string, options: ErrorOptions & { invalidatesSealedRun?: boolean } = {}) {
+    super(message, options);
     this.name = "SignerStakerAnchorError";
+    this.invalidatesSealedRun = options.invalidatesSealedRun ?? false;
   }
 }
 
@@ -287,9 +304,67 @@ async function verifyPageItem(
 function apiStatusMatchesAnchor(status: ApiStatus, anchor: ChainAnchor): boolean {
   return (
     status.chain_tip.block_height === anchor.stacksBlockHeight &&
-    status.chain_tip.index_block_hash.toLowerCase() === anchor.indexBlockHash &&
+    status.chain_tip.index_block_hash.toLowerCase() === anchor.indexBlockHash.toLowerCase() &&
     status.chain_tip.burn_block_height === anchor.burnBlockHeight
   );
+}
+
+function apiStatusesHaveSameTip(left: ApiStatus, right: ApiStatus): boolean {
+  return (
+    left.chain_tip.block_height === right.chain_tip.block_height &&
+    left.chain_tip.block_hash.toLowerCase() === right.chain_tip.block_hash.toLowerCase() &&
+    left.chain_tip.index_block_hash.toLowerCase() ===
+      right.chain_tip.index_block_hash.toLowerCase() &&
+    left.chain_tip.burn_block_height === right.chain_tip.burn_block_height
+  );
+}
+
+function blockMatchesAnchor(block: StacksBlockSummary, anchor: ChainAnchor): boolean {
+  return (
+    block.canonical &&
+    block.height === anchor.stacksBlockHeight &&
+    block.index_block_hash.toLowerCase() === anchor.indexBlockHash.toLowerCase() &&
+    block.burn_block_height === anchor.burnBlockHeight
+  );
+}
+
+async function proveSealedAnchorRemainsCanonical(
+  api: Required<Pick<SignerStakerApi, "getStatus" | "getBlock">>,
+  anchor: ChainAnchor,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      signal?.throwIfAborted();
+      const before = await api.getStatus();
+      signal?.throwIfAborted();
+      if (before.chain_tip.block_height < anchor.stacksBlockHeight) {
+        throw new SignerStakerAnchorError("Signer-staker API is behind the sealed chain anchor");
+      }
+      const block = await api.getBlock(anchor.stacksBlockHeight);
+      signal?.throwIfAborted();
+      const after = await api.getStatus();
+      signal?.throwIfAborted();
+      if (!apiStatusesHaveSameTip(before, after)) {
+        if (attempt < 3) continue;
+        throw new SignerStakerAnchorError(
+          "Chain tip moved while revalidating the sealed signer-staker anchor",
+        );
+      }
+      if (!blockMatchesAnchor(block, anchor)) {
+        throw new SignerStakerAnchorError("Sealed signer-staker anchor is no longer canonical", {
+          invalidatesSealedRun: true,
+        });
+      }
+      return;
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof SignerStakerAnchorError) throw error;
+    throw new SignerStakerAnchorError("Unable to revalidate the sealed signer-staker anchor", {
+      cause: error,
+    });
+  }
 }
 
 export async function syncSignerStakers(
@@ -314,15 +389,7 @@ export async function syncSignerStakers(
   if (!Number.isSafeInteger(stakerConcurrency) || stakerConcurrency < 1 || stakerConcurrency > 16) {
     throw new Error("stakerConcurrency must be an integer from 1 through 16");
   }
-  let anchorFenced = false;
-  if (options.chainAnchor && options.api.getStatus) {
-    const before = await options.api.getStatus();
-    if (!apiStatusMatchesAnchor(before, options.chainAnchor)) {
-      throw new SignerStakerAnchorError("Signer-staker API is not at the requested chain anchor");
-    }
-    anchorFenced = true;
-  }
-
+  options.signal?.throwIfAborted();
   const hasPriorAuthoritativeRun =
     options.store.getLatestCompletedSignerStakerRun(options.sourceId, options.managerPrincipal) !==
     null;
@@ -345,144 +412,253 @@ export async function syncSignerStakers(
     retainedCandidates.add(stakerPrincipal);
   }
 
+  const sealedRun = options.store.getResumableSignerStakerRun(
+    options.sourceId,
+    options.managerPrincipal,
+  );
+  if (sealedRun && !sealedRun.chainAnchor) {
+    throw new Error(`Sealed signer-staker API roster ${sealedRun.runId} has no chain anchor`);
+  }
   const initialRun = options.store.startOrResumeSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
     options.observedAt,
-    options.chainAnchor,
+    sealedRun?.chainAnchor ?? options.chainAnchor,
   );
   const resumed = initialRun.pagesProcessed > 0;
   let run = initialRun;
-  const requestedCursors = new Set<string | null>();
-  const seenApiStakers = new Set(
-    options.store.listSignerStakerPrincipalsSeenInRun(initialRun.runId),
-  );
+  const reconciliationAnchor = run.chainAnchor ?? options.chainAnchor;
+  const reconciliationBurnBlockHeight =
+    reconciliationAnchor?.burnBlockHeight ?? options.burnBlockHeight;
+  const reconciliationStacksTipHeight =
+    reconciliationAnchor?.stacksBlockHeight ?? options.stacksTipHeight;
+  const reconciliationRewardCycle = reconciliationAnchor?.rewardCycle ?? options.currentRewardCycle;
+  const verificationOptions = {
+    node: options.node,
+    pox5ContractId: options.pox5ContractId,
+    managerPrincipal: options.managerPrincipal,
+    currentRewardCycle: reconciliationRewardCycle,
+    ...(reconciliationAnchor ? { chainAnchor: reconciliationAnchor } : {}),
+  };
   const discrepancies: SignerStakerDiscrepancy[] = [];
-  let expectedTotal: number | null = null;
+  let apiScan = options.store.getSignerStakerApiScan(run.runId);
 
-  while (run.status === "running") {
-    if (requestedCursors.has(run.cursor)) {
-      throw new Error(`Signer-staker API repeated cursor ${run.cursor ?? "<initial>"}`);
-    }
-    requestedCursors.add(run.cursor);
-    const page = await options.api.getSignerStakers(
-      options.managerPrincipal,
-      run.cursor,
-      pageLimit,
-    );
-    if (page.cursor.next === run.cursor && page.cursor.next !== null) {
-      throw new Error(`Signer-staker API did not advance cursor ${run.cursor}`);
-    }
-    // API v9 defines `current` as the first row in the returned page, including on the initial
-    // request. Subsequent requests use the prior page's look-ahead `next` row as an inclusive
-    // cursor, so that first row must also equal the requested cursor when resuming.
-    const responseCurrent = page.results[0]?.staker ?? null;
-    if (page.cursor.current !== responseCurrent) {
-      throw new Error(
-        `Signer-staker API current cursor ${page.cursor.current ?? "<empty>"} ` +
-          `does not match first result ${responseCurrent ?? "<empty>"}`,
-      );
-    }
-    if (run.cursor !== null && responseCurrent !== run.cursor) {
-      throw new Error(
-        `Signer-staker API did not resume at requested cursor ${run.cursor}; ` +
-          `received ${responseCurrent ?? "<empty>"}`,
-      );
-    }
-    if (expectedTotal !== null && expectedTotal !== page.total) {
-      throw new Error(`Signer-staker API total changed from ${expectedTotal} to ${page.total}`);
-    }
-    expectedTotal = page.total;
-    const pagePrincipals = new Set<string>();
-    for (const item of page.results) {
-      if (pagePrincipals.has(item.staker) || seenApiStakers.has(item.staker)) {
-        throw new Error(`Signer-staker API repeated staker ${item.staker}`);
-      }
-      pagePrincipals.add(item.staker);
-    }
-    const apiItemsAfterPage = run.itemsProcessed + page.results.length;
-    if (apiItemsAfterPage > page.total) {
-      throw new Error(
-        `Signer-staker API returned ${apiItemsAfterPage} items for total ${page.total}`,
-      );
-    }
-    const apiEnumerationComplete = page.cursor.next === null;
-    if (apiEnumerationComplete && apiItemsAfterPage !== page.total) {
-      throw new Error(`Signer-staker API ended after ${apiItemsAfterPage} of ${page.total} items`);
-    }
-
-    const verifiedItems: SignerStakerPageItem[] = [];
-    for (let index = 0; index < page.results.length; index += stakerConcurrency) {
-      const verifiedBatch = await Promise.all(
-        page.results
-          .slice(index, index + stakerConcurrency)
-          .map((item) => verifyPageItem(item, options)),
-      );
-      for (const verified of verifiedBatch) {
-        verifiedItems.push(verified.item);
-        if (verified.discrepancy) discrepancies.push(verified.discrepancy);
+  if (!apiScan?.sealed) {
+    await options.onProgress?.({
+      phase: "discovering",
+      completed: run.itemsProcessed,
+      total: apiScan?.expectedTotal ?? null,
+    });
+    const getStatus =
+      options.api.getStatus === undefined ? undefined : () => options.api.getStatus?.();
+    const canFenceAnchor =
+      reconciliationAnchor !== undefined &&
+      getStatus !== undefined &&
+      options.api.getBlock !== undefined;
+    if (canFenceAnchor) {
+      options.signal?.throwIfAborted();
+      const before = await getStatus();
+      options.signal?.throwIfAborted();
+      if (!before || !apiStatusMatchesAnchor(before, reconciliationAnchor)) {
+        throw new SignerStakerAnchorError("Signer-staker API is not at the requested chain anchor");
       }
     }
 
-    if (apiEnumerationComplete) {
-      const candidates = [...retainedCandidates]
-        .filter((principal) => !seenApiStakers.has(principal) && !pagePrincipals.has(principal))
-        .map((principal) => {
-          const retained = retainedByPrincipal.get(principal);
-          const types: ("stx" | "btc")[] = [];
-          if (retained?.hasStx ?? true) types.push("stx");
-          if (retained?.hasBtc) types.push("btc");
-          return {
-            item: { staker: principal, types },
-            allowRetainedStxAbsence:
-              anchorFenced &&
-              verifiedStoredStxPrincipals.has(principal) &&
-              types.length === 1 &&
-              types[0] === "stx",
-          };
-        });
-      for (let index = 0; index < candidates.length; index += stakerConcurrency) {
-        const verifiedBatch = await Promise.all(
-          candidates
-            .slice(index, index + stakerConcurrency)
-            .map(({ item, allowRetainedStxAbsence }) =>
-              verifyPageItem(item, options, { allowRetainedStxAbsence }),
-            ),
+    const requestedCursors = new Set<string | null>();
+    const seenApiStakers = new Set(apiScan?.items.map((item) => item.stakerPrincipal) ?? []);
+    let expectedTotal = apiScan?.expectedTotal ?? null;
+    while (!apiScan?.sealed) {
+      options.signal?.throwIfAborted();
+      if (requestedCursors.has(run.cursor)) {
+        throw new Error(`Signer-staker API repeated cursor ${run.cursor ?? "<initial>"}`);
+      }
+      requestedCursors.add(run.cursor);
+      const page = await options.api.getSignerStakers(
+        options.managerPrincipal,
+        run.cursor,
+        pageLimit,
+      );
+      options.signal?.throwIfAborted();
+      if (page.cursor.next === run.cursor && page.cursor.next !== null) {
+        throw new Error(`Signer-staker API did not advance cursor ${run.cursor}`);
+      }
+      // API v9 defines `current` as the first row in the returned page, including on the initial
+      // request. Subsequent requests use the prior page's look-ahead `next` row as an inclusive
+      // cursor, so that first row must also equal the requested cursor when resuming.
+      const responseCurrent = page.results[0]?.staker ?? null;
+      if (page.cursor.current !== responseCurrent) {
+        throw new Error(
+          `Signer-staker API current cursor ${page.cursor.current ?? "<empty>"} ` +
+            `does not match first result ${responseCurrent ?? "<empty>"}`,
         );
-        for (const verified of verifiedBatch) {
-          verifiedItems.push(verified.item);
-          if (verified.discrepancy) discrepancies.push(verified.discrepancy);
-        }
       }
-
-      if (options.chainAnchor && options.api.getStatus) {
-        const after = await options.api.getStatus();
-        if (!apiStatusMatchesAnchor(after, options.chainAnchor)) {
+      if (run.cursor !== null && responseCurrent !== run.cursor) {
+        throw new Error(
+          `Signer-staker API did not resume at requested cursor ${run.cursor}; ` +
+            `received ${responseCurrent ?? "<empty>"}`,
+        );
+      }
+      if (expectedTotal !== null && expectedTotal !== page.total) {
+        throw new Error(`Signer-staker API total changed from ${expectedTotal} to ${page.total}`);
+      }
+      expectedTotal = page.total;
+      const pagePrincipals = new Set<string>();
+      for (const item of page.results) {
+        if (pagePrincipals.has(item.staker) || seenApiStakers.has(item.staker)) {
+          throw new Error(`Signer-staker API repeated staker ${item.staker}`);
+        }
+        pagePrincipals.add(item.staker);
+      }
+      const apiItemsAfterPage = run.itemsProcessed + page.results.length;
+      if (apiItemsAfterPage > page.total) {
+        throw new Error(
+          `Signer-staker API returned ${apiItemsAfterPage} items for total ${page.total}`,
+        );
+      }
+      const apiEnumerationComplete = page.cursor.next === null;
+      if (apiEnumerationComplete && apiItemsAfterPage !== page.total) {
+        throw new Error(
+          `Signer-staker API ended after ${apiItemsAfterPage} of ${page.total} items`,
+        );
+      }
+      if (apiEnumerationComplete && canFenceAnchor) {
+        const after = await getStatus();
+        options.signal?.throwIfAborted();
+        if (!after || !apiStatusMatchesAnchor(after, reconciliationAnchor)) {
           throw new SignerStakerAnchorError("Chain tip moved during signer-staker enumeration");
         }
       }
-    }
 
-    run = options.store.commitSignerStakerPage({
-      runId: run.runId,
-      sourceId: options.sourceId,
-      nodeSourceId: options.nodeSourceId,
-      managerPrincipal: options.managerPrincipal,
-      nextCursor: page.cursor.next,
-      items: verifiedItems,
-      apiItemsProcessed: page.results.length,
-      authoritativeCompletion:
-        apiEnumerationComplete &&
-        anchorFenced &&
-        (apiItemsAfterPage > 0 || retainedCandidates.size > 0 || hasPriorAuthoritativeRun) &&
-        verifiedItems.every((item) => item.reconciliationComplete),
-      ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
-      observedAt: options.observedAt,
-      burnBlockHeight: options.burnBlockHeight,
-      stacksTipHeight: options.stacksTipHeight,
+      options.signal?.throwIfAborted();
+      run = options.store.commitSignerStakerApiPage({
+        runId: run.runId,
+        sourceId: options.sourceId,
+        managerPrincipal: options.managerPrincipal,
+        requestedCursor: run.cursor,
+        nextCursor: page.cursor.next,
+        items: page.results.map((item) => ({
+          stakerPrincipal: item.staker,
+          hasStx: item.types.includes("stx"),
+          hasBtc: item.types.includes("btc"),
+        })),
+        expectedTotal: page.total,
+        sealed: apiEnumerationComplete,
+        anchorFenced: apiEnumerationComplete && canFenceAnchor,
+        ...(reconciliationAnchor ? { chainAnchor: reconciliationAnchor } : {}),
+        observedAt: options.observedAt,
+      });
+      for (const principal of pagePrincipals) seenApiStakers.add(principal);
+      apiScan = options.store.getSignerStakerApiScan(run.runId);
+      if (!apiScan) throw new Error(`Signer-staker API roster ${run.runId} was not persisted`);
+    }
+    await options.onProgress?.({
+      phase: "discovering",
+      completed: apiScan.items.length,
+      total: apiScan.expectedTotal,
     });
-    for (const principal of pagePrincipals) seenApiStakers.add(principal);
   }
+
+  if (!apiScan?.sealed) throw new Error(`Signer-staker API roster ${run.runId} is not sealed`);
+  const apiPrincipals = new Set(apiScan.items.map((item) => item.stakerPrincipal));
+  const candidates: Array<{
+    item: SignerStakersPage["results"][number];
+    allowRetainedStxAbsence?: boolean;
+  }> = apiScan.items.map((item) => {
+    const types: ("stx" | "btc")[] = [];
+    if (item.hasStx) types.push("stx");
+    if (item.hasBtc) types.push("btc");
+    return { item: { staker: item.stakerPrincipal, types } };
+  });
+  for (const principal of retainedCandidates) {
+    if (apiPrincipals.has(principal)) continue;
+    const retained = retainedByPrincipal.get(principal);
+    const types: ("stx" | "btc")[] = [];
+    if (retained?.hasStx ?? true) types.push("stx");
+    if (retained?.hasBtc) types.push("btc");
+    candidates.push({
+      item: { staker: principal, types },
+      allowRetainedStxAbsence:
+        apiScan.anchorFenced &&
+        verifiedStoredStxPrincipals.has(principal) &&
+        types.length === 1 &&
+        types[0] === "stx",
+    });
+  }
+
+  const verifiedItems: SignerStakerPageItem[] = [];
+  await options.onProgress?.({ phase: "verifying", completed: 0, total: candidates.length });
+  for (let index = 0; index < candidates.length; index += stakerConcurrency) {
+    options.signal?.throwIfAborted();
+    const verifiedBatch = await Promise.all(
+      candidates
+        .slice(index, index + stakerConcurrency)
+        .map(({ item, allowRetainedStxAbsence }) =>
+          verifyPageItem(
+            item,
+            verificationOptions,
+            allowRetainedStxAbsence === undefined ? {} : { allowRetainedStxAbsence },
+          ),
+        ),
+    );
+    options.signal?.throwIfAborted();
+    for (const verified of verifiedBatch) {
+      verifiedItems.push(verified.item);
+      if (verified.discrepancy) discrepancies.push(verified.discrepancy);
+    }
+    await options.onProgress?.({
+      phase: "verifying",
+      completed: verifiedItems.length,
+      total: candidates.length,
+    });
+  }
+
+  let canonicalAnchorVerified = false;
+  if (apiScan.anchorFenced) {
+    options.signal?.throwIfAborted();
+    if (!reconciliationAnchor || !options.api.getStatus || !options.api.getBlock) {
+      throw new SignerStakerAnchorError(
+        "Sealed signer-staker anchor cannot be revalidated by the configured API",
+      );
+    }
+    try {
+      await proveSealedAnchorRemainsCanonical(
+        {
+          getStatus: () => options.api.getStatus?.() as Promise<ApiStatus>,
+          getBlock: (height) => options.api.getBlock?.(height) as Promise<StacksBlockSummary>,
+        },
+        reconciliationAnchor,
+        options.signal,
+      );
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (error instanceof SignerStakerAnchorError && error.invalidatesSealedRun) {
+        options.store.abandonSealedSignerStakerRun(run.runId, options.observedAt);
+      }
+      throw error;
+    }
+    canonicalAnchorVerified = true;
+  }
+
+  options.signal?.throwIfAborted();
+  run = options.store.commitSignerStakerPage({
+    runId: run.runId,
+    sourceId: options.sourceId,
+    nodeSourceId: options.nodeSourceId,
+    managerPrincipal: options.managerPrincipal,
+    nextCursor: null,
+    items: verifiedItems,
+    apiItemsProcessed: 0,
+    recordApiPage: false,
+    authoritativeCompletion:
+      apiScan.anchorFenced &&
+      canonicalAnchorVerified &&
+      (apiScan.expectedTotal > 0 || retainedCandidates.size > 0 || hasPriorAuthoritativeRun) &&
+      verifiedItems.every((item) => item.reconciliationComplete),
+    ...(reconciliationAnchor ? { chainAnchor: reconciliationAnchor } : {}),
+    observedAt: options.observedAt,
+    burnBlockHeight: reconciliationBurnBlockHeight,
+    stacksTipHeight: reconciliationStacksTipHeight,
+  });
 
   const activeStakers = options.store.listSignerStakers(options.managerPrincipal);
   return {

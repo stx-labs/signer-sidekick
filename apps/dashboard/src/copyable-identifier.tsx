@@ -32,6 +32,7 @@ export function CopyIdentifierButton({
   showLabel?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -41,7 +42,7 @@ export function CopyIdentifierButton({
     [],
   );
 
-  const action = copied ? `Copied ${label}` : `Copy ${label}`;
+  const action = failed ? `Could not copy ${label}` : copied ? `Copied ${label}` : `Copy ${label}`;
   return (
     <button
       type="button"
@@ -49,7 +50,7 @@ export function CopyIdentifierButton({
       disabled={!value}
       aria-label={value && !copied ? `${action}: ${value}` : action}
       title={action}
-      data-copy-state={copied ? "copied" : "idle"}
+      data-copy-state={failed ? "failed" : copied ? "copied" : "idle"}
       data-copy-value={value ?? undefined}
       onClick={async (event) => {
         event.preventDefault();
@@ -57,16 +58,27 @@ export function CopyIdentifierButton({
         if (!value) return;
         try {
           await copyText(value);
+          setFailed(false);
           setCopied(true);
           if (resetTimer.current) clearTimeout(resetTimer.current);
           resetTimer.current = setTimeout(() => setCopied(false), 1_600);
         } catch {
           setCopied(false);
+          setFailed(true);
+          if (resetTimer.current) clearTimeout(resetTimer.current);
+          resetTimer.current = setTimeout(() => setFailed(false), 3_000);
         }
       }}
     >
       {copied ? <Check aria-hidden="true" /> : <CopySimple aria-hidden="true" />}
-      {showLabel ? (copied ? `Copied ${label}` : `Copy ${label}`) : null}
+      {showLabel ? action : null}
+      <span className="sr-only" aria-live="polite">
+        {copied
+          ? `Copied ${label}`
+          : failed
+            ? `Could not copy ${label}. Select and copy it manually.`
+            : ""}
+      </span>
     </button>
   );
 }

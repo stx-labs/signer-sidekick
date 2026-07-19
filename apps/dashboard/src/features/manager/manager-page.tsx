@@ -79,7 +79,15 @@ function openManagerAction(action: ManagerActionId): void {
   location.hash = dashboardHash("manager", action);
 }
 
-function SignerGrantCeremony({ data, token }: { data: Snapshot; token: string }) {
+function SignerGrantCeremony({
+  data,
+  token,
+  onOperatorStateChanged,
+}: {
+  data: Snapshot;
+  token: string;
+  onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
+}) {
   const [actorPrincipal, setActorPrincipal] = useState("");
   const [authId, setAuthId] = useState("");
   const [signerConfigPath, setSignerConfigPath] = useState("");
@@ -339,6 +347,7 @@ function SignerGrantCeremony({ data, token }: { data: Snapshot; token: string })
                 intentApiBase="/api/v1/wallet-intents"
                 managerPrincipal={data.managerPrincipal}
                 network={data.network}
+                onVerified={onOperatorStateChanged}
                 token={token}
               />
               <div className="manager-manual-path">
@@ -365,10 +374,12 @@ function ManagerActionWorkspace({
   action,
   data,
   token,
+  onOperatorStateChanged,
 }: {
   action: ManagerActionId;
   data: Snapshot;
   token: string;
+  onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
 }) {
   const [actorPrincipal, setActorPrincipal] = useState("");
   const [adminPrincipal, setAdminPrincipal] = useState("");
@@ -426,7 +437,13 @@ function ManagerActionWorkspace({
         </button>
       </div>
 
-      {action === "register-self" ? <SignerGrantCeremony data={data} token={token} /> : null}
+      {action === "register-self" ? (
+        <SignerGrantCeremony
+          data={data}
+          token={token}
+          onOperatorStateChanged={onOperatorStateChanged}
+        />
+      ) : null}
 
       {action !== "register-self" ? (
         <div className="form-grid manager-action-form manager-actor-form">
@@ -583,6 +600,7 @@ function ManagerActionWorkspace({
             intentApiBase="/api/v1/wallet-intents"
             managerPrincipal={data.managerPrincipal}
             network={data.network}
+            onVerified={onOperatorStateChanged}
             token={token}
           />
           <div className="manager-manual-path">
@@ -605,11 +623,15 @@ function ManagerActionWorkspace({
 export function Manager({
   action,
   data,
+  operatorStateStale,
   token,
+  onOperatorStateChanged,
 }: {
   action: ManagerActionId | null;
   data: Snapshot;
+  operatorStateStale: boolean;
   token: string;
+  onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
 }) {
   const cycles = data.forecast?.cycles ?? [];
   const recognitionLabel =
@@ -626,7 +648,7 @@ export function Manager({
   const registrationReady = Boolean(
     data.registration?.registered && data.registration.signerKeyGrantValid,
   );
-  const actionAvailability = managerActionAvailability(data);
+  const actionAvailability = managerActionAvailability(data, operatorStateStale);
   const canPrepareAdminActions = actionAvailability.available;
 
   useEffect(() => {
@@ -707,7 +729,13 @@ export function Manager({
       )}
 
       {action && canPrepareAdminActions ? (
-        <ManagerActionWorkspace key={action} action={action} data={data} token={token} />
+        <ManagerActionWorkspace
+          key={action}
+          action={action}
+          data={data}
+          token={token}
+          onOperatorStateChanged={onOperatorStateChanged}
+        />
       ) : action ? (
         <div className="callout callout-caution manager-required-state" role="alert">
           <WarningCircle className="ic" />

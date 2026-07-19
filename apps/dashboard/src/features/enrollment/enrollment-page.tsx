@@ -3,9 +3,10 @@ import {
   type PoolCardArtifact,
   poolCardResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
-import { CopyableIdentifier } from "../../copyable-identifier.js";
+import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
+import { dashboardHash } from "../../dashboard-route.js";
 import { ErrorCallout, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { formatUstx } from "../../shared/format.js";
 
@@ -14,26 +15,33 @@ export function EnrollmentPage({ token }: { token: string }) {
   const [artifact, setArtifact] = useState<PoolCardArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const generationController = useRef<AbortController | null>(null);
 
   const generate = useCallback(async () => {
+    generationController.current?.abort();
+    const controller = new AbortController();
+    generationController.current = controller;
     setBusy(true);
     setError(null);
     try {
-      setArtifact(
-        await apiJson(token, "/api/v1/pool-card/generate", poolCardResponseSchema, {
-          method: "POST",
-          body: JSON.stringify({ mode }),
-        }),
-      );
+      const result = await apiJson(token, "/api/v1/pool-card/generate", poolCardResponseSchema, {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) setArtifact(result);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (!controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) setBusy(false);
     }
   }, [mode, token]);
 
   useEffect(() => {
     void generate();
+    return () => generationController.current?.abort();
   }, [generate]);
 
   const download = (format: "html" | "json") => {
@@ -84,6 +92,32 @@ export function EnrollmentPage({ token }: { token: string }) {
         }
       />
       <ErrorCallout error={error} />
+      {error ? (
+        <div className="callout callout-neutral" role="note">
+          <div className="body">
+            Pool card generation requires verified manager setup. If setup is incomplete, finish it
+            before retrying.
+            <div className="actions">
+              <button
+                type="button"
+                className="btn btn-accent sm"
+                onClick={() => {
+                  location.hash = dashboardHash("setup");
+                }}
+              >
+                Open Initial Setup
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary sm"
+                onClick={() => void generate()}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="callout callout-info intro-callout">
         <ShieldCheck className="ic" />
         <div className="body">
@@ -98,6 +132,7 @@ export function EnrollmentPage({ token }: { token: string }) {
             <button
               type="button"
               className={mode === "live" ? "on" : ""}
+              disabled={busy}
               onClick={() => setMode("live")}
             >
               Live card
@@ -105,6 +140,7 @@ export function EnrollmentPage({ token }: { token: string }) {
             <button
               type="button"
               className={mode === "static" ? "on" : ""}
+              disabled={busy}
               onClick={() => setMode("static")}
             >
               Static snapshot
@@ -121,14 +157,7 @@ export function EnrollmentPage({ token }: { token: string }) {
         <div className="card">
           <div className="card-head">
             <h2>{mode === "live" ? "Self-contained live HTML" : "Self-contained static HTML"}</h2>
-            <button
-              type="button"
-              className="btn btn-tertiary sm"
-              disabled={!artifact}
-              onClick={() => artifact && void navigator.clipboard.writeText(artifact.body)}
-            >
-              Copy
-            </button>
+            <CopyIdentifierButton value={artifact?.body} label="pool card HTML" showLabel />
           </div>
           <pre className="code">{artifact?.body ?? "Generating artifact"}</pre>
         </div>

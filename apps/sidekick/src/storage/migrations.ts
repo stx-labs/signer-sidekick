@@ -1264,4 +1264,33 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 18,
+    name: "durable_signer_staker_api_rosters",
+    sql: `
+      UPDATE ingestion_runs
+      SET status = 'completed', authoritative = 0, reconciliation_complete = 0,
+        completed_at = COALESCE(completed_at, updated_at)
+      WHERE stream = 'signer-stakers' AND status = 'running';
+
+      CREATE TABLE signer_staker_api_scans (
+        run_id TEXT PRIMARY KEY REFERENCES ingestion_runs(run_id),
+        expected_total INTEGER NOT NULL CHECK (expected_total >= 0),
+        sealed INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0, 1)),
+        anchor_fenced INTEGER NOT NULL DEFAULT 0 CHECK (anchor_fenced IN (0, 1)),
+        CHECK (anchor_fenced = 0 OR sealed = 1)
+      ) STRICT;
+
+      CREATE TABLE signer_staker_api_scan_items (
+        run_id TEXT NOT NULL REFERENCES signer_staker_api_scans(run_id),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        staker_principal TEXT NOT NULL,
+        has_stx INTEGER NOT NULL CHECK (has_stx IN (0, 1)),
+        has_btc INTEGER NOT NULL CHECK (has_btc IN (0, 1)),
+        PRIMARY KEY (run_id, staker_principal),
+        UNIQUE (run_id, ordinal),
+        CHECK (has_stx = 1 OR has_btc = 1)
+      ) STRICT;
+    `,
+  },
 ];

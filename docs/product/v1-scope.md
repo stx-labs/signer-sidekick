@@ -102,7 +102,10 @@ exact call and observable postconditions without attesting custom contract seman
 ### Application operations
 
 - Resumable ingestion and reconciliation across restart and provider changes.
+- Asynchronous, single-flight reconciliation with visible phase, progress, and retry state.
 - Explicit freshness, source, disagreement, and degraded-state reporting.
+- Last-good read-only views during transient refresh failures; stale state never authorizes a new
+  state-changing request.
 - In-product alerts for registration, threshold, reward, withdrawal, gas, ingestion, and transaction
   risks.
 - Health endpoints, metrics, structured redacted logs, backups, and support bundles.

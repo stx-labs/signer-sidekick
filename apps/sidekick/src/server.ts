@@ -1,8 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
+  type ApiError,
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSubmissionRequestSchema,
   type EngineApprovalRequest,
@@ -28,29 +29,37 @@ import {
   onboardingProgressRequestSchema,
   onboardingStartRequestSchema,
   poolCardGenerateRequestSchema,
+  type ReconciliationOperation,
+  type ReconciliationSummary,
+  reconciliationSummarySchema,
+  type WalletIntentAnchorMismatchError,
+  type WalletIntentAnchorUnstableError,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
-import Fastify, { type FastifyError } from "fastify";
+import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import {
+  ChainAnchorError,
+  RateLimitedError,
+  UpstreamHttpError,
+  UpstreamSchemaError,
+  UpstreamUnavailableError,
+} from "./chain-clients.js";
+import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
 import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
+import {
+  InteractiveRequestCancelledError,
+  InteractiveRequestDeadlineError,
+  withInteractiveRequestDeadline,
+  withOperatorRequestSignal,
+} from "./request-context.js";
+import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
-async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error("Readiness snapshot deadline exceeded")),
-      milliseconds,
-    );
-    timeout.unref?.();
-  });
-  try {
-    return await Promise.race([promise, deadline]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
+const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
+const RECONCILIATION_SNAPSHOT_DEADLINE_MS = 60_000;
 
 interface RosterRow {
   stakerPrincipal?: string;
@@ -79,9 +88,19 @@ interface OperatorSnapshotShape {
   alerts?: unknown[];
 }
 
+interface OperatorSynchronizationProgress {
+  phase: "stakers-discovery" | "stakers-verification" | "events";
+  completed: number;
+  total: number | null;
+  message?: string;
+}
+
 interface OperatorSnapshotService {
   snapshot(force?: boolean): Promise<OperatorSnapshotShape>;
-  synchronize(): Promise<unknown>;
+  synchronize(options?: {
+    signal?: AbortSignal;
+    onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
+  }): Promise<unknown>;
   activity?(options?: {
     claimLimit?: number;
     claimOffset?: number;
@@ -148,10 +167,185 @@ class OperatorApiError extends Error {
   constructor(
     readonly statusCode: number,
     readonly responseCode: string,
+    readonly retryable?: boolean,
   ) {
     super(responseCode);
     this.name = "OperatorApiError";
   }
+}
+
+interface SafeErrorClassification {
+  statusCode: number;
+  body: ApiError & Record<string, unknown>;
+  retryAfterSeconds?: number;
+}
+
+function chainSourcesDiffer(error: ChainAnchorError): boolean {
+  const { tips } = error;
+  return Boolean(
+    tips &&
+      (tips.node.stacksTipHeight !== tips.api.stacksTipHeight ||
+        tips.node.burnBlockHeight !== tips.api.burnBlockHeight ||
+        tips.poxBurnBlockHeight !== tips.api.burnBlockHeight),
+  );
+}
+
+function classifySafeOperatorError(error: unknown): SafeErrorClassification {
+  if (error instanceof OperatorApiError) {
+    return {
+      statusCode: error.statusCode,
+      body: {
+        error: error.responseCode,
+        ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
+      },
+    };
+  }
+  if (error instanceof OperatorWorkflowError) {
+    return {
+      statusCode: error.statusCode,
+      body: { error: error.responseCode, message: error.message, retryable: false },
+    };
+  }
+  if (error instanceof TransactionEngineApiServiceError) {
+    return { statusCode: error.statusCode, body: { error: error.responseCode } };
+  }
+  if (error instanceof ChainAnchorError) {
+    if (error.retryable) {
+      if (error.tips && chainSourcesDiffer(error)) {
+        return {
+          statusCode: 503,
+          retryAfterSeconds: 1,
+          body: {
+            error: "chain_sources_out_of_sync",
+            retryable: true,
+            node: error.tips.node,
+            api: error.tips.api,
+            poxBurnBlockHeight: error.tips.poxBurnBlockHeight,
+          },
+        };
+      }
+      return {
+        statusCode: 503,
+        retryAfterSeconds: 1,
+        body: { error: "chain_anchor_unstable", retryable: true },
+      };
+    }
+    return {
+      statusCode: 502,
+      body: { error: "chain_anchor_invalid", retryable: false },
+    };
+  }
+  if (error instanceof SignerStakerAnchorError) {
+    return {
+      statusCode: 503,
+      retryAfterSeconds: 1,
+      body: { error: "signer_staker_anchor_unstable", retryable: true },
+    };
+  }
+  if (error instanceof RateLimitedError) {
+    return {
+      statusCode: 429,
+      retryAfterSeconds: Math.min(
+        30,
+        Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
+      ),
+      body: { error: "upstream_rate_limited", retryable: true },
+    };
+  }
+  if (error instanceof UpstreamUnavailableError) {
+    return {
+      statusCode: 503,
+      retryAfterSeconds: 1,
+      body: { error: "upstream_temporarily_unavailable", retryable: true },
+    };
+  }
+  if (error instanceof UpstreamSchemaError) {
+    return {
+      statusCode: 502,
+      body: { error: "upstream_response_invalid", retryable: false },
+    };
+  }
+  if (error instanceof UpstreamHttpError) {
+    return {
+      statusCode: 502,
+      body: { error: "upstream_request_rejected", retryable: false },
+    };
+  }
+  if (error instanceof HealthSourceError) {
+    if (error.code === "invalid-url") {
+      return { statusCode: 400, body: { error: "invalid_health_source", retryable: false } };
+    }
+    if (error.code === "unsafe-address") {
+      return {
+        statusCode: 422,
+        body: { error: "health_source_not_allowed", retryable: false },
+      };
+    }
+    if (
+      error.code === "dns-unavailable" ||
+      error.code === "connection-failed" ||
+      error.code === "timeout"
+    ) {
+      return {
+        statusCode: 503,
+        retryAfterSeconds: 1,
+        body: { error: "health_source_temporarily_unavailable", retryable: true },
+      };
+    }
+    return {
+      statusCode: 502,
+      body: { error: "health_source_response_invalid", retryable: false },
+    };
+  }
+  if (
+    error instanceof InteractiveRequestDeadlineError ||
+    error instanceof InteractiveRequestCancelledError
+  ) {
+    return {
+      statusCode: 503,
+      retryAfterSeconds: 1,
+      body: { error: "operator_request_temporarily_unavailable", retryable: true },
+    };
+  }
+  if (error instanceof z.ZodError) {
+    return { statusCode: 400, body: { error: "invalid_request", retryable: false } };
+  }
+  if (
+    error instanceof Error &&
+    typeof (error as FastifyError).statusCode === "number" &&
+    ((error as FastifyError).statusCode ?? 500) < 500
+  ) {
+    return {
+      statusCode: (error as FastifyError).statusCode ?? 400,
+      body: { error: "request_error", retryable: false },
+    };
+  }
+  return { statusCode: 500, body: { error: "internal_server_error" } };
+}
+
+function sendClassifiedError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: unknown,
+): FastifyReply {
+  const classified = classifySafeOperatorError(error);
+  if (classified.retryAfterSeconds !== undefined) {
+    reply.header("retry-after", String(classified.retryAfterSeconds));
+  }
+  if (classified.statusCode >= 500) {
+    if (classified.statusCode === 500) {
+      request.log.error(
+        { err: error, responseCode: classified.body.error },
+        "operator API request failed",
+      );
+    } else {
+      request.log.warn(
+        { err: error, responseCode: classified.body.error },
+        "operator API request failed",
+      );
+    }
+  }
+  return reply.code(classified.statusCode).send(classified.body);
 }
 
 function requireFeature<T>(value: T | undefined, responseCode: string): T {
@@ -166,6 +360,42 @@ function walletIntentHttpStatus(error: OnboardingWalletIntentError): number {
   return 400;
 }
 
+function walletIntentAnchorError(
+  error: unknown,
+): WalletIntentAnchorMismatchError | WalletIntentAnchorUnstableError | null {
+  if (error instanceof ChainAnchorError && error.retryable) {
+    const { tips } = error;
+    const sourcesDiffer =
+      tips !== null &&
+      (tips.node.stacksTipHeight !== tips.api.stacksTipHeight ||
+        tips.node.burnBlockHeight !== tips.api.burnBlockHeight ||
+        tips.poxBurnBlockHeight !== tips.api.burnBlockHeight);
+    return sourcesDiffer
+      ? {
+          error: "wallet_intent_anchor_mismatch",
+          retryable: true,
+          node: tips.node,
+          api: tips.api,
+          poxBurnBlockHeight: tips.poxBurnBlockHeight,
+        }
+      : { error: "wallet_intent_anchor_unstable", retryable: true };
+  }
+  return null;
+}
+
+function replyToWalletIntentAnchorError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: unknown,
+  context: Record<string, unknown>,
+): FastifyReply | null {
+  const body = walletIntentAnchorError(error);
+  if (!body) return null;
+  request.log.warn({ ...context, ...body }, "wallet sources out of sync");
+  reply.header("retry-after", "1");
+  return reply.code(503).send(body);
+}
+
 function authorized(header: string | undefined, expected: string): boolean {
   if (!header?.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
@@ -176,6 +406,45 @@ function authorized(header: string | undefined, expected: string): boolean {
 function csvCell(value: unknown): string {
   const text = value === null || value === undefined ? "" : String(value);
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function reconciliationSummary(value: unknown): ReconciliationSummary {
+  const root = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const stakers =
+    root.stakers && typeof root.stakers === "object"
+      ? (root.stakers as Record<string, unknown>)
+      : {};
+  const events =
+    root.events && typeof root.events === "object" ? (root.events as Record<string, unknown>) : {};
+  const candidate = {
+    observedAt: root.observedAt,
+    stakers: {
+      resumed: stakers.resumed,
+      status: stakers.status,
+      authoritative: stakers.authoritative,
+      pagesProcessed: stakers.pagesProcessed,
+      itemsProcessed: stakers.itemsProcessed,
+      activeStakers: stakers.activeStakers,
+      nodeVerifiedStxPositions: stakers.nodeVerifiedStxPositions,
+      unverifiedStxDiscoveries: stakers.unverifiedStxDiscoveries,
+      discrepanciesObserved: Array.isArray(stakers.discrepanciesObservedThisInvocation)
+        ? stakers.discrepanciesObservedThisInvocation.length
+        : undefined,
+    },
+    events: {
+      resumed: events.resumed,
+      pagesProcessed: events.pagesProcessed,
+      eventsProcessed: events.eventsProcessed,
+      newEvents: events.newEvents,
+      replayedEvents: events.replayedEvents,
+      decodeFailures: events.decodeFailures,
+      reorgedEvents: events.reorgedEvents,
+      stoppedAtKnownOverlap: events.stoppedAtKnownOverlap,
+    },
+  };
+  const parsed = reconciliationSummarySchema.safeParse(candidate);
+  if (!parsed.success) throw new Error("Operator reconciliation returned an invalid summary");
+  return parsed.data;
 }
 
 function integerQuery(
@@ -237,21 +506,194 @@ export function createServer(options: ServerOptions = {}) {
   }
   const server = Fastify({ logger: options.logger ?? true });
   let requestCount = 0;
+  let syncRequestCount = 0;
   let syncCount = 0;
   let syncFailureCount = 0;
+  const idleReconciliationOperation = (): ReconciliationOperation => ({
+    schemaVersion: 1,
+    operationId: null,
+    status: "idle",
+    phase: "idle",
+    processLocal: true,
+    startedAt: null,
+    updatedAt: null,
+    completedAt: null,
+    progress: {
+      completedSteps: 0,
+      totalSteps: 4,
+      itemsCompleted: null,
+      itemsTotal: null,
+      message: "No reconciliation has run in this process",
+    },
+    result: null,
+    error: null,
+  });
+  let reconciliationOperation = idleReconciliationOperation();
+  let reconciliationTask: Promise<void> | null = null;
+  let reconciliationController: AbortController | null = null;
+
+  async function interactive<T>(request: FastifyRequest, work: () => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const cancel = () => {
+      if (!controller.signal.aborted) controller.abort(new InteractiveRequestCancelledError());
+    };
+    const cancelOnClosedConnection = () => {
+      if (request.raw.aborted || request.raw.socket.destroyed) cancel();
+    };
+    request.raw.once("aborted", cancel);
+    request.raw.once("close", cancelOnClosedConnection);
+    try {
+      return await withInteractiveRequestDeadline(
+        INTERACTIVE_REQUEST_DEADLINE_MS,
+        work,
+        controller.signal,
+      );
+    } finally {
+      request.raw.off("aborted", cancel);
+      request.raw.off("close", cancelOnClosedConnection);
+    }
+  }
+
+  function updateReconciliationProgress(progress: OperatorSynchronizationProgress): void {
+    if (reconciliationOperation.status !== "running") return;
+    const now = new Date().toISOString();
+    const discovery = progress.phase === "stakers-discovery";
+    const verification = progress.phase === "stakers-verification";
+    reconciliationOperation = {
+      ...reconciliationOperation,
+      phase: discovery
+        ? "reconciling-stakers-discovery"
+        : verification
+          ? "reconciling-stakers-verification"
+          : "reconciling-events",
+      updatedAt: now,
+      progress: {
+        completedSteps: discovery ? 0 : verification ? 1 : 2,
+        totalSteps: 4,
+        itemsCompleted: progress.completed,
+        itemsTotal: progress.total,
+        message:
+          progress.message ??
+          (discovery
+            ? "Discovering indexed signer delegations"
+            : verification
+              ? "Verifying signer delegations against the node"
+              : "Synchronizing manager events"),
+      },
+    };
+  }
+
+  function startReconciliation(
+    request: FastifyRequest,
+    service: OperatorSnapshotService,
+  ): ReconciliationOperation {
+    syncRequestCount += 1;
+    if (reconciliationTask) return reconciliationOperation;
+    syncCount += 1;
+    const controller = new AbortController();
+    reconciliationController = controller;
+    const startedAt = new Date().toISOString();
+    reconciliationOperation = {
+      schemaVersion: 1,
+      operationId: randomUUID(),
+      status: "running",
+      phase: "reconciling-stakers-discovery",
+      processLocal: true,
+      startedAt,
+      updatedAt: startedAt,
+      completedAt: null,
+      progress: {
+        completedSteps: 0,
+        totalSteps: 4,
+        itemsCompleted: 0,
+        itemsTotal: null,
+        message: "Starting signer delegation discovery",
+      },
+      result: null,
+      error: null,
+    };
+    reconciliationTask = (async () => {
+      try {
+        const reconciliation = await withOperatorRequestSignal(controller.signal, async () =>
+          service.synchronize({
+            signal: controller.signal,
+            onProgress: async (progress) => updateReconciliationProgress(progress),
+          }),
+        );
+        const refreshingAt = new Date().toISOString();
+        reconciliationOperation = {
+          ...reconciliationOperation,
+          phase: "refreshing-snapshot",
+          updatedAt: refreshingAt,
+          progress: {
+            completedSteps: 3,
+            totalSteps: 4,
+            itemsCompleted: null,
+            itemsTotal: null,
+            message: "Refreshing operator state from the reconciled database",
+          },
+        };
+        const snapshot = await withInteractiveRequestDeadline(
+          RECONCILIATION_SNAPSHOT_DEADLINE_MS,
+          async () => service.snapshot(true),
+          controller.signal,
+        );
+        const completedAt = new Date().toISOString();
+        reconciliationOperation = {
+          ...reconciliationOperation,
+          status: "succeeded",
+          phase: "complete",
+          updatedAt: completedAt,
+          completedAt,
+          progress: {
+            completedSteps: 4,
+            totalSteps: 4,
+            itemsCompleted: null,
+            itemsTotal: null,
+            message: "Reconciliation complete",
+          },
+          result: {
+            reconciliation: reconciliationSummary(reconciliation),
+            snapshotGeneratedAt: snapshot?.generatedAt ?? completedAt,
+          },
+          error: null,
+        };
+      } catch (error) {
+        syncFailureCount += 1;
+        const failedAt = new Date().toISOString();
+        const classified = classifySafeOperatorError(error);
+        request.log.warn(
+          { err: error, responseCode: classified.body.error },
+          "background reconciliation failed",
+        );
+        reconciliationOperation = {
+          ...reconciliationOperation,
+          status: "failed",
+          phase: "failed",
+          updatedAt: failedAt,
+          completedAt: failedAt,
+          progress: {
+            ...reconciliationOperation.progress,
+            message: "Reconciliation failed",
+          },
+          result: null,
+          error: { ...classified.body, retryable: classified.body.retryable ?? false },
+        };
+      }
+    })().finally(() => {
+      reconciliationTask = null;
+      reconciliationController = null;
+    });
+    return reconciliationOperation;
+  }
 
   server.setErrorHandler((error: FastifyError, request, reply) => {
-    if (error instanceof OperatorApiError) {
-      return reply.code(error.statusCode).send({ error: error.responseCode });
-    }
-    if (error instanceof TransactionEngineApiServiceError) {
-      return reply.code(error.statusCode).send({ error: error.responseCode });
-    }
-    const statusCode = error.statusCode && error.statusCode < 500 ? error.statusCode : 500;
-    if (statusCode >= 500) request.log.error({ err: error }, "operator API request failed");
-    return reply
-      .code(statusCode)
-      .send({ error: statusCode >= 500 ? "internal_server_error" : "request_error" });
+    return sendClassifiedError(request, reply, error);
+  });
+
+  server.addHook("onClose", async () => {
+    reconciliationController?.abort(new InteractiveRequestCancelledError());
+    await reconciliationTask;
   });
 
   server.addHook("onRequest", async (request, reply) => {
@@ -277,8 +719,9 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/health/live", async () => ({ status: "ok" }));
   server.get("/health/ready", async (request, reply) => {
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
+    const service = options.service;
     try {
-      const snapshot = await withDeadline(options.service.snapshot(), 20_000);
+      const snapshot = await interactive(request, () => service.snapshot());
       const preflight = snapshot.preflight as { status?: string } | undefined;
       const ready = preflight?.status !== "fail";
       return reply.code(ready ? 200 : 503).send({
@@ -299,6 +742,9 @@ export function createServer(options: ServerOptions = {}) {
       "# HELP sidekick_sync_total Synchronization attempts.",
       "# TYPE sidekick_sync_total counter",
       `sidekick_sync_total ${syncCount}`,
+      "# HELP sidekick_sync_requests_total Synchronization requests accepted by this process.",
+      "# TYPE sidekick_sync_requests_total counter",
+      `sidekick_sync_requests_total ${syncRequestCount}`,
       "# HELP sidekick_sync_failures_total Failed synchronization attempts.",
       "# TYPE sidekick_sync_failures_total counter",
       `sidekick_sync_failures_total ${syncFailureCount}`,
@@ -306,8 +752,12 @@ export function createServer(options: ServerOptions = {}) {
     ].join("\n");
   });
 
-  server.get("/api/v1/status", async () =>
-    options.service?.summary ? options.service.summary() : options.service?.snapshot(),
+  server.get(
+    "/api/v1/status",
+    async (request) =>
+      await interactive(request, async () =>
+        options.service?.summary ? options.service.summary() : options.service?.snapshot(),
+      ),
   );
   server.get("/api/v1/engine", async () => {
     return await requireFeature(options.engine, "transaction_engine_unavailable").status();
@@ -366,24 +816,26 @@ export function createServer(options: ServerOptions = {}) {
     if (!body.success) throw new OperatorApiError(400, "invalid_adapter_disable_request");
     return await engine.disableAdapter(params.data.adapterId, body.data, engineActor());
   });
-  server.get("/api/v1/health", async (_request, _reply) => {
-    return await requireFeature(options.health, "health_monitoring_unavailable").current();
+  server.get("/api/v1/health", async (request, _reply) => {
+    return await interactive(request, async () =>
+      requireFeature(options.health, "health_monitoring_unavailable").current(),
+    );
   });
-  server.post("/api/v1/health/refresh", async (_request, _reply) => {
-    return await requireFeature(options.health, "health_monitoring_unavailable").refresh();
+  server.post("/api/v1/health/refresh", async (request, _reply) => {
+    return await interactive(request, async () =>
+      requireFeature(options.health, "health_monitoring_unavailable").refresh(),
+    );
   });
   server.post("/api/v1/health/test-source", async (request, reply) => {
     const health = requireFeature(options.health, "health_monitoring_unavailable");
     const parsed = healthSourceTestRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_health_source" });
-    try {
-      return await health.testSource(parsed.data.kind, parsed.data.url);
-    } catch {
-      return reply.code(400).send({ error: "health_source_unavailable" });
-    }
+    return await interactive(request, async () =>
+      health.testSource(parsed.data.kind, parsed.data.url),
+    );
   });
-  server.get("/api/v1/registration", async () => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/registration", async (request) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
       generatedAt: snapshot?.generatedAt,
       network: snapshot?.network,
@@ -397,17 +849,17 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/pool", async (request, _reply) => {
     if (options.service?.poolPage) {
       const pageOptions = parsePagination(request.url, { includeQuery: true });
-      return await options.service.poolPage(pageOptions);
+      return await interactive(request, async () => options.service?.poolPage?.(pageOptions));
     }
-    const snapshot = await options.service?.snapshot();
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
       generatedAt: snapshot?.generatedAt,
       forecast: snapshot?.forecast,
       roster: snapshot?.roster,
     };
   });
-  server.get("/api/v1/pool/roster.csv", async (_request, reply) => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/pool/roster.csv", async (request, reply) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     const roster = snapshot?.roster ?? [];
     const header = [
       "staker_principal",
@@ -432,27 +884,31 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/pool/history", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const poolHistory = requireFeature(service.poolHistory, "pool_history_unavailable");
-    return await poolHistory.call(service, parsePagination(request.url));
+    return await interactive(request, async () =>
+      poolHistory.call(service, parsePagination(request.url)),
+    );
   });
-  server.get("/api/v1/pool/roster.json", async (_request, reply) => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/pool/roster.json", async (request, reply) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     reply.type("application/json; charset=utf-8");
     reply.header("content-disposition", 'attachment; filename="signer-sidekick-roster.json"');
     return snapshot?.roster ?? [];
   });
   server.get("/api/v1/rewards", async (request, _reply) => {
     if (options.service?.rewardsPage) {
-      return await options.service.rewardsPage(parsePagination(request.url));
+      return await interactive(request, async () =>
+        options.service?.rewardsPage?.(parsePagination(request.url)),
+      );
     }
-    const snapshot = await options.service?.snapshot();
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
       generatedAt: snapshot?.generatedAt,
       rewards: snapshot?.rewards,
       activity: snapshot?.activity,
     };
   });
-  server.get("/api/v1/withdrawals", async () => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/withdrawals", async (request) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
       generatedAt: snapshot?.generatedAt,
       withdrawals: snapshot?.activity?.withdrawals ?? [],
@@ -461,10 +917,12 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/rewards/history", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const rewardsHistory = requireFeature(service.rewardsHistory, "reward_history_unavailable");
-    return await rewardsHistory.call(service, parsePagination(request.url));
+    return await interactive(request, async () =>
+      rewardsHistory.call(service, parsePagination(request.url)),
+    );
   });
-  server.get("/api/v1/alerts", async () => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/alerts", async (request) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return { generatedAt: snapshot?.generatedAt, alerts: snapshot?.alerts ?? [] };
   });
   server.get("/api/v1/activity", async (request, reply) => {
@@ -493,10 +951,10 @@ export function createServer(options: ServerOptions = {}) {
     } catch {
       return reply.code(400).send({ error: "invalid_query" });
     }
-    return await activity.call(service, activityOptions);
+    return await interactive(request, async () => activity.call(service, activityOptions));
   });
-  server.get("/api/v1/setup", async () => {
-    const snapshot = await options.service?.snapshot();
+  server.get("/api/v1/setup", async (request) => {
+    const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
       generatedAt: snapshot?.generatedAt,
       network: snapshot?.network,
@@ -512,14 +970,10 @@ export function createServer(options: ServerOptions = {}) {
     const service = requireFeature(options.service, "operator_service_unavailable");
     return requireFeature(service.settings, "runtime_settings_unavailable").call(service);
   });
-  server.put("/api/v1/settings", async (request, reply) => {
+  server.put("/api/v1/settings", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const updateSettings = requireFeature(service.updateSettings, "runtime_settings_unavailable");
-    try {
-      return await updateSettings.call(service, request.body);
-    } catch {
-      return reply.code(400).send({ error: "invalid_runtime_settings" });
-    }
+    return await interactive(request, async () => updateSettings.call(service, request.body));
   });
   server.get("/api/v1/onboarding", async (_request, _reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
@@ -546,79 +1000,77 @@ export function createServer(options: ServerOptions = {}) {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingStartRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_path" });
-    try {
-      return { onboarding: onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
-    } catch {
-      return reply.code(409).send({ error: "onboarding_reset_confirmation_required" });
-    }
+    return { onboarding: onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
   });
   server.post("/api/v1/onboarding/attach/verify", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingAttachRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_manager_principal" });
-    try {
-      return { onboarding: await onboarding.verifyAttach(parsed.data.managerPrincipal) };
-    } catch {
-      return reply.code(400).send({ error: "attach_verification_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () =>
+        onboarding.verifyAttach(parsed.data.managerPrincipal),
+      ),
+    };
   });
-  server.post("/api/v1/onboarding/fresh/prepare", async (request, reply) => {
+  server.post("/api/v1/onboarding/fresh/prepare", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    try {
-      return { onboarding: await onboarding.prepareFresh(request.body) };
-    } catch {
-      return reply.code(400).send({ error: "fresh_setup_preparation_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () => onboarding.prepareFresh(request.body)),
+    };
   });
-  server.post("/api/v1/onboarding/fresh/grant/prepare", async (_request, reply) => {
+  server.post("/api/v1/onboarding/fresh/grant/prepare", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    try {
-      return { onboarding: await onboarding.prepareGrant() };
-    } catch {
-      return reply.code(400).send({ error: "signer_grant_preparation_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () => onboarding.prepareGrant()),
+    };
   });
   server.post("/api/v1/onboarding/fresh/grant/verify", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
-    try {
-      return { onboarding: await onboarding.verifyGrant(parsed.data.signerOutput) };
-    } catch {
-      return reply.code(400).send({ error: "signer_grant_verification_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () =>
+        onboarding.verifyGrant(parsed.data.signerOutput),
+      ),
+    };
   });
   server.post("/api/v1/manager/signer-grant/prepare", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = managerSignerGrantPrepareRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_grant_input" });
-    try {
-      return { onboarding: await onboarding.prepareManagerSignerGrant(parsed.data) };
-    } catch {
-      return reply.code(400).send({ error: "signer_grant_preparation_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () =>
+        onboarding.prepareManagerSignerGrant(parsed.data),
+      ),
+    };
   });
   server.post("/api/v1/manager/signer-grant/verify", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
-    try {
-      return { onboarding: await onboarding.verifyManagerSignerGrant(parsed.data.signerOutput) };
-    } catch {
-      return reply.code(400).send({ error: "signer_grant_verification_failed" });
-    }
+    return {
+      onboarding: await interactive(request, async () =>
+        onboarding.verifyManagerSignerGrant(parsed.data.signerOutput),
+      ),
+    };
   });
   server.post("/api/v1/onboarding/wallet-intents", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
     try {
-      return { intent: await onboarding.wallet.prepare(parsed.data) };
+      return {
+        intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
+      };
     } catch (error) {
+      const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
+        action: parsed.data.action,
+      });
+      if (anchorReply) return anchorReply;
       if (error instanceof OnboardingWalletIntentError) {
         return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
       }
-      return reply.code(400).send({ error: "wallet_intent_preparation_failed" });
+      throw error;
     }
   });
   server.post("/api/v1/wallet-intents", async (request, reply) => {
@@ -626,12 +1078,18 @@ export function createServer(options: ServerOptions = {}) {
     const parsed = browserWalletIntentCreateRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
     try {
-      return { intent: await onboarding.wallet.prepare(parsed.data) };
+      return {
+        intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
+      };
     } catch (error) {
+      const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
+        action: parsed.data.action,
+      });
+      if (anchorReply) return anchorReply;
       if (error instanceof OnboardingWalletIntentError) {
         return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
       }
-      return reply.code(400).send({ error: "wallet_intent_preparation_failed" });
+      throw error;
     }
   });
   const registerWalletIntentLifecycleRoutes = (prefix: string): void => {
@@ -645,7 +1103,7 @@ export function createServer(options: ServerOptions = {}) {
         if (error instanceof OnboardingWalletIntentError) {
           return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
         }
-        return reply.code(400).send({ error: "wallet_intent_read_failed" });
+        throw error;
       }
     });
     server.post(`${prefix}/:id/submission`, async (request, reply) => {
@@ -656,12 +1114,16 @@ export function createServer(options: ServerOptions = {}) {
         return reply.code(400).send({ error: "invalid_wallet_intent_submission" });
       }
       try {
-        return { intent: await onboarding.wallet.submit(params.data.id, body.data.txid) };
+        return {
+          intent: await interactive(request, async () =>
+            onboarding.wallet.submit(params.data.id, body.data.txid),
+          ),
+        };
       } catch (error) {
         if (error instanceof OnboardingWalletIntentError) {
           return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
         }
-        return reply.code(400).send({ error: "wallet_intent_submission_failed" });
+        throw error;
       }
     });
     server.post(`${prefix}/:id/refresh`, async (request, reply) => {
@@ -675,12 +1137,19 @@ export function createServer(options: ServerOptions = {}) {
         return reply.code(400).send({ error: "invalid_wallet_intent_refresh" });
       }
       try {
-        return { intent: await onboarding.wallet.refresh(params.data.id) };
+        return {
+          intent: await interactive(request, async () => onboarding.wallet.refresh(params.data.id)),
+        };
       } catch (error) {
+        const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
+          intentId: params.data.id,
+          operation: "refresh",
+        });
+        if (anchorReply) return anchorReply;
         if (error instanceof OnboardingWalletIntentError) {
           return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
         }
-        return reply.code(400).send({ error: "wallet_intent_refresh_failed" });
+        throw error;
       }
     });
     server.post(`${prefix}/:id/replacement`, async (request, reply) => {
@@ -694,12 +1163,19 @@ export function createServer(options: ServerOptions = {}) {
         return reply.code(400).send({ error: "invalid_wallet_intent_replacement" });
       }
       try {
-        return { intent: await onboarding.wallet.replace(params.data.id) };
+        return {
+          intent: await interactive(request, async () => onboarding.wallet.replace(params.data.id)),
+        };
       } catch (error) {
+        const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
+          intentId: params.data.id,
+          operation: "replacement",
+        });
+        if (anchorReply) return anchorReply;
         if (error instanceof OnboardingWalletIntentError) {
           return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
         }
-        return reply.code(400).send({ error: "wallet_intent_replacement_failed" });
+        throw error;
       }
     });
   };
@@ -707,58 +1183,39 @@ export function createServer(options: ServerOptions = {}) {
   for (const prefix of ["/api/v1/onboarding/wallet-intents", "/api/v1/wallet-intents"] as const) {
     registerWalletIntentLifecycleRoutes(prefix);
   }
-  server.post("/api/v1/onboarding/fresh/refresh", async (_request, reply) => {
+  server.post("/api/v1/onboarding/fresh/refresh", async (request) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    try {
-      return await onboarding.refreshFresh();
-    } catch {
-      return reply.code(400).send({ error: "fresh_setup_refresh_failed" });
-    }
+    return await interactive(request, async () => onboarding.refreshFresh());
   });
   server.patch("/api/v1/onboarding/progress", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = onboardingProgressRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_onboarding_step" });
-    try {
-      return { onboarding: onboarding.setCurrentStep(parsed.data.currentStep) };
-    } catch {
-      return reply.code(400).send({ error: "invalid_onboarding_step" });
-    }
+    return { onboarding: onboarding.setCurrentStep(parsed.data.currentStep) };
   });
   server.get("/api/v1/onboarding/artifacts/:kind", async (request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     const parsed = z.object({ kind: z.enum(["source", "manifest"]) }).safeParse(request.params);
     if (!parsed.success) return reply.code(404).send({ error: "artifact_not_found" });
-    try {
-      const artifact = onboarding.artifact(parsed.data.kind);
-      reply.type(artifact.contentType);
-      reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
-      return artifact.body;
-    } catch {
-      return reply.code(404).send({ error: "artifact_not_found" });
-    }
+    const artifact = onboarding.artifact(parsed.data.kind);
+    reply.type(artifact.contentType);
+    reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
+    return artifact.body;
   });
   server.post("/api/v1/pool-card/generate", async (request, reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const poolCard = requireFeature(service.poolCard, "pool_card_generation_unavailable");
     const parsed = poolCardGenerateRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_pool_card_mode" });
-    try {
-      return await poolCard.call(service, parsed.data.mode);
-    } catch {
-      return reply.code(400).send({ error: "pool_card_generation_failed" });
-    }
+    return await interactive(request, async () => poolCard.call(service, parsed.data.mode));
   });
-  server.post("/api/v1/sync", async (_request, reply) => {
-    syncCount += 1;
-    try {
-      const result = await options.service?.synchronize();
-      const snapshot = await options.service?.snapshot(true);
-      return reply.code(200).send({ result, snapshot });
-    } catch (error) {
-      syncFailureCount += 1;
-      throw error;
-    }
+  server.post("/api/v1/sync", async (request, reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    return reply.code(202).send({ operation: startReconciliation(request, service) });
+  });
+  server.get("/api/v1/sync", async () => {
+    requireFeature(options.service, "operator_service_unavailable");
+    return { operation: reconciliationOperation };
   });
 
   const staticDirectory =

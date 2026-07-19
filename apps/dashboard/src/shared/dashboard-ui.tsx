@@ -100,11 +100,13 @@ export function Pagination({
   pageSize,
   total,
   setPage,
+  disabled = false,
 }: {
   page: number;
   pageSize: number;
   total: number;
   setPage: (page: number) => void;
+  disabled?: boolean;
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const boundedPage = Math.min(page, pages - 1);
@@ -119,7 +121,7 @@ export function Pagination({
         <button
           type="button"
           className="btn btn-tertiary sm"
-          disabled={boundedPage === 0}
+          disabled={disabled || boundedPage === 0}
           onClick={() => setPage(boundedPage - 1)}
         >
           Previous
@@ -130,7 +132,7 @@ export function Pagination({
         <button
           type="button"
           className="btn btn-tertiary sm"
-          disabled={boundedPage >= pages - 1}
+          disabled={disabled || boundedPage >= pages - 1}
           onClick={() => setPage(boundedPage + 1)}
         >
           Next

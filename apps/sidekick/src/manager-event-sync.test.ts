@@ -293,4 +293,36 @@ describe("manager event synchronization", () => {
     expect(sidekickStore.getChainEvent(1, txOne, 1)?.canonical).toBe(true);
     expect(sidekickStore.getChainEvent(1, txTwo, 0)?.canonical).toBe(true);
   });
+
+  it("does not commit an enriched page after cancellation", async () => {
+    const sidekickStore = await store();
+    const controller = new AbortController();
+    let release: ((value: TransactionSummary) => void) | undefined;
+    const pendingTransaction = new Promise<TransactionSummary>((resolve) => {
+      release = resolve;
+    });
+    const api = {
+      getSmartContractLogs: vi
+        .fn()
+        .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+      getTransaction: vi.fn().mockReturnValue(pendingTransaction),
+    };
+    const synchronization = syncManagerEvents({
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      observedAt,
+      pageLimit: 100,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(api.getTransaction).toHaveBeenCalledOnce());
+    controller.abort(new Error("shutdown requested"));
+    release?.(transaction(txOne, 8_600_000));
+
+    await expect(synchronization).rejects.toThrow("shutdown requested");
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
+    expect(sidekickStore.getCursor(sourceId, `manager-logs:${manager}`)).toBeNull();
+  });
 });

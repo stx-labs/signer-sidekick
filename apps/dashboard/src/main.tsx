@@ -17,6 +17,7 @@ import {
 import {
   type DashboardSnapshot,
   onboardingEnvelopeSchema,
+  type ReconciliationOperation,
   statusResponseSchema,
   syncResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -62,7 +63,24 @@ function StacksGlyph() {
   );
 }
 
-function Login({ onLogin }: { onLogin: (token: string) => void }) {
+const STATUS_POLL_MS = 30_000;
+const STATUS_STALE_AFTER_MS = 60_000;
+const SYNC_POLL_MS = 1_000;
+
+function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, milliseconds);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
+
+function Login({ onLogin, error }: { onLogin: (token: string) => void; error: string | null }) {
   const [token, setToken] = useState("");
   return (
     <main className="login-shell">
@@ -76,6 +94,11 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
           Enter the local bootstrap credential configured as{" "}
           <span className="mono">SIDEKICK_AUTH_TOKEN</span>.
         </p>
+        {error ? (
+          <div className="callout callout-critical" role="alert">
+            {error}
+          </div>
+        ) : null}
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -108,11 +131,18 @@ function App() {
     matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
   );
   const settingsThemeApplied = useRef(false);
+  const activeStatusRequests = useRef(0);
+  const statusRequestGeneration = useRef(0);
+  const syncController = useRef<AbortController | null>(null);
   const [data, setData] = useState<Snapshot | null>(null);
   const [onboardingStarted, setOnboardingStarted] = useState<boolean | null>(null);
   const [dismissedSetupNoticeKey, setDismissedSetupNoticeKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncOperation, setSyncOperation] = useState<ReconciliationOperation | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const loadOnboardingState = useCallback(async () => {
     if (!token) return;
     try {
@@ -124,32 +154,74 @@ function App() {
     }
   }, [token]);
   const load = useCallback(
-    async (force = false) => {
-      if (!token) return;
+    async (background = false, includeOnboarding = false) => {
+      if (!token || (background && activeStatusRequests.current > 0)) return false;
+      const requestGeneration = ++statusRequestGeneration.current;
+      activeStatusRequests.current += 1;
       try {
-        const snapshot = force
-          ? (
-              await apiJson(token, "/api/v1/sync", syncResponseSchema, {
-                method: "POST",
-              })
-            ).snapshot
-          : await apiJson(token, "/api/v1/status", statusResponseSchema);
+        const snapshot = await apiJson(token, "/api/v1/status", statusResponseSchema);
+        if (requestGeneration !== statusRequestGeneration.current) return false;
         setData(snapshot);
-        await loadOnboardingState();
-        setError(null);
+        if (includeOnboarding) await loadOnboardingState();
+        setStatusError(null);
+        return true;
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        if (requestGeneration !== statusRequestGeneration.current) return false;
+        setData((current) =>
+          current
+            ? {
+                ...current,
+                freshness: {
+                  status: "stale",
+                  snapshotGeneratedAt: current.generatedAt,
+                  servedAt: current.freshness?.servedAt ?? current.generatedAt,
+                  reason: "refresh-failed",
+                },
+              }
+            : current,
+        );
+        setStatusError(cause instanceof Error ? cause.message : String(cause));
+        return false;
+      } finally {
+        activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
       }
     },
     [loadOnboardingState, token],
   );
   useEffect(() => {
-    void load();
+    void load(false, true);
   }, [load]);
   useEffect(() => {
-    const rejectAuth = () => setToken("");
+    const rejectAuth = () => {
+      statusRequestGeneration.current += 1;
+      syncController.current?.abort();
+      setLoginError("The operator credential was rejected. Check it and try again.");
+      setData(null);
+      setStatusError(null);
+      setSyncError(null);
+      setSyncOperation(null);
+      setSyncing(false);
+      setOnboardingStarted(null);
+      settingsThemeApplied.current = false;
+      setToken("");
+    };
     window.addEventListener(AUTH_REJECTED_EVENT, rejectAuth);
     return () => window.removeEventListener(AUTH_REJECTED_EVENT, rejectAuth);
+  }, []);
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [load]);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(interval);
   }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -177,14 +249,120 @@ function App() {
     return () => removeEventListener("hashchange", handler);
   }, []);
   const login = (value: string) => {
+    statusRequestGeneration.current += 1;
+    syncController.current?.abort();
     sessionStorage.setItem("sidekick-token", value);
+    setLoginError(null);
+    setData(null);
+    setStatusError(null);
+    setSyncError(null);
+    setSyncOperation(null);
+    setSyncing(false);
+    setOnboardingStarted(null);
+    settingsThemeApplied.current = false;
     setToken(value);
   };
+  const monitorSync = useCallback(
+    async (initial: ReconciliationOperation, controller: AbortController) => {
+      let operation = initial;
+      setSyncOperation(operation);
+      const operationId = operation.operationId;
+      if (operation.status === "running" && !operationId) {
+        setSyncError("Reconciliation tracking is missing an operation ID. Retry reconciliation.");
+        return;
+      }
+      while (operation.status === "running" && !controller.signal.aborted) {
+        await waitFor(SYNC_POLL_MS, controller.signal);
+        if (controller.signal.aborted) return;
+        const next = (
+          await apiJson(token, "/api/v1/sync", syncResponseSchema, {
+            signal: controller.signal,
+          })
+        ).operation;
+        if (next.status === "idle" || (operationId !== null && next.operationId !== operationId)) {
+          setSyncOperation(next);
+          setSyncError(
+            "Reconciliation tracking was reset, likely because Sidekick restarted. Start reconciliation again.",
+          );
+          return;
+        }
+        operation = next;
+        setSyncOperation(operation);
+      }
+      if (controller.signal.aborted) return;
+      if (operation.status === "succeeded") {
+        setSyncError(null);
+        await load();
+        return;
+      }
+      if (operation.status === "failed") {
+        const code = operation.error?.error.replaceAll("_", " ") ?? "unknown error";
+        setSyncError(
+          `Reconciliation failed: ${code}.${operation.error?.retryable ? " Retry when the chain sources are available." : " Review Settings and the operator logs before retrying."}`,
+        );
+      }
+    },
+    [load, token],
+  );
   const sync = async () => {
+    if (syncing) return;
+    syncController.current?.abort();
+    const controller = new AbortController();
+    syncController.current = controller;
     setSyncing(true);
-    await load(true);
-    setSyncing(false);
+    setSyncError(null);
+    try {
+      const operation = (
+        await apiJson(token, "/api/v1/sync", syncResponseSchema, {
+          method: "POST",
+          signal: controller.signal,
+        })
+      ).operation;
+      if (operation.status === "idle") {
+        setSyncOperation(operation);
+        setSyncError("Reconciliation did not start. Retry the operation.");
+        return;
+      }
+      await monitorSync(operation, controller);
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        setSyncError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (syncController.current === controller) setSyncing(false);
+    }
   };
+  useEffect(() => {
+    if (!token) return;
+    const controller = new AbortController();
+    syncController.current?.abort();
+    syncController.current = controller;
+    void apiJson(token, "/api/v1/sync", syncResponseSchema, { signal: controller.signal })
+      .then(async ({ operation }) => {
+        setSyncOperation(operation);
+        if (operation.status !== "running") return;
+        setSyncing(true);
+        try {
+          await monitorSync(operation, controller);
+        } catch (cause) {
+          if (!controller.signal.aborted) {
+            setSyncError(cause instanceof Error ? cause.message : String(cause));
+          }
+        } finally {
+          if (syncController.current === controller) setSyncing(false);
+        }
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted) {
+          setSyncError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
+    return () => controller.abort();
+  }, [monitorSync, token]);
+  const refreshOperatorState = useCallback(async () => {
+    const refreshed = await load();
+    if (!refreshed) throw new Error("The latest operator state is not available yet.");
+  }, [load]);
   const markOnboardingStarted = useCallback(() => setOnboardingStarted(true), []);
   const setupNoticeKey = data
     ? `sidekick-setup-notice:${data.network}:${data.managerPrincipal}`
@@ -198,9 +376,55 @@ function App() {
     localStorage.setItem(setupNoticeKey, "dismissed");
     setDismissedSetupNoticeKey(setupNoticeKey);
   };
-  const content = data
-    ? {
-        overview: (
+  const lastStatusAt = data
+    ? Date.parse(data.freshness?.snapshotGeneratedAt ?? data.generatedAt)
+    : Number.NaN;
+  const ageMs = Number.isFinite(lastStatusAt) ? Math.max(0, now - lastStatusAt) : null;
+  const stale = Boolean(
+    data &&
+      (data.freshness?.status === "stale" ||
+        statusError ||
+        ageMs === null ||
+        ageMs > STATUS_STALE_AFTER_MS),
+  );
+  const ageLabel =
+    ageMs === null
+      ? "age unavailable"
+      : ageMs < 60_000
+        ? `${Math.floor(ageMs / 1_000)}s old`
+        : `${Math.floor(ageMs / 60_000)}m old`;
+  const content = (() => {
+    if (page === "health") {
+      return (
+        <SignerHealthPage
+          token={token}
+          context={
+            data
+              ? {
+                  network: data.preflight.compatibility.profileLabel ?? data.network,
+                  currentCycle: data.preflight.cycle.currentId,
+                  registration: data.registration,
+                  eligibility: data.setup?.eligibility ?? null,
+                }
+              : null
+          }
+        />
+      );
+    }
+    if (page === "settings") {
+      return (
+        <SettingsPage
+          data={data}
+          token={token}
+          setTheme={setTheme}
+          onSaved={refreshOperatorState}
+        />
+      );
+    }
+    if (!data) return null;
+    switch (page) {
+      case "overview":
+        return (
           <Overview
             data={data}
             token={token}
@@ -209,28 +433,39 @@ function App() {
             showSetupNotice={onboardingStarted === false && !setupNoticeDismissed}
             dismissSetupNotice={dismissSetupNotice}
           />
-        ),
-        manager: <Manager action={route.action} data={data} token={token} />,
-        pool: <Pool data={data} token={token} />,
-        rewards: <Rewards data={data} token={token} />,
-        health: (
-          <SignerHealthPage
+        );
+      case "manager":
+        return (
+          <Manager
+            action={route.action}
+            data={data}
+            operatorStateStale={stale}
             token={token}
-            context={{
-              network: data.preflight.compatibility.profileLabel ?? data.network,
-              currentCycle: data.preflight.cycle.currentId,
-              registration: data.registration,
-              eligibility: data.setup?.eligibility ?? null,
-            }}
+            onOperatorStateChanged={refreshOperatorState}
           />
-        ),
-        operations: <Operations data={data} token={token} sync={sync} syncing={syncing} />,
-        setup: <SetupPage data={data} token={token} onOnboardingStarted={markOnboardingStarted} />,
-        enrollment: <EnrollmentPage token={token} />,
-        settings: <SettingsPage data={data} token={token} setTheme={setTheme} />,
-      }[page]
-    : null;
-  if (!token) return <Login onLogin={login} />;
+        );
+      case "pool":
+        return <Pool data={data} token={token} />;
+      case "rewards":
+        return <Rewards data={data} operatorStateStale={stale} token={token} />;
+      case "operations":
+        return <Operations data={data} token={token} sync={sync} syncing={syncing} />;
+      case "setup":
+        return (
+          <SetupPage
+            data={data}
+            token={token}
+            onOnboardingStarted={markOnboardingStarted}
+            onOperatorStateChanged={refreshOperatorState}
+          />
+        );
+      case "enrollment":
+        return <EnrollmentPage token={token} />;
+      default:
+        return null;
+    }
+  })();
+  if (!token) return <Login onLogin={login} error={loginError} />;
   return (
     <div className="app" data-network={data?.network ?? "mainnet"}>
       <aside className="sidebar">
@@ -303,15 +538,28 @@ function App() {
             </button>
           </div>
         </div>
-        <div className={`freshness ${data?.preflight.status === "fail" ? "stale" : ""}`}>
+        <div className={`freshness ${stale || data?.preflight.status === "fail" ? "stale" : ""}`}>
           <span className="dot" />
-          <span>{data?.preflight.status === "fail" ? "Chain sources need attention" : "Live"}</span>
+          <span>
+            {!data
+              ? "Connecting"
+              : stale
+                ? "Last successful state"
+                : data.preflight.status === "fail"
+                  ? "Chain sources need attention"
+                  : "Live"}
+          </span>
           <span className="sep">·</span>
           <span className="mono">
             {data
-              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API difference ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${new Date(data.generatedAt).toLocaleTimeString()}`
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API difference ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
               : "loading operator state"}
           </span>
+          {stale ? (
+            <button type="button" className="btn btn-tertiary sm" onClick={() => void load()}>
+              Refresh state
+            </button>
+          ) : null}
           <span className="right">
             <span className="hint-dot-legend">
               <span className="src src-chain">contract read-only</span>
@@ -321,13 +569,66 @@ function App() {
           </span>
         </div>
         <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
-          {error ? (
+          {syncOperation?.status === "running" ? (
+            <div className="callout callout-info" role="status" aria-live="polite">
+              <ArrowClockwise className="ic spin" />
+              <div className="body">
+                <strong>Reconciliation in progress</strong>
+                <br />
+                {syncOperation.progress.message} · step {syncOperation.progress.completedSteps + 1}
+                of {syncOperation.progress.totalSteps}
+                {syncOperation.progress.itemsCompleted !== null ? (
+                  <>
+                    {" "}
+                    · {number(syncOperation.progress.itemsCompleted)}
+                    {syncOperation.progress.itemsTotal !== null
+                      ? ` of ${number(syncOperation.progress.itemsTotal)}`
+                      : ""}{" "}
+                    items
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {syncOperation?.status === "failed" && !syncError ? (
+            <div className="callout callout-critical" role="alert">
+              <WarningCircle className="ic" />
+              <div className="body">
+                <strong>Reconciliation failed</strong>
+                <br />
+                {(syncOperation.error?.error ?? "unknown error").replaceAll("_", " ")}.{" "}
+                {syncOperation.error?.retryable
+                  ? "Retry when the chain sources are available."
+                  : "Review Settings and the operator logs before retrying."}
+              </div>
+            </div>
+          ) : null}
+          {syncError ? (
+            <div className="callout callout-critical" role="alert">
+              <WarningCircle className="ic" />
+              <div className="body">
+                <strong>Reconciliation needs attention</strong>
+                <br />
+                {syncError}
+              </div>
+            </div>
+          ) : null}
+          {statusError ? (
             <div className="callout callout-critical error-banner">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Unable to load operator state</strong>
+                <strong>
+                  {data ? "Latest operator-state refresh failed" : "Unable to load operator state"}
+                </strong>
                 <br />
-                {error}
+                {statusError}
+                {data ? (
+                  <>
+                    <br />
+                    Showing the last successful snapshot from{" "}
+                    {new Date(data.generatedAt).toLocaleString()}.
+                  </>
+                ) : null}
                 <div className="actions">
                   <button
                     type="button"
@@ -341,12 +642,38 @@ function App() {
             </div>
           ) : null}
           {content ??
-            (!error ? (
+            (!statusError ? (
               <div className="loading-state">
                 <ArrowClockwise />
                 <p>Loading operator state</p>
               </div>
-            ) : null)}
+            ) : (
+              <div className="callout callout-neutral">
+                <div className="body">
+                  Settings and Signer Health remain available while operator state recovers.
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary sm"
+                      onClick={() => {
+                        location.hash = dashboardHash("settings");
+                      }}
+                    >
+                      Open settings
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tertiary sm"
+                      onClick={() => {
+                        location.hash = dashboardHash("health");
+                      }}
+                    >
+                      Open Signer Health
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
         </main>
       </div>
     </div>

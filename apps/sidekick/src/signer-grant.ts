@@ -8,6 +8,8 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
+import { UpstreamSchemaError } from "./chain-clients.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 const uint128Max = (1n << 128n) - 1n;
 const signerGrantOutputSchema = z
@@ -55,10 +57,16 @@ export interface VerifiedSignerGrant {
 
 export function parseAuthId(value: string): bigint {
   if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
-    throw new Error("auth-id must be a canonical unsigned decimal integer");
+    throw new OperatorWorkflowError(
+      400,
+      "invalid_auth_id",
+      "auth-id must be a canonical unsigned decimal integer",
+    );
   }
   const authId = BigInt(value);
-  if (authId > uint128Max) throw new Error("auth-id exceeds Clarity uint range");
+  if (authId > uint128Max) {
+    throw new OperatorWorkflowError(400, "invalid_auth_id", "auth-id exceeds Clarity uint range");
+  }
   return authId;
 }
 
@@ -75,7 +83,11 @@ async function getSignerGrantMessageHash(
   const manager = parseContractPrincipal(managerPrincipal);
   const pox5 = parseContractPrincipal(pox5ContractId);
   if (manager.network !== pox5.network) {
-    throw new Error("Manager and PoX-5 contract principals are on different networks");
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_network_mismatch",
+      "Manager and PoX-5 contract principals are on different networks",
+    );
   }
   const result = await node.callReadOnly(
     pox5ContractId,
@@ -85,7 +97,9 @@ async function getSignerGrantMessageHash(
   );
   const hash = decodeBuffer(result, "get-signer-grant-message-hash");
   if (hash.length !== 64) {
-    throw new Error(`PoX-5 returned a ${hash.length / 2}-byte signer grant hash; expected 32`);
+    throw new UpstreamSchemaError(
+      `PoX-5 returned a ${hash.length / 2}-byte signer grant hash; expected 32`,
+    );
   }
   return hash;
 }
@@ -128,17 +142,33 @@ export async function verifySignerGrantOutput(
   expectedAuthIdInput: string,
   input: unknown,
 ): Promise<VerifiedSignerGrant> {
-  const output = signerGrantOutputSchema.parse(input);
+  const parsed = signerGrantOutputSchema.safeParse(input);
+  if (!parsed.success) throw new OperatorWorkflowError(400, "invalid_signer_output");
+  const output = parsed.data;
   const manager = parseContractPrincipal(expectedManagerPrincipal);
   const expectedAuthId = parseAuthId(expectedAuthIdInput);
   if (output.signerManager !== expectedManagerPrincipal) {
-    throw new Error("Signer output manager principal does not match the ceremony");
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_verification_failed",
+      "Signer output manager principal does not match the ceremony",
+    );
   }
   if (output.authId !== expectedAuthId.toString()) {
-    throw new Error("Signer output auth ID does not match the ceremony");
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_verification_failed",
+      "Signer output auth ID does not match the ceremony",
+    );
   }
   const recoveryId = Number.parseInt(output.signerSignature.slice(-2), 16);
-  if (recoveryId > 3) throw new Error("Signer signature has an invalid recovery ID");
+  if (recoveryId > 3) {
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_verification_failed",
+      "Signer signature has an invalid recovery ID",
+    );
+  }
 
   const expectedMessageHashHex = await getSignerGrantMessageHash(
     node,
@@ -156,10 +186,18 @@ export async function verifySignerGrantOutput(
   try {
     recoveredKey = publicKeyFromSignatureRsv(expectedMessageHashHex, output.signerSignature);
   } catch {
-    throw new Error("Signer signature could not recover a public key");
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_verification_failed",
+      "Signer signature could not recover a public key",
+    );
   }
   if (!signatureValid || recoveredKey !== output.signerKey) {
-    throw new Error("Signer signature is not valid for the live PoX-5 grant hash and signer key");
+    throw new OperatorWorkflowError(
+      422,
+      "signer_grant_verification_failed",
+      "Signer signature is not valid for the live PoX-5 grant hash and signer key",
+    );
   }
 
   return {

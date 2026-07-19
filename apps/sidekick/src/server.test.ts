@@ -1,13 +1,63 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ChainAnchorError, RateLimitedError, UpstreamSchemaError } from "./chain-clients.js";
+import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 const walletIntentPrefixes = [
   "/api/v1/onboarding/wallet-intents",
   "/api/v1/wallet-intents",
 ] as const;
+const walletIntentAnchorMismatch = {
+  error: "wallet_intent_anchor_mismatch",
+  retryable: true,
+  node: { stacksTipHeight: 28_079, burnBlockHeight: 4_818 },
+  api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
+  poxBurnBlockHeight: 4_819,
+} as const;
+
+function retryableWalletIntentAnchorError(): ChainAnchorError {
+  return new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
+    retryable: true,
+    tips: {
+      node: walletIntentAnchorMismatch.node,
+      api: walletIntentAnchorMismatch.api,
+      poxBurnBlockHeight: walletIntentAnchorMismatch.poxBurnBlockHeight,
+    },
+  });
+}
+
+function reconciliationResult() {
+  return {
+    observedAt: "2026-07-19T18:00:00.000Z",
+    stakers: {
+      runId: "must-not-cross-api",
+      resumed: false,
+      status: "completed",
+      authoritative: true,
+      pagesProcessed: 2,
+      itemsProcessed: 125,
+      activeStakers: 120,
+      nodeVerifiedStxPositions: 118,
+      unverifiedStxDiscoveries: 2,
+      discrepanciesObservedThisInvocation: [{ principal: "must-not-cross-api" }],
+    },
+    events: {
+      stream: "must-not-cross-api",
+      resumed: true,
+      pagesProcessed: 1,
+      eventsProcessed: 20,
+      newEvents: 3,
+      replayedEvents: 17,
+      decodeFailures: 0,
+      reorgedEvents: 0,
+      stoppedAtKnownOverlap: true,
+    },
+  };
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -58,6 +108,36 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("returns stable workflow codes with safe operator guidance", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const onboarding = {
+      start: () => {
+        throw new OperatorWorkflowError(
+          409,
+          "onboarding_reset_confirmation_required",
+          "Switching onboarding paths requires explicit reset confirmation",
+        );
+      },
+    } as unknown as OnboardingService;
+    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/onboarding/start",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { path: "attach" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "onboarding_reset_confirmation_required",
+      message: "Switching onboarding paths requires explicit reset confirmation",
+      retryable: false,
+    });
   });
 
   it("protects and forwards signer health reads, refreshes, and source tests", async () => {
@@ -217,6 +297,101 @@ describe("local API", () => {
 
   it.each(
     walletIntentPrefixes,
+  )("returns retryable chain-source heights while preparing at %s", async (prefix) => {
+    const token = "test-operator-token-with-32-chars";
+    const wallet = {
+      prepare: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
+    };
+    const onboarding = { wallet } as unknown as OnboardingService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    servers.push(server);
+    const payload =
+      prefix === "/api/v1/onboarding/wallet-intents"
+        ? { action: "deploy-manager" }
+        : {
+            action: "update-fees",
+            actorPrincipal: "SP000000000000000000002Q6VF78",
+            feeBips: "250",
+          };
+
+    const response = await server.inject({
+      method: "POST",
+      url: prefix,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["retry-after"]).toBe("1");
+    expect(response.json()).toEqual(walletIntentAnchorMismatch);
+
+    for (const transient of [
+      new ChainAnchorError("Chain position moved during setup snapshot", { retryable: true }),
+      new ChainAnchorError("API tip changed at the same height", {
+        retryable: true,
+        tips: {
+          node: { stacksTipHeight: 28_100, burnBlockHeight: 4_819 },
+          api: { stacksTipHeight: 28_100, burnBlockHeight: 4_819 },
+          poxBurnBlockHeight: 4_819,
+        },
+      }),
+    ]) {
+      wallet.prepare.mockRejectedValueOnce(transient);
+      const unstable = await server.inject({
+        method: "POST",
+        url: prefix,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+      expect(unstable.statusCode).toBe(503);
+      expect(unstable.headers["retry-after"]).toBe("1");
+      expect(unstable.json()).toEqual({
+        error: "wallet_intent_anchor_unstable",
+        retryable: true,
+      });
+    }
+
+    wallet.prepare.mockRejectedValueOnce(new Error("unexpected failure"));
+    const generic = await server.inject({
+      method: "POST",
+      url: prefix,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(generic.statusCode).toBe(500);
+    expect(generic.json()).toEqual({ error: "internal_server_error" });
+  });
+
+  it("returns the same retryable mismatch while revalidating or replacing an intent", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
+    const wallet = {
+      refresh: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
+      replace: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
+    };
+    const onboarding = { wallet } as unknown as OnboardingService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    servers.push(server);
+
+    for (const prefix of walletIntentPrefixes) {
+      for (const operation of ["refresh", "replacement"] as const) {
+        const response = await server.inject({
+          method: "POST",
+          url: `${prefix}/${intentId}/${operation}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: {},
+        });
+        expect(response.statusCode).toBe(503);
+        expect(response.headers["retry-after"]).toBe("1");
+        expect(response.json()).toEqual(walletIntentAnchorMismatch);
+      }
+    }
+  });
+
+  it.each(
+    walletIntentPrefixes,
   )("serves the sealed wallet-intent lifecycle at %s", async (prefix) => {
     const token = "test-operator-token-with-32-chars";
     const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
@@ -333,6 +508,222 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.statusCode).toBe(200);
     expect(metrics.body).toContain("sidekick_http_requests_total");
+  });
+
+  it("runs reconciliation asynchronously with process-local single-flight progress", async () => {
+    const token = "test-operator-token-with-32-chars";
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const synchronize = vi.fn(async (options?: { onProgress?(progress: unknown): unknown }) => {
+      await options?.onProgress?.({
+        phase: "stakers-verification",
+        completed: 25,
+        total: 120,
+      });
+      await gate;
+      await options?.onProgress?.({ phase: "events", completed: 1, total: 1 });
+      return reconciliationResult();
+    });
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-07-19T18:00:02.000Z" }),
+      synchronize,
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const idle = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+    expect(idle.json().operation).toMatchObject({
+      operationId: null,
+      status: "idle",
+      phase: "idle",
+      processLocal: true,
+    });
+
+    const first = await server.inject({ method: "POST", url: "/api/v1/sync", headers });
+    const second = await server.inject({ method: "POST", url: "/api/v1/sync", headers });
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect(second.json().operation.operationId).toBe(first.json().operation.operationId);
+    expect(synchronize).toHaveBeenCalledOnce();
+
+    const running = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+    expect(running.json().operation).toMatchObject({
+      status: "running",
+      phase: "reconciling-stakers-verification",
+      processLocal: true,
+      progress: { itemsCompleted: 25, itemsTotal: 120 },
+    });
+
+    release?.();
+    await vi.waitFor(async () => {
+      const completed = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+      expect(completed.json().operation.status).toBe("succeeded");
+    });
+    const completed = (await server.inject({ method: "GET", url: "/api/v1/sync", headers })).json()
+      .operation;
+    expect(completed.result).toMatchObject({
+      snapshotGeneratedAt: "2026-07-19T18:00:02.000Z",
+      reconciliation: {
+        stakers: { discrepanciesObserved: 1 },
+        events: { eventsProcessed: 20 },
+      },
+    });
+    expect(JSON.stringify(completed)).not.toContain("must-not-cross-api");
+
+    const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).toContain("sidekick_sync_total 1");
+    expect(metrics.body).toContain("sidekick_sync_requests_total 2");
+  });
+
+  it("stores structured retryable reconciliation failures for polling", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({ generatedAt: "2026-07-19T18:00:00.000Z" }),
+      synchronize: async () => {
+        throw retryableWalletIntentAnchorError();
+      },
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect((await server.inject({ method: "POST", url: "/api/v1/sync", headers })).statusCode).toBe(
+      202,
+    );
+    await vi.waitFor(async () => {
+      const response = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+      expect(response.json().operation.status).toBe("failed");
+    });
+    const operation = (await server.inject({ method: "GET", url: "/api/v1/sync", headers })).json()
+      .operation;
+    expect(operation.error).toEqual({
+      error: "chain_sources_out_of_sync",
+      retryable: true,
+      node: walletIntentAnchorMismatch.node,
+      api: walletIntentAnchorMismatch.api,
+      poxBurnBlockHeight: walletIntentAnchorMismatch.poxBurnBlockHeight,
+    });
+  });
+
+  it("cancels and awaits background reconciliation during server shutdown", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const aborted = vi.fn();
+    const service = {
+      snapshot: async () => ({ generatedAt: "2026-07-19T18:00:00.000Z" }),
+      synchronize: async (options?: { signal?: AbortSignal }) =>
+        await new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              aborted();
+              reject(options.signal?.reason);
+            },
+            { once: true },
+          );
+        }),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/sync",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    await server.close();
+    expect(aborted).toHaveBeenCalledOnce();
+    servers.splice(servers.indexOf(server), 1);
+  });
+
+  it("classifies transient, content, malformed, and unexpected operator failures", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      summary: vi
+        .fn()
+        .mockRejectedValueOnce(retryableWalletIntentAnchorError())
+        .mockRejectedValueOnce(new Error("must-not-leak")),
+      synchronize: async () => reconciliationResult(),
+      updateSettings: vi.fn().mockRejectedValue(new RateLimitedError("limited", 3_000)),
+      poolCard: vi.fn().mockRejectedValue(new UpstreamSchemaError("bad upstream body")),
+    };
+    const health = {
+      current: async () => ({}),
+      refresh: async () => ({}),
+      testSource: vi.fn().mockRejectedValue(new HealthSourceError("timeout", "dns timed out")),
+    };
+    const server = createServer({ service, health, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const mismatch = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect([mismatch.statusCode, mismatch.headers["retry-after"], mismatch.json()]).toEqual([
+      503,
+      "1",
+      {
+        error: "chain_sources_out_of_sync",
+        retryable: true,
+        node: walletIntentAnchorMismatch.node,
+        api: walletIntentAnchorMismatch.api,
+        poxBurnBlockHeight: walletIntentAnchorMismatch.poxBurnBlockHeight,
+      },
+    ]);
+
+    const unavailable = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers,
+      payload: { kind: "node-metrics", url: "http://node.internal:9153" },
+    });
+    expect([
+      unavailable.statusCode,
+      unavailable.headers["retry-after"],
+      unavailable.json(),
+    ]).toEqual([503, "1", { error: "health_source_temporarily_unavailable", retryable: true }]);
+
+    const limited = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers,
+      payload: {},
+    });
+    expect([limited.statusCode, limited.headers["retry-after"], limited.json()]).toEqual([
+      429,
+      "3",
+      { error: "upstream_rate_limited", retryable: true },
+    ]);
+
+    const invalidContent = await server.inject({
+      method: "POST",
+      url: "/api/v1/pool-card/generate",
+      headers,
+      payload: { mode: "live" },
+    });
+    expect([invalidContent.statusCode, invalidContent.json()]).toEqual([
+      502,
+      { error: "upstream_response_invalid", retryable: false },
+    ]);
+
+    const malformed = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers,
+      payload: { kind: "unknown", url: "not-a-url" },
+    });
+    expect([malformed.statusCode, malformed.json()]).toEqual([
+      400,
+      { error: "invalid_health_source" },
+    ]);
+
+    const unexpected = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect([unexpected.statusCode, unexpected.json()]).toEqual([
+      500,
+      { error: "internal_server_error" },
+    ]);
+    expect(unexpected.body).not.toContain("must-not-leak");
   });
 
   it("validates and forwards bounded pagination for large operator datasets", async () => {

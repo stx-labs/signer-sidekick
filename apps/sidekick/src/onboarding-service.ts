@@ -33,6 +33,7 @@ import {
 } from "./signer-grant.js";
 import type { SidekickStore } from "./storage/store.js";
 import type { ManagerClaimWalletAuthoritativeObservation } from "./transaction-engine/manager-claim-wallet-intent.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 const freshInputSchema = z
   .object({
@@ -294,7 +295,11 @@ export class OnboardingService {
     const current = this.get();
     if (current?.path === path) return current;
     if (current && !reset) {
-      throw new Error("Switching onboarding paths requires explicit reset confirmation");
+      throw new OperatorWorkflowError(
+        409,
+        "onboarding_reset_confirmation_required",
+        "Switching onboarding paths requires explicit reset confirmation",
+      );
     }
     this.save(
       path,
@@ -320,7 +325,9 @@ export class OnboardingService {
   ): Promise<PublicOnboardingState> {
     const managerPrincipal = z.string().trim().min(1).parse(managerInput);
     if (managerPrincipal !== this.options.managerPrincipal) {
-      throw new Error(
+      throw new OperatorWorkflowError(
+        422,
+        "attach_manager_mismatch",
         "Attach verification must match SIDEKICK_MANAGER_PRINCIPAL for this deployment",
       );
     }
@@ -356,17 +363,29 @@ export class OnboardingService {
     input: unknown,
     observedAt = new Date().toISOString(),
   ): Promise<PublicOnboardingState> {
-    const freshInput = freshInputSchema.parse(input);
+    const parsed = freshInputSchema.safeParse(input);
+    if (!parsed.success) throw new OperatorWorkflowError(400, "invalid_fresh_setup_input");
+    const freshInput = parsed.data;
     const managerPrincipal = `${freshInput.adminPrincipal}.${freshInput.contractName}`;
-    parseContractPrincipal(managerPrincipal);
+    try {
+      parseContractPrincipal(managerPrincipal);
+    } catch {
+      throw new OperatorWorkflowError(400, "invalid_fresh_setup_input");
+    }
     if (managerPrincipal !== this.options.managerPrincipal) {
-      throw new Error(
+      throw new OperatorWorkflowError(
+        422,
+        "fresh_manager_mismatch",
         "Fresh setup principal must match SIDEKICK_MANAGER_PRINCIPAL for this deployment",
       );
     }
     const { config, node, api } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
-    assertManagerRenderPreflight(config.network, preflight);
+    try {
+      assertManagerRenderPreflight(config.network, preflight);
+    } catch {
+      throw new OperatorWorkflowError(422, "fresh_setup_sources_incompatible");
+    }
     const compatibilityStore = await loadNetworkCompatibilityProfiles({
       ...(config.compatibilityProfilesDirectory
         ? { directory: config.compatibilityProfilesDirectory }
@@ -423,12 +442,16 @@ export class OnboardingService {
   async prepareGrant(observedAt = new Date().toISOString()): Promise<PublicOnboardingState> {
     const { data } = this.readData("fresh");
     if (!data.freshInput || !data.activationPlan) {
-      throw new Error("Prepare the fresh manager artifact before starting the signer grant");
+      throw new OperatorWorkflowError(
+        409,
+        "fresh_setup_not_prepared",
+        "Prepare the fresh manager artifact before starting the signer grant",
+      );
     }
     const { config, node, api } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Signer grant preparation requires healthy sources and active PoX-5");
+      throw new OperatorWorkflowError(422, "signer_grant_sources_incompatible");
     }
     const preparation = await prepareSignerGrant(
       node,
@@ -460,7 +483,11 @@ export class OnboardingService {
   ): Promise<PublicOnboardingState> {
     const { data } = this.readData("fresh");
     if (!data.freshInput || !data.signerGrant.preparation || !data.activationPlan) {
-      throw new Error("Prepare the signer grant before verifying signer output");
+      throw new OperatorWorkflowError(
+        409,
+        "signer_grant_not_prepared",
+        "Prepare the signer grant before verifying signer output",
+      );
     }
     const { node } = this.options.runtimeSettings.clients();
     const verified = await verifySignerGrantOutput(
@@ -497,7 +524,7 @@ export class OnboardingService {
     const { node, api, config } = this.options.runtimeSettings.clients();
     const preflight = await runOperatorPreflight(config, node, api);
     if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
-      throw new Error("Signer grant preparation requires healthy sources and active PoX-5");
+      throw new OperatorWorkflowError(422, "signer_grant_sources_incompatible");
     }
     const preparation = await prepareSignerGrant(
       node,
@@ -525,10 +552,20 @@ export class OnboardingService {
     observedAt = new Date().toISOString(),
   ): Promise<PublicOnboardingState> {
     const { stored, data } = this.managerOperationData();
-    if (!stored) throw new Error("Prepare a fresh signer grant before verifying signer output");
+    if (!stored) {
+      throw new OperatorWorkflowError(
+        409,
+        "signer_grant_not_prepared",
+        "Prepare a fresh signer grant before verifying signer output",
+      );
+    }
     const preparation = data.signerGrant.preparation;
     if (!preparation)
-      throw new Error("Prepare a fresh signer grant before verifying signer output");
+      throw new OperatorWorkflowError(
+        409,
+        "signer_grant_not_prepared",
+        "Prepare a fresh signer grant before verifying signer output",
+      );
     const { node } = this.options.runtimeSettings.clients();
     const verified = await verifySignerGrantOutput(
       node,
@@ -553,7 +590,13 @@ export class OnboardingService {
 
   async refreshFresh(observedAt = new Date().toISOString()): Promise<FreshOnboardingRefresh> {
     const { data } = this.readData("fresh");
-    if (!data.activationPlan) throw new Error("Prepare the fresh setup before refreshing it");
+    if (!data.activationPlan) {
+      throw new OperatorWorkflowError(
+        409,
+        "fresh_setup_not_prepared",
+        "Prepare the fresh setup before refreshing it",
+      );
+    }
     const { config, node, api } = this.options.runtimeSettings.clients();
     const { preflight, manager, registration, setup } = await readSetupSnapshot({
       config,
@@ -622,7 +665,7 @@ export class OnboardingService {
     const step = z.string().min(1).parse(stepInput);
     const { stored, data } = this.readData();
     if (step !== "complete" && !data.activationPlan?.steps.some(({ id }) => id === step)) {
-      throw new Error("Unknown onboarding step");
+      throw new OperatorWorkflowError(400, "invalid_onboarding_step");
     }
     this.save(stored.path, step, stored.status, data, observedAt, "step-selected");
     return this.getOrThrow();
@@ -630,7 +673,7 @@ export class OnboardingService {
 
   artifact(kind: "source" | "manifest"): { filename: string; contentType: string; body: string } {
     const { data } = this.readData("fresh");
-    if (!data.managerArtifact) throw new Error("No manager artifact has been generated");
+    if (!data.managerArtifact) throw new OperatorWorkflowError(404, "artifact_not_found");
     if (kind === "source") {
       return {
         filename: data.managerArtifact.manifest.artifact.sourceFile,
@@ -650,9 +693,9 @@ export class OnboardingService {
     data: PersistedOnboardingData;
   } {
     const stored = this.options.store.getOnboardingState();
-    if (!stored) throw new Error("Start an onboarding path first");
+    if (!stored) throw new OperatorWorkflowError(409, "onboarding_not_started");
     if (expectedPath && stored.path !== expectedPath) {
-      throw new Error(`This action requires the ${expectedPath} onboarding path`);
+      throw new OperatorWorkflowError(409, "onboarding_path_conflict");
     }
     const data = persistedOnboardingDataSchema.safeParse(stored.state);
     if (!data.success) throw new Error("Stored onboarding state is invalid; restart onboarding");

@@ -80,7 +80,10 @@ export function validateHealthEndpointUrl(value: string, name = "Health endpoint
   }
 }
 
-async function resolveAllowedAddress(url: URL): Promise<{ address: string; family: 4 | 6 }> {
+async function resolveAllowedAddress(
+  url: URL,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<{ address: string; family: 4 | 6 }> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   if (isIP(hostname)) {
     if (isDeniedHealthAddress(hostname)) {
@@ -92,12 +95,25 @@ async function resolveAllowedAddress(url: URL): Promise<{ address: string; famil
     return { address: hostname, family: isIP(hostname) as 4 | 6 };
   }
   let addresses: LookupAddress[];
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    addresses = await lookup(hostname, { all: true, verbatim: true });
+    addresses = await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new HealthSourceError("timeout", "Health endpoint DNS timed out")),
+          timeoutMs,
+        );
+        timeout.unref?.();
+      }),
+    ]);
   } catch (error) {
+    if (error instanceof HealthSourceError) throw error;
     throw new HealthSourceError("dns-unavailable", "Health endpoint DNS is unavailable", {
       cause: error,
     });
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
   if (addresses.length === 0) {
     throw new HealthSourceError("dns-unavailable", "Health endpoint DNS returned no addresses");
@@ -139,17 +155,20 @@ export async function fetchHealthSource(
 ): Promise<HealthHttpResponse> {
   const normalized = validateHealthEndpointUrl(input);
   const url = new URL(normalized);
-  const resolved = await resolveAllowedAddress(url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
   const startedAt = performance.now();
+  const resolved = await resolveAllowedAddress(url, timeoutMs);
+  const remainingMs = Math.max(1, timeoutMs - Math.round(performance.now() - startedAt));
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
 
   return await new Promise<HealthHttpResponse>((resolve, reject) => {
     let settled = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const finishError = (error: HealthSourceError) => {
       if (settled) return;
       settled = true;
+      if (deadline) clearTimeout(deadline);
       reject(error);
     };
     const outgoing = request(
@@ -191,6 +210,7 @@ export async function fetchHealthSource(
             return;
           }
           settled = true;
+          if (deadline) clearTimeout(deadline);
           resolve({
             body: Buffer.concat(chunks).toString("utf8"),
             contentType:
@@ -210,10 +230,11 @@ export async function fetchHealthSource(
         });
       },
     );
-    outgoing.setTimeout(timeoutMs, () => {
+    deadline = setTimeout(() => {
       outgoing.destroy();
       finishError(new HealthSourceError("timeout", "Health endpoint request timed out"));
-    });
+    }, remainingMs);
+    deadline.unref?.();
     outgoing.on("error", (error) => {
       finishError(
         new HealthSourceError("connection-failed", "Health endpoint connection failed", {

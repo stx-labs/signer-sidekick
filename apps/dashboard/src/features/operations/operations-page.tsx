@@ -1,6 +1,6 @@
 import { Eye } from "@phosphor-icons/react";
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
-import { lazy, Suspense } from "react";
+import { Component, lazy, type ReactNode, Suspense } from "react";
 import { AlertActionButton } from "../../shared/alert-action-button.js";
 import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { number } from "../../shared/format.js";
@@ -9,6 +9,33 @@ const EngineOperations = lazy(async () => {
   const module = await import("./engine-operations.js");
   return { default: module.EngineOperations };
 });
+
+class EngineChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <section className="card engine-unavailable" role="alert">
+        <div className="card-head">
+          <h2>Transaction engine</h2>
+          <Badge state="caution">Interface unavailable</Badge>
+        </div>
+        <p className="muted">
+          The transaction-engine interface could not be loaded. Observation data below remains
+          available.
+        </p>
+        <button type="button" className="btn btn-secondary" onClick={() => location.reload()}>
+          Reload dashboard
+        </button>
+      </section>
+    );
+  }
+}
 
 type Snapshot = DashboardSnapshot;
 
@@ -29,13 +56,15 @@ export function Operations({
         title="Operations"
         lede="Review durable transaction jobs, exact approvals, ingestion, alerts, and authoritative reconciliation evidence."
       />
-      <Suspense fallback={<div className="loading-state">Loading transaction engine</div>}>
-        <EngineOperations
-          chainId={data.preflight.node.networkId}
-          network={data.network}
-          token={token}
-        />
-      </Suspense>
+      <EngineChunkBoundary>
+        <Suspense fallback={<div className="loading-state">Loading transaction engine</div>}>
+          <EngineOperations
+            chainId={data.preflight.node.networkId}
+            network={data.network}
+            token={token}
+          />
+        </Suspense>
+      </EngineChunkBoundary>
       <div className="card-standout operation-mode">
         <div>
           <span className="muted">Observation</span>

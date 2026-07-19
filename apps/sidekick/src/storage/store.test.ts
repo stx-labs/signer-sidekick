@@ -71,6 +71,8 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE signer_staker_api_scan_items;
+    DROP TABLE signer_staker_api_scans;
     DROP TABLE browser_wallet_intent_observations;
     DROP TABLE browser_wallet_intents;
     DROP TABLE engine_force_observe_control;
@@ -232,7 +234,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 17,
+      schemaVersion: 18,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -893,13 +895,13 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 17,
+      schemaVersion: 18,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migration 17 once", async () => {
+  it("upgrades a persisted migration 13 database through migration 18 once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -919,7 +921,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -942,6 +944,9 @@ describe("Sidekick SQLite store", () => {
     expect(
       inspection.prepare("SELECT name FROM schema_migrations WHERE version = 17").get(),
     ).toEqual({ name: "browser_wallet_manager_actions" });
+    expect(
+      inspection.prepare("SELECT name FROM schema_migrations WHERE version = 18").get(),
+    ).toEqual({ name: "durable_signer_staker_api_rosters" });
     expect(
       inspection.prepare("SELECT name FROM sqlite_master WHERE name = 'transaction_jobs'").get(),
     ).toEqual({ name: "transaction_jobs" });
@@ -1032,7 +1037,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(17);
+    expect(upgraded.store.schemaVersion()).toBe(18);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1089,6 +1094,8 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE signer_staker_api_scan_items;
+      DROP TABLE signer_staker_api_scans;
       DROP TABLE browser_wallet_intent_observations;
       DROP TABLE browser_wallet_intents;
       DELETE FROM schema_migrations WHERE version >= 15;
@@ -1099,7 +1106,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1250,7 +1257,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",

@@ -1,6 +1,6 @@
 import { ArrowClockwise, GearSix, Pulse, WarningCircle } from "@phosphor-icons/react";
 import { type HealthSnapshot, healthSnapshotSchema } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "./api-client.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 
@@ -86,26 +86,36 @@ export function SignerHealthPage({
   context,
 }: {
   token: string;
-  context: SignerHealthContext;
+  context: SignerHealthContext | null;
 }) {
   const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const activeRequest = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (force = false) => {
+      if (!force && activeRequest.current) return;
+      activeRequest.current?.abort();
+      const controller = new AbortController();
+      activeRequest.current = controller;
       setRefreshing(force);
       try {
         setSnapshot(
           await fetchHealthSnapshot(token, force ? "/api/v1/health/refresh" : "/api/v1/health", {
             method: force ? "POST" : "GET",
+            signal: controller.signal,
           }),
         );
         setError(null);
       } catch (cause) {
+        if (controller.signal.aborted) return;
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
-        setRefreshing(false);
+        if (activeRequest.current === controller) {
+          activeRequest.current = null;
+          setRefreshing(false);
+        }
       }
     },
     [token],
@@ -114,7 +124,11 @@ export function SignerHealthPage({
   useEffect(() => {
     void load();
     const interval = setInterval(() => void load(), 30_000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
   }, [load]);
 
   if (!snapshot) {
@@ -126,7 +140,29 @@ export function SignerHealthPage({
             <p className="lede">Live operational state from the configured node and signer.</p>
           </div>
         </div>
-        <div className="card">{error ?? "Collecting the first health sample…"}</div>
+        <div className={`callout ${error ? "callout-critical" : "callout-neutral"}`}>
+          <div className="body">
+            {error
+              ? `Could not load signer health: ${error}`
+              : "Collecting the first health sample…"}
+            {error ? (
+              <div className="actions">
+                <button type="button" className="btn btn-secondary sm" onClick={() => void load()}>
+                  Retry health
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-tertiary sm"
+                  onClick={() => {
+                    location.hash = "settings";
+                  }}
+                >
+                  Open settings
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </>
     );
   }
@@ -211,8 +247,8 @@ export function SignerHealthPage({
           <Metric label="Network">
             <span className="mono">
               {snapshot.node.networkId === null
-                ? context.network
-                : `${context.network} · 0x${snapshot.node.networkId.toString(16).padStart(8, "0")}`}
+                ? (context?.network ?? snapshot.signer.network ?? "unknown")
+                : `${context?.network ?? snapshot.signer.network ?? "network"} · 0x${snapshot.node.networkId.toString(16).padStart(8, "0")}`}
             </span>
           </Metric>
           <Metric label="Stacks tip">
@@ -309,8 +345,8 @@ export function SignerHealthPage({
             </Metric>
             <Metric label="Reward cycle">
               <span className="mono">
-                {displayNumber(snapshot.signer.rewardCycle)} observed · {context.currentCycle}{" "}
-                current
+                {displayNumber(snapshot.signer.rewardCycle)} observed ·{" "}
+                {context?.currentCycle ?? "—"} current
               </span>
             </Metric>
             <Metric label="Signer STX balance">{displayStx(snapshot.signer.stxBalanceUstx)}</Metric>
@@ -318,23 +354,31 @@ export function SignerHealthPage({
           <div>
             <Metric label="Manager registration">
               <span
-                className={`badge b-${context.registration?.registered ? "success" : "caution"}`}
+                className={`badge b-${context?.registration?.registered ? "success" : "caution"}`}
               >
-                {context.registration?.registered ? "Confirmed" : "Missing"}
+                {context
+                  ? context.registration?.registered
+                    ? "Confirmed"
+                    : "Missing"
+                  : "Unavailable"}
               </span>
             </Metric>
             <Metric label="Signer-key grant">
               <span
-                className={`badge b-${context.registration?.signerKeyGrantValid ? "success" : "caution"}`}
+                className={`badge b-${context?.registration?.signerKeyGrantValid ? "success" : "caution"}`}
               >
-                {context.registration?.signerKeyGrantValid ? "Valid" : "Needs attention"}
+                {context
+                  ? context.registration?.signerKeyGrantValid
+                    ? "Valid"
+                    : "Needs attention"
+                  : "Unavailable"}
               </span>
             </Metric>
             <Metric label="Current cycle">
-              <EligibilityState value={context.eligibility?.current ?? null} />
+              <EligibilityState value={context?.eligibility?.current ?? null} />
             </Metric>
             <Metric label="Next cycle">
-              <EligibilityState value={context.eligibility?.next ?? null} />
+              <EligibilityState value={context?.eligibility?.next ?? null} />
             </Metric>
             <div className="section-title health-window-title">Last hour</div>
             <Metric label="Stacks block proposals">

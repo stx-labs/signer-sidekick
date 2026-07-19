@@ -1,5 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
-import { health, responseFor, roster, snapshot } from "./large-pool-fixture.mjs";
+import {
+  health,
+  reconciliationResponse,
+  responseFor,
+  roster,
+  snapshot,
+} from "./large-pool-fixture.mjs";
 
 const credential = "fixture-operator-token-32-characters";
 const consoleErrors = new WeakMap<Page, string[]>();
@@ -28,6 +34,15 @@ async function login(page: Page) {
   await page.getByLabel("Operator credential").fill(credential);
   await page.getByRole("button", { name: "Open console" }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+}
+
+function discardExpectedHttpConsoleError(page: Page, status: number) {
+  consoleErrors.set(
+    page,
+    (consoleErrors.get(page) ?? []).filter(
+      (message) => !message.includes(`server responded with a status of ${status}`),
+    ),
+  );
 }
 
 async function openPage(page: Page, id: string, heading: string) {
@@ -217,6 +232,59 @@ function registerWalletIntent(actorPrincipal: string) {
   };
 }
 
+function updateFeesWalletIntent(
+  actorPrincipal: string,
+  status: "submitted" | "mempool" | "complete",
+) {
+  const base = registerWalletIntent(actorPrincipal).intent;
+  const txid = `0x${"cd".repeat(32)}`;
+  return {
+    intent: {
+      ...base,
+      action: "update-fees",
+      request: { action: "update-fees", actorPrincipal, feeBips: "250" },
+      transaction: {
+        ...base.transaction,
+        params: {
+          ...base.transaction.params,
+          functionName: "update-fees",
+          functionArgs: ["0x0100000000000000fa"],
+        },
+      },
+      review: {
+        title: "Update the manager fee",
+        summary: "Set the manager fee to 250 basis points.",
+        expectedPostState: "The configured manager fee is 250 basis points.",
+        fields: [
+          { label: "Manager", value: snapshot.managerPrincipal },
+          { label: "Sender", value: actorPrincipal },
+          { label: "Fee", value: "250 basis points" },
+        ],
+      },
+      status,
+      txid,
+      verification:
+        status === "complete"
+          ? {
+              outcome: "complete",
+              observedAt: "2026-07-19T18:00:00.000Z",
+              canonical: true,
+              blockHeight: 14_201,
+              indexBlockHash: `0x${"ef".repeat(32)}`,
+              detail: "The manual refresh verified the fee update.",
+            }
+          : {
+              outcome: status,
+              observedAt: "2026-07-19T17:59:00.000Z",
+              canonical: null,
+              blockHeight: null,
+              indexBlockHash: null,
+              detail: "The transaction is awaiting canonical confirmation.",
+            },
+    },
+  };
+}
+
 function finalVerificationOnboarding() {
   const complete = (id: string, title: string): FixtureStep => ({
     id,
@@ -369,6 +437,140 @@ function engineFixture() {
   };
   return { approval, job, jobId, status, summary };
 }
+
+test("keeps Settings and Signer Health usable when initial operator state fails", async ({
+  page,
+}) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/status") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "operator_state_temporarily_unavailable", retryable: true }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(responseFor(route.request().url())),
+    });
+  });
+
+  await page.goto("/#settings");
+  await page.getByLabel("Operator credential").fill(credential);
+  await page.getByRole("button", { name: "Open console" }).click();
+
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await expect(page.getByText("Unable to load operator state")).toBeVisible();
+  await expect(page.getByLabel("Display name")).toBeVisible();
+
+  await openPage(page, "health", "Signer Health");
+  await expect(page.getByRole("heading", { name: "Stacks node" })).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+test("keeps setup read-only until saved progress loads", async ({ page }) => {
+  let onboardingAvailable = false;
+  let startRequests = 0;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/onboarding" && route.request().method() === "GET") {
+      if (!onboardingAvailable) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "upstream_temporarily_unavailable", retryable: true }),
+        });
+        return;
+      }
+    }
+    if (request.pathname === "/api/v1/onboarding/start") startRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(responseFor(route.request().url())),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByRole("button", { name: "Retry setup" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toHaveCount(0);
+  expect(startRequests).toBe(0);
+
+  onboardingAvailable = true;
+  await page.getByRole("button", { name: "Retry setup" }).click();
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
+  expect(startRequests).toBe(0);
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+test("blocks manager actions until stale operator state refreshes", async ({ page }) => {
+  let current = false;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/status" && !current
+        ? {
+            ...snapshot,
+            generatedAt: "2026-07-15T12:10:00.000Z",
+            freshness: {
+              status: "stale",
+              snapshotGeneratedAt: "2026-07-15T12:10:00.000Z",
+              servedAt: new Date().toISOString(),
+              reason: "refresh-failed",
+            },
+          }
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "manager", "Manager");
+  await expect(page.getByRole("button", { name: /Add admin/ })).toBeDisabled();
+  current = true;
+  await page.getByRole("button", { name: "Refresh state" }).click();
+  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+});
+
+test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/status") {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "unauthorized" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(responseFor(route.request().url())),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Operator credential").fill(credential);
+  await page.getByRole("button", { name: "Open console" }).click();
+
+  await expect(page.getByRole("heading", { name: "Operator access" })).toBeVisible();
+  await expect(
+    page.getByText("The operator credential was rejected. Check it and try again."),
+  ).toBeVisible();
+  discardExpectedHttpConsoleError(page, 401);
+});
 
 test("renders every operator screen without leaking the credential", async ({ page }) => {
   await login(page);
@@ -596,6 +798,7 @@ test("required actions provide their resolving control and exclude informational
     alerts: [rewardsAlert, withdrawalAlert, informationalAlert],
   };
   let syncRequests = 0;
+  let syncStarted = false;
 
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
@@ -604,8 +807,12 @@ test("required actions provide their resolving control and exclude informational
     if (request.pathname === "/api/v1/status") {
       body = actionSnapshot;
     } else if (request.pathname === "/api/v1/sync") {
-      syncRequests += 1;
-      body = { snapshot: actionSnapshot };
+      const started = route.request().method() === "POST";
+      if (started) {
+        syncRequests += 1;
+        syncStarted = true;
+      }
+      body = reconciliationResponse(started ? "running" : syncStarted ? "succeeded" : "idle");
     } else {
       body = responseFor(route.request().url());
     }
@@ -624,6 +831,7 @@ test("required actions provide their resolving control and exclude informational
   await expect(requiredActions.getByText("Custom Manager", { exact: true })).not.toBeVisible();
 
   await requiredActions.getByRole("button", { name: "Reconcile now" }).click();
+  await expect(page.getByText("Reconciliation in progress")).toBeVisible();
   await expect.poll(() => syncRequests).toBe(1);
 
   await requiredActions.getByRole("button", { name: "Review L1 withdrawals" }).click();
@@ -862,6 +1070,73 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await page.getByLabel("Admin principal to remove").fill(adminPrincipal);
   await expect(page.getByText("V1 does not allow an admin to remove itself.")).toBeVisible();
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+});
+
+test("explains a temporary chain-source mismatch while preparing a wallet request", async ({
+  page,
+}) => {
+  let walletAttempts = 0;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const walletRequest =
+      request.pathname === "/api/v1/wallet-intents" && route.request().method() === "POST";
+    if (walletRequest) walletAttempts += 1;
+    await route.fulfill({
+      status: walletRequest ? 503 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        walletRequest
+          ? walletAttempts === 1
+            ? {
+                error: "wallet_intent_anchor_mismatch",
+                retryable: true,
+                node: { stacksTipHeight: 28_079, burnBlockHeight: 4_818 },
+                api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
+                poxBurnBlockHeight: 4_819,
+              }
+            : { error: "wallet_intent_anchor_unstable", retryable: true }
+          : responseFor(route.request().url()),
+      ),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "manager", "Manager");
+  await page.evaluate(() => {
+    location.hash = "#manager?action=update-fees";
+  });
+  await page.getByLabel("Signing manager admin").fill(snapshot.managerPrincipal.split(".")[0]);
+  await page.getByLabel("New fee (basis points)").fill("250");
+
+  const walletReview = page.getByRole("region", { name: "Browser wallet" });
+  await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+
+  const alert = walletReview.getByRole("alert");
+  await expect(alert).toContainText("Node, API, and PoX chain data are temporarily out of sync.");
+  await expect(alert).toContainText("Node: Stacks 28,079, Bitcoin 4,818.");
+  await expect(alert).toContainText("API: Stacks 28,097, Bitcoin 4,819.");
+  await expect(alert).toContainText(
+    "Sidekick retried. This attempt did not send a new transaction to the wallet or submit one.",
+  );
+  await expect(alert).toContainText("If this persists, verify the node and API URLs in Settings.");
+  await expect(
+    walletReview.getByRole("button", { name: "Review wallet transaction" }),
+  ).toBeEnabled();
+
+  await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+  await expect(alert).toContainText(
+    "The chain position changed while Sidekick checked the request.",
+  );
+  await expect(alert).not.toContainText("Node: Stacks");
+  await expect(
+    walletReview.getByRole("button", { name: "Review wallet transaction" }),
+  ).toBeEnabled();
+  expect(consoleErrors.get(page)).toEqual([
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  ]);
+  consoleErrors.set(page, []);
 });
 
 test("requires a fresh signer grant before preparing a Testnet registration wallet request", async ({
@@ -1849,6 +2124,201 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   await expect(page.getByText(`51–100 of ${roster.length}`)).toBeVisible();
   await page.getByLabel("Search principal").fill(roster[122].stakerPrincipal);
   await expect(page.getByText("1–1 of 1")).toBeVisible();
+});
+
+test("manual wallet verification supersedes an overlapping automatic poll", async ({ page }) => {
+  await page.clock.install();
+  const actorPrincipal = snapshot.managerPrincipal.split(".")[0];
+  let refreshCalls = 0;
+  let releaseAutomaticRefresh: (() => void) | null = null;
+  const automaticRefreshReleased = new Promise<void>((resolve) => {
+    releaseAutomaticRefresh = resolve;
+  });
+  let finishAutomaticRefresh: (() => void) | null = null;
+  const automaticRefreshFinished = new Promise<void>((resolve) => {
+    finishAutomaticRefresh = resolve;
+  });
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    let heldAutomaticRefresh = false;
+    if (request.pathname === "/api/v1/wallet-intents" && route.request().method() === "POST") {
+      body = updateFeesWalletIntent(actorPrincipal, "submitted");
+    } else if (
+      request.pathname ===
+      `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}/refresh`
+    ) {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        heldAutomaticRefresh = true;
+        await automaticRefreshReleased;
+        body = updateFeesWalletIntent(actorPrincipal, "mempool");
+      } else {
+        body = updateFeesWalletIntent(actorPrincipal, "complete");
+      }
+    } else {
+      body = responseFor(route.request().url());
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    } catch (cause) {
+      if (!heldAutomaticRefresh) throw cause;
+    } finally {
+      if (heldAutomaticRefresh) finishAutomaticRefresh?.();
+    }
+  });
+
+  try {
+    await login(page);
+    await page.evaluate(() => {
+      location.hash = "#manager?action=update-fees";
+    });
+    await page.getByLabel("Signing manager admin").fill(actorPrincipal);
+    await page.getByLabel("New fee (basis points)").fill("250");
+    const walletReview = page.getByRole("region", { name: "Browser wallet" });
+    await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+    await expect(walletReview.getByRole("button", { name: "Refresh verification" })).toBeVisible();
+
+    await page.clock.runFor(15_000);
+    await expect.poll(() => refreshCalls).toBe(1);
+    await walletReview.getByRole("button", { name: "Refresh verification" }).click();
+    await expect.poll(() => refreshCalls).toBe(2);
+    await expect(walletReview).toContainText("The manual refresh verified the fee update.");
+  } finally {
+    releaseAutomaticRefresh?.();
+    await automaticRefreshFinished;
+  }
+
+  await expect(page.getByRole("region", { name: "Browser wallet" })).toContainText(
+    "The manual refresh verified the fee update.",
+  );
+});
+
+test("forced Signer Health refresh supersedes an overlapping ordinary poll", async ({ page }) => {
+  await page.clock.install();
+  let holdNextOrdinaryPoll = false;
+  let ordinaryPollStarted = false;
+  let releaseOrdinaryPoll: (() => void) | null = null;
+  const ordinaryPollReleased = new Promise<void>((resolve) => {
+    releaseOrdinaryPoll = resolve;
+  });
+  let finishOrdinaryPoll: (() => void) | null = null;
+  const ordinaryPollFinished = new Promise<void>((resolve) => {
+    finishOrdinaryPoll = resolve;
+  });
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    let heldOrdinaryPoll = false;
+    if (request.pathname === "/api/v1/health" && route.request().method() === "GET") {
+      if (holdNextOrdinaryPoll && !ordinaryPollStarted) {
+        heldOrdinaryPoll = true;
+        ordinaryPollStarted = true;
+        await ordinaryPollReleased;
+        body = { ...health, node: { ...health.node, version: "stale-poll-version" } };
+      } else {
+        body = health;
+      }
+    } else if (
+      request.pathname === "/api/v1/health/refresh" &&
+      route.request().method() === "POST"
+    ) {
+      body = { ...health, node: { ...health.node, version: "forced-refresh-version" } };
+    } else {
+      body = responseFor(route.request().url());
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    } catch (cause) {
+      if (!heldOrdinaryPoll) throw cause;
+    } finally {
+      if (heldOrdinaryPoll) finishOrdinaryPoll?.();
+    }
+  });
+
+  try {
+    await login(page);
+    await openPage(page, "health", "Signer Health");
+    await expect(page.getByText(health.node.version, { exact: true })).toBeVisible();
+    holdNextOrdinaryPoll = true;
+    await page.clock.runFor(30_000);
+    await expect.poll(() => ordinaryPollStarted).toBe(true);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(page.getByText("forced-refresh-version", { exact: true })).toBeVisible();
+  } finally {
+    releaseOrdinaryPoll?.();
+    await ordinaryPollFinished;
+  }
+
+  await expect(page.getByText("forced-refresh-version", { exact: true })).toBeVisible();
+  await expect(page.getByText("stale-poll-version", { exact: true })).toHaveCount(0);
+});
+
+test("editing a Settings source invalidates its overlapping connection test", async ({ page }) => {
+  let sourceTestCalls = 0;
+  let releaseSourceTest: (() => void) | null = null;
+  const sourceTestReleased = new Promise<void>((resolve) => {
+    releaseSourceTest = resolve;
+  });
+  let finishSourceTest: (() => void) | null = null;
+  const sourceTestFinished = new Promise<void>((resolve) => {
+    finishSourceTest = resolve;
+  });
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const heldSourceTest = request.pathname === "/api/v1/health/test-source";
+    let body: unknown;
+    if (heldSourceTest) {
+      sourceTestCalls += 1;
+      await sourceTestReleased;
+      body = { status: "connected", signals: 7 };
+    } else {
+      body = responseFor(route.request().url());
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    } catch (cause) {
+      if (!heldSourceTest) throw cause;
+    } finally {
+      if (heldSourceTest) finishSourceTest?.();
+    }
+  });
+
+  try {
+    await login(page);
+    await openPage(page, "settings", "Settings");
+    const metricsUrl = page.getByLabel("Node metrics URL");
+    await metricsUrl.locator("xpath=following-sibling::button").click();
+    await expect.poll(() => sourceTestCalls).toBe(1);
+    await expect(page.getByText("Connecting…", { exact: true })).toBeVisible();
+
+    await metricsUrl.fill("http://replacement-node:9153");
+    await expect(page.getByText("Connecting…", { exact: true })).toHaveCount(0);
+  } finally {
+    releaseSourceTest?.();
+    await sourceTestFinished;
+  }
+
+  await expect(page.getByLabel("Node metrics URL")).toHaveValue("http://replacement-node:9153");
+  await expect(page.getByText("Connected · 7 recognized signals", { exact: true })).toHaveCount(0);
 });
 
 test("copies the full principal from an abbreviated address", async ({ page }) => {

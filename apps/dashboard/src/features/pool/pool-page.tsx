@@ -16,26 +16,61 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
   const [page, setPage] = useState(0);
   const [roster, setRoster] = useState(data.roster);
   const [rosterTotal, setRosterTotal] = useState(data.rosterTotal ?? data.roster.length);
+  const [rosterLoading, setRosterLoading] = useState(true);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [rosterRetry, setRosterRetry] = useState(0);
+  const [downloadBusy, setDownloadBusy] = useState<"csv" | "json" | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const rosterRefreshKey = `${data.generatedAt}:${rosterRetry}`;
   const pageSize = 50;
   useEffect(() => {
+    void rosterRefreshKey;
     const controller = new AbortController();
+    let correctingPage = false;
     const parameters = new URLSearchParams({
       offset: String(page * pageSize),
       limit: String(pageSize),
       query,
     });
+    setRosterLoading(true);
+    setRosterError(null);
     void apiJson(token, `/api/v1/pool?${parameters}`, poolPageResponseSchema, {
       signal: controller.signal,
     })
       .then((result) => {
-        setRoster(result.roster);
+        if (controller.signal.aborted) return;
+        const lastPage = Math.max(0, Math.ceil(result.total / pageSize) - 1);
         setRosterTotal(result.total);
+        if (page > lastPage) {
+          correctingPage = true;
+          setPage(lastPage);
+          return;
+        }
+        setRoster(result.roster);
       })
-      .catch((error) => {
-        if ((error as Error).name !== "AbortError") console.error(error);
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        setRosterError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && !correctingPage) setRosterLoading(false);
       });
     return () => controller.abort();
-  }, [page, query, token]);
+  }, [page, query, rosterRefreshKey, token]);
+  const download = async (format: "csv" | "json") => {
+    setDownloadBusy(format);
+    setDownloadError(null);
+    try {
+      await apiDownload(token, `/api/v1/pool/roster.${format}`, {
+        expectedContentTypes: format === "csv" ? ["text/csv"] : ["application/json"],
+        fallbackFilename: `signer-sidekick-roster.${format}`,
+      });
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDownloadBusy(null);
+    }
+  };
   const cycles = data.forecast?.cycles ?? [];
   const max = Math.max(1, ...cycles.map((cycle) => Number(cycle.contract.pendingStxUstx)));
   return (
@@ -45,36 +80,32 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         lede="Every STX-only staker assigned to this manager, which cycles they count in, and when their STX unlocks. No wallet connection or stake submission here."
         actions={
           <>
-            <a
-              className="btn btn-tertiary sm"
-              href="/api/v1/pool/roster.csv"
-              onClick={(event) => {
-                event.preventDefault();
-                void apiDownload(token, "/api/v1/pool/roster.csv", {
-                  expectedContentTypes: ["text/csv"],
-                  fallbackFilename: "signer-sidekick-roster.csv",
-                });
-              }}
-            >
-              <FileCsv />
-              CSV
-            </a>
             <button
               type="button"
               className="btn btn-tertiary sm"
-              onClick={() => {
-                void apiDownload(token, "/api/v1/pool/roster.json", {
-                  expectedContentTypes: ["application/json"],
-                  fallbackFilename: "signer-sidekick-roster.json",
-                });
-              }}
+              disabled={downloadBusy !== null}
+              onClick={() => void download("csv")}
+            >
+              <FileCsv />
+              {downloadBusy === "csv" ? "Downloading" : "CSV"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-tertiary sm"
+              disabled={downloadBusy !== null}
+              onClick={() => void download("json")}
             >
               <BracketsCurly />
-              JSON
+              {downloadBusy === "json" ? "Downloading" : "JSON"}
             </button>
           </>
         }
       />
+      {downloadError ? (
+        <div className="callout callout-critical" role="alert">
+          Download failed: {downloadError}
+        </div>
+      ) : null}
       <div className="kpi">
         <div className="tile hero">
           <div className="l">Stakers</div>
@@ -135,7 +166,28 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         </div>
       </div>
       <div className="section-title">Staker roster</div>
-      <div className="tbl-wrap">
+      {rosterError ? (
+        <div className="callout callout-critical" role="alert">
+          <div className="body">
+            <strong>Could not refresh the staker roster.</strong> {rosterError}
+            <div className="actions">
+              <button
+                type="button"
+                className="btn btn-secondary sm"
+                onClick={() => setRosterRetry((value) => value + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {rosterLoading ? (
+        <div className="callout callout-neutral" role="status">
+          Refreshing roster…
+        </div>
+      ) : null}
+      <div className="tbl-wrap" aria-busy={rosterLoading}>
         <div className="tbl-toolbar">
           <div className="search-inline">
             <input
@@ -148,52 +200,58 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
               }}
             />
           </div>
-          <div className="total">{rosterTotal} stakers</div>
+          <div className="total">
+            {rosterLoading ? "Loading…" : rosterError ? "Unavailable" : `${rosterTotal} stakers`}
+          </div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Staker</th>
-              <th className="right">Amount</th>
-              <th>First cycle</th>
-              <th>Last cycle</th>
-              <th>Unlock Bitcoin block</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {roster.map((entry) => {
-              const position = entry.position;
-              const lastCycle = position ? BigInt(position.unlockCycle) - 1n : null;
-              return (
-                <tr key={entry.stakerPrincipal}>
-                  <td>
-                    <div className="staker">
-                      <span className="avatar">SP</span>
-                      <CopyableIdentifier
-                        value={entry.stakerPrincipal}
-                        display={short(entry.stakerPrincipal, 8, 5)}
-                        label="staker principal"
-                        className="mono"
-                      />
-                    </div>
-                  </td>
-                  <td className="right mono">{stx(position?.amountUstx)}</td>
-                  <td className="mono">{position?.firstRewardCycle ?? "—"}</td>
-                  <td className="mono">{lastCycle?.toString() ?? "—"}</td>
-                  <td className="mono">{number(position?.unlockBurnHeight)}</td>
-                  <td>
-                    <Badge state={entry.stxNodeVerified ? "success" : "caution"}>
-                      {entry.stxNodeVerified ? "Verified" : "API only"}
-                    </Badge>
-                  </td>
+        {!rosterLoading && !rosterError ? (
+          <>
+            <table>
+              <thead>
+                <tr>
+                  <th>Staker</th>
+                  <th className="right">Amount</th>
+                  <th>First cycle</th>
+                  <th>Last cycle</th>
+                  <th>Unlock Bitcoin block</th>
+                  <th>Status</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {rosterTotal === 0 ? <div className="empty-table">No matching stakers</div> : null}
-        <Pagination page={page} pageSize={pageSize} total={rosterTotal} setPage={setPage} />
+              </thead>
+              <tbody>
+                {roster.map((entry) => {
+                  const position = entry.position;
+                  const lastCycle = position ? BigInt(position.unlockCycle) - 1n : null;
+                  return (
+                    <tr key={entry.stakerPrincipal}>
+                      <td>
+                        <div className="staker">
+                          <span className="avatar">SP</span>
+                          <CopyableIdentifier
+                            value={entry.stakerPrincipal}
+                            display={short(entry.stakerPrincipal, 8, 5)}
+                            label="staker principal"
+                            className="mono"
+                          />
+                        </div>
+                      </td>
+                      <td className="right mono">{stx(position?.amountUstx)}</td>
+                      <td className="mono">{position?.firstRewardCycle ?? "—"}</td>
+                      <td className="mono">{lastCycle?.toString() ?? "—"}</td>
+                      <td className="mono">{number(position?.unlockBurnHeight)}</td>
+                      <td>
+                        <Badge state={entry.stxNodeVerified ? "success" : "caution"}>
+                          {entry.stxNodeVerified ? "Verified" : "API only"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {rosterTotal === 0 ? <div className="empty-table">No matching stakers</div> : null}
+            <Pagination page={page} pageSize={pageSize} total={rosterTotal} setPage={setPage} />
+          </>
+        ) : null}
       </div>
       <p className="tertiary roster-note">
         An unstake shortens the position immediately, while STX stays locked until the recorded

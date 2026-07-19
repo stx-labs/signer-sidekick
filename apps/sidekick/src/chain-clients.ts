@@ -8,6 +8,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema, parseChainAnchor } from "./chain-anchor.js";
+import { currentInteractiveRequestSignal } from "./request-context.js";
 
 const nodeInfoSchema = z.object({
   server_version: z.string().min(1).optional(),
@@ -421,9 +422,21 @@ function retryDelay(attempt: number): number {
   return Math.round(exponential * (0.75 + Math.random() * 0.5));
 }
 
-async function sleep(milliseconds: number): Promise<void> {
+async function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (milliseconds <= 0) return;
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(signal?.reason);
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    timeout.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function cancelResponse(response: Response): Promise<void> {
@@ -442,14 +455,24 @@ async function fetchJson<T>(
 ): Promise<T> {
   const endpoint = sanitizedEndpoint(url);
   const maxAttempts = 4;
+  const interactiveSignal = currentInteractiveRequestSignal();
+  const cancellationSignals = [request.signal, interactiveSignal].filter(
+    (signal): signal is AbortSignal => signal !== null && signal !== undefined,
+  );
+  const cancellationSignal =
+    cancellationSignals.length > 1 ? AbortSignal.any(cancellationSignals) : cancellationSignals[0];
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    cancellationSignal?.throwIfAborted();
     let response: Response;
     try {
+      const signals = [AbortSignal.timeout(10_000)];
+      if (cancellationSignal) signals.push(cancellationSignal);
       response = await fetchImpl(url, {
         ...request,
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.any(signals),
       });
     } catch (error) {
+      cancellationSignal?.throwIfAborted();
       if (attempt === maxAttempts) {
         throw new UpstreamUnavailableError(
           `${endpoint} was unavailable after ${attempt} attempts`,
@@ -458,7 +481,7 @@ async function fetchJson<T>(
           },
         );
       }
-      await sleep(retryDelay(attempt));
+      await sleep(retryDelay(attempt), cancellationSignal);
       continue;
     }
 
@@ -467,7 +490,7 @@ async function fetchJson<T>(
       const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
       if (retryable && attempt < maxAttempts) {
         await cancelResponse(response);
-        await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)));
+        await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)), cancellationSignal);
         continue;
       }
       await cancelResponse(response);
@@ -485,9 +508,11 @@ async function fetchJson<T>(
       throw new UpstreamHttpError(`${endpoint} returned HTTP ${response.status}`, response.status);
     }
 
+    cancellationSignal?.throwIfAborted();
     try {
       return schema.parse(await response.json());
     } catch (error) {
+      cancellationSignal?.throwIfAborted();
       throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
         cause: error,
       });
@@ -943,13 +968,27 @@ export class StacksApiClient {
   }
 }
 
+export interface ChainSourceTips {
+  readonly node: {
+    readonly stacksTipHeight: number;
+    readonly burnBlockHeight: number;
+  };
+  readonly api: {
+    readonly stacksTipHeight: number;
+    readonly burnBlockHeight: number;
+  };
+  readonly poxBurnBlockHeight: number;
+}
+
 export class ChainAnchorError extends Error {
   readonly retryable: boolean;
+  readonly tips: ChainSourceTips | null;
 
-  constructor(message: string, options: { retryable?: boolean } = {}) {
+  constructor(message: string, options: { retryable?: boolean; tips?: ChainSourceTips } = {}) {
     super(message);
     this.name = "ChainAnchorError";
     this.retryable = options.retryable ?? false;
+    this.tips = options.tips ?? null;
   }
 }
 
@@ -975,6 +1014,17 @@ export function createChainAnchor(
   ) {
     throw new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
       retryable: true,
+      tips: {
+        node: {
+          stacksTipHeight: nodeInfo.stacks_tip_height,
+          burnBlockHeight: nodeInfo.burn_block_height,
+        },
+        api: {
+          stacksTipHeight: apiTip.block_height,
+          burnBlockHeight: apiTip.burn_block_height,
+        },
+        poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
+      },
     });
   }
   const nextCycle = poxInfo.next_cycle;
@@ -1018,6 +1068,17 @@ export async function captureChainAnchor(
   if (!sameApiTip(before, after)) {
     throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
       retryable: true,
+      tips: {
+        node: {
+          stacksTipHeight: nodeInfo.stacks_tip_height,
+          burnBlockHeight: nodeInfo.burn_block_height,
+        },
+        api: {
+          stacksTipHeight: after.chain_tip.block_height,
+          burnBlockHeight: after.chain_tip.burn_block_height,
+        },
+        poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
+      },
     });
   }
   return createChainAnchor(nodeInfo, after, poxInfo);

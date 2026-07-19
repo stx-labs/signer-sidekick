@@ -7,10 +7,12 @@ limits.
 
 ## Bounded work
 
-- API discovery is cursor-paginated and restartable.
+- API discovery is exact-tip-fenced, cursor-paginated, and persisted by page. A sealed roster is
+  then verified against its pinned node anchor and revalidated before commit.
 - Node verification and transaction enrichment use fixed concurrency limits.
 - Forecast reads are processed in cycle batches.
-- Reconciliation and operator snapshots are single-flight.
+- Reconciliation and operator snapshots are single-flight. Reconciliation runs in the background
+  with process-local progress; persisted discovery can resume after a restart.
 - Dashboard roster, reward, withdrawal, and job collections paginate independently; roster data is
   exportable as CSV or JSON.
 
@@ -40,5 +42,6 @@ Scale-sensitive changes must demonstrate:
 3. No repeated enrichment after known event overlap.
 4. No page-level horizontal overflow at desktop or mobile sizes.
 5. Independent pagination for large reward and withdrawal histories.
+6. Live-tip advancement does not invalidate pinned roster verification, while a reorged anchor does.
 
 The storage and browser tests are the authoritative executable specification.

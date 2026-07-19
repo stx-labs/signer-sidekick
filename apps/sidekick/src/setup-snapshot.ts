@@ -30,13 +30,19 @@ type SetupSnapshotOptions = {
   managerPrincipal: string;
   managerVerification: ManagerVerificationContext | undefined;
   reportMissingManager?: boolean;
+  waitBeforeRetry?: (attempt: number) => Promise<void>;
 };
 
-class SetupSnapshotCoherenceError extends Error {
+class SetupSnapshotCoherenceError extends ChainAnchorError {
   constructor(message: string) {
-    super(message);
+    super(message, { retryable: true });
     this.name = "SetupSnapshotCoherenceError";
   }
+}
+
+async function waitBeforeSnapshotRetry(attempt: number): Promise<void> {
+  const milliseconds = Math.min(1_000, 250 * 2 ** (attempt - 1));
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
@@ -82,16 +88,16 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
 
 export async function readSetupSnapshot(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
   const maxAttempts = 3;
-  let lastError: ChainAnchorError | SetupSnapshotCoherenceError | null = null;
+  const waitBeforeRetry = options.waitBeforeRetry ?? waitBeforeSnapshotRetry;
+  let lastError: ChainAnchorError | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await readSetupSnapshotAttempt(options);
     } catch (error) {
-      const retryable =
-        (error instanceof ChainAnchorError && error.retryable) ||
-        error instanceof SetupSnapshotCoherenceError;
+      const retryable = error instanceof ChainAnchorError && error.retryable;
       if (!retryable || attempt === maxAttempts) throw error;
       lastError = error;
+      await waitBeforeRetry(attempt);
     }
   }
   throw lastError ?? new SetupSnapshotCoherenceError("Unable to assemble a stable setup snapshot");

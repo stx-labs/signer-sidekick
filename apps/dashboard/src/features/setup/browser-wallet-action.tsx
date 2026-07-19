@@ -3,11 +3,14 @@ import {
   type BrowserWalletIntent,
   type BrowserWalletIntentRequest,
   browserWalletIntentResponseSchema,
+  walletIntentAnchorMismatchErrorSchema,
+  walletIntentAnchorUnstableErrorSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { StatusBadge } from "../../shared/dashboard-ui.js";
+import { number } from "../../shared/format.js";
 import {
   BrowserWalletError,
   browserWalletIntentNetwork,
@@ -40,6 +43,24 @@ function walletName(providerId: string): string {
   return providerId === "LeatherProvider" ? "Leather" : "Xverse";
 }
 
+function walletIntentErrorMessage(cause: unknown): string {
+  if (cause instanceof ApiRequestError) {
+    const mismatch = walletIntentAnchorMismatchErrorSchema.safeParse(cause.body);
+    if (mismatch.success) {
+      const { node, api, poxBurnBlockHeight } = mismatch.data;
+      const poxDetail =
+        poxBurnBlockHeight === api.burnBlockHeight
+          ? ""
+          : ` PoX: Bitcoin ${number(poxBurnBlockHeight)}.`;
+      return `Node, API, and PoX chain data are temporarily out of sync. Node: Stacks ${number(node.stacksTipHeight)}, Bitcoin ${number(node.burnBlockHeight)}. API: Stacks ${number(api.stacksTipHeight)}, Bitcoin ${number(api.burnBlockHeight)}.${poxDetail} Sidekick retried. This attempt did not send a new transaction to the wallet or submit one. Wait a moment, then review again. If this persists, verify the node and API URLs in Settings.`;
+    }
+    if (walletIntentAnchorUnstableErrorSchema.safeParse(cause.body).success) {
+      return "The chain position changed while Sidekick checked the request. Sidekick retried. This attempt did not send a new transaction to the wallet or submit one. Wait a moment, then review again.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Unable to prepare the wallet request.";
+}
+
 function requestTarget(intent: BrowserWalletIntent): string {
   return intent.transaction.method === "stx_deployContract"
     ? intent.transaction.params.name
@@ -64,6 +85,7 @@ export function BrowserWalletActionPanel({
   intentApiBase = "/api/v1/onboarding/wallet-intents",
   managerPrincipal,
   network,
+  onVerified,
   token,
 }: {
   createRequest: BrowserWalletIntentRequest;
@@ -71,6 +93,7 @@ export function BrowserWalletActionPanel({
   intentApiBase?: "/api/v1/onboarding/wallet-intents" | "/api/v1/wallet-intents";
   managerPrincipal: string;
   network: string;
+  onVerified?: (() => void | Promise<void>) | undefined;
   token: string;
 }) {
   const action = createRequest.action;
@@ -91,11 +114,14 @@ export function BrowserWalletActionPanel({
   const [intent, setIntent] = useState<BrowserWalletIntent | null>(null);
   const [busy, setBusy] = useState<"prepare" | "sign" | "record" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
   const [walletResults, setWalletResults] = useState<ScopedPendingBrowserWalletBroadcast[]>(() =>
     loadPendingBrowserWalletBroadcasts(recoverySelector),
   );
   const [recoveryMessages, setRecoveryMessages] = useState<Record<string, string>>({});
   const [recoveryCanClear, setRecoveryCanClear] = useState(false);
+  const notifiedCompleteIntent = useRef<string | null>(null);
+  const pollingController = useRef<AbortController | null>(null);
   const walletResult = walletResults.length === 1 ? (walletResults[0] ?? null) : null;
   const ambiguousWalletResults = walletResults.length > 1 ? walletResults : [];
 
@@ -170,27 +196,49 @@ export function BrowserWalletActionPanel({
   }, [getIntent, recordTxid, recoverySelector]);
 
   useEffect(() => {
-    if (!intent || !POLLING_STATUSES.has(intent.status)) return;
+    if (busy !== null || !intent || !POLLING_STATUSES.has(intent.status)) return;
     let active = true;
-    const refresh = async () => {
+    let timeout: number | undefined;
+    const poll = async () => {
+      const controller = new AbortController();
+      pollingController.current = controller;
       try {
         const result = await apiJson(
           token,
           `${intentApiBase}/${encodeURIComponent(intent.id)}/refresh`,
           browserWalletIntentResponseSchema,
-          { method: "POST", body: "{}" },
+          { method: "POST", body: "{}", signal: controller.signal },
         );
-        if (active) setIntent(result.intent);
-      } catch {
-        // Existing onboarding polling and the manual refresh remain available.
+        if (!active || pollingController.current !== controller) return;
+        setIntent(result.intent);
+        setPollError(null);
+      } catch (cause) {
+        if (!active || controller.signal.aborted) return;
+        setPollError(
+          `Automatic verification refresh failed: ${walletIntentErrorMessage(cause)} Use Refresh verification to retry now.`,
+        );
+      } finally {
+        if (pollingController.current === controller) pollingController.current = null;
+        if (active) timeout = window.setTimeout(() => void poll(), 15_000);
       }
     };
-    const interval = window.setInterval(() => void refresh(), 15_000);
+    timeout = window.setTimeout(() => void poll(), 15_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      const controller = pollingController.current;
+      pollingController.current = null;
+      controller?.abort();
     };
-  }, [intent, intentApiBase, token]);
+  }, [busy, intent, intentApiBase, token]);
+
+  useEffect(() => {
+    if (intent?.status !== "complete" || notifiedCompleteIntent.current === intent.id) return;
+    notifiedCompleteIntent.current = intent.id;
+    void Promise.resolve(onVerified?.()).catch(() => {
+      // Completion remains authoritative; the dashboard's periodic status refresh will retry.
+    });
+  }, [intent?.id, intent?.status, onVerified]);
 
   const prepare = async () => {
     const currentRecoveryRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
@@ -200,6 +248,7 @@ export function BrowserWalletActionPanel({
     }
     setBusy("prepare");
     setError(null);
+    setPollError(null);
     try {
       const result = await apiJson(token, intentApiBase, browserWalletIntentResponseSchema, {
         method: "POST",
@@ -207,7 +256,7 @@ export function BrowserWalletActionPanel({
       });
       setIntent(result.intent);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to prepare the wallet request.");
+      setError(walletIntentErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -222,6 +271,7 @@ export function BrowserWalletActionPanel({
     }
     setBusy("sign");
     setError(null);
+    setPollError(null);
     try {
       const execution = await executeRevalidatedBrowserWalletIntent(
         intent,
@@ -270,7 +320,7 @@ export function BrowserWalletActionPanel({
       if (cause instanceof BrowserWalletError && cause.code === "expired-intent") {
         setIntent({ ...intent, status: "expired" });
       }
-      setError(cause instanceof Error ? cause.message : "The wallet request did not complete.");
+      setError(walletIntentErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -279,6 +329,7 @@ export function BrowserWalletActionPanel({
   const retryRecord = async (pending: ScopedPendingBrowserWalletBroadcast) => {
     setBusy("record");
     setError(null);
+    setPollError(null);
     const messageKey = recoveryRecordKey(pending);
     setRecoveryMessages((current) => {
       const next = { ...current };
@@ -330,6 +381,7 @@ export function BrowserWalletActionPanel({
     if (!intent) return;
     setBusy("refresh");
     setError(null);
+    setPollError(null);
     try {
       const result = await apiJson(
         token,
@@ -339,7 +391,7 @@ export function BrowserWalletActionPanel({
       );
       setIntent(result.intent);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to refresh verification.");
+      setError(walletIntentErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -349,6 +401,7 @@ export function BrowserWalletActionPanel({
     if (!intent) return;
     setBusy("prepare");
     setError(null);
+    setPollError(null);
     try {
       const result = await apiJson(
         token,
@@ -358,7 +411,7 @@ export function BrowserWalletActionPanel({
       );
       setIntent(result.intent);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to prepare a replacement.");
+      setError(walletIntentErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -643,6 +696,12 @@ export function BrowserWalletActionPanel({
             <div className="callout callout-critical" role="alert">
               <Warning className="ic" />
               <div className="body">{error}</div>
+            </div>
+          ) : null}
+          {pollError ? (
+            <div className="callout callout-caution" role="status">
+              <Warning className="ic" />
+              <div className="body">{pollError}</div>
             </div>
           ) : null}
 

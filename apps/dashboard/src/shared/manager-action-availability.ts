@@ -1,12 +1,23 @@
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 
-type ManagerActionContext = Pick<DashboardSnapshot, "manager" | "preflight">;
+type ManagerActionContext = Pick<DashboardSnapshot, "freshness" | "manager" | "preflight">;
 
-export function managerActionAvailability(data: ManagerActionContext): {
+export function managerActionAvailability(
+  data: ManagerActionContext,
+  operatorStateStale = false,
+): {
   available: boolean;
   reason: string;
   warning: string | null;
 } {
+  if (operatorStateStale || data.freshness?.status === "stale") {
+    return {
+      available: false,
+      reason:
+        "Sidekick does not have a recent authoritative operator snapshot. Refresh operator state before preparing a manager action.",
+      warning: null,
+    };
+  }
   const networkChecks = new Map(data.preflight.checks.map((check) => [check.id, check]));
   const failedNetworkCheck = ["node-network", "api-network"].find(
     (id) => networkChecks.get(id)?.status !== "pass",

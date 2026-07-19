@@ -91,6 +91,9 @@ export type {
   PoolCardArtifact,
   PoolCardGenerateRequest,
   PoolPageResponse,
+  ReconciliationOperation,
+  ReconciliationOperationPhase,
+  ReconciliationSummary,
   RewardCycleSummary,
   RewardHistoryResponse,
   RewardsPageResponse,
@@ -98,6 +101,8 @@ export type {
   RuntimeSettings,
   StatusResponse,
   SyncResponse,
+  WalletIntentAnchorMismatchError,
+  WalletIntentAnchorUnstableError,
 } from "./v1.js";
 export {
   activityResponseSchema,
@@ -126,9 +131,13 @@ export {
   poolCardGenerateRequestSchema,
   poolCardResponseSchema,
   poolPageResponseSchema,
+  reconciliationOperationSchema,
+  reconciliationSummarySchema,
   rewardHistoryResponseSchema,
   rewardsPageResponseSchema,
   runtimeSettingsSchema,
   statusResponseSchema,
   syncResponseSchema,
+  walletIntentAnchorMismatchErrorSchema,
+  walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";

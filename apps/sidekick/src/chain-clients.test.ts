@@ -1001,6 +1001,59 @@ describe("Stacks node client", () => {
     });
   });
 
+  it("retains the exact source heights when a chain anchor is temporarily inconsistent", () => {
+    let thrown: unknown;
+    try {
+      createChainAnchor(
+        {
+          network_id: 1,
+          burn_block_height: 4_818,
+          stacks_tip_height: 28_079,
+        },
+        {
+          server_version: "stacks-blockchain-api v9",
+          status: "ready",
+          chain_tip: {
+            block_height: 28_097,
+            block_hash: `0x${"cd".repeat(32)}`,
+            index_block_hash: indexBlockHash,
+            burn_block_height: 4_819,
+          },
+        },
+        {
+          current_burnchain_block_height: 4_819,
+          reward_cycle_id: 5,
+          reward_cycle_length: 20,
+          prepare_cycle_length: 5,
+          contract_id: "ST000000000000000000002AMW42H.pox-5",
+          contract_versions: [],
+          next_cycle: {
+            id: 6,
+            min_threshold_ustx: 1,
+            min_increment_ustx: 1,
+            stacked_ustx: 1,
+            prepare_phase_start_block_height: 4_830,
+            blocks_until_prepare_phase: 11,
+            reward_phase_start_block_height: 4_835,
+            blocks_until_reward_phase: 16,
+          },
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      name: ChainAnchorError.name,
+      retryable: true,
+      tips: {
+        node: { stacksTipHeight: 28_079, burnBlockHeight: 4_818 },
+        api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
+        poxBurnBlockHeight: 4_819,
+      },
+    });
+  });
+
   it("discards an anchor when the API tip changes during capture", async () => {
     const firstStatus = {
       server_version: "stacks-blockchain-api v9",
@@ -1051,6 +1104,11 @@ describe("Stacks node client", () => {
     await expect(captureChainAnchor(node, api)).rejects.toMatchObject({
       name: ChainAnchorError.name,
       retryable: true,
+      tips: {
+        node: { stacksTipHeight: 8_600_000, burnBlockHeight: 960_240 },
+        api: { stacksTipHeight: 8_600_000, burnBlockHeight: 960_240 },
+        poxBurnBlockHeight: 960_240,
+      },
     });
     expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
   });

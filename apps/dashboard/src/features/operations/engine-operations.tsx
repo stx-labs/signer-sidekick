@@ -78,9 +78,11 @@ export function EngineOperations({
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<EngineAction | null>(null);
   const loadController = useRef<AbortController | null>(null);
+  const detailController = useRef<AbortController | null>(null);
   const approvalPromise = useRef<Promise<void> | null>(null);
 
   const invalidateActions = useCallback(() => {
+    detailController.current?.abort();
     setActionsEnabled(false);
     setSelectedJob(null);
   }, []);
@@ -118,17 +120,24 @@ export function EngineOperations({
 
   useEffect(() => {
     void loadSurface(cursor);
-    return () => loadController.current?.abort();
+    return () => {
+      loadController.current?.abort();
+      detailController.current?.abort();
+    };
   }, [cursor, loadSurface]);
 
   const selectJob = async (jobId: string) => {
     invalidateActions();
+    const controller = new AbortController();
+    detailController.current = controller;
     setError(null);
     try {
-      const job = await loadEngineJob(token, jobId);
+      const job = await loadEngineJob(token, jobId, controller.signal);
+      if (controller.signal.aborted) return;
       setSelectedJob(job);
       setActionsEnabled(true);
     } catch (cause) {
+      if (controller.signal.aborted) return;
       setSelectedJob(null);
       setError(errorMessage(cause));
     }
@@ -205,13 +214,15 @@ export function EngineOperations({
         reason: "Operator confirmed emergency force-Observe from the dashboard",
       });
       setStatus(result.status);
-      const nextJobs = await loadEngineJobs(token, cursor);
-      setJobs(nextJobs);
       setSurface("ready");
+      try {
+        setJobs(await loadEngineJobs(token, cursor));
+      } catch (cause) {
+        setError(
+          `Forced Observe succeeded, but durable jobs could not be refreshed: ${errorMessage(cause)}`,
+        );
+      }
     } catch (cause) {
-      setStatus(null);
-      setJobs(null);
-      setSurface("error");
       setError(errorMessage(cause));
     } finally {
       setAction(null);
@@ -236,13 +247,15 @@ export function EngineOperations({
         reason: "Operator disabled adapter from the dashboard",
       });
       setStatus(result.status);
-      const nextJobs = await loadEngineJobs(token, cursor);
-      setJobs(nextJobs);
       setSurface("ready");
+      try {
+        setJobs(await loadEngineJobs(token, cursor));
+      } catch (cause) {
+        setError(
+          `${adapterId} was disabled, but durable jobs could not be refreshed: ${errorMessage(cause)}`,
+        );
+      }
     } catch (cause) {
-      setStatus(null);
-      setJobs(null);
-      setSurface("error");
       setError(errorMessage(cause));
     } finally {
       setAction(null);

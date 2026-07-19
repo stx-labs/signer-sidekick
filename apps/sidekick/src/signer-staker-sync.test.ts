@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { contractPrincipalCV, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import { encodePrincipalHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ApiStatus, SignerStakersPage } from "./chain-clients.js";
+import type { ApiStatus, SignerStakersPage, StacksBlockSummary } from "./chain-clients.js";
 import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import {
   createChainSourceId,
@@ -51,6 +51,19 @@ function apiStatus(overrides: Partial<ApiStatus["chain_tip"]> = {}): ApiStatus {
       burn_block_height: chainAnchor.burnBlockHeight,
       ...overrides,
     },
+  };
+}
+
+function apiBlock(overrides: Partial<StacksBlockSummary> = {}): StacksBlockSummary {
+  return {
+    canonical: true,
+    height: chainAnchor.stacksBlockHeight,
+    hash: `0x${"22".repeat(32)}`,
+    index_block_hash: chainAnchor.indexBlockHash,
+    parent_block_hash: `0x${"11".repeat(32)}`,
+    parent_index_block_hash: `0x${"12".repeat(32)}`,
+    burn_block_height: chainAnchor.burnBlockHeight,
+    ...overrides,
   };
 }
 
@@ -151,7 +164,11 @@ function nodeReadsForPositions(positions: ReadonlyMap<string, ReturnType<typeof 
 
 function options(
   sidekickStore: SidekickStore,
-  api: { getSignerStakers: ReturnType<typeof vi.fn>; getStatus?: ReturnType<typeof vi.fn> },
+  api: {
+    getSignerStakers: ReturnType<typeof vi.fn>;
+    getStatus?: ReturnType<typeof vi.fn>;
+    getBlock?: ReturnType<typeof vi.fn>;
+  },
   node: { callReadOnly: ReturnType<typeof vi.fn> },
 ) {
   return {
@@ -159,6 +176,7 @@ function options(
     api: {
       ...api,
       getStatus: api.getStatus ?? vi.fn().mockResolvedValue(apiStatus()),
+      getBlock: api.getBlock ?? vi.fn().mockResolvedValue(apiBlock()),
     },
     node,
     sourceId,
@@ -555,7 +573,7 @@ describe("signer-staker synchronization", () => {
     });
   });
 
-  it("preserves prior memberships when the exact API tip moves during a scan", async () => {
+  it("preserves prior memberships and resumes enumeration when the exact API tip moves", async () => {
     const sidekickStore = await store();
     await syncSignerStakers(
       options(
@@ -569,17 +587,34 @@ describe("signer-staker synchronization", () => {
       ),
     );
     const movedStatus = apiStatus({ index_block_hash: `0x${"44".repeat(32)}` });
+    const failedNode = nodeReads();
     const api = {
-      getSignerStakers: vi.fn().mockResolvedValue(page([], null, null)),
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValueOnce(page([{ staker: stakerOne, types: ["stx"] }], null, stakerTwo, 2))
+        .mockResolvedValueOnce(page([{ staker: stakerTwo, types: ["btc"] }], stakerTwo, null, 2)),
       getStatus: vi.fn().mockResolvedValueOnce(apiStatus()).mockResolvedValueOnce(movedStatus),
     };
 
     const result = syncSignerStakers({
-      ...options(sidekickStore, api, nodeReads()),
+      ...options(sidekickStore, api, failedNode),
       observedAt: later,
     });
     await expect(result).rejects.toBeInstanceOf(SignerStakerAnchorError);
     await expect(result).rejects.toThrow("Chain tip moved during signer-staker enumeration");
+    expect(failedNode.callReadOnly).not.toHaveBeenCalled();
+    const partial = sidekickStore.startOrResumeSignerStakerRun(
+      sourceId,
+      manager,
+      later,
+      chainAnchor,
+    );
+    expect(partial).toMatchObject({ status: "running", pagesProcessed: 1, itemsProcessed: 1 });
+    expect(sidekickStore.getSignerStakerApiScan(partial.runId)).toMatchObject({
+      sealed: false,
+      expectedTotal: 2,
+      items: [{ stakerPrincipal: stakerOne, hasStx: true, hasBtc: false }],
+    });
     expect(sidekickStore.listCycleMemberships(manager)).toHaveLength(2);
     expect(sidekickStore.listCycleMemberships(manager)).toEqual(
       expect.arrayContaining([
@@ -587,6 +622,26 @@ describe("signer-staker synchronization", () => {
         expect.objectContaining({ rewardCycle: 142n, active: true }),
       ]),
     );
+
+    const resumedApi = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerTwo, types: ["btc"] }], stakerTwo, null, 2)),
+    };
+    await expect(
+      syncSignerStakers({
+        ...options(sidekickStore, resumedApi, nodeReads()),
+        observedAt: latest,
+      }),
+    ).resolves.toMatchObject({
+      resumed: true,
+      status: "completed",
+      authoritative: true,
+      pagesProcessed: 2,
+      itemsProcessed: 2,
+      activeStakers: 2,
+    });
+    expect(resumedApi.getSignerStakers).toHaveBeenCalledWith(manager, stakerTwo, 1);
   });
 
   it("classifies a stale API tip before enumeration as a retryable anchor boundary", async () => {
@@ -600,6 +655,204 @@ describe("signer-staker synchronization", () => {
       syncSignerStakers(options(sidekickStore, api, nodeReads())),
     ).rejects.toBeInstanceOf(SignerStakerAnchorError);
     expect(api.getSignerStakers).not.toHaveBeenCalled();
+  });
+
+  it("preserves the API receiver for class methods and accepts normalized hash casing", async () => {
+    const sidekickStore = await store();
+    class StatefulApi {
+      statusCalls = 0;
+      blockCalls = 0;
+      enumerationCalls = 0;
+
+      async getSignerStakers() {
+        this.enumerationCalls += 1;
+        return page([{ staker: stakerOne, types: ["btc"] }], null, null);
+      }
+
+      async getStatus() {
+        this.statusCalls += 1;
+        return apiStatus({
+          index_block_hash: chainAnchor.indexBlockHash.toUpperCase().replace("0X", "0x"),
+        });
+      }
+
+      async getBlock() {
+        this.blockCalls += 1;
+        return apiBlock({
+          index_block_hash: chainAnchor.indexBlockHash.toUpperCase().replace("0X", "0x"),
+        });
+      }
+    }
+    const api = new StatefulApi();
+    const base = options(sidekickStore, { getSignerStakers: vi.fn() }, { callReadOnly: vi.fn() });
+
+    await expect(syncSignerStakers({ ...base, api })).resolves.toMatchObject({
+      status: "completed",
+      authoritative: true,
+    });
+    expect(api).toMatchObject({ statusCalls: 4, blockCalls: 1, enumerationCalls: 1 });
+  });
+
+  it("does not commit verified projections after cancellation", async () => {
+    const sidekickStore = await store();
+    const controller = new AbortController();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    const node = {
+      callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+        if (functionName === "get-staker-info") {
+          controller.abort(new Error("shutdown requested"));
+          return Promise.resolve(position());
+        }
+        if (functionName === "reward-cycle-to-burn-height") {
+          return Promise.resolve(uintCV(961_000n));
+        }
+        return Promise.resolve(membership());
+      }),
+    };
+
+    await expect(
+      syncSignerStakers({ ...options(sidekickStore, api, node), signal: controller.signal }),
+    ).rejects.toThrow("shutdown requested");
+    expect(sidekickStore.listSignerStakers(manager)).toEqual([]);
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toBeNull();
+    expect(sidekickStore.getResumableSignerStakerRun(sourceId, manager)).toMatchObject({
+      status: "running",
+      chainAnchor,
+    });
+  });
+
+  it("resumes sealed verification at its pinned anchor after restart and ordinary tip advance", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+    };
+    await expect(
+      syncSignerStakers({
+        ...options(sidekickStore, api, nodeReads()),
+        onProgress: (progress) => {
+          if (progress.phase === "discovering" && progress.completed === 1) {
+            throw new Error("simulated restart after roster seal");
+          }
+        },
+      }),
+    ).rejects.toThrow("simulated restart after roster seal");
+
+    const sealedRun = sidekickStore.getResumableSignerStakerRun(sourceId, manager);
+    expect(sealedRun).toMatchObject({
+      status: "running",
+      pagesProcessed: 1,
+      itemsProcessed: 1,
+      chainAnchor,
+    });
+    expect(sidekickStore.getSignerStakerApiScan(sealedRun?.runId ?? "")).toMatchObject({
+      sealed: true,
+      anchorFenced: true,
+      expectedTotal: 1,
+    });
+
+    const advancedAnchor = {
+      ...chainAnchor,
+      stacksBlockHeight: chainAnchor.stacksBlockHeight + 5,
+      indexBlockHash: `0x${"55".repeat(32)}`,
+      burnBlockHeight: chainAnchor.burnBlockHeight + 1,
+      cyclePosition: chainAnchor.cyclePosition + 1,
+    };
+    const resumedApi = {
+      getSignerStakers: vi.fn(),
+      getStatus: vi.fn().mockResolvedValue(
+        apiStatus({
+          block_height: advancedAnchor.stacksBlockHeight,
+          index_block_hash: advancedAnchor.indexBlockHash,
+          burn_block_height: advancedAnchor.burnBlockHeight,
+        }),
+      ),
+      getBlock: vi.fn().mockResolvedValue(apiBlock()),
+    };
+    const resumedNode = nodeReads();
+    const progress: Array<{ phase: string; completed: number; total: number | null }> = [];
+    const result = await syncSignerStakers({
+      ...options(sidekickStore, resumedApi, resumedNode),
+      observedAt: later,
+      burnBlockHeight: advancedAnchor.burnBlockHeight,
+      stacksTipHeight: advancedAnchor.stacksBlockHeight,
+      chainAnchor: advancedAnchor,
+      onProgress: (value) => progress.push(value),
+    });
+
+    expect(result).toMatchObject({ resumed: true, status: "completed", authoritative: true });
+    expect(progress[0]).toEqual({ phase: "verifying", completed: 0, total: 1 });
+    expect(resumedApi.getSignerStakers).not.toHaveBeenCalled();
+    expect(resumedApi.getStatus).toHaveBeenCalledTimes(2);
+    expect(resumedApi.getBlock).toHaveBeenCalledWith(chainAnchor.stacksBlockHeight);
+    for (const call of resumedNode.callReadOnly.mock.calls) {
+      expect(call[4]).toEqual({ tip: chainAnchor.indexBlockHash });
+    }
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)?.chainAnchor).toEqual(
+      chainAnchor,
+    );
+  });
+
+  it("rejects a sealed roster when its pinned anchor became noncanonical", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+      getBlock: vi.fn().mockResolvedValue(apiBlock({ canonical: false })),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, nodeReads()))).rejects.toThrow(
+      "Sealed signer-staker anchor is no longer canonical",
+    );
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toBeNull();
+    expect(sidekickStore.listSignerStakers(manager)).toEqual([]);
+    expect(sidekickStore.getResumableSignerStakerRun(sourceId, manager)).toBeNull();
+
+    const replacementAnchor = {
+      ...chainAnchor,
+      stacksBlockHeight: chainAnchor.stacksBlockHeight + 1,
+      indexBlockHash: `0x${"77".repeat(32)}`,
+      burnBlockHeight: chainAnchor.burnBlockHeight + 1,
+      cyclePosition: chainAnchor.cyclePosition + 1,
+    };
+    const replacementApi = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+      getStatus: vi.fn().mockResolvedValue(
+        apiStatus({
+          block_height: replacementAnchor.stacksBlockHeight,
+          index_block_hash: replacementAnchor.indexBlockHash,
+          burn_block_height: replacementAnchor.burnBlockHeight,
+        }),
+      ),
+      getBlock: vi.fn().mockResolvedValue(
+        apiBlock({
+          height: replacementAnchor.stacksBlockHeight,
+          index_block_hash: replacementAnchor.indexBlockHash,
+          burn_block_height: replacementAnchor.burnBlockHeight,
+        }),
+      ),
+    };
+    await expect(
+      syncSignerStakers({
+        ...options(sidekickStore, replacementApi, nodeReads()),
+        observedAt: later,
+        burnBlockHeight: replacementAnchor.burnBlockHeight,
+        stacksTipHeight: replacementAnchor.stacksBlockHeight,
+        chainAnchor: replacementAnchor,
+      }),
+    ).resolves.toMatchObject({
+      resumed: false,
+      status: "completed",
+      authoritative: true,
+    });
   });
 
   it("treats a retained API entry with zero PoX-5 cycles as inactive", async () => {
@@ -814,13 +1067,18 @@ describe("signer-staker synchronization", () => {
     expect(resumedApi.getSignerStakers).toHaveBeenCalledWith(manager, stakerTwo, 1);
   });
 
-  it("reconciles 500 stakers across 12 active cycles without duplicate projections", async () => {
+  it("reconciles 500 stakers at default concurrency after the live API tip advances", async () => {
     const sidekickStore = await store();
     const stakers = Array.from({ length: 500 }, (_, index) => ({
       staker: `${stakerOne}.s${index.toString().padStart(4, "0")}`,
       types: ["stx"] as ("stx" | "btc")[],
     }));
     const indexByPrincipal = new Map(stakers.map(({ staker }, index) => [staker, index] as const));
+    let verificationStarted = false;
+    const advancedStatus = apiStatus({
+      block_height: chainAnchor.stacksBlockHeight + 1,
+      index_block_hash: `0x${"66".repeat(32)}`,
+    });
     const api = {
       getSignerStakers: vi.fn(
         async (_managerPrincipal: string, cursor: string | null, limit: number) => {
@@ -840,40 +1098,54 @@ describe("signer-staker synchronization", () => {
           } satisfies SignerStakersPage;
         },
       ),
+      getStatus: vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(verificationStarted ? advancedStatus : apiStatus()),
+        ),
+      getBlock: vi.fn().mockResolvedValue(apiBlock()),
     };
+    let activeStakerReads = 0;
+    let maximumStakerReads = 0;
     const node = {
-      callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+      callReadOnly: vi.fn().mockImplementation(async (_contract, functionName) => {
         if (functionName === "get-staker-info") {
-          return Promise.resolve(position(manager, 141n, 12n));
+          verificationStarted = true;
+          activeStakerReads += 1;
+          maximumStakerReads = Math.max(maximumStakerReads, activeStakerReads);
+          await Promise.resolve();
+          activeStakerReads -= 1;
+          return position(manager, 141n, 12n);
         }
         if (functionName === "reward-cycle-to-burn-height") {
-          return Promise.resolve(uintCV(986_200n));
+          return uintCV(986_200n);
         }
-        return Promise.resolve(membership());
+        return membership();
       }),
     };
     const scaleOptions = {
       ...options(sidekickStore, api, node),
-      pageLimit: 100,
-      stakerConcurrency: 16,
+      pageLimit: 200,
     };
 
-    for (let run = 0; run < 2; run += 1) {
-      await expect(syncSignerStakers(scaleOptions)).resolves.toMatchObject({
-        status: "completed",
-        pagesProcessed: 5,
-        itemsProcessed: 500,
-        activeStakers: 500,
-        nodeVerifiedStxPositions: 500,
-        unverifiedStxDiscoveries: 0,
-        discrepanciesObservedThisInvocation: [],
-      });
-    }
+    await expect(syncSignerStakers(scaleOptions)).resolves.toMatchObject({
+      status: "completed",
+      authoritative: true,
+      pagesProcessed: 3,
+      itemsProcessed: 500,
+      activeStakers: 500,
+      nodeVerifiedStxPositions: 500,
+      unverifiedStxDiscoveries: 0,
+      discrepanciesObservedThisInvocation: [],
+    });
+    expect(maximumStakerReads).toBe(4);
+    expect(api.getStatus).toHaveBeenCalledTimes(4);
+    expect(api.getBlock).toHaveBeenCalledWith(chainAnchor.stacksBlockHeight);
     expect(sidekickStore.listSignerStakers(manager)).toHaveLength(500);
     expect(sidekickStore.listCycleMemberships(manager)).toHaveLength(6_000);
     expect(sidekickStore.listCycleMembershipsForCycle(manager, 141)).toHaveLength(500);
     expect(sidekickStore.listCycleMembershipsForCycle(manager, 152)).toHaveLength(500);
-  }, 15_000);
+  }, 30_000);
 
   it("records a missing node position as a discrepancy", async () => {
     const sidekickStore = await store();

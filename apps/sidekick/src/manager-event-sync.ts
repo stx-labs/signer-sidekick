@@ -44,6 +44,12 @@ export interface SyncManagerEventsOptions {
   managerPrincipal: string;
   observedAt: string;
   pageLimit?: number;
+  signal?: AbortSignal;
+  onProgress?(progress: {
+    completed: number;
+    total: number | null;
+    eventsProcessed: number;
+  }): void | Promise<void>;
 }
 
 export interface SyncManagerEventsResult {
@@ -69,10 +75,12 @@ function decodeEvent(hex: string): ManagerPrintEvent | null {
 async function enrichTransactions(
   api: ManagerEventApi,
   page: SmartContractLogPage,
+  signal?: AbortSignal,
 ): Promise<Map<string, TransactionSummary>> {
   const transactionIds = [...new Set(page.results.map(({ tx_id }) => tx_id))];
   const entries: Array<[string, TransactionSummary]> = [];
   for (let index = 0; index < transactionIds.length; index += 8) {
+    signal?.throwIfAborted();
     const batch = transactionIds.slice(index, index + 8);
     const batchEntries = await Promise.all(
       batch.map(
@@ -82,6 +90,7 @@ async function enrichTransactions(
         ],
       ),
     );
+    signal?.throwIfAborted();
     entries.push(...batchEntries);
   }
   return new Map(entries);
@@ -117,6 +126,7 @@ export async function syncManagerEvents(
   let scannedBoundaryIsComplete = false;
 
   while (true) {
+    options.signal?.throwIfAborted();
     if (requestedCursors.has(cursor)) {
       throw new Error(`Manager event API repeated cursor ${cursor ?? "<initial>"}`);
     }
@@ -126,6 +136,7 @@ export async function syncManagerEvents(
       cursor,
       pageLimit,
     );
+    options.signal?.throwIfAborted();
     // The API returns logs newest-first. `prev_cursor` advances toward older events;
     // `next_cursor` points back toward newer events and is null on the first page.
     if (page.prev_cursor !== null && page.prev_cursor === cursor) {
@@ -163,9 +174,15 @@ export async function syncManagerEvents(
       eventsProcessed += page.results.length;
       replayedEvents += page.results.length;
       stoppedAtKnownOverlap = true;
+      await options.onProgress?.({
+        completed: pagesProcessed,
+        total: null,
+        eventsProcessed,
+      });
       break;
     }
-    const transactionById = await enrichTransactions(options.api, page);
+    const transactionById = await enrichTransactions(options.api, page, options.signal);
+    options.signal?.throwIfAborted();
     const storedEvents: ChainEventInput[] = page.results.map((event, index) => {
       const transaction = transactionById.get(event.tx_id);
       if (!transaction) throw new Error(`Missing transaction enrichment for ${event.tx_id}`);
@@ -204,6 +221,7 @@ export async function syncManagerEvents(
     const firstTransaction = page.results[0]
       ? transactionById.get(page.results[0].tx_id)
       : undefined;
+    options.signal?.throwIfAborted();
     options.store.putChainEventPage(storedEvents, {
       sourceId: options.sourceId,
       stream,
@@ -229,6 +247,11 @@ export async function syncManagerEvents(
     }
     pagesProcessed += 1;
     eventsProcessed += page.results.length;
+    await options.onProgress?.({
+      completed: pagesProcessed,
+      total: page.prev_cursor === null ? pagesProcessed : null,
+      eventsProcessed,
+    });
     if (page.prev_cursor === null) break;
     cursor = page.prev_cursor;
   }
@@ -237,6 +260,7 @@ export async function syncManagerEvents(
   // independently would make events from a newer page look absent while processing an older page.
   // An interrupted incremental scan intentionally defers this step until the next complete scan.
   if (incrementalScan && scannedBoundaryBlockHeight !== null) {
+    options.signal?.throwIfAborted();
     reorgedEvents = options.store.markMissingCanonicalContractEvents(
       options.chainId,
       options.managerPrincipal,

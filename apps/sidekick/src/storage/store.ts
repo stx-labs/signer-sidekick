@@ -215,6 +215,45 @@ const signerStakerPageItemSchema = z
       });
     }
   });
+const signerStakerApiCandidateSchema = z
+  .object({
+    stakerPrincipal: principalSchema,
+    hasStx: z.boolean(),
+    hasBtc: z.boolean(),
+  })
+  .strict()
+  .refine((value) => value.hasStx || value.hasBtc, "A discovery must include a staking type");
+const signerStakerApiPageInputSchema = z
+  .object({
+    runId: z.string().uuid(),
+    sourceId: z.string().min(1),
+    managerPrincipal: principalSchema,
+    requestedCursor: principalSchema.nullable(),
+    nextCursor: principalSchema.nullable(),
+    items: z.array(signerStakerApiCandidateSchema),
+    expectedTotal: z.number().int().nonnegative(),
+    sealed: z.boolean(),
+    anchorFenced: z.boolean(),
+    chainAnchor: chainAnchorSchema.optional(),
+    observedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.sealed !== (value.nextCursor === null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Only the final API page can seal the roster",
+        path: ["sealed"],
+      });
+    }
+    if (value.anchorFenced && !value.sealed) {
+      context.addIssue({
+        code: "custom",
+        message: "The API anchor fence can only be recorded on a sealed roster",
+        path: ["anchorFenced"],
+      });
+    }
+  });
 const signerStakerPageInputSchema = z
   .object({
     runId: z.string().uuid(),
@@ -224,6 +263,7 @@ const signerStakerPageInputSchema = z
     nextCursor: principalSchema.nullable(),
     items: z.array(signerStakerPageItemSchema),
     apiItemsProcessed: z.number().int().nonnegative().optional(),
+    recordApiPage: z.boolean().optional().default(true),
     authoritativeCompletion: z.boolean().optional(),
     chainAnchor: chainAnchorSchema.optional(),
     observedAt: z.iso.datetime(),
@@ -525,6 +565,7 @@ export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
 export type SignerStakerPositionInput = z.infer<typeof signerStakerPositionInputSchema>;
 export type SignerStakerPageItem = z.infer<typeof signerStakerPageItemSchema>;
 export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
+export type SignerStakerApiCandidate = z.infer<typeof signerStakerApiCandidateSchema>;
 export type PoolCycleSnapshotInput = z.infer<typeof poolCycleSnapshotInputSchema>;
 export type RewardCycleSnapshotInput = z.infer<typeof rewardCycleSnapshotInputSchema>;
 
@@ -542,6 +583,13 @@ export interface SignerStakerRun {
   startedAt: string;
   updatedAt: string;
   completedAt: string | null;
+}
+
+export interface SignerStakerApiScan {
+  sealed: boolean;
+  anchorFenced: boolean;
+  expectedTotal: number;
+  items: SignerStakerApiCandidate[];
 }
 
 export interface StoredSignerStaker {
@@ -2067,6 +2115,214 @@ export class SidekickStore {
     }
   }
 
+  getResumableSignerStakerRun(sourceId: string, managerPrincipal: string): SignerStakerRun | null {
+    const parsedSourceId = z.string().min(1).parse(sourceId);
+    const parsedManager = principalSchema.parse(managerPrincipal);
+    const row = this.db
+      .prepare(
+        `SELECT ingestion_runs.*
+         FROM ingestion_runs AS ingestion_runs
+         JOIN signer_staker_api_scans AS scans ON scans.run_id = ingestion_runs.run_id
+         WHERE ingestion_runs.source_id = ? AND ingestion_runs.stream = ?
+           AND ingestion_runs.manager_principal = ? AND ingestion_runs.status = 'running'
+           AND scans.sealed = 1 AND scans.anchor_fenced = 1`,
+      )
+      .get(parsedSourceId, signerStakersStream, parsedManager);
+    return row ? toSignerStakerRun(row) : null;
+  }
+
+  abandonSealedSignerStakerRun(runId: string, now: string): void {
+    const parsedRunId = z.string().uuid().parse(runId);
+    const parsedNow = z.iso.datetime().parse(now);
+    const result = this.db
+      .prepare(
+        `UPDATE ingestion_runs
+         SET status = 'completed', authoritative = 0, reconciliation_complete = 0,
+           updated_at = ?, completed_at = ?
+         WHERE run_id = ? AND stream = ? AND status = 'running'
+           AND EXISTS (
+             SELECT 1 FROM signer_staker_api_scans
+             WHERE signer_staker_api_scans.run_id = ingestion_runs.run_id
+               AND sealed = 1 AND anchor_fenced = 1
+           )`,
+      )
+      .run(parsedNow, parsedNow, parsedRunId, signerStakersStream);
+    if (Number(result.changes) !== 1) {
+      throw new Error(`Signer-staker run ${parsedRunId} is not active`);
+    }
+  }
+
+  commitSignerStakerApiPage(
+    input: z.input<typeof signerStakerApiPageInputSchema>,
+  ): SignerStakerRun {
+    const value = signerStakerApiPageInputSchema.parse(input);
+    const uniqueStakers = new Set(value.items.map((item) => item.stakerPrincipal));
+    if (uniqueStakers.size !== value.items.length) {
+      throw new Error("Signer-staker API page contains duplicate staker principals");
+    }
+
+    const selectRun = this.db.prepare(
+      `SELECT ${signerStakerRunColumns} FROM ingestion_runs WHERE run_id = ?`,
+    );
+    const selectScan = this.db.prepare(
+      `SELECT expected_total, sealed, anchor_fenced
+       FROM signer_staker_api_scans WHERE run_id = ?`,
+    );
+    const insertScan = this.db.prepare(
+      `INSERT INTO signer_staker_api_scans (
+        run_id, expected_total, sealed, anchor_fenced
+      ) VALUES (?, ?, 0, 0)`,
+    );
+    const insertItem = this.db.prepare(
+      `INSERT INTO signer_staker_api_scan_items (
+        run_id, ordinal, staker_principal, has_stx, has_btc
+      ) VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = toSignerStakerRun(selectRun.get(value.runId));
+      if (
+        current.status !== "running" ||
+        current.sourceId !== value.sourceId ||
+        current.managerPrincipal !== value.managerPrincipal ||
+        !sameChainAnchor(current.chainAnchor, value.chainAnchor ?? null)
+      ) {
+        throw new Error(
+          `Signer-staker run ${value.runId} is not active for this source and manager`,
+        );
+      }
+      if (current.cursor !== value.requestedCursor) {
+        throw new Error(
+          `Signer-staker run ${value.runId} moved from cursor ${value.requestedCursor ?? "<initial>"}`,
+        );
+      }
+
+      let scan = selectScan.get(value.runId) as
+        | { expected_total: unknown; sealed: unknown; anchor_fenced: unknown }
+        | undefined;
+      if (!scan) {
+        insertScan.run(value.runId, value.expectedTotal);
+        scan = selectScan.get(value.runId) as {
+          expected_total: unknown;
+          sealed: unknown;
+          anchor_fenced: unknown;
+        };
+      }
+      const scanValue = z
+        .object({
+          expected_total: z.number().int().nonnegative(),
+          sealed: z.union([z.literal(0), z.literal(1)]),
+          anchor_fenced: z.union([z.literal(0), z.literal(1)]),
+        })
+        .parse(scan);
+      if (scanValue.sealed === 1) {
+        throw new Error(`Signer-staker API roster ${value.runId} is already sealed`);
+      }
+      if (scanValue.expected_total !== value.expectedTotal) {
+        throw new Error(
+          `Signer-staker API total changed from ${scanValue.expected_total} to ${value.expectedTotal}`,
+        );
+      }
+
+      const itemsProcessed = current.itemsProcessed + value.items.length;
+      if (itemsProcessed > value.expectedTotal) {
+        throw new Error(
+          `Signer-staker API returned ${itemsProcessed} items for total ${value.expectedTotal}`,
+        );
+      }
+      if (value.sealed && itemsProcessed !== value.expectedTotal) {
+        throw new Error(
+          `Signer-staker API ended after ${itemsProcessed} of ${value.expectedTotal} items`,
+        );
+      }
+
+      for (const [index, item] of value.items.entries()) {
+        insertItem.run(
+          value.runId,
+          current.itemsProcessed + index,
+          item.stakerPrincipal,
+          item.hasStx ? 1 : 0,
+          item.hasBtc ? 1 : 0,
+        );
+      }
+      this.db
+        .prepare(
+          `UPDATE signer_staker_api_scans
+           SET sealed = ?, anchor_fenced = ?
+           WHERE run_id = ?`,
+        )
+        .run(value.sealed ? 1 : 0, value.anchorFenced ? 1 : 0, value.runId);
+      this.db
+        .prepare(
+          `UPDATE ingestion_runs SET
+            cursor_next = ?, pages_processed = pages_processed + 1,
+            items_processed = items_processed + ?, updated_at = ?
+           WHERE run_id = ?`,
+        )
+        .run(value.nextCursor, value.items.length, value.observedAt, value.runId);
+
+      const updated = selectRun.get(value.runId);
+      const result = toSignerStakerRun(updated);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getSignerStakerApiScan(runId: string): SignerStakerApiScan | null {
+    const parsedRunId = z.string().uuid().parse(runId);
+    const scan = this.db
+      .prepare(
+        `SELECT expected_total, sealed, anchor_fenced
+         FROM signer_staker_api_scans WHERE run_id = ?`,
+      )
+      .get(parsedRunId);
+    if (!scan) return null;
+    const value = z
+      .object({
+        expected_total: z.number().int().nonnegative(),
+        sealed: z.union([z.literal(0), z.literal(1)]),
+        anchor_fenced: z.union([z.literal(0), z.literal(1)]),
+      })
+      .parse(scan);
+    const rows = this.db
+      .prepare(
+        `SELECT staker_principal, has_stx, has_btc
+         FROM signer_staker_api_scan_items
+         WHERE run_id = ? ORDER BY ordinal`,
+      )
+      .all(parsedRunId);
+    const items = rows.map((row) => {
+      const item = z
+        .object({
+          staker_principal: principalSchema,
+          has_stx: z.union([z.literal(0), z.literal(1)]),
+          has_btc: z.union([z.literal(0), z.literal(1)]),
+        })
+        .parse(row);
+      return signerStakerApiCandidateSchema.parse({
+        stakerPrincipal: item.staker_principal,
+        hasStx: item.has_stx === 1,
+        hasBtc: item.has_btc === 1,
+      });
+    });
+    if (items.length > value.expected_total) {
+      throw new Error(`Signer-staker API roster ${parsedRunId} exceeds its expected total`);
+    }
+    if (value.sealed === 1 && items.length !== value.expected_total) {
+      throw new Error(`Sealed signer-staker API roster ${parsedRunId} is incomplete`);
+    }
+    return {
+      sealed: value.sealed === 1,
+      anchorFenced: value.anchor_fenced === 1,
+      expectedTotal: value.expected_total,
+      items,
+    };
+  }
+
   commitSignerStakerPage(input: SignerStakerPageInput): SignerStakerRun {
     const value = signerStakerPageInputSchema.parse(input);
     const uniqueStakers = new Set(value.items.map((item) => item.stakerPrincipal));
@@ -2322,7 +2578,7 @@ export class SidekickStore {
       this.db
         .prepare(
           `UPDATE ingestion_runs SET
-            status = ?, cursor_next = ?, pages_processed = pages_processed + 1,
+            status = ?, cursor_next = ?, pages_processed = pages_processed + ?,
             items_processed = items_processed + ?, authoritative = ?,
             reconciliation_complete = reconciliation_complete AND ?,
             updated_at = ?, completed_at = ?
@@ -2331,6 +2587,7 @@ export class SidekickStore {
         .run(
           completed ? "completed" : "running",
           value.nextCursor,
+          value.recordApiPage ? 1 : 0,
           value.apiItemsProcessed ?? value.items.length,
           authoritative ? 1 : 0,
           pageReconciliationComplete ? 1 : 0,

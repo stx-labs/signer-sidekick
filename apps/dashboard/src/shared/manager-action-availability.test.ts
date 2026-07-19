@@ -2,7 +2,7 @@ import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts"
 import { describe, expect, it } from "vitest";
 import { managerActionAvailability } from "./manager-action-availability.js";
 
-type ManagerActionContext = Pick<DashboardSnapshot, "manager" | "preflight">;
+type ManagerActionContext = Pick<DashboardSnapshot, "freshness" | "manager" | "preflight">;
 
 function context(): ManagerActionContext {
   return {
@@ -61,6 +61,26 @@ describe("managerActionAvailability", () => {
     value.preflight.compatibility.reason = "No matching compatibility profile";
 
     expect(managerActionAvailability(value)).toMatchObject({ available: true });
+  });
+
+  it("blocks action preparation from a last-good stale snapshot", () => {
+    const value = context();
+    value.freshness = {
+      status: "stale",
+      snapshotGeneratedAt: "2026-07-19T16:00:00.000Z",
+      servedAt: "2026-07-19T16:01:00.000Z",
+      reason: "refresh-failed",
+    };
+
+    expect(managerActionAvailability(value)).toEqual({
+      available: false,
+      reason: expect.stringContaining("recent authoritative operator snapshot"),
+      warning: null,
+    });
+  });
+
+  it("blocks when the browser has aged an otherwise current snapshot", () => {
+    expect(managerActionAvailability(context(), true)).toMatchObject({ available: false });
   });
 
   it.each([

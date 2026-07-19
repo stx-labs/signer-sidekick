@@ -17,7 +17,7 @@ import {
   onboardingActionResponseSchema,
   onboardingEnvelopeSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
 import { dashboardHash } from "../../dashboard-route.js";
@@ -39,10 +39,12 @@ export function SetupPage({
   data,
   token,
   onOnboardingStarted,
+  onOperatorStateChanged,
 }: {
   data: DashboardSnapshot;
   token: string;
   onOnboardingStarted: () => void;
+  onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
 }) {
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [wizard, setWizard] = useState<OnboardingWizardState>({
@@ -53,7 +55,8 @@ export function SetupPage({
   });
   const [path, setPath] = useState<"attach" | "fresh">("attach");
   const [selectedStep, setSelectedStep] = useState<string>("preflight");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const managerParts = useMemo(() => {
     const index = data.managerPrincipal.indexOf(".");
@@ -68,6 +71,8 @@ export function SetupPage({
     signerConfigPath: "<SIGNER_CONFIG_PATH>",
   });
   const [signerOutput, setSignerOutput] = useState("");
+  const initialLoadGeneration = useRef(0);
+  const automaticRefreshController = useRef<AbortController | null>(null);
   const [activationSnapshot, setActivationSnapshot] = useState<{
     preflight: OperatorSnapshot["preflight"];
     setup: OperatorSnapshot["setup"];
@@ -80,20 +85,31 @@ export function SetupPage({
     setActivationSnapshot({ preflight: data.preflight, setup: data.setup });
   }, [data.preflight, data.setup]);
 
+  const requestFresh = useCallback(
+    async (signal?: AbortSignal) =>
+      await apiJson(token, "/api/v1/onboarding/fresh/refresh", freshRefreshResponseSchema, {
+        method: "POST",
+        ...(signal ? { signal } : {}),
+      }),
+    [token],
+  );
+
   const refreshFresh = useCallback(async () => {
-    const result = await apiJson(
-      token,
-      "/api/v1/onboarding/fresh/refresh",
-      freshRefreshResponseSchema,
-      { method: "POST" },
-    );
+    const automatic = automaticRefreshController.current;
+    automaticRefreshController.current = null;
+    automatic?.abort();
+    const result = await requestFresh();
     setActivationSnapshot({ preflight: result.preflight, setup: result.setup });
     return result;
-  }, [token]);
+  }, [requestFresh]);
 
   const load = useCallback(async () => {
+    const generation = ++initialLoadGeneration.current;
+    setBusy(true);
+    setError(null);
     try {
       const result = await apiJson(token, "/api/v1/onboarding", onboardingEnvelopeSchema);
+      if (generation !== initialLoadGeneration.current) return;
       setWizard(result.wizard);
       if (result.onboarding) {
         onOnboardingStarted();
@@ -102,51 +118,79 @@ export function SetupPage({
         setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
         if (result.onboarding.freshInput) setFresh(result.onboarding.freshInput);
       }
+      setInitialLoaded(true);
     } catch (cause) {
+      if (generation !== initialLoadGeneration.current) return;
+      setInitialLoaded(false);
       setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (generation === initialLoadGeneration.current) setBusy(false);
     }
   }, [onOnboardingStarted, token]);
 
   useEffect(() => {
     void load();
+    return () => {
+      initialLoadGeneration.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
     if (
+      busy ||
       path !== "fresh" ||
       !onboarding?.activationPlan ||
       !["deploy-manager", "register-manager", "final-verification"].includes(selectedStep)
     ) {
       return;
     }
+    let active = true;
+    let timeout: number | undefined;
     const followedStep = workflowStepId(onboarding.path, onboarding.currentStep);
-    const interval = window.setInterval(() => {
-      void refreshFresh()
-        .then((result) => {
-          setOnboarding(result.onboarding);
-          setPath(result.onboarding.path);
-          setSelectedStep((current) =>
-            current === followedStep
-              ? workflowStepId(result.onboarding.path, result.onboarding.currentStep)
-              : current,
-          );
-          setError(null);
-        })
-        .catch(() => {
-          // The manager may not be deployed yet; the visible manual refresh reports errors.
-        });
-    }, 20_000);
-    return () => window.clearInterval(interval);
+    const poll = async () => {
+      const controller = new AbortController();
+      automaticRefreshController.current = controller;
+      try {
+        const result = await requestFresh(controller.signal);
+        if (!active || automaticRefreshController.current !== controller) return;
+        setActivationSnapshot({ preflight: result.preflight, setup: result.setup });
+        setOnboarding(result.onboarding);
+        setPath(result.onboarding.path);
+        setSelectedStep((current) =>
+          current === followedStep
+            ? workflowStepId(result.onboarding.path, result.onboarding.currentStep)
+            : current,
+        );
+        setError(null);
+      } catch {
+        // The manager may not be deployed yet; the visible manual refresh reports errors.
+      } finally {
+        if (automaticRefreshController.current === controller) {
+          automaticRefreshController.current = null;
+        }
+        if (active) timeout = window.setTimeout(() => void poll(), 20_000);
+      }
+    };
+    timeout = window.setTimeout(() => void poll(), 20_000);
+    return () => {
+      active = false;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      const controller = automaticRefreshController.current;
+      automaticRefreshController.current = null;
+      controller?.abort();
+    };
   }, [
     onboarding?.activationPlan,
     onboarding?.currentStep,
     onboarding?.path,
+    busy,
     path,
-    refreshFresh,
+    requestFresh,
     selectedStep,
   ]);
 
   const run = async (action: () => Promise<{ onboarding: OnboardingState }>) => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -155,6 +199,13 @@ export function SetupPage({
       setOnboarding(result.onboarding);
       setPath(result.onboarding.path);
       setSelectedStep(workflowStepId(result.onboarding.path, result.onboarding.currentStep));
+      try {
+        await onOperatorStateChanged?.();
+      } catch (cause) {
+        setError(
+          `Setup advanced, but operator state could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -163,6 +214,7 @@ export function SetupPage({
   };
 
   const start = async (nextPath: "attach" | "fresh") => {
+    if (busy) return;
     if (onboarding?.path === nextPath) {
       setPath(nextPath);
       return;
@@ -226,6 +278,7 @@ export function SetupPage({
   const signingStartHeight = activationSnapshot.preflight.cycle.rewardPhaseStartBurnHeight;
 
   const selectStep = async (step: ActivationStep) => {
+    if (busy) return;
     setSelectedStep(step.id);
     if (
       onboarding &&
@@ -242,6 +295,35 @@ export function SetupPage({
       } catch {
         // Selection remains useful even if persistence is temporarily unavailable.
       }
+    }
+  };
+
+  const verifySignerOutput = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(signerOutput);
+    } catch {
+      setError("Paste the complete valid JSON object printed by the signer command.");
+      return;
+    }
+    void run(() =>
+      apiJson(token, "/api/v1/onboarding/fresh/grant/verify", onboardingActionResponseSchema, {
+        method: "POST",
+        body: JSON.stringify({ signerOutput: parsed }),
+      }),
+    );
+  };
+
+  const downloadArtifact = async (kind: "source" | "manifest") => {
+    setError(null);
+    try {
+      await apiDownload(token, `/api/v1/onboarding/artifacts/${kind}`, {
+        expectedContentTypes: kind === "source" ? ["text/plain"] : ["application/json"],
+        fallbackFilename:
+          kind === "source" ? "signer-manager.clar" : "signer-manager.deployment.json",
+      });
+    } catch (cause) {
+      setError(`Download failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   };
 
@@ -267,6 +349,25 @@ export function SetupPage({
       setBusy(false);
     }
   };
+
+  if (!initialLoaded) {
+    return (
+      <>
+        <PageHead
+          title="Initial Setup"
+          lede="Load saved setup progress before starting or changing the guided workflow."
+        />
+        <ErrorCallout error={error} />
+        {busy ? (
+          <div className="loading-state">Loading setup progress</div>
+        ) : (
+          <button type="button" className="btn btn-secondary" onClick={() => void load()}>
+            Retry setup
+          </button>
+        )}
+      </>
+    );
+  }
 
   if (wizard.dismissed) {
     return (
@@ -312,6 +413,7 @@ export function SetupPage({
               <button
                 type="button"
                 className={path === "attach" ? "on" : ""}
+                disabled={busy}
                 onClick={() => void start("attach")}
               >
                 Attach Existing Contracts
@@ -319,6 +421,7 @@ export function SetupPage({
               <button
                 type="button"
                 className={path === "fresh" ? "on" : ""}
+                disabled={busy}
                 onClick={() => void start("fresh")}
               >
                 Deploy New Contracts
@@ -355,6 +458,7 @@ export function SetupPage({
               type="button"
               className={`step ${step.status === "complete" ? "done" : ""} ${step.id === selectedStep || (!steps.length && index === 0) ? "active" : ""}`}
               key={step.id}
+              disabled={busy}
               onClick={() => void selectStep(step)}
             >
               <span className="num">{step.status === "complete" ? <Check /> : index + 1}</span>
@@ -727,24 +831,14 @@ export function SetupPage({
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() =>
-                        void apiDownload(token, "/api/v1/onboarding/artifacts/source", {
-                          expectedContentTypes: ["text/plain"],
-                          fallbackFilename: "signer-manager.clar",
-                        })
-                      }
+                      onClick={() => void downloadArtifact("source")}
                     >
                       <DownloadSimple /> Download .clar
                     </button>
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() =>
-                        void apiDownload(token, "/api/v1/onboarding/artifacts/manifest", {
-                          expectedContentTypes: ["application/json"],
-                          fallbackFilename: "signer-manager.deployment.json",
-                        })
-                      }
+                      onClick={() => void downloadArtifact("manifest")}
                     >
                       <DownloadSimple /> Download manifest
                     </button>
@@ -776,24 +870,14 @@ export function SetupPage({
                     <button
                       type="button"
                       className="btn btn-accent"
-                      onClick={() =>
-                        void apiDownload(token, "/api/v1/onboarding/artifacts/source", {
-                          expectedContentTypes: ["text/plain"],
-                          fallbackFilename: "signer-manager.clar",
-                        })
-                      }
+                      onClick={() => void downloadArtifact("source")}
                     >
                       <DownloadSimple /> Download .clar
                     </button>
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() =>
-                        void apiDownload(token, "/api/v1/onboarding/artifacts/manifest", {
-                          expectedContentTypes: ["application/json"],
-                          fallbackFilename: "signer-manager.deployment.json",
-                        })
-                      }
+                      onClick={() => void downloadArtifact("manifest")}
                     >
                       <DownloadSimple /> Download manifest
                     </button>
@@ -811,6 +895,7 @@ export function SetupPage({
                         createRequest={{ action: "deploy-manager" }}
                         managerPrincipal={onboarding.managerPrincipal}
                         network={onboarding.artifact.manifest.network}
+                        onVerified={onOperatorStateChanged}
                         token={token}
                       />
                       <div className="deploy-instructions">
@@ -1001,19 +1086,7 @@ export function SetupPage({
                         type="button"
                         className="btn btn-accent"
                         disabled={busy || !signerOutput.trim()}
-                        onClick={() =>
-                          void run(() =>
-                            apiJson(
-                              token,
-                              "/api/v1/onboarding/fresh/grant/verify",
-                              onboardingActionResponseSchema,
-                              {
-                                method: "POST",
-                                body: JSON.stringify({ signerOutput: JSON.parse(signerOutput) }),
-                              },
-                            ),
-                          )
-                        }
+                        onClick={verifySignerOutput}
                       >
                         Verify signer output
                       </button>
@@ -1049,6 +1122,7 @@ export function SetupPage({
                     createRequest={{ action: "register-self" }}
                     managerPrincipal={data.managerPrincipal}
                     network={data.network}
+                    onVerified={onOperatorStateChanged}
                     token={token}
                   />
 

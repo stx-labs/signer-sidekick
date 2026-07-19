@@ -1,11 +1,11 @@
 import { ArrowSquareOut, Check, Key, Plugs, ShieldCheck, Warning } from "@phosphor-icons/react";
 import {
+  type DashboardSnapshot,
   healthSourceTestResponseSchema,
-  type OperatorSnapshot,
   type RuntimeSettings,
   runtimeSettingsSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyIdentifierButton } from "../../copyable-identifier.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
@@ -15,16 +15,22 @@ export function SettingsPage({
   data,
   token,
   setTheme,
+  onSaved,
 }: {
-  data: OperatorSnapshot;
+  data: DashboardSnapshot | null;
   token: string;
   setTheme: (theme: "light" | "dark") => void;
+  onSaved?: () => void | Promise<void>;
 }) {
-  const [settings, setSettings] = useState<RuntimeSettings | null>(data.runtimeSettings ?? null);
+  const [settings, setSettings] = useState<RuntimeSettings | null>(() =>
+    data?.freshness?.status === "stale" ? null : (data?.runtimeSettings ?? null),
+  );
+  const [loading, setLoading] = useState(settings === null);
   const [apiKeyAction, setApiKeyAction] = useState<"keep" | "clear" | "replace">("keep");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sourceTest, setSourceTest] = useState<{
     kind: "node-metrics" | "signer-monitoring" | "hiro-reference";
@@ -32,15 +38,47 @@ export function SettingsPage({
     detail: string;
   } | null>(null);
   const [activeSection, setActiveSection] = useState("identity");
+  const settingsLoadController = useRef<AbortController | null>(null);
+  const sourceTestController = useRef<AbortController | null>(null);
+
+  const loadSettings = useCallback(async () => {
+    settingsLoadController.current?.abort();
+    const controller = new AbortController();
+    settingsLoadController.current = controller;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const result = await apiJson(token, "/api/v1/settings", runtimeSettingsSchema, {
+        signal: controller.signal,
+      });
+      if (settingsLoadController.current === controller) setSettings(result);
+    } catch (cause) {
+      if (controller.signal.aborted || settingsLoadController.current !== controller) return;
+      setLoadError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (settingsLoadController.current === controller) {
+        settingsLoadController.current = null;
+        setLoading(false);
+      }
+    }
+  }, [token]);
 
   useEffect(() => {
-    void apiJson(token, "/api/v1/settings", runtimeSettingsSchema)
-      .then(setSettings)
-      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [token]);
+    if (!settings) void loadSettings();
+  }, [loadSettings, settings]);
+  useEffect(
+    () => () => {
+      settingsLoadController.current?.abort();
+      sourceTestController.current?.abort();
+    },
+    [],
+  );
 
   const save = async () => {
     if (!settings) return;
+    sourceTestController.current?.abort();
+    sourceTestController.current = null;
+    setSourceTest(null);
     setBusy(true);
     setSaved(false);
     setError(null);
@@ -71,10 +109,18 @@ export function SettingsPage({
         }),
       });
       setSettings(result);
+      setLoadError(null);
       setApiKey("");
       setApiKeyAction("keep");
       setSaved(true);
       if (result.display.defaultTheme !== "system") setTheme(result.display.defaultTheme);
+      try {
+        await onSaved?.();
+      } catch (cause) {
+        setError(
+          `Settings were saved, but operator state could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -82,32 +128,60 @@ export function SettingsPage({
     }
   };
 
-  if (!settings) return <div className="loading-state">Loading settings</div>;
-  const update = <K extends keyof RuntimeSettings>(section: K, value: RuntimeSettings[K]) =>
+  if (!settings) {
+    return (
+      <>
+        <PageHead
+          title="Settings"
+          lede="Configure the running deployment. Settings remain available when chain-derived operator state is temporarily unavailable."
+        />
+        <ErrorCallout error={loadError} />
+        {loading ? <div className="loading-state">Loading settings</div> : null}
+        {!loading && loadError ? (
+          <button type="button" className="btn btn-secondary" onClick={() => void loadSettings()}>
+            Retry settings
+          </button>
+        ) : null}
+      </>
+    );
+  }
+  const update = <K extends keyof RuntimeSettings>(section: K, value: RuntimeSettings[K]) => {
+    sourceTestController.current?.abort();
+    sourceTestController.current = null;
+    setSaved(false);
+    setSourceTest(null);
     setSettings({ ...settings, [section]: value });
+  };
   const testHealthSource = async (
     kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
     url: string,
   ) => {
+    sourceTestController.current?.abort();
+    const controller = new AbortController();
+    sourceTestController.current = controller;
     setSourceTest({ kind, state: "testing", detail: "Connecting…" });
     try {
       const result = await apiJson(
         token,
         "/api/v1/health/test-source",
         healthSourceTestResponseSchema,
-        { method: "POST", body: JSON.stringify({ kind, url }) },
+        { method: "POST", body: JSON.stringify({ kind, url }), signal: controller.signal },
       );
+      if (sourceTestController.current !== controller) return;
       setSourceTest({
         kind,
         state: "connected",
         detail: `Connected · ${result.signals} recognized signals`,
       });
     } catch (cause) {
+      if (controller.signal.aborted || sourceTestController.current !== controller) return;
       setSourceTest({
         kind,
         state: "failed",
         detail: cause instanceof Error ? cause.message : String(cause),
       });
+    } finally {
+      if (sourceTestController.current === controller) sourceTestController.current = null;
     }
   };
 
@@ -127,6 +201,17 @@ export function SettingsPage({
           </button>
         }
       />
+      {loading ? (
+        <div className="callout callout-neutral" role="status">
+          Refreshing settings…
+        </div>
+      ) : null}
+      <ErrorCallout error={loadError} />
+      {loadError ? (
+        <button type="button" className="btn btn-secondary sm" onClick={() => void loadSettings()}>
+          Retry settings
+        </button>
+      ) : null}
       <ErrorCallout error={error} />
       {saved ? (
         <div className="callout callout-info settings-saved">
@@ -158,7 +243,7 @@ export function SettingsPage({
             </button>
           ))}
         </nav>
-        <div className="settings-scroll">
+        <fieldset className="settings-scroll settings-fields" disabled={busy}>
           <section className="card-standout set-section form-grid" id="identity">
             <div className="card-head">
               <h2>Pool identity</h2>
@@ -166,8 +251,12 @@ export function SettingsPage({
             </div>
             <Field label="Manager principal">
               <span className="copyable-input">
-                <input className="input mono" readOnly value={data.managerPrincipal} />
-                <CopyIdentifierButton value={data.managerPrincipal} label="manager principal" />
+                <input
+                  className="input mono"
+                  readOnly
+                  value={data?.managerPrincipal ?? "Operator state temporarily unavailable"}
+                />
+                <CopyIdentifierButton value={data?.managerPrincipal} label="manager principal" />
               </span>
             </Field>
             <Field label="Display name">
@@ -239,56 +328,67 @@ export function SettingsPage({
               </h2>
               <StatusBadge
                 status={
-                  data.preflight.status === "pass"
-                    ? "Connected"
-                    : data.preflight.status === "warn"
-                      ? "Attention"
-                      : "Unavailable"
+                  !data
+                    ? "Unavailable"
+                    : data.preflight.status === "pass"
+                      ? "Connected"
+                      : data.preflight.status === "warn"
+                        ? "Attention"
+                        : "Unavailable"
                 }
               />
             </div>
-            <div className="archive-guidance" role="note">
-              <div>
-                <strong>
-                  Network compatibility: {data.preflight.compatibility.status.replace("-", " ")}
-                </strong>
-                <p>
-                  {data.preflight.compatibility.reason}.
-                  {data.preflight.compatibility.profileId ? (
-                    <>
-                      {" "}
-                      Profile{" "}
-                      <span className="mono">
-                        {data.preflight.compatibility.profileLabel ??
-                          data.preflight.compatibility.profileId}
-                      </span>{" "}
-                      revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
-                      {data.preflight.compatibility.origin === "operator-provided"
-                        ? "operator-provided compatibility data; source proof and Assist gates apply separately"
-                        : "built into Sidekick"}
-                      .
-                    </>
-                  ) : null}{" "}
-                  Node build{" "}
-                  <span className="mono">
-                    {data.preflight.node.version ?? data.preflight.node.serverVersion ?? "unknown"}
-                    {data.preflight.node.commit ? ` (${data.preflight.node.commit})` : ""}
-                  </span>{" "}
-                  is diagnostic; compatible upgrades do not require a Sidekick release.
-                </p>
+            {data ? (
+              <div className="archive-guidance" role="note">
+                <div>
+                  <strong>
+                    Network compatibility: {data.preflight.compatibility.status.replace("-", " ")}
+                  </strong>
+                  <p>
+                    {data.preflight.compatibility.reason}.
+                    {data.preflight.compatibility.profileId ? (
+                      <>
+                        {" "}
+                        Profile{" "}
+                        <span className="mono">
+                          {data.preflight.compatibility.profileLabel ??
+                            data.preflight.compatibility.profileId}
+                        </span>{" "}
+                        revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
+                        {data.preflight.compatibility.origin === "operator-provided"
+                          ? "operator-provided compatibility data; source proof and Assist gates apply separately"
+                          : "built into Sidekick"}
+                        .
+                      </>
+                    ) : null}{" "}
+                    Node build{" "}
+                    <span className="mono">
+                      {data.preflight.node.version ??
+                        data.preflight.node.serverVersion ??
+                        "unknown"}
+                      {data.preflight.node.commit ? ` (${data.preflight.node.commit})` : ""}
+                    </span>{" "}
+                    is diagnostic; compatible upgrades do not require a Sidekick release.
+                  </p>
+                </div>
+                <div className="stacked-doc-links">
+                  <a href={DOCUMENT_LINKS.nodeDocker} target="_blank" rel="noreferrer">
+                    Node setup <ArrowSquareOut aria-hidden="true" />
+                  </a>
+                  <a href={DOCUMENT_LINKS.signerQuickstart} target="_blank" rel="noreferrer">
+                    Signer quickstart <ArrowSquareOut aria-hidden="true" />
+                  </a>
+                  <a href={DOCUMENT_LINKS.signerConfiguration} target="_blank" rel="noreferrer">
+                    Signer configuration <ArrowSquareOut aria-hidden="true" />
+                  </a>
+                </div>
               </div>
-              <div className="stacked-doc-links">
-                <a href={DOCUMENT_LINKS.nodeDocker} target="_blank" rel="noreferrer">
-                  Node setup <ArrowSquareOut aria-hidden="true" />
-                </a>
-                <a href={DOCUMENT_LINKS.signerQuickstart} target="_blank" rel="noreferrer">
-                  Signer quickstart <ArrowSquareOut aria-hidden="true" />
-                </a>
-                <a href={DOCUMENT_LINKS.signerConfiguration} target="_blank" rel="noreferrer">
-                  Signer configuration <ArrowSquareOut aria-hidden="true" />
-                </a>
+            ) : (
+              <div className="callout callout-caution" role="status">
+                Chain-derived compatibility details are temporarily unavailable. You can still
+                review or correct data-source URLs here, then retry operator state above.
               </div>
-            </div>
+            )}
             <Field
               label="Stacks node RPC URL"
               help="Changing provider creates a separate node evidence identity."
@@ -442,7 +542,11 @@ export function SettingsPage({
               <select
                 className="input"
                 value={apiKeyAction}
-                onChange={(event) => setApiKeyAction(event.target.value as typeof apiKeyAction)}
+                onChange={(event) => {
+                  setSaved(false);
+                  setSourceTest(null);
+                  setApiKeyAction(event.target.value as typeof apiKeyAction);
+                }}
               >
                 <option value="keep">Keep current</option>
                 <option value="replace">Replace</option>
@@ -456,7 +560,11 @@ export function SettingsPage({
                   type="password"
                   autoComplete="new-password"
                   value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
+                  onChange={(event) => {
+                    setSaved(false);
+                    setSourceTest(null);
+                    setApiKey(event.target.value);
+                  }}
                 />
               </Field>
             ) : null}
@@ -490,7 +598,7 @@ export function SettingsPage({
               <span className="k">Settings revision</span>
               <span className="v mono">{settings.revision}</span>
             </div>
-            {data.manager ? (
+            {data?.manager ? (
               <>
                 <div className="statline">
                   <span className="k">Manager trust</span>
@@ -584,7 +692,7 @@ export function SettingsPage({
               </span>
             </div>
           </section>
-        </div>
+        </fieldset>
       </div>
     </div>
   );

@@ -435,6 +435,12 @@ export interface RewardCycleSummary {
 
 export interface DashboardSnapshot extends OperatorSnapshot {
   generatedAt: string;
+  freshness?: {
+    status: "current" | "stale";
+    snapshotGeneratedAt: string;
+    servedAt: string;
+    reason: "refresh-failed" | null;
+  };
   config?: {
     nodeRpcUrl: string;
     apiUrl: string;
@@ -612,10 +618,114 @@ export const dashboardSnapshotSchema = z.custom<DashboardSnapshot>(isDashboardSn
 export type StatusResponse = z.infer<typeof dashboardSnapshotSchema>;
 export const statusResponseSchema = dashboardSnapshotSchema;
 
-export const syncResponseSchema = z.custom<{ snapshot: DashboardSnapshot }>(
-  (value) => isRecord(value) && isDashboardSnapshot(value.snapshot),
-  { error: "Invalid sync response" },
+export type ReconciliationOperationPhase =
+  | "idle"
+  | "reconciling-stakers-discovery"
+  | "reconciling-stakers-verification"
+  | "reconciling-events"
+  | "refreshing-snapshot"
+  | "complete"
+  | "failed";
+
+export const reconciliationSummarySchema = z
+  .object({
+    observedAt: z.string(),
+    stakers: z
+      .object({
+        resumed: z.boolean(),
+        status: z.enum(["completed", "incomplete"]),
+        authoritative: z.boolean(),
+        pagesProcessed: z.number().int().nonnegative(),
+        itemsProcessed: z.number().int().nonnegative(),
+        activeStakers: z.number().int().nonnegative(),
+        nodeVerifiedStxPositions: z.number().int().nonnegative(),
+        unverifiedStxDiscoveries: z.number().int().nonnegative(),
+        discrepanciesObserved: z.number().int().nonnegative(),
+      })
+      .strict(),
+    events: z
+      .object({
+        resumed: z.boolean(),
+        pagesProcessed: z.number().int().nonnegative(),
+        eventsProcessed: z.number().int().nonnegative(),
+        newEvents: z.number().int().nonnegative(),
+        replayedEvents: z.number().int().nonnegative(),
+        decodeFailures: z.number().int().nonnegative(),
+        reorgedEvents: z.number().int().nonnegative(),
+        stoppedAtKnownOverlap: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+export type ReconciliationSummary = z.infer<typeof reconciliationSummarySchema>;
+
+export interface ReconciliationOperation {
+  schemaVersion: 1;
+  operationId: string | null;
+  status: "idle" | "running" | "succeeded" | "failed";
+  phase: ReconciliationOperationPhase;
+  processLocal: true;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  progress: {
+    completedSteps: number;
+    totalSteps: number;
+    itemsCompleted: number | null;
+    itemsTotal: number | null;
+    message: string;
+  };
+  result: null | {
+    reconciliation: ReconciliationSummary;
+    snapshotGeneratedAt: string;
+  };
+  error: null | (ApiError & { retryable: boolean });
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isReconciliationOperation(value: unknown): value is ReconciliationOperation {
+  if (!isRecord(value) || !isRecord(value.progress)) return false;
+  const result = value.result;
+  const error = value.error;
+  return (
+    value.schemaVersion === 1 &&
+    isNullableString(value.operationId) &&
+    ["idle", "running", "succeeded", "failed"].includes(String(value.status)) &&
+    [
+      "idle",
+      "reconciling-stakers-discovery",
+      "reconciling-stakers-verification",
+      "reconciling-events",
+      "refreshing-snapshot",
+      "complete",
+      "failed",
+    ].includes(String(value.phase)) &&
+    value.processLocal === true &&
+    isNullableString(value.startedAt) &&
+    isNullableString(value.updatedAt) &&
+    isNullableString(value.completedAt) &&
+    typeof value.progress.completedSteps === "number" &&
+    typeof value.progress.totalSteps === "number" &&
+    (value.progress.itemsCompleted === null || typeof value.progress.itemsCompleted === "number") &&
+    (value.progress.itemsTotal === null || typeof value.progress.itemsTotal === "number") &&
+    typeof value.progress.message === "string" &&
+    (result === null ||
+      (isRecord(result) &&
+        reconciliationSummarySchema.safeParse(result.reconciliation).success &&
+        typeof result.snapshotGeneratedAt === "string")) &&
+    (error === null ||
+      (isRecord(error) && typeof error.error === "string" && typeof error.retryable === "boolean"))
+  );
+}
+
+export const reconciliationOperationSchema = z.custom<ReconciliationOperation>(
+  isReconciliationOperation,
+  { error: "Invalid reconciliation operation" },
 );
+export const syncResponseSchema = z.object({ operation: reconciliationOperationSchema }).strict();
 export type SyncResponse = z.infer<typeof syncResponseSchema>;
 
 export const poolPageResponseSchema = z.custom<{ roster: RosterEntry[]; total: number }>(
@@ -693,7 +803,37 @@ export const poolCardResponseSchema = z.custom<PoolCardArtifact>(
   { error: "Invalid pool card response" },
 );
 
-export const apiErrorSchema = z.looseObject({ error: z.string() });
+const walletIntentChainTipSchema = z
+  .object({
+    stacksTipHeight: z.number().int().nonnegative(),
+    burnBlockHeight: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const walletIntentAnchorMismatchErrorSchema = z
+  .object({
+    error: z.literal("wallet_intent_anchor_mismatch"),
+    retryable: z.literal(true),
+    node: walletIntentChainTipSchema,
+    api: walletIntentChainTipSchema,
+    poxBurnBlockHeight: z.number().int().nonnegative(),
+  })
+  .strict();
+export type WalletIntentAnchorMismatchError = z.infer<typeof walletIntentAnchorMismatchErrorSchema>;
+
+export const walletIntentAnchorUnstableErrorSchema = z
+  .object({
+    error: z.literal("wallet_intent_anchor_unstable"),
+    retryable: z.literal(true),
+  })
+  .strict();
+export type WalletIntentAnchorUnstableError = z.infer<typeof walletIntentAnchorUnstableErrorSchema>;
+
+export const apiErrorSchema = z.looseObject({
+  error: z.string(),
+  message: z.string().optional(),
+  retryable: z.boolean().optional(),
+});
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
 export const healthSourceTestRequestSchema = z

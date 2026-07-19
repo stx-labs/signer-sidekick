@@ -24,9 +24,9 @@ type HealthLight = "green" | "yellow" | "red";
 function sourceHealthLight(
   snapshot: HealthSnapshot | null,
   source: "node" | "signer",
-  unavailable: boolean,
+  transportFailed: boolean,
 ): HealthLight {
-  if (unavailable) return "red";
+  if (transportFailed) return "yellow";
   if (!snapshot) return "yellow";
   const findings = snapshot.findings.filter((finding) => finding.source === source);
   if (findings.some(({ severity }) => severity === "critical")) return "red";
@@ -97,6 +97,12 @@ export function Overview({
       : compactDuration(blocksUntilPrepare * timing.averageSeconds);
   const nodeHealth = sourceHealthLight(health, "node", healthUnavailable);
   const signerHealth = sourceHealthLight(health, "signer", healthUnavailable);
+  const nodeHealthLabel = healthUnavailable
+    ? "unknown; latest health read failed"
+    : healthLightLabel(nodeHealth);
+  const signerHealthLabel = healthUnavailable
+    ? "unknown; latest health read failed"
+    : healthLightLabel(signerHealth);
   return (
     <>
       <PageHead
@@ -182,22 +188,20 @@ export function Overview({
         <a className="cycle-health" href="#health" aria-label="Open Node and Signer Health">
           <span>Node &amp; Signer Health</span>
           <div className="cycle-health-states">
-            <span
-              role="img"
-              aria-label={`Node health: ${healthLightLabel(nodeHealth)}`}
-              title={healthLightLabel(nodeHealth)}
-            >
+            <span role="img" aria-label={`Node health: ${nodeHealthLabel}`} title={nodeHealthLabel}>
               <i className={`health-light ${nodeHealth}`} aria-hidden="true" /> Node
             </span>
             <span
               role="img"
-              aria-label={`Signer health: ${healthLightLabel(signerHealth)}`}
-              title={healthLightLabel(signerHealth)}
+              aria-label={`Signer health: ${signerHealthLabel}`}
+              title={signerHealthLabel}
             >
               <i className={`health-light ${signerHealth}`} aria-hidden="true" /> Signer
             </span>
           </div>
-          <small>Open health details</small>
+          <small>
+            {healthUnavailable ? "Latest read failed · open details" : "Open health details"}
+          </small>
         </a>
       </div>
       <div className="section-title">

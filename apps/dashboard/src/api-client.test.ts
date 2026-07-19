@@ -83,10 +83,16 @@ describe("dashboard API client", () => {
       vi
         .fn()
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ error: "invalid_query" }), {
-            status: 400,
-            headers: { "content-type": "application/json" },
-          }),
+          new Response(
+            JSON.stringify({
+              error: "invalid_query",
+              message: "The requested page is outside the available range.",
+            }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            },
+          ),
         )
         .mockResolvedValueOnce(
           new Response(JSON.stringify({ status: 42 }), {
@@ -97,6 +103,7 @@ describe("dashboard API client", () => {
     );
 
     await expect(apiJson(token, "/api/v1/pool", unknownSchema)).rejects.toMatchObject({
+      message: "Request failed: The requested page is outside the available range.",
       kind: "http",
       status: 400,
       code: "invalid_query",
@@ -104,6 +111,32 @@ describe("dashboard API client", () => {
     await expect(apiJson(token, "/api/v1/status", readySchema)).rejects.toMatchObject({
       kind: "content",
       status: 200,
+    });
+  });
+
+  it("preserves retryable chain-source details from an HTTP failure", async () => {
+    const mismatch = {
+      error: "wallet_intent_anchor_mismatch",
+      retryable: true,
+      node: { stacksTipHeight: 28_079, burnBlockHeight: 4_818 },
+      api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
+      poxBurnBlockHeight: 4_819,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(mismatch), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(apiJson(token, "/api/v1/wallet-intents", unknownSchema)).rejects.toMatchObject({
+      kind: "http",
+      status: 503,
+      code: "wallet_intent_anchor_mismatch",
+      body: mismatch,
     });
   });
 

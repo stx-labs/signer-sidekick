@@ -3,8 +3,75 @@ import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
+  reconciliationOperationSchema,
+  reconciliationSummarySchema,
   runtimeSettingsSchema,
+  syncResponseSchema,
+  walletIntentAnchorMismatchErrorSchema,
+  walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("reconciliation contracts", () => {
+  const reconciliation = {
+    observedAt: "2026-07-19T18:00:00.000Z",
+    stakers: {
+      resumed: false,
+      status: "completed" as const,
+      authoritative: true,
+      pagesProcessed: 2,
+      itemsProcessed: 125,
+      activeStakers: 120,
+      nodeVerifiedStxPositions: 118,
+      unverifiedStxDiscoveries: 2,
+      discrepanciesObserved: 1,
+    },
+    events: {
+      resumed: true,
+      pagesProcessed: 1,
+      eventsProcessed: 20,
+      newEvents: 3,
+      replayedEvents: 17,
+      decodeFailures: 0,
+      reorgedEvents: 0,
+      stoppedAtKnownOverlap: true,
+    },
+  };
+
+  it("accepts bounded process-local progress and success summaries", () => {
+    expect(reconciliationSummarySchema.safeParse(reconciliation).success).toBe(true);
+    const operation = {
+      schemaVersion: 1,
+      operationId: "10000000-0000-4000-8000-000000000001",
+      status: "succeeded",
+      phase: "complete",
+      processLocal: true,
+      startedAt: "2026-07-19T18:00:00.000Z",
+      updatedAt: "2026-07-19T18:00:02.000Z",
+      completedAt: "2026-07-19T18:00:02.000Z",
+      progress: {
+        completedSteps: 4,
+        totalSteps: 4,
+        itemsCompleted: null,
+        itemsTotal: null,
+        message: "Reconciliation complete",
+      },
+      result: {
+        reconciliation,
+        snapshotGeneratedAt: "2026-07-19T18:00:02.000Z",
+      },
+      error: null,
+    };
+    expect(reconciliationOperationSchema.safeParse(operation).success).toBe(true);
+    expect(syncResponseSchema.safeParse({ operation }).success).toBe(true);
+  });
+
+  it("rejects unbounded or unrecognized reconciliation result fields", () => {
+    expect(
+      reconciliationSummarySchema.safeParse({ ...reconciliation, rawRows: ["must-not-cross-api"] })
+        .success,
+    ).toBe(false);
+  });
+});
 
 describe("V1 runtime settings contract", () => {
   it("strips retired settings from legacy-shaped responses", () => {
@@ -113,6 +180,42 @@ describe("browser-wallet intent contracts", () => {
         actorPrincipal: actor,
       }).success,
     ).toBe(true);
+  });
+
+  it("describes a retryable exact-anchor mismatch with each observed height", () => {
+    const mismatch = {
+      error: "wallet_intent_anchor_mismatch",
+      retryable: true,
+      node: { stacksTipHeight: 28_079, burnBlockHeight: 4_818 },
+      api: { stacksTipHeight: 28_097, burnBlockHeight: 4_819 },
+      poxBurnBlockHeight: 4_819,
+    };
+
+    expect(walletIntentAnchorMismatchErrorSchema.safeParse(mismatch).success).toBe(true);
+    expect(
+      walletIntentAnchorMismatchErrorSchema.safeParse({ ...mismatch, retryable: false }).success,
+    ).toBe(false);
+    expect(
+      walletIntentAnchorMismatchErrorSchema.safeParse({
+        ...mismatch,
+        node: { ...mismatch.node, stacksTipHeight: -1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      walletIntentAnchorMismatchErrorSchema.safeParse({ ...mismatch, unexpected: true }).success,
+    ).toBe(false);
+    expect(
+      walletIntentAnchorUnstableErrorSchema.safeParse({
+        error: "wallet_intent_anchor_unstable",
+        retryable: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      walletIntentAnchorUnstableErrorSchema.safeParse({
+        error: "wallet_intent_anchor_unstable",
+        retryable: false,
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts only canonical bounded uint action inputs", () => {
