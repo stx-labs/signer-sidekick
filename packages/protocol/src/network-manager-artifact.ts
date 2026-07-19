@@ -17,8 +17,8 @@ export function managerArtifactFromNetworkProfile(
         sbtcDeployer: parseContractPrincipal(networkProfile.sbtc.tokenContract).address,
       },
       expectedReplacements: artifact.expectedReplacements,
-      // Operator-provided network data can produce externally reviewed setup artifacts, but it
-      // never grants transaction-automation authority.
+      // Operator-provided data never grants mainnet production approval. Non-mainnet Assist still
+      // requires reproduced reference source and every independent runtime gate.
       productionApproved: false,
     }),
     sourceSha256: artifact.sourceSha256,

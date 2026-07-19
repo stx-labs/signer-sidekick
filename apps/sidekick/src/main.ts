@@ -166,6 +166,9 @@ export async function executeCliCommand({
         managerPrincipal,
         contractsDirectory: contractsDirectory(env),
         managerVerification,
+        transactionEngineRequestedMode: engine.requestedMode,
+        observeManagerClaimWalletJob: async (jobId) =>
+          await engine.observeManagerClaimWalletJob(jobId),
       });
       const health = new HealthMonitoringService({
         getConfig: () => runtimeSettings.effectiveConfig(),

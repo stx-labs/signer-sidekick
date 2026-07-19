@@ -107,7 +107,7 @@ describe("operator record", () => {
       },
     });
     expect(record.remainingActions).toContain(
-      "Keep Sidekick in Observe mode until the matching built-in profile is production-approved",
+      "Resolve Assist blocker: Profile is not production-approved",
     );
     expect(JSON.stringify(record)).not.toContain("signerSignature");
   });

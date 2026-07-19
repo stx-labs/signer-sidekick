@@ -162,10 +162,10 @@ export function createOperatorRecord(
   if (!manager.automationEligible) {
     remainingActions.push(
       manager.source.tier === "unrecognized"
-        ? "Keep Sidekick in Observe mode; install a provenance-verified profile if this is a reference render"
+        ? "Verify manager source before enabling Assist; external signing remains available"
         : manager.source.tier === "custom-observe"
-          ? "Keep this custom manager in Observe mode unless a separately reviewed adapter is installed"
-          : "Keep Sidekick in Observe mode until the matching built-in profile is production-approved",
+          ? "Use external signing for fixed actions; Assist requires a reviewed reference adapter"
+          : `Resolve Assist blocker: ${manager.automationEligibilityReason}`,
     );
   }
   if (!enrollment) remainingActions.push("Generate the pool enrollment information document");

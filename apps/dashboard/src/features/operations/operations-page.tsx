@@ -30,7 +30,11 @@ export function Operations({
         lede="Review durable transaction jobs, exact approvals, ingestion, alerts, and authoritative reconciliation evidence."
       />
       <Suspense fallback={<div className="loading-state">Loading transaction engine</div>}>
-        <EngineOperations token={token} />
+        <EngineOperations
+          chainId={data.preflight.node.networkId}
+          network={data.network}
+          token={token}
+        />
       </Suspense>
       <div className="card-standout operation-mode">
         <div>
@@ -57,7 +61,8 @@ export function Operations({
         </div>
         <p className="tertiary">
           Monitoring ingests, reconciles, displays, and alerts independently of transaction-engine
-          availability. Admin-only calls always remain offline.
+          availability. Sidekick never holds or signs with admin keys; calls may be signed manually
+          or by an external browser wallet.
         </p>
       </div>
       <div className="grid cols-2 operation-grid">

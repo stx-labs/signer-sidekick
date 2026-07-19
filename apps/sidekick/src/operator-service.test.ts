@@ -42,7 +42,10 @@ function alertInput(options: {
       installedProfiles: { issues: [] },
     },
     setup: options.setupBlocked
-      ? { status: "blocked", checks: [{ status: "fail", message: "Grant is revoked" }] }
+      ? {
+          status: "blocked",
+          checks: [{ id: "signer-grant", status: "fail", message: "Grant is revoked" }],
+        }
       : { status: "ready", checks: [] },
     forecast: {
       status: "attention",
@@ -84,7 +87,7 @@ describe("operator service", () => {
     expect(onError).toHaveBeenCalledWith(failure);
   });
 
-  it("uses calm read-only language and stable eligibility-transition alert IDs", () => {
+  it("separates external signing from Assist and keeps stable transition IDs", () => {
     const input = alertInput({});
     input.manager.source.tier = "unrecognized";
     input.trustTransition = {
@@ -97,13 +100,14 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "manager:not-recognized-read-only",
           severity: "warning",
-          title: "Manager Not Recognized — Read-only",
+          title: "Manager Source Not Recognized",
+          detail: expect.stringContaining("fixed external actions remain available"),
           action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
-          title: "Manager Degraded to Read-only",
+          title: "Manager Assist Eligibility Lost",
           action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
       ]),
@@ -174,8 +178,14 @@ describe("operator service", () => {
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "setup:blocked",
-        detail: "Grant is revoked. Open Initial Setup to review and resolve the blocked step.",
-        action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+        detail:
+          "Grant is revoked. Open Manager to prepare a fresh signer authorization and registration.",
+        action: {
+          kind: "navigate",
+          label: "Repair signer authorization",
+          target: "manager",
+          managerAction: "register-self",
+        },
       }),
     );
   });
@@ -259,7 +269,11 @@ describe("operator service", () => {
     input.forecast = null;
     input.manager.source.tier = "custom-observe";
     const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-read-only");
-    expect(alert).toMatchObject({ severity: "info" });
+    expect(alert).toMatchObject({
+      severity: "info",
+      title: "Custom Manager",
+      detail: expect.stringContaining("fixed external actions remain available"),
+    });
     expect(alert).not.toHaveProperty("action");
   });
 

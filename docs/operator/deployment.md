@@ -69,15 +69,20 @@ For remote private access, keep the default loopback bind and tunnel it:
 ssh -N -L 3998:127.0.0.1:3998 operator@sidekick-host
 ```
 
-Alternatively, set `SIDEKICK_PUBLISH_ADDRESS` in `.env` to the host's Tailscale IPv4 address and
+Alternatively, set `SIDEKICK_PUBLISH_ADDRESS` in `.env` to a trusted private-interface address and
 keep port 3998 blocked on other interfaces. The `docker compose port` health commands above adapt
-to either bind. Use an authenticated TLS proxy for any non-private exposure; never publish the
-operator API directly to the internet.
+to either bind. Browser-wallet actions work over private HTTP, but HTTP exposes the UI and auth token
+to that network. Use TLS for any untrusted or public network; never publish the operator API directly
+to the internet.
 
 Public-network Fresh setup requires a matched compatibility profile; failure or inconsistency is a
 stop condition. Profiles under
 [`network-compatibility`](../../network-compatibility/README.md) and
 [`trusted-managers`](../../trusted-managers/README.md) load at startup, so restart after changes.
+
+Fixed externally signed manager actions have a narrower gate: the configured manager, required
+interface, and node/API network routing must agree. Manager source/profile trust is a warning, not a
+blocker; review every wallet or manual signing request. Assist retains the stronger gates below.
 
 ## Transaction engine modes
 
@@ -102,6 +107,10 @@ omit the gas secret and keep `SIDEKICK_ENGINE_MODE=observe` to preserve read-onl
 Assist exists for controlled canary validation of the single code-backed
 `reference-manager-claim-rewards` adapter. Do not enable it for a custom manager or unattended
 mainnet operation.
+
+Assist requires an exact reference manager/profile on every network. Production approval is
+required only on mainnet; non-mainnet still requires the signed attestation, exact approval, and all
+runtime admission checks.
 
 Assist fails startup unless all of these values are present and mutually consistent:
 
@@ -197,13 +206,17 @@ prompt. Changed facts or expiry invalidate the action.
 The same page provides three persistent controls:
 
 - **Invalidate approval** withdraws only the selected exact approval.
-- **Force Observe** permanently forces that database into Observe and invalidates all active
-  approvals.
+- **Force Observe** permanently forces that database into Observe, invalidates active approvals,
+  and blocks Sidekick from initiating new external-wallet claims.
 - **Disable adapter** permanently disables new work and broadcasts for that adapter and invalidates
   its active approvals.
 
 Force Observe and adapter disable are one-way circuit breakers in the current database. They stop
 new authority but deliberately keep existing attempts visible and recoverable.
+
+Wallet-intent expiry and Force Observe stop new Sidekick signing requests. They cannot revoke a
+request already disclosed to an external signer or cancel a wallet broadcast, so Sidekick still
+records matching txids and reconciles their effects.
 
 ### Assist recovery
 

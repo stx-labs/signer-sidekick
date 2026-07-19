@@ -4,9 +4,10 @@ Signer Sidekick is a self-hosted control plane for Stacks PoX-5 signer and STX p
 attaches to an existing signer-manager or guides a new deployment, then reconciles registration,
 pool membership, rewards, and withdrawals from the operator's node and Stacks API.
 
-V1 supports setup, read-only operations, and a durable transaction engine for one
-fixed reference-manager reward claim. Deployments default to Observe; Assist remains a controlled,
-approval-gated validation capability and is not ready for unattended mainnet use. See the
+V1 supports setup, externally signed manager administration, read-only operations, and a durable
+transaction engine for one fixed reference-manager reward claim. Deployments default to Observe;
+Assist remains a controlled, approval-gated validation capability and is not ready for unattended
+mainnet use. See the
 [transaction-engine rollout gates](docs/product/transaction-engine-v1.md#rollout-gates).
 
 ## Documentation
@@ -18,6 +19,8 @@ upstream responsibilities.
 
 - One network, signer-manager, and STX-only pool per deployment.
 - Existing and fresh manager workflows.
+- Optional browser-wallet execution for exact setup, manager-admin, and Observe reward-claim
+  transactions; manual handoff remains.
 - Hiro or self-hosted Stacks API endpoints.
 - No custody of signer or manager-admin private keys.
 - No end-user wallet connection or stake submission.
@@ -25,9 +28,9 @@ upstream responsibilities.
   scope.
 - No sBTC bond pooling in V1.
 
-Unknown but interface-compatible managers can be observed. Only reproduced reference-manager
-source is eligible for the fixed code-backed adapter; configuration files cannot grant that
-authority.
+Unknown but interface-compatible managers can use fixed externally signed administration and
+registration actions when manager and routing checks pass. Source trust is a warning for that path.
+Reward-claim handoff and Assist retain the fixed reference-manager adapter gates.
 
 ## Development
 

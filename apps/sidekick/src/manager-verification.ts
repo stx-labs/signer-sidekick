@@ -10,6 +10,7 @@ import {
   canonicalizeClaritySource,
   claritySourceSha256,
   createManagerAdapterFromHashes,
+  managerProfileAllowsAssist,
   type ReviewedManagerArtifact,
   type SourceMatch,
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
@@ -268,7 +269,7 @@ function proveReferenceRender(input: {
     };
   }
 
-  const approvedNetworkArtifact = input.managerArtifacts.find(
+  const productionApprovedNetworkArtifact = input.managerArtifacts.find(
     ({ profile: candidate }) =>
       candidate.network === profile.network &&
       candidate.upstream.tag === upstreamArtifact.profile.upstream.tag &&
@@ -333,13 +334,19 @@ function proveReferenceRender(input: {
         upstreamProfileId: upstreamArtifact.profile.id,
       };
     }
-    const automationEligible = Boolean(approvedNetworkArtifact);
+    const automationEligible = managerProfileAllowsAssist({
+      network: profile.network,
+      productionApproved: Boolean(productionApprovedNetworkArtifact),
+    });
     return {
       verified: true,
       automationEligible,
-      reason: automationEligible
-        ? `Reference render is reproducible and ${approvedNetworkArtifact?.profile.id} approves Assist for ${profile.network}`
-        : `Reference render is reproducible, but no matching ${profile.network} built-in profile is production-approved`,
+      reason:
+        profile.network !== "mainnet"
+          ? `Reference render is reproducible; production approval is not required for Assist on ${profile.network}`
+          : automationEligible
+            ? `Reference render is reproducible and ${productionApprovedNetworkArtifact?.profile.id} approves Assist for mainnet`
+            : "Reference render is reproducible, but no matching mainnet built-in profile is production-approved",
       upstreamProfileId: upstreamArtifact.profile.id,
     };
   } catch (error) {
@@ -448,12 +455,12 @@ export function verifyManagerArtifact(
         : builtIn
           ? operatorProvidedArtifact
             ? "Operator-provided network profiles cannot authorize Assist broadcasts"
-            : `Profile ${builtIn.artifact.profile.id} is not production-approved`
+            : `Mainnet profile ${builtIn.artifact.profile.id} is not production-approved`
           : (proof?.reason ??
             installedFailureReason ??
             (tier === "custom-observe"
-              ? "Custom managers are supported for attach and read-only operation only"
-              : "Manager source is not recognized for reference-manager Assist"));
+              ? "Custom managers do not qualify for reference-manager Assist; fixed external actions remain available"
+              : "Manager source is not recognized for reference-manager Assist; fixed external actions remain available"));
   const reasons: string[] = [];
   if (!networkMatches) reasons.push("Manager principal does not match the configured network");
   if (!interfaceCompatible) {
@@ -463,7 +470,7 @@ export function verifyManagerArtifact(
     reasons.push(
       proof?.reason ??
         installedFailureReason ??
-        "Manager source is not recognized; attach and read-only monitoring remain available when the interface and network are compatible",
+        "Manager source is not recognized for Assist; monitoring and fixed external actions remain available when technical checks pass",
     );
   } else if (!automationEligible) {
     reasons.push(automationEligibilityReason);
@@ -517,7 +524,7 @@ export function verifyManagerArtifact(
             reason: installedFailureReason
               ? installedFailureReason
               : tier === "custom-observe"
-                ? "Operator-installed custom profile is read-only"
+                ? "Operator-installed custom profile identifies source but does not authorize Assist"
                 : "No installed reference-render profile matched this manager",
           },
     interface: {

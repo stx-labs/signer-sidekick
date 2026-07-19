@@ -400,7 +400,7 @@ describe("manager trust profiles", () => {
     });
   });
 
-  it("does not inherit approval from an unrelated network profile", async () => {
+  it("allows a reproducible testnet render without production approval", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
       SIDEKICK_NETWORK: "pox5-testnet",
@@ -435,14 +435,14 @@ describe("manager trust profiles", () => {
       source: { tier: "reference-render" },
       provenance: { status: "verified" },
       attachAllowed: true,
-      automationEligible: false,
+      automationEligible: true,
     });
     expect(report.automationEligibilityReason).toContain(
-      "no matching testnet built-in profile is production-approved",
+      "production approval is not required for Assist on testnet",
     );
   });
 
-  it("cannot inherit devnet approval through a crafted testnet profile", async () => {
+  it("still requires a known upstream reference identity on testnet", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
       SIDEKICK_NETWORK: "pox5-testnet",
@@ -464,8 +464,7 @@ describe("manager trust profiles", () => {
       ...created.profile,
       reference: {
         ...created.profile.reference,
-        upstreamProfileId: DEVNET_REFERENCE_MANAGER.profile.id,
-        upstream: DEVNET_REFERENCE_MANAGER.profile.upstream,
+        upstreamProfileId: "unknown-upstream-profile",
       },
     });
     const report = verifyManagerArtifact(
@@ -484,14 +483,12 @@ describe("manager trust profiles", () => {
       ),
     );
     expect(report).toMatchObject({
-      source: { tier: "reference-render" },
-      provenance: { status: "verified" },
+      source: { tier: "unrecognized" },
+      provenance: { status: "failed" },
       attachAllowed: true,
       automationEligible: false,
     });
-    expect(report.automationEligibilityReason).toContain(
-      "no matching testnet built-in profile is production-approved",
-    );
+    expect(report.automationEligibilityReason).toContain("Unknown built-in upstream profile");
   });
 
   it("does not apply an operator profile on the wrong private network ID", () => {

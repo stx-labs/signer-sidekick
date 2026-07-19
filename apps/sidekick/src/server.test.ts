@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OnboardingService } from "./onboarding-service.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
+const walletIntentPrefixes = [
+  "/api/v1/onboarding/wallet-intents",
+  "/api/v1/wallet-intents",
+] as const;
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -98,6 +103,205 @@ describe("local API", () => {
         })
       ).statusCode,
     ).toBe(400);
+  });
+
+  it("accepts only sealed wallet-intent actions and txids", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
+    const txid = `0x${"ab".repeat(32)}`;
+    const intent = { schemaVersion: 1, id: intentId, action: "deploy-manager" };
+    const wallet = {
+      prepare: vi.fn().mockResolvedValue(intent),
+      get: vi.fn().mockReturnValue(intent),
+      submit: vi.fn().mockResolvedValue({ ...intent, txid }),
+      refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
+      replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
+    };
+    const prepareManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
+    const verifyManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
+    const onboarding = {
+      wallet,
+      prepareManagerSignerGrant,
+      verifyManagerSignerGrant,
+    } as unknown as OnboardingService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/onboarding/wallet-intents",
+          headers,
+          payload: { action: "deploy-manager", transaction: "arbitrary" },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(wallet.prepare).not.toHaveBeenCalled();
+
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/onboarding/wallet-intents",
+          headers,
+          payload: { action: "deploy-manager" },
+        })
+      ).json(),
+    ).toEqual({ intent });
+    expect(wallet.prepare).toHaveBeenCalledWith({ action: "deploy-manager" });
+
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/wallet-intents",
+          headers,
+          payload: { action: "update-fees", feeBips: "250" },
+        })
+      ).statusCode,
+    ).toBe(400);
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/wallet-intents",
+      headers,
+      payload: {
+        action: "update-fees",
+        actorPrincipal: "SP000000000000000000002Q6VF78",
+        feeBips: "250",
+      },
+    });
+    expect(wallet.prepare).toHaveBeenLastCalledWith({
+      action: "update-fees",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      feeBips: "250",
+    });
+
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/wallet-intents",
+      headers,
+      payload: {
+        action: "claim-rewards",
+        actorPrincipal: "SP000000000000000000002Q6VF78",
+        jobId: "10000000-0000-4000-8000-000000000001",
+      },
+    });
+    expect(wallet.prepare).toHaveBeenLastCalledWith({
+      action: "claim-rewards",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      jobId: "10000000-0000-4000-8000-000000000001",
+    });
+
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/manager/signer-grant/prepare",
+      headers,
+      payload: { authId: "9", signerConfigPath: "/etc/stacks-signer/signer.toml" },
+    });
+    expect(prepareManagerSignerGrant).toHaveBeenCalledWith({
+      authId: "9",
+      signerConfigPath: "/etc/stacks-signer/signer.toml",
+    });
+    const signerOutput = { signerKey: "external-output" };
+    await server.inject({
+      method: "POST",
+      url: "/api/v1/manager/signer-grant/verify",
+      headers,
+      payload: { signerOutput },
+    });
+    expect(verifyManagerSignerGrant).toHaveBeenCalledWith(signerOutput);
+  });
+
+  it.each(
+    walletIntentPrefixes,
+  )("serves the sealed wallet-intent lifecycle at %s", async (prefix) => {
+    const token = "test-operator-token-with-32-chars";
+    const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
+    const txid = `0x${"ab".repeat(32)}`;
+    const intent = { schemaVersion: 2, id: intentId, action: "update-fees" };
+    const wallet = {
+      prepare: vi.fn(),
+      get: vi.fn().mockReturnValue(intent),
+      submit: vi.fn().mockResolvedValue({ ...intent, txid }),
+      refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
+      replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
+    };
+    const onboarding = { wallet } as unknown as OnboardingService;
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const invalidRead = await server.inject({ method: "GET", url: `${prefix}/invalid`, headers });
+    expect([invalidRead.statusCode, invalidRead.json()]).toEqual([
+      404,
+      { error: "wallet_intent_not_found" },
+    ]);
+    expect(wallet.get).not.toHaveBeenCalled();
+    expect(
+      (await server.inject({ method: "GET", url: `${prefix}/${intentId}`, headers })).json(),
+    ).toEqual({ intent });
+    expect(wallet.get).toHaveBeenCalledWith(intentId);
+
+    const invalidSubmission = await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/submission`,
+      headers,
+      payload: { txid, signedTransaction: "must-not-be-accepted" },
+    });
+    expect([invalidSubmission.statusCode, invalidSubmission.json()]).toEqual([
+      400,
+      { error: "invalid_wallet_intent_submission" },
+    ]);
+    expect(wallet.submit).not.toHaveBeenCalled();
+    await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/submission`,
+      headers,
+      payload: { txid },
+    });
+    expect(wallet.submit).toHaveBeenCalledWith(intentId, txid);
+
+    const invalidRefresh = await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/refresh`,
+      headers,
+      payload: { unexpected: true },
+    });
+    expect([invalidRefresh.statusCode, invalidRefresh.json()]).toEqual([
+      400,
+      { error: "invalid_wallet_intent_refresh" },
+    ]);
+    expect(wallet.refresh).not.toHaveBeenCalled();
+    await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/refresh`,
+      headers,
+      payload: {},
+    });
+    expect(wallet.refresh).toHaveBeenCalledWith(intentId);
+
+    const invalidReplacement = await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/replacement`,
+      headers,
+      payload: { txid },
+    });
+    expect([invalidReplacement.statusCode, invalidReplacement.json()]).toEqual([
+      400,
+      { error: "invalid_wallet_intent_replacement" },
+    ]);
+    expect(wallet.replace).not.toHaveBeenCalled();
+    await server.inject({
+      method: "POST",
+      url: `${prefix}/${intentId}/replacement`,
+      headers,
+      payload: {},
+    });
+    expect(wallet.replace).toHaveBeenCalledWith(intentId);
   });
 
   it("rejects the documented placeholder bearer token", () => {

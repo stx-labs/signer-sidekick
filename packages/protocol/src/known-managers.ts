@@ -42,10 +42,9 @@ const devnetProfile = {
     pox5: 8,
     sbtcDeployer: 13,
   },
-  // This approval is intentionally devnet-only: the released-environment harness must exercise
-  // the exact automation compatibility gate used by operators. Mainnet remains unapproved until
-  // the reviewed launch artifact is explicitly promoted.
-  productionApproved: true,
+  // Production approval is a mainnet-only gate. Non-mainnet Assist still requires every source,
+  // attestation, approval, and runtime admission check.
+  productionApproved: false,
 } as const satisfies ManagerProfile;
 
 export const DEVNET_REFERENCE_MANAGER = {

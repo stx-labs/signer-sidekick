@@ -18,9 +18,9 @@ PoX-4 delegation loop from `degen-lab/stacker-flow-automation`.
 | Deployment | One network and signer-manager per instance |
 | Manager automation | Independently reproduced pinned reference source only |
 | Existing setup | Attach without redeployment |
-| New setup | Generate and verify manager and registration artifacts |
+| New setup | Prepare, execute, and verify manager deployment and registration |
 | Runtime authority | Dedicated low-balance gas payer for the fixed manager-claim adapter |
-| Manager admin | Held and used outside Sidekick |
+| Manager admin | External wallet or manual signer; Sidekick prepares fixed allowlisted calls |
 | Signer private key | Remains on the signer host |
 | Packaging | One OCI container, embedded UI, SQLite |
 | License | GPL-3.0-only |
@@ -53,14 +53,15 @@ The operator supplies the deployed manager and endpoints. Sidekick verifies the 
 source/interface, registration, signer grant, eligibility, and indexed history. Attach never
 redeploys or changes the manager and always begins in Observe mode.
 
-Compatible unknown managers remain read-only; eligibility for the fixed adapter requires an
-independently reproduced reference source. ABI similarity never authorizes automation.
+Compatible managers may use fixed externally signed actions when the configured target, required
+interface, and node/API network routing agree. Source and profile trust are warnings on that path.
+Assist requires an independently reproduced reference source and never follows from ABI similarity.
 
 ### Fresh setup
 
 Sidekick validates the connected network, renders a reviewable manager artifact, verifies public
 signer-grant output, prepares `register-self` arguments, and confirms the resulting on-chain state.
-The operator reviews, signs, and broadcasts deployment and admin calls using external tooling.
+A supported browser wallet or manual tool owns fee, nonce, signing, and broadcast.
 
 Node and signer setup remain upstream responsibilities. See the
 [operator deployment guide](../operator/deployment.md).
@@ -93,8 +94,10 @@ does not expose a public pool route or collect staker inputs.
 - Account for held funds separately from outstanding withdrawal liabilities.
 - Treat permissionless races as reconciliation outcomes, not necessarily failures.
 
-Admin-only fee changes, admin changes, deployment, registration, fee withdrawal, and fee-refund
-sweeps remain external operations. Sidekick may explain and verify them but does not sign them.
+Sidekick may prepare fixed admin-membership, fee, fee-withdrawal, and fee-refund-sweep calls for any
+technically compatible configured manager. A browser wallet or manual tool reviews, signs, and
+broadcasts; Sidekick never signs an admin transaction. For custom sources, Sidekick verifies the
+exact call and observable postconditions without attesting custom contract semantics.
 
 ### Application operations
 
@@ -111,10 +114,25 @@ mnemonic, or generic transaction authority. V1 supports Observe and approval-gat
 deployment starts in Observe. Assist may use one dedicated, low-balance gas-payer key only for the
 fixed code-backed adapter; V1 has no Automate mode.
 
-Network and manager profiles may identify deployments and guide setup, but cannot install behavior
-or grant transaction authority. Assist also requires a matching authenticated compatibility
-attestation and independent security review. Unsafe conditions stop new broadcasts; observation and
-reconciliation continue for durably committed attempts. The
+Browser-wallet execution is separate from Assist. Sidekick seals one expiring, server-derived
+request; the browser discards any returned signed bytes and submits only the txid. The server
+independently decodes the node-fetched transaction and verifies canonical poststate before
+completion.
+
+Browser-wallet actions support every configured Sidekick network when the wallet supports its exact
+network key. Sidekick verifies the observed chain ID. Custom-network wallet support varies; manual
+handoff always remains available.
+
+Observe may expose the fixed claim adapter's existing preflighted job through this external path.
+It does not replan the job or create an Assist approval, nonce reservation, or attempt. The job
+retains the exact reference-manager profile and attestation gates.
+
+Network and manager profiles identify deployments, guide Fresh setup, and gate Assist; they do not
+gate fixed externally signed manager administration or registration. Assist also requires a
+matching authenticated compatibility attestation and independent security review. Mainnet
+additionally requires a production-approved manager profile; non-mainnet networks do not. Unsafe
+conditions stop new broadcasts; observation and reconciliation continue for durably committed
+attempts. The
 [transaction-engine contract](transaction-engine-v1.md) defines the complete authority, admission,
 and recovery rules; see also
 [ADR 0007](../architecture/decisions/0007-release-independent-network-compatibility.md).
@@ -138,7 +156,12 @@ scaling and Postgres are outside V1. Cross-cutting decisions are recorded in the
 V1 is complete when:
 
 - Attach and Fresh setup work without Sidekick receiving a signer or manager-admin private key.
-- Wrong network/source, revoked grant, unsupported bonds, and insufficient threshold are clear.
+- Browser-wallet setup, fixed manager administration, and Observe reward claims send only sealed
+  requests, accept only a txid, independently verify completion, retain the manual path, and pass
+  released-wallet tests at the deployed origin. PoX-5 Testnet binds chain ID `0x80000005`, never
+  ordinary testnet.
+- Wrong network or interface blocks external actions; untrusted source clearly warns and blocks
+  Assist only. Revoked grants, unsupported bonds, and insufficient threshold are clear.
 - Relevant manager history can be rebuilt and reconciled.
 - Current and future STX membership, deadlines, rewards, and withdrawals are visible and exportable.
 - The generated pool artifact contains only reviewed public information.

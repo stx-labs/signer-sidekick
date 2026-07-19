@@ -26,33 +26,23 @@ import "../../../design/tokens/tokens.css";
 import "./base.css";
 import "./styles.css";
 import { AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
+import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
 import { EnrollmentPage } from "./features/enrollment/enrollment-page.js";
+import { Manager } from "./features/manager/manager-page.js";
 import { Operations } from "./features/operations/operations-page.js";
 import { Overview } from "./features/overview/overview-page.js";
 import { Pool } from "./features/pool/pool-page.js";
-import { Registration } from "./features/registration/registration-page.js";
 import { Rewards } from "./features/rewards/rewards-page.js";
 import { SettingsPage } from "./features/settings/settings-page.js";
 import { SetupPage } from "./features/setup/setup-page.js";
 import { number } from "./shared/format.js";
 import { SignerHealthPage } from "./signer-health.js";
 
-type Page =
-  | "overview"
-  | "health"
-  | "registration"
-  | "pool"
-  | "rewards"
-  | "operations"
-  | "setup"
-  | "enrollment"
-  | "settings";
-
 type Snapshot = DashboardSnapshot;
-const nav: Array<{ group?: string; id?: Page; label?: string; icon?: typeof Gauge }> = [
+const nav: Array<{ group?: string; id?: DashboardPage; label?: string; icon?: typeof Gauge }> = [
   { group: "Operate" },
   { id: "overview", label: "Overview", icon: Gauge },
-  { id: "registration", label: "Registration", icon: SealCheck },
+  { id: "manager", label: "Manager", icon: SealCheck },
   { id: "pool", label: "Pool", icon: UsersThree },
   { id: "rewards", label: "Rewards", icon: Coins },
   { id: "operations", label: "Operations", icon: ListChecks },
@@ -112,10 +102,8 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
 
 function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem("sidekick-token") ?? "");
-  const [page, setPage] = useState<Page>(() => {
-    const hash = location.hash.slice(1) as Page;
-    return nav.some((item) => item.id === hash) ? hash : "overview";
-  });
+  const [route, setRoute] = useState(() => parseDashboardHash(location.hash));
+  const page = route.page;
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
   );
@@ -180,9 +168,11 @@ function App() {
   }, [data]);
   useEffect(() => {
     const handler = () => {
-      const hash = location.hash.slice(1) as Page;
-      if (nav.some((item) => item.id === hash)) setPage(hash);
+      const next = parseDashboardHash(location.hash);
+      if (next.legacy) history.replaceState(null, "", dashboardHash("manager"));
+      setRoute({ ...next, legacy: false });
     };
+    handler();
     addEventListener("hashchange", handler);
     return () => removeEventListener("hashchange", handler);
   }, []);
@@ -220,7 +210,7 @@ function App() {
             dismissSetupNotice={dismissSetupNotice}
           />
         ),
-        registration: <Registration data={data} />,
+        manager: <Manager action={route.action} data={data} token={token} />,
         pool: <Pool data={data} token={token} />,
         rewards: <Rewards data={data} token={token} />,
         health: (
@@ -286,7 +276,7 @@ function App() {
             }}
           >
             {nav
-              .filter((item): item is (typeof nav)[number] & { id: Page; label: string } =>
+              .filter((item): item is (typeof nav)[number] & { id: DashboardPage; label: string } =>
                 Boolean(item.id && item.label),
               )
               .map((item) => (

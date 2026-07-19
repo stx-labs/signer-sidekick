@@ -989,4 +989,279 @@ export const migrations: readonly Migration[] = [
       DROP TABLE migration_15_nonce_reservations;
     `,
   },
+  {
+    version: 16,
+    name: "browser_wallet_intents",
+    sql: `
+      CREATE TABLE browser_wallet_intents (
+        intent_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN ('deploy-manager', 'register-self')),
+        scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 500),
+        facts_sha256 TEXT NOT NULL CHECK (
+          length(facts_sha256) = 64 AND facts_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_sha256 TEXT NOT NULL CHECK (
+          length(manifest_sha256) = 64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_json TEXT NOT NULL CHECK (
+          json_valid(manifest_json) AND length(manifest_json) BETWEEN 2 AND 262144
+        ),
+        required_sender TEXT NOT NULL CHECK (length(required_sender) BETWEEN 1 AND 500),
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
+        chain_id INTEGER NOT NULL CHECK (chain_id BETWEEN 0 AND 4294967295),
+        state TEXT NOT NULL CHECK (state IN (
+          'prepared', 'submitted', 'mempool', 'confirmed', 'complete',
+          'expired', 'superseded', 'failed', 'reobserve'
+        )),
+        state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+        txid TEXT UNIQUE CHECK (
+          txid IS NULL OR (
+            length(txid) = 66
+            AND substr(txid, 1, 2) = '0x'
+            AND substr(txid, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        submitted_at TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK (expires_at > created_at),
+        CHECK ((txid IS NULL) = (submitted_at IS NULL)),
+        CHECK (
+          state NOT IN ('submitted', 'mempool', 'confirmed', 'complete', 'reobserve')
+          OR txid IS NOT NULL
+        ),
+        CHECK (state NOT IN ('prepared', 'expired') OR txid IS NULL)
+      ) STRICT;
+
+      CREATE UNIQUE INDEX browser_wallet_one_active_scope
+        ON browser_wallet_intents (action, scope)
+        WHERE state IN ('prepared', 'submitted', 'mempool', 'confirmed', 'complete', 'reobserve');
+      CREATE INDEX browser_wallet_intents_by_scope
+        ON browser_wallet_intents (action, scope, created_at DESC, intent_id DESC);
+
+      CREATE TRIGGER browser_wallet_intent_immutable_binding
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN NEW.intent_id IS NOT OLD.intent_id
+        OR NEW.action IS NOT OLD.action
+        OR NEW.scope IS NOT OLD.scope
+        OR NEW.facts_sha256 IS NOT OLD.facts_sha256
+        OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+        OR NEW.manifest_json IS NOT OLD.manifest_json
+        OR NEW.required_sender IS NOT OLD.required_sender
+        OR NEW.network IS NOT OLD.network
+        OR NEW.chain_id IS NOT OLD.chain_id
+        OR NEW.created_at IS NOT OLD.created_at
+        OR NEW.expires_at IS NOT OLD.expires_at
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent binding is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_submission
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN (OLD.txid IS NOT NULL AND NEW.txid IS NOT OLD.txid)
+        OR (OLD.submitted_at IS NOT NULL AND NEW.submitted_at IS NOT OLD.submitted_at)
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent submission is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_delete
+      BEFORE DELETE ON browser_wallet_intents
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent is durable');
+      END;
+
+      CREATE TABLE browser_wallet_intent_observations (
+        observation_id TEXT PRIMARY KEY,
+        intent_id TEXT NOT NULL REFERENCES browser_wallet_intents(intent_id),
+        outcome TEXT NOT NULL CHECK (
+          length(outcome) BETWEEN 1 AND 100
+          AND outcome NOT GLOB '*[^a-z0-9-]*'
+        ),
+        canonical INTEGER CHECK (canonical IS NULL OR canonical IN (0, 1)),
+        block_height INTEGER CHECK (block_height IS NULL OR block_height >= 0),
+        index_block_hash TEXT CHECK (
+          index_block_hash IS NULL OR (
+            length(index_block_hash) = 66
+            AND substr(index_block_hash, 1, 2) = '0x'
+            AND substr(index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        evidence_json TEXT NOT NULL CHECK (
+          json_valid(evidence_json) AND length(evidence_json) BETWEEN 2 AND 32768
+        ),
+        observed_at TEXT NOT NULL,
+        CHECK ((block_height IS NULL) = (index_block_hash IS NULL))
+      ) STRICT;
+
+      CREATE INDEX browser_wallet_observations_by_intent
+        ON browser_wallet_intent_observations (
+          intent_id, observed_at DESC, observation_id DESC
+        );
+
+      CREATE TRIGGER browser_wallet_observation_immutable_update
+      BEFORE UPDATE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_observation_immutable_delete
+      BEFORE DELETE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+    `,
+  },
+  {
+    version: 17,
+    name: "browser_wallet_manager_actions",
+    sql: `
+      CREATE TABLE browser_wallet_intents_v17 (
+        intent_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN (
+          'deploy-manager', 'register-self', 'add-admin', 'remove-admin',
+          'update-fees', 'withdraw-fees', 'sweep-fee-refunds', 'claim-rewards'
+        )),
+        scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 500),
+        facts_sha256 TEXT NOT NULL CHECK (
+          length(facts_sha256) = 64 AND facts_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_sha256 TEXT NOT NULL CHECK (
+          length(manifest_sha256) = 64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_json TEXT NOT NULL CHECK (
+          json_valid(manifest_json) AND length(manifest_json) BETWEEN 2 AND 262144
+        ),
+        required_sender TEXT NOT NULL CHECK (length(required_sender) BETWEEN 1 AND 500),
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
+        chain_id INTEGER NOT NULL CHECK (chain_id BETWEEN 0 AND 4294967295),
+        state TEXT NOT NULL CHECK (state IN (
+          'prepared', 'submitted', 'mempool', 'confirmed', 'complete',
+          'expired', 'superseded', 'failed', 'reobserve'
+        )),
+        state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+        txid TEXT UNIQUE CHECK (
+          txid IS NULL OR (
+            length(txid) = 66
+            AND substr(txid, 1, 2) = '0x'
+            AND substr(txid, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        submitted_at TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK (expires_at > created_at),
+        CHECK ((txid IS NULL) = (submitted_at IS NULL)),
+        CHECK (
+          state NOT IN ('submitted', 'mempool', 'confirmed', 'complete', 'reobserve')
+          OR txid IS NOT NULL
+        ),
+        CHECK (state NOT IN ('prepared', 'expired') OR txid IS NULL)
+      ) STRICT;
+
+      INSERT INTO browser_wallet_intents_v17 (
+        intent_id, action, scope, facts_sha256, manifest_sha256, manifest_json,
+        required_sender, network, chain_id, state, state_version, txid,
+        created_at, expires_at, submitted_at, updated_at
+      )
+      SELECT
+        intent_id, action, scope, facts_sha256, manifest_sha256, manifest_json,
+        required_sender, network, chain_id, state, state_version, txid,
+        created_at, expires_at, submitted_at, updated_at
+      FROM browser_wallet_intents;
+
+      CREATE TABLE browser_wallet_intent_observations_v17 (
+        observation_id TEXT PRIMARY KEY,
+        intent_id TEXT NOT NULL REFERENCES browser_wallet_intents_v17(intent_id),
+        outcome TEXT NOT NULL CHECK (
+          length(outcome) BETWEEN 1 AND 100
+          AND outcome NOT GLOB '*[^a-z0-9-]*'
+        ),
+        canonical INTEGER CHECK (canonical IS NULL OR canonical IN (0, 1)),
+        block_height INTEGER CHECK (block_height IS NULL OR block_height >= 0),
+        index_block_hash TEXT CHECK (
+          index_block_hash IS NULL OR (
+            length(index_block_hash) = 66
+            AND substr(index_block_hash, 1, 2) = '0x'
+            AND substr(index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        evidence_json TEXT NOT NULL CHECK (
+          json_valid(evidence_json) AND length(evidence_json) BETWEEN 2 AND 32768
+        ),
+        observed_at TEXT NOT NULL,
+        CHECK ((block_height IS NULL) = (index_block_hash IS NULL))
+      ) STRICT;
+
+      INSERT INTO browser_wallet_intent_observations_v17 (
+        observation_id, intent_id, outcome, canonical, block_height,
+        index_block_hash, evidence_json, observed_at
+      )
+      SELECT
+        observation_id, intent_id, outcome, canonical, block_height,
+        index_block_hash, evidence_json, observed_at
+      FROM browser_wallet_intent_observations;
+
+      DROP TABLE browser_wallet_intent_observations;
+      DROP TABLE browser_wallet_intents;
+      ALTER TABLE browser_wallet_intents_v17 RENAME TO browser_wallet_intents;
+      ALTER TABLE browser_wallet_intent_observations_v17
+        RENAME TO browser_wallet_intent_observations;
+
+      CREATE UNIQUE INDEX browser_wallet_one_active_scope
+        ON browser_wallet_intents (action, scope)
+        WHERE state IN ('prepared', 'submitted', 'mempool', 'confirmed', 'complete', 'reobserve');
+      CREATE INDEX browser_wallet_intents_by_scope
+        ON browser_wallet_intents (action, scope, created_at DESC, intent_id DESC);
+
+      CREATE TRIGGER browser_wallet_intent_immutable_binding
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN NEW.intent_id IS NOT OLD.intent_id
+        OR NEW.action IS NOT OLD.action
+        OR NEW.scope IS NOT OLD.scope
+        OR NEW.facts_sha256 IS NOT OLD.facts_sha256
+        OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+        OR NEW.manifest_json IS NOT OLD.manifest_json
+        OR NEW.required_sender IS NOT OLD.required_sender
+        OR NEW.network IS NOT OLD.network
+        OR NEW.chain_id IS NOT OLD.chain_id
+        OR NEW.created_at IS NOT OLD.created_at
+        OR NEW.expires_at IS NOT OLD.expires_at
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent binding is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_submission
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN (OLD.txid IS NOT NULL AND NEW.txid IS NOT OLD.txid)
+        OR (OLD.submitted_at IS NOT NULL AND NEW.submitted_at IS NOT OLD.submitted_at)
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent submission is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_delete
+      BEFORE DELETE ON browser_wallet_intents
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent is durable');
+      END;
+
+      CREATE INDEX browser_wallet_observations_by_intent
+        ON browser_wallet_intent_observations (
+          intent_id, observed_at DESC, observation_id DESC
+        );
+
+      CREATE TRIGGER browser_wallet_observation_immutable_update
+      BEFORE UPDATE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_observation_immutable_delete
+      BEFORE DELETE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+    `,
+  },
 ];

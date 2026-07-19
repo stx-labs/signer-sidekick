@@ -282,7 +282,7 @@ function parsedUnsigned(value: string, label: string): bigint | null {
 
 function networkKind(setup: SetupSnapshot): "mainnet" | "testnet" | null {
   if (setup.preflight.network === "mainnet") return "mainnet";
-  if (setup.preflight.network === "testnet") return "testnet";
+  if (["testnet", "devnet", "regtest"].includes(setup.preflight.network)) return "testnet";
   return null;
 }
 
@@ -405,7 +405,7 @@ function staticBlocks(
     block(
       blocks,
       "unsupported-network",
-      "The manager-claim adapter supports mainnet and testnet only",
+      "The manager-claim adapter could not classify the configured Stacks network",
     );
   }
   const { preflight, manager } = input.setup;

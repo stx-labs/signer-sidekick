@@ -11,8 +11,13 @@ capabilities. The node build is diagnostic, not an allowlist.
 
 Sidekick ships bootstrap profiles and may load stricter revisions from a read-only directory.
 Profiles contain data only: they may guide observation and deterministic Fresh artifacts but cannot
-authorize Assist. Unknown public networks degrade safely; contradictions with an installed
-fingerprint fail closed.
+install behavior or authorize Assist by themselves. They do not gate fixed externally signed
+manager administration or registration, which require the configured manager/interface and
+node/API network agreement. Unknown public networks degrade safely; contradictions with an
+installed fingerprint fail closed for profile-dependent behavior.
+
+The external Observe reward claim is different: it can only hand off an existing preflighted
+reference-manager adapter job, so its profile and attestation gates remain.
 
 Assist broadcasting is gated by a current authenticated compatibility attestation, validated
 against configured read-only trust roots. The attestation binds reviewed network, PoX-5, sBTC, and

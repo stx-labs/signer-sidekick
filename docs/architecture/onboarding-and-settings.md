@@ -8,19 +8,37 @@ Fresh Setup, and skipping the wizard without changing Sidekick's custody boundar
 Sidekick accepts public principals and public signer-grant output, but never a signer private key,
 manager-admin private key, mnemonic, or arbitrary signing request. In Assist it may hold a
 dedicated, low-balance gas-payer key and sign only the fixed code-backed
-`reference-manager-claim-rewards` transaction vector. Deployment and `register-self` remain
-externally reviewed, signed, and broadcast; Sidekick verifies their effects afterward.
+`reference-manager-claim-rewards` transaction vector. Setup and manager-admin calls remain
+externally signed. Sidekick can pass an exact prepared request using any supported configured
+network key, then verify the fetched transaction's chain ID and poststate. Manual handoff remains
+available.
+
+Fixed manager administration and registration require the configured manager, full interface, and
+node/API network routing. Source/profile trust adds a review warning but does not block those
+external actions. It remains a hard gate for Assist, with production approval required only on
+mainnet.
+
+Observe may hand an existing preflighted reward-claim job to that same external boundary. It does
+not replan the job or enter Assist approval, nonce, or attempt state. The job retains the exact
+reference-manager profile and attestation gates; normal engine reconciliation remains authoritative.
+
+Wallet intents are versioned, sealed, expiring, and stored separately from Assist. The API accepts
+only a txid after signing; it never accepts transaction fields, signed bytes, or wallet credentials.
+Wallet address selection is not operator authentication.
 
 `SIDEKICK_MANAGER_PRINCIPAL` is the fixed identity of a deployment. Fresh inputs must resolve to
 that principal, and Attach cannot silently switch it.
 
 ## Resumability
 
-The selected path, current step, generated public artifacts, grant verification, and an append-only
-action audit are stored in SQLite. Same-path restarts preserve progress; changing paths requires an
-explicit reset. Skipping the wizard changes only its visibility and does not mark checks complete.
+The selected path, current step, generated public artifacts, grant verification, wallet intents,
+and append-only action evidence are stored in SQLite. Same-path restarts preserve progress; changing
+paths requires an explicit reset. Skipping the wizard changes only its visibility and does not mark
+checks complete.
 
 Polling failures never discard saved state. The operator can resume after the node or API recovers.
+A transaction absent from both indexed and pending node state may be explicitly superseded after a
+15-minute grace period; replacement always creates a new sealed intent.
 
 ## Runtime settings
 

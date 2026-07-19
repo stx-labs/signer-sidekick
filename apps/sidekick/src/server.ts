@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
+  browserWalletIntentCreateRequestSchema,
+  browserWalletIntentSubmissionRequestSchema,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
@@ -19,7 +21,9 @@ import {
   engineForceObserveRequestSchema,
   engineInvalidateApprovalRequestSchema,
   healthSourceTestRequestSchema,
+  managerSignerGrantPrepareRequestSchema,
   onboardingAttachRequestSchema,
+  onboardingBrowserWalletIntentCreateRequestSchema,
   onboardingGrantVerifyRequestSchema,
   onboardingProgressRequestSchema,
   onboardingStartRequestSchema,
@@ -29,6 +33,7 @@ import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
 import Fastify, { type FastifyError } from "fastify";
 import { z } from "zod";
 import type { OnboardingService } from "./onboarding-service.js";
+import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 
 async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -152,6 +157,13 @@ class OperatorApiError extends Error {
 function requireFeature<T>(value: T | undefined, responseCode: string): T {
   if (value === undefined) throw new OperatorApiError(501, responseCode);
   return value;
+}
+
+function walletIntentHttpStatus(error: OnboardingWalletIntentError): number {
+  if (error.code === "wallet_intent_not_found") return 404;
+  if (error.code === "wallet_intent_conflict" || error.code === "wallet_intent_expired") return 409;
+  if (error.code === "wallet_execution_unavailable") return 422;
+  return 400;
 }
 
 function authorized(header: string | undefined, expected: string): boolean {
@@ -576,6 +588,125 @@ export function createServer(options: ServerOptions = {}) {
       return reply.code(400).send({ error: "signer_grant_verification_failed" });
     }
   });
+  server.post("/api/v1/manager/signer-grant/prepare", async (request, reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = managerSignerGrantPrepareRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_grant_input" });
+    try {
+      return { onboarding: await onboarding.prepareManagerSignerGrant(parsed.data) };
+    } catch {
+      return reply.code(400).send({ error: "signer_grant_preparation_failed" });
+    }
+  });
+  server.post("/api/v1/manager/signer-grant/verify", async (request, reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_signer_output" });
+    try {
+      return { onboarding: await onboarding.verifyManagerSignerGrant(parsed.data.signerOutput) };
+    } catch {
+      return reply.code(400).send({ error: "signer_grant_verification_failed" });
+    }
+  });
+  server.post("/api/v1/onboarding/wallet-intents", async (request, reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = onboardingBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
+    try {
+      return { intent: await onboarding.wallet.prepare(parsed.data) };
+    } catch (error) {
+      if (error instanceof OnboardingWalletIntentError) {
+        return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+      }
+      return reply.code(400).send({ error: "wallet_intent_preparation_failed" });
+    }
+  });
+  server.post("/api/v1/wallet-intents", async (request, reply) => {
+    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const parsed = browserWalletIntentCreateRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_wallet_intent_action" });
+    try {
+      return { intent: await onboarding.wallet.prepare(parsed.data) };
+    } catch (error) {
+      if (error instanceof OnboardingWalletIntentError) {
+        return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+      }
+      return reply.code(400).send({ error: "wallet_intent_preparation_failed" });
+    }
+  });
+  const registerWalletIntentLifecycleRoutes = (prefix: string): void => {
+    server.get(`${prefix}/:id`, async (request, reply) => {
+      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const parsed = z.object({ id: z.uuid() }).strict().safeParse(request.params);
+      if (!parsed.success) return reply.code(404).send({ error: "wallet_intent_not_found" });
+      try {
+        return { intent: onboarding.wallet.get(parsed.data.id) };
+      } catch (error) {
+        if (error instanceof OnboardingWalletIntentError) {
+          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        }
+        return reply.code(400).send({ error: "wallet_intent_read_failed" });
+      }
+    });
+    server.post(`${prefix}/:id/submission`, async (request, reply) => {
+      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
+      const body = browserWalletIntentSubmissionRequestSchema.safeParse(request.body);
+      if (!params.success || !body.success) {
+        return reply.code(400).send({ error: "invalid_wallet_intent_submission" });
+      }
+      try {
+        return { intent: await onboarding.wallet.submit(params.data.id, body.data.txid) };
+      } catch (error) {
+        if (error instanceof OnboardingWalletIntentError) {
+          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        }
+        return reply.code(400).send({ error: "wallet_intent_submission_failed" });
+      }
+    });
+    server.post(`${prefix}/:id/refresh`, async (request, reply) => {
+      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
+      const body = z
+        .object({})
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!params.success || !body.success) {
+        return reply.code(400).send({ error: "invalid_wallet_intent_refresh" });
+      }
+      try {
+        return { intent: await onboarding.wallet.refresh(params.data.id) };
+      } catch (error) {
+        if (error instanceof OnboardingWalletIntentError) {
+          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        }
+        return reply.code(400).send({ error: "wallet_intent_refresh_failed" });
+      }
+    });
+    server.post(`${prefix}/:id/replacement`, async (request, reply) => {
+      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
+      const body = z
+        .object({})
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!params.success || !body.success) {
+        return reply.code(400).send({ error: "invalid_wallet_intent_replacement" });
+      }
+      try {
+        return { intent: await onboarding.wallet.replace(params.data.id) };
+      } catch (error) {
+        if (error instanceof OnboardingWalletIntentError) {
+          return reply.code(walletIntentHttpStatus(error)).send({ error: error.code });
+        }
+        return reply.code(400).send({ error: "wallet_intent_replacement_failed" });
+      }
+    });
+  };
+
+  for (const prefix of ["/api/v1/onboarding/wallet-intents", "/api/v1/wallet-intents"] as const) {
+    registerWalletIntentLifecycleRoutes(prefix);
+  }
   server.post("/api/v1/onboarding/fresh/refresh", async (_request, reply) => {
     const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
     try {

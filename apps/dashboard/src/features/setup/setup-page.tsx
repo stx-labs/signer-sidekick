@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import {
   type ActivationStep,
+  type DashboardSnapshot,
   freshRefreshResponseSchema,
   type OnboardingState,
   type OnboardingWizardState,
@@ -19,9 +20,11 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
+import { dashboardHash } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { formatUstx } from "../../shared/format.js";
+import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
 import {
   attachLabels,
   attachWorkflowSteps,
@@ -37,7 +40,7 @@ export function SetupPage({
   token,
   onOnboardingStarted,
 }: {
-  data: OperatorSnapshot;
+  data: DashboardSnapshot;
   token: string;
   onOnboardingStarted: () => void;
 }) {
@@ -65,7 +68,10 @@ export function SetupPage({
     signerConfigPath: "<SIGNER_CONFIG_PATH>",
   });
   const [signerOutput, setSignerOutput] = useState("");
-  const [activationSnapshot, setActivationSnapshot] = useState({
+  const [activationSnapshot, setActivationSnapshot] = useState<{
+    preflight: OperatorSnapshot["preflight"];
+    setup: OperatorSnapshot["setup"];
+  }>({
     preflight: data.preflight,
     setup: data.setup,
   });
@@ -299,7 +305,7 @@ export function SetupPage({
     <>
       <PageHead
         title="Initial Setup"
-        lede="Attach a running manager or prepare a fresh PoX-5 deployment. Sidekick verifies and generates artifacts; signing and broadcast stay outside the app."
+        lede="Attach a running manager or prepare a fresh PoX-5 deployment. Sidekick verifies the result; keys and signing stay in the external wallet or signer."
         actions={
           <div className="setup-head-actions">
             <div className="seg">
@@ -425,8 +431,10 @@ export function SetupPage({
                       <strong>Prepare a new signer-manager</strong>
                       <div>
                         Sidekick generates the deployment files, verifies the resulting contract,
-                        and guides signer authorization. You sign and broadcast the deployment and
-                        registration transactions outside Sidekick.
+                        and guides signer authorization. You can hand the exact prepared deployment
+                        and registration transactions to a wallet using the configured network key.
+                        Private-network wallet support is version-dependent; the manual path always
+                        remains available. PoX-5 Testnet uses pox5-testnet, never ordinary testnet.
                       </div>
                     </div>
                   </div>
@@ -612,11 +620,20 @@ export function SetupPage({
                     <div className="callout callout-caution">
                       <Warning className="ic" />
                       <div className="body">
-                        <strong>Signer authorization must be repaired externally.</strong> The
-                        existing manager needs a new signer grant and{" "}
-                        <span className="mono">register-self</span> call. Guided repair for an
-                        existing manager is not yet available; Sidekick will continue read-only
-                        monitoring and can re-check the result afterward.
+                        <strong>Signer authorization needs repair.</strong> Use Manager to prepare
+                        and verify a fresh signer-host grant and{" "}
+                        <span className="mono">register-self</span> transaction, then re-check here.
+                        <div className="actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary sm"
+                            onClick={() => {
+                              location.hash = dashboardHash("manager", "register-self");
+                            }}
+                          >
+                            Review repair ceremony
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -788,76 +805,87 @@ export function SetupPage({
                   </div>
 
                   {onboarding.artifact.manifest ? (
-                    <div className="deploy-instructions">
-                      <h3>Deploy outside Sidekick</h3>
-                      <p>
-                        The <span className="mono">.clar</span> file is the contract source. The
-                        manifest records the values you must review; it is not an import file.
-                      </p>
-                      <div className="deployment-target">
-                        <span>
-                          From{" "}
-                          <CopyableIdentifier
-                            value={onboarding.artifact.manifest.adminPrincipal}
-                            label="manager admin principal"
-                            className="mono"
-                          />
-                        </span>
-                        <span>
-                          Contract{" "}
-                          <strong className="mono">
-                            {onboarding.artifact.manifest.transaction.contractName}
-                          </strong>
-                        </span>
-                        <span>
-                          Network <strong>{onboarding.artifact.manifest.network}</strong>
-                        </span>
-                        <span>
-                          Clarity{" "}
-                          <strong>{onboarding.artifact.manifest.transaction.clarityVersion}</strong>
-                        </span>
-                      </div>
-                      <div className="deployment-options">
-                        <div>
-                          <strong>Wallet / Explorer</strong>
-                          <p>
-                            Connect the funded admin wallet to the same network, open Deploy
-                            Contract, paste the <span className="mono">.clar</span> source, and copy
-                            the contract name from the manifest.
-                          </p>
-                          <a href={DOCUMENT_LINKS.sandboxDeploy} target="_blank" rel="noreferrer">
-                            Open Explorer Sandbox <ArrowSquareOut />
-                          </a>
+                    <>
+                      <BrowserWalletActionPanel
+                        chainId={data.preflight.node.networkId}
+                        createRequest={{ action: "deploy-manager" }}
+                        managerPrincipal={onboarding.managerPrincipal}
+                        network={onboarding.artifact.manifest.network}
+                        token={token}
+                      />
+                      <div className="deploy-instructions">
+                        <h3>Deploy outside Sidekick</h3>
+                        <p>
+                          The <span className="mono">.clar</span> file is the contract source. The
+                          manifest records the values you must review; it is not an import file.
+                        </p>
+                        <div className="deployment-target">
+                          <span>
+                            From{" "}
+                            <CopyableIdentifier
+                              value={onboarding.artifact.manifest.adminPrincipal}
+                              label="manager admin principal"
+                              className="mono"
+                            />
+                          </span>
+                          <span>
+                            Contract{" "}
+                            <strong className="mono">
+                              {onboarding.artifact.manifest.transaction.contractName}
+                            </strong>
+                          </span>
+                          <span>
+                            Network <strong>{onboarding.artifact.manifest.network}</strong>
+                          </span>
+                          <span>
+                            Clarity{" "}
+                            <strong>
+                              {onboarding.artifact.manifest.transaction.clarityVersion}
+                            </strong>
+                          </span>
                         </div>
-                        <div>
-                          <strong>Clarinet CLI</strong>
-                          <p>
-                            Add the <span className="mono">.clar</span> file to a Clarinet project,
-                            configure the same network and deployer, then generate, review, and
-                            apply a deployment plan using the manifest values.
-                          </p>
-                          <a
-                            href={DOCUMENT_LINKS.clarinetDeployment}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Clarinet deployment guide <ArrowSquareOut />
-                          </a>
+                        <div className="deployment-options">
+                          <div>
+                            <strong>Wallet / Explorer</strong>
+                            <p>
+                              Connect the funded admin wallet to the same network, open Deploy
+                              Contract, paste the <span className="mono">.clar</span> source, and
+                              copy the contract name from the manifest.
+                            </p>
+                            <a href={DOCUMENT_LINKS.sandboxDeploy} target="_blank" rel="noreferrer">
+                              Open Explorer Sandbox <ArrowSquareOut />
+                            </a>
+                          </div>
+                          <div>
+                            <strong>Clarinet CLI</strong>
+                            <p>
+                              Add the <span className="mono">.clar</span> file to a Clarinet
+                              project, configure the same network and deployer, then generate,
+                              review, and apply a deployment plan using the manifest values.
+                            </p>
+                            <a
+                              href={DOCUMENT_LINKS.clarinetDeployment}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Clarinet deployment guide <ArrowSquareOut />
+                            </a>
+                          </div>
                         </div>
+                        <p className="deploy-warning">
+                          Keep the admin key in your wallet or CLI. After the transaction confirms,
+                          return here and verify the deployed source before continuing.
+                        </p>
+                        <button
+                          type="button"
+                          className="btn btn-accent"
+                          disabled={busy}
+                          onClick={() => void run(refreshFresh)}
+                        >
+                          <ArrowClockwise /> Verify deployment
+                        </button>
                       </div>
-                      <p className="deploy-warning">
-                        Keep the admin key in your wallet or CLI. After the transaction confirms,
-                        return here and verify the deployed source before continuing.
-                      </p>
-                      <button
-                        type="button"
-                        className="btn btn-accent"
-                        disabled={busy}
-                        onClick={() => void run(refreshFresh)}
-                      >
-                        <ArrowClockwise /> Verify deployment
-                      </button>
-                    </div>
+                    </>
                   ) : (
                     <p className="help mono src src-chain">
                       Prepare the manager artifact before deploying.
@@ -1011,10 +1039,18 @@ export function SetupPage({
                     <div className="body">
                       <strong>Register the manager with PoX-5.</strong> This call grants the
                       verified signer key to the manager and registers the manager in one
-                      transaction. Sign and broadcast it with the manager admin wallet; Sidekick
-                      never receives the key or broadcasts the transaction.
+                      transaction. Sign with a browser wallet below or use the manual values.
+                      Sidekick never receives the key or broadcasts the transaction itself.
                     </div>
                   </div>
+
+                  <BrowserWalletActionPanel
+                    chainId={data.preflight.node.networkId}
+                    createRequest={{ action: "register-self" }}
+                    managerPrincipal={data.managerPrincipal}
+                    network={data.network}
+                    token={token}
+                  />
 
                   <ol className="ceremony-steps registration-instructions">
                     <li>

@@ -166,7 +166,7 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "deploy-manager",
       status: options.preflight.status === "fail" ? "blocked" : "pending",
-      title: "Deploy the manager with the offline admin",
+      title: "Deploy the manager with the external admin wallet",
       detail:
         "Review the rendered principals and source hashes, then sign and submit the Clarity 6 deployment outside Sidekick",
       command: null,
@@ -208,7 +208,7 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
     {
       id: "register-manager",
       status: "pending",
-      title: "Register the manager with the offline admin",
+      title: "Register the manager with the external admin wallet",
       detail: "Sign and submit the generated register-self call outside Sidekick",
       command: null,
       requires: ["deploy-manager", "verify-signer-grant"],
@@ -271,8 +271,8 @@ export function createAttachActivationPlan(
           : manager.source.tier === "reference-render"
             ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager is operator-identified for read-only use; reference-manager Assist remains disabled"
-              : "Manager is compatible and can attach in read-only mode, but its source is not recognized"
+              ? "Custom manager source is recorded; fixed external actions remain available, but reference-manager Assist is disabled"
+              : "Manager source is unrecognized; fixed external actions remain available, but Assist is disabled"
         : "Manager network or interface is incompatible",
       command: `sidekick manager verify ${shellQuote(manager.managerPrincipal)}`,
       requires: ["preflight"],

@@ -157,7 +157,7 @@ export function createInstalledManagerProfile(input: {
 
   if (!input.observeOnly) {
     throw new Error(
-      `Manager is interface-compatible but is not a reproducible reference render: ${referenceFailure}. Re-run with --observe-only to identify it as custom read-only`,
+      `Manager is interface-compatible but is not a reproducible reference render: ${referenceFailure}. Re-run with --observe-only to record it as custom without granting Assist`,
     );
   }
   return {
@@ -166,7 +166,7 @@ export function createInstalledManagerProfile(input: {
       tier: "custom-observe",
     }),
     status: "created",
-    summary: `Custom manager profile created for attach and read-only monitoring only; reference-manager Assist remains disabled (${referenceFailure})`,
+    summary: `Custom manager source recorded; fixed external actions remain available, but reference-manager Assist is disabled (${referenceFailure})`,
   };
 }
 

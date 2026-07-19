@@ -44,7 +44,7 @@ RUN groupadd --system --gid 10001 sidekick \
 COPY --from=build --chown=sidekick:sidekick /opt/sidekick /app
 COPY --from=build --chown=sidekick:sidekick /workspace/apps/dashboard/dist /app/dashboard
 COPY --from=build --chown=sidekick:sidekick /workspace/contracts /app/contracts
-COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /usr/share/doc/signer-sidekick/
+COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /workspace/dist/THIRD_PARTY_LICENSES.txt /usr/share/doc/signer-sidekick/
 COPY --from=build /workspace/design/fonts/OFL-1.1.txt /usr/share/doc/signer-sidekick/OFL-1.1.txt
 
 USER sidekick

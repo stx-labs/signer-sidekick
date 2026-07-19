@@ -95,7 +95,7 @@ export const runtimeSettings = {
 
 export const snapshot = {
   generatedAt: "2026-07-15T12:10:00.000Z",
-  network: "devnet",
+  network: "testnet",
   managerPrincipal,
   config: {
     nodeRpcUrl: "http://stacks-node:20443",
@@ -146,19 +146,19 @@ export const snapshot = {
       isPreparePhase: false,
     },
     checks: [
-      { id: "node", status: "pass", message: "Stacks node is available" },
-      { id: "api", status: "pass", message: "API indexer is caught up" },
+      { id: "node-network", status: "pass", message: "Node network matches testnet" },
+      { id: "api-network", status: "pass", message: "API and node network IDs agree" },
       { id: "pox5", status: "pass", message: "PoX-5 is active" },
     ],
   },
   manager: {
     attachAllowed: true,
     automationEligible: true,
-    automationEligibilityReason: "Source matches approved devnet reference profile",
+    automationEligibilityReason: "Source matches PoX-5 Testnet reference profile",
     publishHeight: 9_100,
     source: {
       recognized: true,
-      profileId: "devnet",
+      profileId: "pox5-testnet-reference-manager",
       sha256: "ca97d964",
       match: "exact",
       tier: "reference-built-in",
@@ -166,8 +166,8 @@ export const snapshot = {
     },
     provenance: {
       status: "built-in",
-      upstreamProfileId: "devnet",
-      reason: "Source matches approved devnet reference profile",
+      upstreamProfileId: "pox5-testnet-reference-manager",
+      reason: "Source matches PoX-5 Testnet reference profile",
     },
     installedProfiles: { directory: null, loaded: 0, issues: [] },
     reasons: [],

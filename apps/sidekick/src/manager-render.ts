@@ -9,45 +9,68 @@ import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/mana
 import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
 import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
+import { z } from "zod";
 import type { SidekickNetwork } from "./config.js";
 import type { PreflightResult } from "./preflight.js";
 
-export interface ManagerDeploymentManifest {
-  schemaVersion: 1;
-  network: SidekickNetwork;
-  adminPrincipal: string;
-  managerPrincipal: string;
-  profile: {
-    id: string;
-    upstreamTag: string;
-    upstreamCommit: string;
-    compatibilityProfileId: string | null;
-    compatibilityProfileRevision: number | null;
-  };
-  contracts: {
-    pox5: string;
-    sbtcDeployer: string;
-  };
-  artifact: {
-    sourceFile: string;
-    sourceSha256: string;
-    canonicalSourceSha256: string;
-    replacements: {
-      pox5: number;
-      sbtcDeployer: number;
-    };
-  };
-  transaction: {
-    type: "smart-contract-deploy";
-    contractName: string;
-    clarityVersion: 6;
-    anchorMode: "any";
-    postConditionMode: "deny";
-    signingAuthority: "external-offline-admin";
-  };
-  operatorReviewRequired: true;
-  warnings: string[];
-}
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const managerDeploymentManifestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    network: z.enum(["mainnet", "testnet", "devnet", "regtest"]),
+    adminPrincipal: z.string().min(1).max(500),
+    managerPrincipal: z.string().min(1).max(500),
+    profile: z
+      .object({
+        id: z.string().min(1).max(100),
+        upstreamTag: z.string().min(1).max(100),
+        upstreamCommit: z.string().regex(/^[0-9a-f]{40}$/),
+        compatibilityProfileId: z.string().min(1).max(100).nullable(),
+        compatibilityProfileRevision: z.number().int().positive().nullable(),
+      })
+      .strict()
+      .refine(
+        (profile) =>
+          (profile.compatibilityProfileId === null) ===
+          (profile.compatibilityProfileRevision === null),
+        "Compatibility profile ID and revision must both be present or both be null",
+      ),
+    contracts: z
+      .object({
+        pox5: z.string().min(1).max(500),
+        sbtcDeployer: z.string().min(1).max(500),
+      })
+      .strict(),
+    artifact: z
+      .object({
+        sourceFile: z.string().min(1).max(500),
+        sourceSha256: sha256Schema,
+        canonicalSourceSha256: sha256Schema,
+        replacements: z
+          .object({
+            pox5: z.number().int().positive(),
+            sbtcDeployer: z.number().int().positive(),
+          })
+          .strict(),
+      })
+      .strict(),
+    transaction: z
+      .object({
+        type: z.literal("smart-contract-deploy"),
+        contractName: z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,39}$/),
+        clarityVersion: z.literal(6),
+        anchorMode: z.literal("any"),
+        postConditionMode: z.literal("deny"),
+        signingAuthority: z.literal("external-offline-admin"),
+      })
+      .strict(),
+    operatorReviewRequired: z.literal(true),
+    warnings: z.array(z.string().min(1).max(1_000)).max(20),
+  })
+  .strict();
+
+export type ManagerDeploymentManifest = z.infer<typeof managerDeploymentManifestSchema>;
 
 export interface RenderManagerOptions {
   network: SidekickNetwork;

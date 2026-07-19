@@ -32,6 +32,12 @@ export interface OperatorAlert {
         kind: "navigate";
         label: string;
         target: "setup" | "settings" | "pool" | "rewards" | "operations";
+      }
+    | {
+        kind: "navigate";
+        label: string;
+        target: "manager";
+        managerAction: "register-self";
       };
 }
 
@@ -130,17 +136,17 @@ export function buildAlerts(snapshot: {
     alerts.push({
       id: "manager:not-recognized-read-only",
       severity: "warning",
-      title: "Manager Not Recognized — Read-only",
-      detail: `Attach, display, reconciliation, and monitoring work normally. Reference-manager Assist remains disabled: ${snapshot.manager.automationEligibilityReason}. Open Settings to install a provenance-verified profile if this is a reference render.`,
+      title: "Manager Source Not Recognized",
+      detail: `Monitoring continues, and fixed external actions remain available when technical checks pass. Assist is disabled: ${snapshot.manager.automationEligibilityReason}. Install a provenance-verified profile only if this is a reference render.`,
       action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
       id: "manager:custom-read-only",
       severity: "info",
-      title: "Custom Manager — Read-only",
+      title: "Custom Manager",
       detail:
-        "This operator-installed custom profile supports attach and monitoring only. It cannot use reference-manager Assist. No action is required unless you intend to enable Assist for a reference manager.",
+        "Monitoring and fixed external actions remain available when technical checks pass. Reference-manager Assist is disabled.",
     });
   }
   if (snapshot.manager.installedProfiles.issues.length > 0) {
@@ -163,7 +169,7 @@ export function buildAlerts(snapshot: {
         ? "Manager Assist Eligibility Gained"
         : degraded
           ? "Manager Recognition Degraded"
-          : "Manager Degraded to Read-only",
+          : "Manager Assist Eligibility Lost",
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
         : `${asSentence(snapshot.trustTransition.reason)} Review the installed manager profile before enabling Assist.`,
@@ -179,15 +185,25 @@ export function buildAlerts(snapshot: {
     });
   }
   if (snapshot.setup?.status === "blocked") {
-    const blockedReason =
-      snapshot.setup.checks.find(({ status }) => status === "fail")?.message ??
-      "A required manager setup check failed";
+    const failedCheck = snapshot.setup.checks.find(({ status }) => status === "fail");
+    const blockedReason = failedCheck?.message ?? "A required manager setup check failed";
+    const signerRepair =
+      failedCheck !== undefined && ["signer-registration", "signer-grant"].includes(failedCheck.id);
     alerts.push({
       id: "setup:blocked",
       severity: "critical",
       title: "Pool Setup Is Blocked",
-      detail: `${asSentence(blockedReason)} Open Initial Setup to review and resolve the blocked step.`,
-      action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+      detail: signerRepair
+        ? `${asSentence(blockedReason)} Open Manager to prepare a fresh signer authorization and registration.`
+        : `${asSentence(blockedReason)} Open Initial Setup to review and resolve the blocked step.`,
+      action: signerRepair
+        ? {
+            kind: "navigate",
+            label: "Repair signer authorization",
+            target: "manager",
+            managerAction: "register-self",
+          }
+        : { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   }
   const affectedCycles =

@@ -7,7 +7,11 @@ import {
   type SignedCompatibilityAttestation,
   type VerifiedCompatibilityAttestation,
 } from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
-import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import {
+  MAINNET_4_0_1_COMPATIBILITY,
+  POX5_TESTNET_COMPATIBILITY,
+} from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
 import type { StxRewardStatus } from "../reward-status.js";
@@ -91,7 +95,9 @@ function evidenceStore(
   };
 }
 
-function payload(): CompatibilityAttestationPayload {
+function payload(
+  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
+): CompatibilityAttestationPayload {
   return {
     schemaVersion: 1,
     issuer: "stacks-labs",
@@ -99,12 +105,14 @@ function payload(): CompatibilityAttestationPayload {
     issuedAt: "2026-07-17T00:00:00.000Z",
     notBefore: "2026-07-17T00:00:00.000Z",
     expiresAt: "2026-07-18T00:00:00.000Z",
-    profile: POX5_TESTNET_COMPATIBILITY,
+    profile,
   };
 }
 
-function signedAttestation(): SignedCompatibilityAttestation {
-  const value = payload();
+function signedAttestation(
+  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
+): SignedCompatibilityAttestation {
+  const value = payload(profile);
   return {
     schemaVersion: 1,
     algorithm: "ed25519",
@@ -118,13 +126,15 @@ function signedAttestation(): SignedCompatibilityAttestation {
   };
 }
 
-async function memoryStore(): Promise<{
+async function memoryStore(
+  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
+): Promise<{
   store: SidekickStore;
   attestation: VerifiedCompatibilityAttestation;
 }> {
   const { store } = await openSidekickStore(":memory:", observedAt);
   stores.push(store);
-  const document = signedAttestation();
+  const document = signedAttestation(profile);
   const digest = compatibilityAttestationPayloadSha256(document.payload);
   const acceptedState = {
     issuer: document.payload.issuer,
@@ -722,6 +732,77 @@ describe("live manager-claim observation", () => {
         records: { policy: { mode: "observe", approvalRequired: false } },
       },
     });
+  });
+
+  it.each([
+    "devnet",
+    "regtest",
+  ] as const)("allows %s Assist without a production-approved manager profile", async (network) => {
+    const networkId = 0x8000_0000;
+    const profile: NetworkCompatibilityProfile = {
+      ...POX5_TESTNET_COMPATIBILITY,
+      id: `wallet-assist-${network}`,
+      label: `Wallet Assist ${network}`,
+      network,
+      networkId,
+    };
+    const { store, attestation } = await memoryStore(profile);
+    const privateInput = input(attestation);
+    privateInput.requestedMode = "assist";
+    privateInput.setup.preflight.network = network;
+    privateInput.setup.preflight.node.networkId = networkId;
+
+    await expect(service(store).observe(privateInput)).resolves.toMatchObject({
+      status: "planned",
+      result: {
+        job: { state: "awaiting_approval" },
+        records: { policy: { mode: "assist", approvalRequired: true } },
+      },
+    });
+  });
+
+  it("blocks mainnet Assist when production approval leaves the reference manager ineligible", async () => {
+    const { store, attestation } = await memoryStore(MAINNET_4_0_1_COMPATIBILITY);
+    const mainnetInput = input(attestation);
+    mainnetInput.requestedMode = "assist";
+    mainnetInput.setup.preflight.network = "mainnet";
+    mainnetInput.setup.preflight.node.networkId = 1;
+    mainnetInput.setup.manager.automationEligible = false;
+
+    await expect(service(store).observe(mainnetInput)).resolves.toMatchObject({
+      status: "blocked",
+      blocks: expect.arrayContaining([expect.objectContaining({ code: "manager-ineligible" })]),
+    });
+    expect(store.transactionEngine.logicalJobStats().total).toBe(0);
+  });
+
+  it.each([
+    ["devnet", "custom-observe"],
+    ["regtest", "unrecognized"],
+  ] as const)("keeps the exact-manager Assist gate on %s for a %s source", async (network, tier) => {
+    const networkId = 0x8000_0000;
+    const profile: NetworkCompatibilityProfile = {
+      ...POX5_TESTNET_COMPATIBILITY,
+      id: `ineligible-${network}`,
+      label: `Ineligible ${network}`,
+      network,
+      networkId,
+    };
+    const { store, attestation } = await memoryStore(profile);
+    const privateInput = input(attestation);
+    privateInput.requestedMode = "assist";
+    privateInput.setup.preflight.network = network;
+    privateInput.setup.preflight.node.networkId = networkId;
+    privateInput.setup.manager.automationEligible = false;
+    privateInput.setup.manager.source.tier = tier;
+    privateInput.setup.manager.source.match = "unknown";
+    if (tier === "unrecognized") privateInput.setup.manager.source.profileId = null;
+
+    await expect(service(store).observe(privateInput)).resolves.toMatchObject({
+      status: "blocked",
+      blocks: expect.arrayContaining([expect.objectContaining({ code: "manager-ineligible" })]),
+    });
+    expect(store.transactionEngine.logicalJobStats().total).toBe(0);
   });
 
   it("fails closed before creating work for incomplete/bonded rosters and bad attestations", async () => {

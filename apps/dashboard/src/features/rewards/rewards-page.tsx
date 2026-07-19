@@ -1,3 +1,4 @@
+import { Coins, Percent } from "@phosphor-icons/react";
 import {
   activityResponseSchema,
   type DashboardSnapshot,
@@ -8,14 +9,18 @@ import {
 import { useEffect, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
+import { dashboardHash } from "../../dashboard-route.js";
 import { Badge, PageHead, Pagination, StatLine } from "../../shared/dashboard-ui.js";
 import { number, sbtc, short } from "../../shared/format.js";
+import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
 
 type Snapshot = DashboardSnapshot;
 
 export function Rewards({ data, token }: { data: Snapshot; token: string }) {
   const rewards = data.rewards;
+  const actionAvailability = managerActionAvailability(data);
+  const managerActionsAvailable = actionAvailability.available;
   const [activity, setActivity] = useState(data.activity);
   const [stakerPage, setStakerPage] = useState(0);
   const [claimPage, setClaimPage] = useState(0);
@@ -113,6 +118,16 @@ export function Rewards({ data, token }: { data: Snapshot; token: string }) {
           />
         </div>
       </div>
+      {!managerActionsAvailable ? (
+        <p className="tertiary balance-note" role="status">
+          <strong>Guided manager actions are unavailable.</strong> {actionAvailability.reason}
+        </p>
+      ) : null}
+      {actionAvailability.warning ? (
+        <p className="tertiary balance-note" role="status">
+          <strong>Unverified manager source.</strong> {actionAvailability.warning}
+        </p>
+      ) : null}
       <div className="grid cols-2 reward-ledger">
         <div className="card">
           <div className="card-head">
@@ -143,6 +158,18 @@ export function Rewards({ data, token }: { data: Snapshot; token: string }) {
             The effective cycle fee is fixed on the manager's first claim. A real 0% snapshot is
             shown as 0%; a missing snapshot is shown separately.
           </p>
+          <div className="reward-admin-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!managerActionsAvailable}
+              onClick={() => {
+                location.hash = dashboardHash("manager", "update-fees");
+              }}
+            >
+              <Percent /> Update manager fee
+            </button>
+          </div>
         </div>
         <div className="card">
           <div className="card-head">
@@ -162,6 +189,30 @@ export function Rewards({ data, token }: { data: Snapshot; token: string }) {
             Pending L1 withdrawals have already left the manager. Liability is tracked separately
             and is not added to expected cash.
           </p>
+          <div className="reward-admin-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={
+                !managerActionsAvailable || BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
+              }
+              onClick={() => {
+                location.hash = dashboardHash("manager", "withdraw-fees");
+              }}
+            >
+              <Coins /> Withdraw earned fees
+            </button>
+            <button
+              type="button"
+              className="btn btn-tertiary"
+              disabled={!managerActionsAvailable}
+              onClick={() => {
+                location.hash = dashboardHash("manager", "sweep-fee-refunds");
+              }}
+            >
+              Sweep fee refunds
+            </button>
+          </div>
         </div>
       </div>
       <div className="section-title">Reward cycle ledger</div>

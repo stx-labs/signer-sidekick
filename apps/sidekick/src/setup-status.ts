@@ -140,8 +140,8 @@ export async function readPoolSetupStatus(
           : manager.source.tier === "reference-render"
             ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager is operator-identified for attach and read-only monitoring; Assist remains disabled"
-              : "Manager source is not recognized — attach and read-only monitoring work, but Assist remains disabled",
+              ? "Custom manager source is recorded; fixed external actions remain available, but Assist is disabled"
+              : "Manager source is not recognized; fixed external actions remain available, but Assist is disabled",
     },
     {
       id: "signer-registration",

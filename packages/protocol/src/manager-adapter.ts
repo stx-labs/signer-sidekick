@@ -30,6 +30,12 @@ export function claritySourceSha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function managerProfileAllowsAssist(
+  profile: Pick<ManagerProfile, "network" | "productionApproved">,
+): boolean {
+  return profile.network !== "mainnet" || profile.productionApproved;
+}
+
 /**
  * Remove line comments and collapse whitespace while preserving string contents.
  * This is deliberately lexical. It does not parse Clarity or attempt semantic equivalence.
@@ -113,13 +119,16 @@ export function createManagerAdapterFromHashes(artifact: ReviewedManagerArtifact
           ? "canonical"
           : "unknown";
     const matched = match !== "unknown";
-    const automationAllowed = matched && profile.productionApproved;
+    const automationAllowed = matched && managerProfileAllowsAssist(profile);
 
     let reason = "Source is not a reviewed reference-manager artifact";
-    if (matched && profile.productionApproved) {
-      reason = `Source matches approved profile ${profile.id} (${match})`;
+    if (automationAllowed) {
+      reason =
+        profile.network === "mainnet"
+          ? `Source matches production-approved profile ${profile.id} (${match})`
+          : `Source matches non-mainnet profile ${profile.id} (${match}); production approval is not required for Assist on ${profile.network}`;
     } else if (matched) {
-      reason = `Source matches profile ${profile.id}, but that profile is not production-approved`;
+      reason = `Source matches mainnet profile ${profile.id}, but that profile is not production-approved`;
     }
 
     return {

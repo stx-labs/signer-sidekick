@@ -45,6 +45,7 @@ import {
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
 } from "./manager-claim-observer.js";
+import type { ManagerClaimWalletAuthoritativeObservation } from "./manager-claim-wallet-intent.js";
 import type { StoredTransactionJob } from "./repository.js";
 import {
   loadTransactionEngineRuntimeConfig,
@@ -236,6 +237,7 @@ function buildAdmission(
  */
 export class SidekickTransactionEngineRuntime {
   readonly api: RepositoryTransactionEngineApiService;
+  readonly requestedMode: "observe" | "assist";
 
   readonly #composition: SidekickTransactionEngineRuntimeComposition;
   #latest: ManagerClaimObservationOutcome = {
@@ -256,6 +258,7 @@ export class SidekickTransactionEngineRuntime {
 
   constructor(composition: SidekickTransactionEngineRuntimeComposition) {
     this.#composition = composition;
+    this.requestedMode = composition.runtimeConfig.requestedMode;
     this.api = new RepositoryTransactionEngineApiService({
       repository: composition.store.transactionEngine,
       requestedMode: composition.runtimeConfig.requestedMode,
@@ -302,6 +305,46 @@ export class SidekickTransactionEngineRuntime {
       this.#runtimeBlockReason = runtimeFailureReason(error);
       throw error;
     }
+  }
+
+  /**
+   * Refresh the normal engine observation and return the exact still-current Observe job binding.
+   * This uses the existing planner and safety controls; it never constructs a wallet transaction.
+   */
+  async observeManagerClaimWalletJob(
+    jobIdInput: string,
+  ): Promise<ManagerClaimWalletAuthoritativeObservation> {
+    const jobId = z.string().uuid().parse(jobIdInput);
+    return await this.#exclusive(async () => {
+      if (this.#composition.runtimeConfig.requestedMode !== "observe") {
+        throw new Error("Browser-wallet manager claims require configured Observe mode");
+      }
+      const context = this.#composition.runtimeContext();
+      const fresh = await this.#composition.readFreshObservation(context);
+      const outcome = await this.#observeWithContext(context, fresh);
+      if (
+        outcome.status !== "planned" ||
+        outcome.result.job.jobId !== jobId ||
+        outcome.result.job.state !== "preflighted" ||
+        this.#composition.store.transactionEngine.getActiveLogicalJobForScope(
+          outcome.result.job.operationScopeKey,
+        )?.jobId !== jobId
+      ) {
+        throw new Error("The selected manager-claim job is not the current actionable observation");
+      }
+      const job = outcome.result.job;
+      return {
+        observedAt: fresh.observedAt,
+        job: {
+          jobId: job.jobId,
+          operationScopeKey: job.operationScopeKey,
+          intentSha256: job.intentSha256,
+          policySha256: job.policySha256,
+          stateVersion: job.stateVersion,
+          attestation: { ...job.attestation },
+        },
+      };
+    });
   }
 
   async #observeWithContext(

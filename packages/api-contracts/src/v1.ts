@@ -178,6 +178,124 @@ export interface OnboardingWizardState {
   audit: Array<{ action: "dismissed" | "resumed"; changedAt: string }>;
 }
 
+export type BrowserWalletIntentAction =
+  | "deploy-manager"
+  | "register-self"
+  | "add-admin"
+  | "remove-admin"
+  | "update-fees"
+  | "withdraw-fees"
+  | "sweep-fee-refunds"
+  | "claim-rewards";
+export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
+export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
+export type OnboardingBrowserWalletIntentCreateRequest =
+  | { action: "deploy-manager" }
+  | { action: "register-self" };
+export type BrowserWalletIntentCreateRequest =
+  | { action: "deploy-manager" }
+  | { action: "register-self"; actorPrincipal: string }
+  | { action: "add-admin" | "remove-admin"; actorPrincipal: string; adminPrincipal: string }
+  | { action: "update-fees"; actorPrincipal: string; feeBips: string }
+  | {
+      action: "withdraw-fees";
+      actorPrincipal: string;
+      amountSats: string;
+      recipient: string;
+    }
+  | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
+  | { action: "claim-rewards"; actorPrincipal: string; jobId: string };
+export type BrowserWalletIntentRequest =
+  | OnboardingBrowserWalletIntentCreateRequest
+  | BrowserWalletIntentCreateRequest;
+export type BrowserWalletIntentStatus =
+  | "prepared"
+  | "submitted"
+  | "mempool"
+  | "confirmed"
+  | "complete"
+  | "expired"
+  | "superseded"
+  | "failed"
+  | "reobserve";
+
+export type BrowserWalletTransaction =
+  | {
+      method: "stx_deployContract";
+      params: {
+        name: string;
+        clarityCode: string;
+        clarityVersion: 6;
+        network: BrowserWalletConnectNetwork;
+        address: string;
+        sponsored: false;
+        postConditionMode: "deny";
+        postConditions: [];
+      };
+    }
+  | {
+      method: "stx_callContract";
+      params: {
+        contract: string;
+        functionName:
+          | "register-self"
+          | "update-admin"
+          | "update-fees"
+          | "withdraw-fees"
+          | "sweep-fee-refunds"
+          | "claim-rewards";
+        functionArgs: string[];
+        network: BrowserWalletConnectNetwork;
+        address: string;
+        sponsored: false;
+        postConditionMode: "deny";
+        postConditions: string[];
+      };
+    };
+
+export interface BrowserWalletIntent {
+  schemaVersion: 1 | 2;
+  id: string;
+  action: BrowserWalletIntentAction;
+  network: BrowserWalletIntentNetwork;
+  chainId: number;
+  requiredSender: string;
+  createdAt: string;
+  expiresAt: string;
+  transaction: BrowserWalletTransaction;
+  request?: BrowserWalletIntentRequest | undefined;
+  review: {
+    title: string;
+    summary: string;
+    expectedPostState: string;
+    fields: Array<{ label: string; value: string }>;
+  };
+  seal: {
+    factsSha256: string;
+    manifestSha256: string;
+  };
+  status: BrowserWalletIntentStatus;
+  txid: string | null;
+  verification: null | {
+    outcome:
+      | "submitted"
+      | "mempool"
+      | "canonical-success"
+      | "complete"
+      | "not-found"
+      | "noncanonical"
+      | "superseded"
+      | "mismatch"
+      | "abort"
+      | "unavailable";
+    observedAt: string;
+    canonical: boolean | null;
+    blockHeight: number | null;
+    indexBlockHash: string | null;
+    detail: string;
+  };
+}
+
 interface Eligibility {
   cycleId: number;
   delegatedUstx: string;
@@ -260,6 +378,12 @@ export interface DashboardAlert {
         kind: "navigate";
         label: string;
         target: "setup" | "settings" | "pool" | "rewards" | "operations";
+      }
+    | {
+        kind: "navigate";
+        label: string;
+        target: "manager";
+        managerAction: "register-self";
       };
 }
 
@@ -600,10 +724,381 @@ export type OnboardingAttachRequest = z.infer<typeof onboardingAttachRequestSche
 export const onboardingGrantVerifyRequestSchema = z.object({ signerOutput: z.unknown() }).strict();
 export type OnboardingGrantVerifyRequest = z.infer<typeof onboardingGrantVerifyRequestSchema>;
 
+export const managerSignerGrantPrepareRequestSchema = z
+  .object({
+    authId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    signerConfigPath: z.string().min(1).max(500),
+  })
+  .strict();
+export type ManagerSignerGrantPrepareRequest = z.infer<
+  typeof managerSignerGrantPrepareRequestSchema
+>;
+
 export const onboardingProgressRequestSchema = z
   .object({ currentStep: z.string().min(1) })
   .strict();
 export type OnboardingProgressRequest = z.infer<typeof onboardingProgressRequestSchema>;
+
+export const browserWalletIntentActionSchema = z.enum([
+  "deploy-manager",
+  "register-self",
+  "add-admin",
+  "remove-admin",
+  "update-fees",
+  "withdraw-fees",
+  "sweep-fee-refunds",
+  "claim-rewards",
+]);
+export const browserWalletIntentNetworkSchema = z.enum([
+  "mainnet",
+  "pox5-testnet",
+  "devnet",
+  "regtest",
+]);
+export const browserWalletConnectNetworkSchema = browserWalletIntentNetworkSchema;
+
+const clarityUintMaximum = (1n << 128n) - 1n;
+const uint32Schema = z.number().int().nonnegative().max(0xffff_ffff);
+const canonicalClarityUintSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]*)$/)
+  .refine((value) => BigInt(value) <= clarityUintMaximum, "Value exceeds Clarity uint range");
+const positiveClarityUintSchema = canonicalClarityUintSchema.refine(
+  (value) => value !== "0",
+  "Value must be positive",
+);
+const walletPrincipalInputSchema = z.string().min(1).max(500);
+const walletActorPrincipalInputSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => !value.includes("."), "Expected a standard principal");
+
+export const onboardingBrowserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("deploy-manager") }).strict(),
+  z.object({ action: z.literal("register-self") }).strict(),
+]);
+export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("deploy-manager") }).strict(),
+  z
+    .object({
+      action: z.literal("register-self"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("add-admin"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      adminPrincipal: walletActorPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("remove-admin"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      adminPrincipal: walletActorPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("update-fees"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      feeBips: canonicalClarityUintSchema.refine(
+        (value) => BigInt(value) < 10_000n,
+        "Fee must be below 10000 basis points",
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("withdraw-fees"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      amountSats: positiveClarityUintSchema,
+      recipient: walletPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("sweep-fee-refunds"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      recipient: walletPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("claim-rewards"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      jobId: z.uuid(),
+    })
+    .strict(),
+]);
+export const browserWalletIntentSubmissionRequestSchema = z
+  .object({ txid: z.string().regex(/^0x[0-9a-f]{64}$/i) })
+  .strict();
+export type BrowserWalletIntentSubmissionRequest = z.infer<
+  typeof browserWalletIntentSubmissionRequestSchema
+>;
+
+const browserWalletCommonParamsSchema = z
+  .object({
+    network: browserWalletConnectNetworkSchema,
+    address: z.string().min(1),
+    sponsored: z.literal(false),
+    postConditionMode: z.literal("deny"),
+  })
+  .strict();
+
+const clarityHexSchema = z.string().regex(/^(?:0x)?(?:[0-9a-f]{2})+$/i);
+const serializedPostConditionSchema = z
+  .string()
+  .min(4)
+  .max(2_048)
+  .regex(/^(?:0x)?(?:[0-9a-f]{2})+$/i);
+const browserWalletNoPostConditionsParamsSchema = browserWalletCommonParamsSchema.extend({
+  postConditions: z.tuple([]),
+});
+const browserWalletAssetPostConditionParamsSchema = browserWalletCommonParamsSchema.extend({
+  postConditions: z.array(serializedPostConditionSchema).length(1),
+});
+
+export const browserWalletTransactionSchema = z.union([
+  z
+    .object({
+      method: z.literal("stx_deployContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          name: z.string().min(1),
+          clarityCode: z.string().min(1),
+          clarityVersion: z.literal(6),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("register-self"),
+          functionArgs: z.array(clarityHexSchema).length(4),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("update-admin"),
+          functionArgs: z.array(clarityHexSchema).length(2),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("update-fees"),
+          functionArgs: z.array(clarityHexSchema).length(1),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletAssetPostConditionParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("withdraw-fees"),
+          functionArgs: z.array(clarityHexSchema).length(2),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletAssetPostConditionParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("claim-rewards"),
+          functionArgs: z.array(clarityHexSchema).length(2),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletAssetPostConditionParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("sweep-fee-refunds"),
+          functionArgs: z.array(clarityHexSchema).length(1),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+
+export const browserWalletIntentSchema = z
+  .object({
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    id: z.uuid(),
+    action: browserWalletIntentActionSchema,
+    network: browserWalletIntentNetworkSchema,
+    chainId: uint32Schema,
+    requiredSender: z.string().min(1),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    transaction: browserWalletTransactionSchema,
+    request: z
+      .union([
+        onboardingBrowserWalletIntentCreateRequestSchema,
+        browserWalletIntentCreateRequestSchema,
+      ])
+      .optional(),
+    review: z
+      .object({
+        title: z.string().min(1),
+        summary: z.string().min(1),
+        expectedPostState: z.string().min(1),
+        fields: z
+          .array(z.object({ label: z.string().min(1), value: z.string().min(1) }).strict())
+          .max(16)
+          .default([]),
+      })
+      .strict(),
+    seal: z
+      .object({
+        factsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+        manifestSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict(),
+    status: z.enum([
+      "prepared",
+      "submitted",
+      "mempool",
+      "confirmed",
+      "complete",
+      "expired",
+      "superseded",
+      "failed",
+      "reobserve",
+    ]),
+    txid: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    verification: z
+      .object({
+        outcome: z.enum([
+          "submitted",
+          "mempool",
+          "canonical-success",
+          "complete",
+          "not-found",
+          "noncanonical",
+          "superseded",
+          "mismatch",
+          "abort",
+          "unavailable",
+        ]),
+        observedAt: z.iso.datetime(),
+        canonical: z.boolean().nullable(),
+        blockHeight: z.number().int().nonnegative().nullable(),
+        indexBlockHash: z
+          .string()
+          .regex(/^0x[0-9a-f]{64}$/)
+          .nullable(),
+        detail: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const expectedChainId =
+      value.network === "mainnet" ? 1 : value.network === "pox5-testnet" ? 0x80000005 : null;
+    if (
+      value.transaction.params.network !== value.network ||
+      (expectedChainId !== null && value.chainId !== expectedChainId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["network"],
+        message: "Wallet intent network and chain binding do not match",
+      });
+    }
+    if (value.schemaVersion === 1) {
+      if (
+        value.network !== "mainnet" ||
+        !["deploy-manager", "register-self"].includes(value.action)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["schemaVersion"],
+          message: "Schema version 1 supports mainnet setup actions only",
+        });
+      }
+    } else {
+      if (value.review.fields.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["review", "fields"],
+          message: "Schema version 2 requires immutable review fields",
+        });
+      }
+      if (!value.request || value.request.action !== value.action) {
+        context.addIssue({
+          code: "custom",
+          path: ["request"],
+          message: "Schema version 2 requires the immutable action request",
+        });
+      }
+    }
+    const transaction = value.transaction;
+    const actionMatches =
+      (value.action === "deploy-manager" && transaction.method === "stx_deployContract") ||
+      (value.action === "register-self" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "register-self") ||
+      (["add-admin", "remove-admin"].includes(value.action) &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "update-admin") ||
+      (value.action === "update-fees" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "update-fees") ||
+      (value.action === "withdraw-fees" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "withdraw-fees") ||
+      (value.action === "sweep-fee-refunds" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "sweep-fee-refunds") ||
+      (value.action === "claim-rewards" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "claim-rewards");
+    if (!actionMatches) {
+      context.addIssue({
+        code: "custom",
+        path: ["transaction"],
+        message: "Wallet intent action and transaction do not match",
+      });
+    }
+  });
+
+export const browserWalletIntentResponseSchema = z
+  .object({ intent: browserWalletIntentSchema })
+  .strict();
+export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
 
 export const poolCardGenerateRequestSchema = z
   .object({ mode: z.enum(["live", "static"]) })

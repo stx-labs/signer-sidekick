@@ -8,8 +8,8 @@ Assist canary remains a release gate and must follow the separate controls in
 [Transaction engine V1](../product/transaction-engine-v1.md) and
 [container deployment](deployment.md#transaction-engine-modes).
 
-Sidekick does not install the node or signer and never signs deployment or `register-self` calls.
-Use current upstream material for those steps:
+Sidekick does not install the node or signer and never signs manager calls. It can hand exact calls
+to Leather or a manual signing tool. Use current upstream material for node and signer setup:
 
 - [Node guide](https://docs.stacks.co/operate/run-a-node)
 - [Signer guide](https://docs.stacks.co/operate/run-a-signer)
@@ -21,7 +21,7 @@ Use current upstream material for those steps:
 
 - Synced PoX-5 Testnet node and configured signer.
 - Funded PoX-5 Testnet admin address.
-- External tool approved for signing and broadcasting contract transactions.
+- Leather or another external tool approved for signing and broadcasting contract transactions.
 - Node RPC reachable from the Sidekick host/container.
 - Reviewed checkout of this repository.
 
@@ -55,6 +55,15 @@ Do not continue with Fresh setup unless PoX-5 is active, compatibility is `match
 fails. If the live network is unrecognized, review and install a profile under
 `network-compatibility/`, restart, and repeat preflight. Do not infer contract principals or hashes.
 
+### Leather custom network
+
+For browser-wallet execution, add a Leather custom network with key `pox5-testnet` and Stacks API
+URL `https://api.testnet-pox5.hiro.so`. The wallet must report the configured admin's `ST...`
+address. Ordinary Stacks testnet is a different chain (`0x80000000`); Sidekick accepts only the
+dedicated PoX-5 chain ID `0x80000005` and independently verifies the broadcast transaction. Xverse
+is not enabled for this custom network. Use the manual handoff if Leather is not configured exactly.
+Private HTTP access is supported under the restrictions in the main guide's remote-access section.
+
 ## Attach an existing manager
 
 Use **Attach Existing Contracts** in the dashboard, or:
@@ -66,8 +75,9 @@ docker compose exec -T sidekick node /app/dist/main.js \
   setup status ST_REPLACE_WITH_ADMIN.signer-manager
 ```
 
-An interface-compatible custom manager may attach read-only. Reference renders require an installed
-[trusted-manager profile](../../trusted-managers/README.md).
+An interface-compatible custom manager may attach and use fixed externally signed actions after
+node/API routing checks pass. Its unverified source warns and keeps Assist disabled. Install a
+[trusted-manager profile](../../trusted-managers/README.md) only to prove a reference render.
 
 ## Create a manager
 

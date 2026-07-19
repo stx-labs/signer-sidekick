@@ -89,11 +89,11 @@ describe("deployed manager verification", () => {
       recommendedMode: "observe",
     });
     expect(report.reasons).toContain(
-      "Profile stacks-4.0.0-mainnet-reference-manager is not production-approved",
+      "Mainnet profile stacks-4.0.0-mainnet-reference-manager is not production-approved",
     );
   });
 
-  it("allows an unknown custom manager to attach only in observe mode", () => {
+  it("allows technical use of an unknown manager without granting Assist", () => {
     const report = verifyManagerArtifact(
       "mainnet",
       manager,
@@ -107,6 +107,7 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
+    expect(report.automationEligibilityReason).toContain("fixed external actions remain available");
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {
@@ -150,9 +151,35 @@ describe("deployed manager verification", () => {
         origin: "operator-installed",
       },
       attachAllowed: true,
-      automationEligible: false,
+      automationEligible: true,
       recommendedMode: "observe",
     });
+    expect(report.automationEligibilityReason).toContain(
+      "production approval is not required for Assist on testnet",
+    );
+  });
+
+  it("allows the built-in regtest reference manager without production approval", async () => {
+    const source = await readFile(
+      resolve(root, "contracts/reference-manager/generated/regtest/signer-manager.clar"),
+      "utf8",
+    );
+    const report = verifyManagerArtifact(
+      "regtest",
+      "ST000000000000000000002AMW42H.signer-manager",
+      { source, publish_height: 1 },
+      compatibleInterface(),
+    );
+
+    expect(report).toMatchObject({
+      networkMatches: true,
+      source: { match: "exact", recognized: true, tier: "reference-built-in" },
+      interface: { compatible: true },
+      attachAllowed: true,
+      automationEligible: true,
+      recommendedMode: "observe",
+    });
+    expect(report.automationEligibilityReason).toContain("non-mainnet profile");
   });
 
   it("does not recognize a manager hash merely asserted by operator network data", async () => {

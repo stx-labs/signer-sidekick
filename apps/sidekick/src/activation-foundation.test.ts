@@ -92,7 +92,7 @@ describe("Fresh and attach activation foundation", () => {
         recognized: true,
       },
       attachAllowed: true,
-      automationEligible: false,
+      automationEligible: true,
       recommendedMode: "observe",
     });
 

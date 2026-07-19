@@ -8,6 +8,7 @@ import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
 import type { SidekickNetwork } from "../config.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
 import { type Migration, migrations } from "./migrations.js";
+import { WalletIntentRepository } from "./wallet-intent-repository.js";
 
 const sourceInputSchema = z
   .object({
@@ -987,9 +988,11 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 
 export class SidekickStore {
   readonly transactionEngine: TransactionEngineRepository;
+  readonly walletIntents: WalletIntentRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.transactionEngine = new TransactionEngineRepository(db);
+    this.walletIntents = new WalletIntentRepository(db);
   }
 
   close(): void {

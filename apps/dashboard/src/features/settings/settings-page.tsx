@@ -264,7 +264,7 @@ export function SettingsPage({
                       </span>{" "}
                       revision {data.preflight.compatibility.profileRevision ?? "unknown"} is{" "}
                       {data.preflight.compatibility.origin === "operator-provided"
-                        ? "operator-provided setup data and cannot authorize Assist"
+                        ? "operator-provided compatibility data; source proof and Assist gates apply separately"
                         : "built into Sidekick"}
                       .
                     </>
@@ -500,8 +500,8 @@ export function SettingsPage({
                       : data.manager.source.tier === "reference-render"
                         ? "Reference render — operator-installed"
                         : data.manager.source.tier === "custom-observe"
-                          ? "Custom — read-only"
-                          : "Not recognized — read-only"}
+                          ? "Custom — external signing"
+                          : "Not recognized — external signing"}
                   </span>
                 </div>
                 <div className="statline">
@@ -518,7 +518,7 @@ export function SettingsPage({
                     <strong>
                       {data.manager.automationEligible
                         ? "Reference-manager Assist eligible."
-                        : "Read-only operation."}
+                        : "Observe mode; fixed external actions remain available when technically compatible."}
                     </strong>{" "}
                     {data.manager.automationEligibilityReason}
                   </div>

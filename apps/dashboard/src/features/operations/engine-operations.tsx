@@ -18,6 +18,7 @@ import {
   loadEngineStatus,
 } from "./engine-api.js";
 import { EngineJobReview } from "./engine-job-review.js";
+import { EngineWalletClaim } from "./engine-wallet-claim.js";
 import { engineJobBadgeState } from "./job-state.js";
 
 type SurfaceState = "loading" | "ready" | "unavailable" | "error";
@@ -58,7 +59,15 @@ function updateJobPage(page: EngineJobPage, job: EngineJobDetail): EngineJobPage
   };
 }
 
-export function EngineOperations({ token }: { token: string }) {
+export function EngineOperations({
+  chainId,
+  network,
+  token,
+}: {
+  chainId: number;
+  network: string;
+  token: string;
+}) {
   const [surface, setSurface] = useState<SurfaceState>("loading");
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [jobs, setJobs] = useState<EngineJobPage | null>(null);
@@ -434,13 +443,24 @@ export function EngineOperations({ token }: { token: string }) {
 
             <div className="card engine-detail-host">
               {selectedJob ? (
-                <EngineJobReview
-                  job={selectedJob}
-                  actionsEnabled={actionsEnabled}
-                  action={action === "approve" || action === "invalidate" ? action : null}
-                  onApprove={approve}
-                  onInvalidate={() => void invalidateApproval()}
-                />
+                <>
+                  <EngineJobReview
+                    job={selectedJob}
+                    actionsEnabled={actionsEnabled}
+                    action={action === "approve" || action === "invalidate" ? action : null}
+                    onApprove={approve}
+                    onInvalidate={() => void invalidateApproval()}
+                  />
+                  {status ? (
+                    <EngineWalletClaim
+                      chainId={chainId}
+                      job={selectedJob}
+                      network={network}
+                      status={status}
+                      token={token}
+                    />
+                  ) : null}
+                </>
               ) : (
                 <div className="engine-empty-detail">
                   <ShieldWarning />

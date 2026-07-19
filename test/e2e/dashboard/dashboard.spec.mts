@@ -112,6 +112,111 @@ function freshOnboardingResponse({
   };
 }
 
+function deployWalletIntent({
+  adminPrincipal,
+  source,
+  id = "4e011bf7-f291-42c4-a35b-ab299a87ff8c",
+}: {
+  adminPrincipal: string;
+  source: string;
+  id?: string;
+}) {
+  return {
+    intent: {
+      schemaVersion: 1,
+      id,
+      action: "deploy-manager",
+      network: "mainnet",
+      chainId: 1,
+      requiredSender: adminPrincipal,
+      createdAt: "2026-07-18T18:00:00.000Z",
+      expiresAt: "2099-07-18T19:00:00.000Z",
+      transaction: {
+        method: "stx_deployContract",
+        params: {
+          name: "signer-manager",
+          clarityCode: source,
+          clarityVersion: 6,
+          network: "mainnet",
+          address: adminPrincipal,
+          sponsored: false,
+          postConditionMode: "deny",
+          postConditions: [],
+        },
+      },
+      review: {
+        title: "Deploy the reviewed signer manager",
+        summary: `Deploy ${adminPrincipal}.signer-manager from ${adminPrincipal} using Clarity 6.`,
+        expectedPostState:
+          "The exact reviewed manager source is canonical and trusted by Sidekick.",
+      },
+      seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
+      status: "prepared",
+      txid: null,
+      verification: null,
+    },
+  };
+}
+
+function walletNetworkSnapshot(
+  network: "mainnet" | "testnet" | "devnet" | "regtest",
+  chainId: number,
+  managerPrincipal: string,
+) {
+  const value = structuredClone(snapshot);
+  value.network = network;
+  value.managerPrincipal = managerPrincipal;
+  value.preflight.node.networkId = chainId;
+  value.preflight.checks = value.preflight.checks.map((check) =>
+    check.id === "node-network" ? { ...check, message: `Node network matches ${network}` } : check,
+  );
+  return value;
+}
+
+function registerWalletIntent(actorPrincipal: string) {
+  return {
+    intent: {
+      schemaVersion: 2,
+      id: "6ed58dac-c42c-4cb5-ad02-ed50671f3d27",
+      action: "register-self",
+      network: "pox5-testnet",
+      chainId: 0x80000005,
+      requiredSender: actorPrincipal,
+      createdAt: "2026-07-18T18:00:00.000Z",
+      expiresAt: "2099-07-18T19:00:00.000Z",
+      transaction: {
+        method: "stx_callContract",
+        params: {
+          contract: snapshot.managerPrincipal,
+          functionName: "register-self",
+          functionArgs: ["0x01", "0x02", "0x03", "0x04"],
+          network: "pox5-testnet",
+          address: actorPrincipal,
+          sponsored: false,
+          postConditionMode: "deny",
+          postConditions: [],
+        },
+      },
+      request: { action: "register-self", actorPrincipal },
+      review: {
+        title: "Register the fresh signer authorization",
+        summary: "Register the independently verified signer grant.",
+        expectedPostState: "The exact signer key is registered and its PoX-5 grant is valid.",
+        fields: [
+          { label: "Signer key", value: `02${"12".repeat(32)}` },
+          { label: "Signer signature", value: "00".repeat(65) },
+          { label: "Manager", value: snapshot.managerPrincipal },
+          { label: "Authorization ID", value: "141" },
+        ],
+      },
+      seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
+      status: "prepared",
+      txid: null,
+      verification: null,
+    },
+  };
+}
+
 function finalVerificationOnboarding() {
   const complete = (id: string, title: string): FixtureStep => ({
     id,
@@ -272,7 +377,7 @@ test("renders every operator screen without leaking the credential", async ({ pa
     .evaluateAll((items) => items.map((item) => item.getAttribute("href")));
   expect(navigationTargets.slice(0, 6)).toEqual([
     "#overview",
-    "#registration",
+    "#manager",
     "#pool",
     "#rewards",
     "#operations",
@@ -280,7 +385,7 @@ test("renders every operator screen without leaking the credential", async ({ pa
   ]);
   const screens = [
     ["health", "Signer Health"],
-    ["registration", "Registration"],
+    ["manager", "Manager"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],
     ["operations", "Operations"],
@@ -482,8 +587,9 @@ test("required actions provide their resolving control and exclude informational
   const informationalAlert = {
     id: "manager:custom-read-only",
     severity: "info",
-    title: "Custom Manager — Read-only",
-    detail: "No action is required unless reference-manager Assist is intended.",
+    title: "Custom Manager",
+    detail:
+      "Monitoring and fixed external actions remain available. Reference-manager Assist is disabled.",
   };
   const actionSnapshot = {
     ...snapshot,
@@ -515,7 +621,7 @@ test("required actions provide their resolving control and exclude informational
   await expect(page.getByText("2 item(s) need attention")).toBeVisible();
   await expect(requiredActions.getByText("Reward Roster Is Incomplete")).toBeVisible();
   await expect(requiredActions.getByText("L1 Withdrawals Await Resolution")).toBeVisible();
-  await expect(requiredActions.getByText("Custom Manager — Read-only")).not.toBeVisible();
+  await expect(requiredActions.getByText("Custom Manager", { exact: true })).not.toBeVisible();
 
   await requiredActions.getByRole("button", { name: "Reconcile now" }).click();
   await expect.poll(() => syncRequests).toBe(1);
@@ -524,9 +630,76 @@ test("required actions provide their resolving control and exclude informational
   await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
 
   await openPage(page, "operations", "Operations");
-  const informationalRow = page.locator(".alert-row", { hasText: "Custom Manager — Read-only" });
+  const informationalRow = page.locator(".alert-row", { hasText: "Custom Manager" });
   await expect(informationalRow).toBeVisible();
   await expect(informationalRow.getByRole("button")).toHaveCount(0);
+});
+
+test("routes a proven signer-registration failure to Manager from every alert surface", async ({
+  page,
+}) => {
+  const signerFailure = {
+    ...structuredClone(snapshot),
+    registration: {
+      ...snapshot.registration,
+      registered: false,
+      signerKeyGrantValid: false,
+    },
+    setup: {
+      ...structuredClone(snapshot.setup),
+      status: "blocked",
+      checks: [
+        ...snapshot.setup.checks.filter(({ id }) => id !== "signer-registration"),
+        {
+          id: "signer-registration",
+          status: "fail",
+          message: "Manager does not have a verified PoX-5 signer registration",
+        },
+      ],
+    },
+    alerts: [
+      {
+        id: "setup:blocked",
+        severity: "critical",
+        title: "Pool Setup Is Blocked",
+        detail:
+          "Manager does not have a verified PoX-5 signer registration. Open Manager to prepare a fresh signer authorization and registration.",
+        action: {
+          kind: "navigate",
+          label: "Repair signer authorization",
+          target: "manager",
+          managerAction: "register-self",
+        },
+      },
+    ],
+  };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/status" ? signerFailure : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  const requiredActions = page.locator(".action-grid");
+  await expect(requiredActions).toContainText(
+    "Open Manager to prepare a fresh signer authorization",
+  );
+  await requiredActions.getByRole("button", { name: "Repair signer authorization" }).click();
+  await expect(page).toHaveURL(/#manager\?action=register-self$/);
+  await expect(
+    page.getByRole("heading", { name: "Repair or rotate signer authorization" }),
+  ).toBeVisible();
+
+  await openPage(page, "operations", "Operations");
+  const operationsAlert = page.locator(".alert-row", { hasText: "Pool Setup Is Blocked" });
+  await operationsAlert.getByRole("button", { name: "Repair signer authorization" }).click();
+  await expect(page).toHaveURL(/#manager\?action=register-self$/);
 });
 
 test("guides first-time operators to setup and remembers dismissal", async ({ page }) => {
@@ -643,9 +816,9 @@ test("refreshes signer health without declaring an empty JSON body", async ({ pa
   await expect(page.getByText(/Latest refresh failed/)).not.toBeVisible();
 });
 
-test("explains the manager trust tier on registration and settings", async ({ page }) => {
+test("explains the manager trust tier on Manager and Settings", async ({ page }) => {
   await login(page);
-  await openPage(page, "registration", "Registration");
+  await openPage(page, "manager", "Manager");
   await expect(page.getByText("Reference — built in")).toBeVisible();
   await expect(page.getByText("Built into Sidekick")).toBeVisible();
   const managerRow = page.locator(".statline", { hasText: "Manager principal" });
@@ -658,6 +831,121 @@ test("explains the manager trust tier on registration and settings", async ({ pa
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
   await expect(page.getByText(/revision 1 is built into Sidekick/)).toBeVisible();
+});
+
+test("deep-links reward administration and blocks manager-admin self-removal", async ({ page }) => {
+  const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await page.getByRole("button", { name: "Update manager fee" }).click();
+  await expect(page).toHaveURL(/#manager\?action=update-fees$/);
+  await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
+  await page.getByLabel("Signing manager admin").fill(adminPrincipal);
+  await page.getByLabel("New fee (basis points)").fill("250");
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+
+  await openPage(page, "rewards", "Rewards");
+  await page.getByRole("button", { name: "Withdraw earned fees" }).click();
+  await expect(page).toHaveURL(/#manager\?action=withdraw-fees$/);
+  await expect(page.getByRole("heading", { name: "Withdraw earned fees" })).toBeVisible();
+
+  await openPage(page, "rewards", "Rewards");
+  await page.getByRole("button", { name: "Sweep fee refunds" }).click();
+  await expect(page).toHaveURL(/#manager\?action=sweep-fee-refunds$/);
+  await expect(page.getByRole("heading", { name: "Sweep fee-refund dust" })).toBeVisible();
+
+  await page.evaluate(() => {
+    location.hash = "#manager?action=remove-admin";
+  });
+  await expect(page.getByRole("heading", { name: "Remove manager admin" })).toBeVisible();
+  await page.getByLabel("Signing manager admin").fill(adminPrincipal);
+  await page.getByLabel("Admin principal to remove").fill(adminPrincipal);
+  await expect(page.getByText("V1 does not allow an admin to remove itself.")).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+});
+
+test("requires a fresh signer grant before preparing a Testnet registration wallet request", async ({
+  page,
+}) => {
+  const actorPrincipal = snapshot.managerPrincipal.split(".")[0];
+  const preparation = {
+    command: "stacks-signer generate-stacking-signature --config /srv/signer/Signer.toml",
+    expectedMessageHashHex: "ab".repeat(32),
+    authId: "141",
+  };
+  const verified = {
+    managerPrincipal: snapshot.managerPrincipal,
+    authId: "141",
+    signerKeyHex: `02${"12".repeat(32)}`,
+    signerSignatureHex: "34".repeat(65),
+    expectedMessageHashHex: preparation.expectedMessageHashHex,
+    registerSelfCall: {
+      contract: snapshot.managerPrincipal,
+      functionName: "register-self",
+      arguments: ["0x01", "0x02", "0x03", "0x04"],
+      signingPrincipal: actorPrincipal,
+    },
+  };
+  const grantResponse = (withVerification: boolean) =>
+    freshOnboardingResponse({
+      currentStep: "verify-signer-grant",
+      steps: [],
+      preparation,
+      verified: withVerification ? verified : null,
+    }).onboarding;
+  let prepareBody: unknown = null;
+  let verifyBody: unknown = null;
+  let walletBody: unknown = null;
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/status") {
+      body = { ...structuredClone(snapshot), network: "testnet" };
+    } else if (request.pathname === "/api/v1/manager/signer-grant/prepare") {
+      prepareBody = route.request().postDataJSON();
+      body = { onboarding: grantResponse(false) };
+    } else if (request.pathname === "/api/v1/manager/signer-grant/verify") {
+      verifyBody = route.request().postDataJSON();
+      body = { onboarding: grantResponse(true) };
+    } else if (request.pathname === "/api/v1/wallet-intents") {
+      walletBody = route.request().postDataJSON();
+      body = registerWalletIntent(actorPrincipal);
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "manager", "Manager");
+  await page.getByRole("button", { name: "Review signer rotation" }).click();
+  await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+  await page.getByLabel("Authorization ID").fill("141");
+  await page.getByLabel("Signer configuration path").fill("/srv/signer/Signer.toml");
+  await page.getByRole("button", { name: "Generate signer command" }).click();
+  expect(prepareBody).toEqual({ authId: "141", signerConfigPath: "/srv/signer/Signer.toml" });
+  await expect(page.getByText(preparation.command)).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+
+  const signerOutput = { signerManager: snapshot.managerPrincipal, authId: "141" };
+  await page.getByLabel("JSON output from the signer command").fill(JSON.stringify(signerOutput));
+  await page.getByRole("button", { name: "Verify signer output" }).click();
+  expect(verifyBody).toEqual({ signerOutput });
+  await expect(page.getByText("Fresh signer grant verified.")).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+
+  await page.getByLabel("Signing manager admin").fill(actorPrincipal);
+  await expect(page.getByLabel("Browser wallet")).toContainText(
+    "testnet profile requires Leather's exact pox5-testnet custom-network key",
+  );
+  await page.getByRole("button", { name: "Review wallet transaction" }).click();
+  expect(walletBody).toEqual({ action: "register-self", actorPrincipal });
 });
 
 test("keeps desktop settings chrome visible while the form scrolls", async ({ page }) => {
@@ -772,7 +1060,7 @@ test("explains how to deploy a generated manager outside Sidekick", async ({ pag
   await expect(page.getByRole("heading", { name: "Deploy outside Sidekick" })).toBeVisible();
   await expect(page.getByText(/manifest records the values you must review/)).toBeVisible();
   await expect(page.getByText("signer-manager", { exact: true })).toBeVisible();
-  await expect(page.getByText("testnet", { exact: true })).toBeVisible();
+  await expect(page.locator(".deployment-target")).toContainText(/Network\s+testnet/);
   await expect(page.locator(".deployment-target")).toContainText("Clarity 6");
   await expect(page.getByRole("link", { name: /Explorer Sandbox/ })).toHaveAttribute(
     "href",
@@ -783,6 +1071,214 @@ test("explains how to deploy a generated manager outside Sidekick", async ({ pag
     "https://docs.stacks.co/clarinet/contract-deployment",
   );
   await expect(page.locator("body")).not.toContainText(credential);
+});
+
+test("shows the exact sealed mainnet deployment before browser-wallet signing", async ({
+  page,
+}) => {
+  const adminPrincipal = "SP000000000000000000002Q6VF78";
+  const managerPrincipal = `${adminPrincipal}.signer-manager`;
+  const exactSource = "(define-public (reviewed-ping)\n  (ok true))";
+  const onboardingResponse = freshOnboardingResponse({
+    currentStep: "deploy-manager",
+    steps: [
+      {
+        id: "deploy-manager",
+        status: "ready",
+        title: "Deploy manager",
+        detail: "Deploy the generated manager contract.",
+        command: null,
+      },
+    ],
+  });
+  if (!onboardingResponse.onboarding.artifact.manifest) {
+    throw new Error("Fresh onboarding fixture is missing its manager manifest");
+  }
+  onboardingResponse.onboarding.managerPrincipal = managerPrincipal;
+  onboardingResponse.onboarding.freshInput.adminPrincipal = adminPrincipal;
+  onboardingResponse.onboarding.artifact.manifest.network = "mainnet";
+  onboardingResponse.onboarding.artifact.manifest.adminPrincipal = adminPrincipal;
+  let createRequest: unknown = null;
+  let releaseIntentResponse: (() => void) | null = null;
+  const intentResponseReady = new Promise<void>((resolve) => {
+    releaseIntentResponse = resolve;
+  });
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/status") {
+      body = walletNetworkSnapshot("mainnet", 1, managerPrincipal);
+    } else if (request.pathname === "/api/v1/onboarding") {
+      body = onboardingResponse;
+    } else if (request.pathname === "/api/v1/onboarding/wallet-intents") {
+      createRequest = route.request().postDataJSON();
+      await intentResponseReady;
+      body = deployWalletIntent({ adminPrincipal, source: exactSource });
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  const walletReview = page.getByRole("region", { name: "Browser wallet" });
+  await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+  try {
+    await expect(walletReview).toHaveAttribute("aria-busy", "true");
+    await expect(walletReview.getByRole("status")).toHaveText("Preparing transaction review…");
+  } finally {
+    releaseIntentResponse?.();
+  }
+  await expect.poll(() => createRequest).toEqual({ action: "deploy-manager" });
+
+  await walletReview.getByText("Exact transaction payload", { exact: true }).click();
+  await expect(walletReview.getByText("Exact contract source", { exact: true })).toBeVisible();
+  await expect(walletReview.locator("pre", { hasText: exactSource })).toHaveText(exactSource);
+  await expect(walletReview).toContainText(/Post-condition mode\s+deny/i);
+  await expect(walletReview).toContainText(/Post-conditions\s+(?:none|empty)/i);
+  await expect(
+    walletReview.getByRole("button", { name: "Connect Leather and sign" }),
+  ).toBeVisible();
+});
+
+test("restores and records a wallet broadcast after reload without signing again", async ({
+  page,
+}) => {
+  const adminPrincipal = "SP000000000000000000002Q6VF78";
+  const exactSource = "(define-public (reviewed-ping) (ok true))";
+  const onboardingResponse = freshOnboardingResponse({
+    currentStep: "deploy-manager",
+    steps: [
+      {
+        id: "deploy-manager",
+        status: "ready",
+        title: "Deploy manager",
+        detail: "Deploy the generated manager contract.",
+        command: null,
+      },
+    ],
+  });
+  if (!onboardingResponse.onboarding.artifact.manifest) {
+    throw new Error("Fresh onboarding fixture is missing its manager manifest");
+  }
+  onboardingResponse.onboarding.managerPrincipal = `${adminPrincipal}.signer-manager`;
+  onboardingResponse.onboarding.freshInput.adminPrincipal = adminPrincipal;
+  onboardingResponse.onboarding.artifact.manifest.network = "mainnet";
+  onboardingResponse.onboarding.artifact.manifest.adminPrincipal = adminPrincipal;
+  const prepared = deployWalletIntent({ adminPrincipal, source: exactSource });
+  const replacement = deployWalletIntent({
+    adminPrincipal,
+    source: exactSource,
+    id: "9f4d2b32-0eed-4e7c-bf92-7217418d8248",
+  });
+  const txid = `0x${"ab".repeat(32)}`;
+  const pending = {
+    intentId: prepared.intent.id,
+    network: "mainnet",
+    chainId: 1,
+    managerPrincipal: `${adminPrincipal}.signer-manager`,
+    action: "deploy-manager",
+    txid,
+    sender: adminPrincipal,
+    providerId: "LeatherProvider",
+  };
+  const pendingKey = `signer-sidekick:browser-wallet:pending:v3:mainnet:00000001:${encodeURIComponent(pending.managerPrincipal)}:deploy-manager:${pending.intentId}`;
+  let submissions = 0;
+  let releaseSubmission: (() => void) | null = null;
+  const submissionReleased = new Promise<void>((resolve) => {
+    releaseSubmission = resolve;
+  });
+
+  await page.addInitScript(
+    ({ key, value }) => {
+      localStorage.setItem(key, JSON.stringify(value));
+    },
+    { key: pendingKey, value: pending },
+  );
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    let body: unknown;
+    if (request.pathname === "/api/v1/status") {
+      body = walletNetworkSnapshot("mainnet", 1, `${adminPrincipal}.signer-manager`);
+    } else if (request.pathname === "/api/v1/onboarding") {
+      body = onboardingResponse;
+    } else if (
+      request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}/submission`
+    ) {
+      submissions += 1;
+      expect(route.request().postDataJSON()).toEqual({ txid });
+      await submissionReleased;
+      body = { intent: { ...prepared.intent, status: "submitted", txid } };
+    } else if (request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}`) {
+      body = { intent: { ...prepared.intent, status: "expired" } };
+    } else if (
+      request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}/refresh`
+    ) {
+      body = {
+        intent: {
+          ...prepared.intent,
+          status: "failed",
+          txid,
+          verification: {
+            outcome: "abort",
+            observedAt: "2026-07-18T18:05:00.000Z",
+            canonical: true,
+            blockHeight: 9_001,
+            indexBlockHash: `0x${"ef".repeat(32)}`,
+            detail: "Canonical transaction abort by response",
+          },
+        },
+      };
+    } else if (
+      request.pathname === "/api/v1/onboarding/wallet-intents" &&
+      route.request().method() === "POST"
+    ) {
+      expect(route.request().postDataJSON()).toEqual({ action: "deploy-manager" });
+      body = replacement;
+    } else {
+      body = responseFor(route.request().url());
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "setup", "Initial Setup");
+  const walletReview = page.getByRole("region", { name: "Browser wallet" });
+  await expect.poll(() => submissions).toBe(1);
+  try {
+    await expect(
+      walletReview.getByRole("button", { name: "Clear saved recovery record" }),
+    ).toHaveCount(0);
+    await expect(walletReview.getByRole("button", { name: /sign/i })).toHaveCount(0);
+  } finally {
+    releaseSubmission?.();
+  }
+  await expect(walletReview).toContainText("Broadcast recorded");
+  await expect(walletReview).toContainText(txid);
+  await expect(walletReview.getByRole("button", { name: /sign/i })).toHaveCount(0);
+  await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), pendingKey)).toBeNull();
+
+  await walletReview.getByRole("button", { name: "Refresh verification" }).click();
+  await expect(
+    walletReview.getByRole("button", { name: "Review a new wallet transaction" }),
+  ).toBeVisible();
+  await walletReview.getByRole("button", { name: "Review a new wallet transaction" }).click();
+  await expect(
+    walletReview.getByRole("button", { name: "Connect Leather and sign" }),
+  ).toBeVisible();
+  await expect(walletReview).not.toContainText("The wallet reported a broadcast");
 });
 
 test("advances fresh setup after a transient deployment refresh failure", async ({ page }) => {
@@ -1033,10 +1529,12 @@ test("summarizes attach checks and explains external repair", async ({ page }) =
   await openPage(page, "setup", "Initial Setup");
   await expect(page.getByRole("button", { name: /Verify existing manager/ })).toHaveCount(1);
   await expect(page.getByText("Manager attached with operational blockers.")).toBeVisible();
-  await expect(
-    page.getByText(/Guided repair for an existing manager is not yet available/),
-  ).toBeVisible();
+  await expect(page.getByText(/Signer authorization needs repair/)).toBeVisible();
+  const repair = page.getByRole("button", { name: "Review repair ceremony" });
+  await expect(repair).toBeVisible();
   await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
+  await repair.click();
+  await expect(page).toHaveURL(/#manager\?action=register-self$/);
 });
 
 test("guides the signer grant ceremony from command generation through verification", async ({
@@ -1253,6 +1751,8 @@ test("makes each signer activation state explicit and actionable", async ({ page
 
 test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {
   let tier: "unrecognized" | "custom-observe" | "reference-render" = "unrecognized";
+  let compatibilityStatus: "matched" | "inconsistent" = "matched";
+  let automationEligible = false;
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const response = structuredClone(responseFor(route.request().url()));
@@ -1262,11 +1762,10 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
       status.manager.source.recognized = tier !== "unrecognized";
       status.manager.source.profileId = tier === "unrecognized" ? null : `operator-${tier}`;
       status.manager.source.origin = tier === "unrecognized" ? null : "operator-installed";
-      status.manager.automationEligible = tier === "reference-render";
-      status.manager.automationEligibilityReason =
-        tier === "reference-render"
-          ? "Pinned reference render and network approval verified"
-          : "Reference-manager Assist is disabled";
+      status.manager.automationEligible = automationEligible;
+      status.manager.automationEligibilityReason = automationEligible
+        ? "Pinned reference render and network approval verified"
+        : "Reference-manager Assist is disabled";
       status.manager.provenance.status =
         tier === "reference-render"
           ? "verified"
@@ -1279,6 +1778,11 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
         loaded: tier === "unrecognized" ? 0 : 1,
         issues: [],
       };
+      status.preflight.compatibility.status = compatibilityStatus;
+      status.preflight.compatibility.reason =
+        compatibilityStatus === "matched"
+          ? "Live network fingerprint matches PoX-5 Testnet"
+          : "No matching compatibility profile";
     }
     await route.fulfill({
       status: 200,
@@ -1288,20 +1792,53 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   });
 
   await login(page);
-  await openPage(page, "registration", "Registration");
-  await expect(page.getByText("Not recognized — read-only")).toBeVisible();
-  await expect(page.getByText(/Attach and all data display work normally/)).toBeVisible();
+  await openPage(page, "manager", "Manager");
+  await expect(page.getByText("Not recognized — external signing")).toBeVisible();
+  await expect(page.getByText("Unverified manager source.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await page.evaluate(() => {
+    location.hash = "#manager?action=update-fees";
+  });
+  await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
+  await expect(page.getByLabel("Signing manager admin")).toBeVisible();
 
   tier = "custom-observe";
   await page.reload();
-  await openPage(page, "registration", "Registration");
-  await expect(page.getByText("Custom — read-only")).toBeVisible();
+  await openPage(page, "manager", "Manager");
+  await expect(page.getByText("Custom — external signing")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await expect(page.getByText("Unverified manager source.").first()).toBeVisible();
 
   tier = "reference-render";
   await page.reload();
-  await openPage(page, "registration", "Registration");
+  await openPage(page, "manager", "Manager");
   await expect(page.getByText("Reference render — verified")).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
+  await expect(page.getByText("Not eligible for Assist", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await page.evaluate(() => {
+    location.hash = "#manager?action=update-fees";
+  });
+  await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
+  await expect(page.getByLabel("Signing manager admin")).toBeVisible();
+  await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.getByRole("button", { name: "Update manager fee" })).toBeEnabled();
+  await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
+  await expect(page.getByText("Unverified manager source.")).toHaveCount(0);
+
+  await openPage(page, "manager", "Manager");
+  automationEligible = true;
+  compatibilityStatus = "inconsistent";
+  await page.reload();
+  await page.evaluate(() => {
+    location.hash = "#manager?action=update-fees";
+  });
+  await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
+  await expect(page.getByLabel("Signing manager admin")).toBeVisible();
+  await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.getByRole("button", { name: "Update manager fee" })).toBeEnabled();
 });
 
 test("paginates and searches a pool with hundreds of stakers", async ({ page }) => {

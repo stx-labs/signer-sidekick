@@ -10,12 +10,17 @@ import {
   assertManagerRenderPreflight,
   buildManagerDeploymentArtifact,
   type ManagerDeploymentManifest,
+  managerDeploymentManifestSchema,
 } from "./manager-render.js";
 import type { ManagerVerificationContext } from "./manager-verification.js";
 import {
   compatibilityProfileByIdentity,
   loadNetworkCompatibilityProfiles,
 } from "./network-compatibility-store.js";
+import {
+  OnboardingWalletIntentService,
+  type WalletFreshState,
+} from "./onboarding-wallet-intent.js";
 import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { readSetupSnapshot } from "./setup-snapshot.js";
@@ -27,6 +32,7 @@ import {
   verifySignerGrantOutput,
 } from "./signer-grant.js";
 import type { SidekickStore } from "./storage/store.js";
+import type { ManagerClaimWalletAuthoritativeObservation } from "./transaction-engine/manager-claim-wallet-intent.js";
 
 const freshInputSchema = z
   .object({
@@ -40,14 +46,14 @@ const freshInputSchema = z
   })
   .strict();
 
-type FreshInput = z.infer<typeof freshInputSchema>;
-
-const managerManifestStorageSchema = z
+const managerSignerGrantInputSchema = z
   .object({
-    artifact: z.object({ sourceFile: z.string().min(1) }).passthrough(),
-    transaction: z.object({ contractName: z.string().min(1) }).passthrough(),
+    authId: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    signerConfigPath: z.string().trim().min(1).max(500).default("<SIGNER_CONFIG_PATH>"),
   })
-  .passthrough();
+  .strict();
+
+type FreshInput = z.infer<typeof freshInputSchema>;
 
 const signerGrantPreparationStorageSchema = z
   .object({
@@ -89,9 +95,7 @@ const persistedOnboardingDataSchema = z
     managerArtifact: z
       .object({
         source: z.string(),
-        manifest: z.custom<ManagerDeploymentManifest>(
-          (value) => managerManifestStorageSchema.safeParse(value).success,
-        ),
+        manifest: managerDeploymentManifestSchema,
       })
       .strict()
       .nullable(),
@@ -180,6 +184,8 @@ function planStatus(steps: ActivationPlan["steps"]): ActivationPlan["status"] {
 }
 
 export class OnboardingService {
+  readonly wallet: OnboardingWalletIntentService;
+
   constructor(
     private readonly options: {
       store: SidekickStore;
@@ -187,8 +193,44 @@ export class OnboardingService {
       managerPrincipal: string;
       contractsDirectory: string;
       managerVerification?: ManagerVerificationContext;
+      transactionEngineRequestedMode?: "observe" | "assist";
+      observeManagerClaimWalletJob?: (
+        jobId: string,
+      ) => Promise<ManagerClaimWalletAuthoritativeObservation>;
     },
-  ) {}
+  ) {
+    this.wallet = new OnboardingWalletIntentService({
+      store: options.store,
+      runtimeSettings: options.runtimeSettings,
+      ...(options.managerVerification ? { managerVerification: options.managerVerification } : {}),
+      ...(options.transactionEngineRequestedMode
+        ? { transactionEngineRequestedMode: options.transactionEngineRequestedMode }
+        : {}),
+      ...(options.observeManagerClaimWalletJob
+        ? { observeManagerClaimWalletJob: options.observeManagerClaimWalletJob }
+        : {}),
+      readFreshState: () => {
+        const { data } = this.readData("fresh");
+        return {
+          managerPrincipal: data.managerPrincipal,
+          freshInput: data.freshInput,
+          managerArtifact: data.managerArtifact,
+          signerGrant: data.signerGrant,
+        };
+      },
+      readWalletState: () => this.readWalletState(),
+    });
+  }
+
+  private readWalletState(): WalletFreshState {
+    const data = this.managerOperationData().data;
+    return {
+      managerPrincipal: data.managerPrincipal,
+      freshInput: data.freshInput,
+      managerArtifact: data.managerArtifact,
+      signerGrant: data.signerGrant,
+    };
+  }
 
   wizardState(): PublicOnboardingWizardState {
     const preference = this.options.store.getOnboardingWizardPreference();
@@ -445,6 +487,70 @@ export class OnboardingService {
     return this.getOrThrow();
   }
 
+  async prepareManagerSignerGrant(
+    input: unknown,
+    observedAt = new Date().toISOString(),
+  ): Promise<PublicOnboardingState> {
+    const value = managerSignerGrantInputSchema.parse(input);
+    const current = this.managerOperationData();
+    const data = current.data;
+    const { node, api, config } = this.options.runtimeSettings.clients();
+    const preflight = await runOperatorPreflight(config, node, api);
+    if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
+      throw new Error("Signer grant preparation requires healthy sources and active PoX-5");
+    }
+    const preparation = await prepareSignerGrant(
+      node,
+      preflight.pox.pox5ContractId,
+      data.managerPrincipal,
+      value.authId,
+      value.signerConfigPath,
+    );
+    this.save(
+      current.stored?.path ?? "attach",
+      current.stored?.currentStep ?? "preflight",
+      current.stored?.status ?? "in-progress",
+      {
+        ...data,
+        signerGrant: { preparation, verified: null },
+      },
+      observedAt,
+      "manager-grant-prepared",
+    );
+    return this.getOrThrow();
+  }
+
+  async verifyManagerSignerGrant(
+    signerOutput: unknown,
+    observedAt = new Date().toISOString(),
+  ): Promise<PublicOnboardingState> {
+    const { stored, data } = this.managerOperationData();
+    if (!stored) throw new Error("Prepare a fresh signer grant before verifying signer output");
+    const preparation = data.signerGrant.preparation;
+    if (!preparation)
+      throw new Error("Prepare a fresh signer grant before verifying signer output");
+    const { node } = this.options.runtimeSettings.clients();
+    const verified = await verifySignerGrantOutput(
+      node,
+      preparation.pox5ContractId,
+      data.managerPrincipal,
+      preparation.authId,
+      signerOutput,
+    );
+    this.save(
+      stored.path,
+      stored.currentStep,
+      stored.status,
+      {
+        ...data,
+        signerGrant: { preparation, verified },
+      },
+      observedAt,
+      "manager-grant-verified",
+    );
+    return this.getOrThrow();
+  }
+
   async refreshFresh(observedAt = new Date().toISOString()): Promise<FreshOnboardingRefresh> {
     const { data } = this.readData("fresh");
     if (!data.activationPlan) throw new Error("Prepare the fresh setup before refreshing it");
@@ -551,6 +657,30 @@ export class OnboardingService {
     const data = persistedOnboardingDataSchema.safeParse(stored.state);
     if (!data.success) throw new Error("Stored onboarding state is invalid; restart onboarding");
     return { stored, data: data.data };
+  }
+
+  private managerOperationData(): {
+    stored: ReturnType<SidekickStore["getOnboardingState"]>;
+    data: PersistedOnboardingData;
+  } {
+    const stored = this.options.store.getOnboardingState();
+    if (!stored) return { stored: null, data: this.minimalAttachData() };
+    const current = this.readData();
+    if (current.data.managerPrincipal !== this.options.managerPrincipal) {
+      return { stored: null, data: this.minimalAttachData() };
+    }
+    return current;
+  }
+
+  private minimalAttachData(): PersistedOnboardingData {
+    return {
+      schemaVersion: 1,
+      managerPrincipal: this.options.managerPrincipal,
+      activationPlan: null,
+      freshInput: null,
+      managerArtifact: null,
+      signerGrant: { preparation: null, verified: null },
+    };
   }
 
   private save(

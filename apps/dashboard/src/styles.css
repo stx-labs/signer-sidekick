@@ -909,8 +909,256 @@
   margin-bottom: var(--space-3);
 }
 
+.browser-wallet-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.browser-wallet-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.browser-wallet-heading p,
+.wallet-intent-review p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wallet-intent-review,
+.wallet-intent-seals {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.wallet-intent-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.wallet-intent-fields > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-secondary);
+}
+
+.wallet-intent-fields dt {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.wallet-intent-fields dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.wallet-intent-payload {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.wallet-intent-payload strong {
+  margin-right: 0.35rem;
+}
+
+.wallet-intent-payload pre {
+  margin-top: 0.45rem;
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.wallet-intent-payload ol {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.45rem 0 0;
+  padding-left: 1.5rem;
+}
+
+.wallet-intent-seals {
+  margin-top: var(--space-3);
+}
+
+.wallet-recovery-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.wallet-recovery-record {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  background: var(--surface-primary);
+}
+
+.wallet-recovery-record p {
+  margin: 0;
+}
+
+.manager-required-state,
+.manager-status-grid,
+.manager-action-grid,
+.manager-action-workspace {
+  margin-bottom: var(--space-5);
+}
+
+.manager-action-workspace {
+  display: grid;
+  gap: var(--space-4);
+  scroll-margin-top: 72px;
+}
+
+.manager-action-workspace > .card-head {
+  align-items: flex-start;
+}
+
+.manager-action-workspace .eyebrow,
+.manager-action-workspace h2,
+.manager-action-workspace .card-head p {
+  margin: 0;
+}
+
+.manager-action-detail {
+  max-width: 720px;
+  margin-top: var(--space-1);
+}
+
+.manager-action-form {
+  max-width: 760px;
+}
+
+.manager-actor-form {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.manager-repair-ceremony {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.manager-ceremony-step {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+}
+
+.manager-step-heading {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.manager-step-heading > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface-primary);
+  font-weight: 700;
+}
+
+.manager-step-heading h3,
+.manager-step-heading p {
+  margin: 0;
+}
+
+.manager-step-heading p {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.manager-repair-ceremony .ceremony-steps .copyable-identifier {
+  margin-top: var(--space-1);
+}
+
+.manager-action-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.manager-action-card:hover:not(:disabled),
+.manager-action-card:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.manager-action-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.manager-action-card > svg:first-child {
+  width: 24px;
+  height: 24px;
+  color: var(--accent-text);
+}
+
+.manager-action-card > svg:last-child {
+  width: 18px;
+  height: 18px;
+  color: var(--text-tertiary);
+}
+
+.manager-action-card span {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.manager-action-card small,
+.manager-manual-path p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.manager-manual-path {
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-secondary);
+}
+
+.manager-manual-path p {
+  margin: var(--space-1) 0 0;
+}
+
+.reward-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
 @media (max-width: 720px) {
-  .deployment-options {
+  .deployment-options,
+  .wallet-intent-fields {
     grid-template-columns: 1fr;
   }
 }
@@ -1284,6 +1532,19 @@
 .engine-job-list,
 .engine-detail-host {
   min-width: 0;
+}
+
+.engine-wallet-claim {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-secondary);
+}
+
+.engine-wallet-claim h3,
+.engine-wallet-claim p {
+  margin: 0;
 }
 
 .engine-job-list {

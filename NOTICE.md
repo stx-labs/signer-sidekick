@@ -13,6 +13,9 @@ Matter and Matter Mono redistribution for this project has been confirmed by Sta
 Instrument Sans and Open Sauce Sans are distributed under the SIL Open Font License 1.1; their
 copyright notices and the license text are included in `design/fonts/OFL-1.1.txt`.
 
+License terms and notices for bundled production dependencies are generated deterministically during
+release builds and included as `THIRD_PARTY_LICENSES.txt` in every published container image.
+
 For every published container image, the release build must pass the signed Git commit as
 `--build-arg VCS_REF=<commit>`. The image tag and resulting OCI revision label identify the exact
 commit containing its corresponding source. Release notes must link that signed commit and include

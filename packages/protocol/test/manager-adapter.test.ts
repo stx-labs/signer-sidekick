@@ -49,7 +49,7 @@ describe("reference manager source recognition", () => {
     });
   });
 
-  it("recognizes the rendered regtest artifact used by the lifecycle harness", async () => {
+  it("allows the rendered regtest artifact without production approval", async () => {
     const source = await readFile(
       resolve(root, "contracts/reference-manager/generated/regtest/signer-manager.clar"),
       "utf8",
@@ -59,7 +59,7 @@ describe("reference manager source recognition", () => {
     expect(adapter.recognizeSource(source)).toMatchObject({
       match: "exact",
       profileId: REGTEST_REFERENCE_MANAGER.profile.id,
-      automationAllowed: false,
+      automationAllowed: true,
     });
   });
 

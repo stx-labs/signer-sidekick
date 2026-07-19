@@ -23,6 +23,10 @@ Runtime configuration accepts only these modes:
 Observe is the default and needs no engine key or attestation files. Assist follows the rollout gates
 below; V1 has no Automate switch.
 
+Observe may hand an existing preflighted job to the external wallet-intent boundary. This does not
+enable engine signing or broadcast: the job is not replanned and never enters approval, nonce, or
+attempt state. The engine completes it only through normal reconciliation of the external effect.
+
 ## Authority and key boundary
 
 Sidekick may use one dedicated, low-balance gas-payer key for the fixed permissionless call. It must
@@ -63,6 +67,10 @@ against the configured instance before changing durable accepted state.
 
 Profiles and attestations are data. They cannot install an adapter, change executable call
 semantics, relax postconditions, or grant generic transaction authority.
+
+Assist requires an exact reference source/profile on every network. A production-approved manager
+profile is an additional mainnet-only gate; non-mainnet Assist still requires the attestation,
+approval, and admission checks in this document.
 
 ## Reference-manager reward claim
 
@@ -165,7 +173,7 @@ The authenticated Operations surface and `/api/v1/engine` API expose engine stat
 approvals, attempts, txids, and reconciliation evidence.
 
 - **Force Observe** is a persistent, one-way emergency control for that database. It invalidates
-  active approvals and prevents new signing and broadcasts across all adapters.
+  active approvals and prevents new signing, broadcasts, and Sidekick-initiated wallet claims.
 - **Disable adapter** is a persistent, one-way circuit breaker for the selected adapter. It
   invalidates that adapter's approvals and prevents new jobs and broadcasts.
 - **Invalidate approval** withdraws only that exact approval and cannot restore it.
@@ -173,10 +181,14 @@ approvals, attempts, txids, and reconciliation evidence.
 These controls do not erase an in-flight attempt. Observation and reconciliation continue because
 abandoning a submitted nonce would make recovery less safe.
 
+Wallet-intent expiry and Force Observe cannot revoke a request already disclosed to an external
+signer or cancel its broadcast. Sidekick therefore records matching late txids and reconciles their
+effects without granting new signing authority.
+
 ## Rollout gates
 
-Complete these gates in order. Production Assist is permitted only after all seven; before then,
-broadcasts are limited to the explicitly reviewed canaries in gates 4 and 7.
+Complete these gates in order. Mainnet Assist is permitted only after all seven. Public-network
+broadcasts before then are limited to the explicitly reviewed canaries in gates 4 and 7.
 
 1. Record owners and accepted answers for the broadcast-critical items in
    [Open technical questions](open-technical-questions.md), including trust-root governance,

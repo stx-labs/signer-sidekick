@@ -1,15 +1,18 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { migrations } from "./migrations.js";
 import {
   backupSidekickDatabase,
   createChainSourceId,
   createNodeSourceId,
   openSidekickStore,
-  type SidekickStore,
+  SidekickStore,
 } from "./store.js";
+import { canonicalJsonSha256 } from "./wallet-intent-repository.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const later = "2026-07-14T12:01:00.000Z";
@@ -68,6 +71,8 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE browser_wallet_intent_observations;
+    DROP TABLE browser_wallet_intents;
     DROP TABLE engine_force_observe_control;
     DROP TABLE engine_adapter_disable_controls;
     DROP TABLE transaction_reconciliation_observations;
@@ -81,6 +86,33 @@ function revertMigration14(database: DatabaseSync): void {
     DELETE FROM schema_migrations WHERE version >= 14;
     PRAGMA user_version = 13;
   `);
+}
+
+function createDatabaseThroughMigration(path: string, version: number): SidekickStore {
+  const database = new DatabaseSync(path);
+  database.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    ) STRICT;
+  `);
+  const insert = database.prepare(
+    "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+  );
+  for (const migration of migrations.filter((candidate) => candidate.version <= version)) {
+    database.exec("BEGIN IMMEDIATE");
+    database.exec(migration.sql);
+    const checksum = createHash("sha256")
+      .update(`${migration.version}\n${migration.name}\n${migration.sql}`)
+      .digest("hex");
+    insert.run(migration.version, migration.name, checksum, observedAt);
+    database.exec(`PRAGMA user_version = ${migration.version}`);
+    database.exec("COMMIT");
+  }
+  return new SidekickStore(database);
 }
 
 afterEach(async () => {
@@ -200,7 +232,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 15,
+      schemaVersion: 17,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -861,13 +893,13 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 15,
+      schemaVersion: 17,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migrations 14 and 15 once", async () => {
+  it("upgrades a persisted migration 13 database through migration 17 once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -887,7 +919,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -905,6 +937,12 @@ describe("Sidekick SQLite store", () => {
       inspection.prepare("SELECT name FROM schema_migrations WHERE version = 15").get(),
     ).toEqual({ name: "reusable_resolved_gas_payer_nonces" });
     expect(
+      inspection.prepare("SELECT name FROM schema_migrations WHERE version = 16").get(),
+    ).toEqual({ name: "browser_wallet_intents" });
+    expect(
+      inspection.prepare("SELECT name FROM schema_migrations WHERE version = 17").get(),
+    ).toEqual({ name: "browser_wallet_manager_actions" });
+    expect(
       inspection.prepare("SELECT name FROM sqlite_master WHERE name = 'transaction_jobs'").get(),
     ).toEqual({ name: "transaction_jobs" });
     expect(
@@ -913,6 +951,98 @@ describe("Sidekick SQLite store", () => {
         .get("chain_anchor_json"),
     ).toEqual({ name: "chain_anchor_json" });
     inspection.close();
+  });
+
+  it("preserves an active V1 wallet intent and observation from migration 16", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v16-wallet-upgrade-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const version16 = createDatabaseThroughMigration(path, 16);
+    const intentId = "10000000-0000-4000-8000-000000000016";
+    const observationId = "20000000-0000-4000-8000-000000000016";
+    const factsSha256 = "44".repeat(32);
+    const manifest = {
+      schemaVersion: 1,
+      id: intentId,
+      action: "deploy-manager" as const,
+      network: "mainnet" as const,
+      chainId: 1,
+      requiredSender: stakerOne,
+      createdAt: observedAt,
+      expiresAt: "2026-07-14T13:00:00.000Z",
+      transaction: {
+        method: "stx_deployContract" as const,
+        params: {
+          name: "signer-manager",
+          clarityCode: "(define-public (ping) (ok true))",
+          clarityVersion: 6 as const,
+          network: "mainnet" as const,
+          address: stakerOne,
+          sponsored: false as const,
+          postConditionMode: "deny" as const,
+          postConditions: [] as [],
+        },
+      },
+      review: {
+        title: "Deploy signer manager",
+        summary: "Deploy the reviewed manager source.",
+        expectedPostState: "The exact manager source is canonical.",
+      },
+      seal: { factsSha256 },
+    };
+    const manifestSha256 = canonicalJsonSha256(manifest);
+    version16.walletIntents.create({
+      id: intentId,
+      action: "deploy-manager",
+      scope: manager,
+      factsSha256,
+      manifestSha256,
+      manifest,
+      requiredSender: stakerOne,
+      network: "mainnet",
+      chainId: 1,
+      createdAt: observedAt,
+      expiresAt: manifest.expiresAt,
+    });
+    version16.walletIntents.submit({ id: intentId, txid: txId, submittedAt: later });
+    const evidence = {
+      schemaVersion: 1,
+      verification: {
+        outcome: "submitted",
+        observedAt: later,
+        canonical: null,
+        blockHeight: null,
+        indexBlockHash: null,
+        detail: "Wallet transaction recorded",
+      },
+      decoded: null,
+    };
+    version16.walletIntents.appendObservation({
+      id: observationId,
+      intentId,
+      outcome: "submitted",
+      canonical: null,
+      blockHeight: null,
+      indexBlockHash: null,
+      evidence,
+      observedAt: later,
+    });
+    version16.close();
+
+    const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
+    openStores.push(upgraded.store);
+    expect(upgraded.backupPath).not.toBeNull();
+    expect(upgraded.store.schemaVersion()).toBe(17);
+    expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
+      id: intentId,
+      state: "submitted",
+      txid: txId,
+      manifestSha256,
+      manifest,
+    });
+    expect(upgraded.store.walletIntents.listObservations(intentId)).toEqual([
+      expect.objectContaining({ id: observationId, outcome: "submitted", evidence }),
+    ]);
   });
 
   it("upgrades migration 14 nonce history without losing attempts or foreign keys", async () => {
@@ -959,7 +1089,9 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
-      DELETE FROM schema_migrations WHERE version = 15;
+      DROP TABLE browser_wallet_intent_observations;
+      DROP TABLE browser_wallet_intents;
+      DELETE FROM schema_migrations WHERE version >= 15;
       PRAGMA user_version = 14;
     `);
     version14.close();
@@ -967,7 +1099,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1118,7 +1250,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(15);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(17);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
