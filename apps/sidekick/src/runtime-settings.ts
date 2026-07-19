@@ -3,6 +3,7 @@ import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
 import { validateHealthEndpointForSave } from "./health-http.js";
 import { runOperatorPreflight } from "./preflight.js";
+import { currentInteractiveRequestSignal } from "./request-context.js";
 import type { SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -287,6 +288,8 @@ export class RuntimeSettingsController {
     input: unknown,
     observedAt = new Date().toISOString(),
   ): Promise<PublicRuntimeSettings> {
+    const requestSignal = currentInteractiveRequestSignal();
+    requestSignal?.throwIfAborted();
     const parsed = runtimeSettingsUpdateSchema.safeParse(input);
     if (!parsed.success) {
       throw new OperatorWorkflowError(
@@ -311,18 +314,24 @@ export class RuntimeSettingsController {
       );
     }
     const nodeMetricsUrl = value.dataSources.nodeMetricsUrl
-      ? await validateHealthEndpointForSave(value.dataSources.nodeMetricsUrl, "Node metrics URL")
+      ? await validateHealthEndpointForSave(
+          value.dataSources.nodeMetricsUrl,
+          "Node metrics URL",
+          requestSignal,
+        )
       : "";
     const signerMonitoringUrl = value.dataSources.signerMonitoringUrl
       ? await validateHealthEndpointForSave(
           value.dataSources.signerMonitoringUrl,
           "Signer monitoring URL",
+          requestSignal,
         )
       : "";
     const hiroReferenceApiUrl = value.dataSources.hiroReferenceApiUrl
       ? await validateHealthEndpointForSave(
           value.dataSources.hiroReferenceApiUrl,
           "Hiro reference API URL",
+          requestSignal,
         )
       : "";
     const action = value.dataSources.apiKeyAction;
@@ -366,6 +375,7 @@ export class RuntimeSettingsController {
         ),
       );
     }
+    requestSignal?.throwIfAborted();
     const stored = this.store.putRuntimeSettings({
       settings: next,
       apiKeySecret: nextSecret,

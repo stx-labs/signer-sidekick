@@ -419,15 +419,20 @@ export async function syncSignerStakers(
   if (sealedRun && !sealedRun.chainAnchor) {
     throw new Error(`Sealed signer-staker API roster ${sealedRun.runId} has no chain anchor`);
   }
+  const reconciliationAnchor = sealedRun?.chainAnchor ?? options.chainAnchor;
+  if (reconciliationAnchor && (!options.api.getStatus || !options.api.getBlock)) {
+    throw new SignerStakerAnchorError(
+      "Anchored signer-staker synchronization requires API status and block lookup",
+    );
+  }
   const initialRun = options.store.startOrResumeSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
     options.observedAt,
-    sealedRun?.chainAnchor ?? options.chainAnchor,
+    reconciliationAnchor,
   );
   const resumed = initialRun.pagesProcessed > 0;
   let run = initialRun;
-  const reconciliationAnchor = run.chainAnchor ?? options.chainAnchor;
   const reconciliationBurnBlockHeight =
     reconciliationAnchor?.burnBlockHeight ?? options.burnBlockHeight;
   const reconciliationStacksTipHeight =

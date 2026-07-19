@@ -6,6 +6,7 @@ import {
   validateHealthEndpointForSave,
   validateHealthEndpointUrl,
 } from "./health-http.js";
+import { InteractiveRequestCancelledError } from "./request-context.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -39,6 +40,18 @@ describe("health endpoint safety", () => {
     ).rejects.toMatchObject({
       code: "unsafe-address",
     });
+  });
+
+  it("stops save validation when the operator request is cancelled", async () => {
+    const controller = new AbortController();
+    const validation = validateHealthEndpointForSave(
+      "http://127.0.0.1:9153",
+      "Node metrics URL",
+      controller.signal,
+    );
+    controller.abort(new InteractiveRequestCancelledError());
+
+    await expect(validation).rejects.toBeInstanceOf(InteractiveRequestCancelledError);
   });
 
   it("pins an allowed address and bounds the response", async () => {

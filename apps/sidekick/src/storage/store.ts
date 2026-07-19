@@ -2725,18 +2725,6 @@ export class SidekickStore {
     });
   }
 
-  listSignerStakerPrincipalsSeenInRun(runId: string): string[] {
-    const parsedRunId = z.string().uuid().parse(runId);
-    const rows = this.db
-      .prepare(
-        `SELECT staker_principal FROM stakers
-         WHERE last_seen_run_id = ?
-         ORDER BY staker_principal`,
-      )
-      .all(parsedRunId) as Array<{ staker_principal: unknown }>;
-    return rows.map((row) => principalSchema.parse(row.staker_principal));
-  }
-
   listStakerPositionObservations(
     managerPrincipal: string,
     stakerPrincipal: string,

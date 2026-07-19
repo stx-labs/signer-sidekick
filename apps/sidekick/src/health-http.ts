@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { parseEndpointUrl } from "./config.js";
+import { currentInteractiveRequestSignal } from "./request-context.js";
 
 const MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -83,7 +84,9 @@ export function validateHealthEndpointUrl(value: string, name = "Health endpoint
 async function resolveAllowedAddress(
   url: URL,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<{ address: string; family: 4 | 6 }> {
+  signal?.throwIfAborted();
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   if (isIP(hostname)) {
     if (isDeniedHealthAddress(hostname)) {
@@ -96,8 +99,9 @@ async function resolveAllowedAddress(
   }
   let addresses: LookupAddress[];
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
   try {
-    addresses = await Promise.race([
+    const candidates: Array<Promise<LookupAddress[]>> = [
       lookup(hostname, { all: true, verbatim: true }),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(
@@ -106,15 +110,27 @@ async function resolveAllowedAddress(
         );
         timeout.unref?.();
       }),
-    ]);
+    ];
+    if (signal) {
+      candidates.push(
+        new Promise<never>((_resolve, reject) => {
+          cancel = () => reject(signal.reason);
+          signal.addEventListener("abort", cancel, { once: true });
+        }),
+      );
+    }
+    addresses = await Promise.race(candidates);
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof HealthSourceError) throw error;
     throw new HealthSourceError("dns-unavailable", "Health endpoint DNS is unavailable", {
       cause: error,
     });
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (cancel) signal?.removeEventListener("abort", cancel);
   }
+  signal?.throwIfAborted();
   if (addresses.length === 0) {
     throw new HealthSourceError("dns-unavailable", "Health endpoint DNS returned no addresses");
   }
@@ -138,14 +154,18 @@ async function resolveAllowedAddress(
 export async function validateHealthEndpointForSave(
   value: string,
   name = "Health endpoint URL",
+  signal = currentInteractiveRequestSignal(),
 ): Promise<string> {
+  signal?.throwIfAborted();
   const normalized = validateHealthEndpointUrl(value, name);
   try {
-    await resolveAllowedAddress(new URL(normalized));
+    await resolveAllowedAddress(new URL(normalized), DEFAULT_TIMEOUT_MS, signal);
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof HealthSourceError && error.code === "dns-unavailable") return normalized;
     throw error;
   }
+  signal?.throwIfAborted();
   return normalized;
 }
 

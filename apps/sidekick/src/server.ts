@@ -48,6 +48,7 @@ import {
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
 import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
+import type { OperatorSynchronizationProgress } from "./operator-service.js";
 import {
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
@@ -86,13 +87,6 @@ interface OperatorSnapshotShape {
   roster?: RosterRow[];
   activity?: { withdrawals?: unknown[] };
   alerts?: unknown[];
-}
-
-interface OperatorSynchronizationProgress {
-  phase: "stakers-discovery" | "stakers-verification" | "events";
-  completed: number;
-  total: number | null;
-  message?: string;
 }
 
 interface OperatorSnapshotService {

@@ -657,6 +657,25 @@ describe("signer-staker synchronization", () => {
     expect(api.getSignerStakers).not.toHaveBeenCalled();
   });
 
+  it("rejects an anchored sync without block lookup before discovery or persistence", async () => {
+    const sidekickStore = await store();
+    const getSignerStakers = vi.fn();
+    const startRun = vi.spyOn(sidekickStore, "startOrResumeSignerStakerRun");
+    const base = options(sidekickStore, { getSignerStakers }, { callReadOnly: vi.fn() });
+
+    const result = syncSignerStakers({
+      ...base,
+      api: { getSignerStakers, getStatus: vi.fn().mockResolvedValue(apiStatus()) },
+    });
+
+    await expect(result).rejects.toBeInstanceOf(SignerStakerAnchorError);
+    await expect(result).rejects.toThrow(
+      "Anchored signer-staker synchronization requires API status and block lookup",
+    );
+    expect(getSignerStakers).not.toHaveBeenCalled();
+    expect(startRun).not.toHaveBeenCalled();
+  });
+
   it("preserves the API receiver for class methods and accepts normalized hash casing", async () => {
     const sidekickStore = await store();
     class StatefulApi {
