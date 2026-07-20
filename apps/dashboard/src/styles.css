@@ -101,6 +101,16 @@
   min-width: 0;
 }
 
+.app-status-banner {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+}
+
+.app-status-banner .body {
+  display: grid;
+  gap: var(--space-1);
+}
+
 .copyable-identifier,
 .copyable-input {
   display: inline-flex;
@@ -226,7 +236,7 @@
 
 .cycle-clock > * {
   min-width: 0;
-  padding: 14px 18px;
+  padding: var(--space-4) var(--space-5);
   border-right: 1px solid var(--border-secondary);
 }
 

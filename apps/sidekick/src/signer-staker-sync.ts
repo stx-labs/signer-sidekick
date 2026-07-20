@@ -328,7 +328,7 @@ function blockMatchesAnchor(block: StacksBlockSummary, anchor: ChainAnchor): boo
   );
 }
 
-async function proveSealedAnchorRemainsCanonical(
+export async function proveSignerStakerAnchorRemainsCanonical(
   api: Required<Pick<SignerStakerApi, "getStatus" | "getBlock">>,
   anchor: ChainAnchor,
   signal?: AbortSignal,
@@ -626,7 +626,7 @@ export async function syncSignerStakers(
       );
     }
     try {
-      await proveSealedAnchorRemainsCanonical(
+      await proveSignerStakerAnchorRemainsCanonical(
         {
           getStatus: () => options.api.getStatus?.() as Promise<ApiStatus>,
           getBlock: (height) => options.api.getBlock?.(height) as Promise<StacksBlockSummary>,

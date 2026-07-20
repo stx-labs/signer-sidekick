@@ -598,58 +598,54 @@ function App() {
         </div>
         <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
           {syncOperation?.status === "running" ? (
-            <div className="callout callout-info" role="status" aria-live="polite">
+            <div
+              className="callout callout-info app-status-banner"
+              role="status"
+              aria-live="polite"
+            >
               <ArrowClockwise className="ic spin" />
               <div className="body">
                 <strong>Syncing chain data</strong>
-                <br />
-                {syncOperation.progress.message} · step {syncOperation.progress.completedSteps + 1}
-                of {syncOperation.progress.totalSteps}
-                {syncOperation.progress.itemsCompleted !== null ? (
-                  <>
-                    {" "}
-                    · {number(syncOperation.progress.itemsCompleted)}
-                    {syncOperation.progress.itemsTotal !== null
-                      ? ` of ${number(syncOperation.progress.itemsTotal)}`
-                      : ""}{" "}
-                    items
-                  </>
-                ) : null}
+                <span>
+                  {syncOperation.progress.message} · step
+                  {` ${syncOperation.progress.completedSteps + 1} of ${syncOperation.progress.totalSteps}`}
+                  {syncOperation.progress.itemsCompleted !== null
+                    ? ` · ${number(syncOperation.progress.itemsCompleted)}${
+                        syncOperation.progress.itemsTotal !== null
+                          ? ` of ${number(syncOperation.progress.itemsTotal)}`
+                          : ""
+                      } items`
+                    : ""}
+                </span>
               </div>
             </div>
           ) : null}
           {syncOperation?.status === "failed" && !syncError ? (
-            <div className="callout callout-critical" role="alert">
+            <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
                 <strong>Chain data sync failed</strong>
-                <br />
-                {syncOperationError(syncOperation)}
+                <span>{syncOperationError(syncOperation)}</span>
               </div>
             </div>
           ) : null}
           {syncError ? (
-            <div className="callout callout-critical" role="alert">
+            <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
                 <strong>Chain data sync needs attention</strong>
-                <br />
-                {syncError}
+                <span>{syncError}</span>
               </div>
             </div>
           ) : null}
           {statusError ? (
-            <div className="callout callout-critical error-banner">
+            <div className="callout callout-critical app-status-banner error-banner">
               <WarningCircle className="ic" />
               <div className="body">
                 <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>
-                <br />
-                {statusError}
+                <span>{statusError}</span>
                 {data ? (
-                  <>
-                    <br />
-                    Showing data from {new Date(data.generatedAt).toLocaleString()}.
-                  </>
+                  <span>Showing data from {new Date(data.generatedAt).toLocaleString()}.</span>
                 ) : null}
                 <div className="actions">
                   <button

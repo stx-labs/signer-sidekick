@@ -3,7 +3,7 @@ import type { ChainAnchor } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
-import { OperatorService } from "./operator-service.js";
+import { OperatorService, resolveRosterProjectionAnchor } from "./operator-service.js";
 import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import {
   SignerStakerAnchorError,
@@ -179,5 +179,84 @@ describe("OperatorService synchronization anchor retries", () => {
     expect(readSetupSnapshot).toHaveBeenCalledTimes(1);
     expect(syncSignerStakers).toHaveBeenCalledTimes(1);
     expect(syncManagerEvents).not.toHaveBeenCalled();
+  });
+});
+
+describe("roster projection anchor selection", () => {
+  it("keeps a completed pinned roster when the live tip advances normally", async () => {
+    const pinnedAnchor = anchor(100, 200);
+    const liveAnchor = anchor(101, 200);
+    const status = {
+      chain_tip: {
+        block_height: liveAnchor.stacksBlockHeight,
+        block_hash: `0x${"aa".repeat(32)}`,
+        index_block_hash: liveAnchor.indexBlockHash,
+        burn_block_height: liveAnchor.burnBlockHeight,
+      },
+    };
+    const api = {
+      getStatus: vi.fn().mockResolvedValue(status),
+      getBlock: vi.fn().mockResolvedValue({
+        canonical: true,
+        height: pinnedAnchor.stacksBlockHeight,
+        index_block_hash: pinnedAnchor.indexBlockHash,
+        burn_block_height: pinnedAnchor.burnBlockHeight,
+      }),
+    } as unknown as Pick<StacksApiClient, "getStatus" | "getBlock">;
+    const store = {
+      getLatestCompletedSignerStakerRun: vi.fn().mockReturnValue({
+        authoritative: true,
+        chainAnchor: pinnedAnchor,
+      }),
+    } as unknown as Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
+
+    await expect(
+      resolveRosterProjectionAnchor({
+        store,
+        api,
+        sourceId: "api:testnet:source",
+        managerPrincipal,
+        liveAnchor,
+      }),
+    ).resolves.toEqual(pinnedAnchor);
+    expect(api.getBlock).toHaveBeenCalledWith(pinnedAnchor.stacksBlockHeight);
+  });
+
+  it("discards a completed roster whose pinned block was reorged", async () => {
+    const pinnedAnchor = anchor(100, 200);
+    const liveAnchor = anchor(101, 200);
+    const status = {
+      chain_tip: {
+        block_height: liveAnchor.stacksBlockHeight,
+        block_hash: `0x${"aa".repeat(32)}`,
+        index_block_hash: liveAnchor.indexBlockHash,
+        burn_block_height: liveAnchor.burnBlockHeight,
+      },
+    };
+    const api = {
+      getStatus: vi.fn().mockResolvedValue(status),
+      getBlock: vi.fn().mockResolvedValue({
+        canonical: true,
+        height: pinnedAnchor.stacksBlockHeight,
+        index_block_hash: `0x${"ff".repeat(32)}`,
+        burn_block_height: pinnedAnchor.burnBlockHeight,
+      }),
+    } as unknown as Pick<StacksApiClient, "getStatus" | "getBlock">;
+    const store = {
+      getLatestCompletedSignerStakerRun: vi.fn().mockReturnValue({
+        authoritative: true,
+        chainAnchor: pinnedAnchor,
+      }),
+    } as unknown as Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
+
+    await expect(
+      resolveRosterProjectionAnchor({
+        store,
+        api,
+        sourceId: "api:testnet:source",
+        managerPrincipal,
+        liveAnchor,
+      }),
+    ).resolves.toEqual(liveAnchor);
   });
 });

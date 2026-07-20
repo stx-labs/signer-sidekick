@@ -833,6 +833,7 @@ test("required actions provide their resolving control and exclude informational
 
   await requiredActions.getByRole("button", { name: "Sync now" }).click();
   await expect(page.getByText("Syncing chain data")).toBeVisible();
+  await expect(page.getByText("Syncing manager events · step 3 of 4")).toBeVisible();
   await expect.poll(() => syncRequests).toBe(1);
 
   await requiredActions.getByRole("button", { name: "Review Bitcoin withdrawals" }).click();

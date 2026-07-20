@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { deriveRewardCalculationTarget } from "./chain-anchor.js";
+import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
@@ -18,7 +18,11 @@ import { readStxRewardStatus, type StxRewardStatus } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import type { readPoolSetupStatus } from "./setup-status.js";
-import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
+import {
+  proveSignerStakerAnchorRemainsCanonical,
+  SignerStakerAnchorError,
+  syncSignerStakers,
+} from "./signer-staker-sync.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -116,6 +120,27 @@ export async function observeTransactionEngineSafely(
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function resolveRosterProjectionAnchor(options: {
+  store: Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
+  api: Pick<StacksApiClient, "getStatus" | "getBlock">;
+  sourceId: string;
+  managerPrincipal: string;
+  liveAnchor: ChainAnchor;
+}): Promise<ChainAnchor> {
+  const run = options.store.getLatestCompletedSignerStakerRun(
+    options.sourceId,
+    options.managerPrincipal,
+  );
+  if (!run?.chainAnchor) return options.liveAnchor;
+  try {
+    await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
+    return run.chainAnchor;
+  } catch (error) {
+    if (!(error instanceof SignerStakerAnchorError)) throw error;
+    return options.liveAnchor;
   }
 }
 
@@ -633,7 +658,14 @@ export class OperatorService {
       latestTrustTransition.currentTier === manager.source.tier
         ? latestTrustTransition
         : null);
-    const rewardCalculation = deriveRewardCalculationTarget(chainAnchor);
+    const projectionAnchor = await resolveRosterProjectionAnchor({
+      store,
+      api,
+      sourceId,
+      managerPrincipal,
+      liveAnchor: chainAnchor,
+    });
+    const rewardCalculation = deriveRewardCalculationTarget(projectionAnchor);
     const [forecast, rewards] =
       manager.attachAllowed && pox5ContractId
         ? await Promise.all([
@@ -643,12 +675,12 @@ export class OperatorService {
               sourceId,
               managerPrincipal,
               pox5ContractId,
-              currentRewardCycle: chainAnchor.rewardCycle,
+              currentRewardCycle: projectionAnchor.rewardCycle,
               horizonCycles: config.forecastHorizonCycles,
               observedAt: generatedAt,
-              burnBlockHeight: chainAnchor.burnBlockHeight,
-              stacksTipHeight: chainAnchor.stacksBlockHeight,
-              chainAnchor,
+              burnBlockHeight: projectionAnchor.burnBlockHeight,
+              stacksTipHeight: projectionAnchor.stacksBlockHeight,
+              chainAnchor: projectionAnchor,
             }),
             rewardCalculation.status === "ready"
               ? readStxRewardStatus({
@@ -659,9 +691,9 @@ export class OperatorService {
                   pox5ContractId,
                   rewardCycle: rewardCalculation.rewardCycle,
                   observedAt: generatedAt,
-                  burnBlockHeight: chainAnchor.burnBlockHeight,
-                  stacksTipHeight: chainAnchor.stacksBlockHeight,
-                  chainAnchor,
+                  burnBlockHeight: projectionAnchor.burnBlockHeight,
+                  stacksTipHeight: projectionAnchor.stacksBlockHeight,
+                  chainAnchor: projectionAnchor,
                 })
               : null,
           ])
