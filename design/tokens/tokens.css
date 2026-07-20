@@ -1,7 +1,7 @@
 /* Stacks Labs Design System — Colors & Type tokens */
-/* Vendored from Claude Design project "Stacks Labs Design System" on 2026-07-14 and
-   mechanically formatted by the Signer Sidekick repository. See ../DESIGN.md for provenance.
-   Font files are present, but Matter redistribution still requires approval. */
+/* Vendored from the Stacks Labs Design System on 2026-07-14 and mechanically formatted by the
+   Signer Sidekick repository. See ../README.md for provenance.
+   Matter and Matter Mono redistribution for this project has been confirmed. */
 
 /* ============ FONTS ============ */
 /* All brand fonts are self-hosted from /fonts. No remote font fetches. */
@@ -11,7 +11,7 @@
   font-family: "Matter";
   src:
     url("../fonts/matter-regular.woff2") format("woff2"),
-    url("../fonts/matter-regular_explorer.woff") format("woff");
+    url("../fonts/matter-regular.woff") format("woff");
   font-weight: 400 500;
   font-style: normal;
   font-display: swap;
@@ -23,19 +23,10 @@
   src:
     url("../fonts/matter-mono-regular.woff2") format("woff2"),
     url("../fonts/matter-mono-regular.woff") format("woff");
-  font-weight: 400;
+  font-weight: 400 500;
   font-style: normal;
   font-display: swap;
 }
-/* Mono — Matter SQ Mono Medium (alt weight available; mapped to weight 500). */
-@font-face {
-  font-family: "Matter Mono";
-  src: url("../fonts/MatterSQMono-Medium.woff") format("woff");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
 /* Body — Instrument Sans (self-hosted from /fonts). */
 @font-face {
   font-family: "Instrument Sans";

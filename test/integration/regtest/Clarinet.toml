@@ -1,0 +1,19 @@
+[project]
+name = "signer-sidekick-pox5-lifecycle"
+
+[repl]
+costs_version = 1
+
+# Clarinet needs an explicit Epoch 4.0 deployment batch before the boot override can execute as
+# Clarity 6. Lifecycle calls always target the boot principal; the first test asserts that identity.
+[contracts.pox-5]
+path = "contracts/pox-5.clar"
+clarity_version = 6
+epoch = 4.0
+
+[repl.analysis.lints]
+panic = "off"
+case_fn = "off"
+
+[project.override_boot_contracts_source]
+pox-5 = "contracts/pox-5.clar"

@@ -1,9 +1,17 @@
 .git
 .github
+.env
+.env.*
 node_modules
 dist
 coverage
 data
+backups
+trusted-managers/*.json
 tmp
+**/.runtime
+**/artifacts
+**/playwright-report
+**/test-results
 test-results
 playwright-report

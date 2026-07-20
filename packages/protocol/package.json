@@ -8,6 +8,54 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./clarity-codecs": {
+      "types": "./dist/clarity-codecs.d.ts",
+      "default": "./dist/clarity-codecs.js"
+    },
+    "./manager-adapter": {
+      "types": "./dist/manager-adapter.d.ts",
+      "default": "./dist/manager-adapter.js"
+    },
+    "./manager-claim-rewards": {
+      "types": "./dist/manager-claim-rewards.d.ts",
+      "default": "./dist/manager-claim-rewards.js"
+    },
+    "./manager-artifact": {
+      "types": "./dist/manager-artifact.d.ts",
+      "default": "./dist/manager-artifact.js"
+    },
+    "./manager-events": {
+      "types": "./dist/manager-events.d.ts",
+      "default": "./dist/manager-events.js"
+    },
+    "./known-managers": {
+      "types": "./dist/known-managers.d.ts",
+      "default": "./dist/known-managers.js"
+    },
+    "./installed-manager-profile": {
+      "types": "./dist/installed-manager-profile.d.ts",
+      "default": "./dist/installed-manager-profile.js"
+    },
+    "./network-compatibility": {
+      "types": "./dist/network-compatibility.d.ts",
+      "default": "./dist/network-compatibility.js"
+    },
+    "./compatibility-attestation": {
+      "types": "./dist/compatibility-attestation.d.ts",
+      "default": "./dist/compatibility-attestation.js"
+    },
+    "./network-manager-artifact": {
+      "types": "./dist/network-manager-artifact.d.ts",
+      "default": "./dist/network-manager-artifact.js"
+    },
+    "./known-network-compatibility": {
+      "types": "./dist/known-network-compatibility.d.ts",
+      "default": "./dist/known-network-compatibility.js"
+    },
+    "./principals": {
+      "types": "./dist/principals.d.ts",
+      "default": "./dist/principals.js"
     }
   },
   "scripts": {
@@ -15,7 +63,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "generate:manager": "tsx src/generate-manager.ts",
-    "generate:mainnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/mainnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/mainnet/signer-manager.clar"
+    "generate:mainnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/mainnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/mainnet/signer-manager.clar",
+    "generate:devnet": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/devnet.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/devnet/signer-manager.clar",
+    "generate:regtest": "tsx src/generate-manager.ts --profile ../../contracts/reference-manager/profiles/regtest.json --source ../../contracts/reference-manager/upstream/signer-manager.clar --output ../../contracts/reference-manager/generated/regtest/signer-manager.clar"
   },
   "dependencies": {
     "@stacks/transactions": "7.5.0",

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalizeClaritySource } from "./manager-adapter.js";
 import type { ManagerProfile } from "./profile.js";
 
 export const UPSTREAM_POX5 = "ST000000000000000000002AMW42H.pox-5";
@@ -13,6 +14,7 @@ export interface GeneratedManagerArtifact {
     upstreamCommit: string;
     sourceSha256: string;
     outputSha256: string;
+    canonicalOutputSha256: string;
     replacements: {
       pox5: number;
       sbtcDeployer: number;
@@ -27,6 +29,10 @@ function hash(value: string): string {
 
 function occurrenceCount(source: string, value: string): number {
   return source.split(value).length - 1;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function generateManagerArtifact(
@@ -56,11 +62,11 @@ export function generateManagerArtifact(
     );
   }
 
-  const generated = upstreamSource
-    .split(UPSTREAM_POX5)
-    .join(profile.contracts.pox5)
-    .split(UPSTREAM_SBTC_DEPLOYER)
-    .join(profile.contracts.sbtcDeployer);
+  const generated = upstreamSource.replace(
+    new RegExp(`${escapeRegExp(UPSTREAM_POX5)}|${escapeRegExp(UPSTREAM_SBTC_DEPLOYER)}`, "g"),
+    (principal) =>
+      principal === UPSTREAM_POX5 ? profile.contracts.pox5 : profile.contracts.sbtcDeployer,
+  );
 
   if (profile.contracts.pox5 !== UPSTREAM_POX5 && generated.includes(UPSTREAM_POX5)) {
     throw new Error("Generated manager still contains the upstream PoX-5 principal");
@@ -81,6 +87,7 @@ export function generateManagerArtifact(
       upstreamCommit: profile.upstream.commit,
       sourceSha256,
       outputSha256: hash(generated),
+      canonicalOutputSha256: hash(canonicalizeClaritySource(generated)),
       replacements,
       productionApproved: profile.productionApproved,
     },

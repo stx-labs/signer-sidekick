@@ -1,0 +1,14 @@
+[project]
+name = "signer-sidekick-pox5-e2e"
+
+[repl]
+costs_version = 1
+
+[repl.analysis.lints]
+panic = "off"
+case_fn = "off"
+
+[contracts.sbtc-withdrawal]
+path = "../../../contracts/upstream/sbtc-mainnet/sbtc-withdrawal.clar"
+clarity_version = 3
+epoch = 3.0

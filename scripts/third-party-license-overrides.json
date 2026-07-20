@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "@bitcoinerlab/secp256k1@1.2.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2023 Jose-Luis Landabaso",
+      "source": "https://github.com/bitcoinerlab/secp256k1/blob/9a0fb52885995923dac4041083e3ae5da6789ffe/index.js"
+    },
+    "@lit-labs/ssr-dom-shim@1.6.0": {
+      "spdx": "BSD-3-Clause",
+      "copyright": "Copyright (c) 2017 Google LLC. All rights reserved.",
+      "source": "https://github.com/lit/lit/blob/20afabd3c5bfd49fdcdf1b8518e05c7f99a46db6/LICENSE"
+    },
+    "@stacks/common@7.5.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2017 Blockstack Inc.",
+      "source": "https://github.com/stx-labs/stacks.js/blob/1098749082ea6d1d43a8025924d815e79e9f336a/LICENSE"
+    },
+    "@stacks/network@7.5.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2017 Blockstack Inc.",
+      "source": "https://github.com/stx-labs/stacks.js/blob/1098749082ea6d1d43a8025924d815e79e9f336a/LICENSE"
+    },
+    "@stacks/profile@7.5.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2017 Blockstack Inc.",
+      "source": "https://github.com/stx-labs/stacks.js/blob/1098749082ea6d1d43a8025924d815e79e9f336a/LICENSE"
+    },
+    "@stacks/transactions@7.5.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2017 Blockstack Inc.",
+      "source": "https://github.com/stx-labs/stacks.js/blob/1098749082ea6d1d43a8025924d815e79e9f336a/LICENSE"
+    },
+    "abstract-logging@2.0.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) James Sumners",
+      "source": "https://github.com/jsumners/abstract-logging/blob/80dfaef91ee87008f4ed2b6e78921d383bccd406/package.json"
+    },
+    "brorand@1.1.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright Fedor Indutny, 2014.",
+      "source": "https://github.com/indutny/brorand/blob/ddc4f9344287769d7e2c2ea987d26bbeec5456b4/README.md"
+    },
+    "bs58@4.0.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2018 cryptocoinjs",
+      "source": "https://github.com/cryptocoinjs/bs58/blob/d98ce96470dc5b0a0d10529d92cb9c4a7da3db4a/LICENSE"
+    },
+    "elliptic@6.6.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright Fedor Indutny, 2014.",
+      "source": "https://github.com/indutny/elliptic/blob/9b77436a59cc35eccf4ffb848259c8762a492ee7/README.md"
+    },
+    "encode-utf8@1.0.3": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2017-2021 Linus Unnebäck",
+      "source": "https://github.com/LinusU/encode-utf8/blob/87cba02f7ddf8792f2e60c4b1a7c1eccf6daa3d2/LICENCE"
+    },
+    "hash.js@1.1.7": {
+      "spdx": "MIT",
+      "copyright": "Copyright Fedor Indutny, 2014.",
+      "source": "https://github.com/indutny/hash.js/blob/fcd35edcc4e30145be4b7a737477ad54e83afc25/README.md"
+    },
+    "hmac-drbg@1.0.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright Fedor Indutny, 2017.",
+      "source": "https://github.com/indutny/hmac-drbg/blob/2592375270a7a689d3752a6ba7235a47eb234d15/README.md"
+    },
+    "isarray@1.0.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2013 Julian Gruber <julian@juliangruber.com>",
+      "source": "https://github.com/juliangruber/isarray/blob/2a23a281f369e9ae06394c0fb4d2381355a6ba33/README.md"
+    },
+    "minimalistic-crypto-utils@1.0.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright Fedor Indutny, 2017.",
+      "source": "https://github.com/indutny/minimalistic-crypto-utils/blob/f4f2b13a3ac78d8ee6991994bae89ec93304d225/README.md"
+    },
+    "tr46@0.0.3": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Sebastian Mayr",
+      "source": "https://github.com/Sebmaster/tr46.js/blob/a8009f9ce80ff5dbe71dd71e203afe4e4c878d28/package.json"
+    },
+    "uint8arrays@3.1.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Alex Potsides, Cayman, Irakli Gozalishvili, Hugo Dias, Mircea Nistor, Rafael Ramalho, and Vasco Santos",
+      "source": "https://github.com/achingbrain/uint8arrays/blob/66c931a497c598bfaff46d09b6ddd061b6c91a08/package.json"
+    },
+    "undici-types@5.26.5": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Matteo Collina and Undici contributors",
+      "source": "https://github.com/nodejs/undici/blob/9197790ae0d015b40b75fd0c5cdb7420704b5272/LICENSE"
+    }
+  },
+  "packagePrefixes": [
+    {
+      "namePrefix": "@rollup/rollup-",
+      "version": "4.44.0",
+      "spdx": "MIT",
+      "document": "rollup-4.44.0-LICENSE.md",
+      "sha256": "a8e7d0e8e147b388f5255f0968c2a11568814ab6467d0436433d13b62c85aa8e",
+      "source": "https://github.com/rollup/rollup/blob/fa4b2842c823f6a61f6b994a28b7fcb54419b6c6/LICENSE.md"
+    }
+  ]
+}

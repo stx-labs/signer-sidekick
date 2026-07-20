@@ -7,8 +7,11 @@ coverage/
 *.tsbuildinfo
 .env
 .env.*
-!.env.example
+!.env.mainnet.example
+!.env.pox5-testnet.example
 data/
 tmp/
 test-results/
 playwright-report/
+test/integration/regtest/.cache/
+trusted-managers/*.json

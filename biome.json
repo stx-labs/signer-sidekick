@@ -6,6 +6,13 @@
       "!**/node_modules",
       "!**/dist",
       "!**/coverage",
+      "!tmp",
+      "!test/integration/regtest/.cache",
+      "!test/e2e/devnet/.runtime",
+      "!test/e2e/devnet/artifacts",
+      "!test/e2e/devnet/deployments",
+      "!test/e2e/devnet/playwright-report",
+      "!test/e2e/devnet/test-results",
       "!contracts/**/*.clar",
       "!design",
       "!design/fonts"

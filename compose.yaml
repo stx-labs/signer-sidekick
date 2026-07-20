@@ -1,0 +1,41 @@
+services:
+  sidekick:
+    build:
+      context: .
+      target: runtime
+    image: signer-sidekick:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "${SIDEKICK_PUBLISH_ADDRESS:-127.0.0.1}:3998:3998"
+    environment:
+      SIDEKICK_NETWORK: ${SIDEKICK_NETWORK:-mainnet}
+      SIDEKICK_NETWORK_ID: ${SIDEKICK_NETWORK_ID:-}
+      STACKS_NODE_RPC_URL: ${STACKS_NODE_RPC_URL:?Set STACKS_NODE_RPC_URL in .env}
+      STACKS_API_URL: ${STACKS_API_URL:-}
+      STACKS_API_KEY: ${STACKS_API_KEY:-}
+      STACKS_API_KEY_HEADER: ${STACKS_API_KEY_HEADER:-x-api-key}
+      STACKS_NODE_METRICS_URL: ${STACKS_NODE_METRICS_URL:-}
+      STACKS_SIGNER_MONITORING_URL: ${STACKS_SIGNER_MONITORING_URL:-}
+      HIRO_REFERENCE_API_URL: ${HIRO_REFERENCE_API_URL:-}
+      SIDEKICK_MANAGER_PRINCIPAL: ${SIDEKICK_MANAGER_PRINCIPAL:?Set SIDEKICK_MANAGER_PRINCIPAL in .env}
+      SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR: /etc/sidekick/trusted-managers
+      SIDEKICK_COMPATIBILITY_PROFILES_DIR: /etc/sidekick/network-compatibility
+      SIDEKICK_AUTH_TOKEN: ${SIDEKICK_AUTH_TOKEN:?Set SIDEKICK_AUTH_TOKEN in .env}
+      SIDEKICK_FORECAST_HORIZON_CYCLES: ${SIDEKICK_FORECAST_HORIZON_CYCLES:-6}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - sidekick-data:/data
+      - ./trusted-managers:/etc/sidekick/trusted-managers:ro
+      - ./network-compatibility:/etc/sidekick/network-compatibility:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  sidekick-data:

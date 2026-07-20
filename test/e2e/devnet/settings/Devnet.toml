@@ -1,0 +1,95 @@
+[network]
+name = "devnet"
+deployment_fee_rate = 10
+
+# Public deterministic fixtures for the isolated Bitcoin-regtest/Stacks-Devnet harness only.
+# Never use these accounts, mnemonics, or derived keys on any live network.
+[accounts.deployer]
+mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_1]
+mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_2]
+mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_3]
+mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_4]
+mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_5]
+mnemonic = "hurry aunt blame peanut heavy update captain human rice crime juice adult scale device promote vast project quiz unit note reform update climb purchase"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.wallet_6]
+mnemonic = "area desk dutch sign gold cricket dawn toward giggle vibrant indoor bench warfare wagon number tiny universe sand talk dilemma pottery bone trap buddy"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[accounts.faucet]
+mnemonic = "shadow private easily thought say logic fault paddle word top book during ignore notable orange flight clock image wealth health outside kitten belt reform"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+
+[devnet]
+name = "signer-sidekick-e2e"
+working_dir = "test/e2e/devnet/.runtime/clarinet"
+bind_containers_volumes = true
+disable_bitcoin_explorer = true
+disable_stacks_explorer = true
+disable_stacks_api = false
+disable_postgres = false
+# Clarinet must mine through scheduled protocol deployments before it emits its
+# ready event. Ten seconds leaves stacks-core and the real signer enough time
+# to agree on PoX anchor blocks at prepare-phase boundaries.
+bitcoin_controller_automining_disabled = false
+bitcoin_controller_block_time = 10_000
+# Epoch 3.0 starts at Clarinet's default height 142. Stacks Core requires Epoch
+# 4.0 to begin in a later 20-block reward cycle, so 162 is the earliest valid
+# activation height. The harness always starts from genesis because Clarinet
+# 3.21.1's embedded snapshot was produced by stacks-core 3.4 and is not a valid
+# stacks-core 4.0 test baseline.
+epoch_4_0 = 162
+stacks_signers_keys = ["7287ba251d44a4d3fd9276c88ce34c5c52a038955511cccaf77e61068649c17801"]
+bitcoin_node_image_url = "docker.io/lncm/bitcoind:v27.2@sha256:6b911de286306cddedcbe65fc06ffb14102179e4301c970d80cc6e6d5a2f4c17"
+stacks_node_image_url = "ghcr.io/stacks-network/stacks-core:4.0.0@sha256:91b2c2701a425e57052baca51b30234bf9af02fa118a5a4586022e7d0ecc303f"
+stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.0@sha256:7ee8914ccc732432206fa65d59522dee06d1d374bf201c6c9c379e385f3cdee9"
+stacks_api_image_url = "ghcr.io/stx-labs/stacks-blockchain-api:9.0.1@sha256:5ee39d1da7c1e37090ffef172f17390437545720e29e54e1818172edc52189bd"
+postgres_image_url = "docker.io/library/postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"

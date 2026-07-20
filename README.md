@@ -1,46 +1,65 @@
 # Signer Sidekick
 
-Signer Sidekick is an open-source operations suite for Stacks PoX-5 signer and STX pool
-operators. It is designed to attach to an existing compatible signer-manager deployment or
-guide a fresh operator through setup, then monitor and automate the pool lifecycle without
-holding the signer or manager-admin keys.
+Signer Sidekick is a self-hosted control plane for Stacks PoX-5 signer and STX pool operators. It
+attaches to an existing signer-manager or guides a new deployment, then reconciles registration,
+pool membership, rewards, and withdrawals from the operator's node and Stacks API.
 
-This repository is in the protocol-foundation phase. It is not ready for mainnet operation.
+V1 supports setup, externally signed manager administration, read-only operations, and a durable
+transaction engine for one fixed reference-manager reward claim. Deployments default to Observe;
+Assist remains a controlled, approval-gated validation capability and is not ready for unattended
+mainnet use. See the
+[transaction-engine rollout gates](docs/product/transaction-engine-v1.md#rollout-gates).
 
-## Start here
+## Documentation
 
-- [v1 product and architecture plan](docs/product/v1-plan.md)
-- [questions for protocol, API, signer, design, and security reviewers](docs/reviews/team-questions.md)
-- [initial independent plan review](docs/reviews/initial-spec-review.md)
-- [round 2 review and product-owner disposition](docs/reviews/round2-disposition.md)
-- [development setup](docs/operator/development.md)
-- [upstream source provenance](contracts/PROVENANCE.md)
+Start with [the documentation index](docs/README.md). Node and signer installation remain separate
+upstream responsibilities.
 
-## Current scaffold
+## Scope
 
-- `apps/sidekick`: local API, worker, scheduler, and CLI process
-- `apps/dashboard`: React operator interface using the vendored Stacks design system
-- `packages/protocol`: versioned PoX-5 and signer-manager profiles, types, and artifact generator
-- `packages/core`: protocol-independent domain and reconciliation boundaries
-- `contracts`: pinned upstream sources and reproducibly generated manager artifacts
-- `test/integration/regtest`: externally provisioned Epoch 4.0 regtest/devnet smoke harness
+- One network, signer-manager, and STX-only pool per deployment.
+- Existing and fresh manager workflows.
+- Optional browser-wallet execution for exact setup, manager-admin, and Observe reward-claim
+  transactions; manual handoff remains.
+- Hiro or self-hosted Stacks API endpoints.
+- No custody of signer or manager-admin private keys.
+- No end-user wallet connection or stake submission.
+- Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
+  scope.
+- No sBTC bond pooling in V1.
+
+Unknown but interface-compatible managers can use fixed externally signed administration and
+registration actions when manager and routing checks pass. Source trust is a warning for that path.
+Reward-claim handoff and Assist retain the fixed reference-manager adapter gates.
 
 ## Development
 
-Use Node.js 24.18.0 and pnpm 10.32.1.
+Requires Node.js 24.18.0 and pnpm 10.32.1.
 
 ```sh
 pnpm install
-pnpm protocol:verify
 pnpm check
-pnpm test
+pnpm test:coverage
+pnpm test:regtest
 pnpm build
 ```
 
-See [the development guide](docs/operator/development.md) for the upstream refresh and
-regtest workflows.
+See [development](docs/operator/development.md) for browser tests, the released Devnet harness,
+live-node smoke tests, and upstream-source verification.
+
+## Repository
+
+| Path | Purpose |
+| --- | --- |
+| `apps/sidekick` | API, CLI, reconciliation, persistence, and dashboard host |
+| `apps/dashboard` | React operator UI |
+| `packages/protocol` | PoX-5 and signer-manager codecs, profiles, and artifacts |
+| `packages/api-contracts` | Versioned operator API schemas and browser-facing DTOs |
+| `contracts` | Pinned upstream sources and generated test artifacts |
+| `test` | Contract, browser, container, and released-Devnet validation |
+| `design` | Vendored tokens, fonts, and the local UI contract |
 
 ## License
 
-Signer Sidekick is licensed under GPL-3.0-only. Vendored upstream files retain their own
-copyright and provenance; see [contracts/PROVENANCE.md](contracts/PROVENANCE.md).
+GPL-3.0-only. Vendored sources retain their notices; see
+[contract provenance](contracts/PROVENANCE.md) and [NOTICE.md](NOTICE.md).

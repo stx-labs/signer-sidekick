@@ -11,9 +11,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "@phosphor-icons/react": "2.1.10",
-    "@stx-labs/signer-sidekick-protocol": "workspace:*",
-    "@tanstack/react-query": "5.101.2",
+    "@stacks/connect": "8.2.6",
+    "@stx-labs/signer-sidekick-api-contracts": "workspace:*",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

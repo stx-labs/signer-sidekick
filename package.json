@@ -11,19 +11,48 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "check": "biome check . && pnpm typecheck",
+    "check": "biome check . && pnpm typecheck && pnpm third-party:licenses",
     "check:fix": "biome check --write .",
-    "typecheck": "pnpm --filter @stx-labs/signer-sidekick-protocol build && pnpm --filter @stx-labs/signer-sidekick-core build && pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @stx-labs/signer-sidekick-protocol build && pnpm --filter @stx-labs/signer-sidekick-api-contracts build && pnpm -r --if-present typecheck && tsc -p test/integration/regtest/tsconfig.json --noEmit",
     "test": "pnpm -r --if-present test",
-    "test:regtest": "vitest run test/integration/regtest",
+    "test:coverage": "vitest run --config vitest.coverage.config.mts --coverage",
+    "test:e2e:dashboard": "playwright test",
+    "test:e2e:dashboard:live": "playwright test --config test/e2e/devnet/playwright.live.config.mts",
+    "test:regtest": "vitest run --config test/integration/regtest/vitest.clarinet.config.mts",
+    "test:regtest:external": "RUN_REGTEST=1 vitest run test/integration/regtest/smoke.test.ts",
+    "test:container:external": "node scripts/smoke-container.mjs",
     "protocol:vendor": "node scripts/vendor-upstream.mjs",
     "protocol:verify": "node scripts/verify-upstream.mjs",
-    "protocol:generate:mainnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:mainnet"
+    "devnet:verify": "node scripts/verify-devnet-lock.mjs",
+    "devnet:verify:offline": "node scripts/verify-devnet-lock.mjs --offline",
+    "third-party:licenses": "node scripts/generate-third-party-licenses.mjs",
+    "e2e:devnet:doctor": "node scripts/e2e-devnet.mjs doctor",
+    "e2e:devnet:up": "node scripts/e2e-devnet.mjs up",
+    "e2e:devnet:down": "node scripts/e2e-devnet.mjs down",
+    "e2e:devnet:reset": "node scripts/e2e-devnet.mjs reset",
+    "e2e:devnet:status": "node scripts/e2e-devnet.mjs status",
+    "e2e:devnet:scenario": "node scripts/e2e-devnet.mjs scenario",
+    "e2e:devnet:mine": "node scripts/e2e-devnet.mjs mine",
+    "e2e:devnet:test": "node scripts/e2e-devnet.mjs test",
+    "protocol:generate:mainnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:mainnet",
+    "protocol:generate:devnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:devnet",
+    "protocol:generate:regtest": "node scripts/generate-regtest-contracts.mjs && pnpm --filter @stx-labs/signer-sidekick-protocol generate:regtest"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
+    "@playwright/test": "1.61.1",
+    "@stacks/clarinet-sdk": "3.20.0",
+    "@stacks/network": "7.5.0",
+    "@stacks/transactions": "7.5.0",
     "@types/node": "26.1.1",
+    "@vitest/coverage-v8": "4.1.10",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "vitest-environment-clarinet": "3.0.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws@>=8.0.0 <8.21.0": "8.21.0"
+    }
   }
 }

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-07-15",
+  "clarinet": {
+    "version": "3.21.1",
+    "releaseBaseUrl": "https://github.com/stx-labs/clarinet/releases/download/v3.21.1",
+    "archives": {
+      "darwin-arm64": {
+        "file": "clarinet-darwin-arm64.tar.gz",
+        "sha256": "b490b87998c6fc2d7ab17b53a59a96d6676a87712e7c88f98e2c0617513021b3"
+      },
+      "darwin-x64": {
+        "file": "clarinet-darwin-x64.tar.gz",
+        "sha256": "34ba0d2c3629355d0e95d7f90c5cbb1af29bbec47511731813f739dbd67e3ba3"
+      },
+      "linux-arm64": {
+        "file": "clarinet-linux-arm64-glibc.tar.gz",
+        "sha256": "973fefde9b703049830ffdf5b27da78b086a60177c70842540ebb19a9f065893"
+      },
+      "linux-x64": {
+        "file": "clarinet-linux-x64-glibc.tar.gz",
+        "sha256": "bf94c841fe660de1db8403324e70c80994d9402e77f436ce99769c156e208e36"
+      }
+    }
+  },
+  "stacksCore": {
+    "repository": "https://github.com/stacks-network/stacks-core.git",
+    "tag": "4.0.0",
+    "commit": "5595f08a244362cefc316f95b398510a2b8cb791"
+  },
+  "images": {
+    "stacksNode": {
+      "reference": "ghcr.io/stacks-network/stacks-core:4.0.0",
+      "digest": "sha256:91b2c2701a425e57052baca51b30234bf9af02fa118a5a4586022e7d0ecc303f"
+    },
+    "stacksSigner": {
+      "reference": "ghcr.io/stacks-network/stacks-signer:4.0.0",
+      "digest": "sha256:7ee8914ccc732432206fa65d59522dee06d1d374bf201c6c9c379e385f3cdee9"
+    },
+    "stacksApi": {
+      "reference": "ghcr.io/stx-labs/stacks-blockchain-api:9.0.1",
+      "digest": "sha256:5ee39d1da7c1e37090ffef172f17390437545720e29e54e1818172edc52189bd"
+    },
+    "bitcoin": {
+      "reference": "docker.io/lncm/bitcoind:v27.2",
+      "digest": "sha256:6b911de286306cddedcbe65fc06ffb14102179e4301c970d80cc6e6d5a2f4c17"
+    },
+    "postgres": {
+      "reference": "docker.io/library/postgres:17.6-alpine",
+      "digest": "sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
+    }
+  },
+  "manager": {
+    "profile": "contracts/reference-manager/profiles/devnet.json",
+    "source": "contracts/reference-manager/generated/devnet/signer-manager.clar",
+    "sha256": "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
+    "canonicalSha256": "3512163c9685e8d127322744655926d7e04d42afe5be13523637d7dc1ac478d8"
+  }
+}

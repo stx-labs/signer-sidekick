@@ -6,16 +6,20 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "attach": "node dist/main.js attach",
+    "cli": "node dist/main.js",
     "dev": "tsx watch src/main.ts serve",
+    "preflight": "node dist/main.js preflight",
     "start": "node dist/main.js serve",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@stx-labs/signer-sidekick-core": "workspace:*",
+    "@fastify/static": "9.1.1",
+    "@stacks/transactions": "7.5.0",
+    "@stx-labs/signer-sidekick-api-contracts": "workspace:*",
     "@stx-labs/signer-sidekick-protocol": "workspace:*",
     "fastify": "5.10.0",
-    "pino": "10.3.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
