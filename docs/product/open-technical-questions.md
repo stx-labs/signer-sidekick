@@ -11,8 +11,8 @@ the accepting owner.
    sBTC principals, and node build are approved for release validation?
 2. Does the released signer retain the tested four-field JSON output for
    `generate-staking-signature`?
-3. What external ceremony should operators use to broadcast and verify `register-self` without
-   sharing the signer consensus private key or manager-admin private key with Sidekick?
+3. Which released wallet versions, deployed Sidekick origins, and network configurations must pass
+   real-wallet certification for each enabled V1 action?
 4. Which API endpoint(s) enumerate a manager's stakers after `stake-update` changes the latest
    signer while the current-cycle membership remains with the prior signer?
 5. What pagination, canonicality, reorg, retention, and provider-change guarantees apply to roster,

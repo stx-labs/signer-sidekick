@@ -21,6 +21,8 @@ Choose the shortest path for your task.
 - HTTP behavior: route schemas and tests under `apps/sidekick/src`.
 - Database structure: migrations and repositories under `apps/sidekick/src/storage`.
 - Protocol inputs: [contract provenance](../contracts/PROVENANCE.md).
+- Configuration examples: [operator record metadata](examples/operator-record-metadata.example.json)
+  and [public pool enrollment](examples/pool-enrollment-config.example.json).
 
 Documentation explains intent, safety boundaries, and operator procedures. It does not duplicate
 code-level schemas, command inventories, or upstream node/signer setup.

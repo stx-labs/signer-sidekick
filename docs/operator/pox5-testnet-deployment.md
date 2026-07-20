@@ -8,8 +8,9 @@ Assist canary remains a release gate and must follow the separate controls in
 [Transaction engine V1](../product/transaction-engine-v1.md) and
 [container deployment](deployment.md#transaction-engine-modes).
 
-Sidekick does not install the node or signer and never signs manager calls. It can hand exact calls
-to Leather or a manual signing tool. Use current upstream material for node and signer setup:
+Sidekick does not install the node or signer and never signs setup or manager-admin calls. It can
+hand exact calls to Leather or a manual signing tool. Use current upstream material for node and
+signer setup:
 
 - [Node guide](https://docs.stacks.co/operate/run-a-node)
 - [Signer guide](https://docs.stacks.co/operate/run-a-signer)
@@ -66,7 +67,7 @@ Private HTTP access is supported under the restrictions in the main guide's remo
 
 ## Attach an existing manager
 
-Use **Attach Existing Contracts** in the dashboard, or:
+Use **Attach Existing Manager** in the dashboard, or:
 
 ```sh
 docker compose exec -T sidekick node /app/dist/main.js \
@@ -123,9 +124,9 @@ Transaction submission alone is not success.
 
 ## Validate the dashboard
 
-Open `http://127.0.0.1:3998`, reconcile, and review registration, pool, cycles, rewards, activity,
-settings, and diagnostics. Allow the API indexer to catch up before treating a lagging indexed view
-as a Sidekick defect.
+Open `http://127.0.0.1:3998`, reconcile, and review Overview, Manager, Pool, Rewards, Operations,
+Signer Health, Initial Setup, Settings, and Public Pool Page. Allow the API indexer to catch up
+before treating a lagging indexed view as a Sidekick defect.
 
 Record the Sidekick commit, compatibility profile, node release, deployment artifacts, public grant
 JSON, transaction IDs, and verification heights. Review diagnostics before sharing them.

@@ -70,7 +70,7 @@ Node and signer setup remain upstream responsibilities. See the
 
 The dashboard summarizes registration, cycle timing, current and projected pool membership,
 reward checkpoints, payout progress, withdrawals, and required actions. Large collections are
-paginated and exportable.
+paginated. The pool roster is exportable as CSV or JSON.
 
 Sidekick also generates static or live pool-information artifacts for the operator to host. It
 does not expose a public pool route or collect staker inputs.
@@ -166,7 +166,8 @@ V1 is complete when:
 - Wrong network or interface blocks external actions; untrusted source clearly warns and blocks
   Assist only. Revoked grants, unsupported bonds, and insufficient threshold are clear.
 - Relevant manager history can be rebuilt and reconciled.
-- Current and future STX membership, deadlines, rewards, and withdrawals are visible and exportable.
+- Current and future STX membership, deadlines, rewards, and withdrawals are visible; roster data
+  is exportable as CSV or JSON, and reward and withdrawal histories are paginated.
 - The generated pool artifact contains only reviewed public information.
 - The fixed manager-claim adapter satisfies every
   [transaction-engine rollout gate](transaction-engine-v1.md#rollout-gates).
