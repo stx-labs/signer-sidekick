@@ -1,11 +1,11 @@
 {
   "profileId": "stacks-4.0.0-regtest-reference-manager",
   "network": "regtest",
-  "upstreamTag": "4.0.0",
-  "upstreamCommit": "5595f08a244362cefc316f95b398510a2b8cb791",
-  "sourceSha256": "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
-  "outputSha256": "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
-  "canonicalOutputSha256": "ad8acf88b61617acec43dd3c0767ef58bfaea62e34fe2b5adb07521323d7f22b",
+  "upstreamTag": "main",
+  "upstreamCommit": "efc34a07a225c4b950ab9404a1652aa5e14affaf",
+  "sourceSha256": "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695",
+  "outputSha256": "d5dfb736a5d464fac49ccfe38f77c100fe03464fb084a711c2ec21d2d0cc8045",
+  "canonicalOutputSha256": "b365887e3706a2486c688e85651c082c78f80984e87b6325d7cb358a5b73bdf1",
   "replacements": {
     "pox5": 8,
     "sbtcDeployer": 13

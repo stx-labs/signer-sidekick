@@ -2,9 +2,9 @@
   "id": "stacks-4.0.0-devnet-reference-manager",
   "network": "devnet",
   "upstream": {
-    "tag": "4.0.0",
-    "commit": "5595f08a244362cefc316f95b398510a2b8cb791",
-    "sourceSha256": "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf"
+    "tag": "main",
+    "commit": "efc34a07a225c4b950ab9404a1652aa5e14affaf",
+    "sourceSha256": "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695"
   },
   "contracts": {
     "pox5": "ST000000000000000000002AMW42H.pox-5",

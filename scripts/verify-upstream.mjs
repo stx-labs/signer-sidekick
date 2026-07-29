@@ -15,7 +15,7 @@ const sources = new Map([
   ],
   [
     "contracts/reference-manager/upstream/signer-manager.clar",
-    "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+    "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695",
   ],
   [
     "contracts/upstream/sbtc-mainnet/sbtc-registry.clar",
@@ -48,17 +48,17 @@ const generatedManagers = [
   {
     network: "mainnet",
     profileId: "stacks-4.0.0-mainnet-reference-manager",
-    sha256: "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
+    sha256: "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
   },
   {
     network: "devnet",
     profileId: "stacks-4.0.0-devnet-reference-manager",
-    sha256: "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
+    sha256: "403254a3ce0a65a32b2aeb64a3c116a1a3ce5ee339f36d99edab3e4a605d7f38",
   },
   {
     network: "regtest",
     profileId: "stacks-4.0.0-regtest-reference-manager",
-    sha256: "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
+    sha256: "d5dfb736a5d464fac49ccfe38f77c100fe03464fb084a711c2ec21d2d0cc8045",
   },
 ];
 

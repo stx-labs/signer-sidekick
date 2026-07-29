@@ -69,7 +69,7 @@ describe("manager deployment rendering", () => {
     expect(rendered.manifest).toMatchObject({
       managerPrincipal: "SP000000000000000000002Q6VF78.my-signer-manager",
       artifact: {
-        sourceSha256: "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
+        sourceSha256: "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
       },
       transaction: {
         clarityVersion: 6,

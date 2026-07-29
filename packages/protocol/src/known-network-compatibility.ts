@@ -24,13 +24,13 @@ export const MAINNET_4_0_1_COMPATIBILITY = {
   referenceManager: {
     profileId: "stacks-4.0.0-mainnet-reference-manager",
     upstream: {
-      tag: "4.0.0",
-      commit: "5595f08a244362cefc316f95b398510a2b8cb791",
-      sourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+      tag: "main",
+      commit: "efc34a07a225c4b950ab9404a1652aa5e14affaf",
+      sourceSha256: "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695",
     },
     expectedReplacements: { pox5: 8, sbtcDeployer: 13 },
-    sourceSha256: "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
-    canonicalSha256: "7fd58a7591ff0ae1643eb7e71ea2867385bcac237a3ea819f52301310c0d2e27",
+    sourceSha256: "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
+    canonicalSha256: "004da6bde5f91b9cdf555a020494cab73d29cc75733ad0c05e4f4b32a94e251b",
   },
   capabilities: { pox5SbtcContractFields: true },
   provenance: {
@@ -62,13 +62,13 @@ export const POX5_TESTNET_COMPATIBILITY = {
   referenceManager: {
     profileId: "stacks-pox5-testnet-4.0.1-reference-manager",
     upstream: {
-      tag: "4.0.0",
-      commit: "5595f08a244362cefc316f95b398510a2b8cb791",
-      sourceSha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+      tag: "main",
+      commit: "efc34a07a225c4b950ab9404a1652aa5e14affaf",
+      sourceSha256: "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695",
     },
     expectedReplacements: { pox5: 8, sbtcDeployer: 13 },
-    sourceSha256: "28fd9b3dcb89c165723f54b5e61bfaa9e960cd6adfb69f87f2830d4c809aceb4",
-    canonicalSha256: "409e8cfa6a447e159062536aff677ca6df7e04e5c7ced92189b6dd90a4689c51",
+    sourceSha256: "b9c49ce03453a734fed8cf0d9202adb807d53d585108cdf4839be86728693e76",
+    canonicalSha256: "97e003554c90ff8cefe0a17ee7f52e47fd42464a464ff02f666b117740e84214",
   },
   capabilities: { pox5SbtcContractFields: true },
   provenance: {

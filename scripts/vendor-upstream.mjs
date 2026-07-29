@@ -18,8 +18,8 @@ const sources = [
   },
   {
     path: "contracts/reference-manager/upstream/signer-manager.clar",
-    url: "https://raw.githubusercontent.com/stacks-network/stacks-core/4.0.0/contrib/core-contract-tests/contracts/signer-manager.clar",
-    sha256: "f86819132e5c4e6f00d491b27f32ded4c3342c2be875ff90d1eba70fd5f0a5cf",
+    url: "https://raw.githubusercontent.com/stacks-network/stacks-core/efc34a07a225c4b950ab9404a1652aa5e14affaf/contrib/core-contract-tests/contracts/signer-manager.clar",
+    sha256: "ac552739b668226930e679b6b13fcf1af411b30688d8b258cfae7ff7bf0b8695",
   },
   {
     path: "contracts/upstream/sbtc-mainnet/sbtc-registry.clar",

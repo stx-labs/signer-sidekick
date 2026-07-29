@@ -53,7 +53,11 @@
   "manager": {
     "profile": "contracts/reference-manager/profiles/devnet.json",
     "source": "contracts/reference-manager/generated/devnet/signer-manager.clar",
-    "sha256": "ca97d964d7402decddce14e1542df615d6f5f13f826281b1c4ff70e83dc21c61",
-    "canonicalSha256": "3512163c9685e8d127322744655926d7e04d42afe5be13523637d7dc1ac478d8"
+    "upstream": {
+      "tag": "main",
+      "commit": "efc34a07a225c4b950ab9404a1652aa5e14affaf"
+    },
+    "sha256": "403254a3ce0a65a32b2aeb64a3c116a1a3ce5ee339f36d99edab3e4a605d7f38",
+    "canonicalSha256": "f7d1e21949b04a4c825b50d3df9539d3db27043717f0b98ab676784380a358a1"
   }
 }
