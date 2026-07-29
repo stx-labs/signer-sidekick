@@ -4,10 +4,11 @@ import type {
   EngineJobDetail,
   EngineJobPage,
   EngineStatus,
+  OperationReadiness,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../api-client.js";
-import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
+import { Badge, ErrorCallout, StatusBadge } from "../../shared/dashboard-ui.js";
 import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
 import {
   approveEngineJob,
@@ -17,6 +18,7 @@ import {
   loadEngineJob,
   loadEngineJobs,
   loadEngineStatus,
+  loadOperationReadiness,
 } from "./engine-api.js";
 import { EngineJobReview } from "./engine-job-review.js";
 import { EngineWalletClaim } from "./engine-wallet-claim.js";
@@ -77,6 +79,7 @@ export function EngineOperations({
 }) {
   const [surface, setSurface] = useState<SurfaceState>("loading");
   const [status, setStatus] = useState<EngineStatus | null>(null);
+  const [readiness, setReadiness] = useState<OperationReadiness | null>(null);
   const [jobs, setJobs] = useState<EngineJobPage | null>(null);
   const [selectedJob, setSelectedJob] = useState<EngineJobDetail | null>(null);
   const [actionsEnabled, setActionsEnabled] = useState(false);
@@ -103,7 +106,11 @@ export function EngineOperations({
       setError(null);
       setSurface("loading");
       try {
-        const nextStatus = await loadEngineStatus(token, controller.signal);
+        const [nextStatus, nextReadiness] = await Promise.all([
+          loadEngineStatus(token, controller.signal),
+          loadOperationReadiness(token, controller.signal),
+        ]);
+        setReadiness(nextReadiness);
         if (nextStatus === null) {
           setStatus(null);
           setJobs(null);
@@ -117,6 +124,7 @@ export function EngineOperations({
       } catch (cause) {
         if (controller.signal.aborted) return;
         setStatus(null);
+        setReadiness(null);
         setJobs(null);
         setError(
           engineActionError(
@@ -349,6 +357,20 @@ export function EngineOperations({
       {status ? (
         <>
           <div className="engine-status-grid">
+            {readiness ? (
+              <div className="card engine-readiness-card">
+                <div className="card-head">
+                  <h3>Operation readiness</h3>
+                  <StatusBadge status={readiness.status} />
+                </div>
+                <p className="muted">
+                  {readiness.checks
+                    .filter((check) => check.status !== "ready")
+                    .map((check) => check.detail)
+                    .join(" ") || "Control plane, manager setup, and transaction engine are ready."}
+                </p>
+              </div>
+            ) : null}
             <div className="card-standout engine-mode-card">
               <span className="muted">Engine mode</span>
               <h3>

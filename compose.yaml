@@ -24,6 +24,7 @@ services:
       SIDEKICK_COMPATIBILITY_PROFILES_DIR: /etc/sidekick/network-compatibility
       SIDEKICK_AUTH_TOKEN: ${SIDEKICK_AUTH_TOKEN:?Set SIDEKICK_AUTH_TOKEN in .env}
       SIDEKICK_FORECAST_HORIZON_CYCLES: ${SIDEKICK_FORECAST_HORIZON_CYCLES:-6}
+      SIDEKICK_ENGINE_MODE: ${SIDEKICK_ENGINE_MODE:-observe}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     tmpfs:

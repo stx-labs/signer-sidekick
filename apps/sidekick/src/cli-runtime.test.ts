@@ -62,6 +62,7 @@ describe("CLI dispatch", () => {
         sidekick serve    Start the loopback-only local API
         sidekick config validate  Validate and print redacted endpoint configuration
         sidekick doctor  Open, migrate, and verify the local SQLite store
+        sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
         sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
         sidekick init attach <manager>  Build an activation plan from a running manager
@@ -160,6 +161,24 @@ describe("CLI dispatch", () => {
     expect(capture.stderr()).toBe("");
     expect(capture.exitCodes()).toEqual([2]);
     expect(result).toEqual({ exitCode: 2 });
+    expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
+  });
+
+  it("runs connectivity doctor checks without opening the local database", async () => {
+    mocks.runOperatorPreflight.mockResolvedValue({ status: "warn" });
+    const capture = captureOutput();
+
+    const result = await dispatchCli(["doctor", "connectivity"], executeCliCommand, {
+      env: connectedEnvironment,
+      output: capture.output,
+    });
+
+    expect(JSON.parse(capture.stdout())).toMatchObject({
+      config: { network: "mainnet", apiKeyConfigured: true },
+      result: { status: "warn" },
+    });
+    expect(capture.exitCodes()).toEqual([]);
+    expect(result).toEqual({ exitCode: 0 });
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
   });
 });

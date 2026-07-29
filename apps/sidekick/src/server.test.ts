@@ -82,8 +82,8 @@ describe("local API", () => {
     expect(response.json()).toMatchObject({
       status: "ok",
       sourceLineage: {
-        stacksCoreTag: "4.0.0",
-        stacksCoreCommit: "5595f08a244362cefc316f95b398510a2b8cb791",
+        stacksCoreTag: "4.0.1",
+        stacksCoreCommit: "62e03cc5551bfc574223c2b78ce04ceca30cec37",
       },
     });
     expect(response.json()).not.toHaveProperty("protocol");
@@ -1149,6 +1149,65 @@ describe("local API", () => {
       error: "transaction_engine_unavailable",
       message: "The requested feature is unavailable in this Sidekick deployment.",
       retryable: false,
+    });
+  });
+
+  it("reports engine blockers through authenticated operation readiness without failing control-plane readiness", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({
+        generatedAt: "2026-07-17T12:00:00.000Z",
+        preflight: { status: "pass" },
+        setup: { status: "ready" },
+      }),
+      synchronize: async () => ({}),
+    };
+    const engine = {
+      status: () => ({
+        schemaVersion: 1,
+        mode: "observe" as const,
+        forcedObserve: { active: false, reason: null, actor: null, forcedAt: null },
+        adapters: [
+          {
+            adapter: { id: "reference-manager-claim-rewards", revision: 1 },
+            label: "Reference manager claim rewards",
+            mode: "observe" as const,
+            enabled: true,
+            availability: "blocked" as const,
+            blockReason: "Chain tips disagree",
+          },
+        ],
+        jobs: { active: 0, awaitingApproval: 0, ambiguous: 0 },
+        generatedAt: "2026-07-17T12:00:00.000Z",
+      }),
+      listJobs: async () => ({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
+      getJob: async () => null,
+      approve: async () => ({}),
+      invalidateApproval: async () => ({}),
+      forceObserve: async () => ({}),
+      disableAdapter: async () => ({}),
+    } as unknown as TransactionEngineApiService;
+    const server = createServer({ service, engine, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect((await server.inject({ method: "GET", url: "/health/ready" })).statusCode).toBe(200);
+    expect(
+      (await server.inject({ method: "GET", url: "/api/v1/operations/readiness" })).statusCode,
+    ).toBe(401);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/operations/readiness",
+      headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: "blocked",
+      checks: [
+        { id: "control-plane", status: "ready" },
+        { id: "setup", status: "ready" },
+        { id: "engine", status: "blocked", detail: "Chain tips disagree" },
+      ],
     });
   });
 
