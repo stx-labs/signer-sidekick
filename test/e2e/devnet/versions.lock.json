@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verifiedAt": "2026-07-15",
+  "verifiedAt": "2026-07-29",
   "clarinet": {
     "version": "3.21.1",
     "releaseBaseUrl": "https://github.com/stx-labs/clarinet/releases/download/v3.21.1",
@@ -25,17 +25,17 @@
   },
   "stacksCore": {
     "repository": "https://github.com/stacks-network/stacks-core.git",
-    "tag": "4.0.0",
-    "commit": "5595f08a244362cefc316f95b398510a2b8cb791"
+    "tag": "4.0.1",
+    "commit": "62e03cc5551bfc574223c2b78ce04ceca30cec37"
   },
   "images": {
     "stacksNode": {
-      "reference": "ghcr.io/stacks-network/stacks-core:4.0.0",
-      "digest": "sha256:91b2c2701a425e57052baca51b30234bf9af02fa118a5a4586022e7d0ecc303f"
+      "reference": "ghcr.io/stacks-network/stacks-core:4.0.1",
+      "digest": "sha256:ceb768f881ef52a1d2792a2b4a89d81e092b1df11293b04c31ce36613c3f9711"
     },
     "stacksSigner": {
-      "reference": "ghcr.io/stacks-network/stacks-signer:4.0.0",
-      "digest": "sha256:7ee8914ccc732432206fa65d59522dee06d1d374bf201c6c9c379e385f3cdee9"
+      "reference": "ghcr.io/stacks-network/stacks-signer:4.0.1",
+      "digest": "sha256:815b5518ec0f3a9b4c30d7fdca8f048a1fe8c263790ca65c5785e119b87d8590"
     },
     "stacksApi": {
       "reference": "ghcr.io/stx-labs/stacks-blockchain-api:9.0.1",
