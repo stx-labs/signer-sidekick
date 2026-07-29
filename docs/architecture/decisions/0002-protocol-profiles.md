@@ -10,9 +10,9 @@ contract principals, and expected source substitutions. Generated manager artifa
 contract source with a machine-readable manifest containing upstream source and rendered output
 hashes.
 
-The 4.0.0 reference `signer-manager.clar` is treated as source material, not as a production
-artifact. Generation must fail if the upstream hash, replacement counts, or remaining hard-coded
-principals differ from the profile.
+The upstream reference `signer-manager.clar` (pinned to a stacks-core `main` commit) is treated as
+source material, not as a production artifact. Generation must fail if the upstream hash,
+replacement counts, or remaining hard-coded principals differ from the profile.
 
 ## Consequences
 
