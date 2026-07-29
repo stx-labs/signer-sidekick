@@ -46,9 +46,9 @@ invariant(
   `Devnet manager hash mismatch: expected ${lock.manager.sha256}, got ${sha256(managerSource)}`,
 );
 invariant(
-  managerProfile.upstream.tag === lock.stacksCore.tag &&
-    managerProfile.upstream.commit === lock.stacksCore.commit,
-  "Devnet manager profile does not match the stacks-core lock",
+  managerProfile.upstream.tag === lock.manager.upstream.tag &&
+    managerProfile.upstream.commit === lock.manager.upstream.commit,
+  "Devnet manager profile does not match the locked manager upstream",
 );
 invariant(managerMetadata.profileId === managerProfile.id, "Devnet manager metadata profile drift");
 invariant(
