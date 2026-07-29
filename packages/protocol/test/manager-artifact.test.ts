@@ -34,10 +34,10 @@ describe("reference manager artifact generation", () => {
 
     expect(artifact.metadata.replacements).toEqual({ pox5: 8, sbtcDeployer: 13 });
     expect(artifact.metadata.outputSha256).toBe(
-      "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
+      "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
     );
     expect(artifact.metadata.canonicalOutputSha256).toBe(
-      "7fd58a7591ff0ae1643eb7e71ea2867385bcac237a3ea819f52301310c0d2e27",
+      "004da6bde5f91b9cdf555a020494cab73d29cc75733ad0c05e4f4b32a94e251b",
     );
     expect(MAINNET_REFERENCE_MANAGER.profile).toEqual(profile);
     expect(MAINNET_REFERENCE_MANAGER.sourceSha256).toBe(generatedMetadata.outputSha256);

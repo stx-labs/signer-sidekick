@@ -74,7 +74,7 @@ describe("Fresh and attach activation foundation", () => {
         sbtcDeployer: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT",
       },
       artifact: {
-        sourceSha256: "61db24eefbfe30ac778e0918d02019f2d33a831f376fbdb76e288fe16b070505",
+        sourceSha256: "d5dfb736a5d464fac49ccfe38f77c100fe03464fb084a711c2ec21d2d0cc8045",
       },
       operatorReviewRequired: true,
     });

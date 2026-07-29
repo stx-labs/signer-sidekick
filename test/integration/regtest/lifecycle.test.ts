@@ -263,7 +263,7 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         [Cl.principal(staker), Cl.uint(1), Cl.none()],
         permissionlessCaller,
       ).result,
-    ).toBeOk(Cl.uint(1_530));
+    ).toBeOk(Cl.tuple({ earned: Cl.uint(1_530), "withdrawal-request": Cl.none() }));
     expect(sbtcBalance(staker)).toBe(1_530n);
     expect(simnet.callReadOnlyFn(managerId, "get-earned-fees", [], deployer).result).toBeUint(170);
     expect(
@@ -313,7 +313,7 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         [Cl.principal(staker), Cl.uint(1), Cl.none()],
         permissionlessCaller,
       ).result,
-    ).toBeOk(Cl.uint(1_700));
+    ).toBeOk(Cl.tuple({ earned: Cl.uint(1_700), "withdrawal-request": Cl.some(Cl.uint(1)) }));
     expect(sbtcBalance(staker)).toBe(0n);
     expect(
       simnet.callReadOnlyFn(managerId, "get-withdrawal-liability", [], deployer).result,
@@ -430,7 +430,7 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         [Cl.principal(staker), Cl.uint(1), Cl.none()],
         permissionlessCaller,
       ).result,
-    ).toBeOk(Cl.uint(1_700));
+    ).toBeOk(Cl.tuple({ earned: Cl.uint(1_700), "withdrawal-request": Cl.some(Cl.uint(1)) }));
 
     const burnHeight = BigInt(simnet.burnBlockHeight - 1);
     const burnHash = optionalBufferValue(
