@@ -23,11 +23,13 @@ import {
   engineInvalidateApprovalRequestSchema,
   healthSourceTestRequestSchema,
   managerSignerGrantPrepareRequestSchema,
+  type OperationReadiness,
   onboardingAttachRequestSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   onboardingGrantVerifyRequestSchema,
   onboardingProgressRequestSchema,
   onboardingStartRequestSchema,
+  operationReadinessSchema,
   poolCardGenerateRequestSchema,
   type ReconciliationOperation,
   type ReconciliationSummary,
@@ -35,7 +37,7 @@ import {
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { STACKS_CORE_4_0_0 } from "@stx-labs/signer-sidekick-protocol";
+import { STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -111,6 +113,86 @@ interface OperatorSnapshotService {
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
   poolCard?(mode: "live" | "static"): Promise<unknown>;
+}
+
+function snapshotStatus<const Status extends string>(
+  value: unknown,
+  allowed: readonly Status[],
+): Status | null {
+  if (!value || typeof value !== "object") return null;
+  const status = (value as { status?: unknown }).status;
+  if (typeof status !== "string" || !allowed.some((candidate) => candidate === status)) return null;
+  return status as Status;
+}
+
+function operationReadiness(
+  snapshot: OperatorSnapshotShape,
+  engine: EngineStatus | null,
+): OperationReadiness {
+  const preflight = snapshotStatus(snapshot.preflight, ["pass", "warn", "fail"]);
+  const setup = snapshotStatus(snapshot.setup, ["ready", "attention", "blocked"]);
+  const engineAvailability = engine?.adapters.some((adapter) => adapter.availability === "blocked")
+    ? "blocked"
+    : engine?.adapters.some((adapter) => adapter.availability === "disabled")
+      ? "attention"
+      : engine
+        ? "ready"
+        : "attention";
+  const checks: OperationReadiness["checks"] = [
+    {
+      id: "control-plane",
+      status:
+        preflight === "fail"
+          ? "blocked"
+          : preflight === "warn" || !preflight
+            ? "attention"
+            : "ready",
+      detail:
+        preflight === "pass"
+          ? "Node, API, network, lag, and PoX-5 checks pass."
+          : preflight === "warn"
+            ? "One or more node, API, network, lag, or PoX-5 checks need review."
+            : preflight === "fail"
+              ? "Node, API, network, lag, or PoX-5 checks failed."
+              : "No preflight result is available.",
+    },
+    {
+      id: "setup",
+      status: setup ?? "attention",
+      detail:
+        setup === "ready"
+          ? "Manager setup is ready."
+          : setup === "attention"
+            ? "Manager setup needs operator attention."
+            : setup === "blocked"
+              ? "Manager setup is blocked."
+              : "No manager setup result is available.",
+    },
+    {
+      id: "engine",
+      status: engineAvailability,
+      detail:
+        engineAvailability === "ready"
+          ? "Transaction engine adapters are available."
+          : engineAvailability === "blocked"
+            ? (engine?.adapters.find((adapter) => adapter.availability === "blocked")
+                ?.blockReason ?? "A transaction engine adapter is blocked.")
+            : engine
+              ? "A transaction engine adapter is disabled."
+              : "Transaction engine status is unavailable.",
+    },
+  ];
+  const status = checks.some((check) => check.status === "blocked")
+    ? "blocked"
+    : checks.some((check) => check.status === "attention")
+      ? "attention"
+      : "ready";
+  return operationReadinessSchema.parse({
+    schemaVersion: 1,
+    status,
+    generatedAt: snapshot.generatedAt ?? engine?.generatedAt ?? new Date().toISOString(),
+    checks,
+  });
 }
 
 type ActivityOptions = Parameters<NonNullable<OperatorSnapshotService["activity"]>>[0];
@@ -829,8 +911,8 @@ export function createServer(options: ServerOptions = {}) {
     status: "ok",
     phase: "read-only-control-plane",
     sourceLineage: {
-      stacksCoreTag: STACKS_CORE_4_0_0.tag,
-      stacksCoreCommit: STACKS_CORE_4_0_0.commit,
+      stacksCoreTag: STACKS_CORE_4_0_1.tag,
+      stacksCoreCommit: STACKS_CORE_4_0_1.commit,
     },
   }));
   server.get("/health/live", async () => ({ status: "ok" }));
@@ -878,6 +960,12 @@ export function createServer(options: ServerOptions = {}) {
   );
   server.get("/api/v1/engine", async () => {
     return await requireFeature(options.engine, "transaction_engine_unavailable").status();
+  });
+  server.get("/api/v1/operations/readiness", async (request) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const snapshot = await interactive(request, async () => await service.snapshot());
+    const engine = options.engine ? await options.engine.status() : null;
+    return operationReadiness(snapshot, engine);
   });
   server.get("/api/v1/engine/jobs", async (request) => {
     const engine = requireFeature(options.engine, "transaction_engine_unavailable");

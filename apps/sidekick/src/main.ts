@@ -255,6 +255,12 @@ export async function executeCliCommand({
   } else if (command === "config" && arguments_[0] === "validate") {
     const config = loadConfig(env);
     writeCliJson(output, { valid: true, config: redactConfig(config) });
+  } else if (command === "doctor" && arguments_[0] === "connectivity") {
+    const config = loadConfig(env);
+    const { node, api } = clientsFromConfig(config);
+    const result = await runOperatorPreflight(config, node, api);
+    writeCliJson(output, { config: redactConfig(config), result });
+    if (result.status === "fail") output.setExitCode(2);
   } else if (command === "doctor") {
     const config = loadConfig(env);
     const [managerVerification, networkCompatibility] = await Promise.all([
@@ -796,6 +802,7 @@ Usage:
   sidekick serve    Start the loopback-only local API
   sidekick config validate  Validate and print redacted endpoint configuration
   sidekick doctor  Open, migrate, and verify the local SQLite store
+  sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
   sidekick database backup <output.sqlite>  Create and integrity-check an online backup
   sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
   sidekick init attach <manager>  Build an activation plan from a running manager

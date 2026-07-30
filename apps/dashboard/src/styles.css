@@ -1473,8 +1473,14 @@
 
 .engine-status-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-3);
+}
+
+.engine-readiness-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
 }
 
 .engine-mode-card h3 {

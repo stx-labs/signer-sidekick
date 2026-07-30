@@ -16,12 +16,16 @@ keys or process access.
 The supplied Compose service is non-root, read-only, and loopback-bound by default. SQLite uses a
 named volume; profile directories are mounted read-only.
 
+Docker Compose v2.24.4 or newer is required. Run `docker compose`, not the legacy
+`docker-compose` v1 binary: it is unsupported and can fail recreating containers with current Docker.
+
 ```sh
 umask 077
 cp .env.mainnet.example .env
 chmod 600 .env
 openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
 # Linux Wayland: replace pbcopy with wl-copy
+./scripts/require-docker-compose-v2.sh
 ```
 
 Store the generated token in a password manager, then paste it into `.env`; avoid printing it in
@@ -39,23 +43,36 @@ bridge traffic. Choose the simplest endpoint that fits the deployment:
 | Same Docker network | Use `http://<node-service>:20443` and attach Sidekick with a Compose override. |
 | Sidekick host | Use `http://host.docker.internal:20443` or a host address reachable from the container. |
 | Remote host | Use its private RPC URL and restrict ingress to the Sidekick host. |
-| Linux host networking | In an override, remove `ports`, set `network_mode: host`, `SIDEKICK_HTTP_HOST=127.0.0.1`, and use `http://127.0.0.1:20443`. |
+| Linux host networking | Use `compose.host-network.yaml`, set `STACKS_NODE_RPC_URL=http://127.0.0.1:20443`, and keep the Sidekick listener on loopback. |
+
+For Linux host networking, use the supplied Compose-v2 overlay for every command. It removes the
+base port publishing and adapts the container health probe to the configured listener:
+
+```sh
+./scripts/require-docker-compose-v2.sh
+docker compose -f compose.yaml -f compose.host-network.yaml config
+docker compose -f compose.yaml -f compose.host-network.yaml build --pull
+docker compose -f compose.yaml -f compose.host-network.yaml run --rm --no-deps sidekick doctor connectivity
+docker compose -f compose.yaml -f compose.host-network.yaml up -d
+curl --fail http://127.0.0.1:3998/health/live
+```
 
 Build, then verify the node from the same container network before starting Sidekick:
 
 ```sh
 docker compose build --pull
-docker compose run --rm --no-deps --entrypoint node sidekick -e \
-  "fetch(new URL('/v2/info', process.env.STACKS_NODE_RPC_URL)).then(r => { if (!r.ok) throw new Error('Node RPC returned ' + r.status); console.log('Node RPC reachable') })"
+docker compose run --rm --no-deps sidekick doctor connectivity
 docker compose up -d
 curl --fail "http://$(docker compose port sidekick 3998)/health/live"
 curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
-docker compose exec -T sidekick node /app/dist/main.js preflight
+docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
 ```
 
-Docker `healthy` checks liveness only: it means the control plane is listening, not that the node,
-API, or manager is ready. Do not begin onboarding until `/health/ready` succeeds and `preflight`
-reports no failed checks.
+Docker `healthy` checks liveness only. `/health/ready` checks control-plane dependencies, but does
+not change during ordinary engine observation or trigger restarts. `doctor connectivity` checks node,
+API, network, lag, and PoX-5. The authenticated Operations readiness panel
+(`/api/v1/operations/readiness`) also reports manager setup and engine blockers. Do not begin
+onboarding until `/health/ready` succeeds and connectivity reports no failed checks.
 
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.
@@ -70,10 +87,10 @@ ssh -N -L 3998:127.0.0.1:3998 operator@sidekick-host
 ```
 
 Alternatively, set `SIDEKICK_PUBLISH_ADDRESS` in `.env` to a trusted private-interface address and
-keep port 3998 blocked on other interfaces. The `docker compose port` health commands above adapt
-to either bind. Browser-wallet actions work over private HTTP, but HTTP exposes the UI and auth token
-to that network. Use TLS for any untrusted or public network; never publish the operator API directly
-to the internet.
+restrict port 3998 with the host firewall and network ACLs. The `docker compose port` health
+commands above adapt to either bind. Browser-wallet actions work over private HTTP, but HTTP exposes
+the UI and auth token to that network. Use TLS for any untrusted or public network; never publish the
+operator API directly to the internet.
 
 Public-network Fresh setup requires a matched compatibility profile; failure or inconsistency is a
 stop condition. Profiles under
@@ -251,6 +268,7 @@ docker compose exec -T sidekick \
   node /app/dist/main.js database backup /data/pre-upgrade.sqlite
 docker compose cp sidekick:/data/pre-upgrade.sqlite backups/pre-upgrade.sqlite
 
+./scripts/require-docker-compose-v2.sh
 docker compose build --pull
 docker compose up -d
 curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
@@ -289,6 +307,7 @@ curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
 
 ```sh
 docker compose exec -T sidekick node /app/dist/main.js doctor
+docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
 docker compose logs --tail=200 sidekick
 curl --fail "http://$(docker compose port sidekick 3998)/health/live"
 curl --fail "http://$(docker compose port sidekick 3998)/health/ready"

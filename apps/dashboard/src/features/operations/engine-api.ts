@@ -17,6 +17,8 @@ import {
   engineJobDetailSchema,
   engineJobPageSchema,
   engineStatusSchema,
+  type OperationReadiness,
+  operationReadinessSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { apiJson, apiJsonOrUnavailable } from "../../api-client.js";
 
@@ -28,6 +30,18 @@ export async function loadEngineStatus(
     token,
     "/api/v1/engine",
     engineStatusSchema,
+    signal ? { signal } : {},
+  );
+}
+
+export async function loadOperationReadiness(
+  token: string,
+  signal?: AbortSignal,
+): Promise<OperationReadiness | null> {
+  return apiJsonOrUnavailable(
+    token,
+    "/api/v1/operations/readiness",
+    operationReadinessSchema,
     signal ? { signal } : {},
   );
 }

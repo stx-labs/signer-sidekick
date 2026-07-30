@@ -335,6 +335,25 @@ export const engineStatusSchema = z
   .strict();
 export type EngineStatus = z.infer<typeof engineStatusSchema>;
 
+export const operationReadinessCheckSchema = z
+  .object({
+    id: z.enum(["control-plane", "setup", "engine"]),
+    status: z.enum(["ready", "attention", "blocked"]),
+    detail: z.string().min(1).max(1_000),
+  })
+  .strict();
+export type OperationReadinessCheck = z.infer<typeof operationReadinessCheckSchema>;
+
+export const operationReadinessSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["ready", "attention", "blocked"]),
+    generatedAt: instantSchema,
+    checks: z.array(operationReadinessCheckSchema).length(3),
+  })
+  .strict();
+export type OperationReadiness = z.infer<typeof operationReadinessSchema>;
+
 export const engineApprovalRequestSchema = z
   .object({
     decision: z.literal("approve"),

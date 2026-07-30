@@ -25,6 +25,8 @@ export type {
   EngineMode,
   EngineReconciliation,
   EngineStatus,
+  OperationReadiness,
+  OperationReadinessCheck,
 } from "./engine.js";
 export {
   engineAdapterIdentitySchema,
@@ -53,6 +55,8 @@ export {
   engineModeSchema,
   engineReconciliationSchema,
   engineStatusSchema,
+  operationReadinessCheckSchema,
+  operationReadinessSchema,
 } from "./engine.js";
 export type {
   ActivationStep,

@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   health,
+  operationReadiness,
   reconciliationResponse,
   responseFor,
   roster,
@@ -435,7 +436,16 @@ function engineFixture() {
     invalidationReason: null,
     version: 0,
   };
-  return { approval, job, jobId, status, summary };
+  const readiness = {
+    ...operationReadiness,
+    generatedAt: now,
+    checks: operationReadiness.checks.map((check) =>
+      check.id === "engine"
+        ? { ...check, detail: "Transaction engine adapters are available." }
+        : check,
+    ),
+  };
+  return { approval, job, jobId, readiness, status, summary };
 }
 
 test("keeps Settings and Signer Health usable when initial operator state fails", async ({
@@ -603,13 +613,15 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("treats an HTTP 501 transaction engine as an unavailable Observe surface", async ({
+test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe surface", async ({
   page,
 }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
-    const unavailable = request.pathname.startsWith("/api/v1/engine");
+    const unavailable =
+      request.pathname.startsWith("/api/v1/engine") ||
+      request.pathname === "/api/v1/operations/readiness";
     await route.fulfill({
       status: unavailable ? 501 : 200,
       contentType: "application/json",
@@ -645,7 +657,9 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
     let body: unknown;
-    if (request.pathname === "/api/v1/engine") {
+    if (request.pathname === "/api/v1/operations/readiness") {
+      body = fixture.readiness;
+    } else if (request.pathname === "/api/v1/engine") {
       body = currentStatus;
     } else if (request.pathname === "/api/v1/engine/jobs") {
       body = { schemaVersion: 1, items: [fixture.summary], nextCursor: null, total: 1 };

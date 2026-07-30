@@ -8,6 +8,7 @@ import {
   engineJobDetailSchema,
   engineJobPageSchema,
   engineStatusSchema,
+  operationReadinessSchema,
 } from "./engine.js";
 
 const jobId = "3ef4ee75-c4d9-4ee7-980d-4fdb2914ef28";
@@ -162,6 +163,18 @@ describe("transaction engine v1 API contracts", () => {
         created: true,
       }).approval.actor,
     ).toBe("operator-session");
+    expect(
+      operationReadinessSchema.parse({
+        schemaVersion: 1,
+        status: "blocked",
+        generatedAt: now,
+        checks: [
+          { id: "control-plane", status: "ready", detail: "Chain checks pass." },
+          { id: "setup", status: "ready", detail: "Manager setup is ready." },
+          { id: "engine", status: "blocked", detail: "Chain tips disagree." },
+        ],
+      }).status,
+    ).toBe("blocked");
   });
 
   it("rejects private keys, signed transaction bytes, and undeclared nested material", () => {
