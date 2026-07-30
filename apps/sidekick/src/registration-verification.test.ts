@@ -43,6 +43,21 @@ describe("manager registration verification", () => {
     expect(callReadOnly).toHaveBeenCalledTimes(2);
   });
 
+  it("pins signer-registration reads to the supplied chain anchor", async () => {
+    const callReadOnly = vi.fn().mockResolvedValue(noneCV());
+    const options = { tip: `0x${"ab".repeat(32)}` as const };
+
+    await verifyManagerRegistration({ callReadOnly }, pox5, manager, options);
+
+    expect(callReadOnly).toHaveBeenCalledWith(
+      pox5,
+      "get-signer-info",
+      manager,
+      expect.any(Array),
+      options,
+    );
+  });
+
   it("distinguishes a revoked grant from a missing registration", async () => {
     const callReadOnly = vi
       .fn()

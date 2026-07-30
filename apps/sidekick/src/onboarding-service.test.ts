@@ -74,6 +74,10 @@ async function service() {
       if (principal === managerPrincipal) throw new UpstreamHttpError("not found", 404);
       return { source: pox5Source, publish_height: 8_500_000 };
     },
+    getContractInterface: async (principal: string) => {
+      if (principal === managerPrincipal) throw new UpstreamHttpError("not found", 404);
+      return { functions: [] };
+    },
     callReadOnly: async () => bufferCV(Buffer.alloc(32, 7)),
   };
   const api = {
@@ -86,10 +90,10 @@ async function service() {
       server_version: "stacks-blockchain-api v9.0.0",
       status: "ready",
       chain_tip: {
-        block_height: 8_599_990,
-        block_hash: "0x01",
-        index_block_hash: "0x02",
-        burn_block_height: 960_238,
+        block_height: 8_600_000,
+        block_hash: `0x${"01".repeat(32)}`,
+        index_block_hash: `0x${"02".repeat(32)}`,
+        burn_block_height: 960_240,
       },
     }),
   };
@@ -141,6 +145,26 @@ describe("onboarding service", () => {
       "fresh-prepared",
       "path-started",
     ]);
+  });
+
+  it("reports an undeployed fresh manager as a pending deployment step", async () => {
+    const { onboarding } = await service();
+    onboarding.start("fresh");
+    await onboarding.prepareFresh({
+      adminPrincipal: "SP000000000000000000002Q6VF78",
+      contractName: "signer-manager",
+      authId: "7",
+      signerConfigPath: "/etc/stacks-signer/signer.toml",
+    });
+
+    const refreshed = await onboarding.refreshFresh();
+    expect(
+      refreshed.onboarding.activationPlan?.steps.find(({ id }) => id === "deploy-manager"),
+    ).toMatchObject({
+      status: "pending",
+      detail:
+        "Manager contract is not deployed at the shared chain anchor yet. Submit or wait for the deployment transaction, then verify again.",
+    });
   });
 
   it("refuses a fresh principal that differs from the configured deployment", async () => {

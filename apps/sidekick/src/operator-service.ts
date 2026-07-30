@@ -387,11 +387,11 @@ export class OperatorService {
     return { manager, transition };
   }
 
-  async summary() {
+  async summary(force = false) {
     let snapshot: Awaited<ReturnType<OperatorService["load"]>>;
     let stale = false;
     try {
-      snapshot = await this.snapshot();
+      snapshot = await this.snapshot(force);
     } catch (error) {
       if (!this.cached) throw error;
       snapshot = this.cached.value;

@@ -355,6 +355,12 @@ export interface ChainReadOptions {
   tip: ChainAnchor["indexBlockHash"];
 }
 
+/**
+ * A node can receive the next Bitcoin block before the indexed API has processed it, while both
+ * still report the same Stacks tip. Accept only that one-block indexing lead as a shared anchor.
+ */
+export const MAX_SHARED_ANCHOR_BURN_LAG = 1;
+
 type Fetch = typeof fetch;
 
 export class UpstreamHttpError extends Error {
@@ -539,20 +545,29 @@ export class StacksNodeClient {
     );
   }
 
-  async getContractSource(principal: string): Promise<ContractSource> {
+  async getContractSource(principal: string, options?: ChainReadOptions): Promise<ContractSource> {
     const { address, contractName } = parseContractPrincipal(principal);
     return await fetchJson(
       this.fetchImpl,
-      `${this.baseUrl}/v2/contracts/source/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}?proof=0`,
+      appendQuery(
+        `${this.baseUrl}/v2/contracts/source/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}`,
+        { proof: "0", tip: readTip(options) },
+      ),
       contractSourceSchema,
     );
   }
 
-  async getContractInterface(principal: string): Promise<ContractInterface> {
+  async getContractInterface(
+    principal: string,
+    options?: ChainReadOptions,
+  ): Promise<ContractInterface> {
     const { address, contractName } = parseContractPrincipal(principal);
     return await fetchJson(
       this.fetchImpl,
-      `${this.baseUrl}/v2/contracts/interface/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}`,
+      appendQuery(
+        `${this.baseUrl}/v2/contracts/interface/${encodeURIComponent(address)}/${encodeURIComponent(contractName)}`,
+        { tip: readTip(options) },
+      ),
       contractInterfaceSchema,
     );
   }
@@ -1007,10 +1022,17 @@ export function createChainAnchor(
   poxInfo: PoxInfo,
 ): ChainAnchor {
   const apiTip = apiStatus.chain_tip;
+  const nodeBurnLag = nodeInfo.burn_block_height - apiTip.burn_block_height;
+  // The API tip is the shared anchor: it is fenced before and after this read, while the node
+  // proves it can execute PoX queries at that exact index block hash. A node may lead the API by
+  // one Bitcoin block while both retain the same Stacks tip, but anything further is stale.
+  // PoX reports the node's live burn tip even when the chainstate query is tip-pinned, so derive
+  // the anchor's cycle facts from the API burn height below instead of comparing it to the API.
   if (
     nodeInfo.stacks_tip_height !== apiTip.block_height ||
-    nodeInfo.burn_block_height !== apiTip.burn_block_height ||
-    poxInfo.current_burnchain_block_height !== apiTip.burn_block_height
+    nodeBurnLag < 0 ||
+    nodeBurnLag > MAX_SHARED_ANCHOR_BURN_LAG ||
+    poxInfo.current_burnchain_block_height !== nodeInfo.burn_block_height
   ) {
     throw new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
       retryable: true,
@@ -1032,8 +1054,19 @@ export function createChainAnchor(
     throw new ChainAnchorError("PoX response does not expose the next-cycle boundary");
   }
   const currentCycleStart = nextCycle.reward_phase_start_block_height - poxInfo.reward_cycle_length;
-  const cyclePosition = poxInfo.current_burnchain_block_height - currentCycleStart;
-  if (cyclePosition < 0 || cyclePosition >= poxInfo.reward_cycle_length) {
+  const anchorCycleOffset = Math.floor(
+    (apiTip.burn_block_height - currentCycleStart) / poxInfo.reward_cycle_length,
+  );
+  const rewardCycle = poxInfo.reward_cycle_id + anchorCycleOffset;
+  const cyclePosition =
+    apiTip.burn_block_height -
+    (currentCycleStart + anchorCycleOffset * poxInfo.reward_cycle_length);
+  if (
+    rewardCycle < 0 ||
+    !Number.isSafeInteger(rewardCycle) ||
+    cyclePosition < 0 ||
+    cyclePosition >= poxInfo.reward_cycle_length
+  ) {
     throw new ChainAnchorError("PoX cycle boundary is inconsistent with the current Bitcoin block");
   }
   const phase =
@@ -1046,7 +1079,7 @@ export function createChainAnchor(
     stacksBlockHeight: apiTip.block_height,
     indexBlockHash: apiTip.index_block_hash,
     burnBlockHeight: apiTip.burn_block_height,
-    rewardCycle: poxInfo.reward_cycle_id,
+    rewardCycle,
     rewardCycleLength: poxInfo.reward_cycle_length,
     prepareCycleLength: poxInfo.prepare_cycle_length,
     cyclePosition,

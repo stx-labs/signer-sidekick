@@ -111,6 +111,20 @@ describe("pool setup status", () => {
     expect(callReadOnly).toHaveBeenCalledTimes(4);
   });
 
+  it("pins cycle eligibility reads to the supplied chain anchor", async () => {
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(uintCV(49_000_000_000n))
+      .mockResolvedValueOnce(falseCV())
+      .mockResolvedValueOnce(uintCV(51_000_000_000n))
+      .mockResolvedValueOnce(trueCV());
+    const options = { tip: `0x${"ab".repeat(32)}` as const };
+
+    await readPoolSetupStatus({ callReadOnly }, preflight, manager, registration, options);
+
+    for (const call of callReadOnly.mock.calls) expect(call[4]).toEqual(options);
+  });
+
   it("surfaces threshold and signer-set disagreement instead of hiding it", async () => {
     const callReadOnly = vi
       .fn()

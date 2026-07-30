@@ -47,6 +47,7 @@ async function waitBeforeSnapshotRetry(attempt: number): Promise<void> {
 
 async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
   const before = await captureChainAnchor(options.node, options.api);
+  const readOptions = { tip: before.indexBlockHash };
   const managerReader = options.reportMissingManager
     ? inspectManagerOrReportMissing
     : inspectDeployedManager;
@@ -57,6 +58,7 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
       options.config.network,
       options.managerPrincipal,
       options.managerVerification,
+      readOptions,
     ),
   ]);
   const registration =
@@ -65,18 +67,28 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
           options.node,
           preflight.pox.pox5ContractId,
           options.managerPrincipal,
+          readOptions,
         )
       : null;
-  const setup = await readPoolSetupStatus(options.node, preflight, manager, registration);
+  const setup = await readPoolSetupStatus(
+    options.node,
+    preflight,
+    manager,
+    registration,
+    readOptions,
+  );
   const after = await captureChainAnchor(options.node, options.api);
   if (!chainAnchorsEqual(before, after)) {
     throw new SetupSnapshotCoherenceError(
       "Chain position moved while the setup snapshot was being assembled",
     );
   }
+  // Preflight is deliberately live health data. It may be one Bitcoin block ahead of the shared
+  // API anchor, but it must not describe a different Stacks tip or PoX reward cycle than the
+  // pinned manager and eligibility reads in this snapshot.
   if (
     preflight.node.stacksTipHeight !== before.stacksBlockHeight ||
-    preflight.node.burnBlockHeight !== before.burnBlockHeight ||
+    preflight.node.burnBlockHeight < before.burnBlockHeight ||
     preflight.cycle.currentId !== before.rewardCycle
   ) {
     throw new SetupSnapshotCoherenceError(

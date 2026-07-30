@@ -18,6 +18,7 @@ import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/mana
 import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import {
+  type ChainReadOptions,
   type ContractInterface,
   type ContractSource,
   type StacksNodeClient,
@@ -549,13 +550,14 @@ export async function inspectDeployedManager(
   configuredNetwork: SidekickNetwork,
   managerPrincipal: string,
   context?: ManagerVerificationContext,
+  options?: ChainReadOptions,
 ): Promise<ManagerVerificationReport> {
-  const cacheKey = `${configuredNetwork}:${managerPrincipal}`;
+  const cacheKey = `${configuredNetwork}:${options?.tip ?? "latest"}:${managerPrincipal}`;
   let contract = context?.sourceCache.get(cacheKey);
   if (!contract) {
     const [contractSource, contractInterface] = await Promise.all([
-      node.getContractSource(managerPrincipal),
-      node.getContractInterface(managerPrincipal),
+      node.getContractSource(managerPrincipal, options),
+      node.getContractInterface(managerPrincipal, options),
     ]);
     contract = { contractSource, contractInterface };
     context?.sourceCache.set(cacheKey, contract);
@@ -574,9 +576,16 @@ export async function inspectManagerOrReportMissing(
   configuredNetwork: SidekickNetwork,
   managerPrincipal: string,
   context?: ManagerVerificationContext,
+  options?: ChainReadOptions,
 ): Promise<ManagerVerificationReport> {
   try {
-    return await inspectDeployedManager(node, configuredNetwork, managerPrincipal, context);
+    return await inspectDeployedManager(
+      node,
+      configuredNetwork,
+      managerPrincipal,
+      context,
+      options,
+    );
   } catch (error) {
     if (!(error instanceof UpstreamHttpError) || error.status !== 404) throw error;
     const principal = parseContractPrincipal(managerPrincipal);

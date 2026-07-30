@@ -153,6 +153,7 @@ function App() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncOperation, setSyncOperation] = useState<ReconciliationOperation | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -167,12 +168,16 @@ function App() {
     }
   }, [token]);
   const load = useCallback(
-    async (background = false, includeOnboarding = false) => {
+    async (background = false, includeOnboarding = false, force = false) => {
       if (!token || (background && activeStatusRequests.current > 0)) return false;
       const requestGeneration = ++statusRequestGeneration.current;
       activeStatusRequests.current += 1;
       try {
-        const snapshot = await apiJson(token, "/api/v1/status", statusResponseSchema);
+        const snapshot = await apiJson(
+          token,
+          force ? "/api/v1/status?refresh=1" : "/api/v1/status",
+          statusResponseSchema,
+        );
         if (requestGeneration !== statusRequestGeneration.current) return false;
         setData(snapshot);
         if (includeOnboarding) await loadOnboardingState();
@@ -584,8 +589,16 @@ function App() {
               : "loading status"}
           </span>
           {stale ? (
-            <button type="button" className="btn btn-tertiary sm" onClick={() => void load()}>
-              Refresh
+            <button
+              type="button"
+              className="btn btn-tertiary sm"
+              disabled={refreshingStatus}
+              onClick={() => {
+                setRefreshingStatus(true);
+                void load(false, false, true).finally(() => setRefreshingStatus(false));
+              }}
+            >
+              {refreshingStatus ? "Refreshing…" : "Refresh"}
             </button>
           ) : null}
           <span className="right">

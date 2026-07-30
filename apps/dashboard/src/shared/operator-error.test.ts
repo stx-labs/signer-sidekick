@@ -58,4 +58,27 @@ describe("operator errors", () => {
       "Sidekick returned no error detail.",
     );
   });
+
+  it("adds observed positions for a chain-anchor failure", () => {
+    const error = new ApiRequestError(
+      "Request failed: Chain sources are temporarily out of sync.",
+      {
+        kind: "http",
+        status: 503,
+        code: "chain_sources_out_of_sync",
+        body: {
+          error: "chain_sources_out_of_sync",
+          message: "Chain sources are temporarily out of sync.",
+          retryable: true,
+          node: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_263 },
+          api: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_262 },
+          poxBurnBlockHeight: 960_262,
+        },
+      },
+    );
+
+    expect(operatorErrorDetail(error)).toBe(
+      "Chain sources are temporarily out of sync. Observed: node Stacks 8667384 / Bitcoin 960263; API Stacks 8667384 / Bitcoin 960262; PoX Bitcoin 960262.",
+    );
+  });
 });
