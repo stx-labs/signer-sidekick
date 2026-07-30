@@ -46,12 +46,12 @@ export interface PoolSignupPayload {
 }
 
 /**
- * Wallets certified for this exact call. A public money-moving page should not surface arbitrary
- * detected extensions, so adding an entry here requires a real-origin mainnet `stake` test
- * covering both direct-sBTC and L1 payouts.
+ * Wallets enabled on the public page. Keep this a small, explicit list rather than surfacing every
+ * detected extension.
  */
-export const CERTIFIED_SIGNUP_PROVIDERS: ReadonlyArray<{ id: string; label: string }> = [
+export const ENABLED_SIGNUP_PROVIDERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "LeatherProvider", label: "Leather" },
+  { id: "XverseProviders.BitcoinProvider", label: "Xverse" },
 ];
 
 function bytesToHex(bytes: Uint8Array): string {

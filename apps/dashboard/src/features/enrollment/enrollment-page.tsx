@@ -59,21 +59,36 @@ export function PoolCardError({
 /**
  * Open the generated page in a new tab.
  *
- * The document is written into a blank window rather than served from a blob URL, even though the
- * download path next to it uses one. A blob carries an opaque origin: wallet extensions will not
- * inject into it and the live PoX fetch would issue from a null origin, so the page would render
- * but could not transact. A written document inherits this origin instead.
+ * The preview first loads a real, same-origin page. Wallet extensions inject during that normal
+ * navigation; the page then receives the generated artifact over a same-origin postMessage.
+ * Writing directly into about:blank runs too late for some extensions to inject a provider.
  *
  * Callers must invoke this synchronously inside a click handler, or the popup blocker takes it.
  */
 export function openPoolCardPreview(
   body: string,
   open: (url: string, target: string) => Window | null = (url, target) => window.open(url, target),
+  origin = window.location.origin,
+  events: Pick<Window, "addEventListener" | "removeEventListener"> = window,
 ): boolean {
-  const preview = open("", "_blank");
-  if (!preview) return false;
-  preview.document.write(body);
-  preview.document.close();
+  let preview: Window | null = null;
+  const sendArtifact = (event: MessageEvent) => {
+    if (
+      event.origin !== origin ||
+      event.source !== preview ||
+      event.data?.type !== "sidekick-pool-card-preview-ready"
+    ) {
+      return;
+    }
+    events.removeEventListener("message", sendArtifact);
+    preview?.postMessage({ type: "sidekick-pool-card-preview", body }, origin);
+  };
+  events.addEventListener("message", sendArtifact);
+  preview = open("/pool-card-preview.html", "_blank");
+  if (!preview) {
+    events.removeEventListener("message", sendArtifact);
+    return false;
+  }
   return true;
 }
 

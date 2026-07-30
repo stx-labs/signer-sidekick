@@ -86,6 +86,7 @@ describe("pool card artifacts", () => {
     expect(artifact.body).toContain('fetch(data.publicApiUrl + "/v2/pox"');
     expect(artifact.body).toContain("Operator &lt;Pool&gt;");
     expect(artifact.body).toContain("Bitcoin block height");
+    expect(artifact.body).not.toContain("Open in Leather");
     expect(artifact.body).not.toContain("<h1>Operator <Pool></h1>");
     expect(artifact.safety).toEqual({
       containsApiKey: false,
@@ -167,10 +168,11 @@ describe("pool card staking form", () => {
     expect(artifact.body).toContain("only begin once your earned rewards exceed");
   });
 
-  it("keeps the certified wallet list, and does not ship Connect", () => {
+  it("keeps the enabled wallet list, and does not ship Connect", () => {
     const artifact = createPoolCardArtifact(staking(), "live", API_URL);
 
     expect(artifact.body).toContain("LeatherProvider");
+    expect(artifact.body).toContain("XverseProviders.BitcoinProvider");
     expect(artifact.body).not.toContain("@stacks/connect");
     expect(artifact.body).not.toContain("WalletConnect");
     expect(artifact.safety.requiresSidekickPublicRoute).toBe(false);

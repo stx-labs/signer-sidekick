@@ -2,8 +2,8 @@ import { z } from "zod";
 import { isHttpUrl, parseEndpointUrl } from "./config.js";
 import type { PoolEnrollmentDocument } from "./enrollment-info.js";
 import {
-  CERTIFIED_SIGNUP_PROVIDERS,
   createStakeCalldataTemplates,
+  ENABLED_SIGNUP_PROVIDERS,
   encodeNoneCalldata,
   encodeStakeManagerArg,
   POOL_SIGNUP_SCRIPT,
@@ -88,7 +88,7 @@ function signupPayload(enrollment: PoolEnrollmentDocument): PoolSignupPayload {
     bitcoinL1: enrollment.rewardDestinations.bitcoinL1 && maxFee !== null,
     l1MaxFeeSats: maxFee,
     calldataTemplates: maxFee === null ? [] : createStakeCalldataTemplates(BigInt(maxFee)),
-    providers: CERTIFIED_SIGNUP_PROVIDERS.map((provider) => ({ ...provider })),
+    providers: ENABLED_SIGNUP_PROVIDERS.map((provider) => ({ ...provider })),
   };
 }
 
@@ -386,7 +386,6 @@ function cardHtml(
       <dt>Support</dt><dd>${html(supportLabel(enrollment))}</dd>
     </dl>
     <div class="actions">
-      <a class="button" href="${html(enrollment.links.officialPlatforms[0]?.url ?? "https://earn.leather.io")}" rel="noopener noreferrer">Open in Leather</a>
       <a href="${html(enrollment.links.managerExplorer)}" rel="noopener noreferrer">View manager on Explorer</a>
     </div>
     ${signupForm}

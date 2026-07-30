@@ -1,8 +1,8 @@
 import { ClarityType, deserializeCV } from "@stacks/transactions";
 import { describe, expect, it } from "vitest";
 import {
-  CERTIFIED_SIGNUP_PROVIDERS,
   createStakeCalldataTemplates,
+  ENABLED_SIGNUP_PROVIDERS,
   encodeNoneCalldata,
   encodeStakeManagerArg,
   POOL_SIGNUP_SCRIPT,
@@ -143,8 +143,11 @@ describe("pool signup calldata", () => {
     expect(runtime.buildCalldataHex(signupPayload(0n), 0, new Uint8Array(21))).toBeNull();
   });
 
-  it("ships only wallets certified for this call", () => {
-    expect(CERTIFIED_SIGNUP_PROVIDERS.map(({ id }) => id)).toEqual(["LeatherProvider"]);
+  it("ships the enabled public-page wallets", () => {
+    expect(ENABLED_SIGNUP_PROVIDERS.map(({ id }) => id)).toEqual([
+      "LeatherProvider",
+      "XverseProviders.BitcoinProvider",
+    ]);
   });
 });
 

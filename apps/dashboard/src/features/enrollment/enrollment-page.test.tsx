@@ -33,20 +33,40 @@ describe("pool card error actions", () => {
 });
 
 describe("pool card preview", () => {
-  it("writes into a real-origin window rather than a blob URL", () => {
-    const write = vi.fn();
-    const close = vi.fn();
-    const open = vi.fn().mockReturnValue({ document: { write, close } } as unknown as Window);
+  it("loads a real page before delivering the generated artifact", () => {
+    const postMessage = vi.fn();
+    const preview = { postMessage } as unknown as Window;
+    const open = vi.fn().mockReturnValue(preview);
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
 
-    expect(openPoolCardPreview("<main>pool</main>", open)).toBe(true);
+    expect(
+      openPoolCardPreview("<main>pool</main>", open, "https://sidekick.example", {
+        addEventListener,
+        removeEventListener,
+      }),
+    ).toBe(true);
 
-    // A blob URL would carry an opaque origin, so wallets could not inject into the preview.
-    expect(open).toHaveBeenCalledWith("", "_blank");
-    expect(write).toHaveBeenCalledWith("<main>pool</main>");
-    expect(close).toHaveBeenCalledOnce();
+    const onMessage = addEventListener.mock.calls[0]?.[1] as (event: MessageEvent) => void;
+    expect(open).toHaveBeenCalledWith("/pool-card-preview.html", "_blank");
+    onMessage({
+      origin: "https://sidekick.example",
+      source: preview,
+      data: { type: "sidekick-pool-card-preview-ready" },
+    } as MessageEvent);
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: "sidekick-pool-card-preview", body: "<main>pool</main>" },
+      "https://sidekick.example",
+    );
+    expect(removeEventListener).toHaveBeenCalledWith("message", onMessage);
   });
 
   it("reports a blocked pop-up instead of failing silently", () => {
-    expect(openPoolCardPreview("<main>pool</main>", () => null)).toBe(false);
+    expect(
+      openPoolCardPreview("<main>pool</main>", () => null, "https://sidekick.example", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    ).toBe(false);
   });
 });

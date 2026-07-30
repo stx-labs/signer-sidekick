@@ -94,8 +94,8 @@ cycle and a static snapshot's height fails after the next rollover. It refuses t
 transaction during the prepare phase, or when chain data cannot be read. It creates new stakes
 only; changing an existing position is `stake-update` through an official interface.
 
-Only wallets certified for this exact call are offered. A Bitcoin L1 payout carries a fixed
-10,000-sat fee budget deducted from each withdrawal, which the page states before the wallet opens.
+The page offers Leather and Xverse when installed. A Bitcoin L1 payout carries a fixed 10,000-sat
+fee budget deducted from each withdrawal, which the page states before the wallet opens.
 
 ## Functional requirements
 

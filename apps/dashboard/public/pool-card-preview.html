@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pool card preview</title>
+</head>
+<body>
+  <p>Loading pool card preview…</p>
+  <script>
+    (() => {
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin || event.source !== window.opener) return;
+        var message = event.data;
+        if (message?.type !== "sidekick-pool-card-preview" || typeof message.body !== "string") return;
+        document.open();
+        document.write(message.body);
+        document.close();
+      });
+      if (window.opener) {
+        window.opener.postMessage({ type: "sidekick-pool-card-preview-ready" }, location.origin);
+      }
+    })();
+  </script>
+</body>
+</html>
