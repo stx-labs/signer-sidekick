@@ -37,8 +37,8 @@ export async function loadEngineStatus(
 export async function loadOperationReadiness(
   token: string,
   signal?: AbortSignal,
-): Promise<OperationReadiness> {
-  return apiJson(
+): Promise<OperationReadiness | null> {
+  return apiJsonOrUnavailable(
     token,
     "/api/v1/operations/readiness",
     operationReadinessSchema,

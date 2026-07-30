@@ -285,6 +285,17 @@ export const snapshot = {
   ],
 };
 
+export const operationReadiness = {
+  schemaVersion: 1,
+  status: "ready",
+  generatedAt: "2026-07-15T12:00:00.000Z",
+  checks: [
+    { id: "control-plane", status: "ready", detail: "Control plane is ready." },
+    { id: "setup", status: "ready", detail: "Manager setup is ready." },
+    { id: "engine", status: "ready", detail: "Transaction engine is ready." },
+  ],
+};
+
 export const onboarding = {
   onboarding: null,
   wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
@@ -461,6 +472,7 @@ export function responseFor(url) {
   const offset = Number(request.searchParams.get("offset") ?? 0);
   const limit = Number(request.searchParams.get("limit") ?? 50);
   if (request.pathname === "/api/v1/status") return snapshot;
+  if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
   if (request.pathname === "/api/v1/sync") return reconciliationResponse();
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
   if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
