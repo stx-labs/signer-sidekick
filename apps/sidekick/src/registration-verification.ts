@@ -7,6 +7,7 @@ import {
   encodeBufferHex,
   encodePrincipalHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import type { ChainReadOptions } from "./chain-clients.js";
 
 interface ReadOnlyCaller {
   callReadOnly(
@@ -14,6 +15,7 @@ interface ReadOnlyCaller {
     functionName: string,
     sender: string,
     args: readonly string[],
+    options?: ChainReadOptions,
   ): Promise<ClarityValue>;
 }
 
@@ -30,10 +32,15 @@ export async function verifyManagerRegistration(
   node: ReadOnlyCaller,
   pox5ContractId: string,
   managerPrincipal: string,
+  options?: ChainReadOptions,
 ): Promise<RegistrationVerification> {
-  const signerInfo = await node.callReadOnly(pox5ContractId, "get-signer-info", managerPrincipal, [
-    encodePrincipalHex(managerPrincipal),
-  ]);
+  const signerInfo = await node.callReadOnly(
+    pox5ContractId,
+    "get-signer-info",
+    managerPrincipal,
+    [encodePrincipalHex(managerPrincipal)],
+    options,
+  );
   const signerKeyHex = decodeOptionalBuffer(signerInfo, "get-signer-info");
   if (!signerKeyHex) {
     return {
@@ -56,6 +63,7 @@ export async function verifyManagerRegistration(
     "verify-signer-key-grant",
     managerPrincipal,
     [encodePrincipalHex(managerPrincipal), encodeBufferHex(signerKeyHex)],
+    options,
   );
   let signerKeyGrantValid = false;
   try {

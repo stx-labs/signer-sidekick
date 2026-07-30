@@ -889,6 +889,8 @@ describe("Stacks node client", () => {
     };
     const responses = [
       pox,
+      { source: "(define-public (ping) (ok true))", publish_height: 8_600_000 },
+      { functions: [] },
       { okay: true, result: cvToHex(uintCV(141n)) },
       { data: cvToHex(uintCV(500n)) },
       { data: cvToHex(someCV(uintCV(0n))) },
@@ -904,6 +906,8 @@ describe("Stacks node client", () => {
     const readOptions = { tip: indexBlockHash };
 
     await client.getPoxInfo(readOptions);
+    await client.getContractSource(manager, readOptions);
+    await client.getContractInterface(manager, readOptions);
     await client.callReadOnly(
       "SP000000000000000000002Q6VF78.pox-5",
       "reward-cycle-to-burn-height",
@@ -916,6 +920,8 @@ describe("Stacks node client", () => {
 
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
       `http://127.0.0.1:20443/v2/pox?tip=${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v2/contracts/source/SP000000000000000000002Q6VF78/signer-manager?proof=0&tip=${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v2/contracts/interface/SP000000000000000000002Q6VF78/signer-manager?tip=${indexBlockHash.slice(2)}`,
       `http://127.0.0.1:20443/v2/contracts/call-read/SP000000000000000000002Q6VF78/pox-5/reward-cycle-to-burn-height?tip=${indexBlockHash.slice(2)}`,
       `http://127.0.0.1:20443/v2/data_var/SP000000000000000000002Q6VF78/signer-manager/fees-bips?proof=0&tip=${indexBlockHash.slice(2)}`,
       `http://127.0.0.1:20443/v2/map_entry/SP000000000000000000002Q6VF78/signer-manager/fee-bips-for-cycle?proof=0&tip=${indexBlockHash.slice(2)}`,
@@ -999,6 +1005,130 @@ describe("Stacks node client", () => {
       checkpoint,
       indexBlockHash,
     });
+  });
+
+  it("accepts a node that learned one newer Bitcoin tip than the shared API anchor", () => {
+    expect(
+      createChainAnchor(
+        {
+          network_id: 1,
+          burn_block_height: 960_263,
+          stacks_tip_height: 8_667_384,
+        },
+        {
+          server_version: "stacks-blockchain-api v9",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_667_384,
+            block_hash: `0x${"cd".repeat(32)}`,
+            index_block_hash: indexBlockHash,
+            burn_block_height: 960_262,
+          },
+        },
+        {
+          current_burnchain_block_height: 960_263,
+          reward_cycle_id: 141,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+          next_cycle: {
+            id: 142,
+            min_threshold_ustx: 1,
+            min_increment_ustx: 1,
+            stacked_ustx: 1,
+            prepare_phase_start_block_height: 961_000,
+            blocks_until_prepare_phase: 738,
+            reward_phase_start_block_height: 961_100,
+            blocks_until_reward_phase: 838,
+          },
+        },
+      ),
+    ).toMatchObject({
+      stacksBlockHeight: 8_667_384,
+      burnBlockHeight: 960_262,
+      indexBlockHash,
+    });
+  });
+
+  it("rejects an API anchor that trails the node by more than one Bitcoin block", () => {
+    expect(() =>
+      createChainAnchor(
+        {
+          network_id: 1,
+          burn_block_height: 960_264,
+          stacks_tip_height: 8_667_384,
+        },
+        {
+          server_version: "stacks-blockchain-api v9",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_667_384,
+            block_hash: `0x${"cd".repeat(32)}`,
+            index_block_hash: indexBlockHash,
+            burn_block_height: 960_262,
+          },
+        },
+        {
+          current_burnchain_block_height: 960_264,
+          reward_cycle_id: 141,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+          next_cycle: {
+            id: 142,
+            min_threshold_ustx: 1,
+            min_increment_ustx: 1,
+            stacked_ustx: 1,
+            prepare_phase_start_block_height: 961_000,
+            blocks_until_prepare_phase: 736,
+            reward_phase_start_block_height: 961_100,
+            blocks_until_reward_phase: 836,
+          },
+        },
+      ),
+    ).toThrow(ChainAnchorError);
+  });
+
+  it("derives prior-cycle anchor facts when the one-block lead crosses a reward-cycle boundary", () => {
+    expect(
+      createChainAnchor(
+        {
+          network_id: 1,
+          burn_block_height: 961_100,
+          stacks_tip_height: 8_667_384,
+        },
+        {
+          server_version: "stacks-blockchain-api v9",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_667_384,
+            block_hash: `0x${"cd".repeat(32)}`,
+            index_block_hash: indexBlockHash,
+            burn_block_height: 961_099,
+          },
+        },
+        {
+          current_burnchain_block_height: 961_100,
+          reward_cycle_id: 142,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+          next_cycle: {
+            id: 143,
+            min_threshold_ustx: 1,
+            min_increment_ustx: 1,
+            stacked_ustx: 1,
+            prepare_phase_start_block_height: 963_100,
+            blocks_until_prepare_phase: 2_000,
+            reward_phase_start_block_height: 963_200,
+            blocks_until_reward_phase: 2_100,
+          },
+        },
+      ),
+    ).toMatchObject({ rewardCycle: 141, cyclePosition: 2_099, phase: "prepare" });
   });
 
   it("retains the exact source heights when a chain anchor is temporarily inconsistent", () => {

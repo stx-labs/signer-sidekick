@@ -25,7 +25,7 @@ const walletIntentAnchorMismatch = {
   poxBurnBlockHeight: 4_819,
 } as const;
 const chainSourcesOutOfSyncMessage =
-  "The node and API are temporarily out of sync. Retry when their Stacks and Bitcoin heights match.";
+  "The node and API are temporarily out of sync. Retry after the indexed API catches up.";
 
 function retryableWalletIntentAnchorError(): ChainAnchorError {
   return new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -116,6 +116,58 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("treats a normal one-block node lead as an unstable anchor, not source drift", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      summary: async () => {
+        throw new ChainAnchorError("tip moved", {
+          retryable: true,
+          tips: {
+            node: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_263 },
+            api: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_262 },
+            poxBurnBlockHeight: 960_263,
+          },
+        });
+      },
+      synchronize: async () => ({}),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/status",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: "chain_anchor_unstable",
+      retryable: true,
+      node: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_263 },
+      api: { stacksTipHeight: 8_667_384, burnBlockHeight: 960_262 },
+      poxBurnBlockHeight: 960_263,
+    });
+  });
+
+  it("forces a fresh status snapshot when the operator requests refresh", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const summary = vi.fn(async () => ({ network: "mainnet", activity: { withdrawals: [] } }));
+    const service = { snapshot: vi.fn(), summary, synchronize: async () => ({}) };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/status?refresh=1",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(summary).toHaveBeenCalledWith(true);
   });
 
   it("returns stable workflow codes with safe operator guidance", async () => {

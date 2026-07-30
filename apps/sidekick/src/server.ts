@@ -42,6 +42,7 @@ import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } fr
 import { z } from "zod";
 import {
   ChainAnchorError,
+  MAX_SHARED_ANCHOR_BURN_LAG,
   RateLimitedError,
   UpstreamHttpError,
   UpstreamSchemaError,
@@ -105,7 +106,7 @@ interface OperatorSnapshotService {
     withdrawalOffset?: number;
     withdrawalState?: "pending" | "settled" | "reclaimed" | null;
   }): Promise<unknown>;
-  summary?(): Promise<OperatorSnapshotShape>;
+  summary?(force?: boolean): Promise<OperatorSnapshotShape>;
   poolPage?(options?: { offset?: number; limit?: number; query?: string }): Promise<unknown>;
   poolHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsPage?(options?: { offset?: number; limit?: number }): Promise<unknown>;
@@ -311,7 +312,7 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   invalid_adapter_disable_request:
     "The adapter disable request is invalid. Confirm the decision and reason, then retry.",
   chain_sources_out_of_sync:
-    "The node and API are temporarily out of sync. Retry when their Stacks and Bitcoin heights match.",
+    "The node and API are temporarily out of sync. Retry after the indexed API catches up.",
   chain_anchor_unstable: "Chain data changed while Sidekick was reading it. Retry in a moment.",
   chain_anchor_invalid:
     "Node, API, or PoX data is inconsistent. Check the configured chain sources before retrying.",
@@ -390,8 +391,9 @@ function chainSourcesDiffer(error: ChainAnchorError): boolean {
   return Boolean(
     tips &&
       (tips.node.stacksTipHeight !== tips.api.stacksTipHeight ||
-        tips.node.burnBlockHeight !== tips.api.burnBlockHeight ||
-        tips.poxBurnBlockHeight !== tips.api.burnBlockHeight),
+        tips.node.burnBlockHeight < tips.api.burnBlockHeight ||
+        tips.node.burnBlockHeight - tips.api.burnBlockHeight > MAX_SHARED_ANCHOR_BURN_LAG ||
+        tips.poxBurnBlockHeight !== tips.node.burnBlockHeight),
   );
 }
 
@@ -435,6 +437,15 @@ function classifySafeOperatorError(error: unknown): SafeErrorClassification {
       return safeClassification(503, "chain_anchor_unstable", {
         retryable: true,
         retryAfterSeconds: 1,
+        ...(error.tips
+          ? {
+              details: {
+                node: error.tips.node,
+                api: error.tips.api,
+                poxBurnBlockHeight: error.tips.poxBurnBlockHeight,
+              },
+            }
+          : {}),
       });
     }
     return safeClassification(502, "chain_anchor_invalid");
@@ -951,13 +962,14 @@ export function createServer(options: ServerOptions = {}) {
     ].join("\n");
   });
 
-  server.get(
-    "/api/v1/status",
-    async (request) =>
-      await interactive(request, async () =>
-        options.service?.summary ? options.service.summary() : options.service?.snapshot(),
-      ),
-  );
+  server.get("/api/v1/status", async (request) => {
+    const refresh = (request.query as { refresh?: unknown }).refresh === "1";
+    return await interactive(request, async () =>
+      options.service?.summary
+        ? options.service.summary(refresh)
+        : options.service?.snapshot(refresh),
+    );
+  });
   server.get("/api/v1/engine", async () => {
     return await requireFeature(options.engine, "transaction_engine_unavailable").status();
   });

@@ -6,6 +6,7 @@ import {
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import type { ChainReadOptions } from "./chain-clients.js";
 import type { ManagerVerificationReport } from "./manager-verification.js";
 import type { PreflightCheckStatus, PreflightResult } from "./preflight.js";
 import type { RegistrationVerification } from "./registration-verification.js";
@@ -16,6 +17,7 @@ interface ReadOnlyCaller {
     functionName: string,
     sender: string,
     args: readonly string[],
+    options?: ChainReadOptions,
   ): Promise<ClarityValue>;
 }
 
@@ -65,11 +67,24 @@ async function readCycleEligibility(
   pox5ContractId: string,
   managerPrincipal: string,
   cycleId: number,
+  options?: ChainReadOptions,
 ): Promise<PoolCycleEligibility> {
   const args = [encodePrincipalHex(managerPrincipal), encodeUIntHex(BigInt(cycleId))];
   const [delegated, membership] = await Promise.all([
-    node.callReadOnly(pox5ContractId, "get-amount-delegated-for-signer", managerPrincipal, args),
-    node.callReadOnly(pox5ContractId, "signer-set-contains-for-cycle", managerPrincipal, args),
+    node.callReadOnly(
+      pox5ContractId,
+      "get-amount-delegated-for-signer",
+      managerPrincipal,
+      args,
+      options,
+    ),
+    node.callReadOnly(
+      pox5ContractId,
+      "signer-set-contains-for-cycle",
+      managerPrincipal,
+      args,
+      options,
+    ),
   ]);
   const delegatedUstx = decodeUInt(delegated, "get-amount-delegated-for-signer");
   const inSignerSet = decodeBoolean(membership, "signer-set-contains-for-cycle");
@@ -97,6 +112,7 @@ export async function readPoolSetupStatus(
   preflight: PreflightResult,
   manager: ManagerVerificationReport,
   registration: RegistrationVerification | null,
+  options?: ChainReadOptions,
 ): Promise<PoolSetupStatus> {
   const pox5ContractId = preflight.pox.pox5ContractId;
   const canReadEligibility = Boolean(pox5ContractId && manager.attachAllowed);
@@ -109,7 +125,7 @@ export async function readPoolSetupStatus(
     pox5ContractId && canReadEligibility
       ? await Promise.all(
           cycleIds.map((cycleId) =>
-            readCycleEligibility(node, pox5ContractId, manager.managerPrincipal, cycleId),
+            readCycleEligibility(node, pox5ContractId, manager.managerPrincipal, cycleId, options),
           ),
         )
       : [];

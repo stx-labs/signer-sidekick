@@ -76,8 +76,18 @@ describe("setup snapshot", () => {
       node,
       preflight.pox.pox5ContractId,
       managerPrincipal,
+      { tip: chainAnchor.indexBlockHash },
     );
-    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, registration);
+    expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
+      node,
+      config.network,
+      managerPrincipal,
+      undefined,
+      { tip: chainAnchor.indexBlockHash },
+    );
+    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, registration, {
+      tip: chainAnchor.indexBlockHash,
+    });
   });
 
   it("preserves blocked setup detail when registration cannot be read", async () => {
@@ -102,7 +112,9 @@ describe("setup snapshot", () => {
       }),
     ).resolves.toEqual({ chainAnchor, preflight, manager, registration: null, setup });
     expect(mocks.verifyManagerRegistration).not.toHaveBeenCalled();
-    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, null);
+    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, null, {
+      tip: chainAnchor.indexBlockHash,
+    });
   });
 
   it("uses the missing-manager report for read-only operator snapshots", async () => {
@@ -218,7 +230,41 @@ describe("setup snapshot", () => {
     }
   });
 
-  it("retries when preflight facts do not match the snapshot anchor", async () => {
+  it("keeps setup reads anchored when the live node learns a newer Bitcoin block", async () => {
+    const preflight = {
+      node: { stacksTipHeight: 10, burnBlockHeight: 5 },
+      cycle: { currentId: 2 },
+      pox: { pox5ContractId: null },
+    };
+    mocks.runOperatorPreflight.mockResolvedValue({
+      ...preflight,
+      node: { stacksTipHeight: 10, burnBlockHeight: 6 },
+    });
+    mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
+    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+
+    await expect(
+      readSetupSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: undefined,
+        waitBeforeRetry,
+      }),
+    ).resolves.toMatchObject({ chainAnchor });
+    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+    expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
+    expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
+      node,
+      config.network,
+      managerPrincipal,
+      undefined,
+      { tip: chainAnchor.indexBlockHash },
+    );
+  });
+
+  it("retries when preflight reports a different Stacks tip", async () => {
     const matchingPreflight = {
       node: { stacksTipHeight: 10, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -228,6 +274,37 @@ describe("setup snapshot", () => {
       .mockResolvedValueOnce({
         ...matchingPreflight,
         node: { stacksTipHeight: 11, burnBlockHeight: 5 },
+      })
+      .mockResolvedValue(matchingPreflight);
+    mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
+    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+
+    await expect(
+      readSetupSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: undefined,
+        waitBeforeRetry,
+      }),
+    ).resolves.toMatchObject({ chainAnchor });
+    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
+    expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
+    expect(waitBeforeRetry).toHaveBeenCalledOnce();
+  });
+
+  it("retries when the live PoX cycle differs from the shared anchor", async () => {
+    const matchingPreflight = {
+      node: { stacksTipHeight: 10, burnBlockHeight: 5 },
+      cycle: { currentId: 2 },
+      pox: { pox5ContractId: null },
+    };
+    mocks.runOperatorPreflight
+      .mockResolvedValueOnce({
+        ...matchingPreflight,
+        node: { stacksTipHeight: 10, burnBlockHeight: 6 },
+        cycle: { currentId: 3 },
       })
       .mockResolvedValue(matchingPreflight);
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });

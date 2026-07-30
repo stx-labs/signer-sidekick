@@ -626,15 +626,25 @@ export class OnboardingService {
       api,
       managerPrincipal: data.managerPrincipal,
       managerVerification: this.options.managerVerification,
+      reportMissingManager: true,
     });
     const steps = data.activationPlan.steps.map((step) => {
       if (step.id === "deploy-manager") {
+        const managerNotDeployed =
+          manager.publishHeight === 0 &&
+          manager.reasons.includes("Manager contract is not deployed yet");
         return {
           ...step,
-          status: manager.attachAllowed ? ("complete" as const) : ("blocked" as const),
+          status: manager.attachAllowed
+            ? ("complete" as const)
+            : managerNotDeployed
+              ? ("pending" as const)
+              : ("blocked" as const),
           detail: manager.attachAllowed
             ? `Manager source verified at Stacks block ${manager.publishHeight}`
-            : manager.reasons.join("; "),
+            : managerNotDeployed
+              ? "Manager contract is not deployed at the shared chain anchor yet. Submit or wait for the deployment transaction, then verify again."
+              : manager.reasons.join("; "),
         };
       }
       if (step.id === "register-manager") {
