@@ -53,7 +53,7 @@ VOLUME ["/data"]
 EXPOSE 3998
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3998/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "const host=process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; fetch('http://' + host + ':3998/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["node", "/app/dist/main.js"]
 CMD ["serve"]

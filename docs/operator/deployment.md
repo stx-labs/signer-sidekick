@@ -16,7 +16,8 @@ keys or process access.
 The supplied Compose service is non-root, read-only, and loopback-bound by default. SQLite uses a
 named volume; profile directories are mounted read-only.
 
-Docker Compose v2.24.4 or newer is required. Legacy `docker-compose` v1 is unsupported.
+Docker Compose v2.24.4 or newer is required. Run `docker compose`, not the legacy
+`docker-compose` v1 binary: it is unsupported and can fail recreating containers with current Docker.
 
 ```sh
 umask 077
