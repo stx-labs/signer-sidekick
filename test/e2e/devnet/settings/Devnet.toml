@@ -65,8 +65,8 @@ bitcoin_controller_block_time = 10_000
 epoch_4_0 = 162
 stacks_signers_keys = ["7287ba251d44a4d3fd9276c88ce34c5c52a038955511cccaf77e61068649c17801"]
 bitcoin_node_image_url = "docker.io/lncm/bitcoind:v27.2@sha256:6b911de286306cddedcbe65fc06ffb14102179e4301c970d80cc6e6d5a2f4c17"
-stacks_node_image_url = "ghcr.io/stacks-network/stacks-core:4.0.0@sha256:91b2c2701a425e57052baca51b30234bf9af02fa118a5a4586022e7d0ecc303f"
-stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.0@sha256:7ee8914ccc732432206fa65d59522dee06d1d374bf201c6c9c379e385f3cdee9"
+stacks_node_image_url = "ghcr.io/stacks-network/stacks-core:4.0.1@sha256:ceb768f881ef52a1d2792a2b4a89d81e092b1df11293b04c31ce36613c3f9711"
+stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.1@sha256:815b5518ec0f3a9b4c30d7fdca8f048a1fe8c263790ca65c5785e119b87d8590"
 stacks_api_image_url = "ghcr.io/stx-labs/stacks-blockchain-api:9.0.1@sha256:5ee39d1da7c1e37090ffef172f17390437545720e29e54e1818172edc52189bd"
 postgres_image_url = "docker.io/library/postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
 

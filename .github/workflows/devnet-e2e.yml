@@ -1,9 +1,17 @@
 name: Released Devnet E2E
 
+# The weekly schedule is disabled because the suite cannot complete. The version
+# lock now verifies, but Clarinet aborts before the Devnet starts: it gives
+# bitcoind roughly 15 seconds to answer on localhost:18443 and then exits fatally.
+# Nothing downstream of that has ever run. Restore the schedule below once a
+# workflow_dispatch run passes end to end.
+#
+#  schedule:
+#    - cron: "17 8 * * 1"
+#
+# See https://github.com/stx-labs/signer-sidekick/issues/3
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 8 * * 1"
 
 permissions:
   contents: read
