@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "../../api-client.js";
-import { PoolCardError, poolCardSetupRequired } from "./enrollment-page.js";
+import {
+  openPoolCardPreview,
+  PoolCardError,
+  poolCardRequestBody,
+  poolCardSetupRequired,
+} from "./enrollment-page.js";
 
 describe("pool card error actions", () => {
   it("offers Initial Setup only when pool setup is incomplete", () => {
@@ -29,5 +34,41 @@ describe("pool card error actions", () => {
     expect(setupHtml).toContain("Open Initial Setup");
     expect(transportHtml).not.toContain("Open Initial Setup");
     expect(transportHtml).toContain(">Retry<");
+  });
+});
+
+describe("pool card generation request", () => {
+  it("leaves the staking form off by default", () => {
+    expect(poolCardRequestBody("live", false, "10000")).toEqual({
+      mode: "live",
+      includeStakingForm: false,
+    });
+  });
+
+  it("sends the operator fee budget only when staking is enabled", () => {
+    expect(poolCardRequestBody("live", true, "12500")).toEqual({
+      mode: "live",
+      includeStakingForm: true,
+      l1MaxFeeSats: 12500,
+    });
+  });
+});
+
+describe("pool card preview", () => {
+  it("writes into a real-origin window rather than a blob URL", () => {
+    const write = vi.fn();
+    const close = vi.fn();
+    const open = vi.fn().mockReturnValue({ document: { write, close } } as unknown as Window);
+
+    expect(openPoolCardPreview("<main>pool</main>", open)).toBe(true);
+
+    // A blob URL would carry an opaque origin, so wallets could not inject into the preview.
+    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(write).toHaveBeenCalledWith("<main>pool</main>");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a blocked pop-up instead of failing silently", () => {
+    expect(openPoolCardPreview("<main>pool</main>", () => null)).toBe(false);
   });
 });

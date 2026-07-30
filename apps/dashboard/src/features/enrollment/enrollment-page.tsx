@@ -1,4 +1,11 @@
-import { ArrowClockwise, Check, DownloadSimple, ShieldCheck } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  ArrowSquareOut,
+  Check,
+  DownloadSimple,
+  ShieldCheck,
+  Warning,
+} from "@phosphor-icons/react";
 import {
   type PoolCardArtifact,
   poolCardResponseSchema,
@@ -50,8 +57,43 @@ export function PoolCardError({
   );
 }
 
+/**
+ * Open the generated page in a new tab.
+ *
+ * The document is written into a blank window rather than served from a blob URL, even though the
+ * download path next to it uses one. A blob carries an opaque origin: wallet extensions will not
+ * inject into it and the live PoX fetch would issue from a null origin, so the page would render
+ * but could not transact. A written document inherits this origin instead.
+ *
+ * Callers must invoke this synchronously inside a click handler, or the popup blocker takes it.
+ */
+export function openPoolCardPreview(
+  body: string,
+  open: (url: string, target: string) => Window | null = (url, target) => window.open(url, target),
+): boolean {
+  const preview = open("", "_blank");
+  if (!preview) return false;
+  preview.document.write(body);
+  preview.document.close();
+  return true;
+}
+
+export function poolCardRequestBody(
+  mode: "live" | "static",
+  includeStakingForm: boolean,
+  l1MaxFeeSats: string,
+): Record<string, unknown> {
+  return {
+    mode,
+    includeStakingForm,
+    ...(includeStakingForm ? { l1MaxFeeSats: Number(l1MaxFeeSats) } : {}),
+  };
+}
+
 export function EnrollmentPage({ token }: { token: string }) {
   const [mode, setMode] = useState<"live" | "static">("live");
+  const [includeStakingForm, setIncludeStakingForm] = useState(false);
+  const [l1MaxFeeSats, setL1MaxFeeSats] = useState("10000");
   const [artifact, setArtifact] = useState<PoolCardArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +110,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     try {
       const result = await apiJson(token, "/api/v1/pool-card/generate", poolCardResponseSchema, {
         method: "POST",
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify(poolCardRequestBody(mode, includeStakingForm, l1MaxFeeSats)),
         signal: controller.signal,
       });
       if (!controller.signal.aborted) setArtifact(result);
@@ -82,7 +124,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
-  }, [mode, token]);
+  }, [mode, includeStakingForm, l1MaxFeeSats, token]);
 
   useEffect(() => {
     void generate();
@@ -100,6 +142,13 @@ export function EnrollmentPage({ token }: { token: string }) {
     URL.revokeObjectURL(url);
   };
 
+  const preview = () => {
+    if (!artifact) return;
+    if (!openPoolCardPreview(artifact.body)) {
+      setError("Allow pop-ups for this site to preview the pool page.");
+    }
+  };
+
   const enrollment = artifact?.enrollment;
   const current = enrollment?.eligibility.current;
   return (
@@ -109,6 +158,14 @@ export function EnrollmentPage({ token }: { token: string }) {
         lede="Generate a pool card to publish on your website."
         actions={
           <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!artifact}
+              onClick={preview}
+            >
+              <ArrowSquareOut /> Preview
+            </button>
             <button
               type="button"
               className="btn btn-secondary"
@@ -164,6 +221,54 @@ export function EnrollmentPage({ token }: { token: string }) {
             ? "Updates reward cycle and Bitcoin height when the page loads."
             : "Uses the values generated now and makes no network requests."}
         </p>
+      </div>
+      <div className="card-standout embed-mode">
+        <div>
+          <span className="muted">Staking form</span>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={includeStakingForm}
+              disabled={busy}
+              onChange={(event) => setIncludeStakingForm(event.target.checked)}
+            />
+            Include a &ldquo;Stake STX to this pool&rdquo; form
+          </label>
+          {includeStakingForm ? (
+            <label className="field">
+              <span className="muted">Bitcoin L1 fee budget (sats)</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={l1MaxFeeSats}
+                disabled={busy}
+                onChange={(event) => setL1MaxFeeSats(event.target.value)}
+              />
+            </label>
+          ) : null}
+        </div>
+        <div className="tertiary">
+          {includeStakingForm ? (
+            <>
+              <p>
+                Stakers enter an amount and sign in their own wallet. Sidekick receives nothing, and
+                the form only appears on a live mainnet card.
+              </p>
+              <p>
+                <Warning /> Preview opens on this Sidekick origin, not your hosting origin, so a
+                successful preview does not certify the deployed page. Completing a transaction
+                there is a <strong>real mainnet stake</strong> — there is no dry run.
+              </p>
+              <p>
+                The fee budget is deducted from each Bitcoin L1 reward withdrawal. Setting it above
+                a staker&rsquo;s earned rewards blocks their claims until the rewards exceed it.
+              </p>
+            </>
+          ) : (
+            <p>Off by default. The card stays informational and asks stakers for nothing.</p>
+          )}
+        </div>
       </div>
       <div className="grid cols-3-2 embed-grid">
         <div className="card">

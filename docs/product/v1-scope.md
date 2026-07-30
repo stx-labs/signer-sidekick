@@ -38,7 +38,10 @@ The product should answer:
 - Host/process resource monitoring, log collection, durable health history, and notifications. V1
   does include the direct node and signer signals described in
   [Signer Health](signer-health.md).
-- End-user wallet connection, pool selection, or stake submission.
+- Pool selection or comparison across managers.
+- Custody, brokerage, or submission of a staker's transaction. The generated page can optionally
+  build a PoX-5 `stake` call and hand it to the staker's own wallet; Sidekick never signs,
+  broadcasts, or receives staker input. See [the staking form](#optional-staking-form).
 - PoX-4 migration tracking.
 - sBTC bond pooling and bond-member operations.
 - Multiple managers in one process.
@@ -73,7 +76,28 @@ reward checkpoints, payout progress, withdrawals, and required actions. Large co
 paginated. The pool roster is exportable as CSV or JSON.
 
 Sidekick also generates static or live pool-information artifacts for the operator to host. It
-does not expose a public pool route or collect staker inputs.
+never exposes a public pool route: the artifact is a self-contained file served from the operator's
+own site, and nothing on it reports back to Sidekick.
+
+### Optional staking form
+
+The generated page can include a "Stake STX to this pool" form, off by default and enabled per
+generation. It collects an amount, a cycle count, and a payout choice of direct sBTC or a Bitcoin
+L1 address, then asks the staker's own wallet to sign and broadcast a PoX-5 `stake` call.
+
+The boundary is unchanged by it. Sidekick receives no staker input, holds no key, signs nothing,
+broadcasts nothing, and keeps no staker record; the operator's normal reconciliation observes the
+resulting position like any other. The page reads a txid back only to show an explorer link.
+
+It appears only on a live mainnet card, because `stake` pins `start-burn-ht` to the current reward
+cycle and a static snapshot's height fails after the next rollover. It refuses to build a
+transaction during the prepare phase, or when chain data cannot be read. It creates new stakes
+only; changing an existing position is `stake-update` through an official interface.
+
+Only wallets certified for this exact call are offered. A Bitcoin L1 payout carries an
+operator-configured fee budget deducted from each withdrawal, which the page states before the
+wallet opens: set above a staker's earned rewards, it blocks their claims until the rewards exceed
+it.
 
 ## Functional requirements
 

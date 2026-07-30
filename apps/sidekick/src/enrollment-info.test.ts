@@ -135,8 +135,9 @@ describe("pool enrollment information", () => {
 
     expect(() => poolEnrollmentDocumentSchema.parse(document)).not.toThrow();
     expect(document).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       documentType: "stx-only-pool-enrollment-info",
+      staking: { enabled: false, l1MaxFeeSats: null },
       readiness: { enrollmentReady: true },
       fee: { currentConfiguredBips: 500, source: "operator-config" },
       links: {

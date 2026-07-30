@@ -73,7 +73,7 @@ const publicEligibilitySchema = z
 
 export const poolEnrollmentDocumentSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     documentType: z.literal("stx-only-pool-enrollment-info"),
     pool: z
       .object({
@@ -175,12 +175,19 @@ export const poolEnrollmentDocumentSchema = z
         ),
       })
       .strict(),
+    staking: z
+      .object({
+        enabled: z.boolean(),
+        l1MaxFeeSats: unsignedIntegerSchema.nullable(),
+      })
+      .strict(),
     userInteraction: z
       .object({
-        collectsAmount: z.literal(false),
-        collectsBitcoinAddress: z.literal(false),
-        connectsWallet: z.literal(false),
-        signsTransactions: z.literal(false),
+        collectsAmount: z.boolean(),
+        collectsBitcoinAddress: z.boolean(),
+        connectsWallet: z.boolean(),
+        signsTransactions: z.boolean(),
+        // Sidekick itself never submits. The staker's wallet broadcasts; the page reads a txid.
         submitsTransactions: z.literal(false),
       })
       .strict(),
@@ -207,14 +214,27 @@ function publicEligibility(value: PoolCycleEligibility | null) {
     : null;
 }
 
+/**
+ * Whether the generated page offers a staking form, and the operator-set Bitcoin fee budget used
+ * when a staker chooses an L1 payout. Off unless the operator explicitly asks for it.
+ */
+export interface PoolStakingOption {
+  enabled: boolean;
+  l1MaxFeeSats: bigint | null;
+}
+
 export function createPoolEnrollmentDocument(
   configInput: unknown,
   preflight: PreflightResult,
   manager: ManagerVerificationReport,
   registration: RegistrationVerification | null,
   setup: PoolSetupStatus,
+  staking: PoolStakingOption = { enabled: false, l1MaxFeeSats: null },
 ): PoolEnrollmentDocument {
   const config = poolEnrollmentConfigSchema.parse(configInput);
+  if (staking.enabled && config.rewardDestinations.bitcoinL1 && staking.l1MaxFeeSats === null) {
+    throw new Error("An L1-capable staking form requires l1MaxFeeSats");
+  }
   if (!preflight.pox.pox5ContractId) {
     throw new Error("Pool enrollment information requires an active PoX-5 contract");
   }
@@ -229,7 +249,7 @@ export function createPoolEnrollmentDocument(
       registration.signerKeyGrantValid,
   );
   const document = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     documentType: "stx-only-pool-enrollment-info" as const,
     pool: {
       displayName: config.displayName,
@@ -288,11 +308,17 @@ export function createPoolEnrollmentDocument(
         ]
       ).map((platform) => ({ ...platform, integration: "link-only" as const })),
     },
+    staking: {
+      enabled: staking.enabled,
+      l1MaxFeeSats:
+        staking.enabled && staking.l1MaxFeeSats !== null ? staking.l1MaxFeeSats.toString() : null,
+    },
     userInteraction: {
-      collectsAmount: false as const,
-      collectsBitcoinAddress: false as const,
-      connectsWallet: false as const,
-      signsTransactions: false as const,
+      collectsAmount: staking.enabled,
+      collectsBitcoinAddress: staking.enabled && config.rewardDestinations.bitcoinL1,
+      connectsWallet: staking.enabled,
+      signsTransactions: staking.enabled,
+      // Sidekick itself never submits, with or without the staking form.
       submitsTransactions: false as const,
     },
   };

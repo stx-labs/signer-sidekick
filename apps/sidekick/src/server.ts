@@ -113,7 +113,10 @@ interface OperatorSnapshotService {
   rewardsHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
-  poolCard?(mode: "live" | "static"): Promise<unknown>;
+  poolCard?(
+    mode: "live" | "static",
+    staking?: { includeStakingForm: boolean; l1MaxFeeSats: number | null },
+  ): Promise<unknown>;
 }
 
 function snapshotStatus<const Status extends string>(
@@ -1425,7 +1428,13 @@ export function createServer(options: ServerOptions = {}) {
     const poolCard = requireFeature(service.poolCard, "pool_card_generation_unavailable");
     const parsed = poolCardGenerateRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_pool_card_mode");
-    return await interactive(request, async () => poolCard.call(service, parsed.data.mode));
+    const { mode, includeStakingForm, l1MaxFeeSats } = parsed.data;
+    return await interactive(request, async () =>
+      poolCard.call(service, mode, {
+        includeStakingForm,
+        l1MaxFeeSats: l1MaxFeeSats ?? null,
+      }),
+    );
   });
   server.post("/api/v1/sync", async (request, reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");

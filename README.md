@@ -23,7 +23,8 @@ upstream responsibilities.
   transactions; manual handoff remains.
 - Hiro or self-hosted Stacks API endpoints.
 - No custody of signer or manager-admin private keys.
-- No end-user wallet connection or stake submission.
+- Optional staking form on the generated public pool page: the staker's own wallet signs and
+  broadcasts a PoX-5 `stake` call, and Sidekick receives no staker input or key.
 - Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
   scope.
 - No sBTC bond pooling in V1.
