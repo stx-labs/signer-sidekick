@@ -4,7 +4,6 @@ import {
   Check,
   DownloadSimple,
   ShieldCheck,
-  Warning,
 } from "@phosphor-icons/react";
 import {
   type PoolCardArtifact,
@@ -78,22 +77,8 @@ export function openPoolCardPreview(
   return true;
 }
 
-export function poolCardRequestBody(
-  mode: "live" | "static",
-  includeStakingForm: boolean,
-  l1MaxFeeSats: string,
-): Record<string, unknown> {
-  return {
-    mode,
-    includeStakingForm,
-    ...(includeStakingForm ? { l1MaxFeeSats: Number(l1MaxFeeSats) } : {}),
-  };
-}
-
 export function EnrollmentPage({ token }: { token: string }) {
   const [mode, setMode] = useState<"live" | "static">("live");
-  const [includeStakingForm, setIncludeStakingForm] = useState(false);
-  const [l1MaxFeeSats, setL1MaxFeeSats] = useState("10000");
   const [artifact, setArtifact] = useState<PoolCardArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,7 +95,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     try {
       const result = await apiJson(token, "/api/v1/pool-card/generate", poolCardResponseSchema, {
         method: "POST",
-        body: JSON.stringify(poolCardRequestBody(mode, includeStakingForm, l1MaxFeeSats)),
+        body: JSON.stringify({ mode }),
         signal: controller.signal,
       });
       if (!controller.signal.aborted) setArtifact(result);
@@ -124,7 +109,7 @@ export function EnrollmentPage({ token }: { token: string }) {
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
-  }, [mode, includeStakingForm, l1MaxFeeSats, token]);
+  }, [mode, token]);
 
   useEffect(() => {
     void generate();
@@ -221,54 +206,6 @@ export function EnrollmentPage({ token }: { token: string }) {
             ? "Updates reward cycle and Bitcoin height when the page loads."
             : "Uses the values generated now and makes no network requests."}
         </p>
-      </div>
-      <div className="card-standout embed-mode">
-        <div>
-          <span className="muted">Staking form</span>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={includeStakingForm}
-              disabled={busy}
-              onChange={(event) => setIncludeStakingForm(event.target.checked)}
-            />
-            Include a &ldquo;Stake STX to this pool&rdquo; form
-          </label>
-          {includeStakingForm ? (
-            <label className="field">
-              <span className="muted">Bitcoin L1 fee budget (sats)</span>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={l1MaxFeeSats}
-                disabled={busy}
-                onChange={(event) => setL1MaxFeeSats(event.target.value)}
-              />
-            </label>
-          ) : null}
-        </div>
-        <div className="tertiary">
-          {includeStakingForm ? (
-            <>
-              <p>
-                Stakers enter an amount and sign in their own wallet. Sidekick receives nothing, and
-                the form only appears on a live mainnet card.
-              </p>
-              <p>
-                <Warning /> Preview opens on this Sidekick origin, not your hosting origin, so a
-                successful preview does not certify the deployed page. Completing a transaction
-                there is a <strong>real mainnet stake</strong> — there is no dry run.
-              </p>
-              <p>
-                The fee budget is deducted from each Bitcoin L1 reward withdrawal. Setting it above
-                a staker&rsquo;s earned rewards blocks their claims until the rewards exceed it.
-              </p>
-            </>
-          ) : (
-            <p>Off by default. The card stays informational and asks stakers for nothing.</p>
-          )}
-        </div>
       </div>
       <div className="grid cols-3-2 embed-grid">
         <div className="card">

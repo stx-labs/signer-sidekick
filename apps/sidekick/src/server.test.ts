@@ -1367,22 +1367,7 @@ describe("local API", () => {
         })
       ).json(),
     ).toMatchObject({ filename: "signer-sidekick-pool.html" });
-    // Absent means off: a public money-moving form is never opt-out.
-    expect(service.poolCard).toHaveBeenCalledWith("live", {
-      includeStakingForm: false,
-      l1MaxFeeSats: null,
-    });
-
-    await server.inject({
-      method: "POST",
-      url: "/api/v1/pool-card/generate",
-      headers,
-      payload: { mode: "live", includeStakingForm: true, l1MaxFeeSats: 12_500 },
-    });
-    expect(service.poolCard).toHaveBeenLastCalledWith("live", {
-      includeStakingForm: true,
-      l1MaxFeeSats: 12_500,
-    });
+    expect(service.poolCard).toHaveBeenCalledWith("live");
 
     expect(
       (
@@ -1390,7 +1375,7 @@ describe("local API", () => {
           method: "POST",
           url: "/api/v1/pool-card/generate",
           headers,
-          payload: { mode: "live", l1MaxFeeSats: -1 },
+          payload: { mode: "live", includeStakingForm: false },
         })
       ).statusCode,
     ).toBe(400);

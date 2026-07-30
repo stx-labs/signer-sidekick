@@ -23,7 +23,7 @@ upstream responsibilities.
   transactions; manual handoff remains.
 - Hiro or self-hosted Stacks API endpoints.
 - No custody of signer or manager-admin private keys.
-- Optional staking form on the generated public pool page: the staker's own wallet signs and
+- Live mainnet public pool pages include a staking form: the staker's own wallet signs and
   broadcasts a PoX-5 `stake` call, and Sidekick receives no staker input or key.
 - Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
   scope.

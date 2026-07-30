@@ -1,12 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "../../api-client.js";
-import {
-  openPoolCardPreview,
-  PoolCardError,
-  poolCardRequestBody,
-  poolCardSetupRequired,
-} from "./enrollment-page.js";
+import { openPoolCardPreview, PoolCardError, poolCardSetupRequired } from "./enrollment-page.js";
 
 describe("pool card error actions", () => {
   it("offers Initial Setup only when pool setup is incomplete", () => {
@@ -34,23 +29,6 @@ describe("pool card error actions", () => {
     expect(setupHtml).toContain("Open Initial Setup");
     expect(transportHtml).not.toContain("Open Initial Setup");
     expect(transportHtml).toContain(">Retry<");
-  });
-});
-
-describe("pool card generation request", () => {
-  it("leaves the staking form off by default", () => {
-    expect(poolCardRequestBody("live", false, "10000")).toEqual({
-      mode: "live",
-      includeStakingForm: false,
-    });
-  });
-
-  it("sends the operator fee budget only when staking is enabled", () => {
-    expect(poolCardRequestBody("live", true, "12500")).toEqual({
-      mode: "live",
-      includeStakingForm: true,
-      l1MaxFeeSats: 12500,
-    });
   });
 });
 

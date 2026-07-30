@@ -484,13 +484,7 @@ export class OperatorService {
     return result;
   }
 
-  async poolCard(
-    mode: PoolCardMode,
-    staking: { includeStakingForm: boolean; l1MaxFeeSats: number | null } = {
-      includeStakingForm: false,
-      l1MaxFeeSats: null,
-    },
-  ) {
+  async poolCard(mode: PoolCardMode) {
     if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
     const snapshot = await this.snapshot(true);
     if (!snapshot.setup) {
@@ -520,8 +514,8 @@ export class OperatorService {
       snapshot.registration,
       snapshot.setup,
       {
-        enabled: staking.includeStakingForm,
-        l1MaxFeeSats: staking.l1MaxFeeSats === null ? null : BigInt(staking.l1MaxFeeSats),
+        enabled: true,
+        l1MaxFeeSats: 10_000n,
       },
     );
     return createPoolCardArtifact(enrollment, mode, settings.embed.publicApiUrl);

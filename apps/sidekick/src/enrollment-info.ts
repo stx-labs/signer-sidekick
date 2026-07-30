@@ -215,8 +215,7 @@ function publicEligibility(value: PoolCycleEligibility | null) {
 }
 
 /**
- * Whether the generated page offers a staking form, and the operator-set Bitcoin fee budget used
- * when a staker chooses an L1 payout. Off unless the operator explicitly asks for it.
+ * Whether a generated page offers a staking form, and its Bitcoin fee budget for L1 payouts.
  */
 export interface PoolStakingOption {
   enabled: boolean;

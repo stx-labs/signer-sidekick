@@ -1241,15 +1241,6 @@ export const browserWalletIntentResponseSchema = z
 export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
 
 export const poolCardGenerateRequestSchema = z
-  .object({
-    mode: z.enum(["live", "static"]),
-    /**
-     * Off unless the operator explicitly asks for it. The generated page only offers staking on
-     * mainnet in live mode, because `stake` pins `start-burn-ht` to the current reward cycle.
-     */
-    includeStakingForm: z.boolean().default(false),
-    /** Bitcoin fee budget deducted from an L1 reward withdrawal. Required for L1-capable pools. */
-    l1MaxFeeSats: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-  })
+  .object({ mode: z.enum(["live", "static"]) })
   .strict();
 export type PoolCardGenerateRequest = z.infer<typeof poolCardGenerateRequestSchema>;
