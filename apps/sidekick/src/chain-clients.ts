@@ -213,6 +213,9 @@ const transactionDetailSchema = z
       })
       .nullable(),
     post_conditions: z.array(z.unknown()),
+    sponsored: z.boolean(),
+    anchor_mode: z.enum(["any", "on_chain_only", "off_chain_only"]),
+    post_condition_mode: z.enum(["allow", "deny"]),
     canonical: z.boolean(),
     block_hash: canonicalHex.nullable(),
     block_height: z.number().int().nonnegative().safe(),

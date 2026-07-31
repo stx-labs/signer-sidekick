@@ -660,9 +660,14 @@ async function proveRecurringManagerAction(input: {
   setCanonicalPoststate: () => void;
   restoreAuthoritativeFacts: () => void;
   managerSnapshot?: ReturnType<typeof trustedManagerSnapshot>;
-  expectedOutcome?: "complete" | "canonical-success";
+  expectedOutcome?: "complete" | "canonical-success" | "mismatch";
   repeatable?: boolean;
   transactionIndexUnavailable?: boolean;
+  apiDetails?: Partial<{
+    sponsored: boolean;
+    anchorMode: "any" | "on_chain_only" | "off_chain_only";
+    postConditionMode: "allow" | "deny";
+  }>;
 }): Promise<void> {
   const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
   stores.push(store);
@@ -690,6 +695,9 @@ async function proveRecurringManagerAction(input: {
           }
         : null,
       post_conditions: preparedTransaction?.params.postConditions.map(() => ({})) ?? [],
+      sponsored: input.apiDetails?.sponsored ?? false,
+      anchor_mode: input.apiDetails?.anchorMode ?? "any",
+      post_condition_mode: input.apiDetails?.postConditionMode ?? "deny",
       canonical: true,
       block_hash: blockHash,
       block_height: blockHeight,
@@ -768,7 +776,15 @@ async function proveRecurringManagerAction(input: {
   await wallet.submit(prepared.id, txid, "2026-07-19T12:02:00.000Z");
   input.setCanonicalPoststate();
   const expectedOutcome = input.expectedOutcome ?? "complete";
-  await expect(wallet.refresh(prepared.id, "2026-07-19T12:03:00.000Z")).resolves.toMatchObject({
+  const refreshed = await wallet.refresh(prepared.id, "2026-07-19T12:03:00.000Z");
+  if (expectedOutcome === "mismatch") {
+    expect(refreshed).toMatchObject({
+      status: "failed",
+      verification: { outcome: "mismatch", canonical: null },
+    });
+    return;
+  }
+  expect(refreshed).toMatchObject({
     status: expectedOutcome === "complete" ? "complete" : "confirmed",
     verification: { outcome: expectedOutcome, canonical: true },
   });
@@ -1836,6 +1852,30 @@ describe("manager wallet action preparation", () => {
     await proveRecurringManagerAction({
       request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
       transactionIndexUnavailable: true,
+      node: {
+        callReadOnly: vi.fn(async () => trueCV()),
+        getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
+      },
+      setCanonicalPoststate: () => {
+        currentFeeBips = 250n;
+      },
+      restoreAuthoritativeFacts: () => {
+        currentFeeBips = 100n;
+      },
+    });
+  });
+
+  it.each([
+    ["sponsored", { sponsored: true }],
+    ["on-chain-only", { anchorMode: "on_chain_only" as const }],
+    ["allow post-condition", { postConditionMode: "allow" as const }],
+  ])("rejects API fallback with %s transaction authority", async (_label, apiDetails) => {
+    let currentFeeBips = 100n;
+    await proveRecurringManagerAction({
+      request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      transactionIndexUnavailable: true,
+      expectedOutcome: "mismatch",
+      apiDetails,
       node: {
         callReadOnly: vi.fn(async () => trueCV()),
         getDataVar: vi.fn(async () => uintCV(currentFeeBips)),

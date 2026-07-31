@@ -1931,6 +1931,8 @@ export class OnboardingWalletIntentService {
         );
         return this.publicIntent(stored);
       }
+      // The API does not publish a transaction-level chain ID. refresh() already required this
+      // API and the local node to report the manifest's network ID before this fallback begins.
       const verified = this.verifyApiIndexedTransaction(stored, manifest, details, observedAt);
       if (!verified) return this.publicIntent(this.requireStored(stored.id));
       return await this.refreshIndexed(
@@ -1981,6 +1983,9 @@ export class OnboardingWalletIntentService {
     };
     if (details.tx_id !== stored.txid) return fail("transaction ID");
     if (details.sender_address !== manifest.requiredSender) return fail("sender");
+    if (details.sponsored) return fail("sponsored authorization");
+    if (details.anchor_mode !== "any") return fail("anchor mode");
+    if (details.post_condition_mode !== "deny") return fail("post-condition mode");
     if (manifest.transaction.method === "stx_deployContract") {
       if (details.tx_type !== "smart_contract") return fail("transaction type");
       return {
