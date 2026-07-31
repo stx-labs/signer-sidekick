@@ -790,7 +790,7 @@ describe("Stacks API client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("honors Retry-After and retries a rate-limited request", async () => {
+  it("retries one short explicit rate limit", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "0" } }))
@@ -828,6 +828,7 @@ describe("Stacks API client", () => {
         limitedFetch,
       ).getNodeInfo(),
     ).rejects.toBeInstanceOf(RateLimitedError);
+    expect(limitedFetch).toHaveBeenCalledTimes(2);
     await expect(
       new StacksApiClient(
         "https://api.example.test",

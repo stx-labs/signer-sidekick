@@ -719,6 +719,30 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_http_requests_total");
   });
 
+  it("keeps readiness available from a recent stale observation", async () => {
+    const service = {
+      snapshot: async () => {
+        throw new Error("A stale summary should be used instead");
+      },
+      summary: async () => ({
+        generatedAt: "2026-07-14T12:00:00.000Z",
+        preflight: { status: "pass" },
+        freshness: { status: "stale" as const },
+      }),
+      synchronize: async () => ({}),
+    };
+    const server = createServer({
+      service,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({ method: "GET", url: "/health/ready" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: "ready", freshness: "stale" });
+  });
+
   it("runs reconciliation asynchronously with process-local single-flight progress", async () => {
     const token = "test-operator-token-with-32-chars";
     let release: (() => void) | undefined;

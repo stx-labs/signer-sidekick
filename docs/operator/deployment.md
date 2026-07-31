@@ -30,8 +30,9 @@ openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
 
 Store the generated token in a password manager, then paste it into `.env`; avoid printing it in
 terminal history or logs. Set the node URL and manager principal. Mainnet uses the Hiro API by
-default; set `STACKS_API_URL` and optional key fields for another provider. For Fresh setup,
-configure the future manager principal.
+default. Set `STACKS_API_KEY` for a Hiro plan or another keyed provider; public Hiro access can be
+rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. For Fresh setup, configure the
+future manager principal.
 
 ## Connect to the node
 
@@ -68,11 +69,12 @@ curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
 docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
 ```
 
-Docker `healthy` checks liveness only. `/health/ready` checks control-plane dependencies, but does
-not change during ordinary engine observation or trigger restarts. `doctor connectivity` checks node,
-API, network, lag, and PoX-5. The authenticated Operations readiness panel
-(`/api/v1/operations/readiness`) also reports manager setup and engine blockers. Do not begin
-onboarding until `/health/ready` succeeds and connectivity reports no failed checks.
+Docker `healthy` checks liveness only. `/health/ready` reports a current or last-good control-plane
+observation, but does not change during ordinary engine observation or trigger restarts. Check that
+its `freshness` is `current` before onboarding. `doctor connectivity` checks node, API, network,
+lag, and PoX-5. The authenticated Operations readiness panel (`/api/v1/operations/readiness`) also
+reports manager setup and engine blockers. Do not begin onboarding until connectivity reports no
+failed checks.
 
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.

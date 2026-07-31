@@ -492,20 +492,25 @@ async function fetchJson<T>(
     }
 
     if (!response.ok) {
-      const retryable = response.status === 429 || response.status >= 500;
       const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
-      if (retryable && attempt < maxAttempts) {
+      if (response.status === 429) {
+        // A short, explicit retry is useful for long paginated reconciliations without turning an
+        // interactive status request into a multi-second retry storm. Longer or unspecified
+        // limits return immediately so OperatorService can serve its last-good observation.
+        if (retryAfterMs !== null && retryAfterMs <= 1_000 && attempt === 1) {
+          await cancelResponse(response);
+          await sleep(retryAfterMs, cancellationSignal);
+          continue;
+        }
+        await cancelResponse(response);
+        throw new RateLimitedError(`${endpoint} returned HTTP 429`, retryAfterMs);
+      }
+      if (response.status >= 500 && attempt < maxAttempts) {
         await cancelResponse(response);
         await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)), cancellationSignal);
         continue;
       }
       await cancelResponse(response);
-      if (response.status === 429) {
-        throw new RateLimitedError(
-          `${endpoint} remained rate limited after ${attempt} attempts`,
-          retryAfterMs,
-        );
-      }
       if (response.status >= 500) {
         throw new UpstreamUnavailableError(
           `${endpoint} returned HTTP ${response.status} after ${attempt} attempts`,

@@ -577,7 +577,11 @@ function App() {
             {!data
               ? "Connecting"
               : stale
-                ? "Data may be stale"
+                ? data.freshness?.reason === "rate-limited"
+                  ? "Data source is rate limited"
+                  : data.freshness?.reason === "refreshing"
+                    ? "Refreshing data"
+                    : "Data may be stale"
                 : data.preflight.status === "fail"
                   ? "Chain sources need attention"
                   : "Live"}

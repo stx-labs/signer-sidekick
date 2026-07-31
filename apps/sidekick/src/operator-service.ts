@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
-import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import { RateLimitedError, type StacksApiClient, type StacksNodeClient } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
@@ -53,6 +53,7 @@ export interface OperatorServiceOptions {
   node: StacksNodeClient;
   api: StacksApiClient;
   cacheTtlMs?: number;
+  now?(): number;
   runtimeSettings?: RuntimeSettingsController;
   managerVerification?: ManagerVerificationContext;
   transactionEngineObservation?: TransactionEngineObservationHook;
@@ -336,10 +337,84 @@ export class OperatorService {
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
   > | null = null;
   private pendingTrustTransition: ManagerTrustTransition | null = null;
+  private refreshBlockedUntil = 0;
+  private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
 
   constructor(private readonly options: OperatorServiceOptions) {}
 
   async snapshot(force = false) {
+    return (await this.snapshotWithFreshness(force)).value;
+  }
+
+  private currentTime(): number {
+    return this.options.now?.() ?? Date.now();
+  }
+
+  private refresh(): Promise<Awaited<ReturnType<OperatorService["load"]>>> {
+    if (this.loading) return this.loading;
+    const now = this.currentTime();
+    if (this.refreshBlockedUntil > now) {
+      return Promise.reject(
+        new RateLimitedError(
+          "A configured chain source is still rate limiting Sidekick",
+          this.refreshBlockedUntil - now,
+        ),
+      );
+    }
+    this.loading = this.load()
+      .then((value) => {
+        const loadedAt = this.currentTime();
+        this.cached = {
+          // The dashboard polls every 30 seconds. Keep a successful observation fresh through the
+          // next poll so normal status traffic does not create an upstream refresh per page view.
+          expiresAt: loadedAt + (this.options.cacheTtlMs ?? 45_000),
+          value,
+        };
+        this.refreshBlockedUntil = 0;
+        this.lastRefreshFailure = null;
+        return value;
+      })
+      .catch((error: unknown) => {
+        this.lastRefreshFailure =
+          error instanceof RateLimitedError ? "rate-limited" : "refresh-failed";
+        if (error instanceof RateLimitedError) {
+          // Hiro's unauthenticated quota is per minute. If it omits Retry-After, avoid repeatedly
+          // probing it for the next minute while preserving the last known operator state.
+          const cooldownMs = Math.min(60_000, Math.max(1_000, error.retryAfterMs ?? 60_000));
+          this.refreshBlockedUntil = this.currentTime() + cooldownMs;
+        }
+        throw error;
+      })
+      .finally(() => {
+        this.loading = null;
+      });
+    return this.loading;
+  }
+
+  private refreshInBackground(): void {
+    void this.refresh().catch(() => {
+      // The stale snapshot remains the normal status response. A later refresh may recover.
+    });
+  }
+
+  private staleSnapshot(): {
+    value: Awaited<ReturnType<OperatorService["load"]>>;
+    stale: true;
+    reason: "refreshing" | "refresh-failed" | "rate-limited";
+  } | null {
+    if (!this.cached) return null;
+    return {
+      value: this.cached.value,
+      stale: true,
+      reason: this.lastRefreshFailure ?? "refreshing",
+    };
+  }
+
+  private async snapshotWithFreshness(force = false): Promise<{
+    value: Awaited<ReturnType<OperatorService["load"]>>;
+    stale: boolean;
+    reason: "refreshing" | "refresh-failed" | "rate-limited" | null;
+  }> {
     if (force && this.loading) {
       try {
         await this.loading;
@@ -347,21 +422,25 @@ export class OperatorService {
         // A forced read must start after any older in-flight read, even if that read failed.
       }
     }
-    const now = Date.now();
-    if (!force && this.cached && this.cached.expiresAt > now) return this.cached.value;
-    if (this.loading) return this.loading;
-    this.loading = this.load()
-      .then((value) => {
-        this.cached = {
-          expiresAt: Date.now() + (this.options.cacheTtlMs ?? 15_000),
-          value,
-        };
-        return value;
-      })
-      .finally(() => {
-        this.loading = null;
-      });
-    return this.loading;
+    if (force) {
+      try {
+        return { value: await this.refresh(), stale: false, reason: null };
+      } catch (error) {
+        const stale = this.staleSnapshot();
+        if (stale) return stale;
+        throw error;
+      }
+    }
+    const now = this.currentTime();
+    if (this.cached) {
+      if (this.cached.expiresAt > now) {
+        return { value: this.cached.value, stale: false, reason: null };
+      }
+      this.refreshInBackground();
+      const stale = this.staleSnapshot();
+      if (stale) return stale;
+    }
+    return { value: await this.refresh(), stale: false, reason: null };
   }
 
   async synchronize(options: OperatorSynchronizationOptions = {}) {
@@ -388,15 +467,7 @@ export class OperatorService {
   }
 
   async summary(force = false) {
-    let snapshot: Awaited<ReturnType<OperatorService["load"]>>;
-    let stale = false;
-    try {
-      snapshot = await this.snapshot(force);
-    } catch (error) {
-      if (!this.cached) throw error;
-      snapshot = this.cached.value;
-      stale = true;
-    }
+    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness(force);
     const servedAt = new Date().toISOString();
     return {
       ...snapshot,
@@ -404,7 +475,7 @@ export class OperatorService {
         status: stale ? ("stale" as const) : ("current" as const),
         snapshotGeneratedAt: snapshot.generatedAt,
         servedAt,
-        reason: stale ? ("refresh-failed" as const) : null,
+        reason,
       },
       rosterTotal: snapshot.roster.length,
       rosterStats: {
@@ -418,7 +489,7 @@ export class OperatorService {
   }
 
   async poolPage(options: { offset?: number; limit?: number; query?: string } = {}) {
-    const snapshot = await this.snapshot();
+    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
     const query = options.query?.trim().toLowerCase() ?? "";
@@ -429,6 +500,12 @@ export class OperatorService {
       : snapshot.roster;
     return {
       generatedAt: snapshot.generatedAt,
+      freshness: {
+        status: stale ? ("stale" as const) : ("current" as const),
+        snapshotGeneratedAt: snapshot.generatedAt,
+        servedAt: new Date().toISOString(),
+        reason,
+      },
       forecast: snapshot.forecast,
       roster: roster.slice(offset, offset + limit),
       total: roster.length,
@@ -442,12 +519,18 @@ export class OperatorService {
   }
 
   async rewardsPage(options: { offset?: number; limit?: number } = {}) {
-    const snapshot = await this.snapshot();
+    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
     const stakers = snapshot.rewards?.stakers ?? [];
     return {
       generatedAt: snapshot.generatedAt,
+      freshness: {
+        status: stale ? ("stale" as const) : ("current" as const),
+        snapshotGeneratedAt: snapshot.generatedAt,
+        servedAt: new Date().toISOString(),
+        reason,
+      },
       rewards: snapshot.rewards
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }
         : null,

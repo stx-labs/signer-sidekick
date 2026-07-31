@@ -90,6 +90,7 @@ interface OperatorSnapshotShape {
   roster?: RosterRow[];
   activity?: { withdrawals?: unknown[] };
   alerts?: unknown[];
+  freshness?: { status: "current" | "stale" };
 }
 
 interface OperatorSnapshotService {
@@ -931,12 +932,15 @@ export function createServer(options: ServerOptions = {}) {
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
     const service = options.service;
     try {
-      const snapshot = await interactive(request, () => service.snapshot());
+      const snapshot = await interactive(request, () =>
+        service.summary ? service.summary() : service.snapshot(),
+      );
       const preflight = snapshot.preflight as { status?: string } | undefined;
       const ready = preflight?.status !== "fail";
       return reply.code(ready ? 200 : 503).send({
         status: ready ? "ready" : "not-ready",
         generatedAt: snapshot.generatedAt,
+        freshness: snapshot.freshness?.status ?? "current",
       });
     } catch (error) {
       request.log.warn({ err: error }, "readiness snapshot failed");

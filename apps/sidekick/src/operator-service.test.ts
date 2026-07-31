@@ -5,7 +5,7 @@ import {
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
 } from "@stx-labs/signer-sidekick-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import { RateLimitedError, type StacksApiClient, type StacksNodeClient } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import {
   buildAlerts,
@@ -387,7 +387,7 @@ describe("operator service", () => {
         rewards: null,
         activity: { withdrawals: [] },
       })
-      .mockRejectedValueOnce(new Error("upstream unavailable"));
+      .mockRejectedValue(new Error("upstream unavailable"));
     (service as unknown as { load: typeof load }).load = load;
 
     await expect(service.summary()).resolves.toMatchObject({
@@ -395,11 +395,171 @@ describe("operator service", () => {
     });
     await expect(service.summary()).resolves.toMatchObject({
       generatedAt,
+      freshness: { status: "stale", reason: "refreshing" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt,
       freshness: {
         status: "stale",
         snapshotGeneratedAt: generatedAt,
         reason: "refresh-failed",
       },
+    });
+  });
+
+  it("serves a stale snapshot immediately while one background refresh is in progress", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 10,
+      now: () => now,
+    });
+    let releaseRefresh: ((value: unknown) => void) | undefined;
+    const refresh = new Promise((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({
+        generatedAt: "first",
+        roster: [],
+        rewards: null,
+        activity: { withdrawals: [] },
+      })
+      .mockImplementationOnce(async () => await refresh);
+    (service as unknown as { load: typeof load }).load = load;
+
+    await expect(service.summary()).resolves.toMatchObject({ freshness: { status: "current" } });
+    now = 11;
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt: "first",
+      freshness: { status: "stale", reason: "refreshing" },
+    });
+    await expect(service.snapshot()).resolves.toMatchObject({ generatedAt: "first" });
+    expect(load).toHaveBeenCalledTimes(2);
+
+    releaseRefresh?.({
+      generatedAt: "second",
+      roster: [],
+      rewards: null,
+      activity: { withdrawals: [] },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt: "second",
+      freshness: { status: "current" },
+    });
+  });
+
+  it("backs off refreshes after a rate limit while a usable stale snapshot remains", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 10,
+      now: () => now,
+    });
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({
+        generatedAt: "first",
+        roster: [],
+        rewards: null,
+        activity: { withdrawals: [] },
+      })
+      .mockRejectedValueOnce(new RateLimitedError("limited", 30_000));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await service.summary();
+    now = 11;
+    await expect(service.summary()).resolves.toMatchObject({
+      freshness: { status: "stale", reason: "refreshing" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(service.summary()).resolves.toMatchObject({
+      freshness: { status: "stale", reason: "rate-limited" },
+    });
+    await expect(service.summary(true)).resolves.toMatchObject({
+      freshness: { status: "stale", reason: "rate-limited" },
+    });
+
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps last-good read views available through a longer upstream outage", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 10,
+      now: () => now,
+    });
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({
+        generatedAt: "first",
+        roster: [],
+        rewards: null,
+        activity: { withdrawals: [] },
+      })
+      .mockRejectedValue(new Error("upstream unavailable"));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await service.summary();
+    now = 600_000;
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt: "first",
+      freshness: { status: "stale", reason: "refreshing" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt: "first",
+      freshness: { status: "stale", reason: "refresh-failed" },
     });
   });
 
