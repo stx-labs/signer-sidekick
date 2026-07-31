@@ -253,6 +253,46 @@ describe("Stacks API client", () => {
     });
   });
 
+  it("reads public transaction details for the node-index fallback", async () => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const blockHash = `0x${"cd".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: txId.toUpperCase().replace("0X", "0x"),
+          tx_status: "success",
+          sender_address: "SP000000000000000000002Q6VF78",
+          tx_type: "contract_call",
+          contract_call: {
+            contract_id: "SP000000000000000000002Q6VF78.pox-5",
+            function_name: "delegate-stx",
+            function_args: [{ hex: "0x01000000000000000000000000000001f4", repr: "u500" }],
+          },
+          post_conditions: [],
+          canonical: true,
+          block_hash: blockHash.toUpperCase().replace("0X", "0x"),
+          block_height: 8_600_000,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionDetails(txId)).resolves.toMatchObject({
+      tx_id: txId,
+      sender_address: "SP000000000000000000002Q6VF78",
+      contract_call: {
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        function_args: [{ hex: "0x01000000000000000000000000000001f4" }],
+      },
+      block_hash: blockHash,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v1/tx/${txId}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("reads a bounded canonical block projection by height", async () => {
     const blockHash = `0x${"12".repeat(32)}`;
     const indexHash = `0x${"34".repeat(32)}`;

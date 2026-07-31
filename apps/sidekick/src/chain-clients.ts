@@ -196,6 +196,29 @@ const transactionSummarySchema = z.object({
   }),
 });
 
+// `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
+// endpoint supplies the signed transaction's public call details needed for the narrow fallback
+// used when a node explicitly has transaction indexing disabled.
+const transactionDetailSchema = z
+  .object({
+    tx_id: canonicalHex,
+    tx_status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
+    sender_address: z.string().refine(validatePrincipal, "Invalid transaction sender"),
+    tx_type: z.string(),
+    contract_call: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        function_name: z.string().regex(clarityFunctionNamePattern),
+        function_args: z.array(z.object({ hex: z.string().regex(clarityHexPattern) }).strip()),
+      })
+      .nullable(),
+    post_conditions: z.array(z.unknown()),
+    canonical: z.boolean(),
+    block_hash: canonicalHex.nullable(),
+    block_height: z.number().int().nonnegative().safe(),
+  })
+  .strip();
+
 const stacksBlockSummarySchema = z
   .object({
     canonical: z.boolean(),
@@ -262,6 +285,7 @@ export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
+export type TransactionDetail = z.infer<typeof transactionDetailSchema>;
 export type StacksBlockSummary = z.infer<typeof stacksBlockSummarySchema>;
 
 export interface GasPayerMempoolActivityOptions {
@@ -777,6 +801,19 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v3/transactions/${parsedTxId}`,
       transactionSummarySchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getTransactionDetails(txId: string): Promise<TransactionDetail> {
+    const parsedTxId = z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/i)
+      .parse(txId);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v1/tx/${parsedTxId}`,
+      transactionDetailSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }
