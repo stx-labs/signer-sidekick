@@ -189,6 +189,13 @@ export async function executeCliCommand({
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       const server = createServer({
         service,
+        getRateLimitSettings: () => {
+          const current = runtimeSettings.effectiveConfig();
+          return {
+            apiUrl: current.apiUrl,
+            apiKeyConfigured: Boolean(current.apiKey),
+          };
+        },
         onboarding,
         health,
         engine: engine.api,

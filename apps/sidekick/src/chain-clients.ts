@@ -404,10 +404,61 @@ export class RateLimitedError extends UpstreamHttpError {
   constructor(
     message: string,
     readonly retryAfterMs: number | null,
+    readonly endpoint?: string,
   ) {
     super(message, 429);
     this.name = "RateLimitedError";
   }
+}
+
+export interface RateLimitApiSource {
+  apiUrl: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface RateLimitInfo {
+  source: "hiro-api" | "stacks-api" | "node";
+  retryAfterSeconds: number;
+  apiKeyConfigured?: boolean;
+}
+
+function origin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isHiroApi(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "api.hiro.so" || hostname.endsWith(".hiro.so");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reduce an upstream 429 to safe operator-facing facts. The endpoint itself never leaves
+ * Sidekick; it is only compared with the configured indexed API to distinguish it from node RPC.
+ */
+export function rateLimitInfo(
+  error: RateLimitedError,
+  api: RateLimitApiSource,
+): RateLimitInfo | null {
+  const endpointOrigin = error.endpoint ? origin(error.endpoint) : null;
+  const apiOrigin = origin(api.apiUrl);
+  if (!endpointOrigin || !apiOrigin) return null;
+  const retryAfterSeconds = Math.min(
+    30,
+    Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
+  );
+  if (endpointOrigin !== apiOrigin) return { source: "node", retryAfterSeconds };
+  if (isHiroApi(api.apiUrl)) {
+    return { source: "hiro-api", retryAfterSeconds, apiKeyConfigured: api.apiKeyConfigured };
+  }
+  return { source: "stacks-api", retryAfterSeconds };
 }
 
 export class UpstreamUnavailableError extends Error {
@@ -530,7 +581,7 @@ async function fetchJson<T>(
           continue;
         }
         await cancelResponse(response);
-        throw new RateLimitedError(`${endpoint} returned HTTP 429`, retryAfterMs);
+        throw new RateLimitedError(`${endpoint} returned HTTP 429`, retryAfterMs, endpoint);
       }
       if (response.status >= 500 && attempt < maxAttempts) {
         await cancelResponse(response);

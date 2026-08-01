@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export const rateLimitInfoSchema = z
+  .object({
+    source: z.enum(["hiro-api", "stacks-api", "node"]),
+    retryAfterSeconds: z.number().int().positive(),
+    apiKeyConfigured: z.boolean().optional(),
+  })
+  .strict();
+export type RateLimitInfo = z.infer<typeof rateLimitInfoSchema>;
+
 const runtimeSettingsShape = z.object({
   schemaVersion: z.literal(1),
   revision: z.number().int().nonnegative(),
@@ -440,6 +449,7 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     snapshotGeneratedAt: string;
     servedAt: string;
     reason: "refreshing" | "refresh-failed" | "rate-limited" | null;
+    rateLimit?: RateLimitInfo;
   };
   config?: {
     nodeRpcUrl: string;
@@ -838,6 +848,7 @@ export const apiErrorSchema = z.looseObject({
   error: z.string(),
   message: z.string().optional(),
   retryable: z.boolean().optional(),
+  rateLimit: rateLimitInfoSchema.optional(),
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 

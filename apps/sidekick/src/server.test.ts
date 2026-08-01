@@ -986,6 +986,52 @@ describe("local API", () => {
     expect(unexpected.body).not.toContain("must-not-leak");
   });
 
+  it("explains a Hiro API rate limit without exposing the configured endpoint", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      updateSettings: async () => {
+        throw new RateLimitedError(
+          "limited",
+          3_000,
+          "https://api.mainnet.hiro.so/extended/v1/status",
+        );
+      },
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      getRateLimitSettings: () => ({
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyConfigured: false,
+      }),
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    });
+
+    expect([response.statusCode, response.headers["retry-after"], response.json()]).toEqual([
+      429,
+      "3",
+      {
+        error: "upstream_rate_limited",
+        message: "Hiro API is rate limiting Sidekick. It will retry automatically.",
+        retryable: true,
+        rateLimit: {
+          source: "hiro-api",
+          retryAfterSeconds: 3,
+          apiKeyConfigured: false,
+        },
+      },
+    ]);
+  });
+
   it("classifies retryable and rejected upstream HTTP responses without leaking bodies", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {

@@ -497,7 +497,9 @@ describe("operator service", () => {
         rewards: null,
         activity: { withdrawals: [] },
       })
-      .mockRejectedValueOnce(new RateLimitedError("limited", 30_000));
+      .mockRejectedValueOnce(
+        new RateLimitedError("limited", 30_000, "https://api.mainnet.hiro.so/extended/v1/status"),
+      );
     (service as unknown as { load: typeof load }).load = load;
 
     await service.summary();
@@ -508,7 +510,15 @@ describe("operator service", () => {
     await Promise.resolve();
     await Promise.resolve();
     await expect(service.summary()).resolves.toMatchObject({
-      freshness: { status: "stale", reason: "rate-limited" },
+      freshness: {
+        status: "stale",
+        reason: "rate-limited",
+        rateLimit: {
+          source: "hiro-api",
+          retryAfterSeconds: 30,
+          apiKeyConfigured: false,
+        },
+      },
     });
     await expect(service.summary(true)).resolves.toMatchObject({
       freshness: { status: "stale", reason: "rate-limited" },

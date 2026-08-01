@@ -4,7 +4,6 @@ import {
   ChainAnchorError,
   captureChainAnchor,
   createChainAnchor,
-  RateLimitedError,
   StacksApiClient,
   StacksNodeClient,
   UpstreamHttpError,
@@ -870,7 +869,10 @@ describe("Stacks API client", () => {
         undefined,
         limitedFetch,
       ).getNodeInfo(),
-    ).rejects.toBeInstanceOf(RateLimitedError);
+    ).rejects.toMatchObject({
+      name: "RateLimitedError",
+      endpoint: "https://api.example.test/v2/info",
+    });
     expect(limitedFetch).toHaveBeenCalledTimes(2);
     await expect(
       new StacksApiClient(

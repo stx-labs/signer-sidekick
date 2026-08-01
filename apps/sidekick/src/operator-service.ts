@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
-import { RateLimitedError, type StacksApiClient, type StacksNodeClient } from "./chain-clients.js";
+import {
+  RateLimitedError,
+  type RateLimitInfo,
+  rateLimitInfo,
+  type StacksApiClient,
+  type StacksNodeClient,
+} from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
@@ -339,6 +345,8 @@ export class OperatorService {
   private pendingTrustTransition: ManagerTrustTransition | null = null;
   private refreshBlockedUntil = 0;
   private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
+  private lastRateLimit: RateLimitInfo | null = null;
+  private lastRateLimitEndpoint: string | undefined;
 
   constructor(private readonly options: OperatorServiceOptions) {}
 
@@ -358,6 +366,7 @@ export class OperatorService {
         new RateLimitedError(
           "A configured chain source is still rate limiting Sidekick",
           this.refreshBlockedUntil - now,
+          this.lastRateLimitEndpoint,
         ),
       );
     }
@@ -372,12 +381,20 @@ export class OperatorService {
         };
         this.refreshBlockedUntil = 0;
         this.lastRefreshFailure = null;
+        this.lastRateLimit = null;
+        this.lastRateLimitEndpoint = undefined;
         return value;
       })
       .catch((error: unknown) => {
         this.lastRefreshFailure =
           error instanceof RateLimitedError ? "rate-limited" : "refresh-failed";
         if (error instanceof RateLimitedError) {
+          const { config } = this.runtimeContext();
+          this.lastRateLimit = rateLimitInfo(error, {
+            apiUrl: config.apiUrl,
+            apiKeyConfigured: Boolean(config.apiKey),
+          });
+          this.lastRateLimitEndpoint = error.endpoint;
           // Hiro's unauthenticated quota is per minute. If it omits Retry-After, avoid repeatedly
           // probing it for the next minute while preserving the last known operator state.
           const cooldownMs = Math.min(60_000, Math.max(1_000, error.retryAfterMs ?? 60_000));
@@ -401,12 +418,14 @@ export class OperatorService {
     value: Awaited<ReturnType<OperatorService["load"]>>;
     stale: true;
     reason: "refreshing" | "refresh-failed" | "rate-limited";
+    rateLimit: RateLimitInfo | null;
   } | null {
     if (!this.cached) return null;
     return {
       value: this.cached.value,
       stale: true,
       reason: this.lastRefreshFailure ?? "refreshing",
+      rateLimit: this.lastRefreshFailure === "rate-limited" ? this.lastRateLimit : null,
     };
   }
 
@@ -414,6 +433,7 @@ export class OperatorService {
     value: Awaited<ReturnType<OperatorService["load"]>>;
     stale: boolean;
     reason: "refreshing" | "refresh-failed" | "rate-limited" | null;
+    rateLimit: RateLimitInfo | null;
   }> {
     if (force && this.loading) {
       try {
@@ -424,7 +444,7 @@ export class OperatorService {
     }
     if (force) {
       try {
-        return { value: await this.refresh(), stale: false, reason: null };
+        return { value: await this.refresh(), stale: false, reason: null, rateLimit: null };
       } catch (error) {
         const stale = this.staleSnapshot();
         if (stale) return stale;
@@ -434,13 +454,13 @@ export class OperatorService {
     const now = this.currentTime();
     if (this.cached) {
       if (this.cached.expiresAt > now) {
-        return { value: this.cached.value, stale: false, reason: null };
+        return { value: this.cached.value, stale: false, reason: null, rateLimit: null };
       }
       this.refreshInBackground();
       const stale = this.staleSnapshot();
       if (stale) return stale;
     }
-    return { value: await this.refresh(), stale: false, reason: null };
+    return { value: await this.refresh(), stale: false, reason: null, rateLimit: null };
   }
 
   async synchronize(options: OperatorSynchronizationOptions = {}) {
@@ -467,7 +487,7 @@ export class OperatorService {
   }
 
   async summary(force = false) {
-    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness(force);
+    const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness(force);
     const servedAt = new Date().toISOString();
     return {
       ...snapshot,
@@ -476,6 +496,7 @@ export class OperatorService {
         snapshotGeneratedAt: snapshot.generatedAt,
         servedAt,
         reason,
+        ...(rateLimit ? { rateLimit } : {}),
       },
       rosterTotal: snapshot.roster.length,
       rosterStats: {
@@ -489,7 +510,7 @@ export class OperatorService {
   }
 
   async poolPage(options: { offset?: number; limit?: number; query?: string } = {}) {
-    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness();
+    const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
     const query = options.query?.trim().toLowerCase() ?? "";
@@ -505,6 +526,7 @@ export class OperatorService {
         snapshotGeneratedAt: snapshot.generatedAt,
         servedAt: new Date().toISOString(),
         reason,
+        ...(rateLimit ? { rateLimit } : {}),
       },
       forecast: snapshot.forecast,
       roster: roster.slice(offset, offset + limit),
@@ -519,7 +541,7 @@ export class OperatorService {
   }
 
   async rewardsPage(options: { offset?: number; limit?: number } = {}) {
-    const { value: snapshot, stale, reason } = await this.snapshotWithFreshness();
+    const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
     const stakers = snapshot.rewards?.stakers ?? [];
@@ -530,6 +552,7 @@ export class OperatorService {
         snapshotGeneratedAt: snapshot.generatedAt,
         servedAt: new Date().toISOString(),
         reason,
+        ...(rateLimit ? { rateLimit } : {}),
       },
       rewards: snapshot.rewards
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }

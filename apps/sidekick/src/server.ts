@@ -43,7 +43,9 @@ import { z } from "zod";
 import {
   ChainAnchorError,
   MAX_SHARED_ANCHOR_BURN_LAG,
+  type RateLimitApiSource,
   RateLimitedError,
+  rateLimitInfo,
   UpstreamHttpError,
   UpstreamSchemaError,
   UpstreamUnavailableError,
@@ -227,6 +229,7 @@ export interface TransactionEngineApiService {
 export interface ServerOptions {
   service?: OperatorSnapshotService;
   authToken?: string;
+  getRateLimitSettings?(): RateLimitApiSource;
   logger?: boolean;
   staticDirectory?: string | null;
   onboarding?: OnboardingService;
@@ -398,7 +401,21 @@ function chainSourcesDiffer(error: ChainAnchorError): boolean {
   );
 }
 
-function classifySafeOperatorError(error: unknown): SafeErrorClassification {
+function rateLimitMessage(info: NonNullable<ReturnType<typeof rateLimitInfo>>): string {
+  switch (info.source) {
+    case "hiro-api":
+      return "Hiro API is rate limiting Sidekick. It will retry automatically.";
+    case "stacks-api":
+      return "The configured Stacks API is rate limiting Sidekick. It will retry automatically.";
+    case "node":
+      return "The local Stacks node is rate limiting Sidekick. It will retry automatically.";
+  }
+}
+
+function classifySafeOperatorError(
+  error: unknown,
+  configuredApi?: RateLimitApiSource,
+): SafeErrorClassification {
   if (error instanceof OperatorApiError) {
     return safeClassification(error.statusCode, error.responseCode, {
       message: error.message,
@@ -458,12 +475,13 @@ function classifySafeOperatorError(error: unknown): SafeErrorClassification {
     });
   }
   if (error instanceof RateLimitedError) {
+    const info = configuredApi ? rateLimitInfo(error, configuredApi) : null;
     return safeClassification(429, "upstream_rate_limited", {
+      ...(info ? { message: rateLimitMessage(info), details: { rateLimit: info } } : {}),
       retryable: true,
-      retryAfterSeconds: Math.min(
-        30,
-        Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
-      ),
+      retryAfterSeconds:
+        info?.retryAfterSeconds ??
+        Math.min(30, Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000))),
     });
   }
   if (error instanceof UpstreamUnavailableError) {
@@ -532,8 +550,9 @@ function sendClassifiedError(
   request: FastifyRequest,
   reply: FastifyReply,
   error: unknown,
+  configuredApi?: RateLimitApiSource,
 ): FastifyReply {
-  const classified = classifySafeOperatorError(error);
+  const classified = classifySafeOperatorError(error, configuredApi);
   const body =
     classified.statusCode === 500
       ? {
@@ -718,6 +737,13 @@ export function createServer(options: ServerOptions = {}) {
     throw new Error("The operator API requires SIDEKICK_AUTH_TOKEN with at least 24 characters");
   }
   const server = Fastify({ logger: options.logger ?? true });
+  const rateLimitSettings = (): RateLimitApiSource | undefined => {
+    try {
+      return options.getRateLimitSettings?.();
+    } catch {
+      return undefined;
+    }
+  };
   let requestCount = 0;
   let syncRequestCount = 0;
   let syncCount = 0;
@@ -874,7 +900,7 @@ export function createServer(options: ServerOptions = {}) {
       } catch (error) {
         syncFailureCount += 1;
         const failedAt = new Date().toISOString();
-        const classified = classifySafeOperatorError(error);
+        const classified = classifySafeOperatorError(error, rateLimitSettings());
         request.log.warn(
           { err: error, responseCode: classified.body.error },
           "background reconciliation failed",
@@ -901,7 +927,7 @@ export function createServer(options: ServerOptions = {}) {
   }
 
   server.setErrorHandler((error: FastifyError, request, reply) => {
-    return sendClassifiedError(request, reply, error);
+    return sendClassifiedError(request, reply, error, rateLimitSettings());
   });
 
   server.addHook("onClose", async () => {
