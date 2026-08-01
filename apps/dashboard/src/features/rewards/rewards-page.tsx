@@ -60,6 +60,7 @@ export function Rewards({
   token: string;
 }) {
   const rewards = data.rewards;
+  const [rewardsFreshness, setRewardsFreshness] = useState(data.freshness ?? null);
   const actionAvailability = managerActionAvailability(data, operatorStateStale);
   const managerActionsAvailable = actionAvailability.available;
   const [activity, setActivity] = useState(data.activity);
@@ -104,6 +105,7 @@ export function Rewards({
         if (controller.signal.aborted) return;
         const total = result.rewards?.totals.stakers ?? 0;
         const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+        setRewardsFreshness(result.freshness ?? null);
         setRewardStakerTotal(total);
         if (stakerPage > lastPage) {
           correctingPage = true;
@@ -200,6 +202,11 @@ export function Rewards({
         title="Rewards"
         lede={`sBTC rewards and Bitcoin withdrawals for cycle ${rewards?.rewardCycle ?? data.preflight.cycle.currentId}.`}
       />
+      {rewardsFreshness?.status === "stale" ? (
+        <div className="callout callout-caution" role="status">
+          Showing last known reward data while Sidekick refreshes chain data.
+        </div>
+      ) : null}
       <div className="card-standout pipeline-wrap">
         <div className="pipeline">
           <PipelineStage

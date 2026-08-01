@@ -955,7 +955,7 @@ describe("local API", () => {
       {
         error: "upstream_response_invalid",
         message:
-          "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+          "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
         retryable: false,
       },
     ]);
@@ -1028,6 +1028,40 @@ describe("local API", () => {
           retryAfterSeconds: 3,
           apiKeyConfigured: false,
         },
+      },
+    ]);
+  });
+
+  it("explains how to replace a special-purpose health address", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const server = createServer({
+      service: { snapshot: async () => ({}) },
+      health: {
+        current: async () => ({}),
+        refresh: async () => ({}),
+        testSource: async () => {
+          throw new HealthSourceError("unsafe-address", "blocked");
+        },
+      },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { kind: "node-metrics", url: "http://169.254.169.254/latest" },
+    });
+
+    expect([response.statusCode, response.json()]).toEqual([
+      422,
+      {
+        error: "health_source_not_allowed",
+        message:
+          "Sidekick cannot use this URL because it points to a special-purpose network address (for example, link-local or multicast). Use a normal LAN, Tailnet, or public address for this service, or proxy it through one.",
+        retryable: false,
       },
     ]);
   });

@@ -327,9 +327,9 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   upstream_temporarily_unavailable:
     "A configured chain source is unavailable. Check node and API connectivity, then retry.",
   upstream_response_invalid:
-    "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+    "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
   health_source_not_allowed:
-    "The health source is not allowed. Use an endpoint permitted by Sidekick's health-source policy.",
+    "Sidekick cannot use this URL because it points to a special-purpose network address (for example, link-local or multicast). Use a normal LAN, Tailnet, or public address for this service, or proxy it through one.",
   health_source_temporarily_unavailable:
     "The health source could not be reached. Check the endpoint, then retry.",
   health_source_response_invalid:

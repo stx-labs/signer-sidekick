@@ -3,6 +3,7 @@ import {
   type BrowserWalletIntent,
   type BrowserWalletIntentRequest,
   browserWalletIntentResponseSchema,
+  type RateLimitInfo,
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -12,6 +13,7 @@ import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { StatusBadge } from "../../shared/dashboard-ui.js";
 import { number } from "../../shared/format.js";
 import { operatorErrorDetail } from "../../shared/operator-error.js";
+import { rateLimitGuidance, rateLimitHeading } from "../../shared/rate-limit-guidance.js";
 import {
   BrowserWalletError,
   browserWalletIntentNetwork,
@@ -61,6 +63,18 @@ function walletIntentErrorMessage(cause: unknown): string {
     }
   }
   return operatorErrorDetail(cause, "Could not prepare the wallet request");
+}
+
+function rateLimitFromError(cause: unknown): RateLimitInfo | null {
+  return cause instanceof ApiRequestError ? (cause.body?.rateLimit ?? null) : null;
+}
+
+export function automaticVerificationRefreshError(cause: unknown): string {
+  const rateLimit = rateLimitFromError(cause);
+  if (rateLimit) {
+    return `${rateLimitHeading(rateLimit)}. Sidekick will retry automatically. ${rateLimitGuidance(rateLimit)}`;
+  }
+  return `Automatic verification refresh failed: ${walletIntentErrorMessage(cause)} Use Refresh verification to retry now.`;
 }
 
 function requestTarget(intent: BrowserWalletIntent): string {
@@ -216,9 +230,7 @@ export function BrowserWalletActionPanel({
         setPollError(null);
       } catch (cause) {
         if (!active || controller.signal.aborted) return;
-        setPollError(
-          `Automatic verification refresh failed: ${walletIntentErrorMessage(cause)} Use Refresh verification to retry now.`,
-        );
+        setPollError(automaticVerificationRefreshError(cause));
       } finally {
         if (pollingController.current === controller) pollingController.current = null;
         if (active) timeout = window.setTimeout(() => void poll(), 15_000);

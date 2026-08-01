@@ -21,6 +21,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
   const [page, setPage] = useState(0);
   const [roster, setRoster] = useState(data.roster);
   const [rosterTotal, setRosterTotal] = useState(data.rosterTotal ?? data.roster.length);
+  const [rosterFreshness, setRosterFreshness] = useState(data.freshness ?? null);
   const [rosterLoading, setRosterLoading] = useState(true);
   const [rosterError, setRosterError] = useState<string | null>(null);
   const [rosterRetry, setRosterRetry] = useState(0);
@@ -45,6 +46,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       .then((result) => {
         if (controller.signal.aborted) return;
         const lastPage = Math.max(0, Math.ceil(result.total / pageSize) - 1);
+        setRosterFreshness(result.freshness ?? null);
         setRosterTotal(result.total);
         if (page > lastPage) {
           correctingPage = true;
@@ -112,6 +114,11 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
           </>
         }
       />
+      {rosterFreshness?.status === "stale" ? (
+        <div className="callout callout-caution" role="status">
+          Showing last known roster data while Sidekick refreshes chain data.
+        </div>
+      ) : null}
       {downloadError ? (
         <div className="callout callout-critical" role="alert">
           {downloadError}
