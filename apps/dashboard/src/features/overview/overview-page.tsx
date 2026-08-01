@@ -90,11 +90,10 @@ export function Overview({
   const rewards = data.rewards;
   const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
   const blocksUntilPrepare = data.preflight.cycle.blocksUntilPreparePhase;
-  const timing = health?.burnBlockTiming ?? null;
   const prepareEta =
-    blocksUntilPrepare === null || !timing
+    blocksUntilPrepare === null || !health?.burnBlockTiming
       ? null
-      : compactDuration(blocksUntilPrepare * timing.averageSeconds);
+      : compactDuration(blocksUntilPrepare * health.burnBlockTiming.averageSeconds);
   const nodeHealth = sourceHealthLight(health, "node", healthUnavailable);
   const signerHealth = sourceHealthLight(health, "signer", healthUnavailable);
   const nodeHealthLabel = healthUnavailable
@@ -173,14 +172,10 @@ export function Overview({
         <div>
           <span>Next prepare phase</span>
           <strong>
-            {number(blocksUntilPrepare)} <em>Bitcoin blocks</em>
+            {number(blocksUntilPrepare)}{" "}
+            <em>Bitcoin blocks (#{number(data.preflight.cycle.preparePhaseStartBurnHeight)})</em>
           </strong>
-          <small className="prepare-eta">
-            {prepareEta && timing
-              ? `~${prepareEta} · ${timing.windowHours}h average`
-              : "ETA unavailable"}
-          </small>
-          <small>at Bitcoin block {number(data.preflight.cycle.preparePhaseStartBurnHeight)}</small>
+          <small className="prepare-eta">{prepareEta ? `~${prepareEta}` : "ETA unavailable"}</small>
         </div>
         <a className="cycle-health" href="#health" aria-label="Open Node and Signer Health">
           <span>Node &amp; Signer Health</span>
