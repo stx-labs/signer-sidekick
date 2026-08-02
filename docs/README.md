@@ -8,6 +8,7 @@ Choose the shortest path for your task.
 | PoX-5 Testnet evaluator | [PoX-5 Testnet runbook](operator/pox5-testnet-deployment.md) | Exercise Attach and Fresh setup against the dedicated PoX-5 network |
 | Contributor | [Development](operator/development.md) | Build, test, and run locally |
 | Signer-health reviewer | [Signer Health](product/signer-health.md) | Monitoring sources, behavior, and scope |
+| Assist reviewer | [Transaction engine safety contract](architecture/transaction-engine.md) | Authority and execution invariants before reviewing Assist |
 
 ## Source of truth
 
