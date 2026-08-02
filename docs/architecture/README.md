@@ -1,7 +1,6 @@
 # Architecture
 
-Read [the V1 scope](../product/v1-scope.md) first. This directory contains only cross-cutting design
-notes and decisions that are not obvious from code.
+This directory contains cross-cutting design notes and decisions that are not obvious from code.
 
 ## Notes
 

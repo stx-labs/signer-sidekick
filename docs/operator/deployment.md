@@ -101,17 +101,12 @@ stop condition. Profiles under
 
 Fixed externally signed manager actions have a narrower gate: the configured manager, required
 interface, and node/API network routing must agree. Manager source/profile trust is a warning, not a
-blocker; review every wallet or manual signing request. Assist retains the stronger gates below.
+blocker; review every wallet or manual signing request.
 
 ## Operation mode
 
 Sidekick starts in Observe. It can prepare and verify external wallet requests but cannot sign or
 broadcast. Keep mainnet deployments in this mode.
-
-Assist is a separate controlled-canary release track, not an operator setup option. Do not enable it
-for production or a custom manager. Its design, configuration, recovery rules, and release gates are
-in [Transaction engine and Assist](../product/transaction-engine-v1.md) and
-[issue #6](https://github.com/stx-labs/signer-sidekick/issues/6).
 
 ## Back up and upgrade
 
