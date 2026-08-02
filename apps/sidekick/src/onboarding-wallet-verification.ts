@@ -89,6 +89,7 @@ export interface VerifiedWalletTransaction {
           | "update-fees"
           | "withdraw-fees"
           | "sweep-fee-refunds"
+          | "claim-staker-rewards"
           | "claim-rewards";
         argumentsSha256: string;
         signerKeyHex: string | null;

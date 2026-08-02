@@ -174,11 +174,22 @@ const signerStakerPositionInputSchema = z
     cycleMemberships: z.array(signerCycleMembershipInputSchema).max(97),
   })
   .strict();
+const signerStakerBondSchema = z
+  .object({
+    bondIndex: z.bigint().nonnegative(),
+    amountUstx: z.bigint().nonnegative(),
+    amountSats: z.bigint().nonnegative(),
+    isL1Lock: z.boolean(),
+    signer: principalSchema,
+  })
+  .strict();
 const signerStakerPageItemSchema = z
   .object({
     stakerPrincipal: principalSchema,
     hasStx: z.boolean(),
     hasBtc: z.boolean(),
+    /** Anchored `get-bond-membership` result for the configured manager, or null when absent. */
+    bond: signerStakerBondSchema.nullable().optional().default(null),
     active: z.boolean(),
     stxNodeVerified: z.boolean().nullable(),
     reconciliationComplete: z.boolean().optional().default(true),
@@ -191,20 +202,6 @@ const signerStakerPageItemSchema = z
         code: "custom",
         message: "A discovery must include at least one staking type",
         path: ["hasStx"],
-      });
-    }
-    if (value.hasStx && value.stxNodeVerified === null) {
-      context.addIssue({
-        code: "custom",
-        message: "STX discoveries require a node verification result",
-        path: ["stxNodeVerified"],
-      });
-    }
-    if (!value.hasStx && value.stxNodeVerified !== null) {
-      context.addIssue({
-        code: "custom",
-        message: "BTC-only discoveries cannot have an STX node verification result",
-        path: ["stxNodeVerified"],
       });
     }
     if ((value.position !== null) !== (value.stxNodeVerified === true)) {
@@ -323,6 +320,11 @@ const storedSignerStakerRowSchema = z.object({
   has_stx: z.union([z.literal(0), z.literal(1)]),
   has_btc: z.union([z.literal(0), z.literal(1)]),
   stx_node_verified: z.union([z.literal(0), z.literal(1)]).nullable(),
+  bond_node_verified: z.union([z.literal(0), z.literal(1)]).nullable(),
+  bond_index: z.string().nullable(),
+  bond_amount_ustx: z.string().nullable(),
+  bond_amount_sats: z.string().nullable(),
+  bond_is_l1_lock: z.union([z.literal(0), z.literal(1)]).nullable(),
   active: z.union([z.literal(0), z.literal(1)]),
   source_id: z.string(),
   verification_source_id: z.string().nullable(),
@@ -597,6 +599,13 @@ export interface StoredSignerStaker {
   stakerPrincipal: string;
   hasStx: boolean;
   hasBtc: boolean;
+  /** Node-verified bond membership at the reconciliation anchor, not the API's `types` label. */
+  bond: null | {
+    bondIndex: bigint;
+    amountUstx: bigint;
+    amountSats: bigint;
+    isL1Lock: boolean;
+  };
   stxNodeVerified: boolean | null;
   active: boolean;
   sourceId: string;
@@ -2363,12 +2372,18 @@ export class SidekickStore {
     const upsertStaker = this.db.prepare(
       `INSERT INTO stakers (
         manager_principal, staker_principal, has_stx, has_btc, stx_node_verified,
+        bond_node_verified, bond_index, bond_amount_ustx, bond_amount_sats, bond_is_l1_lock,
         active, source_id, verification_source_id, last_seen_run_id, first_seen_at, last_seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, staker_principal) DO UPDATE SET
         has_stx = excluded.has_stx,
         has_btc = excluded.has_btc,
         stx_node_verified = excluded.stx_node_verified,
+        bond_node_verified = excluded.bond_node_verified,
+        bond_index = excluded.bond_index,
+        bond_amount_ustx = excluded.bond_amount_ustx,
+        bond_amount_sats = excluded.bond_amount_sats,
+        bond_is_l1_lock = excluded.bond_is_l1_lock,
         active = excluded.active,
         source_id = excluded.source_id,
         verification_source_id = excluded.verification_source_id,
@@ -2473,6 +2488,13 @@ export class SidekickStore {
           item.hasStx ? 1 : 0,
           item.hasBtc ? 1 : 0,
           item.stxNodeVerified === null ? null : item.stxNodeVerified ? 1 : 0,
+          // Written on every anchored verification pass, so a bond that ends is cleared rather
+          // than left behind as a stale membership.
+          item.reconciliationComplete ? 1 : 0,
+          item.bond === null ? null : item.bond.bondIndex.toString(),
+          item.bond === null ? null : item.bond.amountUstx.toString(),
+          item.bond === null ? null : item.bond.amountSats.toString(),
+          item.bond === null ? null : item.bond.isL1Lock ? 1 : 0,
           item.active ? 1 : 0,
           value.sourceId,
           item.hasStx ? value.nodeSourceId : null,
@@ -2615,7 +2637,8 @@ export class SidekickStore {
     const rows = this.db
       .prepare(
         `SELECT s.manager_principal, s.staker_principal, s.has_stx, s.has_btc,
-          s.stx_node_verified, s.active, s.source_id, s.last_seen_run_id,
+          s.stx_node_verified, s.bond_node_verified, s.bond_index, s.bond_amount_ustx,
+          s.bond_amount_sats, s.bond_is_l1_lock, s.active, s.source_id, s.last_seen_run_id,
           s.verification_source_id, s.first_seen_at, s.last_seen_at,
           p.signer_principal, p.amount_ustx,
           p.first_reward_cycle, p.num_cycles, p.unlock_cycle, p.unlock_burn_height,
@@ -2638,6 +2661,15 @@ export class SidekickStore {
         hasStx: value.has_stx === 1,
         hasBtc: value.has_btc === 1,
         stxNodeVerified: value.stx_node_verified === null ? null : value.stx_node_verified === 1,
+        bond:
+          value.bond_index === null
+            ? null
+            : {
+                bondIndex: BigInt(value.bond_index),
+                amountUstx: BigInt(value.bond_amount_ustx ?? "0"),
+                amountSats: BigInt(value.bond_amount_sats ?? "0"),
+                isL1Lock: value.bond_is_l1_lock === 1,
+              },
         active: value.active === 1,
         sourceId: value.source_id,
         verificationSourceId: value.verification_source_id,

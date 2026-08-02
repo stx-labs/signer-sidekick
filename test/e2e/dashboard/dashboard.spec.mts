@@ -1086,6 +1086,19 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
 });
 
+test("prepares a staker settlement through the browser-wallet flow", async ({ page }) => {
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+
+  await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
+  await expect(page.getByRole("button", { name: "Settle" })).toBeVisible();
+  await page.getByRole("button", { name: "Settle" }).click();
+
+  await expect(page.getByText("One transaction settles this tuple.")).toBeVisible();
+  await page.getByLabel("Signing account").fill(snapshot.managerPrincipal.split(".")[0] ?? "");
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+});
+
 test("explains a temporary chain-source mismatch while preparing a wallet request", async ({
   page,
 }) => {

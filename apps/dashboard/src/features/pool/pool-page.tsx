@@ -230,6 +230,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
                   <th>First cycle</th>
                   <th>Last cycle</th>
                   <th>Unlock Bitcoin block</th>
+                  <th>Bond</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -255,8 +256,22 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
                       <td className="mono">{lastCycle?.toString() ?? "—"}</td>
                       <td className="mono">{number(position?.unlockBurnHeight)}</td>
                       <td>
-                        <Badge state={entry.stxNodeVerified ? "success" : "caution"}>
-                          {entry.stxNodeVerified ? "Verified" : "Not node-verified"}
+                        {entry.bond ? (
+                          // Read from PoX-5 `get-bond-membership`, not the indexer's type label.
+                          <Badge state={entry.bond.isL1Lock ? "accent" : "info"}>
+                            {entry.bond.isL1Lock ? "Bitcoin L1" : "sBTC"} · #{entry.bond.bondIndex}
+                          </Badge>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>
+                        <Badge state={entry.stxNodeVerified === false ? "caution" : "success"}>
+                          {entry.stxNodeVerified === false
+                            ? "Not node-verified"
+                            : entry.stxNodeVerified === null && entry.bond
+                              ? "Bond verified"
+                              : "Verified"}
                         </Badge>
                       </td>
                     </tr>

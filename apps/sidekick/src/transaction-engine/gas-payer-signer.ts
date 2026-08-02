@@ -254,7 +254,16 @@ async function revalidateSealedPlan(
         lastRewardComputeBurnHeight: plan.material.rewardObservation.lastRewardComputeBurnHeight,
         rewardsPerToken: BigInt(plan.material.rewardObservation.rewardsPerToken),
       },
-      noBondParticipation: plan.material.noBondParticipation,
+      stxEarnedSats: BigInt(plan.material.stxEarnedSats),
+      bondBuckets: plan.material.bondBuckets.map((bucket) => ({
+        bondIndex: BigInt(bucket.bondIndex),
+        managerSharesSats: BigInt(bucket.managerSharesSats),
+        earnedSats: BigInt(bucket.earnedSats),
+        feeSnapshot: {
+          state: bucket.feeSnapshot.state,
+          effectiveFeeBips: BigInt(bucket.feeSnapshot.effectiveFeeBips),
+        },
+      })),
       feeSnapshot: {
         state: plan.material.feeSnapshot.state,
         effectiveFeeBips: BigInt(plan.material.feeSnapshot.effectiveFeeBips),

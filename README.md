@@ -14,7 +14,9 @@ upstream responsibilities.
 
 ## Scope
 
-- One network, signer-manager, and STX-only pool per deployment.
+- One network and signer-manager per deployment. Pools may include PoX-5 bond participants;
+  Sidekick observes bond membership and claims per-bond reward buckets, but never creates or
+  changes a bond.
 - Existing and fresh manager workflows.
 - Browser-wallet or manual execution for setup, manager administration, and Observe reward claims.
 - Hiro or self-hosted Stacks API endpoints.
@@ -22,7 +24,7 @@ upstream responsibilities.
 - No end-user wallet connection or stake submission.
 - Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
   scope.
-- No sBTC bond pooling in V1.
+- No bond creation, Bitcoin L1 lock handling, SPV proofs, early exits, or rollovers.
 
 Compatible managers can use supported external administration and registration actions. Observe
 reward claims require a verified reference manager; Assist has additional release gates.
