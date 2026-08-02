@@ -398,7 +398,7 @@ export function Rewards({
             </button>
             <button
               type="button"
-              className="btn btn-tertiary"
+              className="btn btn-secondary"
               disabled={!managerActionsAvailable}
               onClick={() => {
                 location.hash = dashboardHash("manager", "sweep-fee-refunds");
@@ -881,7 +881,7 @@ function StakerSettlementPanel({
               token={token}
             />
           ) : null}
-          <button type="button" onClick={() => setSelected(null)}>
+          <button type="button" className="btn btn-tertiary sm" onClick={() => setSelected(null)}>
             Cancel
           </button>
         </div>
@@ -893,12 +893,16 @@ function StakerSettlementPanel({
         retry={() => load(latest?.page.nextCursor ?? null)}
       />
       {!loading && !error && latest && !complete ? (
-        <button type="button" onClick={() => load(latest.page.nextCursor)}>
+        <button
+          type="button"
+          className="btn btn-secondary sm"
+          onClick={() => load(latest.page.nextCursor)}
+        >
           Scan the next {latest.page.limit} stakers
         </button>
       ) : null}
       {pages.length === 0 && !loading && !error ? (
-        <button type="button" onClick={() => load(null)}>
+        <button type="button" className="btn btn-secondary sm" onClick={() => load(null)}>
           Check what settling this cycle costs
         </button>
       ) : null}

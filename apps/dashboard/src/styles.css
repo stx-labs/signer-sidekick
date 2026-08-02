@@ -1166,6 +1166,16 @@
   margin-top: var(--space-4);
 }
 
+.reward-ledger > .card {
+  display: flex;
+  flex-direction: column;
+}
+
+.reward-ledger .reward-admin-actions {
+  margin-top: auto;
+  padding-top: var(--space-4);
+}
+
 @media (max-width: 720px) {
   .deployment-options,
   .wallet-intent-fields {
