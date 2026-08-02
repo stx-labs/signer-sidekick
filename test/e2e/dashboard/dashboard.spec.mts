@@ -775,7 +775,8 @@ test("summarizes the cycle clock and links health details", async ({ page }) => 
   await expect(cards.nth(0)).toContainText("Reward cycle");
   await expect(cards.nth(1)).toContainText("Bitcoin block height");
   await expect(cards.nth(2)).toContainText("Next prepare phase");
-  await expect(cards.nth(2)).toContainText("~10d 16h · 24h average");
+  await expect(cards.nth(2)).toContainText("~10d 16h");
+  await expect(cards.nth(2)).toContainText("Bitcoin blocks (#10,780)");
   await expect(cards.nth(3)).toContainText("Node & Signer Health");
   await expect(cards.nth(3)).toContainText("Node");
   await expect(cards.nth(3)).toContainText("Signer");
