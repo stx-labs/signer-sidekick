@@ -760,6 +760,7 @@ describe("Sidekick SQLite store", () => {
         lastComputedRewardCycle: "140",
         rewardsPerToken: "42",
         signerEarnedBeforeManagerClaimSats: "0",
+        signerEarnedAcrossBucketsSats: "0",
       },
       manager: {
         configuredFeeBips: "750",

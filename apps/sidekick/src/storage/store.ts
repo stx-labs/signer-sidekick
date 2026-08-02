@@ -459,6 +459,7 @@ const rewardCycleSnapshotInputSchema = z
         lastComputedRewardCycle: unsignedIntegerTextSchema.nullable(),
         rewardsPerToken: unsignedIntegerTextSchema,
         signerEarnedBeforeManagerClaimSats: unsignedIntegerTextSchema,
+        signerEarnedAcrossBucketsSats: unsignedIntegerTextSchema,
       })
       .strict(),
     manager: z
