@@ -90,7 +90,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
     <>
       <PageHead
         title="Pool positions"
-        lede="STX-only stakers assigned to this manager, their eligible cycles, and unlock timing."
+        lede="Stakers assigned to this manager, including observed bond participants, their eligible cycles, and unlock timing."
         actions={
           <>
             <button

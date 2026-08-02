@@ -173,7 +173,10 @@ export function freshWorkflowSteps(raw: ActivationStep[]): ActivationStep[] {
   const verificationSteps = [byId.get("verify-setup"), byId.get("publish-enrollment-info")];
   return [
     mapped("preflight", "Prerequisites"),
-    mapped("render-manager", "Manager artifact"),
+    {
+      ...mapped("render-manager", "Manager artifact"),
+      detail: "Generate the contract and deployment files that operate this pool",
+    },
     mapped("deploy-manager", "Deploy manager"),
     {
       id: "signer-grant-ceremony",

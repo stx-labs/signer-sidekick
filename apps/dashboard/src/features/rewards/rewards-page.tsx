@@ -265,6 +265,7 @@ export function Rewards({
       ) : null}
       <StakerSettlementPanel
         chainId={data.preflight.node.networkId}
+        calculationPending={rewards?.calculation.state === "pending"}
         managerPrincipal={data.managerPrincipal}
         network={data.network}
         onSettled={() => setStakersRetry((value) => value + 1)}
@@ -704,12 +705,14 @@ function blockedLabel(reason: string | null): string {
 
 function StakerSettlementPanel({
   chainId,
+  calculationPending,
   managerPrincipal,
   network,
   onSettled,
   token,
 }: {
   chainId: number;
+  calculationPending: boolean;
   managerPrincipal: string;
   network: string;
   onSettled: () => void;
@@ -737,6 +740,12 @@ function StakerSettlementPanel({
     .reduce((total, page) => total + BigInt(page.settlement.totalNetSats), 0n)
     .toString();
   const complete = latest !== null && latest.page.nextCursor === null;
+  const candidates = pages.flatMap(({ candidates: pageCandidates }) => pageCandidates);
+  // A zero-reward tuple is neither actionable nor a blocked obligation. Avoid rendering an
+  // O(stakers) table of those rows, while keeping every payable or genuinely blocked tuple visible.
+  const candidatesWithDetails = candidates.filter(
+    (candidate) => candidate.claimable || candidate.blockedReason !== "nothing-settled",
+  );
 
   const load = (cursor: string | null): void => {
     setLoading(true);
@@ -749,163 +758,181 @@ function StakerSettlementPanel({
   };
 
   return (
-    <section className="card" aria-labelledby="staker-settlement">
+    <section className="card reward-settlement" aria-labelledby="staker-settlement">
       <h2 id="staker-settlement">Settle staker rewards</h2>
-      <p className="tertiary">
-        Each settleable staker and bucket is its own transaction; the reference manager offers no
-        way to combine them. Sidekick lists only the calls the manager would accept.
-      </p>
-      {latest ? (
+      {calculationPending ? (
+        <p className="tertiary" role="status">
+          Staker rewards become available after the global calculation runs. Sidekick observes that
+          permissionless call and will list payable rewards once it is confirmed.
+        </p>
+      ) : (
         <>
-          <div className="stat-row">
-            <StatLine label={complete ? "Transactions to sign" : "Transactions so far"}>
-              {transactionCount}
-            </StatLine>
-            <StatLine label={complete ? "Total payout" : "Payout so far"}>
-              {sbtc(totalNetSats)} sBTC
-            </StatLine>
-            <StatLine label="Owed but not sendable">{blockedClaims}</StatLine>
-            <StatLine label="Stakers scanned">
-              {scanned} of {stakersTotal}
-            </StatLine>
-          </div>
-          {!complete ? (
-            <p className="tertiary" role="status">
-              These are running totals for the {scanned} staker{scanned === 1 ? "" : "s"} scanned so
-              far, not the whole cycle. Keep scanning to see what settling the pool costs.
-            </p>
-          ) : null}
-          {pages.flatMap(({ candidates }) => candidates).length > 0 ? (
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Staker</th>
-                  <th scope="col">Bucket</th>
-                  <th scope="col">Payout</th>
-                  <th scope="col">Route</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pages
-                  .flatMap(({ candidates }) => candidates)
-                  .map((candidate) => (
-                    <tr key={`${candidate.stakerPrincipal}:${candidate.bondIndex ?? "stx"}`}>
-                      <td>
-                        <CopyableIdentifier
-                          value={candidate.stakerPrincipal}
-                          display={short(candidate.stakerPrincipal, 8, 5)}
-                          label="staker principal"
-                          className="mono"
-                        />
-                      </td>
-                      <td>
-                        {candidate.bondIndex === null ? "STX-only" : `Bond ${candidate.bondIndex}`}
-                      </td>
-                      <td className="mono">{sbtc(candidate.rewards.earnedSats)}</td>
-                      <td>
-                        {candidate.payout.kind === "bitcoin-l1" ? "Bitcoin L1" : "Direct sBTC"}
-                      </td>
-                      <td>
-                        {candidate.claimable ? (
-                          <Badge state="success">Ready</Badge>
-                        ) : (
-                          <Badge state="neutral">{blockedLabel(candidate.blockedReason)}</Badge>
-                        )}
-                      </td>
-                      <td>
-                        {candidate.claimable ? (
-                          <button
-                            type="button"
-                            className="btn btn-secondary sm"
-                            onClick={() => setSelected(candidate)}
-                          >
-                            Settle
-                          </button>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="empty-table">No staker rewards are outstanding for this cycle</div>
-          )}
-        </>
-      ) : null}
-      {selected ? (
-        <div className="card-standout">
-          <h3>
-            Settle {short(selected.stakerPrincipal, 8, 5)} ·{" "}
-            {selected.bondIndex === null ? "STX-only" : `bond ${selected.bondIndex}`}
-          </h3>
           <p className="tertiary">
-            One transaction settles this tuple. The call pays the staker named in its arguments, not
-            the signer, and the postcondition pins the manager's exact sBTC outflow.
+            Each settleable staker and bucket is its own transaction; the reference manager offers
+            no way to combine them. Sidekick lists only the calls the manager would accept.
           </p>
-          <label htmlFor="staker-claim-actor">Signing account</label>
-          <input
-            id="staker-claim-actor"
-            value={actorPrincipal}
-            onChange={(event) => setActorPrincipal(event.target.value)}
-            placeholder="SP..."
-            className="mono"
+          {latest ? (
+            <>
+              <div className="stat-row">
+                <StatLine label={complete ? "Transactions to sign" : "Transactions so far"}>
+                  {transactionCount}
+                </StatLine>
+                <StatLine label={complete ? "Total payout" : "Payout so far"}>
+                  {sbtc(totalNetSats)} sBTC
+                </StatLine>
+                <StatLine label="Owed but not sendable">{blockedClaims}</StatLine>
+                <StatLine label="Stakers scanned">
+                  {scanned} of {stakersTotal}
+                </StatLine>
+              </div>
+              {!complete ? (
+                <p className="tertiary" role="status">
+                  These are running totals for the {scanned} staker{scanned === 1 ? "" : "s"}{" "}
+                  scanned so far, not the whole cycle. Keep scanning to see what settling the pool
+                  costs.
+                </p>
+              ) : null}
+              {candidatesWithDetails.length > 0 ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Staker</th>
+                      <th scope="col">Bucket</th>
+                      <th scope="col">Payout</th>
+                      <th scope="col">Route</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {candidatesWithDetails.map((candidate) => (
+                      <tr key={`${candidate.stakerPrincipal}:${candidate.bondIndex ?? "stx"}`}>
+                        <td>
+                          <CopyableIdentifier
+                            value={candidate.stakerPrincipal}
+                            display={short(candidate.stakerPrincipal, 8, 5)}
+                            label="staker principal"
+                            className="mono"
+                          />
+                        </td>
+                        <td>
+                          {candidate.bondIndex === null
+                            ? "STX-only"
+                            : `Bond ${candidate.bondIndex}`}
+                        </td>
+                        <td className="mono">{sbtc(candidate.rewards.earnedSats)}</td>
+                        <td>
+                          {candidate.payout.kind === "bitcoin-l1" ? "Bitcoin L1" : "Direct sBTC"}
+                        </td>
+                        <td>
+                          {candidate.claimable ? (
+                            <Badge state="success">Ready</Badge>
+                          ) : (
+                            <Badge state="neutral">{blockedLabel(candidate.blockedReason)}</Badge>
+                          )}
+                        </td>
+                        <td>
+                          {candidate.claimable ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary sm"
+                              onClick={() => setSelected(candidate)}
+                            >
+                              Settle
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty-table">
+                  {complete
+                    ? "No staker rewards are settleable for this cycle"
+                    : `No payable or blocked rewards in the ${scanned} stakers scanned so far`}
+                </div>
+              )}
+            </>
+          ) : null}
+          {selected ? (
+            <div className="card-standout">
+              <h3>
+                Settle {short(selected.stakerPrincipal, 8, 5)} ·{" "}
+                {selected.bondIndex === null ? "STX-only" : `bond ${selected.bondIndex}`}
+              </h3>
+              <p className="tertiary">
+                One transaction settles this tuple. The call pays the staker named in its arguments,
+                not the signer, and the postcondition pins the manager's exact sBTC outflow.
+              </p>
+              <label htmlFor="staker-claim-actor">Signing account</label>
+              <input
+                id="staker-claim-actor"
+                value={actorPrincipal}
+                onChange={(event) => setActorPrincipal(event.target.value)}
+                placeholder="SP..."
+                className="mono"
+              />
+              {actorPrincipal.trim() !== "" && !actorValid ? (
+                <span className="tertiary">
+                  Enter a valid Stacks account principal for this network.
+                </span>
+              ) : null}
+              {actorValid ? (
+                <BrowserWalletActionPanel
+                  key={`${selected.stakerPrincipal}:${selected.bondIndex ?? "stx"}`}
+                  chainId={chainId}
+                  createRequest={{
+                    action: "claim-staker-rewards",
+                    actorPrincipal: actorPrincipal.trim(),
+                    stakerPrincipal: selected.stakerPrincipal,
+                    rewardCycle: String(latest?.rewardCycle ?? 0),
+                    bondIndex: selected.bondIndex,
+                  }}
+                  intentApiBase="/api/v1/wallet-intents"
+                  managerPrincipal={managerPrincipal}
+                  network={network}
+                  onVerified={() => {
+                    setSelected(null);
+                    setPages([]);
+                    onSettled();
+                  }}
+                  token={token}
+                />
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-tertiary sm"
+                onClick={() => setSelected(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          <RequestState
+            label="settlement plan"
+            loading={loading}
+            error={error}
+            retry={() => load(latest?.page.nextCursor ?? null)}
           />
-          {actorPrincipal.trim() !== "" && !actorValid ? (
-            <span className="tertiary">
-              Enter a valid Stacks account principal for this network.
-            </span>
+          {!loading && !error && latest && !complete ? (
+            <button
+              type="button"
+              className="btn btn-secondary sm"
+              onClick={() => load(latest.page.nextCursor)}
+            >
+              Scan the next {latest.page.limit} stakers
+            </button>
           ) : null}
-          {actorValid ? (
-            <BrowserWalletActionPanel
-              key={`${selected.stakerPrincipal}:${selected.bondIndex ?? "stx"}`}
-              chainId={chainId}
-              createRequest={{
-                action: "claim-staker-rewards",
-                actorPrincipal: actorPrincipal.trim(),
-                stakerPrincipal: selected.stakerPrincipal,
-                rewardCycle: String(latest?.rewardCycle ?? 0),
-                bondIndex: selected.bondIndex,
-              }}
-              intentApiBase="/api/v1/wallet-intents"
-              managerPrincipal={managerPrincipal}
-              network={network}
-              onVerified={() => {
-                setSelected(null);
-                setPages([]);
-                onSettled();
-              }}
-              token={token}
-            />
+          {pages.length === 0 && !loading && !error ? (
+            <button type="button" className="btn btn-secondary sm" onClick={() => load(null)}>
+              Check what settling this cycle costs
+            </button>
           ) : null}
-          <button type="button" className="btn btn-tertiary sm" onClick={() => setSelected(null)}>
-            Cancel
-          </button>
-        </div>
-      ) : null}
-      <RequestState
-        label="settlement plan"
-        loading={loading}
-        error={error}
-        retry={() => load(latest?.page.nextCursor ?? null)}
-      />
-      {!loading && !error && latest && !complete ? (
-        <button
-          type="button"
-          className="btn btn-secondary sm"
-          onClick={() => load(latest.page.nextCursor)}
-        >
-          Scan the next {latest.page.limit} stakers
-        </button>
-      ) : null}
-      {pages.length === 0 && !loading && !error ? (
-        <button type="button" className="btn btn-secondary sm" onClick={() => load(null)}>
-          Check what settling this cycle costs
-        </button>
-      ) : null}
+        </>
+      )}
     </section>
   );
 }
