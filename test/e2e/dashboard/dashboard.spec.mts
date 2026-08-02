@@ -1850,7 +1850,9 @@ test("keeps setup commands behind advanced disclosure", async ({ page }) => {
 
   currentStep = "render-manager";
   await page.reload();
-  await expect(page.getByText(/Review and download the generated contract source/)).toBeVisible();
+  await expect(
+    page.getByText(/Download the contract source and deployment manifest, then deploy them/),
+  ).toBeVisible();
   await expect(page.getByText("sidekick manager render --json")).not.toBeVisible();
 });
 
