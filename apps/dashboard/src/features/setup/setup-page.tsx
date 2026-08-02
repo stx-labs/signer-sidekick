@@ -908,6 +908,31 @@ export function SetupPage({
                         token={token}
                       />
                       <div className="deploy-instructions">
+                        <h3>Manager contract</h3>
+                        <p>
+                          This contract represents your pool: it registers your signer, manages
+                          rewards, and records pool fees. The deploying wallet is its first admin.
+                        </p>
+                        <p>
+                          Deploy the generated Stacks Core reference manager, or deploy a compatible
+                          manager and attach it later. It starts at 0%; set your pool fee in Manager
+                          before claims begin (100 basis points = 1%).
+                        </p>
+                        <p className="help">
+                          <a
+                            href={DOCUMENT_LINKS.referenceManager}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View reference source <ArrowSquareOut />
+                          </a>
+                          {" · "}
+                          <a href={DOCUMENT_LINKS.poolOperator} target="_blank" rel="noreferrer">
+                            Pool operator guide <ArrowSquareOut />
+                          </a>
+                        </p>
+                      </div>
+                      <div className="deploy-instructions">
                         <h3>Manual deployment</h3>
                         <p>
                           The <span className="mono">.clar</span> file is the contract source. The
