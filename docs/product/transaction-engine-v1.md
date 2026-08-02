@@ -1,4 +1,7 @@
-# Transaction engine V1
+# Transaction engine and Assist
+
+This document defines the controlled Assist release track. V1 launches with externally signed
+Observe workflows; Assist remains blocked until its [rollout gates](#rollout-gates) are complete.
 
 ## Release boundary
 
@@ -20,8 +23,7 @@ Runtime configuration accepts only these modes:
 | Observe | Plan, block, supersede, and reconcile. Signing and broadcast are unreachable. |
 | Assist | Perform the same observations, then require a fresh exact approval before the fixed adapter may sign and broadcast. |
 
-Observe is the default and needs no engine key or attestation files. Assist follows the rollout gates
-below; V1 has no Automate switch.
+Observe is the default and needs no engine key or attestation files. V1 has no Automate switch.
 
 Observe may hand an existing preflighted job to the external wallet-intent boundary. This does not
 enable engine signing or broadcast: the job is not replanned and never enters approval, nonce, or
@@ -164,8 +166,7 @@ that cannot be reconciled remains unresolved and requires manual intervention.
 
 During submission uncertainty, signing and broadcast must stop while observation and reconciliation
 continue. Do not retry manually, replace the database or key, or restore a pre-broadcast backup while
-a nonce is unresolved. Follow the
-[Assist recovery procedure](../operator/deployment.md#assist-recovery).
+a nonce is unresolved.
 
 ## Emergency controls
 

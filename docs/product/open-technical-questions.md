@@ -1,24 +1,11 @@
 # Open technical questions
 
-These questions require Stacks core, signer, API, reference-manager, security, or release expertise;
-the durable engine contract is [Transaction Engine V1](transaction-engine-v1.md). Answers must cite
-source, code, or a reproducible network observation, state network-specific assumptions, and name
-the accepting owner.
+These questions require core, signer, API, reference-manager, security, or release expertise.
+Answers should cite source, code, or a reproducible network observation and name an accepting owner.
+Fresh/Attach and released-wallet validation are complete; these questions concern Assist and future
+adapters.
 
-## Needed for public-testnet validation
-
-1. Which PoX-5 Testnet endpoint, network ID, activation height, first reward cycle, PoX-5 source,
-   sBTC principals, and node build are approved for release validation?
-2. Does the released signer retain the tested four-field JSON output for
-   `generate-staking-signature`?
-3. Which released wallet versions, deployed Sidekick origins, and network configurations must pass
-   real-wallet certification for each enabled V1 action?
-4. Which API endpoint(s) enumerate a manager's stakers after `stake-update` changes the latest
-   signer while the current-cycle membership remains with the prior signer?
-5. What pagination, canonicality, reorg, retention, and provider-change guarantees apply to roster,
-   event, and transaction endpoints?
-
-## Needed before the first manager claim in Assist
+## Assist
 
 1. How does Sidekick positively prove that the V1 STX-staking-only manager has no sBTC bond
    participation and that an empty `bond-periods` list is exact for its `claim-rewards` call?
@@ -30,7 +17,7 @@ the accepting owner.
 4. Who owns the compatibility-attestation issuer key, trust roots, release availability, rotation,
    revocation, expiry, clock policy, downgrade protection, and emergency response?
 
-## Needed before the global calculator adapter
+## Global calculator adapter
 
 1. Who normally calls `calculate-rewards`, and what fallback delay/jitter should another
    permissionless caller use?
@@ -39,7 +26,7 @@ the accepting owner.
 3. How should Sidekick reconcile a lost calculator race, malformed/incomplete bond input, and a
    later calculation in the same reward cycle?
 
-## Needed before staker payouts and withdrawals
+## Staker payouts and withdrawals
 
 1. What are the authoritative manager request-map and sBTC registry transitions for pending,
    accepted, rejected, settled, reclaimable, and reclaimed withdrawals?
@@ -48,7 +35,7 @@ the accepting owner.
 3. Which current/future-cycle read-only values are authoritative for direct-sBTC and Bitcoin-L1
    payout planning, and which remain projections?
 
-## Needed for production confidence
+## Production confidence
 
 1. Which API v9 endpoints and fields are authoritative for stake changes, claims, registration, and
    deferred unlock history?

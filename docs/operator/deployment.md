@@ -103,166 +103,20 @@ Fixed externally signed manager actions have a narrower gate: the configured man
 interface, and node/API network routing must agree. Manager source/profile trust is a warning, not a
 blocker; review every wallet or manual signing request. Assist retains the stronger gates below.
 
-## Transaction engine modes
+## Operation mode
 
-The safety contract is [Transaction engine V1](../product/transaction-engine-v1.md).
+Sidekick starts in Observe. It can prepare and verify external wallet requests but cannot sign or
+broadcast. Keep mainnet deployments in this mode.
 
-### Observe
-
-Observe starts without engine inputs and cannot reserve a nonce, sign, or broadcast. Keep production
-and mainnet deployments in Observe until all
-[rollout gates](../product/transaction-engine-v1.md#rollout-gates) are complete:
-
-```dotenv
-SIDEKICK_ENGINE_MODE=observe
-```
-
-Without engine inputs, Operations shows observations and blockers. Exact plans require the public
-gas-payer principal/key and reviewed attestation/trust files from the Assist configuration below;
-omit the gas secret and keep `SIDEKICK_ENGINE_MODE=observe` to preserve read-only authority.
-
-### Assist configuration
-
-Assist exists for controlled canary validation of the single code-backed
-`reference-manager-claim-rewards` adapter. Do not enable it for a custom manager or unattended
-mainnet operation.
-
-Assist requires an exact reference manager/profile on every network. Production approval is
-required only on mainnet; non-mainnet still requires the signed attestation, exact approval, and all
-runtime admission checks.
-
-Assist fails startup unless all of these values are present and mutually consistent:
-
-```dotenv
-SIDEKICK_ENGINE_MODE=assist
-SIDEKICK_GAS_PAYER_PRINCIPAL=ST_REPLACE_WITH_DEDICATED_GAS_PAYER
-SIDEKICK_GAS_PAYER_PUBLIC_KEY=02_REPLACE_WITH_COMPRESSED_PUBLIC_KEY
-SIDEKICK_GAS_PAYER_SECRET_FILE=/run/sidekick-engine/gas-payer.key
-SIDEKICK_COMPATIBILITY_ATTESTATION_FILE=/run/sidekick-engine/compatibility-attestation.json
-SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE=/run/sidekick-engine/trust-keys.json
-```
-
-Devnet and regtest Assist also require `SIDEKICK_NETWORK_ID`; it must match both the node and signed
-attestation.
-
-The principal must be a standard principal for the configured network and must derive from the
-compressed public key. The three file settings are absolute paths **inside the container**. Put only
-paths and public identity in the environment; never put a private key, mnemonic, signed transaction,
-or attestation issuer secret in an environment value.
-
-The gas key must be dedicated to one running Sidekick instance, low balance, and funded only for
-bounded transaction fees. It is not a signer, manager-admin, or operator-wallet private key. The file
-contains exactly one raw Stacks private key, is a regular non-symlink file, is owned by container UID
-`10001`, and permits owner read with optional owner write but no group, world, or execute access.
-Keep it outside the repository and container image. Compatibility attestation and trust-key JSON
-must come from the approved release process; do not author permissive local replacements.
-
-On a Linux host, prepare a root-controlled directory and install reviewed source files without
-printing them:
-
-```sh
-sudo install -d -m 0700 -o root -g root /var/lib/signer-sidekick/engine
-sudo install -m 0400 -o 10001 -g 10001 /secure/source/gas-payer.key \
-  /var/lib/signer-sidekick/engine/gas-payer.key
-sudo install -m 0444 -o 10001 -g 10001 /secure/source/compatibility-attestation.json \
-  /var/lib/signer-sidekick/engine/compatibility-attestation.json
-sudo install -m 0444 -o 10001 -g 10001 /secure/source/trust-keys.json \
-  /var/lib/signer-sidekick/engine/trust-keys.json
-```
-
-Pass the public settings and bind-mount each file read-only with a Compose override. The base Compose
-file needs no engine mounts for Observe.
-
-```yaml
-# compose.assist.yaml
-services:
-  sidekick:
-    environment:
-      SIDEKICK_ENGINE_MODE: assist
-      SIDEKICK_GAS_PAYER_PRINCIPAL: ${SIDEKICK_GAS_PAYER_PRINCIPAL:?Set the public principal}
-      SIDEKICK_GAS_PAYER_PUBLIC_KEY: ${SIDEKICK_GAS_PAYER_PUBLIC_KEY:?Set the compressed public key}
-      SIDEKICK_GAS_PAYER_SECRET_FILE: /run/sidekick-engine/gas-payer.key
-      SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: /run/sidekick-engine/compatibility-attestation.json
-      SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: /run/sidekick-engine/trust-keys.json
-      SIDEKICK_ENGINE_FINALITY_DEPTH: ${SIDEKICK_ENGINE_FINALITY_DEPTH:-6}
-      SIDEKICK_ENGINE_MAXIMUM_FEE_USTX: ${SIDEKICK_ENGINE_MAXIMUM_FEE_USTX:-100000}
-      SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES: ${SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES:-30}
-    volumes:
-      - /var/lib/signer-sidekick/engine/gas-payer.key:/run/sidekick-engine/gas-payer.key:ro
-      - /var/lib/signer-sidekick/engine/compatibility-attestation.json:/run/sidekick-engine/compatibility-attestation.json:ro
-      - /var/lib/signer-sidekick/engine/trust-keys.json:/run/sidekick-engine/trust-keys.json:ro
-```
-
-Start the override only after reviewing the effective configuration and candidate image:
-
-```sh
-docker compose -f compose.yaml -f compose.assist.yaml config
-docker compose -f compose.yaml -f compose.assist.yaml up -d
-docker compose -f compose.yaml -f compose.assist.yaml exec -T sidekick \
-  node /app/dist/main.js preflight
-```
-
-Use both Compose files for every later `up`, `run`, or replacement-container command in that Assist
-canary. Omitting the override safely returns the replacement container to Observe without the engine
-files.
-
-Policy values are bounded at startup:
-
-| Setting | Default | Accepted range |
-| --- | ---: | ---: |
-| `SIDEKICK_ENGINE_FINALITY_DEPTH` | 6 | 1–144 blocks |
-| `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` | 100,000 | 1–10,000,000 µSTX per transaction |
-| `SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES` | 30 | 1–1,440 minutes |
-
-### Approval and emergency controls
-
-In Assist, open **Operations**, select a job in `awaiting_approval`, and review every displayed call,
-checkpoint, anchor, recipient, outflow, fee, attestation, and expected post-state field. Approve only
-when the exact intent and policy hashes match the current bounded approval window. Approval is the
-authorization to run the final admission gate and broadcast; there is no later generic signing
-prompt. Changed facts or expiry invalidate the action.
-
-The same page provides three persistent controls:
-
-- **Invalidate approval** withdraws only the selected exact approval.
-- **Force Observe** permanently forces that database into Observe, invalidates active approvals,
-  and blocks Sidekick from initiating new external-wallet claims.
-- **Disable adapter** permanently disables new work and broadcasts for that adapter and invalidates
-  its active approvals.
-
-Force Observe and adapter disable are one-way circuit breakers in the current database. They stop
-new authority but deliberately keep existing attempts visible and recoverable.
-
-Wallet-intent expiry and Force Observe stop new Sidekick signing requests. They cannot revoke a
-request already disclosed to an external signer or cancel a wallet broadcast, so Sidekick still
-records matching txids and reconciles their effects.
-
-### Assist recovery
-
-If submission is ambiguous, a txid does not appear, the node/API becomes unavailable, account nonce
-activity is unexpected, or a reorg occurs:
-
-1. Use **Force Observe** or **Disable adapter** immediately.
-2. Do not send the call manually, allocate another nonce, restart with another database, or remove
-   the gas secret.
-3. Preserve the SQLite database and WAL files, logs, txids, attestation files, and exact candidate
-   image.
-4. Restore node/API access. Sidekick probes the precomputed txid, unconfirmed/indexed transaction
-   state, account nonce, canonical anchor, and expected contract effect without rebroadcasting the
-   original attempt.
-5. Keep the instance online until the job is confirmed/reconciled. A pending or ambiguous attempt
-   that cannot be reconciled is reported as manual intervention required; V1 does not construct,
-   sign, or broadcast replacement transactions. Escalate with the complete support evidence before
-   taking any other signing action.
-
-Restarting the same instance with the same database is supported. Replacing the database or key is
-not a recovery procedure while any nonce remains unresolved.
+Assist is a separate controlled-canary release track, not an operator setup option. Do not enable it
+for production or a custom manager. Its design, configuration, recovery rules, and release gates are
+in [Transaction engine and Assist](../product/transaction-engine-v1.md) and
+[issue #6](https://github.com/stx-labs/signer-sidekick/issues/6).
 
 ## Back up and upgrade
 
-These examples use the base Observe deployment. During an Assist canary, replace every
-`docker compose` with `docker compose -f compose.yaml -f compose.assist.yaml`; omitting the override
-intentionally restarts in Observe. Never upgrade or restore while a nonce is unresolved.
+These examples use the base Observe deployment. Never upgrade or restore while a submitted
+transaction is unresolved.
 
 ```sh
 mkdir -p backups
@@ -281,10 +135,7 @@ backups: runtime API credentials may be stored in SQLite.
 
 ## Restore
 
-Restore only while Sidekick is stopped. Confirm the Compose volume name before running this
-example. After any Assist submission, do not restore a backup taken before that submission: it may
-erase the nonce, txid, and attempt evidence required to avoid a duplicate or conflicting
-transaction.
+Restore only while Sidekick is stopped. Confirm the Compose volume name before running this example.
 
 ```sh
 docker compose down
