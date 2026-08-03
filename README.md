@@ -1,14 +1,11 @@
 # Signer Sidekick
 
 Signer Sidekick is a self-hosted control plane for Stacks PoX-5 signer and STX pool operators. It
-attaches to an existing signer-manager or guides a new deployment, then reconciles registration,
-pool membership, rewards, and withdrawals from the operator's node and Stacks API.
+guides Fresh or Attach setup and reconciles registration, pool membership, rewards, and withdrawals
+from the operator's node and Stacks API.
 
-V1 supports setup, externally signed manager administration, read-only operations, and a durable
-transaction engine for one fixed reference-manager reward claim. Deployments default to Observe;
-Assist remains a controlled, approval-gated validation capability and is not ready for unattended
-mainnet use. See the
-[transaction-engine rollout gates](docs/product/transaction-engine-v1.md#rollout-gates).
+V1 provides monitoring, externally signed manager administration, and Observe reward claims.
+Assist is a separate, controlled release track; it is not available for unattended mainnet use.
 
 ## Documentation
 
@@ -19,8 +16,7 @@ upstream responsibilities.
 
 - One network, signer-manager, and STX-only pool per deployment.
 - Existing and fresh manager workflows.
-- Optional browser-wallet execution for exact setup, manager-admin, and Observe reward-claim
-  transactions; manual handoff remains.
+- Browser-wallet or manual execution for setup, manager administration, and Observe reward claims.
 - Hiro or self-hosted Stacks API endpoints.
 - No custody of signer or manager-admin private keys.
 - No end-user wallet connection or stake submission.
@@ -28,9 +24,8 @@ upstream responsibilities.
   scope.
 - No sBTC bond pooling in V1.
 
-Unknown but interface-compatible managers can use fixed externally signed administration and
-registration actions when manager and routing checks pass. Source trust is a warning for that path.
-Reward-claim handoff and Assist retain the fixed reference-manager adapter gates.
+Compatible managers can use supported external administration and registration actions. Observe
+reward claims require a verified reference manager; Assist has additional release gates.
 
 ## Development
 

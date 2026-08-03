@@ -4,6 +4,7 @@ import {
   bufferCV,
   ClarityType,
   cvToHex,
+  hexToCV,
   Pc,
   postConditionToHex,
   principalCV,
@@ -55,6 +56,7 @@ import {
   mainnetWalletNetwork,
   pox5TestnetChainId,
   pox5TestnetWalletNetwork,
+  type VerifiedWalletTransaction,
   verifyWalletTransactionHex,
   WalletTransactionMismatchError,
   type WalletTransactionNetworkBinding,
@@ -646,6 +648,10 @@ export class OnboardingWalletIntentService {
     const indexed = await reader.lookupIndexedTransaction(stored.txid);
     if (indexed.status === "observed") {
       return await this.refreshIndexed(stored, manifest, indexed.value, observedAt, clients);
+    }
+    if (indexed.status === "unavailable" && indexed.reason === "transaction-index-unavailable") {
+      const fallback = await this.refreshIndexedFromApi(stored, manifest, observedAt, clients);
+      if (fallback) return fallback;
     }
     if (indexed.status !== "not-found") {
       this.recordUnavailable(
@@ -1598,8 +1604,10 @@ export class OnboardingWalletIntentService {
     indexed: IndexedTransactionObservation,
     observedAt: string,
     clients: WalletRuntimeClients,
+    verifiedByApi?: VerifiedWalletTransaction,
   ): Promise<BrowserWalletIntent> {
-    const decoded = this.verifyObserved(stored, manifest, indexed.transactionHex, observedAt);
+    const decoded =
+      verifiedByApi ?? this.verifyObserved(stored, manifest, indexed.transactionHex, observedAt);
     if (!decoded) return this.publicIntent(this.requireStored(stored.id));
     if (!indexed.isCanonical || indexed.blockHeight === null) {
       const next =
@@ -1854,8 +1862,8 @@ export class OnboardingWalletIntentService {
           // The exact-equality sBTC postcondition binds the manager, amount, and asset. Only a
           // verified reference source gives Sidekick enough semantic assurance to claim that the
           // recipient argument produced the expected poststate.
-          customAssetSemanticsUnattested = !verifiedReferenceManager;
-          complete = decoded.postConditionCount === 1 && verifiedReferenceManager;
+          customAssetSemanticsUnattested = Boolean(verifiedByApi) || !verifiedReferenceManager;
+          complete = !verifiedByApi && decoded.postConditionCount === 1 && verifiedReferenceManager;
         }
       }
       if (complete && !["complete", "superseded"].includes(next.state))
@@ -1871,10 +1879,14 @@ export class OnboardingWalletIntentService {
           blockHeight,
           indexBlockHash: indexed.indexBlockHash,
           detail: complete
-            ? "Transaction and expected on-chain state verified"
-            : customAssetSemanticsUnattested && decoded.postConditionCount === 1
-              ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
-              : "Transaction confirmed. Waiting for the expected on-chain state",
+            ? verifiedByApi
+              ? "Transaction inclusion confirmed by the configured API and expected on-chain state verified. Node transaction indexing is disabled, so Sidekick could not inspect raw transaction bytes"
+              : "Transaction and expected on-chain state verified"
+            : verifiedByApi
+              ? "Transaction inclusion confirmed by the configured API. Node transaction indexing is disabled, so Sidekick could not inspect raw transaction bytes"
+              : customAssetSemanticsUnattested && decoded.postConditionCount === 1
+                ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
+                : "Transaction confirmed. Waiting for the expected on-chain state",
         },
         decoded,
       );
@@ -1888,6 +1900,154 @@ export class OnboardingWalletIntentService {
       );
       return this.publicIntent(current);
     }
+  }
+
+  private async refreshIndexedFromApi(
+    stored: StoredWalletIntent,
+    manifest: StoredManifest,
+    observedAt: string,
+    clients: WalletRuntimeClients,
+  ): Promise<BrowserWalletIntent | null> {
+    try {
+      const details = await clients.api.getTransactionDetails(stored.txid ?? "");
+      if (!details.canonical || !details.block_hash) {
+        this.recordUnavailable(
+          stored,
+          observedAt,
+          "Configured API has not confirmed this transaction in a canonical block. Sidekick will retry",
+        );
+        return this.publicIntent(stored);
+      }
+      const block = await clients.api.getBlock(details.block_hash);
+      if (
+        !block.canonical ||
+        block.hash !== details.block_hash ||
+        block.height !== details.block_height
+      ) {
+        this.recordUnavailable(
+          stored,
+          observedAt,
+          "Configured API transaction and block records are not yet coherent. Sidekick will retry",
+        );
+        return this.publicIntent(stored);
+      }
+      // The API does not publish a transaction-level chain ID. refresh() already required this
+      // API and the local node to report the manifest's network ID before this fallback begins.
+      const verified = this.verifyApiIndexedTransaction(stored, manifest, details, observedAt);
+      if (!verified) return this.publicIntent(this.requireStored(stored.id));
+      return await this.refreshIndexed(
+        stored,
+        manifest,
+        {
+          txid: details.tx_id,
+          transactionHex: "",
+          nonce: 0n,
+          feeUstx: 0n,
+          indexBlockHash: block.index_block_hash,
+          blockHeight: BigInt(block.height),
+          isCanonical: true,
+          resultRepr: "",
+        },
+        observedAt,
+        clients,
+        verified,
+      );
+    } catch (error) {
+      if (error instanceof UpstreamHttpError && error.status === 404) return null;
+      this.recordUnavailable(
+        stored,
+        observedAt,
+        `Configured API transaction lookup is unavailable: ${error instanceof Error ? error.message : "the API returned no diagnostic detail"}. Sidekick will retry`,
+      );
+      return this.publicIntent(stored);
+    }
+  }
+
+  private verifyApiIndexedTransaction(
+    stored: StoredWalletIntent,
+    manifest: StoredManifest,
+    details: Awaited<ReturnType<WalletRuntimeClients["api"]["getTransactionDetails"]>>,
+    observedAt: string,
+  ): VerifiedWalletTransaction | null {
+    const fail = (detail: string) => {
+      const next = stored.state === "superseded" ? stored : this.toFailed(stored, observedAt);
+      this.recordObservation(next, {
+        outcome: "mismatch",
+        observedAt,
+        canonical: null,
+        blockHeight: null,
+        indexBlockHash: null,
+        detail: `Configured API transaction does not match the prepared request (${detail})`,
+      });
+      return null;
+    };
+    if (details.tx_id !== stored.txid) return fail("transaction ID");
+    if (details.sender_address !== manifest.requiredSender) return fail("sender");
+    if (details.sponsored) return fail("sponsored authorization");
+    if (details.anchor_mode !== "any") return fail("anchor mode");
+    if (details.post_condition_mode !== "deny") return fail("post-condition mode");
+    if (manifest.transaction.method === "stx_deployContract") {
+      if (details.tx_type !== "smart_contract") return fail("transaction type");
+      return {
+        txid: details.tx_id,
+        sender: details.sender_address,
+        chainId: manifest.chainId,
+        transactionVersion: createWalletTransactionNetworkBinding(
+          manifest.network,
+          manifest.chainId,
+        ).transactionVersion,
+        sponsored: false,
+        anchorMode: "any",
+        postConditionMode: "deny",
+        postConditionCount: details.post_conditions.length,
+        payload: {
+          kind: "deploy-contract",
+          contractName: manifest.transaction.params.name,
+          clarityVersion: manifest.transaction.params.clarityVersion,
+          sourceSha256: textSha256(manifest.transaction.params.clarityCode),
+        },
+      };
+    }
+    const call = details.contract_call;
+    const expected = manifest.transaction.params;
+    if (
+      details.tx_type !== "contract_call" ||
+      !call ||
+      call.contract_id !== expected.contract ||
+      call.function_name !== expected.functionName ||
+      JSON.stringify(call.function_args.map(({ hex }) => hex.toLowerCase())) !==
+        JSON.stringify(expected.functionArgs.map((hex) => hex.toLowerCase())) ||
+      details.post_conditions.length !== expected.postConditions.length
+    ) {
+      return fail("contract call");
+    }
+    const signerKey =
+      expected.functionName === "register-self"
+        ? (() => {
+            const value = hexToCV(expected.functionArgs[1] ?? "");
+            return value.type === ClarityType.Buffer ? value.value : null;
+          })()
+        : null;
+    return {
+      txid: details.tx_id,
+      sender: details.sender_address,
+      chainId: manifest.chainId,
+      transactionVersion: createWalletTransactionNetworkBinding(manifest.network, manifest.chainId)
+        .transactionVersion,
+      sponsored: false,
+      anchorMode: "any",
+      postConditionMode: "deny",
+      postConditionCount: details.post_conditions.length,
+      payload: {
+        kind: "call-contract",
+        contract: expected.contract,
+        functionName: expected.functionName,
+        argumentsSha256: textSha256(
+          JSON.stringify(expected.functionArgs.map((hex) => hex.toLowerCase())),
+        ),
+        signerKeyHex: signerKey,
+      },
+    };
   }
 
   private refreshPending(

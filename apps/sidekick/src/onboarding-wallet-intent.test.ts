@@ -22,7 +22,10 @@ import {
   trueCV,
   uintCV,
 } from "@stacks/transactions";
-import type { BrowserWalletIntentCreateRequest } from "@stx-labs/signer-sidekick-api-contracts";
+import type {
+  BrowserWalletIntentCreateRequest,
+  BrowserWalletTransaction,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UpstreamHttpError } from "./chain-clients.js";
@@ -160,6 +163,7 @@ const deploymentArtifactManifest = {
 } satisfies ManagerDeploymentManifest;
 const indexBlockHash = `0x${"ef".repeat(32)}` as `0x${string}`;
 const otherIndexBlockHash = `0x${"cd".repeat(32)}` as `0x${string}`;
+const blockHash = `0x${"ab".repeat(32)}` as `0x${string}`;
 const blockHeight = 9_001;
 
 interface SubmittedIntentFixture {
@@ -656,14 +660,21 @@ async function proveRecurringManagerAction(input: {
   setCanonicalPoststate: () => void;
   restoreAuthoritativeFacts: () => void;
   managerSnapshot?: ReturnType<typeof trustedManagerSnapshot>;
-  expectedOutcome?: "complete" | "canonical-success";
+  expectedOutcome?: "complete" | "canonical-success" | "mismatch";
   repeatable?: boolean;
+  transactionIndexUnavailable?: boolean;
+  apiDetails?: Partial<{
+    sponsored: boolean;
+    anchorMode: "any" | "on_chain_only" | "off_chain_only";
+    postConditionMode: "allow" | "deny";
+  }>;
 }): Promise<void> {
   const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
   stores.push(store);
   readSetupSnapshotMock.mockResolvedValue(input.managerSnapshot ?? trustedManagerSnapshot({}));
   let txid = `0x${"00".repeat(32)}` as `0x${string}`;
   let transactionHex = "";
+  let preparedTransaction: BrowserWalletTransaction | null = null;
   const api = {
     getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
     getTransaction: vi.fn(async () => ({
@@ -671,7 +682,32 @@ async function proveRecurringManagerAction(input: {
       status: "success",
       block: { height: blockHeight, index_hash: indexBlockHash },
     })),
-    getBlock: vi.fn(async () => ({ canonical: true, index_block_hash: indexBlockHash })),
+    getTransactionDetails: vi.fn(async () => ({
+      tx_id: txid,
+      tx_status: "success",
+      sender_address: requiredSender,
+      tx_type: "contract_call",
+      contract_call: preparedTransaction
+        ? {
+            contract_id: preparedTransaction.params.contract,
+            function_name: preparedTransaction.params.functionName,
+            function_args: preparedTransaction.params.functionArgs.map((hex) => ({ hex })),
+          }
+        : null,
+      post_conditions: preparedTransaction?.params.postConditions.map(() => ({})) ?? [],
+      sponsored: input.apiDetails?.sponsored ?? false,
+      anchor_mode: input.apiDetails?.anchorMode ?? "any",
+      post_condition_mode: input.apiDetails?.postConditionMode ?? "deny",
+      canonical: true,
+      block_hash: blockHash,
+      block_height: blockHeight,
+    })),
+    getBlock: vi.fn(async () => ({
+      canonical: true,
+      height: blockHeight,
+      hash: blockHash,
+      index_block_hash: indexBlockHash,
+    })),
   };
   const wallet = new OnboardingWalletIntentService({
     store,
@@ -685,20 +721,27 @@ async function proveRecurringManagerAction(input: {
     readFreshState: deploymentFreshState,
     readWalletState: deploymentFreshState,
     readerFactory: () => ({
-      lookupIndexedTransaction: async () => ({
-        status: "observed" as const,
-        httpStatus: 200,
-        value: {
-          txid,
-          transactionHex,
-          nonce: 9n,
-          feeUstx: 1_000n,
-          indexBlockHash,
-          blockHeight: BigInt(blockHeight),
-          isCanonical: true,
-          resultRepr: "(ok true)",
-        },
-      }),
+      lookupIndexedTransaction: async () =>
+        input.transactionIndexUnavailable
+          ? {
+              status: "unavailable" as const,
+              httpStatus: 501,
+              reason: "transaction-index-unavailable" as const,
+            }
+          : {
+              status: "observed" as const,
+              httpStatus: 200,
+              value: {
+                txid,
+                transactionHex,
+                nonce: 9n,
+                feeUstx: 1_000n,
+                indexBlockHash,
+                blockHeight: BigInt(blockHeight),
+                isCanonical: true,
+                resultRepr: "(ok true)",
+              },
+            },
       lookupUnconfirmedTransaction: async () => ({ status: "not-found" as const, httpStatus: 404 }),
     }),
   });
@@ -706,6 +749,7 @@ async function proveRecurringManagerAction(input: {
   if (prepared.transaction.method !== "stx_callContract") {
     throw new Error("Expected manager contract call");
   }
+  preparedTransaction = prepared.transaction;
   const postConditions =
     input.request.action === "withdraw-fees"
       ? [
@@ -732,7 +776,15 @@ async function proveRecurringManagerAction(input: {
   await wallet.submit(prepared.id, txid, "2026-07-19T12:02:00.000Z");
   input.setCanonicalPoststate();
   const expectedOutcome = input.expectedOutcome ?? "complete";
-  await expect(wallet.refresh(prepared.id, "2026-07-19T12:03:00.000Z")).resolves.toMatchObject({
+  const refreshed = await wallet.refresh(prepared.id, "2026-07-19T12:03:00.000Z");
+  if (expectedOutcome === "mismatch") {
+    expect(refreshed).toMatchObject({
+      status: "failed",
+      verification: { outcome: "mismatch", canonical: null },
+    });
+    return;
+  }
+  expect(refreshed).toMatchObject({
     status: expectedOutcome === "complete" ? "complete" : "confirmed",
     verification: { outcome: expectedOutcome, canonical: true },
   });
@@ -1782,6 +1834,48 @@ describe("manager wallet action preparation", () => {
     let currentFeeBips = 100n;
     await proveRecurringManagerAction({
       request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      node: {
+        callReadOnly: vi.fn(async () => trueCV()),
+        getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
+      },
+      setCanonicalPoststate: () => {
+        currentFeeBips = 250n;
+      },
+      restoreAuthoritativeFacts: () => {
+        currentFeeBips = 100n;
+      },
+    });
+  });
+
+  it("falls back to the configured API when node transaction indexing is unavailable", async () => {
+    let currentFeeBips = 100n;
+    await proveRecurringManagerAction({
+      request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      transactionIndexUnavailable: true,
+      node: {
+        callReadOnly: vi.fn(async () => trueCV()),
+        getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
+      },
+      setCanonicalPoststate: () => {
+        currentFeeBips = 250n;
+      },
+      restoreAuthoritativeFacts: () => {
+        currentFeeBips = 100n;
+      },
+    });
+  });
+
+  it.each([
+    ["sponsored", { sponsored: true }],
+    ["on-chain-only", { anchorMode: "on_chain_only" as const }],
+    ["allow post-condition", { postConditionMode: "allow" as const }],
+  ])("rejects API fallback with %s transaction authority", async (_label, apiDetails) => {
+    let currentFeeBips = 100n;
+    await proveRecurringManagerAction({
+      request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      transactionIndexUnavailable: true,
+      expectedOutcome: "mismatch",
+      apiDetails,
       node: {
         callReadOnly: vi.fn(async () => trueCV()),
         getDataVar: vi.fn(async () => uintCV(currentFeeBips)),

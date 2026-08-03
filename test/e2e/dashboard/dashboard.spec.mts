@@ -775,7 +775,8 @@ test("summarizes the cycle clock and links health details", async ({ page }) => 
   await expect(cards.nth(0)).toContainText("Reward cycle");
   await expect(cards.nth(1)).toContainText("Bitcoin block height");
   await expect(cards.nth(2)).toContainText("Next prepare phase");
-  await expect(cards.nth(2)).toContainText("~10d 16h · 24h average");
+  await expect(cards.nth(2)).toContainText("~10d 16h");
+  await expect(cards.nth(2)).toContainText("Bitcoin blocks (#10,780)");
   await expect(cards.nth(3)).toContainText("Node & Signer Health");
   await expect(cards.nth(3)).toContainText("Node");
   await expect(cards.nth(3)).toContainText("Signer");
@@ -1339,6 +1340,17 @@ test("explains how to deploy a generated manager outside Sidekick", async ({ pag
 
   await login(page);
   await openPage(page, "setup", "Initial Setup");
+  await expect(page.getByRole("heading", { name: "Manager contract" })).toBeVisible();
+  await expect(page.getByText(/This contract represents your pool/)).toBeVisible();
+  await expect(page.getByText(/starts at 0%; set your pool fee in Manager/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /View reference source/ })).toHaveAttribute(
+    "href",
+    "https://github.com/stacks-network/stacks-core/blob/efc34a07a225c4b950ab9404a1652aa5e14affaf/contrib/core-contract-tests/contracts/signer-manager.clar",
+  );
+  await expect(page.getByRole("link", { name: /Pool operator guide/ })).toHaveAttribute(
+    "href",
+    "https://docs.stacks.co/operate/stacking-stx/operate-a-stacking-pool",
+  );
   await expect(page.getByRole("heading", { name: "Manual deployment" })).toBeVisible();
   await expect(page.getByText(/manifest records the values you must review/)).toBeVisible();
   await expect(page.getByText("signer-manager", { exact: true })).toBeVisible();

@@ -1,13 +1,14 @@
 # Architecture
 
-Read [the V1 scope](../product/v1-scope.md) first. This directory contains only cross-cutting design
-notes and decisions that are not obvious from code.
+This directory contains cross-cutting design notes and decisions that are not obvious from code.
 
 ## Notes
 
 - [Onboarding and settings](onboarding-and-settings.md): custody boundary, resumability, runtime
   configuration, and public artifacts.
 - [Scaling](scaling.md): bounded reads, retained evidence, and large-pool expectations.
+- [Transaction engine safety contract](transaction-engine.md): Assist authority, admission, and
+  durable-execution invariants.
 
 ## Decisions
 

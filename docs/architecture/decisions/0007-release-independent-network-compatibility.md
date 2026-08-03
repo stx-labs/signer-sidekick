@@ -23,8 +23,7 @@ Assist broadcasting is gated by a current authenticated compatibility attestatio
 against configured read-only trust roots. The attestation binds reviewed network, PoX-5, sBTC, and
 manager identities to an existing code-backed adapter; it cannot add an adapter or authorize an
 arbitrary transaction. Issuance, rotation, revocation, and release availability are operational
-rollout requirements; see
-[the transaction-engine contract](../../product/transaction-engine-v1.md).
+rollout requirements.
 
 ## Consequences
 

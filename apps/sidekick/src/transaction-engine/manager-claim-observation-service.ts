@@ -49,6 +49,7 @@ export type ManagerClaimObservationBlockCode =
   | "unsupported-network"
   | "network-fingerprint-mismatch"
   | "manager-ineligible"
+  | "assist-not-approved"
   | "manager-fingerprint-mismatch"
   | "reward-status-unavailable"
   | "reward-checkpoint-mismatch"
@@ -398,6 +399,7 @@ function staticBlocks(
   input: ManagerClaimObservationInput,
   checkpoint: ReturnType<typeof rewardCheckpoint>,
   rosterProof: ReturnType<typeof currentRosterProof> | null,
+  mode: "observe" | "assist",
 ): ManagerClaimObservationBlock[] {
   const blocks: ManagerClaimObservationBlock[] = [];
   const kind = networkKind(input.setup);
@@ -417,12 +419,17 @@ function staticBlocks(
       "PoX-5 and sBTC contracts do not match the active compatibility profile",
     );
   }
-  if (
-    !manager.automationEligible ||
-    (manager.source.tier !== "reference-built-in" && manager.source.tier !== "reference-render") ||
-    !manager.source.profileId
-  ) {
+  const verifiedReferenceManager =
+    (manager.source.tier === "reference-built-in" || manager.source.tier === "reference-render") &&
+    manager.source.profileId !== null;
+  if (!verifiedReferenceManager) {
     block(blocks, "manager-ineligible", "Reward claims require a verified reference manager");
+  } else if (mode === "assist" && !manager.automationEligible) {
+    block(
+      blocks,
+      "assist-not-approved",
+      "Assist is not enabled for this verified reference manager on mainnet",
+    );
   }
   if (!manager.source.sha256 || manager.source.match === "unknown") {
     block(blocks, "manager-fingerprint-mismatch", "Manager source could not be verified");
@@ -891,6 +898,8 @@ export class ManagerClaimObservationService {
   }
 
   async observe(input: ManagerClaimObservationInput): Promise<ManagerClaimObservationOutcome> {
+    const effectiveMode =
+      this.options.repository.getForceObserveControl() === null ? input.requestedMode : "observe";
     const checkpoint = rewardCheckpoint(input);
     const rosterProof =
       checkpoint?.effect === "remaining" && !input.reconcileOnly
@@ -902,7 +911,7 @@ export class ManagerClaimObservationService {
             input.rewards?.ingestion?.runId ?? null,
           )
         : null;
-    const blocks = staticBlocks(input, checkpoint, rosterProof);
+    const blocks = staticBlocks(input, checkpoint, rosterProof, effectiveMode);
     if (
       blocks.length > 0 ||
       !checkpoint ||
@@ -1099,8 +1108,6 @@ export class ManagerClaimObservationService {
       return this.#latest;
     }
 
-    const effectiveMode =
-      this.options.repository.getForceObserveControl() === null ? input.requestedMode : "observe";
     let result = await this.#planner.observe({
       schemaVersion: 1,
       observedAt: input.observedAt,

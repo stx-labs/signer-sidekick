@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export const rateLimitInfoSchema = z
+  .object({
+    source: z.enum(["hiro-api", "stacks-api", "node"]),
+    retryAfterSeconds: z.number().int().positive(),
+    apiKeyConfigured: z.boolean().optional(),
+  })
+  .strict();
+export type RateLimitInfo = z.infer<typeof rateLimitInfoSchema>;
+
 const runtimeSettingsShape = z.object({
   schemaVersion: z.literal(1),
   revision: z.number().int().nonnegative(),
@@ -439,7 +448,8 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     status: "current" | "stale";
     snapshotGeneratedAt: string;
     servedAt: string;
-    reason: "refresh-failed" | null;
+    reason: "refreshing" | "refresh-failed" | "rate-limited" | null;
+    rateLimit?: RateLimitInfo;
   };
   config?: {
     nodeRpcUrl: string;
@@ -728,16 +738,21 @@ export const reconciliationOperationSchema = z.custom<ReconciliationOperation>(
 export const syncResponseSchema = z.object({ operation: reconciliationOperationSchema }).strict();
 export type SyncResponse = z.infer<typeof syncResponseSchema>;
 
-export const poolPageResponseSchema = z.custom<{ roster: RosterEntry[]; total: number }>(
-  (value) => isRecord(value) && Array.isArray(value.roster) && typeof value.total === "number",
-  { error: "Invalid pool response" },
-);
+export const poolPageResponseSchema = z.custom<{
+  roster: RosterEntry[];
+  total: number;
+  freshness?: DashboardSnapshot["freshness"];
+}>((value) => isRecord(value) && Array.isArray(value.roster) && typeof value.total === "number", {
+  error: "Invalid pool response",
+});
 export type PoolPageResponse = z.infer<typeof poolPageResponseSchema>;
 
-export const rewardsPageResponseSchema = z.custom<{ rewards: DashboardSnapshot["rewards"] }>(
-  (value) => isRecord(value) && (value.rewards === null || isRecord(value.rewards)),
-  { error: "Invalid rewards response" },
-);
+export const rewardsPageResponseSchema = z.custom<{
+  rewards: DashboardSnapshot["rewards"];
+  freshness?: DashboardSnapshot["freshness"];
+}>((value) => isRecord(value) && (value.rewards === null || isRecord(value.rewards)), {
+  error: "Invalid rewards response",
+});
 export type RewardsPageResponse = z.infer<typeof rewardsPageResponseSchema>;
 
 export const activityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
@@ -833,6 +848,7 @@ export const apiErrorSchema = z.looseObject({
   error: z.string(),
   message: z.string().optional(),
   retryable: z.boolean().optional(),
+  rateLimit: rateLimitInfoSchema.optional(),
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 

@@ -196,6 +196,32 @@ const transactionSummarySchema = z.object({
   }),
 });
 
+// `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
+// endpoint supplies the signed transaction's public call details needed for the narrow fallback
+// used when a node explicitly has transaction indexing disabled.
+const transactionDetailSchema = z
+  .object({
+    tx_id: canonicalHex,
+    tx_status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
+    sender_address: z.string().refine(validatePrincipal, "Invalid transaction sender"),
+    tx_type: z.string(),
+    contract_call: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        function_name: z.string().regex(clarityFunctionNamePattern),
+        function_args: z.array(z.object({ hex: z.string().regex(clarityHexPattern) }).strip()),
+      })
+      .nullable(),
+    post_conditions: z.array(z.unknown()),
+    sponsored: z.boolean(),
+    anchor_mode: z.enum(["any", "on_chain_only", "off_chain_only"]),
+    post_condition_mode: z.enum(["allow", "deny"]),
+    canonical: z.boolean(),
+    block_hash: canonicalHex.nullable(),
+    block_height: z.number().int().nonnegative().safe(),
+  })
+  .strip();
+
 const stacksBlockSummarySchema = z
   .object({
     canonical: z.boolean(),
@@ -262,6 +288,7 @@ export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
+export type TransactionDetail = z.infer<typeof transactionDetailSchema>;
 export type StacksBlockSummary = z.infer<typeof stacksBlockSummarySchema>;
 
 export interface GasPayerMempoolActivityOptions {
@@ -377,10 +404,61 @@ export class RateLimitedError extends UpstreamHttpError {
   constructor(
     message: string,
     readonly retryAfterMs: number | null,
+    readonly endpoint?: string,
   ) {
     super(message, 429);
     this.name = "RateLimitedError";
   }
+}
+
+export interface RateLimitApiSource {
+  apiUrl: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface RateLimitInfo {
+  source: "hiro-api" | "stacks-api" | "node";
+  retryAfterSeconds: number;
+  apiKeyConfigured?: boolean;
+}
+
+function origin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isHiroApi(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "api.hiro.so" || hostname.endsWith(".hiro.so");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reduce an upstream 429 to safe operator-facing facts. The endpoint itself never leaves
+ * Sidekick; it is only compared with the configured indexed API to distinguish it from node RPC.
+ */
+export function rateLimitInfo(
+  error: RateLimitedError,
+  api: RateLimitApiSource,
+): RateLimitInfo | null {
+  const endpointOrigin = error.endpoint ? origin(error.endpoint) : null;
+  const apiOrigin = origin(api.apiUrl);
+  if (!endpointOrigin || !apiOrigin) return null;
+  const retryAfterSeconds = Math.min(
+    30,
+    Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
+  );
+  if (endpointOrigin !== apiOrigin) return { source: "node", retryAfterSeconds };
+  if (isHiroApi(api.apiUrl)) {
+    return { source: "hiro-api", retryAfterSeconds, apiKeyConfigured: api.apiKeyConfigured };
+  }
+  return { source: "stacks-api", retryAfterSeconds };
 }
 
 export class UpstreamUnavailableError extends Error {
@@ -492,20 +570,25 @@ async function fetchJson<T>(
     }
 
     if (!response.ok) {
-      const retryable = response.status === 429 || response.status >= 500;
       const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
-      if (retryable && attempt < maxAttempts) {
+      if (response.status === 429) {
+        // A short, explicit retry is useful for long paginated reconciliations without turning an
+        // interactive status request into a multi-second retry storm. Longer or unspecified
+        // limits return immediately so OperatorService can serve its last-good observation.
+        if (retryAfterMs !== null && retryAfterMs <= 1_000 && attempt === 1) {
+          await cancelResponse(response);
+          await sleep(retryAfterMs, cancellationSignal);
+          continue;
+        }
+        await cancelResponse(response);
+        throw new RateLimitedError(`${endpoint} returned HTTP 429`, retryAfterMs, endpoint);
+      }
+      if (response.status >= 500 && attempt < maxAttempts) {
         await cancelResponse(response);
         await sleep(Math.min(30_000, retryAfterMs ?? retryDelay(attempt)), cancellationSignal);
         continue;
       }
       await cancelResponse(response);
-      if (response.status === 429) {
-        throw new RateLimitedError(
-          `${endpoint} remained rate limited after ${attempt} attempts`,
-          retryAfterMs,
-        );
-      }
       if (response.status >= 500) {
         throw new UpstreamUnavailableError(
           `${endpoint} returned HTTP ${response.status} after ${attempt} attempts`,
@@ -772,6 +855,19 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v3/transactions/${parsedTxId}`,
       transactionSummarySchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getTransactionDetails(txId: string): Promise<TransactionDetail> {
+    const parsedTxId = z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/i)
+      .parse(txId);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v1/tx/${parsedTxId}`,
+      transactionDetailSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }

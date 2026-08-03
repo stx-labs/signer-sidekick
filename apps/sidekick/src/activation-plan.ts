@@ -154,7 +154,8 @@ export function createFreshActivationPlan(options: FreshActivationPlanOptions): 
       id: "render-manager",
       status: "ready",
       title: "Generate manager files",
-      detail: `Generate the manager contract and deployment manifest from profile ${profileId}`,
+      detail:
+        "Create the contract that represents your pool, registers your signer, and manages rewards.",
       command: [
         "sidekick manager render",
         shellQuote(options.adminPrincipal),

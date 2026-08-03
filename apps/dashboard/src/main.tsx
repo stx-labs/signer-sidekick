@@ -17,6 +17,7 @@ import {
 import {
   type DashboardSnapshot,
   onboardingEnvelopeSchema,
+  type RateLimitInfo,
   type ReconciliationOperation,
   statusResponseSchema,
   syncResponseSchema,
@@ -26,7 +27,7 @@ import { createRoot } from "react-dom/client";
 import "../../../design/tokens/tokens.css";
 import "./base.css";
 import "./styles.css";
-import { AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
+import { ApiRequestError, AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
 import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
 import { EnrollmentPage } from "./features/enrollment/enrollment-page.js";
 import { Manager } from "./features/manager/manager-page.js";
@@ -38,6 +39,11 @@ import { SettingsPage } from "./features/settings/settings-page.js";
 import { SetupPage } from "./features/setup/setup-page.js";
 import { number } from "./shared/format.js";
 import { operatorActionError, operatorErrorDetail } from "./shared/operator-error.js";
+import {
+  isHiroRateLimit,
+  rateLimitGuidance,
+  rateLimitHeading,
+} from "./shared/rate-limit-guidance.js";
 import { SignerHealthPage } from "./signer-health.js";
 
 type Snapshot = DashboardSnapshot;
@@ -67,6 +73,10 @@ function StacksGlyph() {
 const STATUS_POLL_MS = 30_000;
 const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
+
+function rateLimitFromError(cause: unknown): RateLimitInfo | null {
+  return cause instanceof ApiRequestError ? (cause.body?.rateLimit ?? null) : null;
+}
 
 function syncOperationError(operation: ReconciliationOperation): string {
   const authoritative = operation.error?.message?.trim();
@@ -151,6 +161,7 @@ function App() {
   const [onboardingStarted, setOnboardingStarted] = useState<boolean | null>(null);
   const [dismissedSetupNoticeKey, setDismissedSetupNoticeKey] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusRateLimit, setStatusRateLimit] = useState<RateLimitInfo | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
@@ -182,6 +193,7 @@ function App() {
         setData(snapshot);
         if (includeOnboarding) await loadOnboardingState();
         setStatusError(null);
+        setStatusRateLimit(null);
         return true;
       } catch (cause) {
         if (requestGeneration !== statusRequestGeneration.current) return false;
@@ -199,6 +211,7 @@ function App() {
             : current,
         );
         setStatusError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+        setStatusRateLimit(rateLimitFromError(cause));
         return false;
       } finally {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
@@ -216,6 +229,7 @@ function App() {
       setLoginError("The operator credential was rejected. Check it and try again.");
       setData(null);
       setStatusError(null);
+      setStatusRateLimit(null);
       setSyncError(null);
       setSyncOperation(null);
       setSyncing(false);
@@ -273,6 +287,7 @@ function App() {
     setLoginError(null);
     setData(null);
     setStatusError(null);
+    setStatusRateLimit(null);
     setSyncError(null);
     setSyncOperation(null);
     setSyncing(false);
@@ -420,6 +435,8 @@ function App() {
         ageMs === null ||
         ageMs > STATUS_STALE_AFTER_MS),
   );
+  const rateLimit = data?.freshness?.rateLimit ?? statusRateLimit;
+  const rateLimited = data?.freshness?.reason === "rate-limited" || statusRateLimit !== null;
   const ageLabel =
     ageMs === null
       ? "age unavailable"
@@ -577,7 +594,11 @@ function App() {
             {!data
               ? "Connecting"
               : stale
-                ? "Data may be stale"
+                ? rateLimited
+                  ? `${rateLimitHeading(rateLimit)} — retrying automatically`
+                  : data.freshness?.reason === "refreshing"
+                    ? "Refreshing data"
+                    : "Data may be stale"
                 : data.preflight.status === "fail"
                   ? "Chain sources need attention"
                   : "Live"}
@@ -588,7 +609,7 @@ function App() {
               ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node/API gap ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
               : "loading status"}
           </span>
-          {stale ? (
+          {stale && !rateLimited ? (
             <button
               type="button"
               className="btn btn-tertiary sm"
@@ -600,6 +621,16 @@ function App() {
             >
               {refreshingStatus ? "Refreshing…" : "Refresh"}
             </button>
+          ) : null}
+          {rateLimited && isHiroRateLimit(rateLimit) ? (
+            <a
+              className="btn btn-tertiary sm"
+              href="https://platform.hiro.so"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
+            </a>
           ) : null}
           <span className="right">
             <span className="hint-dot-legend">
@@ -657,17 +688,31 @@ function App() {
               <div className="body">
                 <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>
                 <span>{statusError}</span>
+                {statusRateLimit ? <span>{rateLimitGuidance(statusRateLimit)}</span> : null}
                 {data ? (
                   <span>Showing data from {new Date(data.generatedAt).toLocaleString()}.</span>
                 ) : null}
                 <div className="actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary sm"
-                    onClick={() => void load()}
-                  >
-                    Retry
-                  </button>
+                  {isHiroRateLimit(statusRateLimit) ? (
+                    <a
+                      className="btn btn-secondary sm"
+                      href="https://platform.hiro.so"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {statusRateLimit?.apiKeyConfigured
+                        ? "Open Hiro Platform"
+                        : "Get a Hiro API key"}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-secondary sm"
+                      onClick={() => void load()}
+                    >
+                      Retry
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

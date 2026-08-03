@@ -738,6 +738,7 @@ describe("live manager-claim observation", () => {
     });
     const forcedInput = input(observedStore.attestation);
     forcedInput.requestedMode = "assist";
+    forcedInput.setup.manager.automationEligible = false;
     await expect(service(observedStore.store).observe(forcedInput)).resolves.toMatchObject({
       status: "planned",
       result: {
@@ -784,9 +785,66 @@ describe("live manager-claim observation", () => {
 
     await expect(service(store).observe(mainnetInput)).resolves.toMatchObject({
       status: "blocked",
-      blocks: expect.arrayContaining([expect.objectContaining({ code: "manager-ineligible" })]),
+      blocks: expect.arrayContaining([
+        expect.objectContaining({
+          code: "assist-not-approved",
+          message: "Assist is not enabled for this verified reference manager on mainnet",
+        }),
+      ]),
     });
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
+  });
+
+  it("allows a verified mainnet reference manager through Observe without Assist approval", async () => {
+    const { store, attestation } = await memoryStore(MAINNET_4_0_1_COMPATIBILITY);
+    const mainnetInput = input(attestation);
+    const mainnetManager = "SP000000000000000000002Q6VF78.signer-manager";
+    const mainnetGasPayer = getAddressFromPublicKey(publicKey, "mainnet");
+    mainnetInput.setup.preflight.network = "mainnet";
+    mainnetInput.setup.preflight.node.networkId = 1;
+    mainnetInput.setup.preflight.pox.pox5ContractId = MAINNET_4_0_1_COMPATIBILITY.pox5.contractId;
+    mainnetInput.setup.preflight.pox.sourceSha256 = MAINNET_4_0_1_COMPATIBILITY.pox5.sourceSha256;
+    mainnetInput.setup.preflight.pox.sbtcTokenContract =
+      MAINNET_4_0_1_COMPATIBILITY.sbtc.tokenContract;
+    mainnetInput.setup.preflight.pox.sbtcRegistryContract =
+      MAINNET_4_0_1_COMPATIBILITY.sbtc.registryContract;
+    mainnetInput.setup.manager.managerPrincipal = mainnetManager;
+    mainnetInput.setup.manager.automationEligible = false;
+    mainnetInput.setup.manager.source.profileId =
+      MAINNET_4_0_1_COMPATIBILITY.referenceManager.profileId;
+    mainnetInput.setup.manager.source.sha256 =
+      MAINNET_4_0_1_COMPATIBILITY.referenceManager.sourceSha256;
+    mainnetInput.gasPayer = { principal: mainnetGasPayer, publicKey };
+    mainnetInput.rewards = rewards({
+      managerPrincipal: mainnetManager,
+      pox5ContractId: MAINNET_4_0_1_COMPATIBILITY.pox5.contractId,
+    });
+
+    await expect(
+      service(
+        store,
+        evidenceStore(),
+        undefined,
+        reader({
+          readAnchoredAccount: vi.fn().mockResolvedValue({
+            status: "observed",
+            httpStatus: 200,
+            value: {
+              principal: mainnetGasPayer,
+              indexBlockHash: anchor.indexBlockHash,
+              balanceUstx: 10_000n,
+              lockedUstx: 0n,
+              unlockHeight: 0n,
+              nonce: 7n,
+            },
+          }),
+        }),
+      ).observe(mainnetInput),
+    ).resolves.toMatchObject({
+      status: "planned",
+      result: { records: { policy: { mode: "observe", approvalRequired: false } } },
+    });
+    expect(store.transactionEngine.logicalJobStats().total).toBe(1);
   });
 
   it.each([

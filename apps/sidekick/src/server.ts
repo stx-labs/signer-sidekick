@@ -43,7 +43,9 @@ import { z } from "zod";
 import {
   ChainAnchorError,
   MAX_SHARED_ANCHOR_BURN_LAG,
+  type RateLimitApiSource,
   RateLimitedError,
+  rateLimitInfo,
   UpstreamHttpError,
   UpstreamSchemaError,
   UpstreamUnavailableError,
@@ -90,6 +92,7 @@ interface OperatorSnapshotShape {
   roster?: RosterRow[];
   activity?: { withdrawals?: unknown[] };
   alerts?: unknown[];
+  freshness?: { status: "current" | "stale" };
 }
 
 interface OperatorSnapshotService {
@@ -226,6 +229,7 @@ export interface TransactionEngineApiService {
 export interface ServerOptions {
   service?: OperatorSnapshotService;
   authToken?: string;
+  getRateLimitSettings?(): RateLimitApiSource;
   logger?: boolean;
   staticDirectory?: string | null;
   onboarding?: OnboardingService;
@@ -323,9 +327,9 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   upstream_temporarily_unavailable:
     "A configured chain source is unavailable. Check node and API connectivity, then retry.",
   upstream_response_invalid:
-    "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+    "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
   health_source_not_allowed:
-    "The health source is not allowed. Use an endpoint permitted by Sidekick's health-source policy.",
+    "Sidekick cannot use this URL because it points to a special-purpose network address (for example, link-local or multicast). Use a normal LAN, Tailnet, or public address for this service, or proxy it through one.",
   health_source_temporarily_unavailable:
     "The health source could not be reached. Check the endpoint, then retry.",
   health_source_response_invalid:
@@ -397,7 +401,21 @@ function chainSourcesDiffer(error: ChainAnchorError): boolean {
   );
 }
 
-function classifySafeOperatorError(error: unknown): SafeErrorClassification {
+function rateLimitMessage(info: NonNullable<ReturnType<typeof rateLimitInfo>>): string {
+  switch (info.source) {
+    case "hiro-api":
+      return "Hiro API is rate limiting Sidekick. It will retry automatically.";
+    case "stacks-api":
+      return "The configured Stacks API is rate limiting Sidekick. It will retry automatically.";
+    case "node":
+      return "The local Stacks node is rate limiting Sidekick. It will retry automatically.";
+  }
+}
+
+function classifySafeOperatorError(
+  error: unknown,
+  configuredApi?: RateLimitApiSource,
+): SafeErrorClassification {
   if (error instanceof OperatorApiError) {
     return safeClassification(error.statusCode, error.responseCode, {
       message: error.message,
@@ -457,12 +475,13 @@ function classifySafeOperatorError(error: unknown): SafeErrorClassification {
     });
   }
   if (error instanceof RateLimitedError) {
+    const info = configuredApi ? rateLimitInfo(error, configuredApi) : null;
     return safeClassification(429, "upstream_rate_limited", {
+      ...(info ? { message: rateLimitMessage(info), details: { rateLimit: info } } : {}),
       retryable: true,
-      retryAfterSeconds: Math.min(
-        30,
-        Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)),
-      ),
+      retryAfterSeconds:
+        info?.retryAfterSeconds ??
+        Math.min(30, Math.max(1, Math.ceil((error.retryAfterMs ?? 1_000) / 1_000))),
     });
   }
   if (error instanceof UpstreamUnavailableError) {
@@ -531,8 +550,9 @@ function sendClassifiedError(
   request: FastifyRequest,
   reply: FastifyReply,
   error: unknown,
+  configuredApi?: RateLimitApiSource,
 ): FastifyReply {
-  const classified = classifySafeOperatorError(error);
+  const classified = classifySafeOperatorError(error, configuredApi);
   const body =
     classified.statusCode === 500
       ? {
@@ -717,6 +737,13 @@ export function createServer(options: ServerOptions = {}) {
     throw new Error("The operator API requires SIDEKICK_AUTH_TOKEN with at least 24 characters");
   }
   const server = Fastify({ logger: options.logger ?? true });
+  const rateLimitSettings = (): RateLimitApiSource | undefined => {
+    try {
+      return options.getRateLimitSettings?.();
+    } catch {
+      return undefined;
+    }
+  };
   let requestCount = 0;
   let syncRequestCount = 0;
   let syncCount = 0;
@@ -873,7 +900,7 @@ export function createServer(options: ServerOptions = {}) {
       } catch (error) {
         syncFailureCount += 1;
         const failedAt = new Date().toISOString();
-        const classified = classifySafeOperatorError(error);
+        const classified = classifySafeOperatorError(error, rateLimitSettings());
         request.log.warn(
           { err: error, responseCode: classified.body.error },
           "background reconciliation failed",
@@ -900,7 +927,7 @@ export function createServer(options: ServerOptions = {}) {
   }
 
   server.setErrorHandler((error: FastifyError, request, reply) => {
-    return sendClassifiedError(request, reply, error);
+    return sendClassifiedError(request, reply, error, rateLimitSettings());
   });
 
   server.addHook("onClose", async () => {
@@ -931,12 +958,15 @@ export function createServer(options: ServerOptions = {}) {
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
     const service = options.service;
     try {
-      const snapshot = await interactive(request, () => service.snapshot());
+      const snapshot = await interactive(request, () =>
+        service.summary ? service.summary() : service.snapshot(),
+      );
       const preflight = snapshot.preflight as { status?: string } | undefined;
       const ready = preflight?.status !== "fail";
       return reply.code(ready ? 200 : 503).send({
         status: ready ? "ready" : "not-ready",
         generatedAt: snapshot.generatedAt,
+        freshness: snapshot.freshness?.status ?? "current",
       });
     } catch (error) {
       request.log.warn({ err: error }, "readiness snapshot failed");

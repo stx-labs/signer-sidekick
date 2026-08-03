@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiRequestError } from "../../api-client.js";
 import { type BrowserWalletRecoveryScope, LEATHER_PROVIDER_ID } from "./browser-wallet.js";
-import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
+import {
+  automaticVerificationRefreshError,
+  BrowserWalletActionPanel,
+} from "./browser-wallet-action.js";
 import {
   type PendingBrowserWalletBroadcast,
   persistPendingBrowserWalletBroadcast,
@@ -53,6 +57,27 @@ class MemoryStorage {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("BrowserWalletActionPanel recovery", () => {
+  it("does not suggest manual refresh while the Hiro API is rate limited", () => {
+    const error = new ApiRequestError("rate limited", {
+      kind: "http",
+      status: 429,
+      body: {
+        error: "upstream_rate_limited",
+        message: "Hiro API is rate limiting Sidekick.",
+        retryable: true,
+        rateLimit: {
+          source: "hiro-api",
+          retryAfterSeconds: 60,
+          apiKeyConfigured: false,
+        },
+      },
+    });
+
+    expect(automaticVerificationRefreshError(error)).toBe(
+      "Hiro API rate limit reached. Sidekick will retry automatically. Add a free API key in Settings for higher limits.",
+    );
+  });
+
   it("derives concise signing guidance from the supported providers", () => {
     const leatherOnly = renderPanel({ action: "deploy-manager" });
     expect(leatherOnly).toContain("Supported wallet: Leather.");

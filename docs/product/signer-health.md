@@ -88,13 +88,3 @@ Collectors normalize recognized Prometheus signals, ignore unknown metrics, and 
 metrics as reduced coverage. Metric names are isolated in the collector so aliases do not change the
 API or UI. Stacks 4.0.1 node and signer monitoring contracts are the current baseline; testnet
 operation calibrates release-specific behavior.
-
-## Testnet calibration checklist
-
-Before promoting thresholds beyond reachability:
-
-1. Confirm the deployed node and signer expose the expected endpoints and record missing aliases.
-2. Observe normal peer, chaintip, heartbeat, proposal, response, latency, and conflict ranges.
-3. Exercise signer/node restarts and counter resets; confirm transient failures do not create
-   misleading findings and collection returns cleanly to baseline.
-4. Add a threshold only when testnet evidence shows it is actionable and stable.

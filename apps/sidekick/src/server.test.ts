@@ -719,6 +719,30 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_http_requests_total");
   });
 
+  it("keeps readiness available from a recent stale observation", async () => {
+    const service = {
+      snapshot: async () => {
+        throw new Error("A stale summary should be used instead");
+      },
+      summary: async () => ({
+        generatedAt: "2026-07-14T12:00:00.000Z",
+        preflight: { status: "pass" },
+        freshness: { status: "stale" as const },
+      }),
+      synchronize: async () => ({}),
+    };
+    const server = createServer({
+      service,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({ method: "GET", url: "/health/ready" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: "ready", freshness: "stale" });
+  });
+
   it("runs reconciliation asynchronously with process-local single-flight progress", async () => {
     const token = "test-operator-token-with-32-chars";
     let release: (() => void) | undefined;
@@ -931,7 +955,7 @@ describe("local API", () => {
       {
         error: "upstream_response_invalid",
         message:
-          "A configured chain source returned data Sidekick could not validate. Check source compatibility before retrying.",
+          "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
         retryable: false,
       },
     ]);
@@ -960,6 +984,86 @@ describe("local API", () => {
       retryable: false,
     });
     expect(unexpected.body).not.toContain("must-not-leak");
+  });
+
+  it("explains a Hiro API rate limit without exposing the configured endpoint", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: async () => ({}),
+      updateSettings: async () => {
+        throw new RateLimitedError(
+          "limited",
+          3_000,
+          "https://api.mainnet.hiro.so/extended/v1/status",
+        );
+      },
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      getRateLimitSettings: () => ({
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyConfigured: false,
+      }),
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    });
+
+    expect([response.statusCode, response.headers["retry-after"], response.json()]).toEqual([
+      429,
+      "3",
+      {
+        error: "upstream_rate_limited",
+        message: "Hiro API is rate limiting Sidekick. It will retry automatically.",
+        retryable: true,
+        rateLimit: {
+          source: "hiro-api",
+          retryAfterSeconds: 3,
+          apiKeyConfigured: false,
+        },
+      },
+    ]);
+  });
+
+  it("explains how to replace a special-purpose health address", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const server = createServer({
+      service: { snapshot: async () => ({}) },
+      health: {
+        current: async () => ({}),
+        refresh: async () => ({}),
+        testSource: async () => {
+          throw new HealthSourceError("unsafe-address", "blocked");
+        },
+      },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { kind: "node-metrics", url: "http://169.254.169.254/latest" },
+    });
+
+    expect([response.statusCode, response.json()]).toEqual([
+      422,
+      {
+        error: "health_source_not_allowed",
+        message:
+          "Sidekick cannot use this URL because it points to a special-purpose network address (for example, link-local or multicast). Use a normal LAN, Tailnet, or public address for this service, or proxy it through one.",
+        retryable: false,
+      },
+    ]);
   });
 
   it("classifies retryable and rejected upstream HTTP responses without leaking bodies", async () => {

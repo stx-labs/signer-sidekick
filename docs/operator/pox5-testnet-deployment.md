@@ -3,10 +3,7 @@
 This runbook targets the dedicated PoX-5 Testnet profile. Do not substitute canonical Stacks testnet
 configuration; normal deployment documentation assumes mainnet.
 
-This procedure covers Attach, Fresh setup, and Observe validation. The first transaction-engine
-Assist canary remains a release gate and must follow the separate controls in
-[Transaction engine V1](../product/transaction-engine-v1.md) and
-[container deployment](deployment.md#transaction-engine-modes).
+This procedure covers Attach, Fresh setup, and Observe validation.
 
 Sidekick does not install the node or signer and never signs setup or manager-admin calls. It can
 hand exact calls to Leather or a manual signing tool. Use current upstream material for node and

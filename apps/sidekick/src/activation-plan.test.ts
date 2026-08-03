@@ -93,8 +93,8 @@ describe("activation plans", () => {
       authId: "1",
     });
 
-    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toContain(
-      "public-testnet-pox5-reference-manager",
+    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toBe(
+      "Create the contract that represents your pool, registers your signer, and manages rewards.",
     );
     expect(result.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
       status: "pending",
@@ -117,8 +117,8 @@ describe("activation plans", () => {
       authId: "1",
     });
 
-    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toContain(
-      "operator-mainnet-upgrade-reference-manager",
+    expect(result.steps.find(({ id }) => id === "render-manager")?.detail).toBe(
+      "Create the contract that represents your pool, registers your signer, and manages rewards.",
     );
     expect(result.steps.find(({ id }) => id === "deploy-manager")).toMatchObject({
       status: "pending",

@@ -49,7 +49,7 @@ select the live PoX-5 fingerprint and the reference-manager fingerprint separate
 
 - Repository: `https://github.com/stacks-sbtc/sbtc`
 - Deployed source principal: `SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4`
-- Source API: `https://api.mainnet.hiro.so/v2/contracts/source/`
+- Source API: `GET /v2/contracts/source/:address/:contract_name` on the configured Stacks API
 - License: GPL-3.0
 
 These immutable deployed sources are the exact sBTC dependencies loaded by the upstream

@@ -4,7 +4,6 @@ import {
   ChainAnchorError,
   captureChainAnchor,
   createChainAnchor,
-  RateLimitedError,
   StacksApiClient,
   StacksNodeClient,
   UpstreamHttpError,
@@ -251,6 +250,49 @@ describe("Stacks API client", () => {
         index_hash: upperIndexHash.toLowerCase(),
       },
     });
+  });
+
+  it("reads public transaction details for the node-index fallback", async () => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const blockHash = `0x${"cd".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: txId.toUpperCase().replace("0X", "0x"),
+          tx_status: "success",
+          sender_address: "SP000000000000000000002Q6VF78",
+          tx_type: "contract_call",
+          contract_call: {
+            contract_id: "SP000000000000000000002Q6VF78.pox-5",
+            function_name: "delegate-stx",
+            function_args: [{ hex: "0x01000000000000000000000000000001f4", repr: "u500" }],
+          },
+          post_conditions: [],
+          sponsored: false,
+          anchor_mode: "any",
+          post_condition_mode: "deny",
+          canonical: true,
+          block_hash: blockHash.toUpperCase().replace("0X", "0x"),
+          block_height: 8_600_000,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionDetails(txId)).resolves.toMatchObject({
+      tx_id: txId,
+      sender_address: "SP000000000000000000002Q6VF78",
+      contract_call: {
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        function_args: [{ hex: "0x01000000000000000000000000000001f4" }],
+      },
+      block_hash: blockHash,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v1/tx/${txId}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("reads a bounded canonical block projection by height", async () => {
@@ -790,7 +832,7 @@ describe("Stacks API client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("honors Retry-After and retries a rate-limited request", async () => {
+  it("retries one short explicit rate limit", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "0" } }))
@@ -827,7 +869,11 @@ describe("Stacks API client", () => {
         undefined,
         limitedFetch,
       ).getNodeInfo(),
-    ).rejects.toBeInstanceOf(RateLimitedError);
+    ).rejects.toMatchObject({
+      name: "RateLimitedError",
+      endpoint: "https://api.example.test/v2/info",
+    });
+    expect(limitedFetch).toHaveBeenCalledTimes(2);
     await expect(
       new StacksApiClient(
         "https://api.example.test",
