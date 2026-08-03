@@ -548,8 +548,45 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
   await openPage(page, "manager", "Manager");
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeDisabled();
   current = true;
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+});
+
+test("links readiness blockers to their repair pages", async ({ page }) => {
+  const readiness = {
+    ...operationReadiness,
+    checks: [
+      {
+        id: "control-plane",
+        status: "attention",
+        detail: "One or more node, API, network, lag, or PoX-5 checks need review.",
+      },
+      { id: "setup", status: "blocked", detail: "Manager setup is blocked." },
+      { id: "engine", status: "ready", detail: "Transaction engine adapters are available." },
+    ],
+    status: "blocked",
+  };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/operations/readiness" ? readiness : responseFor(request.href);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  const readinessCard = page.locator(".engine-readiness-card");
+  await readinessCard.getByRole("button", { name: "Open Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+
+  await openPage(page, "operations", "Operations");
+  await readinessCard.getByRole("button", { name: "Open Initial Setup" }).click();
+  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
 });
 
 test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
@@ -1087,6 +1124,32 @@ test("explains the manager trust tier on Manager and Settings", async ({ page })
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
+});
+
+test("starts an admin-history sync from Manager", async ({ page }) => {
+  let syncRequests = 0;
+  let syncStarted = false;
+  await page.route("**/api/v1/sync", async (route) => {
+    const started = route.request().method() === "POST";
+    if (started) {
+      syncRequests += 1;
+      syncStarted = true;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        reconciliationResponse(started ? "running" : syncStarted ? "succeeded" : "idle"),
+      ),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "manager", "Manager");
+  await page.getByRole("button", { name: "Sync admin history" }).click();
+
+  await expect(page.getByText("Syncing chain data")).toBeVisible();
+  await expect.poll(() => syncRequests).toBe(1);
 });
 
 test("deep-links reward administration and blocks manager-admin self-removal", async ({ page }) => {

@@ -148,6 +148,13 @@
   margin: 0;
 }
 
+.manager-admin-sync {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .manager-admin-principals {
   display: grid;
   gap: 0.45rem;
@@ -1520,6 +1527,21 @@
   display: grid;
   align-content: start;
   gap: var(--space-2);
+}
+
+.engine-readiness-checks {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.engine-readiness-check {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+}
+
+.engine-readiness-check p {
+  margin: 0;
 }
 
 .engine-mode-card h3 {

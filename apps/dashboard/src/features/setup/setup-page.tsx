@@ -595,6 +595,17 @@ export function SetupPage({
                               <li key={check.id}>{check.message}</li>
                             ))}
                         </ul>
+                        <div className="actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary sm"
+                            onClick={() => {
+                              location.hash = dashboardHash("settings");
+                            }}
+                          >
+                            Open Settings
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}

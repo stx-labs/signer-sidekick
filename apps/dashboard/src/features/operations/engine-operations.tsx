@@ -8,6 +8,7 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../api-client.js";
+import { dashboardHash } from "../../dashboard-route.js";
 import { Badge, ErrorCallout, StatusBadge } from "../../shared/dashboard-ui.js";
 import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
 import {
@@ -43,6 +44,16 @@ function engineActionError(error: unknown, summary: string, recovery: string): s
 
 function stateLabel(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function readinessAction(check: OperationReadiness["checks"][number]): {
+  label: string;
+  target: "settings" | "setup";
+} | null {
+  if (check.status === "ready") return null;
+  if (check.id === "control-plane") return { label: "Open Settings", target: "settings" };
+  if (check.id === "setup") return { label: "Open Initial Setup", target: "setup" };
+  return null;
 }
 
 function updateJobPage(page: EngineJobPage, job: EngineJobDetail): EngineJobPage {
@@ -363,12 +374,35 @@ export function EngineOperations({
                   <h3>Operation readiness</h3>
                   <StatusBadge status={readiness.status} />
                 </div>
-                <p className="muted">
-                  {readiness.checks
-                    .filter((check) => check.status !== "ready")
-                    .map((check) => check.detail)
-                    .join(" ") || "Control plane, manager setup, and transaction engine are ready."}
-                </p>
+                {readiness.checks.some((check) => check.status !== "ready") ? (
+                  <div className="engine-readiness-checks">
+                    {readiness.checks
+                      .filter((check) => check.status !== "ready")
+                      .map((check) => {
+                        const action = readinessAction(check);
+                        return (
+                          <div className="engine-readiness-check" key={check.id}>
+                            <p className="muted">{check.detail}</p>
+                            {action ? (
+                              <button
+                                type="button"
+                                className="btn btn-tertiary sm"
+                                onClick={() => {
+                                  location.hash = dashboardHash(action.target);
+                                }}
+                              >
+                                {action.label}
+                              </button>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                  </div>
+                ) : (
+                  <p className="muted">
+                    Control plane, manager setup, and transaction engine are ready.
+                  </p>
+                )}
               </div>
             ) : null}
             <div className="card-standout engine-mode-card">
