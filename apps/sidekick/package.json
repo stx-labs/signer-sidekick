@@ -15,11 +15,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fastify/static": "9.1.1",
+    "@fastify/static": "10.1.2",
     "@stacks/transactions": "7.5.0",
     "@stx-labs/signer-sidekick-api-contracts": "workspace:*",
     "@stx-labs/signer-sidekick-protocol": "workspace:*",
-    "fastify": "5.10.0",
+    "fastify": "5.11.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
