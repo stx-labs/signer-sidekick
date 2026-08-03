@@ -20,7 +20,11 @@ import {
 import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import type { runOperatorPreflight } from "./preflight.js";
-import { readStxRewardStatus, type StxRewardStatus } from "./reward-status.js";
+import {
+  discoverStakerClaims,
+  readStxRewardStatus,
+  type StxRewardStatus,
+} from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import type { readPoolSetupStatus } from "./setup-status.js";
@@ -161,6 +165,14 @@ type ManagerTrustTransition = NonNullable<ReturnType<SidekickStore["recordManage
 function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: string) {
   return store.listSignerStakers(managerPrincipal, true, sourceId).map((staker) => ({
     ...staker,
+    bond: staker.bond
+      ? {
+          bondIndex: staker.bond.bondIndex.toString(),
+          amountUstx: staker.bond.amountUstx.toString(),
+          amountSats: staker.bond.amountSats.toString(),
+          isL1Lock: staker.bond.isL1Lock,
+        }
+      : null,
     position: staker.position
       ? {
           ...staker.position,
@@ -560,6 +572,76 @@ export class OperatorService {
       total: stakers.length,
       offset,
       limit,
+    };
+  }
+
+  /**
+   * Per-bucket claim discovery for one page of the roster.
+   *
+   * Deliberately not part of the operator snapshot: this issues a `get-pox-addr` and a
+   * `get-earned-staker-rewards` per staker per participating bucket, so on a large roster it would
+   * multiply every refresh by the bucket count. The caller pages it, and the returned settlement
+   * summary is what an operator sees before signing the first of N transactions.
+   */
+  async stakerClaims(options: { offset?: number; limit?: number } = {}) {
+    const snapshot = await this.snapshot();
+    const rewards = snapshot.rewards;
+    if (!rewards) throw new Error("Reward status is unavailable");
+    const offset = options.offset ?? 0;
+    const limit = Math.min(options.limit ?? 25, 100);
+    // The reconciled roster, not the STX cycle-membership list. A pure bond staker has no STX
+    // membership, so sourcing candidates from reward status would silently never offer their
+    // settlement transaction. Only reconciliation-complete entries are offered: an unexplained
+    // roster entry is not something to build a payout from.
+    const config = this.runtimeContext().config;
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    const completedRun = this.options.store.getLatestCompletedSignerStakerRun(
+      sourceId,
+      this.options.managerPrincipal,
+    );
+    if (!completedRun?.reconciliationComplete) {
+      throw new Error("Signer-staker reconciliation must complete before settling staker rewards");
+    }
+    const principals = this.options.store
+      .listSignerStakers(this.options.managerPrincipal, true, sourceId)
+      .filter(
+        ({ lastSeenRunId, bond, position, stxNodeVerified }) =>
+          lastSeenRunId === completedRun.runId &&
+          (bond !== null || position !== null || stxNodeVerified === true),
+      )
+      .map(({ stakerPrincipal }) => stakerPrincipal);
+    const page = principals.slice(offset, offset + limit);
+    const bondIndices = rewards.buckets
+      .filter(({ bondIndex, participating }) => bondIndex !== null && participating)
+      .map(({ bondIndex }) => BigInt(bondIndex as string));
+    const discovery = await discoverStakerClaims({
+      node: this.options.node,
+      managerPrincipal: this.options.managerPrincipal,
+      rewardCycle: rewards.rewardCycle,
+      stakerPrincipals: page,
+      bondIndices,
+    });
+    return {
+      generatedAt: snapshot.generatedAt,
+      rewardCycle: discovery.rewardCycle,
+      page: {
+        stakerPrincipals: page,
+        offset,
+        limit,
+        stakersTotal: principals.length,
+        nextCursor: offset + limit < principals.length ? String(offset + limit) : null,
+      },
+      settlement: discovery.settlement,
+      candidates: discovery.stakers.flatMap((staker) =>
+        staker.claims.map((claim) => ({
+          stakerPrincipal: staker.stakerPrincipal,
+          bondIndex: claim.bondIndex,
+          payout: { kind: staker.payout.kind, maxFeeSats: staker.payout.maxFeeSats },
+          rewards: claim.rewards,
+          claimable: claim.claimable,
+          blockedReason: claim.blockedReason,
+        })),
+      ),
     };
   }
 

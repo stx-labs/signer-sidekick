@@ -195,7 +195,8 @@ export type BrowserWalletIntentAction =
   | "update-fees"
   | "withdraw-fees"
   | "sweep-fee-refunds"
-  | "claim-rewards";
+  | "claim-rewards"
+  | "claim-staker-rewards";
 export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
 export type OnboardingBrowserWalletIntentCreateRequest =
@@ -213,7 +214,14 @@ export type BrowserWalletIntentCreateRequest =
       recipient: string;
     }
   | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
-  | { action: "claim-rewards"; actorPrincipal: string; jobId: string };
+  | { action: "claim-rewards"; actorPrincipal: string; jobId: string }
+  | {
+      action: "claim-staker-rewards";
+      actorPrincipal: string;
+      stakerPrincipal: string;
+      rewardCycle: string;
+      bondIndex: string | null;
+    };
 export type BrowserWalletIntentRequest =
   | OnboardingBrowserWalletIntentCreateRequest
   | BrowserWalletIntentCreateRequest;
@@ -252,7 +260,8 @@ export type BrowserWalletTransaction =
           | "update-fees"
           | "withdraw-fees"
           | "sweep-fee-refunds"
-          | "claim-rewards";
+          | "claim-rewards"
+          | "claim-staker-rewards";
         functionArgs: string[];
         network: BrowserWalletConnectNetwork;
         address: string;
@@ -419,6 +428,16 @@ export interface RosterEntry {
   active: boolean;
   hasStx: boolean;
   stxNodeVerified: boolean | null;
+  /**
+   * PoX-5 `get-bond-membership` at the reconciliation anchor, not the indexer's `types` label.
+   * `isL1Lock` distinguishes a native Bitcoin timelock from sBTC held by the protocol.
+   */
+  bond: null | {
+    bondIndex: string;
+    amountUstx: string;
+    amountSats: string;
+    isL1Lock: boolean;
+  };
   position: null | {
     amountUstx: string;
     firstRewardCycle: string;
@@ -507,8 +526,30 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     global: {
       lastRewardComputeBurnHeight: string;
       lastComputedRewardCycle: string | null;
+      /** The STX-only bucket. `buckets` carries the whole picture. */
       signerEarnedBeforeManagerClaimSats: string;
+      signerEarnedAcrossBucketsSats: string;
     };
+    /**
+     * Whether the permissionless global `calculate-rewards` has run for the cycle Sidekick would
+     * claim. Nothing is claimable until it has, and Observe never calls it.
+     */
+    calculation: {
+      state: "pending" | "completed" | "ahead" | "unknown";
+      targetRewardCycle: number | null;
+      targetCheckpoint: "first-half" | "second-half" | null;
+      expectedLastRewardComputeBurnHeight: number | null;
+      observedLastRewardComputeBurnHeight: string;
+    };
+    /** The STX bucket first, then every bond period holding shares for this cycle. */
+    buckets: Array<{
+      bondIndex: string | null;
+      managerSharesSats: string;
+      signerEarnedBeforeManagerClaimSats: string;
+      rewardsPerToken: string;
+      feeSnapshotBips: string | null;
+      participating: boolean;
+    }>;
     manager: {
       configuredFeeBips: string;
       feeSnapshotBips: string | null;
@@ -904,6 +945,7 @@ export const browserWalletIntentActionSchema = z.enum([
   "withdraw-fees",
   "sweep-fee-refunds",
   "claim-rewards",
+  "claim-staker-rewards",
 ]);
 export const browserWalletIntentNetworkSchema = z.enum([
   "mainnet",
@@ -988,7 +1030,102 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
       jobId: z.uuid(),
     })
     .strict(),
+  z
+    .object({
+      // One `(staker, reward-cycle, bond-index)` per request. `claim-staker-rewards` takes a
+      // single staker and has no batch form, so a settlement is one transaction per tuple.
+      action: z.literal("claim-staker-rewards"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+      stakerPrincipal: walletPrincipalInputSchema,
+      rewardCycle: canonicalClarityUintSchema,
+      /** `null` claims the STX-only bucket; a value claims one bond bucket. */
+      bondIndex: canonicalClarityUintSchema.nullable(),
+    })
+    .strict(),
 ]);
+
+/** One settleable tuple and why it is or is not worth a transaction. */
+export interface StakerClaimCandidate {
+  stakerPrincipal: string;
+  bondIndex: string | null;
+  payout: { kind: "direct-sbtc" | "bitcoin-l1"; maxFeeSats: string | null };
+  rewards: { earnedSats: string; feeSats: string; grossSats: string };
+  claimable: boolean;
+  blockedReason: null | "nothing-settled" | "l1-below-max-fee";
+}
+
+/**
+ * What settling a cycle costs, shown before the operator signs anything. The outstanding claim
+ * count is the transaction count: the contract offers no way to combine them.
+ */
+export const stakerClaimsResponseSchema = z
+  .object({
+    generatedAt: z.string().optional(),
+    rewardCycle: z.number().int().nonnegative(),
+    page: z
+      .object({
+        stakerPrincipals: z.array(z.string()),
+        offset: z.number().int().nonnegative(),
+        limit: z.number().int().positive(),
+        stakersTotal: z.number().int().nonnegative(),
+        nextCursor: z.string().nullable(),
+      })
+      .strict(),
+    settlement: z
+      .object({
+        // Scoped to the stakers this page actually read, never the whole cycle.
+        scope: z.literal("page"),
+        stakersScanned: z.number().int().nonnegative(),
+        outstandingClaims: z.number().int().nonnegative(),
+        transactionCount: z.number().int().nonnegative(),
+        totalNetSats: canonicalClarityUintSchema,
+        blockedClaims: z.number().int().nonnegative(),
+      })
+      .strict(),
+    candidates: z.array(
+      z
+        .object({
+          stakerPrincipal: z.string(),
+          bondIndex: canonicalClarityUintSchema.nullable(),
+          payout: z
+            .object({
+              kind: z.enum(["direct-sbtc", "bitcoin-l1"]),
+              maxFeeSats: canonicalClarityUintSchema.nullable(),
+            })
+            .strict(),
+          rewards: z
+            .object({
+              earnedSats: canonicalClarityUintSchema,
+              feeSats: canonicalClarityUintSchema,
+              grossSats: canonicalClarityUintSchema,
+            })
+            .strict(),
+          claimable: z.boolean(),
+          blockedReason: z
+            .enum([
+              "nothing-settled",
+              "manager-has-not-claimed",
+              "l1-below-max-fee",
+              "l1-below-dust-limit",
+            ])
+            .nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export interface StakerClaimDiscoveryResponse {
+  rewardCycle: number;
+  page: { stakerPrincipals: string[]; nextCursor: string | null };
+  settlement: {
+    outstandingClaims: number;
+    transactionCount: number;
+    totalNetSats: string;
+    blockedClaims: number;
+  };
+  candidates: StakerClaimCandidate[];
+}
 export const browserWalletIntentSubmissionRequestSchema = z
   .object({ txid: z.string().regex(/^0x[0-9a-f]{64}$/i) })
   .strict();
@@ -1087,6 +1224,19 @@ export const browserWalletTransactionSchema = z.union([
           contract: z.string().min(1),
           functionName: z.literal("claim-rewards"),
           functionArgs: z.array(clarityHexSchema).length(2),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
+      params: browserWalletAssetPostConditionParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          // (staker, reward-cycle, bond-index) -- exactly one settleable tuple.
+          functionName: z.literal("claim-staker-rewards"),
+          functionArgs: z.array(clarityHexSchema).length(3),
         })
         .strict(),
     })
@@ -1241,7 +1391,10 @@ export const browserWalletIntentSchema = z
         transaction.params.functionName === "sweep-fee-refunds") ||
       (value.action === "claim-rewards" &&
         transaction.method === "stx_callContract" &&
-        transaction.params.functionName === "claim-rewards");
+        transaction.params.functionName === "claim-rewards") ||
+      (value.action === "claim-staker-rewards" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "claim-staker-rewards");
     if (!actionMatches) {
       context.addIssue({
         code: "custom",

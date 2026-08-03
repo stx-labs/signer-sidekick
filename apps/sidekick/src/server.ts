@@ -70,6 +70,7 @@ const RECONCILIATION_SNAPSHOT_DEADLINE_MS = 60_000;
 interface RosterRow {
   stakerPrincipal?: string;
   active?: boolean;
+  bond?: null | { bondIndex?: string; amountSats?: string; isL1Lock?: boolean };
   position?: null | {
     amountUstx?: string;
     firstRewardCycle?: string;
@@ -114,6 +115,7 @@ interface OperatorSnapshotService {
   poolHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsPage?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
+  stakerClaims?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
   poolCard?(mode: "live" | "static"): Promise<unknown>;
@@ -1115,6 +1117,9 @@ export function createServer(options: ServerOptions = {}) {
       "num_cycles",
       "unlock_cycle",
       "active",
+      "bond_index",
+      "bond_amount_sats",
+      "bond_collateral",
     ];
     const rows = roster.map((staker) => [
       staker.stakerPrincipal,
@@ -1123,6 +1128,9 @@ export function createServer(options: ServerOptions = {}) {
       staker.position?.numCycles,
       staker.position?.unlockCycle,
       staker.active,
+      staker.bond?.bondIndex,
+      staker.bond?.amountSats,
+      staker.bond ? (staker.bond.isL1Lock ? "bitcoin-l1" : "sbtc") : undefined,
     ]);
     reply.type("text/csv; charset=utf-8");
     reply.header("content-disposition", 'attachment; filename="signer-sidekick-roster.csv"');
@@ -1153,6 +1161,13 @@ export function createServer(options: ServerOptions = {}) {
       rewards: snapshot?.rewards,
       activity: snapshot?.activity,
     };
+  });
+  server.get("/api/v1/rewards/staker-claims", async (request, _reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const stakerClaims = requireFeature(service.stakerClaims, "staker_claims_unavailable");
+    return await interactive(request, async () =>
+      stakerClaims.call(service, parsePagination(request.url)),
+    );
   });
   server.get("/api/v1/withdrawals", async (request) => {
     const snapshot = await interactive(request, async () => options.service?.snapshot());

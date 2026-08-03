@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ClarityValue } from "@stacks/transactions";
 import {
   bufferCV,
   ClarityVersion,
@@ -20,6 +21,7 @@ import {
   signMessageHashRsv,
   someCV,
   trueCV,
+  tupleCV,
   uintCV,
 } from "@stacks/transactions";
 import type {
@@ -2342,5 +2344,161 @@ describe("manager wallet action preparation", () => {
     await expect(
       wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
     ).rejects.toThrow("already been used");
+  });
+
+  describe("staker reward claims", () => {
+    const staker = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
+
+    async function stakerClaimWallet(reads: {
+      earned: bigint;
+      fees: bigint;
+      unclaimed: bigint;
+      poxAddr?: ClarityValue;
+      feeBips?: bigint;
+      /** `null` models an unclaimed bucket: the manager never inserted a fee snapshot for it. */
+      feeSnapshot?: bigint | null;
+    }) {
+      const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+      stores.push(store);
+      readSetupSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+      return new OnboardingWalletIntentService({
+        store,
+        runtimeSettings: {
+          clients: () => ({
+            config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+            node: {
+              getInfo: vi.fn(async () => ({ network_id: 1 })),
+              getMapEntry: vi.fn(async () =>
+                reads.feeSnapshot === null ? noneCV() : someCV(uintCV(reads.feeSnapshot ?? 1_000n)),
+              ),
+              callReadOnly: vi.fn(async (_manager: string, functionName: string) => {
+                if (functionName === "is-admin") return trueCV();
+                if (functionName === "get-earned-staker-rewards") {
+                  return tupleCV({ earned: uintCV(reads.earned), fees: uintCV(reads.fees) });
+                }
+                if (functionName === "get-pox-addr") return reads.poxAddr ?? noneCV();
+                if (functionName === "get-fee-bips-for-cycle")
+                  return uintCV(reads.feeBips ?? 1_000n);
+                if (functionName === "get-unclaimed-staker-rewards") return uintCV(reads.unclaimed);
+                throw new Error(`Unexpected manager read ${functionName}`);
+              }),
+            },
+            api: { getNodeInfo: vi.fn(async () => ({ network_id: 1 })) },
+          }),
+        } as unknown as RuntimeSettingsController,
+        readFreshState: deploymentFreshState,
+      });
+    }
+
+    const request = {
+      action: "claim-staker-rewards",
+      actorPrincipal: requiredSender,
+      stakerPrincipal: staker,
+      rewardCycle: "141",
+      bondIndex: null,
+    } as const;
+
+    it("pins the manager's exact outflow for a direct sBTC payout", async () => {
+      const wallet = await stakerClaimWallet({ earned: 9_000n, fees: 1_000n, unclaimed: 10_000n });
+
+      const prepared = await wallet.prepare(request, "2026-07-19T12:01:00.000Z");
+
+      expect(prepared.transaction.method).toBe("stx_callContract");
+      if (prepared.transaction.method !== "stx_callContract") throw new Error("expected a call");
+      expect(prepared.transaction.params.functionName).toBe("claim-staker-rewards");
+      // (staker, reward-cycle, bond-index) -- exactly one settleable tuple per transaction.
+      expect(prepared.transaction.params.functionArgs).toHaveLength(3);
+      expect(prepared.transaction.params.postConditions).toHaveLength(1);
+      expect(prepared.review.fields).toEqual(
+        expect.arrayContaining([{ label: "Staker receives (sats)", value: "9000" }]),
+      );
+    });
+
+    it("claims a bond bucket by naming its index", async () => {
+      const wallet = await stakerClaimWallet({ earned: 500n, fees: 0n, unclaimed: 500n });
+
+      const prepared = await wallet.prepare(
+        { ...request, bondIndex: "3" },
+        "2026-07-19T12:01:00.000Z",
+      );
+
+      expect(prepared.review.fields).toEqual(
+        expect.arrayContaining([{ label: "Bucket", value: "bond period 3" }]),
+      );
+    });
+
+    it.each([
+      ["nothing settled in the bucket", { earned: 0n, fees: 0n, unclaimed: 10_000n }],
+      [
+        "the manager has not pulled the rewards in yet",
+        { earned: 9_000n, fees: 1_000n, unclaimed: 0n },
+      ],
+      [
+        // `get-fee-bips-for-cycle` would read this as a zero-fee bucket. Only the map entry itself
+        // separates "never claimed" from "claimed at zero fee", and unrelated manager funds satisfy
+        // the unclaimed-balance check on their own.
+        "the bucket has no fee snapshot despite the manager holding funds",
+        { earned: 9_000n, fees: 0n, unclaimed: 10_000n, feeSnapshot: null },
+      ],
+    ])("refuses a call the manager would reject: %s", async (_label, reads) => {
+      const wallet = await stakerClaimWallet(reads);
+
+      await expect(wallet.prepare(request, "2026-07-19T12:01:00.000Z")).rejects.toMatchObject({
+        code: "wallet_intent_invalid",
+      });
+    });
+
+    it("refuses a Bitcoin L1 payout that would revert on fee budget or dust", async () => {
+      const l1 = (maxFee: bigint) =>
+        someCV(
+          tupleCV({
+            "max-fee": uintCV(maxFee),
+            "pox-addr": tupleCV({
+              version: bufferCV(Uint8Array.of(0)),
+              hashbytes: bufferCV(new Uint8Array(20).fill(7)),
+            }),
+          }),
+        );
+
+      // Below the staker's own fee budget: the manager rejects it.
+      await expect(
+        (
+          await stakerClaimWallet({
+            earned: 400n,
+            fees: 0n,
+            unclaimed: 400n,
+            poxAddr: l1(500n),
+            feeBips: 0n,
+          })
+        ).prepare(request, "2026-07-19T12:01:00.000Z"),
+      ).rejects.toMatchObject({ code: "wallet_intent_invalid" });
+
+      // Clears the fee budget but leaves a withdrawal at the dust limit: sbtc-withdrawal rejects it.
+      await expect(
+        (
+          await stakerClaimWallet({
+            earned: 1_046n,
+            fees: 0n,
+            unclaimed: 1_046n,
+            poxAddr: l1(500n),
+            feeBips: 0n,
+          })
+        ).prepare(request, "2026-07-19T12:01:00.000Z"),
+      ).rejects.toMatchObject({ code: "wallet_intent_invalid" });
+
+      // One sat clear of the dust limit is plannable.
+      const prepared = await (
+        await stakerClaimWallet({
+          earned: 1_047n,
+          fees: 0n,
+          unclaimed: 1_047n,
+          poxAddr: l1(500n),
+          feeBips: 0n,
+        })
+      ).prepare(request, "2026-07-19T12:01:00.000Z");
+      expect(prepared.review.fields).toEqual(
+        expect.arrayContaining([{ label: "Payout route", value: "Bitcoin L1 withdrawal" }]),
+      );
+    });
   });
 });

@@ -5,9 +5,11 @@ import {
   ClarityType,
   cvToHex,
   hexToCV,
+  noneCV,
   Pc,
   postConditionToHex,
   principalCV,
+  someCV,
   tupleCV,
   uintCV,
   validateStacksAddress,
@@ -26,8 +28,12 @@ import {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
+  decodeEarnedStakerRewards,
+  decodeOptionalUInt,
+  decodePoxAddressPreference,
   decodeResponseOk,
   decodeUInt,
+  encodeOptionalUIntHex,
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
@@ -176,6 +182,7 @@ const storedManifestV2Schema = z
       "withdraw-fees",
       "sweep-fee-refunds",
       "claim-rewards",
+      "claim-staker-rewards",
     ]),
     request: walletIntentRequestSchema,
     network: z.enum(["mainnet", "pox5-testnet", "devnet", "regtest"]),
@@ -294,6 +301,9 @@ interface EquivalentIntentFacts {
   scope: string;
   factsSha256: string;
 }
+
+/** `sbtc-withdrawal` asserts `(> amount DUST_LIMIT)`; the withdrawn amount is net minus fee budget. */
+const SBTC_WITHDRAWAL_DUST_LIMIT = 546n;
 
 export class OnboardingWalletIntentError extends Error {
   constructor(
@@ -1253,7 +1263,8 @@ export class OnboardingWalletIntentService {
         | "update-admin"
         | "update-fees"
         | "withdraw-fees"
-        | "sweep-fee-refunds",
+        | "sweep-fee-refunds"
+        | "claim-staker-rewards",
       functionArgs: string[],
       postConditions: string[] = [],
     ): BrowserWalletTransaction => ({
@@ -1461,6 +1472,160 @@ export class OnboardingWalletIntentService {
         "The matched network does not expose the trusted sBTC token contract",
       );
     }
+
+    if (action === "claim-staker-rewards") {
+      // `claim-staker-rewards` is permissionless and always pays the staker named in its
+      // arguments, never the sender, so the operator settles a staker without holding any
+      // authority over their funds. It takes one staker and has no batch form: settling a pool is
+      // one transaction per (staker, reward-cycle, bond-index).
+      this.assertActionPrincipal(request.stakerPrincipal, network.network);
+      const rewardCycle = BigInt(request.rewardCycle);
+      const bondIndex = request.bondIndex === null ? null : BigInt(request.bondIndex);
+      const bucketArgs = [
+        encodePrincipalHex(request.stakerPrincipal),
+        encodeUIntHex(rewardCycle),
+        encodeOptionalUIntHex(bondIndex),
+      ];
+      const [rewardsValue, payoutValue, feeSnapshotValue, unclaimedValue] = await Promise.all([
+        node.callReadOnly(
+          managerPrincipal,
+          "get-earned-staker-rewards",
+          actorPrincipal,
+          bucketArgs,
+          readOptions,
+        ),
+        node.callReadOnly(
+          managerPrincipal,
+          "get-pox-addr",
+          actorPrincipal,
+          [encodePrincipalHex(request.stakerPrincipal)],
+          readOptions,
+        ),
+        // The map entry itself, not `get-fee-bips-for-cycle`, whose `default-to u0` makes an
+        // unclaimed bucket indistinguishable from a genuine zero-fee one.
+        node.getMapEntry(
+          managerPrincipal,
+          "fee-bips-for-cycle",
+          cvToHex(
+            tupleCV({
+              "reward-cycle": uintCV(rewardCycle),
+              "bond-index": bondIndex === null ? noneCV() : someCV(uintCV(bondIndex)),
+            }),
+          ),
+          readOptions,
+        ),
+        node.callReadOnly(
+          managerPrincipal,
+          "get-unclaimed-staker-rewards",
+          actorPrincipal,
+          [],
+          readOptions,
+        ),
+      ]);
+      const rewards = decodeEarnedStakerRewards(rewardsValue);
+      const payout = decodePoxAddressPreference(payoutValue);
+      // `map-insert` only happens inside `claim-rewards`, so a present entry is anchored proof the
+      // manager already pulled this bucket's rewards in. Absent means the payout would revert on
+      // the manager's own balance checks, whatever unrelated funds it happens to hold.
+      const feeBips = decodeOptionalUInt(feeSnapshotValue, "fee-bips-for-cycle");
+      const unclaimed = decodeUInt(unclaimedValue, "get-unclaimed-staker-rewards");
+      const gross = rewards.earned + rewards.fees;
+
+      // Every refusal below is a call the manager or sBTC would reject. Sidekick must not spend a
+      // transaction discovering that.
+      if (rewards.earned === 0n) {
+        throw new OnboardingWalletIntentError(
+          "wallet_intent_invalid",
+          "This bucket has nothing settled for the staker",
+        );
+      }
+      if (feeBips === null) {
+        throw new OnboardingWalletIntentError(
+          "wallet_intent_invalid",
+          "The manager has not claimed this bucket yet; claim manager rewards first",
+        );
+      }
+      if (unclaimed < gross) {
+        throw new OnboardingWalletIntentError(
+          "wallet_intent_invalid",
+          "The manager has not claimed these rewards yet; claim manager rewards first",
+        );
+      }
+      if (payout !== null) {
+        if (rewards.earned < payout.maxFee) {
+          throw new OnboardingWalletIntentError(
+            "wallet_intent_invalid",
+            "The payout does not cover the staker's maximum Bitcoin withdrawal fee",
+          );
+        }
+        if (rewards.earned - payout.maxFee <= SBTC_WITHDRAWAL_DUST_LIMIT) {
+          throw new OnboardingWalletIntentError(
+            "wallet_intent_invalid",
+            `A Bitcoin L1 withdrawal must exceed the ${SBTC_WITHDRAWAL_DUST_LIMIT}-sat dust limit after the fee budget`,
+          );
+        }
+      }
+
+      // Both payout routes reduce the manager's sbtc-token balance by exactly the net amount --
+      // a direct transfer, or `protocol-lock` burning it into the withdrawal system -- so one
+      // equality postcondition covers either outcome and rejects the other.
+      const postCondition = postConditionToHex(
+        Pc.principal(managerPrincipal)
+          .willSendEq(rewards.earned)
+          .ft(sbtcTokenContract as `${string}.${string}`, "sbtc-token"),
+      );
+      assertStateUnchanged();
+      const bucketLabel = bondIndex === null ? "STX-only" : `bond period ${bondIndex}`;
+      return {
+        scope: managerPrincipal,
+        requiredSender: actorPrincipal,
+        network: network.network,
+        chainId: network.chainId,
+        facts: {
+          schemaVersion: 2,
+          request,
+          managerPrincipal,
+          grossSats: gross.toString(),
+          feeSats: rewards.fees.toString(),
+          netSats: rewards.earned.toString(),
+          feeSnapshotBips: feeBips.toString(),
+          unclaimedStakerRewardsSats: unclaimed.toString(),
+          payout:
+            payout === null
+              ? { kind: "direct-sbtc" }
+              : {
+                  kind: "bitcoin-l1",
+                  maxFeeSats: payout.maxFee.toString(),
+                  withdrawalAmountSats: (rewards.earned - payout.maxFee).toString(),
+                },
+          postCondition,
+        },
+        transaction: transaction("claim-staker-rewards", bucketArgs, [postCondition]),
+        review: {
+          title: "Claim staker rewards",
+          summary: `Pay ${rewards.earned} sats of ${bucketLabel} rewards for cycle ${rewardCycle} to ${request.stakerPrincipal}.`,
+          expectedPostState:
+            payout === null
+              ? "The staker receives the exact sBTC amount and the bucket settles to zero."
+              : "The exact sBTC amount enters the withdrawal system for the staker's Bitcoin address and the bucket settles to zero.",
+          fields: [
+            ...commonFields,
+            { label: "Staker", value: request.stakerPrincipal },
+            { label: "Reward cycle", value: rewardCycle.toString() },
+            { label: "Bucket", value: bucketLabel },
+            { label: "Gross (sats)", value: gross.toString() },
+            { label: "Manager fee (sats)", value: rewards.fees.toString() },
+            { label: "Fee snapshot (bips)", value: feeBips.toString() },
+            { label: "Staker receives (sats)", value: rewards.earned.toString() },
+            {
+              label: "Payout route",
+              value: payout === null ? "Direct sBTC" : "Bitcoin L1 withdrawal",
+            },
+          ],
+        },
+      };
+    }
+
     if (!("recipient" in request)) {
       throw new OnboardingWalletIntentError(
         "wallet_intent_invalid",
@@ -1845,6 +2010,32 @@ export class OnboardingWalletIntentService {
           complete =
             decodeUInt(await node.getDataVar(managerPrincipal, "fees-bips"), "fees-bips") ===
             BigInt(request.feeBips);
+        } else if (manifest.action === "claim-staker-rewards") {
+          if (!("stakerPrincipal" in request) || !("rewardCycle" in request)) {
+            throw new OnboardingWalletIntentError(
+              "wallet_intent_invalid",
+              "Staker-claim intent is missing its settlement tuple",
+            );
+          }
+          // Canonical post-state: `claim-staker-rewards-for-signer` zeroes the staker's unclaimed
+          // balance for the bucket, so the tuple reads back as settled regardless of which payout
+          // route ran. This also confirms a completion that some other caller produced, since the
+          // call is permissionless.
+          const settled = decodeEarnedStakerRewards(
+            await node.callReadOnly(
+              managerPrincipal,
+              "get-earned-staker-rewards",
+              manifest.requiredSender,
+              [
+                encodePrincipalHex(request.stakerPrincipal),
+                encodeUIntHex(BigInt(request.rewardCycle)),
+                encodeOptionalUIntHex(
+                  request.bondIndex === null ? null : BigInt(request.bondIndex),
+                ),
+              ],
+            ),
+          );
+          complete = settled.earned === 0n;
         } else {
           const snapshot = await readSetupSnapshot({
             config,

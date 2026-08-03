@@ -194,6 +194,29 @@ function setup(): SetupSnapshot {
 }
 
 function rewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
+  const base = baseRewards(overrides);
+  if (base.buckets.length > 0) return base;
+  // Derive the STX bucket from `global` so the many tests that override the earned amount stay
+  // internally consistent. Shares stay at zero so participation tracks earnings alone, which keeps
+  // an unclaimed-but-empty cycle idle rather than bucket-idle.
+  const stxEarned = base.global.signerEarnedBeforeManagerClaimSats;
+  return {
+    ...base,
+    global: { ...base.global, signerEarnedAcrossBucketsSats: stxEarned },
+    buckets: [
+      {
+        bondIndex: null,
+        managerSharesSats: "0",
+        signerEarnedBeforeManagerClaimSats: stxEarned,
+        rewardsPerToken: base.global.rewardsPerToken,
+        feeSnapshotBips: base.manager.feeSnapshotBips,
+        participating: stxEarned !== "0",
+      },
+    ],
+  };
+}
+
+function baseRewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
   return {
     status: "ready",
     managerPrincipal: manager,
@@ -210,7 +233,16 @@ function rewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
       lastComputedRewardCycle: String(anchor.rewardCycle),
       rewardsPerToken: "123456789",
       signerEarnedBeforeManagerClaimSats: "1234",
+      signerEarnedAcrossBucketsSats: "1234",
     },
+    calculation: {
+      state: "completed",
+      targetRewardCycle: anchor.rewardCycle,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: 4_099,
+      observedLastRewardComputeBurnHeight: "4099",
+    },
+    buckets: [],
     manager: {
       configuredFeeBips: "500",
       feeSnapshotBips: null,
@@ -551,7 +583,14 @@ describe("live manager-claim observation", () => {
     [
       "earned amount",
       (value: ManagerClaimApprovalRevalidationInput) => {
-        if (value.rewards) value.rewards.global.signerEarnedBeforeManagerClaimSats = "1233";
+        if (!value.rewards) return;
+        value.rewards.global.signerEarnedBeforeManagerClaimSats = "1233";
+        value.rewards.global.signerEarnedAcrossBucketsSats = "1233";
+        value.rewards.buckets = value.rewards.buckets.map((bucket) =>
+          bucket.bondIndex === null
+            ? { ...bucket, signerEarnedBeforeManagerClaimSats: "1233" }
+            : bucket,
+        );
       },
       "claim-amount-changed",
     ],
@@ -775,12 +814,13 @@ describe("live manager-claim observation", () => {
     });
   });
 
-  it("blocks mainnet Assist when production approval leaves the reference manager ineligible", async () => {
+  it("gates Assist on production approval without blocking Observe", async () => {
     const { store, attestation } = await memoryStore(MAINNET_4_0_1_COMPATIBILITY);
     const mainnetInput = input(attestation);
     mainnetInput.requestedMode = "assist";
     mainnetInput.setup.preflight.network = "mainnet";
     mainnetInput.setup.preflight.node.networkId = 1;
+    // A verified reference manager that has not been approved for unattended use.
     mainnetInput.setup.manager.automationEligible = false;
 
     await expect(service(store).observe(mainnetInput)).resolves.toMatchObject({
@@ -793,6 +833,23 @@ describe("live manager-claim observation", () => {
       ]),
     });
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
+
+    // Observe only needs the source verified: the operator signs and the postcondition pins the
+    // effect, so Assist approval has no bearing on proposing the same claim for a browser wallet.
+    const { store: observeStore, attestation: observeAttestation } = await memoryStore(
+      MAINNET_4_0_1_COMPATIBILITY,
+    );
+    const observeInput = input(observeAttestation);
+    observeInput.requestedMode = "observe";
+    observeInput.setup.preflight.network = "mainnet";
+    observeInput.setup.preflight.node.networkId = 1;
+    observeInput.setup.manager.automationEligible = false;
+
+    // The Assist gate must not reach Observe. Whatever else this mainnet fixture lacks, a manager
+    // that is merely unapproved for unattended use is not a reason to refuse an operator-signed
+    // claim.
+    const observed = await service(observeStore).observe(observeInput);
+    expect(observed.blocks.some(({ code }) => code === "assist-not-approved")).toBe(false);
   });
 
   it("allows a verified mainnet reference manager through Observe without Assist approval", async () => {
@@ -876,22 +933,25 @@ describe("live manager-claim observation", () => {
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
   });
 
-  it("fails closed before creating work for incomplete/bonded rosters and bad attestations", async () => {
+  it("plans from anchored bucket reads without consulting the staker roster", async () => {
     const { store, attestation } = await memoryStore();
-    const incomplete = await service(store, evidenceStore(null)).observe(input(attestation));
-    expect(incomplete).toMatchObject({
-      status: "blocked",
-      blocks: [{ code: "roster-proof-incomplete" }],
-    });
 
-    const bonded = await service(store, evidenceStore(run, [roster({ hasBtc: true })])).observe(
-      input(attestation),
-    );
-    expect(bonded).toMatchObject({
-      status: "blocked",
-      blocks: [{ code: "bond-participation-present" }],
-    });
+    // Revision 1 refused to plan without a complete roster crawl, because the empty bond list was
+    // only justified by a negative proof drawn from that roster. The buckets are read straight from
+    // PoX-5 now, so neither a missing roster nor a bonded one has any bearing on the claim.
+    const withoutRoster = await service(store, evidenceStore(null)).observe(input(attestation));
+    expect(withoutRoster).toMatchObject({ status: "planned" });
 
+    const { store: bondedStore, attestation: bondedAttestation } = await memoryStore();
+    const bonded = await service(
+      bondedStore,
+      evidenceStore(run, [roster({ hasBtc: true })]),
+    ).observe(input(bondedAttestation));
+    expect(bonded).toMatchObject({ status: "planned" });
+  });
+
+  it("fails closed on a bad attestation", async () => {
+    const { store, attestation } = await memoryStore();
     const mismatched = structuredClone(attestation);
     mismatched.profile = {
       ...mismatched.profile,
@@ -1273,6 +1333,100 @@ describe("live manager-claim observation", () => {
       blocks: [],
       reason: "external-completion-without-local-work",
     });
+    expect(store.transactionEngine.logicalJobStats().total).toBe(0);
+  });
+
+  it("plans a claim that names every participating bond bucket", async () => {
+    const { store, attestation } = await memoryStore();
+    // The STX bucket alone would be 1234; two bond buckets add 300 more. Revision 1 could not
+    // express this at all, and an invariant defined only over the STX bucket would reject it.
+    const bonded = rewards({
+      global: {
+        ...rewards().global,
+        signerEarnedBeforeManagerClaimSats: "1234",
+        signerEarnedAcrossBucketsSats: "1534",
+      },
+      buckets: [
+        {
+          bondIndex: null,
+          managerSharesSats: "0",
+          signerEarnedBeforeManagerClaimSats: "1234",
+          rewardsPerToken: "123456789",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+        {
+          bondIndex: "2",
+          managerSharesSats: "100000",
+          signerEarnedBeforeManagerClaimSats: "200",
+          rewardsPerToken: "42",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+        {
+          // Zero earnings but live shares: still named, so its fee snapshot is pinned with the rest.
+          bondIndex: "3",
+          managerSharesSats: "50000",
+          signerEarnedBeforeManagerClaimSats: "100",
+          rewardsPerToken: "7",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+      ],
+    });
+
+    const outcome = await service(store).observe({ ...input(attestation), rewards: bonded });
+
+    expect(outcome).toMatchObject({ status: "planned" });
+    if (outcome.status !== "planned") throw new Error("expected a planned claim");
+    const material = outcome.result.plan.material;
+    expect(material.call.bondPeriods).toEqual(["2", "3"]);
+    expect(material.stxEarnedSats).toBe("1234");
+    expect(material.bondBuckets).toMatchObject([
+      { bondIndex: "2", earnedSats: "200" },
+      { bondIndex: "3", earnedSats: "100" },
+    ]);
+    // One transfer covers the whole claim, so the postcondition is the sum of every named bucket.
+    expect(material.expectedEffect.amount).toBe("1534");
+  });
+
+  it("stays idle when buckets participate but nothing is settled in them", async () => {
+    const { store, attestation } = await memoryStore();
+    const idle = rewards({
+      global: {
+        ...rewards().global,
+        signerEarnedBeforeManagerClaimSats: "0",
+        signerEarnedAcrossBucketsSats: "0",
+      },
+      buckets: [
+        {
+          bondIndex: null,
+          managerSharesSats: "0",
+          signerEarnedBeforeManagerClaimSats: "0",
+          rewardsPerToken: "123456789",
+          feeSnapshotBips: null,
+          participating: false,
+        },
+        {
+          bondIndex: "2",
+          managerSharesSats: "100000",
+          signerEarnedBeforeManagerClaimSats: "0",
+          rewardsPerToken: "0",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+      ],
+    });
+
+    // `claim-rewards` reverts when the whole call totals zero, so proposing it would hand the
+    // operator a transaction that cannot succeed.
+    await expect(service(store).observe({ ...input(attestation), rewards: idle })).resolves.toEqual(
+      {
+        status: "idle",
+        blocks: [],
+        reason: "buckets-present-nothing-claimable",
+      },
+    );
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
   });
 });

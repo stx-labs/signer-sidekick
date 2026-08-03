@@ -83,6 +83,11 @@ function revertMigration14(database: DatabaseSync): void {
     DROP TABLE gas_payer_nonce_reservations;
     DROP TABLE transaction_jobs;
     DROP TABLE accepted_compatibility_attestations;
+    ALTER TABLE stakers DROP COLUMN bond_node_verified;
+    ALTER TABLE stakers DROP COLUMN bond_index;
+    ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
+    ALTER TABLE stakers DROP COLUMN bond_amount_sats;
+    ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
     ALTER TABLE pool_cycle_snapshots DROP COLUMN chain_anchor_json;
     ALTER TABLE reward_cycle_snapshots DROP COLUMN chain_anchor_json;
     DELETE FROM schema_migrations WHERE version >= 14;
@@ -234,7 +239,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 18,
+      schemaVersion: 21,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -755,6 +760,7 @@ describe("Sidekick SQLite store", () => {
         lastComputedRewardCycle: "140",
         rewardsPerToken: "42",
         signerEarnedBeforeManagerClaimSats: "0",
+        signerEarnedAcrossBucketsSats: "0",
       },
       manager: {
         configuredFeeBips: "750",
@@ -895,13 +901,13 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 18,
+      schemaVersion: 21,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migration 18 once", async () => {
+  it("upgrades a persisted migration 13 database through migration 21 once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -921,7 +927,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1037,7 +1043,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(18);
+    expect(upgraded.store.schemaVersion()).toBe(21);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1098,6 +1104,11 @@ describe("Sidekick SQLite store", () => {
       DROP TABLE signer_staker_api_scans;
       DROP TABLE browser_wallet_intent_observations;
       DROP TABLE browser_wallet_intents;
+      ALTER TABLE stakers DROP COLUMN bond_node_verified;
+      ALTER TABLE stakers DROP COLUMN bond_index;
+      ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
+      ALTER TABLE stakers DROP COLUMN bond_amount_sats;
+      ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
       DELETE FROM schema_migrations WHERE version >= 15;
       PRAGMA user_version = 14;
     `);
@@ -1106,7 +1117,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1257,7 +1268,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(18);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1353,5 +1364,101 @@ describe("Sidekick SQLite store", () => {
         observedAt,
       }),
     ).toThrow("decodedSchemaVersion and decodedPayload must either both be present");
+  });
+
+  it("retires a revision 1 manager claim when the adapter revision moves to 2", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-claim-revision-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, observedAt);
+    initial.store.close();
+
+    // Rewind past the supersession migration and plant the kind of job a revision 1 deployment
+    // would be holding: an approved claim whose sealed plan carries an empty bond-periods argument
+    // and a no-bond roster digest, neither of which revision 2 can reproduce.
+    const rewound = new DatabaseSync(path);
+    rewound.exec(`
+      INSERT INTO transaction_jobs (
+        job_id, idempotency_key, operation_scope_key, adapter_id, adapter_revision,
+        manager_principal, intent_sha256, policy_sha256, intent_json, policy_json,
+        chain_anchor_json, attestation_issuer, attestation_revision,
+        attestation_payload_sha256, state, state_version, created_at, updated_at
+      ) VALUES (
+        'legacy-job', 'legacy-key', 'legacy-scope', 'reference-manager-claim-rewards', 1,
+        'SP000000000000000000002Q6VF78.signer-manager', '${"aa".repeat(32)}', '${"bb".repeat(32)}',
+        '{"noBondEvidenceSha256":"${"cc".repeat(32)}","bondPeriods":[]}', '{}',
+        '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
+        'awaiting_approval', 3, '${observedAt}', '${observedAt}'
+      );
+      ALTER TABLE stakers DROP COLUMN bond_node_verified;
+      ALTER TABLE stakers DROP COLUMN bond_index;
+      ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
+      ALTER TABLE stakers DROP COLUMN bond_amount_sats;
+      ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DELETE FROM schema_migrations WHERE version >= 19;
+      PRAGMA user_version = 18;
+    `);
+    rewound.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    const job = inspection
+      .prepare(
+        "SELECT state, supersession_reason, state_version FROM transaction_jobs WHERE job_id = ?",
+      )
+      .get("legacy-job") as
+      | { state: string; supersession_reason: string | null; state_version: number }
+      | undefined;
+    inspection.close();
+
+    // It must be retired outright rather than left to fail deep inside a revalidation path.
+    expect(job).toMatchObject({ state: "superseded", state_version: 4 });
+    expect(job?.supersession_reason).toContain("revision 1");
+  });
+
+  it("leaves a settled revision 1 manager claim alone", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-claim-settled-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, observedAt);
+    initial.store.close();
+
+    const rewound = new DatabaseSync(path);
+    rewound.exec(`
+      INSERT INTO transaction_jobs (
+        job_id, idempotency_key, operation_scope_key, adapter_id, adapter_revision,
+        manager_principal, intent_sha256, policy_sha256, intent_json, policy_json,
+        chain_anchor_json, attestation_issuer, attestation_revision,
+        attestation_payload_sha256, state, state_version, created_at, updated_at
+      ) VALUES (
+        'settled-job', 'settled-key', 'settled-scope', 'reference-manager-claim-rewards', 1,
+        'SP000000000000000000002Q6VF78.signer-manager', '${"aa".repeat(32)}', '${"bb".repeat(32)}',
+        '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
+        'reconciled', 7, '${observedAt}', '${observedAt}'
+      );
+      ALTER TABLE stakers DROP COLUMN bond_node_verified;
+      ALTER TABLE stakers DROP COLUMN bond_index;
+      ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
+      ALTER TABLE stakers DROP COLUMN bond_amount_sats;
+      ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DELETE FROM schema_migrations WHERE version >= 19;
+      PRAGMA user_version = 18;
+    `);
+    rewound.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    const job = inspection
+      .prepare("SELECT state, state_version FROM transaction_jobs WHERE job_id = ?")
+      .get("settled-job") as { state: string; state_version: number } | undefined;
+    inspection.close();
+
+    // A settled claim is history: nothing reads its sealed plan to act on it again.
+    expect(job).toMatchObject({ state: "reconciled", state_version: 7 });
   });
 });

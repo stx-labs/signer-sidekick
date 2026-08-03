@@ -12,6 +12,7 @@ const walletIntentActions = [
   "withdraw-fees",
   "sweep-fee-refunds",
   "claim-rewards",
+  "claim-staker-rewards",
 ] as const;
 export type WalletIntentAction = (typeof walletIntentActions)[number];
 

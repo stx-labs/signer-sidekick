@@ -340,6 +340,7 @@ const ACTION_FUNCTIONS: Readonly<Record<Exclude<BrowserWalletAction, "deploy-man
   "remove-admin": "update-admin",
   "update-fees": "update-fees",
   "withdraw-fees": "withdraw-fees",
+  "claim-staker-rewards": "claim-staker-rewards",
   "sweep-fee-refunds": "sweep-fee-refunds",
   "claim-rewards": "claim-rewards",
 };

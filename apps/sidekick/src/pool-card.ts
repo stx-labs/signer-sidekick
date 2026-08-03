@@ -100,7 +100,7 @@ function cardHtml(
     .status { display: inline-flex; padding: 4px 8px; border-radius: 999px; background: #dff4e5; color: #176b35; font-size: 12px; }
     .notice { margin: 18px 0; padding: 12px; border-radius: 8px; background: #f0eee7; font-size: 13px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    a { color: #a63e1d; } .button { padding: 10px 14px; border-radius: 8px; background: #fc6432; color: #111; text-decoration: none; font-weight: 600; }
+    a { color: #a63e1d; }
     footer { margin-top: 18px; color: #77736a; font-size: 11px; }
     @media (prefers-color-scheme: dark) { body { background: #171714; color: #f4f1e8; } .pool-card { background: #24231f; border-color: #47443b; } dt, dd { border-color: #47443b; } p, footer, dt { color: #b9b4a7; } .notice { background: #302e28; } }
     @media (max-width: 520px) { body { padding: 12px; } .pool-card { padding: 18px; } dl { grid-template-columns: 1fr; } dt { padding-bottom: 3px; border-bottom: 0; } dd { padding-top: 0; } }
@@ -124,7 +124,6 @@ function cardHtml(
       <dt>Support</dt><dd>${html(supportLabel(enrollment))}</dd>
     </dl>
     <div class="actions">
-      <a class="button" href="${html(enrollment.links.officialPlatforms[0]?.url ?? "https://earn.leather.io")}" rel="noopener noreferrer">Open in Leather</a>
       <a href="${html(enrollment.links.managerExplorer)}" rel="noopener noreferrer">View manager on Explorer</a>
     </div>
     <footer><span data-sidekick-freshness>${mode === "live" ? "Loading public API" : "Static snapshot"}</span> · schema v1 · hosted on your site, not by Sidekick</footer>

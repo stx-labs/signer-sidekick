@@ -1,5 +1,6 @@
 import type { ClarityValue } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import {
+  decodePox5BondMembership,
   decodePox5CycleMembership,
   decodePox5StakerInfo,
   decodeUInt,
@@ -41,6 +42,16 @@ export type SignerStakerDiscrepancy =
   | {
       kind: "stx-position-missing";
       stakerPrincipal: string;
+    }
+  | {
+      kind: "bond-position-missing";
+      stakerPrincipal: string;
+    }
+  | {
+      kind: "bond-signer-mismatch";
+      stakerPrincipal: string;
+      expectedSignerPrincipal: string;
+      actualSignerPrincipal: string;
     }
   | {
       kind: "signer-mismatch";
@@ -109,7 +120,7 @@ async function verifyPageItem(
     SyncSignerStakersOptions,
     "node" | "pox5ContractId" | "managerPrincipal" | "currentRewardCycle"
   > & { chainAnchor?: ChainAnchor },
-  context: { allowRetainedStxAbsence?: boolean } = {},
+  context: { allowRetainedAbsence?: boolean } = {},
 ): Promise<{
   item: SignerStakerPageItem;
   discrepancy: SignerStakerDiscrepancy | null;
@@ -117,39 +128,77 @@ async function verifyPageItem(
   const hasStx = item.types.includes("stx");
   const hasBtc = item.types.includes("btc");
   const readOptions = options.chainAnchor ? { tip: options.chainAnchor.indexBlockHash } : undefined;
-  if (!hasStx) {
+
+  // The API's `types` field nominates candidates and nothing else: both authoritative reads happen
+  // at the same anchor for every candidate, whatever the indexer labelled them. A staker can hold
+  // an STX position, a bond membership, or neither, and only the node can say which.
+  const [bondValue, stakerInfoValue] = await Promise.all([
+    options.node.callReadOnly(
+      options.pox5ContractId,
+      "get-bond-membership",
+      options.managerPrincipal,
+      [encodePrincipalHex(item.staker)],
+      readOptions,
+    ),
+    options.node.callReadOnly(
+      options.pox5ContractId,
+      "get-staker-info",
+      options.managerPrincipal,
+      [encodePrincipalHex(item.staker)],
+      readOptions,
+    ),
+  ]);
+  // `get-bond-membership` returns `none` both for a staker who never joined a bond and for one
+  // whose term has ended, so `null` means "no active bond at this tip".
+  const bondMembership = decodePox5BondMembership(bondValue);
+  const bondForManager =
+    bondMembership !== null && bondMembership.signer === options.managerPrincipal;
+  const bond = bondForManager && bondMembership ? { ...bondMembership } : null;
+  const base = { stakerPrincipal: item.staker, hasStx, hasBtc, bond };
+  const position = decodePox5StakerInfo(stakerInfoValue);
+
+  if (bondMembership !== null && !bondForManager) {
+    // Someone else's bond. Counting it as this pool's principal would overstate the roster.
     return {
       item: {
-        stakerPrincipal: item.staker,
-        hasStx,
-        hasBtc,
+        ...base,
+        bond: null,
         active: true,
-        stxNodeVerified: null,
-        reconciliationComplete: true,
+        stxNodeVerified: false,
+        reconciliationComplete: false,
         position: null,
       },
-      discrepancy: null,
+      discrepancy: {
+        kind: "bond-signer-mismatch",
+        stakerPrincipal: item.staker,
+        expectedSignerPrincipal: options.managerPrincipal,
+        actualSignerPrincipal: bondMembership.signer,
+      },
     };
   }
 
-  const response = await options.node.callReadOnly(
-    options.pox5ContractId,
-    "get-staker-info",
-    options.managerPrincipal,
-    [encodePrincipalHex(item.staker)],
-    readOptions,
-  );
-  const position = decodePox5StakerInfo(response);
   if (!position) {
-    // A complete, anchor-fenced API scan that omits a previously stored STX-only
-    // candidate agrees with the canonical node that no active STX position remains.
-    // Keep API-listed items, bond candidates, and transition-only candidates fail-closed.
-    if (context.allowRetainedStxAbsence && hasStx && !hasBtc) {
+    // `register-for-bond` never writes the STX-only `staker-info` record, and deletes it on a
+    // rollover, so a bond participant legitimately has no STX position. A positive bond membership
+    // for this manager explains the absence; an API label does not.
+    if (bondForManager) {
       return {
         item: {
-          stakerPrincipal: item.staker,
-          hasStx,
-          hasBtc,
+          ...base,
+          active: true,
+          stxNodeVerified: false,
+          reconciliationComplete: true,
+          position: null,
+        },
+        discrepancy: null,
+      };
+    }
+    // Both authoritative reads are empty. For a retained candidate the API's silence and the
+    // node's agree, so this is a verified absence rather than an unexplained gap.
+    if (context.allowRetainedAbsence) {
+      return {
+        item: {
+          ...base,
           active: false,
           stxNodeVerified: false,
           reconciliationComplete: true,
@@ -158,19 +207,22 @@ async function verifyPageItem(
         discrepancy: null,
       };
     }
+    // The API named this candidate and the node accounts for it in neither form. Which label the
+    // API used only decides how the gap is reported.
     return {
       item: {
-        stakerPrincipal: item.staker,
-        hasStx,
-        hasBtc,
+        ...base,
         active: true,
         stxNodeVerified: false,
         reconciliationComplete: false,
         position: null,
       },
-      discrepancy: { kind: "stx-position-missing", stakerPrincipal: item.staker },
+      discrepancy: hasStx
+        ? { kind: "stx-position-missing", stakerPrincipal: item.staker }
+        : { kind: "bond-position-missing", stakerPrincipal: item.staker },
     };
   }
+
   if (position.numCycles < 1n) {
     // PoX-5 retains a staker-info tuple after `unstake`, but clears num-cycles
     // to zero. The signer API can continue returning that historical roster
@@ -178,9 +230,7 @@ async function verifyPageItem(
     // instead of failing the entire reconciliation run.
     return {
       item: {
-        stakerPrincipal: item.staker,
-        hasStx,
-        hasBtc,
+        ...base,
         active: false,
         stxNodeVerified: false,
         reconciliationComplete: true,
@@ -245,9 +295,7 @@ async function verifyPageItem(
       const rewardCycle = batch[missingCycle];
       return {
         item: {
-          stakerPrincipal: item.staker,
-          hasStx,
-          hasBtc,
+          ...base,
           active: true,
           stxNodeVerified: false,
           reconciliationComplete: false,
@@ -274,10 +322,8 @@ async function verifyPageItem(
   }
   return {
     item: {
-      stakerPrincipal: item.staker,
-      hasStx,
-      hasBtc,
-      active: cycleMemberships.length > 0 || hasBtc,
+      ...base,
+      active: cycleMemberships.length > 0 || bondForManager,
       stxNodeVerified: true,
       reconciliationComplete: true,
       position: {
@@ -567,7 +613,7 @@ export async function syncSignerStakers(
   const apiPrincipals = new Set(apiScan.items.map((item) => item.stakerPrincipal));
   const candidates: Array<{
     item: SignerStakersPage["results"][number];
-    allowRetainedStxAbsence?: boolean;
+    allowRetainedAbsence?: boolean;
   }> = apiScan.items.map((item) => {
     const types: ("stx" | "btc")[] = [];
     if (item.hasStx) types.push("stx");
@@ -582,11 +628,11 @@ export async function syncSignerStakers(
     if (retained?.hasBtc) types.push("btc");
     candidates.push({
       item: { staker: principal, types },
-      allowRetainedStxAbsence:
+      // Extends to bond candidates now that their absence can be node-proven rather than assumed
+      // from the API's silence. `verifyPageItem` still requires both anchored reads to be empty.
+      allowRetainedAbsence:
         apiScan.anchorFenced &&
-        verifiedStoredStxPrincipals.has(principal) &&
-        types.length === 1 &&
-        types[0] === "stx",
+        (verifiedStoredStxPrincipals.has(principal) || (retained?.hasBtc ?? false)),
     });
   }
 
@@ -597,11 +643,11 @@ export async function syncSignerStakers(
     const verifiedBatch = await Promise.all(
       candidates
         .slice(index, index + stakerConcurrency)
-        .map(({ item, allowRetainedStxAbsence }) =>
+        .map(({ item, allowRetainedAbsence }) =>
           verifyPageItem(
             item,
             verificationOptions,
-            allowRetainedStxAbsence === undefined ? {} : { allowRetainedStxAbsence },
+            allowRetainedAbsence === undefined ? {} : { allowRetainedAbsence },
           ),
         ),
     );

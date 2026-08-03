@@ -142,6 +142,7 @@ export {
   rewardHistoryResponseSchema,
   rewardsPageResponseSchema,
   runtimeSettingsSchema,
+  stakerClaimsResponseSchema,
   statusResponseSchema,
   syncResponseSchema,
   walletIntentAnchorMismatchErrorSchema,

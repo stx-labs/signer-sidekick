@@ -16,6 +16,7 @@ import {
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
   MANAGER_CLAIM_REWARDS_FUNCTION_NAME,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
 import {
   parseManagerClaimIntentRecord,
@@ -58,9 +59,24 @@ const sealedPlanSchema = z
             rewardsPerToken: uintTextSchema,
           })
           .strict(),
-        noBondParticipation: z
-          .object({ proven: z.literal(true), evidenceDigest: digestSchema })
-          .strict(),
+        stxEarnedSats: uintTextSchema,
+        bondBuckets: z
+          .array(
+            z
+              .object({
+                bondIndex: uintTextSchema,
+                managerSharesSats: uintTextSchema,
+                earnedSats: uintTextSchema,
+                feeSnapshot: z
+                  .object({
+                    state: z.enum(["absent", "present"]),
+                    effectiveFeeBips: uintTextSchema,
+                  })
+                  .strict(),
+              })
+              .strict(),
+          )
+          .max(MAX_BOND_PERIODS_PER_CYCLE),
         feeSnapshot: z
           .object({ state: z.enum(["absent", "present"]), effectiveFeeBips: uintTextSchema })
           .strict(),
@@ -68,7 +84,7 @@ const sealedPlanSchema = z
           .object({
             contract: z.string().min(1),
             functionName: z.literal(MANAGER_CLAIM_REWARDS_FUNCTION_NAME),
-            bondPeriods: z.tuple([]),
+            bondPeriods: z.array(uintTextSchema).max(MAX_BOND_PERIODS_PER_CYCLE),
             rewardCycle: uintTextSchema,
           })
           .strict(),
@@ -415,6 +431,14 @@ function resolveManagerClaimWalletIntent(input: {
   }
   const payload = transaction.payload;
   const contract = `${addressToString(payload.contractAddress)}.${payload.contractName.content}`;
+  // Recompute the bucket digest from the sealed plan so the comparison below proves the intent
+  // record still describes the readings this transaction was built from.
+  const plannedBondBucketsSha256 = transactionEngineDocumentSha256({
+    schemaVersion: 1,
+    kind: "manager-claim-bond-buckets",
+    stxEarnedSats: plan.material.stxEarnedSats,
+    bondBuckets: plan.material.bondBuckets,
+  });
   const functionArgs = payload.functionArgs.map(cvToHex);
   if (
     contract !== plan.material.call.contract ||
@@ -445,8 +469,7 @@ function resolveManagerClaimWalletIntent(input: {
       plan.material.rewardObservation.lastRewardComputeBurnHeight ||
     intent.reconciliation.rewardCheckpoint.rewardsPerToken !==
       plan.material.rewardObservation.rewardsPerToken ||
-    intent.reconciliation.noBondEvidenceSha256 !==
-      plan.material.noBondParticipation.evidenceDigest ||
+    intent.reconciliation.bondBucketsSha256 !== plannedBondBucketsSha256 ||
     intent.reconciliation.expectedFeeSnapshot.effectiveFeeBips !==
       plan.material.feeSnapshot.effectiveFeeBips ||
     intent.reconciliation.expectedEffect.asset !== decodedCondition.asset ||

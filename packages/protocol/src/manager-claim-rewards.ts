@@ -11,10 +11,17 @@ import {
   wireToPostCondition,
 } from "@stacks/transactions";
 import { z } from "zod";
+import { MAX_BOND_PERIODS_PER_CYCLE } from "./pox5-bonds.js";
 import { parseContractPrincipal, validatePrincipal } from "./principals.js";
 
 export const MANAGER_CLAIM_REWARDS_ADAPTER_ID = "reference-manager-claim-rewards" as const;
-export const MANAGER_CLAIM_REWARDS_ADAPTER_REVISION = 1 as const;
+/**
+ * Revision 2 generalized the adapter from "STX bucket only, proven empty bond list" to an explicit
+ * per-bucket claim. Revision 1 plans are not upgradeable: they sealed a `bond-periods` argument
+ * that this revision no longer produces, so in-flight revision 1 work is invalidated rather than
+ * migrated.
+ */
+export const MANAGER_CLAIM_REWARDS_ADAPTER_REVISION = 2 as const;
 export const MANAGER_CLAIM_REWARDS_FUNCTION_NAME = "claim-rewards" as const;
 export const MANAGER_CLAIM_REWARDS_SBTC_ASSET_NAME = "sbtc-token" as const;
 
@@ -101,12 +108,24 @@ export const managerClaimRewardsPlanInputSchema = z
         rewardsPerToken: uint128Schema,
       })
       .strict(),
-    noBondParticipation: z
-      .object({
-        proven: z.literal(true),
-        evidenceDigest: digestSchema,
-      })
-      .strict(),
+    stxEarnedSats: uint64Schema,
+    bondBuckets: z
+      .array(
+        z
+          .object({
+            bondIndex: uint128Schema,
+            managerSharesSats: uint128Schema,
+            earnedSats: uint64Schema,
+            feeSnapshot: z
+              .object({
+                state: z.enum(["absent", "present"]),
+                effectiveFeeBips: z.bigint().min(0n).max(MAX_FEE_BIPS),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(MAX_BOND_PERIODS_PER_CYCLE),
     feeSnapshot: z
       .object({
         state: z.enum(["absent", "present"]),
@@ -124,6 +143,38 @@ export const managerClaimRewardsPlanInputSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    let previousBondIndex: bigint | null = null;
+    for (const [index, bucket] of value.bondBuckets.entries()) {
+      // Ascending and unique: the contract folds the list without deduplicating, and Sidekick
+      // binds it into the intent hash, so the order has to be reproducible from the same reads.
+      if (previousBondIndex !== null && bucket.bondIndex <= previousBondIndex) {
+        context.addIssue({
+          code: "custom",
+          path: ["bondBuckets", index, "bondIndex"],
+          message: "Bond buckets must be unique and ascending by bond index",
+        });
+      }
+      previousBondIndex = bucket.bondIndex;
+      // A bucket earns its place by holding shares or by holding already-settled rewards.
+      // `unstake-sbtc` and `announce-l1-early-exit` settle into the unclaimed balance before
+      // zeroing shares, so a zero-share bucket can still owe the manager sats.
+      if (bucket.managerSharesSats === 0n && bucket.earnedSats === 0n) {
+        context.addIssue({
+          code: "custom",
+          path: ["bondBuckets", index],
+          message: "A bond bucket must hold manager shares or earned rewards to be claimed",
+        });
+      }
+    }
+    const bondEarned = value.bondBuckets.reduce((total, bucket) => total + bucket.earnedSats, 0n);
+    if (value.stxEarnedSats + bondEarned !== value.expectedSbtcOutflow) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedSbtcOutflow"],
+        message:
+          "Expected sBTC outflow must equal the STX bucket plus every claimed bond bucket, because PoX-5 pays the whole claim in one transfer",
+      });
+    }
     if (value.chainAnchor.prepareCycleLength > value.chainAnchor.rewardCycleLength) {
       context.addIssue({
         code: "custom",
@@ -312,10 +363,17 @@ export interface ManagerClaimRewardsIntentMaterial {
     readonly lastRewardComputeBurnHeight: number;
     readonly rewardsPerToken: string;
   };
-  readonly noBondParticipation: {
-    readonly proven: true;
-    readonly evidenceDigest: string;
-  };
+  readonly stxEarnedSats: string;
+  /** Every bond bucket this claim sweeps, ascending by bond index. Empty for an STX-only pool. */
+  readonly bondBuckets: readonly {
+    readonly bondIndex: string;
+    readonly managerSharesSats: string;
+    readonly earnedSats: string;
+    readonly feeSnapshot: {
+      readonly state: "absent" | "present";
+      readonly effectiveFeeBips: string;
+    };
+  }[];
   readonly feeSnapshot: {
     readonly state: "absent" | "present";
     readonly effectiveFeeBips: string;
@@ -327,7 +385,7 @@ export interface ManagerClaimRewardsIntentMaterial {
   readonly call: {
     readonly contract: string;
     readonly functionName: typeof MANAGER_CLAIM_REWARDS_FUNCTION_NAME;
-    readonly bondPeriods: readonly [];
+    readonly bondPeriods: readonly string[];
     readonly rewardCycle: string;
   };
   readonly expectedEffect: {
@@ -392,14 +450,20 @@ function canonicalJson(value: unknown): string {
  * Builds the only V1 manager-claim call supported by the reference-manager adapter.
  *
  * The function performs no reads, signing, fee estimation, nonce lookup, or broadcast. The caller
- * must supply already-fenced chain facts and the exact expected sBTC amount. The empty bond list is
- * deliberate: this vector is restricted to a manager proven to have no bond participation.
+ * must supply already-fenced chain facts and the exact expected sBTC amount.
+ *
+ * `bondBuckets` carries the caller's anchored per-bucket reads. PoX-5's `claim-rewards` neither
+ * requires a complete bond list nor imposes an ordering, so an incomplete list still succeeds — it
+ * just leaves rewards behind and, worse, leaves each omitted bucket's fee to be pinned by whatever
+ * fee is configured when someone later claims it. Naming every participating bucket here is what
+ * makes the fee snapshot consistent across the pool.
  */
 export async function planManagerClaimRewards(
   input: ManagerClaimRewardsPlanInput,
 ): Promise<ManagerClaimRewardsPlan> {
   const value = managerClaimRewardsPlanInputSchema.parse(input);
   const manager = parseContractPrincipal(value.managerContract);
+  const bondPeriods = value.bondBuckets.map(({ bondIndex }) => bondIndex);
   const postCondition = Pc.principal(value.pox5Contract)
     .willSendEq(value.expectedSbtcOutflow)
     .ft(value.sbtcTokenContract as `${string}.${string}`, MANAGER_CLAIM_REWARDS_SBTC_ASSET_NAME);
@@ -407,7 +471,10 @@ export async function planManagerClaimRewards(
     contractAddress: manager.address,
     contractName: manager.contractName,
     functionName: MANAGER_CLAIM_REWARDS_FUNCTION_NAME,
-    functionArgs: [Cl.list([]), Cl.uint(value.rewardCycle)],
+    functionArgs: [
+      Cl.list(bondPeriods.map((bondIndex) => Cl.uint(bondIndex))),
+      Cl.uint(value.rewardCycle),
+    ],
     publicKey: value.sender.publicKey,
     fee: value.fee,
     nonce: value.nonce,
@@ -450,7 +517,16 @@ export async function planManagerClaimRewards(
       lastRewardComputeBurnHeight: value.rewardObservation.lastRewardComputeBurnHeight,
       rewardsPerToken: value.rewardObservation.rewardsPerToken.toString(),
     },
-    noBondParticipation: value.noBondParticipation,
+    stxEarnedSats: value.stxEarnedSats.toString(),
+    bondBuckets: value.bondBuckets.map((bucket) => ({
+      bondIndex: bucket.bondIndex.toString(),
+      managerSharesSats: bucket.managerSharesSats.toString(),
+      earnedSats: bucket.earnedSats.toString(),
+      feeSnapshot: {
+        state: bucket.feeSnapshot.state,
+        effectiveFeeBips: bucket.feeSnapshot.effectiveFeeBips.toString(),
+      },
+    })),
     feeSnapshot: {
       state: value.feeSnapshot.state,
       effectiveFeeBips: value.feeSnapshot.effectiveFeeBips.toString(),
@@ -459,7 +535,7 @@ export async function planManagerClaimRewards(
     call: {
       contract: value.managerContract,
       functionName: MANAGER_CLAIM_REWARDS_FUNCTION_NAME,
-      bondPeriods: [],
+      bondPeriods: bondPeriods.map((bondIndex) => bondIndex.toString()),
       rewardCycle: value.rewardCycle.toString(),
     },
     expectedEffect: {
