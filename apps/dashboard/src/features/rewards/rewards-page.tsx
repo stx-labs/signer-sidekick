@@ -7,11 +7,18 @@ import {
   rewardsPageResponseSchema,
   stakerClaimsResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { dashboardHash } from "../../dashboard-route.js";
-import { Badge, PageHead, Pagination, StatLine } from "../../shared/dashboard-ui.js";
+import {
+  Badge,
+  PageHead,
+  Pagination,
+  SortableHeader,
+  StatLine,
+  type TableSort,
+} from "../../shared/dashboard-ui.js";
 import { number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
@@ -20,6 +27,32 @@ import { standardManagerActionPrincipal } from "../manager/manager-action-princi
 import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
 
 type Snapshot = DashboardSnapshot;
+type BucketSort = "bucket" | "shares" | "earned" | "fee" | "included";
+type RewardHistorySort =
+  | "cycle"
+  | "status"
+  | "stakers"
+  | "gross"
+  | "net"
+  | "fee"
+  | "configured-fee"
+  | "effective-fee"
+  | "actionable"
+  | "bitcoin-block";
+type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "status";
+type ClaimSort = "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
+type WithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
+
+function compareSortValues(
+  left: bigint | number | string | boolean | null,
+  right: bigint | number | string | boolean | null,
+  direction: "asc" | "desc",
+): number {
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  const compared = left < right ? -1 : left > right ? 1 : 0;
+  return direction === "asc" ? compared : -compared;
+}
 
 function RequestState({
   label,
@@ -34,7 +67,7 @@ function RequestState({
 }) {
   if (error) {
     return (
-      <div className="callout callout-critical" role="alert">
+      <div className="callout callout-critical content-notice" role="alert">
         <div className="body">
           <strong>Could not refresh {label}.</strong> {operatorErrorSentence(error)}
           <div className="actions">
@@ -47,7 +80,7 @@ function RequestState({
     );
   }
   return loading ? (
-    <div className="callout callout-neutral" role="status">
+    <div className="callout callout-neutral content-notice" role="status">
       Refreshing {label}…
     </div>
   ) : null;
@@ -68,9 +101,29 @@ export function Rewards({
   const managerActionsAvailable = actionAvailability.available;
   const [activity, setActivity] = useState(data.activity);
   const [stakerPage, setStakerPage] = useState(0);
+  const [bucketSort, setBucketSort] = useState<TableSort<BucketSort>>({
+    key: "bucket",
+    direction: "asc",
+  });
+  const [historySort, setHistorySort] = useState<TableSort<RewardHistorySort>>({
+    key: "cycle",
+    direction: "desc",
+  });
+  const [stakerSort, setStakerSort] = useState<TableSort<RewardStakerSort>>({
+    key: "staker",
+    direction: "asc",
+  });
   const [claimPage, setClaimPage] = useState(0);
+  const [claimSort, setClaimSort] = useState<TableSort<ClaimSort>>({
+    key: "block",
+    direction: "desc",
+  });
   const [claimCycle, setClaimCycle] = useState("");
   const [withdrawalPage, setWithdrawalPage] = useState(0);
+  const [withdrawalSort, setWithdrawalSort] = useState<TableSort<WithdrawalSort>>({
+    key: "block",
+    direction: "desc",
+  });
   const [cycleHistoryPage, setCycleHistoryPage] = useState(0);
   const [cycleHistory, setCycleHistory] = useState<RewardCycleSummary[]>([]);
   const [cycleHistoryTotal, setCycleHistoryTotal] = useState(0);
@@ -87,10 +140,30 @@ export function Rewards({
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyRetry, setHistoryRetry] = useState(0);
-  const stakersRefreshKey = `${data.generatedAt}:${stakersRetry}`;
-  const activityRefreshKey = `${data.generatedAt}:${activityRetry}`;
-  const historyRefreshKey = `${data.generatedAt}:${historyRetry}`;
+  const stakersRefreshKey = `${data.generatedAt}:${stakersRetry}:${stakerSort.key}:${stakerSort.direction}`;
+  const activityRefreshKey = `${data.generatedAt}:${activityRetry}:${claimSort.key}:${claimSort.direction}:${withdrawalSort.key}:${withdrawalSort.direction}`;
+  const historyRefreshKey = `${data.generatedAt}:${historyRetry}:${historySort.key}:${historySort.direction}`;
   const withdrawals = activity.withdrawals;
+  const buckets = useMemo(() => {
+    const values = [...(rewards?.buckets ?? [])];
+    return values.sort((left, right) => {
+      const value = (bucket: (typeof values)[number]) => {
+        switch (bucketSort.key) {
+          case "bucket":
+            return bucket.bondIndex === null ? -1 : Number(bucket.bondIndex);
+          case "shares":
+            return BigInt(bucket.managerSharesSats);
+          case "earned":
+            return BigInt(bucket.signerEarnedBeforeManagerClaimSats);
+          case "fee":
+            return bucket.feeSnapshotBips === null ? null : BigInt(bucket.feeSnapshotBips);
+          case "included":
+            return bucket.participating ? 1 : 0;
+        }
+      };
+      return compareSortValues(value(left), value(right), bucketSort.direction);
+    });
+  }, [bucketSort, rewards?.buckets]);
   useEffect(() => {
     void stakersRefreshKey;
     const controller = new AbortController();
@@ -98,6 +171,8 @@ export function Rewards({
     const query = new URLSearchParams({
       limit: String(pageSize),
       offset: String(stakerPage * pageSize),
+      sort: stakerSort.key,
+      direction: stakerSort.direction,
     });
     setStakersLoading(true);
     setStakersError(null);
@@ -126,7 +201,7 @@ export function Rewards({
         if (!controller.signal.aborted && !correctingPage) setStakersLoading(false);
       });
     return () => controller.abort();
-  }, [stakerPage, stakersRefreshKey, token]);
+  }, [stakerPage, stakersRefreshKey, stakerSort, token]);
   useEffect(() => {
     void activityRefreshKey;
     const controller = new AbortController();
@@ -134,8 +209,12 @@ export function Rewards({
     const query = new URLSearchParams({
       claimLimit: String(pageSize),
       claimOffset: String(claimPage * pageSize),
+      claimSort: claimSort.key,
+      claimDirection: claimSort.direction,
       withdrawalLimit: String(pageSize),
       withdrawalOffset: String(withdrawalPage * pageSize),
+      withdrawalSort: withdrawalSort.key,
+      withdrawalDirection: withdrawalSort.direction,
     });
     if (claimCycle) query.set("rewardCycle", claimCycle);
     setActivityLoading(true);
@@ -164,7 +243,7 @@ export function Rewards({
         if (!controller.signal.aborted && !correctingPage) setActivityLoading(false);
       });
     return () => controller.abort();
-  }, [activityRefreshKey, claimCycle, claimPage, token, withdrawalPage]);
+  }, [activityRefreshKey, claimCycle, claimPage, claimSort, token, withdrawalPage, withdrawalSort]);
   useEffect(() => {
     void historyRefreshKey;
     const controller = new AbortController();
@@ -172,6 +251,8 @@ export function Rewards({
     const query = new URLSearchParams({
       limit: String(cycleHistoryPageSize),
       offset: String(cycleHistoryPage * cycleHistoryPageSize),
+      sort: historySort.key,
+      direction: historySort.direction,
     });
     setHistoryLoading(true);
     setHistoryError(null);
@@ -198,7 +279,7 @@ export function Rewards({
         if (!controller.signal.aborted && !correctingPage) setHistoryLoading(false);
       });
     return () => controller.abort();
-  }, [cycleHistoryPage, historyRefreshKey, token]);
+  }, [cycleHistoryPage, historyRefreshKey, historySort, token]);
   return (
     <>
       <PageHead
@@ -206,7 +287,7 @@ export function Rewards({
         lede={`sBTC rewards and Bitcoin withdrawals for cycle ${rewards?.rewardCycle ?? data.preflight.cycle.currentId}.`}
       />
       {rewardsFreshness?.status === "stale" ? (
-        <div className="callout callout-caution" role="status">
+        <div className="callout callout-caution content-notice" role="status">
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
@@ -271,7 +352,7 @@ export function Rewards({
         onSettled={() => setStakersRetry((value) => value + 1)}
         token={token}
       />
-      {rewards?.buckets.some(({ bondIndex }) => bondIndex !== null) ? (
+      {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
         <section className="card" aria-labelledby="reward-buckets">
           <h2 id="reward-buckets">Reward buckets</h2>
           <p className="tertiary">
@@ -281,15 +362,40 @@ export function Rewards({
           <table>
             <thead>
               <tr>
-                <th scope="col">Bucket</th>
-                <th scope="col">Manager shares</th>
-                <th scope="col">Earned</th>
-                <th scope="col">Fee snapshot</th>
-                <th scope="col">In next claim</th>
+                <SortableHeader
+                  column="bucket"
+                  label="Bucket"
+                  setSort={setBucketSort}
+                  sort={bucketSort}
+                />
+                <SortableHeader
+                  column="shares"
+                  label="Manager shares"
+                  setSort={setBucketSort}
+                  sort={bucketSort}
+                />
+                <SortableHeader
+                  column="earned"
+                  label="Earned"
+                  setSort={setBucketSort}
+                  sort={bucketSort}
+                />
+                <SortableHeader
+                  column="fee"
+                  label="Fee snapshot"
+                  setSort={setBucketSort}
+                  sort={bucketSort}
+                />
+                <SortableHeader
+                  column="included"
+                  label="In next claim"
+                  setSort={setBucketSort}
+                  sort={bucketSort}
+                />
               </tr>
             </thead>
             <tbody>
-              {rewards.buckets.map((bucket) => (
+              {buckets.map((bucket) => (
                 <tr key={bucket.bondIndex ?? "stx"}>
                   <th scope="row">
                     {bucket.bondIndex === null ? "STX-only" : `Bond period ${bucket.bondIndex}`}
@@ -423,16 +529,103 @@ export function Rewards({
             <table>
               <thead>
                 <tr>
-                  <th>Cycle</th>
-                  <th>Status</th>
-                  <th className="right">Stakers</th>
-                  <th className="right">Gross</th>
-                  <th className="right">Net</th>
-                  <th className="right">Fee</th>
-                  <th className="right">Configured fee</th>
-                  <th className="right">Effective fee</th>
-                  <th className="right">Actionable</th>
-                  <th>Observed Bitcoin block</th>
+                  <SortableHeader
+                    column="cycle"
+                    label="Cycle"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    column="status"
+                    label="Status"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="stakers"
+                    label="Stakers"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="gross"
+                    label="Gross"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="net"
+                    label="Net"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="fee"
+                    label="Fee"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="configured-fee"
+                    label="Configured fee"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="effective-fee"
+                    label="Effective fee"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="actionable"
+                    label="Actionable"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
+                  <SortableHeader
+                    column="bitcoin-block"
+                    label="Observed Bitcoin block"
+                    setSort={(sort) => {
+                      setHistorySort(sort);
+                      setCycleHistoryPage(0);
+                    }}
+                    sort={historySort}
+                  />
                 </tr>
               </thead>
               <tbody>
@@ -489,12 +682,63 @@ export function Rewards({
             <table>
               <thead>
                 <tr>
-                  <th>Staker</th>
-                  <th className="right">Gross</th>
-                  <th className="right">Fee</th>
-                  <th className="right">Net</th>
-                  <th>Destination</th>
-                  <th>Status</th>
+                  <SortableHeader
+                    column="staker"
+                    label="Staker"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="gross"
+                    label="Gross"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="fee"
+                    label="Fee"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="net"
+                    label="Net"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
+                  <SortableHeader
+                    column="destination"
+                    label="Destination"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
+                  <SortableHeader
+                    column="status"
+                    label="Status"
+                    setSort={(sort) => {
+                      setStakerSort(sort);
+                      setStakerPage(0);
+                    }}
+                    sort={stakerSort}
+                  />
                 </tr>
               </thead>
               <tbody>
@@ -572,12 +816,61 @@ export function Rewards({
             <table>
               <thead>
                 <tr>
-                  <th>Cycle</th>
-                  <th>Staker</th>
-                  <th className="right">Amount</th>
-                  <th>Destination</th>
-                  <th>Stacks block</th>
-                  <th>Transaction</th>
+                  <SortableHeader
+                    column="cycle"
+                    label="Cycle"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
+                  <SortableHeader
+                    column="staker"
+                    label="Staker"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="amount"
+                    label="Amount"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
+                  <SortableHeader
+                    column="destination"
+                    label="Destination"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
+                  <SortableHeader
+                    column="block"
+                    label="Stacks block"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
+                  <SortableHeader
+                    column="transaction"
+                    label="Transaction"
+                    setSort={(sort) => {
+                      setClaimSort(sort);
+                      setClaimPage(0);
+                    }}
+                    sort={claimSort}
+                  />
                 </tr>
               </thead>
               <tbody>
@@ -637,12 +930,62 @@ export function Rewards({
             <table>
               <thead>
                 <tr>
-                  <th>Request ID</th>
-                  <th>Staker</th>
-                  <th className="right">Amount</th>
-                  <th className="right">Max fee</th>
-                  <th>Manager state</th>
-                  <th>Initiated at Stacks block</th>
+                  <SortableHeader
+                    column="request"
+                    label="Request ID"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
+                  <SortableHeader
+                    column="staker"
+                    label="Staker"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="amount"
+                    label="Amount"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="max-fee"
+                    label="Max fee"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
+                  <SortableHeader
+                    column="state"
+                    label="Manager state"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
+                  <SortableHeader
+                    column="block"
+                    label="Initiated at Stacks block"
+                    setSort={(sort) => {
+                      setWithdrawalSort(sort);
+                      setWithdrawalPage(0);
+                    }}
+                    sort={withdrawalSort}
+                  />
                 </tr>
               </thead>
               <tbody>

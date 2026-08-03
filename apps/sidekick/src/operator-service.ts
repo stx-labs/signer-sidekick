@@ -1,3 +1,4 @@
+import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
@@ -79,6 +80,108 @@ export interface OperatorSynchronizationProgress {
 export interface OperatorSynchronizationOptions {
   signal?: AbortSignal;
   onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
+}
+
+export type SortDirection = "asc" | "desc";
+export type PoolRosterSort =
+  | "staker"
+  | "amount"
+  | "first-cycle"
+  | "last-cycle"
+  | "unlock-height"
+  | "bond"
+  | "status";
+export type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "status";
+
+function compareSortValues(
+  left: bigint | number | string | null,
+  right: bigint | number | string | null,
+  direction: SortDirection,
+): number {
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  const compared = left < right ? -1 : left > right ? 1 : 0;
+  return direction === "asc" ? compared : -compared;
+}
+
+function orderBy<T>(
+  values: T[],
+  direction: SortDirection,
+  value: (item: T) => bigint | number | string | null,
+  tieBreak: (item: T) => string,
+): T[] {
+  return [...values].sort(
+    (left, right) =>
+      compareSortValues(value(left), value(right), direction) ||
+      tieBreak(left).localeCompare(tieBreak(right)),
+  );
+}
+
+export function sortPoolRoster(
+  roster: DashboardSnapshot["roster"],
+  sort: PoolRosterSort = "staker",
+  direction: SortDirection = "asc",
+): DashboardSnapshot["roster"] {
+  return orderBy(
+    roster,
+    direction,
+    (entry) => {
+      const position = entry.position;
+      switch (sort) {
+        case "amount":
+          return position ? BigInt(position.amountUstx) : null;
+        case "first-cycle":
+          return position ? BigInt(position.firstRewardCycle) : null;
+        case "last-cycle":
+          return position ? BigInt(position.unlockCycle) - 1n : null;
+        case "unlock-height":
+          return position?.unlockBurnHeight === null || !position
+            ? null
+            : BigInt(position.unlockBurnHeight);
+        case "bond":
+          return entry.bond
+            ? `${entry.bond.isL1Lock ? "1" : "0"}:${entry.bond.bondIndex.padStart(20, "0")}`
+            : null;
+        case "status":
+          return entry.stxNodeVerified === false
+            ? "not-node-verified"
+            : entry.bond
+              ? "bond-verified"
+              : "verified";
+        case "staker":
+          return entry.stakerPrincipal;
+      }
+    },
+    (entry) => entry.stakerPrincipal,
+  );
+}
+
+export function sortRewardStakers(
+  stakers: NonNullable<DashboardSnapshot["rewards"]>["stakers"],
+  sort: RewardStakerSort = "staker",
+  direction: SortDirection = "asc",
+): NonNullable<DashboardSnapshot["rewards"]>["stakers"] {
+  return orderBy(
+    stakers,
+    direction,
+    (entry) => {
+      switch (sort) {
+        case "gross":
+          return BigInt(entry.rewards.grossSats);
+        case "fee":
+          return BigInt(entry.rewards.feeSats);
+        case "net":
+          return BigInt(entry.rewards.earnedSats);
+        case "destination":
+          return entry.payout.kind;
+        case "status":
+          return entry.claimableByPolicy ? "claimable" : "no-action";
+        case "staker":
+          return entry.stakerPrincipal;
+      }
+    },
+    (entry) => entry.stakerPrincipal,
+  );
 }
 
 export interface TransactionEngineObservationHook {
@@ -534,16 +637,25 @@ export class OperatorService {
     };
   }
 
-  async poolPage(options: { offset?: number; limit?: number; query?: string } = {}) {
+  async poolPage(
+    options: {
+      offset?: number;
+      limit?: number;
+      query?: string;
+      sort?: PoolRosterSort;
+      direction?: SortDirection;
+    } = {},
+  ) {
     const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
     const query = options.query?.trim().toLowerCase() ?? "";
-    const roster = query
+    const matchingRoster = query
       ? snapshot.roster.filter(({ stakerPrincipal }) =>
           stakerPrincipal.toLowerCase().includes(query),
         )
       : snapshot.roster;
+    const roster = sortPoolRoster(matchingRoster, options.sort, options.direction);
     return {
       generatedAt: snapshot.generatedAt,
       freshness: {
@@ -565,11 +677,20 @@ export class OperatorService {
     return this.options.store.listLatestPoolCycleSnapshots(this.options.managerPrincipal, options);
   }
 
-  async rewardsPage(options: { offset?: number; limit?: number } = {}) {
+  async rewardsPage(
+    options: {
+      offset?: number;
+      limit?: number;
+      sort?: RewardStakerSort;
+      direction?: SortDirection;
+    } = {},
+  ) {
     const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness();
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 50;
-    const stakers = snapshot.rewards?.stakers ?? [];
+    const stakers = snapshot.rewards
+      ? sortRewardStakers(snapshot.rewards.stakers, options.sort, options.direction)
+      : [];
     return {
       generatedAt: snapshot.generatedAt,
       freshness: {
@@ -658,7 +779,24 @@ export class OperatorService {
     };
   }
 
-  async rewardsHistory(options: { offset?: number; limit?: number } = {}) {
+  async rewardsHistory(
+    options: {
+      offset?: number;
+      limit?: number;
+      sort?:
+        | "cycle"
+        | "status"
+        | "stakers"
+        | "gross"
+        | "net"
+        | "fee"
+        | "configured-fee"
+        | "effective-fee"
+        | "actionable"
+        | "bitcoin-block";
+      direction?: SortDirection;
+    } = {},
+  ) {
     return this.options.store.listRewardCycleSummaries(this.options.managerPrincipal, options);
   }
 

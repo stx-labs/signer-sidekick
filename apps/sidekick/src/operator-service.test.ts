@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
@@ -13,6 +14,8 @@ import {
   OperatorService,
   type OperatorServiceOptions,
   observeTransactionEngineSafely,
+  sortPoolRoster,
+  sortRewardStakers,
 } from "./operator-service.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
@@ -72,6 +75,62 @@ function alertInput(options: {
 }
 
 describe("operator service", () => {
+  it("sorts roster and reward pages before pagination", () => {
+    const roster = [
+      {
+        stakerPrincipal: "SPZ",
+        active: true,
+        hasStx: true,
+        stxNodeVerified: true,
+        bond: null,
+        position: {
+          amountUstx: "10",
+          firstRewardCycle: "12",
+          numCycles: "1",
+          unlockCycle: "13",
+          unlockBurnHeight: "100",
+          active: true,
+        },
+      },
+      {
+        stakerPrincipal: "SPA",
+        active: true,
+        hasStx: true,
+        stxNodeVerified: true,
+        bond: null,
+        position: {
+          amountUstx: "20",
+          firstRewardCycle: "12",
+          numCycles: "1",
+          unlockCycle: "13",
+          unlockBurnHeight: "100",
+          active: true,
+        },
+      },
+    ] as DashboardSnapshot["roster"];
+    const stakers = [
+      {
+        stakerPrincipal: "SPZ",
+        payout: { kind: "direct-sbtc", maxFeeSats: "0", poxAddress: null },
+        rewards: { grossSats: "1", feeSats: "0", earnedSats: "1" },
+        claimableByPolicy: false,
+      },
+      {
+        stakerPrincipal: "SPA",
+        payout: { kind: "direct-sbtc", maxFeeSats: "0", poxAddress: null },
+        rewards: { grossSats: "20", feeSats: "0", earnedSats: "20" },
+        claimableByPolicy: true,
+      },
+    ] as NonNullable<DashboardSnapshot["rewards"]>["stakers"];
+
+    expect(
+      sortPoolRoster(roster, "amount", "desc").map(({ stakerPrincipal }) => stakerPrincipal),
+    ).toEqual(["SPA", "SPZ"]);
+    expect(
+      sortRewardStakers(stakers, "net", "desc").map(({ stakerPrincipal }) => stakerPrincipal),
+    ).toEqual(["SPA", "SPZ"]);
+  });
+
   it("contains transaction-engine failures at the optional observation boundary", async () => {
     const failure = new Error("engine unavailable");
     const onError = vi.fn();

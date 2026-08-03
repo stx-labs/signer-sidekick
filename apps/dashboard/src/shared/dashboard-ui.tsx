@@ -1,4 +1,45 @@
-import { Warning } from "@phosphor-icons/react";
+import { CaretDown, CaretUp, CaretUpDown, Warning } from "@phosphor-icons/react";
+
+export type SortDirection = "asc" | "desc";
+
+export interface TableSort<Key extends string> {
+  key: Key;
+  direction: SortDirection;
+}
+
+export function SortableHeader<Key extends string>({
+  label,
+  column,
+  sort,
+  setSort,
+  align = "left",
+}: {
+  label: string;
+  column: Key;
+  sort: TableSort<Key>;
+  setSort: (sort: TableSort<Key>) => void;
+  align?: "left" | "right";
+}) {
+  const active = sort.key === column;
+  const nextDirection: SortDirection = active && sort.direction === "asc" ? "desc" : "asc";
+  const Icon = active ? (sort.direction === "asc" ? CaretUp : CaretDown) : CaretUpDown;
+  return (
+    <th
+      aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
+      className={align === "right" ? "right" : undefined}
+      scope="col"
+    >
+      <button
+        aria-label={`Sort by ${label}, ${nextDirection === "asc" ? "ascending" : "descending"}`}
+        className="table-sort"
+        type="button"
+        onClick={() => setSort({ key: column, direction: nextDirection })}
+      >
+        {label} <Icon aria-hidden="true" weight={active ? "bold" : "regular"} />
+      </button>
+    </th>
+  );
+}
 
 export function Badge({
   state,

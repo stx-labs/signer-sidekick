@@ -1120,12 +1120,18 @@ describe("local API", () => {
       (
         await server.inject({
           method: "GET",
-          url: "/api/v1/pool?offset=100&limit=50&query=SP2JX",
+          url: "/api/v1/pool?offset=100&limit=50&query=SP2JX&sort=amount&direction=desc",
           headers,
         })
       ).json(),
     ).toMatchObject({ total: 500, offset: 100, limit: 50 });
-    expect(service.poolPage).toHaveBeenCalledWith({ offset: 100, limit: 50, query: "SP2JX" });
+    expect(service.poolPage).toHaveBeenCalledWith({
+      offset: 100,
+      limit: 50,
+      query: "SP2JX",
+      sort: "amount",
+      direction: "desc",
+    });
 
     await server.inject({
       method: "GET",
@@ -1136,29 +1142,43 @@ describe("local API", () => {
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/rewards?offset=50&limit=50",
+      url: "/api/v1/rewards?offset=50&limit=50&sort=net&direction=desc",
       headers,
     });
-    expect(service.rewardsPage).toHaveBeenCalledWith({ offset: 50, limit: 50 });
+    expect(service.rewardsPage).toHaveBeenCalledWith({
+      offset: 50,
+      limit: 50,
+      sort: "net",
+      direction: "desc",
+    });
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/rewards/history?offset=25&limit=25",
+      url: "/api/v1/rewards/history?offset=25&limit=25&sort=gross&direction=desc",
       headers,
     });
-    expect(service.rewardsHistory).toHaveBeenCalledWith({ offset: 25, limit: 25 });
+    expect(service.rewardsHistory).toHaveBeenCalledWith({
+      offset: 25,
+      limit: 25,
+      sort: "gross",
+      direction: "desc",
+    });
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/activity?claimOffset=150&claimLimit=50&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalState=pending",
+      url: "/api/v1/activity?claimOffset=150&claimLimit=50&claimSort=amount&claimDirection=desc&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalSort=max-fee&withdrawalDirection=asc&withdrawalState=pending",
       headers,
     });
     expect(service.activity).toHaveBeenCalledWith({
       claimOffset: 150,
       claimLimit: 50,
+      claimSort: "amount",
+      claimDirection: "desc",
       rewardCycle: "141",
       withdrawalOffset: 20,
       withdrawalLimit: 20,
+      withdrawalSort: "max-fee",
+      withdrawalDirection: "asc",
       withdrawalState: "pending",
     });
 
@@ -1167,6 +1187,15 @@ describe("local API", () => {
         await server.inject({
           method: "GET",
           url: "/api/v1/pool?limit=201",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await server.inject({
+          method: "GET",
+          url: "/api/v1/pool?sort=unknown",
           headers,
         })
       ).statusCode,

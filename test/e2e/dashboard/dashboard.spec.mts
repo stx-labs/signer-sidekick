@@ -2344,6 +2344,18 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   await login(page);
   await openPage(page, "pool", "Pool positions");
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
+  const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
+  await expect(amountSort).toHaveCount(1);
+  await amountSort.click();
+  const rows = page.locator("tbody tr");
+  await expect(rows).toHaveCount(50);
+  const smallestStaker = roster[0]?.stakerPrincipal ?? "";
+  await expect(rows.nth(0).locator(`[data-copy-value="${smallestStaker}"]`)).toHaveCount(1);
+  const descendingAmountSort = page.getByRole("button", { name: "Sort by Amount, descending" });
+  await expect(descendingAmountSort).toHaveCount(1);
+  await descendingAmountSort.click();
+  const largestStaker = roster.at(-1)?.stakerPrincipal ?? "";
+  await expect(rows.nth(0).locator(`[data-copy-value="${largestStaker}"]`)).toHaveCount(1);
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page.getByText(`51–100 of ${roster.length}`)).toBeVisible();
   await page.getByLabel("Search principal").fill(roster[122].stakerPrincipal);

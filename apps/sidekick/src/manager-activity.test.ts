@@ -73,6 +73,47 @@ describe("manager activity projection", () => {
     });
   });
 
+  it("forwards independent claim and withdrawal sort orders", () => {
+    const listManagerClaims = vi
+      .fn()
+      .mockReturnValue({ items: [], total: 0, offset: 0, limit: 50 });
+    const listManagerWithdrawals = vi
+      .fn()
+      .mockReturnValueOnce({ items: [], total: 0, offset: 0, limit: 50 })
+      .mockReturnValueOnce({ items: [], total: 0, offset: 0, limit: 1 });
+
+    readManagerActivity(
+      {
+        listManagerClaims,
+        listManagerWithdrawals,
+        getManagerActivityMetadata: () => ({ eventCount: 0, latestBlockHeight: null }),
+      },
+      1,
+      manager,
+      {
+        claimSort: "amount",
+        claimDirection: "asc",
+        withdrawalSort: "max-fee",
+        withdrawalDirection: "desc",
+      },
+    );
+
+    expect(listManagerClaims).toHaveBeenCalledWith(1, manager, {
+      limit: 50,
+      offset: 0,
+      rewardCycle: null,
+      sort: "amount",
+      direction: "asc",
+    });
+    expect(listManagerWithdrawals).toHaveBeenNthCalledWith(1, 1, manager, {
+      limit: 50,
+      offset: 0,
+      state: null,
+      sort: "max-fee",
+      direction: "desc",
+    });
+  });
+
   it("reconstructs the current admin set only after a complete event-history sync", () => {
     const common = {
       listManagerClaims: () => ({ items: [], total: 0, offset: 0, limit: 50 }),

@@ -10,7 +10,13 @@ export interface ManagerActivityStore {
   listManagerClaims(
     chainId: number,
     contractId: string,
-    options?: { limit?: number; offset?: number; rewardCycle?: string | null },
+    options?: {
+      limit?: number;
+      offset?: number;
+      rewardCycle?: string | null;
+      sort?: ManagerClaimSort;
+      direction?: SortDirection;
+    },
   ): ManagerActivityPage<StoredManagerClaim>;
   listManagerWithdrawals(
     chainId: number,
@@ -19,6 +25,8 @@ export interface ManagerActivityStore {
       limit?: number;
       offset?: number;
       state?: "pending" | "settled" | "reclaimed" | null;
+      sort?: ManagerWithdrawalSort;
+      direction?: SortDirection;
     },
   ): ManagerActivityPage<StoredManagerWithdrawal>;
   getManagerActivityMetadata(
@@ -72,11 +80,25 @@ export interface ManagerActivityOptions {
   claimLimit?: number;
   claimOffset?: number;
   rewardCycle?: string | null;
+  claimSort?: ManagerClaimSort;
+  claimDirection?: SortDirection;
   withdrawalLimit?: number;
   withdrawalOffset?: number;
+  withdrawalSort?: ManagerWithdrawalSort;
+  withdrawalDirection?: SortDirection;
   withdrawalState?: "pending" | "settled" | "reclaimed" | null;
   sourceId?: string;
 }
+
+export type SortDirection = "asc" | "desc";
+export type ManagerClaimSort =
+  | "cycle"
+  | "staker"
+  | "amount"
+  | "destination"
+  | "block"
+  | "transaction";
+export type ManagerWithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
 
 export function readManagerActivity(
   store: ManagerActivityStore,
@@ -88,11 +110,15 @@ export function readManagerActivity(
     limit: options.claimLimit ?? 50,
     offset: options.claimOffset ?? 0,
     rewardCycle: options.rewardCycle ?? null,
+    ...(options.claimSort ? { sort: options.claimSort } : {}),
+    ...(options.claimDirection ? { direction: options.claimDirection } : {}),
   });
   const withdrawals = store.listManagerWithdrawals(chainId, managerPrincipal, {
     limit: options.withdrawalLimit ?? 50,
     offset: options.withdrawalOffset ?? 0,
     state: options.withdrawalState ?? null,
+    ...(options.withdrawalSort ? { sort: options.withdrawalSort } : {}),
+    ...(options.withdrawalDirection ? { direction: options.withdrawalDirection } : {}),
   });
   const pending = store.listManagerWithdrawals(chainId, managerPrincipal, {
     limit: 1,

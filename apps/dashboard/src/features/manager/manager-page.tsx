@@ -20,7 +20,14 @@ import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
 import { dashboardHash, type ManagerActionId } from "../../dashboard-route.js";
-import { Badge, Field, PageHead, StatLine } from "../../shared/dashboard-ui.js";
+import {
+  Badge,
+  Field,
+  PageHead,
+  SortableHeader,
+  StatLine,
+  type TableSort,
+} from "../../shared/dashboard-ui.js";
 import { number, short, stx } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorActionError } from "../../shared/operator-error.js";
@@ -31,6 +38,7 @@ import {
 } from "./manager-action-principal.js";
 
 type Snapshot = DashboardSnapshot;
+type EligibilitySort = "cycle" | "delegated" | "margin" | "eligibility" | "source";
 
 const canonicalUintPattern = /^(?:0|[1-9][0-9]*)$/;
 const canonicalPositiveUintPattern = /^[1-9][0-9]*$/;
@@ -648,7 +656,33 @@ export function Manager({
   sync: () => void;
   syncing: boolean;
 }) {
-  const cycles = data.forecast?.cycles ?? [];
+  const [eligibilitySort, setEligibilitySort] = useState<TableSort<EligibilitySort>>({
+    key: "cycle",
+    direction: "asc",
+  });
+  const cycles = useMemo(() => {
+    const values = [...(data.forecast?.cycles ?? [])];
+    return values.sort((left, right) => {
+      const value = (cycle: (typeof values)[number]) => {
+        switch (eligibilitySort.key) {
+          case "cycle":
+            return cycle.cycleId;
+          case "delegated":
+            return BigInt(cycle.contract.pendingStxUstx);
+          case "margin":
+            return BigInt(cycle.threshold.marginUstx);
+          case "eligibility":
+            return cycle.contract.inSignerSet ? 1 : 0;
+          case "source":
+            return cycle.provenance.classification;
+        }
+      };
+      const leftValue = value(left);
+      const rightValue = value(right);
+      const compared = leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+      return eligibilitySort.direction === "asc" ? compared : -compared;
+    });
+  }, [data.forecast?.cycles, eligibilitySort]);
   const recognitionLabel =
     data.manager.source.tier === "reference-built-in"
       ? "Built-in reference"
@@ -1017,18 +1051,48 @@ export function Manager({
         <table>
           <thead>
             <tr>
-              <th>Reward cycle</th>
-              <th className="right">Delegated STX</th>
-              <th className="right">Threshold margin</th>
-              <th>Eligibility</th>
-              <th>Source</th>
+              <SortableHeader
+                column="cycle"
+                label="Reward cycle"
+                setSort={setEligibilitySort}
+                sort={eligibilitySort}
+              />
+              <SortableHeader
+                align="right"
+                column="delegated"
+                label="Delegated STX"
+                setSort={setEligibilitySort}
+                sort={eligibilitySort}
+              />
+              <SortableHeader
+                align="right"
+                column="margin"
+                label="Threshold margin"
+                setSort={setEligibilitySort}
+                sort={eligibilitySort}
+              />
+              <SortableHeader
+                column="eligibility"
+                label="Eligibility"
+                setSort={setEligibilitySort}
+                sort={eligibilitySort}
+              />
+              <SortableHeader
+                column="source"
+                label="Source"
+                setSort={setEligibilitySort}
+                sort={eligibilitySort}
+              />
             </tr>
           </thead>
           <tbody>
-            {cycles.map((cycle, index) => (
+            {cycles.map((cycle) => (
               <tr key={cycle.cycleId}>
                 <td className="mono">
-                  {cycle.cycleId} {index === 0 ? <Badge state="accent">current</Badge> : null}
+                  {cycle.cycleId}{" "}
+                  {cycle.cycleId === data.preflight.cycle.currentId ? (
+                    <Badge state="accent">current</Badge>
+                  ) : null}
                 </td>
                 <td className="right mono">{stx(cycle.contract.pendingStxUstx)}</td>
                 <td className="right mono">{stx(cycle.threshold.marginUstx)}</td>

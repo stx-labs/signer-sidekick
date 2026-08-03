@@ -220,7 +220,7 @@ export function SettingsPage({
         }
       />
       {loading ? (
-        <div className="callout callout-neutral" role="status">
+        <div className="callout callout-neutral content-notice" role="status">
           Refreshing settings…
         </div>
       ) : null}

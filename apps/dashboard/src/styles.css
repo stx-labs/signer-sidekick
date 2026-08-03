@@ -1480,6 +1480,11 @@
   margin-bottom: var(--space-4);
 }
 
+/* Standalone status messages need separation from the content they describe. */
+.content-notice {
+  margin-bottom: var(--space-4);
+}
+
 .loading-state {
   display: grid;
   min-height: 50vh;
