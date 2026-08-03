@@ -326,6 +326,22 @@ export const operationReadiness = {
   ],
 };
 
+export const engineStatus = {
+  schemaVersion: 1,
+  mode: "observe",
+  forcedObserve: { active: false, reason: null, actor: null, forcedAt: null },
+  adapters: [],
+  jobs: { active: 0, awaitingApproval: 0, ambiguous: 0 },
+  generatedAt: "2026-07-15T12:00:00.000Z",
+};
+
+export const engineJobs = {
+  schemaVersion: 1,
+  items: [],
+  nextCursor: null,
+  total: 0,
+};
+
 export const onboarding = {
   onboarding: null,
   wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
@@ -503,6 +519,8 @@ export function responseFor(url) {
   const limit = Number(request.searchParams.get("limit") ?? 50);
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
+  if (request.pathname === "/api/v1/engine") return engineStatus;
+  if (request.pathname === "/api/v1/engine/jobs") return engineJobs;
   if (request.pathname === "/api/v1/sync") return reconciliationResponse();
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
   if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
