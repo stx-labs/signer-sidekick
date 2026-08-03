@@ -17,9 +17,17 @@
       "types": "./dist/manager-adapter.d.ts",
       "default": "./dist/manager-adapter.js"
     },
+    "./pox5-bonds": {
+      "types": "./dist/pox5-bonds.d.ts",
+      "default": "./dist/pox5-bonds.js"
+    },
     "./manager-claim-rewards": {
       "types": "./dist/manager-claim-rewards.d.ts",
       "default": "./dist/manager-claim-rewards.js"
+    },
+    "./manager-claim-staker-rewards": {
+      "types": "./dist/manager-claim-staker-rewards.d.ts",
+      "default": "./dist/manager-claim-staker-rewards.js"
     },
     "./manager-artifact": {
       "types": "./dist/manager-artifact.d.ts",

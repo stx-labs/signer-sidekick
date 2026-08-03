@@ -56,6 +56,36 @@ describe("activation plans", () => {
     expect(() => activationPlanSchema.parse(result)).not.toThrow();
   });
 
+  it("does not present a fixed signer set as an unfinished attach step", () => {
+    const setup = {
+      status: "ready",
+      enrollmentWindow: { status: "prepare-phase" },
+      eligibility: {
+        next: {
+          cycleId: 142,
+          meetsThreshold: false,
+          inSignerSet: false,
+          marginUstx: "-1000000",
+        },
+      },
+    } as PoolSetupStatus;
+    const result = createAttachActivationPlan(
+      preflight,
+      {
+        managerPrincipal,
+        attachAllowed: true,
+        source: { tier: "reference-built-in", profileId: "reference" },
+      } as ManagerVerificationReport,
+      { registered: true, signerKeyGrantValid: true } as RegistrationVerification,
+      setup,
+    );
+
+    expect(result.steps.find(({ id }) => id === "verify-next-cycle-eligibility")).toMatchObject({
+      status: "complete",
+      detail: "Cycle 142 signer-set eligibility is fixed for this prepare phase",
+    });
+  });
+
   it("keeps pre-activation signer work blocked until the node exposes PoX-5", () => {
     const result = createFreshActivationPlan({
       network: "mainnet",

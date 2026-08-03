@@ -1,5 +1,5 @@
 import { ClarityType, type ClarityValue } from "@stacks/transactions";
-import { ClarityCodecError, decodeUInt } from "./clarity-codecs.js";
+import { ClarityCodecError, decodeBoolean, decodeUInt } from "./clarity-codecs.js";
 
 export type ManagerPrintEvent =
   | {
@@ -28,6 +28,12 @@ export type ManagerPrintEvent =
       requestId: string;
       stakerPrincipal: string;
       liabilityReleasedSats: string;
+    }
+  | {
+      kind: "update-admin";
+      topic: "update-admin";
+      adminPrincipal: string;
+      enabled: boolean;
     }
   | {
       kind: "other";
@@ -136,6 +142,14 @@ export function decodeManagerPrintEvent(
         field(event, "liability-released", path),
         `${path}.liability-released`,
       ).toString(),
+    };
+  }
+  if (eventTopic === "update-admin") {
+    return {
+      kind: "update-admin",
+      topic: eventTopic,
+      adminPrincipal: principal(field(event, "admin", path), `${path}.admin`),
+      enabled: decodeBoolean(field(event, "enabled", path), `${path}.enabled`),
     };
   }
   return { kind: "other", topic: eventTopic };

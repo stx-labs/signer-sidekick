@@ -2,7 +2,9 @@ import {
   contractPrincipalCV,
   noneCV,
   someCV,
+  standardPrincipalCV,
   stringAsciiCV,
+  trueCV,
   tupleCV,
   uintCV,
 } from "@stacks/transactions";
@@ -85,6 +87,23 @@ describe("reference manager print events", () => {
       kind: "settle-accepted-withdrawal",
       requestId: "73",
       liabilityReleasedSats: "20000",
+    });
+  });
+
+  it("decodes administrator changes structurally", () => {
+    expect(
+      decodeManagerPrintEvent(
+        tupleCV({
+          topic: stringAsciiCV("update-admin"),
+          admin: standardPrincipalCV("SP000000000000000000002Q6VF78"),
+          enabled: trueCV(),
+        }),
+      ),
+    ).toEqual({
+      kind: "update-admin",
+      topic: "update-admin",
+      adminPrincipal: "SP000000000000000000002Q6VF78",
+      enabled: true,
     });
   });
 

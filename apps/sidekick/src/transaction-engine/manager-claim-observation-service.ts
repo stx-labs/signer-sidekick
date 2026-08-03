@@ -9,6 +9,7 @@ import {
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
   planManagerClaimRewards,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
 import {
   type ChainAnchor,
@@ -30,6 +31,7 @@ import type {
   TransactionFeeObservation,
 } from "./live-transaction-reader.js";
 import {
+  bondBucketsDigest,
   type ManagerClaimObserveResult,
   managerClaimOperationScopeKey,
   ObserveManagerClaimPlanner,
@@ -53,8 +55,7 @@ export type ManagerClaimObservationBlockCode =
   | "manager-fingerprint-mismatch"
   | "reward-status-unavailable"
   | "reward-checkpoint-mismatch"
-  | "roster-proof-incomplete"
-  | "bond-participation-present"
+  | "reward-calculation-pending"
   | "attestation-unavailable"
   | "attestation-fingerprint-mismatch"
   | "gas-payer-unavailable"
@@ -63,6 +64,13 @@ export type ManagerClaimObservationBlockCode =
   | "fee-estimate-unavailable"
   | "fee-cap-exceeded"
   | "gas-balance-insufficient";
+
+export interface ManagerClaimBondBucket {
+  bondIndex: bigint;
+  managerSharesSats: bigint;
+  earnedSats: bigint;
+  feeSnapshot: { state: "absent" | "present"; effectiveFeeBips: bigint };
+}
 
 export interface ManagerClaimObservationBlock {
   code: ManagerClaimObservationBlockCode;
@@ -80,6 +88,7 @@ export type ManagerClaimObservationOutcome =
       blocks: readonly [];
       reason:
         | "no-claimable-effect"
+        | "buckets-present-nothing-claimable"
         | "external-completion-without-local-work"
         | "no-matching-active-work"
         | "effect-still-remaining";
@@ -199,10 +208,45 @@ const storedPlanExecutionSchema = z
       .object({
         sender: z.object({ principal: z.string().min(1), publicKey: z.string().min(1) }).strict(),
         transaction: z.object({ nonce: z.string().regex(/^(0|[1-9]\d*)$/) }).passthrough(),
+        stxEarnedSats: z.string().regex(/^(0|[1-9]\d*)$/),
+        bondBuckets: z.array(
+          z
+            .object({
+              bondIndex: z.string().regex(/^(0|[1-9]\d*)$/),
+              managerSharesSats: z.string().regex(/^(0|[1-9]\d*)$/),
+              earnedSats: z.string().regex(/^(0|[1-9]\d*)$/),
+              feeSnapshot: z
+                .object({
+                  state: z.enum(["absent", "present"]),
+                  effectiveFeeBips: z.string().regex(/^(0|[1-9]\d*)$/),
+                })
+                .strict(),
+            })
+            .passthrough(),
+        ),
       })
       .passthrough(),
   })
   .passthrough();
+
+/** Bucket facts as they were sealed, for paths that must reproduce the original plan. */
+function sealedBondBuckets(plan: z.output<typeof storedPlanExecutionSchema>): {
+  stxEarnedSats: bigint;
+  bondBuckets: ManagerClaimBondBucket[];
+} {
+  return {
+    stxEarnedSats: BigInt(plan.material.stxEarnedSats),
+    bondBuckets: plan.material.bondBuckets.map((bucket) => ({
+      bondIndex: BigInt(bucket.bondIndex),
+      managerSharesSats: BigInt(bucket.managerSharesSats),
+      earnedSats: BigInt(bucket.earnedSats),
+      feeSnapshot: {
+        state: bucket.feeSnapshot.state,
+        effectiveFeeBips: BigInt(bucket.feeSnapshot.effectiveFeeBips),
+      },
+    })),
+  };
+}
 
 const storedApprovalPlanSchema = z
   .object({
@@ -229,9 +273,24 @@ const storedApprovalPlanSchema = z
             rewardsPerToken: z.string().regex(/^(0|[1-9]\d*)$/),
           })
           .strict(),
-        noBondParticipation: z
-          .object({ proven: z.literal(true), evidenceDigest: z.string().regex(/^[0-9a-f]{64}$/i) })
-          .strict(),
+        stxEarnedSats: z.string().regex(/^(0|[1-9]\d*)$/),
+        bondBuckets: z
+          .array(
+            z
+              .object({
+                bondIndex: z.string().regex(/^(0|[1-9]\d*)$/),
+                managerSharesSats: z.string().regex(/^(0|[1-9]\d*)$/),
+                earnedSats: z.string().regex(/^(0|[1-9]\d*)$/),
+                feeSnapshot: z
+                  .object({
+                    state: z.enum(["absent", "present"]),
+                    effectiveFeeBips: z.string().regex(/^(0|[1-9]\d*)$/),
+                  })
+                  .strict(),
+              })
+              .strict(),
+          )
+          .max(MAX_BOND_PERIODS_PER_CYCLE),
         feeSnapshot: z
           .object({
             state: z.enum(["absent", "present"]),
@@ -295,7 +354,9 @@ function rewardCheckpoint(input: ManagerClaimObservationInput): {
   observedSignerEarnedSats: bigint;
   expectedSignerOutflowSats: bigint;
   feeSnapshot: { state: "absent" | "present"; effectiveFeeBips: bigint };
-  effect: "remaining" | "completed" | "none";
+  stxEarnedSats: bigint;
+  bondBuckets: ManagerClaimBondBucket[];
+  effect: "remaining" | "completed" | "none" | "buckets-idle";
 } | null {
   const { rewards, setup } = input;
   if (!rewards) return null;
@@ -336,69 +397,90 @@ function rewardCheckpoint(input: ManagerClaimObservationInput): {
   ) {
     return null;
   }
+  const stxBucket = rewards.buckets.find(({ bondIndex }) => bondIndex === null);
+  if (
+    !stxBucket ||
+    parsedUnsigned(stxBucket.signerEarnedBeforeManagerClaimSats, "stx bucket") !== signerEarned
+  ) {
+    return null;
+  }
+  // Only buckets that hold something go into the call. A bucket qualifies on shares alone so its
+  // fee snapshot is pinned with the rest of the pool, and on earnings alone because unstaking
+  // settles rewards before zeroing shares.
+  const bondBuckets: ManagerClaimBondBucket[] = [];
+  for (const bucket of rewards.buckets) {
+    if (bucket.bondIndex === null || !bucket.participating) continue;
+    const bondIndex = parsedUnsigned(bucket.bondIndex, "bond index");
+    const managerSharesSats = parsedUnsigned(bucket.managerSharesSats, "bond bucket shares");
+    const earnedSats = parsedUnsigned(
+      bucket.signerEarnedBeforeManagerClaimSats,
+      "bond bucket earnings",
+    );
+    const bucketFee =
+      bucket.feeSnapshotBips === null
+        ? null
+        : parsedUnsigned(bucket.feeSnapshotBips, "bond bucket fee snapshot");
+    if (
+      bondIndex === null ||
+      managerSharesSats === null ||
+      earnedSats === null ||
+      (bucketFee !== null && bucketFee > 9_999n)
+    ) {
+      return null;
+    }
+    bondBuckets.push({
+      bondIndex,
+      managerSharesSats,
+      earnedSats,
+      feeSnapshot: {
+        state: bucketFee === null ? "absent" : "present",
+        effectiveFeeBips: bucketFee ?? configuredFee,
+      },
+    });
+  }
+  bondBuckets.sort((left, right) =>
+    left.bondIndex < right.bondIndex ? -1 : left.bondIndex > right.bondIndex ? 1 : 0,
+  );
+  if (
+    new Set(bondBuckets.map(({ bondIndex }) => bondIndex.toString())).size !== bondBuckets.length
+  ) {
+    return null;
+  }
+  const totalEarned =
+    signerEarned + bondBuckets.reduce((total, bucket) => total + bucket.earnedSats, 0n);
+  const anyFeePinned =
+    snapshottedFee !== null ||
+    bondBuckets.some(({ feeSnapshot }) => feeSnapshot.state === "present");
   return {
     rewardCycle: BigInt(rewards.rewardCycle),
     calculationCheckpoint: target.calculationCheckpoint,
     lastRewardComputeBurnHeight: Number(lastHeight),
     rewardsPerToken,
-    observedSignerEarnedSats: signerEarned,
-    expectedSignerOutflowSats: signerEarned,
+    observedSignerEarnedSats: totalEarned,
+    expectedSignerOutflowSats: totalEarned,
     feeSnapshot: {
       state: snapshottedFee === null ? "absent" : "present",
       effectiveFeeBips: snapshottedFee ?? configuredFee,
     },
-    effect: signerEarned > 0n ? "remaining" : snapshottedFee !== null ? "completed" : "none",
-  };
-}
-
-function currentRosterProof(
-  store: ManagerClaimEvidenceStore,
-  sourceId: string,
-  managerPrincipal: string,
-  chainAnchor: ChainAnchor,
-  expectedRunId: string | null,
-):
-  | { status: "proven"; evidenceSha256: string }
-  | { status: "incomplete" }
-  | { status: "bond-present" } {
-  const run = store.getLatestCompletedSignerStakerRun(sourceId, managerPrincipal);
-  if (
-    !run?.authoritative ||
-    !run.reconciliationComplete ||
-    !run.chainAnchor ||
-    !chainAnchorsEqual(run.chainAnchor, chainAnchor) ||
-    (expectedRunId !== null && run.runId !== expectedRunId)
-  ) {
-    return { status: "incomplete" };
-  }
-  const roster = store.listSignerStakers(managerPrincipal, true, sourceId);
-  if (roster.length === 0 || roster.some((staker) => staker.lastSeenRunId !== run.runId)) {
-    return { status: "incomplete" };
-  }
-  if (roster.some((staker) => staker.hasBtc)) return { status: "bond-present" };
-  return {
-    status: "proven",
-    evidenceSha256: transactionEngineDocumentSha256({
-      schemaVersion: 1,
-      kind: "complete-manager-no-bond-participation",
-      sourceId,
-      runId: run.runId,
-      managerPrincipal,
-      chainAnchor,
-      stakers: roster
-        .map((staker) => ({
-          stakerPrincipal: staker.stakerPrincipal,
-          hasBtc: staker.hasBtc,
-        }))
-        .sort((left, right) => left.stakerPrincipal.localeCompare(right.stakerPrincipal)),
-    }),
+    stxEarnedSats: signerEarned,
+    bondBuckets,
+    // `claim-rewards` reverts when the whole call totals zero, so a pool that has buckets but
+    // nothing settled in them is idle, not claimable — proposing the call would hand the operator
+    // a transaction that cannot succeed.
+    effect:
+      totalEarned > 0n
+        ? "remaining"
+        : anyFeePinned
+          ? "completed"
+          : bondBuckets.length > 0 || stxBucket.participating
+            ? "buckets-idle"
+            : "none",
   };
 }
 
 function staticBlocks(
   input: ManagerClaimObservationInput,
   checkpoint: ReturnType<typeof rewardCheckpoint>,
-  rosterProof: ReturnType<typeof currentRosterProof> | null,
   mode: "observe" | "assist",
 ): ManagerClaimObservationBlock[] {
   const blocks: ManagerClaimObservationBlock[] = [];
@@ -419,6 +501,9 @@ function staticBlocks(
       "PoX-5 and sBTC contracts do not match the active compatibility profile",
     );
   }
+  // Observe only needs a verified reference manager: the operator signs, and the postcondition
+  // pins the effect. Assist approval is a separate, stricter gate, so folding it in here would
+  // block an Observe claim that is perfectly safe to propose.
   const verifiedReferenceManager =
     (manager.source.tier === "reference-built-in" || manager.source.tier === "reference-render") &&
     manager.source.profileId !== null;
@@ -441,24 +526,22 @@ function staticBlocks(
       "Reward data is unavailable. Sync chain data and try again",
     );
   } else if (!checkpoint) {
-    block(
-      blocks,
-      "reward-checkpoint-mismatch",
-      "Reward data is stale. Sync chain data and try again",
-    );
-  }
-  if (rosterProof?.status === "incomplete") {
-    block(
-      blocks,
-      "roster-proof-incomplete",
-      "The staker roster is incomplete at the current chain tip. Sync chain data",
-    );
-  } else if (rosterProof?.status === "bond-present") {
-    block(
-      blocks,
-      "bond-participation-present",
-      "This claim path does not support pools with Bitcoin bond participation",
-    );
+    // A pending global calculation is not stale local data, and telling an operator to sync would
+    // send them after the wrong thing: `calculate-rewards` is permissionless and nobody has run it
+    // for this distribution yet.
+    if (input.rewards?.calculation.state === "pending") {
+      block(
+        blocks,
+        "reward-calculation-pending",
+        "The permissionless PoX-5 reward calculation has not run for this distribution yet. Nothing is claimable until it does",
+      );
+    } else {
+      block(
+        blocks,
+        "reward-checkpoint-mismatch",
+        "Reward data is not aligned with the current claim checkpoint. Sidekick will retry as the chain advances",
+      );
+    }
   }
   return blocks;
 }
@@ -785,17 +868,16 @@ export class ManagerClaimObservationService {
     }
     if (
       checkpoint.effect !== "remaining" ||
-      checkpoint.observedSignerEarnedSats.toString() !== plan.material.expectedEffect.amount ||
-      checkpoint.observedSignerEarnedSats.toString() !==
+      checkpoint.expectedSignerOutflowSats.toString() !== plan.material.expectedEffect.amount ||
+      checkpoint.expectedSignerOutflowSats.toString() !==
         intent.reconciliation.expectedEffect.amountSats ||
-      plan.material.noBondParticipation.evidenceDigest !==
-        intent.reconciliation.noBondEvidenceSha256
+      bondBucketsDigest(checkpoint) !== intent.reconciliation.bondBucketsSha256
     ) {
       return this.revalidationBlock(
         input,
         "invalidated",
         "claim-amount-changed",
-        "The claim amount or no-bond proof changed",
+        "The claim amount or bond-bucket readings changed",
       );
     }
 
@@ -901,24 +983,8 @@ export class ManagerClaimObservationService {
     const effectiveMode =
       this.options.repository.getForceObserveControl() === null ? input.requestedMode : "observe";
     const checkpoint = rewardCheckpoint(input);
-    const rosterProof =
-      checkpoint?.effect === "remaining" && !input.reconcileOnly
-        ? currentRosterProof(
-            this.options.evidenceStore,
-            input.sourceId,
-            input.setup.manager.managerPrincipal,
-            input.setup.chainAnchor,
-            input.rewards?.ingestion?.runId ?? null,
-          )
-        : null;
-    const blocks = staticBlocks(input, checkpoint, rosterProof, effectiveMode);
-    if (
-      blocks.length > 0 ||
-      !checkpoint ||
-      (checkpoint.effect === "remaining" &&
-        !input.reconcileOnly &&
-        rosterProof?.status !== "proven")
-    ) {
+    const blocks = staticBlocks(input, checkpoint, effectiveMode);
+    if (blocks.length > 0 || !checkpoint) {
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
@@ -946,6 +1012,15 @@ export class ManagerClaimObservationService {
 
     if (checkpoint.effect === "none") {
       this.#latest = { status: "idle", blocks: [], reason: "no-claimable-effect" };
+      return this.#latest;
+    }
+
+    if (checkpoint.effect === "buckets-idle") {
+      this.#latest = {
+        status: "idle",
+        blocks: [],
+        reason: "buckets-present-nothing-claimable",
+      };
       return this.#latest;
     }
 
@@ -1011,10 +1086,6 @@ export class ManagerClaimObservationService {
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
-    if (rosterProof?.status !== "proven") {
-      throw new Error("Validated manager-claim roster proof disappeared");
-    }
-
     let rewardsPaused: boolean;
     try {
       rewardsPaused = decodeBoolean(
@@ -1074,7 +1145,8 @@ export class ManagerClaimObservationService {
         lastRewardComputeBurnHeight: checkpoint.lastRewardComputeBurnHeight,
         rewardsPerToken: checkpoint.rewardsPerToken,
       },
-      noBondParticipation: { proven: true, evidenceDigest: rosterProof.evidenceSha256 },
+      stxEarnedSats: checkpoint.stxEarnedSats,
+      bondBuckets: checkpoint.bondBuckets,
       feeSnapshot: checkpoint.feeSnapshot,
       sender: input.gasPayer,
       nonce: account.value.nonce,
@@ -1135,7 +1207,8 @@ export class ManagerClaimObservationService {
         lastRewardComputeBurnHeight: checkpoint.lastRewardComputeBurnHeight,
         rewardsPerToken: checkpoint.rewardsPerToken,
       },
-      noBondParticipation: { proven: true, evidenceSha256: rosterProof.evidenceSha256 },
+      stxEarnedSats: checkpoint.stxEarnedSats,
+      bondBuckets: checkpoint.bondBuckets,
       observedSignerEarnedSats: checkpoint.observedSignerEarnedSats,
       feeSnapshot: checkpoint.feeSnapshot,
       expectedSignerOutflowSats: checkpoint.expectedSignerOutflowSats,
@@ -1241,10 +1314,9 @@ export class ManagerClaimObservationService {
         lastRewardComputeBurnHeight: checkpoint.lastRewardComputeBurnHeight,
         rewardsPerToken: checkpoint.rewardsPerToken,
       },
-      noBondParticipation: {
-        proven: true,
-        evidenceSha256: intent.reconciliation.noBondEvidenceSha256,
-      },
+      // A completed claim has zeroed the very earnings it was planned from, so the facts here must
+      // come from the sealed plan, exactly as `expectedOutflow` does.
+      ...sealedBondBuckets(plan),
       observedSignerEarnedSats: checkpoint.observedSignerEarnedSats,
       feeSnapshot: checkpoint.feeSnapshot,
       expectedSignerOutflowSats: expectedOutflow,

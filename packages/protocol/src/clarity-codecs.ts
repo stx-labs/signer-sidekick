@@ -219,6 +219,61 @@ export function decodePox5CycleMembership(
   };
 }
 
+export interface Pox5BondMembership {
+  bondIndex: bigint;
+  amountUstx: bigint;
+  amountSats: bigint;
+  isL1Lock: boolean;
+  signer: string;
+}
+
+/**
+ * Decodes `get-bond-membership`. PoX-5 returns `none` both when the staker never joined a bond
+ * and once the membership's term has ended, so a `null` here means "no active bond at this tip",
+ * not "no bond row exists".
+ */
+export function decodePox5BondMembership(
+  value: ClarityValue,
+  path = "get-bond-membership",
+): Pox5BondMembership | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  const membership = expectType(value, ClarityType.OptionalSome, path).value;
+  const signer = tupleField(membership, "signer", path);
+  if (
+    signer.type !== ClarityType.PrincipalStandard &&
+    signer.type !== ClarityType.PrincipalContract
+  ) {
+    throw new ClarityCodecError(`expected principal, received ${signer.type}`, `${path}.signer`);
+  }
+  return {
+    bondIndex: decodeUInt(tupleField(membership, "bond-index", path), `${path}.bond-index`),
+    amountUstx: decodeUInt(tupleField(membership, "amount-ustx", path), `${path}.amount-ustx`),
+    amountSats: decodeUInt(tupleField(membership, "amount-sats", path), `${path}.amount-sats`),
+    isL1Lock: decodeBoolean(tupleField(membership, "is-l1-lock", path), `${path}.is-l1-lock`),
+    signer: signer.value,
+  };
+}
+
+export interface Pox5ProtocolBond {
+  targetRate: bigint;
+  stxValueRatio: bigint;
+  minUstxRatio: bigint;
+}
+
+/** Decodes `get-protocol-bond`. `none` means the bond index was never set up. */
+export function decodePox5ProtocolBond(
+  value: ClarityValue,
+  path = "get-protocol-bond",
+): Pox5ProtocolBond | null {
+  if (value.type === ClarityType.OptionalNone) return null;
+  const bond = expectType(value, ClarityType.OptionalSome, path).value;
+  return {
+    targetRate: decodeUInt(tupleField(bond, "target-rate", path), `${path}.target-rate`),
+    stxValueRatio: decodeUInt(tupleField(bond, "stx-value-ratio", path), `${path}.stx-value-ratio`),
+    minUstxRatio: decodeUInt(tupleField(bond, "min-ustx-ratio", path), `${path}.min-ustx-ratio`),
+  };
+}
+
 export interface ClaimRewardsResult {
   totalRewards: bigint;
   bondTotals: bigint;

@@ -1,7 +1,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { contractPrincipalCV, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
+import {
+  contractPrincipalCV,
+  falseCV,
+  noneCV,
+  someCV,
+  trueCV,
+  tupleCV,
+  uintCV,
+} from "@stacks/transactions";
 import { encodePrincipalHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiStatus, SignerStakersPage, StacksBlockSummary } from "./chain-clients.js";
@@ -125,9 +133,27 @@ function membership(amountUstx = 75_000_000_000n, signer = manager) {
   );
 }
 
+/** `get-bond-membership` for a staker with an active bond under `signer`. */
+function bondMembership(
+  signer = manager,
+  { bondIndex = 0n, isL1Lock = false, amountSats = 100_000n, amountUstx = 1_000_000_000n } = {},
+) {
+  const [address, contractName] = signer.split(".") as [string, string];
+  return someCV(
+    tupleCV({
+      "bond-index": uintCV(bondIndex),
+      "amount-ustx": uintCV(amountUstx),
+      "amount-sats": uintCV(amountSats),
+      "is-l1-lock": isL1Lock ? trueCV() : falseCV(),
+      signer: contractPrincipalCV(address, contractName),
+    }),
+  );
+}
+
 function nodeReads() {
   return {
     callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+      if (functionName === "get-bond-membership") return Promise.resolve(bondMembership());
       if (functionName === "get-staker-info") return Promise.resolve(position());
       if (functionName === "reward-cycle-to-burn-height") {
         return Promise.resolve(uintCV(961_000n));
@@ -137,15 +163,27 @@ function nodeReads() {
   };
 }
 
-function nodeReadsForPositions(positions: ReadonlyMap<string, ReturnType<typeof position> | null>) {
+function nodeReadsForPositions(
+  positions: ReadonlyMap<string, ReturnType<typeof position> | null>,
+  bonds: ReadonlyMap<string, ReturnType<typeof bondMembership>> = new Map(),
+) {
   const positionsByEncodedPrincipal = new Map(
     [...positions].map(([principal, value]) => [encodePrincipalHex(principal), value] as const),
+  );
+  const bondsByEncodedPrincipal = new Map(
+    [...bonds].map(([principal, value]) => [encodePrincipalHex(principal), value] as const),
   );
   return {
     callReadOnly: vi
       .fn()
       .mockImplementation(
         (_contract: string, functionName: string, _sender: string, args: readonly string[]) => {
+          if (functionName === "get-bond-membership") {
+            const principal = args[0];
+            return Promise.resolve(
+              (principal && bondsByEncodedPrincipal.get(principal)) ?? noneCV(),
+            );
+          }
           if (functionName === "get-staker-info") {
             const principal = args[0];
             if (!principal || !positionsByEncodedPrincipal.has(principal)) {
@@ -208,13 +246,32 @@ describe("signer-staker synchronization", () => {
         .mockResolvedValueOnce(page([{ staker: stakerOne, types: ["stx"] }], null, stakerTwo, 2))
         .mockResolvedValueOnce(page([{ staker: stakerTwo, types: ["btc"] }], stakerTwo, null, 2)),
     };
+    let cycleReads = 0;
     const node = {
       callReadOnly: vi
         .fn()
-        .mockResolvedValueOnce(position())
-        .mockResolvedValueOnce(uintCV(961_000n))
-        .mockResolvedValueOnce(membership(49_000_000_000n))
-        .mockResolvedValueOnce(membership()),
+        .mockImplementation(
+          async (
+            _contract: string,
+            functionName: string,
+            _sender: string,
+            args: readonly string[],
+          ) => {
+            if (functionName === "get-bond-membership") {
+              // The node confirms the bond the API labelled; `types` alone would not be enough.
+              return args[0] === encodePrincipalHex(stakerTwo)
+                ? bondMembership(manager, { isL1Lock: true })
+                : noneCV();
+            }
+            if (functionName === "get-staker-info") {
+              // `register-for-bond` never writes `staker-info`, so the bond participant has none.
+              return args[0] === encodePrincipalHex(stakerTwo) ? noneCV() : position();
+            }
+            if (functionName === "reward-cycle-to-burn-height") return uintCV(961_000n);
+            cycleReads += 1;
+            return cycleReads === 1 ? membership(49_000_000_000n) : membership();
+          },
+        ),
     };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
@@ -230,7 +287,16 @@ describe("signer-staker synchronization", () => {
 
     expect(api.getSignerStakers).toHaveBeenNthCalledWith(1, manager, null, 1);
     expect(api.getSignerStakers).toHaveBeenNthCalledWith(2, manager, stakerTwo, 1);
-    expect(node.callReadOnly).toHaveBeenCalledTimes(4);
+    // Both authoritative reads run for both candidates regardless of what the API labelled them,
+    // plus the unlock-height and cycle-membership reads for the one real STX position.
+    expect(node.callReadOnly).toHaveBeenCalledTimes(7);
+    expect(node.callReadOnly).toHaveBeenCalledWith(
+      pox5,
+      "get-bond-membership",
+      manager,
+      expect.arrayContaining([expect.stringMatching(/^0x/)]),
+      { tip: indexBlockHash },
+    );
     expect(node.callReadOnly).toHaveBeenCalledWith(
       pox5,
       "get-staker-info",
@@ -257,6 +323,91 @@ describe("signer-staker synchronization", () => {
     expect(sidekickStore.listStakerPositionObservations(manager, stakerOne)).toMatchObject([
       { observedIndexBlockHash: indexBlockHash },
     ]);
+    // The bond participant is carried with the type the node reported, not the API's label.
+    expect(
+      sidekickStore.listSignerStakers(manager).find((s) => s.stakerPrincipal === stakerTwo)?.bond,
+    ).toMatchObject({ bondIndex: 0n, isL1Lock: true, amountSats: 100_000n });
+  });
+
+  it("fails closed when the API claims a bond the node does not confirm", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerTwo, types: ["btc"] }], null, null, 1)),
+    };
+    // Revision 1 recorded this staker as active purely on the API's `types` label. The node is
+    // authoritative now, and it reports no bond membership at the anchor.
+    const node = {
+      callReadOnly: vi.fn().mockImplementation(async () => noneCV()),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
+      status: "incomplete",
+      authoritative: false,
+      discrepanciesObservedThisInvocation: [
+        { kind: "bond-position-missing", stakerPrincipal: stakerTwo },
+      ],
+    });
+  });
+
+  it("accepts a bond participant that has no STX position", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerTwo, types: ["stx", "btc"] }], null, null, 1)),
+    };
+    // `register-for-bond` never writes `staker-info`, so a bond participant the API also labels
+    // "stx" reads back with no STX position. Revision 1 treated that as an unexplained gap and
+    // voided the whole run; a positive bond membership for this manager explains it.
+    const node = {
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, functionName: string) => {
+        if (functionName === "get-bond-membership") return bondMembership();
+        if (functionName === "get-staker-info") return noneCV();
+        return noneCV();
+      }),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
+      status: "completed",
+      authoritative: true,
+      discrepanciesObservedThisInvocation: [],
+    });
+    expect(sidekickStore.listSignerStakers(manager)[0]).toMatchObject({
+      stakerPrincipal: stakerTwo,
+      active: true,
+      bond: { bondIndex: 0n, isL1Lock: false },
+    });
+  });
+
+  it("refuses to count another signer's bond as this pool's roster", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerTwo, types: ["btc"] }], null, null, 1)),
+    };
+    const otherManager = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B.other-manager";
+    const node = {
+      callReadOnly: vi
+        .fn()
+        .mockImplementation(async (_contract: string, functionName: string) =>
+          functionName === "get-bond-membership" ? bondMembership(otherManager) : noneCV(),
+        ),
+    };
+
+    await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
+      status: "incomplete",
+      discrepanciesObservedThisInvocation: [
+        {
+          kind: "bond-signer-mismatch",
+          stakerPrincipal: stakerTwo,
+          expectedSignerPrincipal: manager,
+          actualSignerPrincipal: otherManager,
+        },
+      ],
+    });
   });
 
   it("does not present a cold-start empty API roster as authoritatively complete", async () => {
@@ -280,13 +431,17 @@ describe("signer-staker synchronization", () => {
         .fn()
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
+    let cycleReads = 0;
     const node = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position(otherManager))
-        .mockResolvedValueOnce(uintCV(961_000n))
-        .mockResolvedValueOnce(membership(49_000_000_000n, manager))
-        .mockResolvedValueOnce(membership(75_000_000_000n, otherManager)),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position(otherManager);
+        if (fn === "reward-cycle-to-burn-height") return uintCV(961_000n);
+        cycleReads += 1;
+        return cycleReads === 1
+          ? membership(49_000_000_000n, manager)
+          : membership(75_000_000_000n, otherManager);
+      }),
     };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
@@ -331,13 +486,17 @@ describe("signer-staker synchronization", () => {
     const omittedApi = {
       getSignerStakers: vi.fn().mockResolvedValue(page([], null, null)),
     };
+    let switchedCycleReads = 0;
     const switchedNode = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position(otherManager))
-        .mockResolvedValueOnce(uintCV(961_000n))
-        .mockResolvedValueOnce(membership(49_000_000_000n, manager))
-        .mockResolvedValueOnce(membership(75_000_000_000n, otherManager)),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position(otherManager);
+        if (fn === "reward-cycle-to-burn-height") return uintCV(961_000n);
+        switchedCycleReads += 1;
+        return switchedCycleReads === 1
+          ? membership(49_000_000_000n, manager)
+          : membership(75_000_000_000n, otherManager);
+      }),
     };
 
     await expect(
@@ -557,6 +716,9 @@ describe("signer-staker synchronization", () => {
         nodeReadsForPositions(new Map([[stakerTwo, position(manager, 141n, 2n)]])),
       ),
     );
+    // Retained bond candidate, both anchored reads empty: the API's silence and the node's agree,
+    // so this is a verified absence rather than the permanent fail-closed state revision 1 left it
+    // in once the bond term ended.
     await expect(
       syncSignerStakers({
         ...options(bondStore, emptyApi, nodeReadsForPositions(new Map([[stakerTwo, null]]))),
@@ -565,12 +727,29 @@ describe("signer-staker synchronization", () => {
         chainAnchor: { ...chainAnchor, rewardCycle: 143 },
       }),
     ).resolves.toMatchObject({
-      status: "incomplete",
-      authoritative: false,
-      discrepanciesObservedThisInvocation: [
-        { kind: "stx-position-missing", stakerPrincipal: stakerTwo },
-      ],
+      status: "completed",
+      authoritative: true,
+      discrepanciesObservedThisInvocation: [],
     });
+    expect(bondStore.listSignerStakers(manager)).toEqual([]);
+
+    // A still-live bond keeps the candidate active with the type the node reported.
+    const liveBondStore = await store();
+    await expect(
+      syncSignerStakers(
+        options(
+          liveBondStore,
+          initialApi,
+          nodeReadsForPositions(
+            new Map([[stakerTwo, null]]),
+            new Map([[stakerTwo, bondMembership(manager, { isL1Lock: true })]]),
+          ),
+        ),
+      ),
+    ).resolves.toMatchObject({ status: "completed", authoritative: true });
+    expect(liveBondStore.listSignerStakers(manager)).toMatchObject([
+      { stakerPrincipal: stakerTwo, active: true, bond: { isL1Lock: true } },
+    ]);
   });
 
   it("preserves prior memberships and resumes enumeration when the exact API tip moves", async () => {
@@ -703,7 +882,17 @@ describe("signer-staker synchronization", () => {
       }
     }
     const api = new StatefulApi();
-    const base = options(sidekickStore, { getSignerStakers: vi.fn() }, { callReadOnly: vi.fn() });
+    const base = options(
+      sidekickStore,
+      { getSignerStakers: vi.fn() },
+      {
+        callReadOnly: vi
+          .fn()
+          .mockImplementation(async (_contract: string, functionName: string) =>
+            functionName === "get-bond-membership" ? bondMembership() : noneCV(),
+          ),
+      },
+    );
 
     await expect(syncSignerStakers({ ...base, api })).resolves.toMatchObject({
       status: "completed",
@@ -722,6 +911,7 @@ describe("signer-staker synchronization", () => {
     };
     const node = {
       callReadOnly: vi.fn().mockImplementation((_contract, functionName) => {
+        if (functionName === "get-bond-membership") return Promise.resolve(noneCV());
         if (functionName === "get-staker-info") {
           controller.abort(new Error("shutdown requested"));
           return Promise.resolve(position());
@@ -881,7 +1071,13 @@ describe("signer-staker synchronization", () => {
         .fn()
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
-    const node = { callReadOnly: vi.fn().mockResolvedValue(position(manager, 141n, 0n)) };
+    const node = {
+      callReadOnly: vi
+        .fn()
+        .mockImplementation(async (_contract: string, functionName: string) =>
+          functionName === "get-bond-membership" ? noneCV() : position(manager, 141n, 0n),
+        ),
+    };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
       nodeVerifiedStxPositions: 0,
@@ -889,7 +1085,9 @@ describe("signer-staker synchronization", () => {
       unverifiedStxDiscoveries: 0,
       discrepanciesObservedThisInvocation: [],
     });
-    expect(node.callReadOnly).toHaveBeenCalledTimes(1);
+    // Bond membership plus staker info: both authoritative reads are taken before concluding the
+    // retained entry holds nothing.
+    expect(node.callReadOnly).toHaveBeenCalledTimes(2);
     expect(sidekickStore.listSignerStakers(manager)).toEqual([]);
     expect(sidekickStore.listSignerStakers(manager, false)).toMatchObject([
       { stakerPrincipal: stakerOne, active: false, stxNodeVerified: false, position: null },
@@ -904,13 +1102,15 @@ describe("signer-staker synchronization", () => {
         .fn()
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
+    let cycleReads = 0;
     const node = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position(manager, 11n, 275n))
-        .mockResolvedValueOnce(uintCV(5_720n))
-        .mockResolvedValueOnce(membership(100_000_000_000n))
-        .mockResolvedValueOnce(membership(100_000_000_000n)),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position(manager, 11n, 275n);
+        if (fn === "reward-cycle-to-burn-height") return uintCV(5_720n);
+        cycleReads += 1;
+        return cycleReads === 1 ? membership(100_000_000_000n) : membership(100_000_000_000n);
+      }),
     };
 
     await expect(
@@ -946,10 +1146,12 @@ describe("signer-staker synchronization", () => {
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
     const node = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position(manager, 141n, 98n))
-        .mockResolvedValueOnce(uintCV(5_720n)),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position(manager, 141n, 98n);
+        if (fn === "reward-cycle-to-burn-height") return uintCV(5_720n);
+        throw new Error(`unexpected read ${fn}`);
+      }),
     };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).rejects.toThrow(
@@ -964,13 +1166,15 @@ describe("signer-staker synchronization", () => {
         .fn()
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
+    let cycleReads = 0;
     const node = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position())
-        .mockResolvedValueOnce(uintCV(961_000n))
-        .mockResolvedValueOnce(membership(49_000_000_000n, otherManager))
-        .mockResolvedValueOnce(membership()),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position();
+        if (fn === "reward-cycle-to-burn-height") return uintCV(961_000n);
+        cycleReads += 1;
+        return cycleReads === 1 ? membership(49_000_000_000n, otherManager) : membership();
+      }),
     };
 
     await syncSignerStakers(options(sidekickStore, api, node));
@@ -1128,6 +1332,7 @@ describe("signer-staker synchronization", () => {
     let maximumStakerReads = 0;
     const node = {
       callReadOnly: vi.fn().mockImplementation(async (_contract, functionName) => {
+        if (functionName === "get-bond-membership") return Promise.resolve(noneCV());
         if (functionName === "get-staker-info") {
           verificationStarted = true;
           activeStakerReads += 1;
@@ -1192,13 +1397,15 @@ describe("signer-staker synchronization", () => {
         .fn()
         .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
     };
+    let cycleReads = 0;
     const node = {
-      callReadOnly: vi
-        .fn()
-        .mockResolvedValueOnce(position())
-        .mockResolvedValueOnce(uintCV(961_000n))
-        .mockResolvedValueOnce(noneCV())
-        .mockResolvedValueOnce(membership()),
+      callReadOnly: vi.fn().mockImplementation(async (_contract: string, fn: string) => {
+        if (fn === "get-bond-membership") return noneCV();
+        if (fn === "get-staker-info") return position();
+        if (fn === "reward-cycle-to-burn-height") return uintCV(961_000n);
+        cycleReads += 1;
+        return cycleReads === 1 ? noneCV() : membership();
+      }),
     };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
@@ -1247,7 +1454,11 @@ describe("signer-staker synchronization", () => {
       stakerConcurrency: 2,
     });
 
-    expect(maximumReads).toBe(2);
-    expect(node.callReadOnly).toHaveBeenCalledTimes(2);
+    // The bound is on candidates in flight, not raw reads. Each candidate now issues its bond and
+    // staker-info reads together so both land at the same anchor, so two candidates means four
+    // concurrent reads.
+    expect(maximumReads).toBe(4);
+    // One bond read and one staker-info read per candidate, taken together at the same anchor.
+    expect(node.callReadOnly).toHaveBeenCalledTimes(4);
   });
 });

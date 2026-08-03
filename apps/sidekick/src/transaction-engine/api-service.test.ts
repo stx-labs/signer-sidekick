@@ -7,7 +7,10 @@ import {
   type SignedCompatibilityAttestation,
 } from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
 import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
-import { MANAGER_CLAIM_REWARDS_ADAPTER_ID } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import {
+  MANAGER_CLAIM_REWARDS_ADAPTER_ID,
+  MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
+} from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import {
@@ -122,7 +125,8 @@ function facts(digest: string, observedAt = initial): ManagerClaimObserveFacts {
       lastRewardComputeBurnHeight: 4_099,
       rewardsPerToken: 123_456_789n,
     },
-    noBondParticipation: { proven: true, evidenceSha256: "ef".repeat(32) },
+    stxEarnedSats: 1_234n,
+    bondBuckets: [],
     observedSignerEarnedSats: 1_234n,
     feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
     expectedSignerOutflowSats: 1_234n,
@@ -207,7 +211,10 @@ describe("repository transaction-engine API service", () => {
       forcedObserve: { active: false },
       adapters: [
         {
-          adapter: { id: MANAGER_CLAIM_REWARDS_ADAPTER_ID, revision: 1 },
+          adapter: {
+            id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
+            revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
+          },
           mode: "assist",
           enabled: true,
           availability: "available",
@@ -234,7 +241,10 @@ describe("repository transaction-engine API service", () => {
     expect(detail).toMatchObject({
       jobId: awaiting.jobId,
       review: {
-        adapter: { id: MANAGER_CLAIM_REWARDS_ADAPTER_ID, revision: 1 },
+        adapter: {
+          id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
+          revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
+        },
         managerPrincipal: manager,
         hashes: {
           intentSha256: awaiting.intentSha256,

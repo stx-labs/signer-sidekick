@@ -548,8 +548,45 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
   await openPage(page, "manager", "Manager");
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeDisabled();
   current = true;
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+});
+
+test("links readiness blockers to their repair pages", async ({ page }) => {
+  const readiness = {
+    ...operationReadiness,
+    checks: [
+      {
+        id: "control-plane",
+        status: "attention",
+        detail: "One or more node, API, network, lag, or PoX-5 checks need review.",
+      },
+      { id: "setup", status: "blocked", detail: "Manager setup is blocked." },
+      { id: "engine", status: "ready", detail: "Transaction engine adapters are available." },
+    ],
+    status: "blocked",
+  };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/operations/readiness" ? readiness : responseFor(request.href);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  const readinessCard = page.locator(".engine-readiness-card");
+  await readinessCard.getByRole("button", { name: "Open Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+
+  await openPage(page, "operations", "Operations");
+  await readinessCard.getByRole("button", { name: "Open Initial Setup" }).click();
+  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
 });
 
 test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
@@ -640,6 +677,40 @@ test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe s
     ),
   ).toBeVisible();
   consoleErrors.set(page, []);
+});
+
+test("uses a compact empty state when the transaction engine has no jobs", async ({ page }) => {
+  const fixture = engineFixture();
+  const emptyStatus = {
+    ...fixture.status,
+    jobs: { active: 0, awaitingApproval: 0, ambiguous: 0 },
+  };
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/operations/readiness"
+        ? fixture.readiness
+        : request.pathname === "/api/v1/engine"
+          ? emptyStatus
+          : request.pathname === "/api/v1/engine/jobs"
+            ? { schemaVersion: 1, items: [], nextCursor: null, total: 0 }
+            : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "operations", "Operations");
+  await expect(page.getByRole("heading", { name: "No transaction jobs" })).toBeVisible();
+  await expect(
+    page.getByText("Sidekick will list a job here when a supported operation needs review."),
+  ).toBeVisible();
+  await expect(page.locator(".engine-workspace")).toHaveCount(0);
 });
 
 test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
@@ -1055,6 +1126,32 @@ test("explains the manager trust tier on Manager and Settings", async ({ page })
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
+test("starts an admin-history sync from Manager", async ({ page }) => {
+  let syncRequests = 0;
+  let syncStarted = false;
+  await page.route("**/api/v1/sync", async (route) => {
+    const started = route.request().method() === "POST";
+    if (started) {
+      syncRequests += 1;
+      syncStarted = true;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        reconciliationResponse(started ? "running" : syncStarted ? "succeeded" : "idle"),
+      ),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "manager", "Manager");
+  await page.getByRole("button", { name: "Sync admin history" }).click();
+
+  await expect(page.getByText("Syncing chain data")).toBeVisible();
+  await expect.poll(() => syncRequests).toBe(1);
+});
+
 test("deep-links reward administration and blocks manager-admin self-removal", async ({ page }) => {
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
@@ -1084,6 +1181,107 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await page.getByLabel("Admin principal to remove").fill(adminPrincipal);
   await expect(page.getByText("An admin cannot remove itself.")).toBeVisible();
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+});
+
+test("prepares a staker settlement through the browser-wallet flow", async ({ page }) => {
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+
+  await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
+  await expect(page.getByRole("button", { name: "Settle" })).toBeVisible();
+  await page.getByRole("button", { name: "Settle" }).click();
+
+  await expect(page.getByText("One transaction settles this tuple.")).toBeVisible();
+  await page.getByLabel("Signing account").fill(snapshot.managerPrincipal.split(".")[0] ?? "");
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+});
+
+test("keeps pending and empty staker settlement views compact", async ({ page }) => {
+  const pendingSnapshot = structuredClone(snapshot);
+  pendingSnapshot.rewards.calculation = {
+    ...pendingSnapshot.rewards.calculation,
+    state: "pending",
+  };
+  let settlementReads = 0;
+
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/status") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(pendingSnapshot),
+      });
+      return;
+    }
+    if (request.pathname === "/api/v1/rewards/staker-claims") settlementReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(responseFor(route.request().url())),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(
+    page.getByText("Staker rewards become available after the global calculation runs."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Check what settling this cycle costs" }),
+  ).toHaveCount(0);
+  expect(settlementReads).toBe(0);
+});
+
+test("does not list every zero-value staker in settlement discovery", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/rewards/staker-claims"
+        ? {
+            generatedAt: snapshot.generatedAt,
+            rewardCycle: snapshot.rewards.rewardCycle,
+            page: {
+              stakerPrincipals: [roster[1].stakerPrincipal],
+              offset: 0,
+              limit: 50,
+              stakersTotal: 1,
+              nextCursor: null,
+            },
+            settlement: {
+              scope: "page",
+              stakersScanned: 1,
+              outstandingClaims: 0,
+              transactionCount: 0,
+              totalNetSats: "0",
+              blockedClaims: 0,
+            },
+            candidates: [
+              {
+                stakerPrincipal: roster[1].stakerPrincipal,
+                bondIndex: null,
+                payout: { kind: "direct-sbtc", maxFeeSats: null },
+                rewards: { earnedSats: "0", feeSats: "0", grossSats: "0" },
+                claimable: false,
+                blockedReason: "nothing-settled",
+              },
+            ],
+          }
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
+  await expect(page.getByText("No staker rewards are settleable for this cycle")).toBeVisible();
+  await expect(page.getByText("Nothing settled")).toHaveCount(0);
 });
 
 test("explains a temporary chain-source mismatch while preparing a wallet request", async ({
@@ -1715,7 +1913,9 @@ test("keeps setup commands behind advanced disclosure", async ({ page }) => {
 
   currentStep = "render-manager";
   await page.reload();
-  await expect(page.getByText(/Review and download the generated contract source/)).toBeVisible();
+  await expect(
+    page.getByText(/Download the contract source and deployment manifest, then deploy them/),
+  ).toBeVisible();
   await expect(page.getByText("sidekick manager render --json")).not.toBeVisible();
 });
 

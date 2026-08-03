@@ -595,6 +595,17 @@ export function SetupPage({
                               <li key={check.id}>{check.message}</li>
                             ))}
                         </ul>
+                        <div className="actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary sm"
+                            onClick={() => {
+                              location.hash = dashboardHash("settings");
+                            }}
+                          >
+                            Open Settings
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -692,7 +703,11 @@ export function SetupPage({
                 />
               </div>
               {active?.id !== "final-verification" ? (
-                <p className="muted setup-copy">{active?.detail}</p>
+                <p className="muted setup-copy">
+                  {active?.id === "render-manager"
+                    ? "The manager contract records pool registration, rewards, and fee settings."
+                    : active?.detail}
+                </p>
               ) : null}
               {path === "attach" ? (
                 <div className="checklist">
@@ -833,7 +848,8 @@ export function SetupPage({
                   <div className="callout callout-info">
                     <ShieldCheck className="ic" />
                     <div className="body">
-                      Review and download the generated contract source and deployment manifest.
+                      Download the contract source and deployment manifest, then deploy them with
+                      your wallet, Explorer, or CLI.
                     </div>
                   </div>
                   <div className="artifact-actions">

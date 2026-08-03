@@ -72,4 +72,51 @@ describe("manager activity projection", () => {
       rewardCycle: null,
     });
   });
+
+  it("reconstructs the current admin set only after a complete event-history sync", () => {
+    const common = {
+      listManagerClaims: () => ({ items: [], total: 0, offset: 0, limit: 50 }),
+      listManagerWithdrawals: () => ({ items: [], total: 0, offset: 0, limit: 50 }),
+      getManagerActivityMetadata: () => ({ eventCount: 2, latestBlockHeight: 102 }),
+      listManagerAdminUpdates: () => [
+        {
+          adminPrincipal: "SP000000000000000000002Q6VF78.second-admin",
+          enabled: true,
+          transactionIndex: 2,
+          blockHeight: 101,
+          eventIndex: 0,
+        },
+        {
+          adminPrincipal: "SP000000000000000000002Q6VF78",
+          enabled: false,
+          transactionIndex: 3,
+          blockHeight: 101,
+          eventIndex: 0,
+        },
+      ],
+    };
+    const complete = readManagerActivity(
+      { ...common, getCursor: () => ({ cursor: null }) },
+      1,
+      manager,
+      { sourceId: "api:mainnet:test" },
+    );
+    const incomplete = readManagerActivity(
+      { ...common, getCursor: () => ({ cursor: "older-page" }) },
+      1,
+      manager,
+      { sourceId: "api:mainnet:test" },
+    );
+
+    expect(complete.admins).toEqual({
+      status: "current",
+      principals: ["SP000000000000000000002Q6VF78.second-admin"],
+      updatesObserved: 2,
+    });
+    expect(incomplete.admins).toEqual({
+      status: "sync-required",
+      principals: [],
+      updatesObserved: 2,
+    });
+  });
 });

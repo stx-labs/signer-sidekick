@@ -8,6 +8,7 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "../../api-client.js";
+import { dashboardHash } from "../../dashboard-route.js";
 import { Badge, ErrorCallout, StatusBadge } from "../../shared/dashboard-ui.js";
 import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
 import {
@@ -43,6 +44,16 @@ function engineActionError(error: unknown, summary: string, recovery: string): s
 
 function stateLabel(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function readinessAction(check: OperationReadiness["checks"][number]): {
+  label: string;
+  target: "settings" | "setup";
+} | null {
+  if (check.status === "ready") return null;
+  if (check.id === "control-plane") return { label: "Open Settings", target: "settings" };
+  if (check.id === "setup") return { label: "Open Initial Setup", target: "setup" };
+  return null;
 }
 
 function updateJobPage(page: EngineJobPage, job: EngineJobDetail): EngineJobPage {
@@ -363,12 +374,35 @@ export function EngineOperations({
                   <h3>Operation readiness</h3>
                   <StatusBadge status={readiness.status} />
                 </div>
-                <p className="muted">
-                  {readiness.checks
-                    .filter((check) => check.status !== "ready")
-                    .map((check) => check.detail)
-                    .join(" ") || "Control plane, manager setup, and transaction engine are ready."}
-                </p>
+                {readiness.checks.some((check) => check.status !== "ready") ? (
+                  <div className="engine-readiness-checks">
+                    {readiness.checks
+                      .filter((check) => check.status !== "ready")
+                      .map((check) => {
+                        const action = readinessAction(check);
+                        return (
+                          <div className="engine-readiness-check" key={check.id}>
+                            <p className="muted">{check.detail}</p>
+                            {action ? (
+                              <button
+                                type="button"
+                                className="btn btn-tertiary sm"
+                                onClick={() => {
+                                  location.hash = dashboardHash(action.target);
+                                }}
+                              >
+                                {action.label}
+                              </button>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                  </div>
+                ) : (
+                  <p className="muted">
+                    Control plane, manager setup, and transaction engine are ready.
+                  </p>
+                )}
               </div>
             ) : null}
             <div className="card-standout engine-mode-card">
@@ -465,96 +499,111 @@ export function EngineOperations({
             ))}
           </div>
 
-          <div className="engine-workspace">
-            <div className="card engine-job-list">
+          {jobs?.total === 0 ? (
+            <div className="card engine-no-jobs">
               <div className="card-head">
-                <h3>Transaction jobs</h3>
-                <span className="muted">{jobs?.total ?? 0} total</span>
+                <h3>No transaction jobs</h3>
+                <span className="muted">0 total</span>
               </div>
-              {jobs?.items.map((job) => (
-                <button
-                  type="button"
-                  className="engine-job-row"
-                  aria-pressed={selectedJob?.jobId === job.jobId}
-                  key={job.jobId}
-                  onClick={() => void selectJob(job.jobId)}
-                >
-                  <span>
-                    <strong>{job.functionName}</strong>
-                    <small className="mono">
-                      {job.adapter.id} r{job.adapter.revision} · cycle {job.rewardCycle}
-                    </small>
-                  </span>
-                  <span>
-                    <Badge state={engineJobBadgeState(job.state)}>{stateLabel(job.state)}</Badge>
-                    <small>{stateLabel(job.approvalState)}</small>
-                  </span>
-                </button>
-              ))}
-              {jobs?.items.length === 0 ? <p className="muted">No transaction jobs yet.</p> : null}
-              {jobs ? (
-                <div className="pagination engine-pagination">
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    disabled={previousCursors.length === 0 || surface === "loading"}
-                    onClick={() => {
-                      const history = previousCursors.slice();
-                      const previous = history.pop() ?? null;
-                      setPreviousCursors(history);
-                      setCursor(previous);
-                    }}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    disabled={!jobs.nextCursor || surface === "loading"}
-                    onClick={() => {
-                      if (!jobs.nextCursor) return;
-                      setPreviousCursors((history) => [...history, cursor]);
-                      setCursor(jobs.nextCursor);
-                    }}
-                  >
-                    Next
-                  </button>
-                </div>
-              ) : null}
+              <p className="muted">
+                Sidekick will list a job here when a supported operation needs review. Monitoring,
+                readiness, and alerts remain available above.
+              </p>
             </div>
+          ) : (
+            <div className="engine-workspace">
+              <div className="card engine-job-list">
+                <div className="card-head">
+                  <h3>Transaction jobs</h3>
+                  <span className="muted">{jobs?.total ?? 0} total</span>
+                </div>
+                {jobs?.items.map((job) => (
+                  <button
+                    type="button"
+                    className="engine-job-row"
+                    aria-pressed={selectedJob?.jobId === job.jobId}
+                    key={job.jobId}
+                    onClick={() => void selectJob(job.jobId)}
+                  >
+                    <span>
+                      <strong>{job.functionName}</strong>
+                      <small className="mono">
+                        {job.adapter.id} r{job.adapter.revision} · cycle {job.rewardCycle}
+                      </small>
+                    </span>
+                    <span>
+                      <Badge state={engineJobBadgeState(job.state)}>{stateLabel(job.state)}</Badge>
+                      <small>{stateLabel(job.approvalState)}</small>
+                    </span>
+                  </button>
+                ))}
+                {jobs?.items.length === 0 ? (
+                  <p className="muted">No transaction jobs yet.</p>
+                ) : null}
+                {jobs ? (
+                  <div className="pagination engine-pagination">
+                    <button
+                      type="button"
+                      className="btn btn-tertiary"
+                      disabled={previousCursors.length === 0 || surface === "loading"}
+                      onClick={() => {
+                        const history = previousCursors.slice();
+                        const previous = history.pop() ?? null;
+                        setPreviousCursors(history);
+                        setCursor(previous);
+                      }}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tertiary"
+                      disabled={!jobs.nextCursor || surface === "loading"}
+                      onClick={() => {
+                        if (!jobs.nextCursor) return;
+                        setPreviousCursors((history) => [...history, cursor]);
+                        setCursor(jobs.nextCursor);
+                      }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                ) : null}
+              </div>
 
-            <div className="card engine-detail-host">
-              {selectedJob ? (
-                <>
-                  <EngineJobReview
-                    job={selectedJob}
-                    actionsEnabled={actionsEnabled}
-                    action={action === "approve" || action === "invalidate" ? action : null}
-                    onApprove={approve}
-                    onInvalidate={() => void invalidateApproval()}
-                  />
-                  {status ? (
-                    <EngineWalletClaim
-                      chainId={chainId}
+              <div className="card engine-detail-host">
+                {selectedJob ? (
+                  <>
+                    <EngineJobReview
                       job={selectedJob}
-                      network={network}
-                      status={status}
-                      token={token}
+                      actionsEnabled={actionsEnabled}
+                      action={action === "approve" || action === "invalidate" ? action : null}
+                      onApprove={approve}
+                      onInvalidate={() => void invalidateApproval()}
                     />
-                  ) : null}
-                </>
-              ) : (
-                <div className="engine-empty-detail">
-                  <ShieldWarning />
-                  <h3>Select a transaction job</h3>
-                  <p className="muted">
-                    Sidekick validates the current details before showing approval controls.
-                    Refreshing or signing out clears them.
-                  </p>
-                </div>
-              )}
+                    {status ? (
+                      <EngineWalletClaim
+                        chainId={chainId}
+                        job={selectedJob}
+                        network={network}
+                        status={status}
+                        token={token}
+                      />
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="engine-empty-detail">
+                    <ShieldWarning />
+                    <h3>Select a transaction job</h3>
+                    <p className="muted">
+                      Sidekick validates the current details before showing approval controls.
+                      Refreshing or signing out clears them.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </>
       ) : null}
     </section>

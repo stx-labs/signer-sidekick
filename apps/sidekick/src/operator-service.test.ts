@@ -34,7 +34,10 @@ function alertInput(options: {
 }) {
   const thresholdUstx = "75000000000";
   return {
-    preflight: { checks: [] },
+    preflight: {
+      checks: [],
+      cycle: { nextId: 144, isPreparePhase: false, blocksUntilPreparePhase: 100 },
+    },
     manager: {
       attachAllowed: true,
       automationEligibilityReason: "Manager source is not recognized",
@@ -239,8 +242,8 @@ describe("operator service", () => {
   });
 
   it("limits the signer-set threshold alert to the next cycle", () => {
-    const alerts = buildAlerts(
-      alertInput({
+    const alerts = buildAlerts({
+      ...alertInput({
         cycles: [
           { cycleId: 5, status: "ready", meetsThreshold: true },
           { cycleId: 6, status: "attention", meetsThreshold: false },
@@ -252,7 +255,11 @@ describe("operator service", () => {
           },
         ],
       }),
-    );
+      preflight: {
+        checks: [],
+        cycle: { nextId: 6, isPreparePhase: false, blocksUntilPreparePhase: 100 },
+      },
+    } as Parameters<typeof buildAlerts>[0]);
 
     expect(alerts).toContainEqual(
       expect.objectContaining({
@@ -278,6 +285,47 @@ describe("operator service", () => {
     );
 
     expect(alerts).not.toContainEqual(expect.objectContaining({ id: "pool:forecast-attention" }));
+  });
+
+  it("does not present a locked signer set as a required action", () => {
+    const input = alertInput({
+      cycles: [
+        { cycleId: 143, status: "attention", meetsThreshold: false },
+        { cycleId: 144, status: "attention", meetsThreshold: false },
+        { cycleId: 145, status: "ready", meetsThreshold: true },
+      ],
+    });
+    input.preflight.cycle = {
+      nextId: 144,
+      isPreparePhase: true,
+      blocksUntilPreparePhase: 0,
+    } as typeof input.preflight.cycle;
+
+    expect(buildAlerts(input)).not.toContainEqual(
+      expect.objectContaining({ id: "pool:forecast-attention" }),
+    );
+  });
+
+  it("moves the threshold action to the first cycle that can still change", () => {
+    const input = alertInput({
+      cycles: [
+        { cycleId: 143, status: "ready", meetsThreshold: true },
+        { cycleId: 144, status: "attention", meetsThreshold: false },
+        { cycleId: 145, status: "attention", meetsThreshold: false },
+      ],
+    });
+    input.preflight.cycle = {
+      nextId: 144,
+      isPreparePhase: true,
+      blocksUntilPreparePhase: 0,
+    } as typeof input.preflight.cycle;
+
+    expect(buildAlerts(input)).toContainEqual(
+      expect.objectContaining({
+        id: "pool:forecast-attention",
+        detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 145.",
+      }),
+    );
   });
 
   it("attaches the resolving control to roster and withdrawal alerts", () => {

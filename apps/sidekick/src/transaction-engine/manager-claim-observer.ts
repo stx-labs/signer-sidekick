@@ -9,6 +9,7 @@ import {
   type ManagerClaimRewardsPlan,
   planManagerClaimRewards,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import {
@@ -94,12 +95,28 @@ export const managerClaimObserveFactsSchema = z
         rewardsPerToken: uintSchema,
       })
       .strict(),
-    noBondParticipation: z
-      .object({
-        proven: z.literal(true),
-        evidenceSha256: digestSchema,
-      })
-      .strict(),
+    stxEarnedSats: uintSchema,
+    /**
+     * Every bond bucket this claim will name, ascending. Empty for an STX-only pool, which is now
+     * just the case where no bond period holds anything for this manager.
+     */
+    bondBuckets: z
+      .array(
+        z
+          .object({
+            bondIndex: uintSchema,
+            managerSharesSats: uintSchema,
+            earnedSats: uintSchema,
+            feeSnapshot: z
+              .object({
+                state: z.enum(["absent", "present"]),
+                effectiveFeeBips: z.bigint().min(0n).max(9_999n),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(MAX_BOND_PERIODS_PER_CYCLE),
     observedSignerEarnedSats: uintSchema,
     feeSnapshot: z
       .object({
@@ -181,6 +198,21 @@ export const managerClaimObserveFactsSchema = z
         });
       }
     }
+    // `observedSignerEarnedSats` is the whole claim: the STX bucket plus every bond bucket named in
+    // the call. PoX-5 pays a claim out in one transfer, so the outflow, the postcondition and the
+    // per-bucket breakdown all have to agree on that one number.
+    // Only meaningful while the claim is still outstanding. Reconciling a completed claim replays
+    // the sealed buckets, whose earnings the claim itself has already zeroed on chain.
+    const bucketTotal =
+      value.stxEarnedSats +
+      value.bondBuckets.reduce((total, bucket) => total + bucket.earnedSats, 0n);
+    if (value.effect.remaining && bucketTotal !== value.observedSignerEarnedSats) {
+      context.addIssue({
+        code: "custom",
+        path: ["observedSignerEarnedSats"],
+        message: "Observed earned rewards must equal the STX bucket plus every bond bucket",
+      });
+    }
     if (value.effect.remaining) {
       if (value.observedSignerEarnedSats === 0n) {
         context.addIssue({
@@ -239,7 +271,8 @@ export interface ManagerClaimReconciliationPredicate {
     lastRewardComputeBurnHeight: number;
     rewardsPerToken: string;
   };
-  noBondEvidenceSha256: string;
+  /** Digest over the exact bucket readings this claim was planned from. */
+  bondBucketsSha256: string;
   expectedFeeSnapshot: {
     state: "present";
     effectiveFeeBips: string;
@@ -326,7 +359,7 @@ const storedPredicateSchema = z
         rewardsPerToken: z.string().regex(/^(0|[1-9]\d*)$/),
       })
       .strict(),
-    noBondEvidenceSha256: digestSchema,
+    bondBucketsSha256: digestSchema,
     expectedFeeSnapshot: z
       .object({
         state: z.literal("present"),
@@ -521,6 +554,33 @@ export function storedManagerClaimRecords(
   };
 }
 
+/**
+ * Digest of the exact bucket readings a claim was planned from.
+ *
+ * This replaces the revision 1 no-bond roster proof. That proof was a negative claim derived from a
+ * complete staker crawl; this is a positive statement about what each bucket held at the anchor,
+ * read straight from PoX-5. Binding it means a claim is invalidated when any bucket moves, the same
+ * way a changed amount invalidates one.
+ */
+export function bondBucketsDigest(
+  value: Pick<ParsedManagerClaimObserveFacts, "stxEarnedSats" | "bondBuckets">,
+): string {
+  return transactionEngineDocumentSha256({
+    schemaVersion: 1,
+    kind: "manager-claim-bond-buckets",
+    stxEarnedSats: value.stxEarnedSats.toString(),
+    bondBuckets: value.bondBuckets.map((bucket) => ({
+      bondIndex: bucket.bondIndex.toString(),
+      managerSharesSats: bucket.managerSharesSats.toString(),
+      earnedSats: bucket.earnedSats.toString(),
+      feeSnapshot: {
+        state: bucket.feeSnapshot.state,
+        effectiveFeeBips: bucket.feeSnapshot.effectiveFeeBips.toString(),
+      },
+    })),
+  });
+}
+
 function completionBlocks(
   value: ParsedManagerClaimObserveFacts,
   records: ManagerClaimObserveResult["records"],
@@ -535,7 +595,7 @@ function completionBlocks(
       value.rewardCheckpoint.lastRewardComputeBurnHeight &&
     predicate.rewardCheckpoint.rewardsPerToken ===
       value.rewardCheckpoint.rewardsPerToken.toString() &&
-    predicate.noBondEvidenceSha256 === value.noBondParticipation.evidenceSha256 &&
+    predicate.bondBucketsSha256 === bondBucketsDigest(value) &&
     predicate.expectedFeeSnapshot.effectiveFeeBips ===
       value.feeSnapshot.effectiveFeeBips.toString() &&
     predicate.expectedEffect.amountSats === value.expectedSignerOutflowSats.toString() &&
@@ -615,10 +675,8 @@ export class ObserveManagerClaimPlanner {
         lastRewardComputeBurnHeight: value.rewardCheckpoint.lastRewardComputeBurnHeight,
         rewardsPerToken: value.rewardCheckpoint.rewardsPerToken,
       },
-      noBondParticipation: {
-        proven: true,
-        evidenceDigest: value.noBondParticipation.evidenceSha256,
-      },
+      stxEarnedSats: value.stxEarnedSats,
+      bondBuckets: value.bondBuckets,
       feeSnapshot: value.feeSnapshot,
       sender: {
         principal: value.gasPayer.principal,
@@ -637,7 +695,7 @@ export class ObserveManagerClaimPlanner {
         lastRewardComputeBurnHeight: value.rewardCheckpoint.lastRewardComputeBurnHeight,
         rewardsPerToken: value.rewardCheckpoint.rewardsPerToken.toString(),
       },
-      noBondEvidenceSha256: value.noBondParticipation.evidenceSha256,
+      bondBucketsSha256: bondBucketsDigest(value),
       expectedFeeSnapshot: {
         state: "present",
         effectiveFeeBips: value.feeSnapshot.effectiveFeeBips.toString(),

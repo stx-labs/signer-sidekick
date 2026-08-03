@@ -411,6 +411,14 @@ function App() {
     const refreshed = await load();
     if (!refreshed) throw new Error("The latest operator state is not available yet.");
   }, [load]);
+  const refreshStatus = useCallback(async () => {
+    setRefreshingStatus(true);
+    try {
+      await load(false, false, true);
+    } finally {
+      setRefreshingStatus(false);
+    }
+  }, [load]);
   const markOnboardingStarted = useCallback(() => setOnboardingStarted(true), []);
   const setupNoticeKey = data
     ? `sidekick-setup-notice:${data.network}:${data.managerPrincipal}`
@@ -492,6 +500,10 @@ function App() {
             operatorStateStale={stale}
             token={token}
             onOperatorStateChanged={refreshOperatorState}
+            onRefreshStatus={refreshStatus}
+            refreshingStatus={refreshingStatus}
+            sync={sync}
+            syncing={syncing}
           />
         );
       case "pool":
@@ -614,10 +626,7 @@ function App() {
               type="button"
               className="btn btn-tertiary sm"
               disabled={refreshingStatus}
-              onClick={() => {
-                setRefreshingStatus(true);
-                void load(false, false, true).finally(() => setRefreshingStatus(false));
-              }}
+              onClick={() => void refreshStatus()}
             >
               {refreshingStatus ? "Refreshing…" : "Refresh"}
             </button>
@@ -670,6 +679,16 @@ function App() {
               <div className="body">
                 <strong>Chain data sync failed</strong>
                 <span>{syncOperationError(syncOperation)}</span>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary sm"
+                    disabled={syncing}
+                    onClick={() => void sync()}
+                  >
+                    {syncing ? "Syncing" : "Retry sync"}
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -679,6 +698,16 @@ function App() {
               <div className="body">
                 <strong>Chain data sync needs attention</strong>
                 <span>{syncError}</span>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary sm"
+                    disabled={syncing}
+                    onClick={() => void sync()}
+                  >
+                    {syncing ? "Syncing" : "Retry sync"}
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}

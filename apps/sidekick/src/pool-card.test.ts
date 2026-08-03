@@ -82,6 +82,8 @@ describe("pool card artifacts", () => {
     expect(artifact.body).toContain('fetch(data.publicApiUrl + "/v2/pox"');
     expect(artifact.body).toContain("Operator &lt;Pool&gt;");
     expect(artifact.body).toContain("Bitcoin block height");
+    expect(artifact.body).toContain("View manager on Explorer");
+    expect(artifact.body).not.toContain("Open in Leather");
     expect(artifact.body).not.toContain("<h1>Operator <Pool></h1>");
     expect(artifact.safety).toEqual({
       containsApiKey: false,

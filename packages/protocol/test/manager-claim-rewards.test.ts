@@ -47,10 +47,8 @@ function fixture(): ManagerClaimRewardsPlanInput {
       lastRewardComputeBurnHeight: 4_099,
       rewardsPerToken: 123_456_789n,
     },
-    noBondParticipation: {
-      proven: true,
-      evidenceDigest: "ef".repeat(32),
-    },
+    stxEarnedSats: 1_234n,
+    bondBuckets: [],
     feeSnapshot: {
       state: "absent",
       effectiveFeeBips: 500n,
@@ -75,7 +73,7 @@ describe("reference-manager claim-rewards transaction planner", () => {
 
     expect(plan).toMatchObject({
       kind: "manager-claim-rewards",
-      intentHash: "d20180ed08e03ff35c59985a6b5b93b64650185788c2758722b852b4e3402143",
+      intentHash: "550fe51e946c58570645d6858bde2d73c1cb01e11865b0bb58e0ecad528b0a18",
       unsignedTransactionSha256: "17beb820be1e1568cb52c53d2ea17ac3705c39d6381a0bb9a7e5ac56567ee995",
       material: {
         adapter: {
@@ -100,10 +98,8 @@ describe("reference-manager claim-rewards transaction planner", () => {
           lastRewardComputeBurnHeight: 4_099,
           rewardsPerToken: "123456789",
         },
-        noBondParticipation: {
-          proven: true,
-          evidenceDigest: "ef".repeat(32),
-        },
+        stxEarnedSats: "1234",
+        bondBuckets: [],
         feeSnapshot: {
           state: "absent",
           effectiveFeeBips: "500",
@@ -202,8 +198,6 @@ describe("reference-manager claim-rewards transaction planner", () => {
       value.attestationDigest = value.attestationDigest.toUpperCase();
       value.chainAnchor.indexBlockHash = value.chainAnchor.indexBlockHash.toUpperCase();
       value.managerSourceFingerprint = value.managerSourceFingerprint.toUpperCase();
-      value.noBondParticipation.evidenceDigest =
-        value.noBondParticipation.evidenceDigest.toUpperCase();
       value.sender.publicKey = value.sender.publicKey.toUpperCase();
     });
     const normalized = await planManagerClaimRewards(uppercaseHex);
@@ -235,9 +229,6 @@ describe("reference-manager claim-rewards transaction planner", () => {
       }),
       withChange((value) => {
         value.rewardObservation.rewardsPerToken += 1n;
-      }),
-      withChange((value) => {
-        value.noBondParticipation.evidenceDigest = "45".repeat(32);
       }),
       withChange((value) => {
         value.feeSnapshot.state = "present";
@@ -275,6 +266,7 @@ describe("reference-manager claim-rewards transaction planner", () => {
       }),
       withChange((value) => {
         value.expectedSbtcOutflow += 1n;
+        value.stxEarnedSats += 1n;
       }),
       withChange((value) => {
         value.chainAnchor.stacksBlockHeight += 1;
@@ -321,7 +313,15 @@ describe("reference-manager claim-rewards transaction planner", () => {
         value.rewardObservation.rewardsPerToken += 1n;
       }),
       withChange((value) => {
-        value.noBondParticipation.evidenceDigest = "45".repeat(32);
+        value.stxEarnedSats = 1_034n;
+        value.bondBuckets = [
+          {
+            bondIndex: 0n,
+            managerSharesSats: 9n,
+            earnedSats: 200n,
+            feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+          },
+        ];
       }),
       withChange((value) => {
         value.feeSnapshot.state = "present";
@@ -349,11 +349,80 @@ describe("reference-manager claim-rewards transaction planner", () => {
     }
   });
 
+  it("puts the bond-index list in the transaction and the bucket readings in the intent only", async () => {
+    function bucketed(
+      buckets: NonNullable<ManagerClaimRewardsPlanInput["bondBuckets"]>,
+      stxEarnedSats: bigint,
+    ): ManagerClaimRewardsPlanInput {
+      return withChange((value) => {
+        value.stxEarnedSats = stxEarnedSats;
+        value.bondBuckets = buckets;
+      });
+    }
+    const bucket = {
+      bondIndex: 2n,
+      managerSharesSats: 5_000n,
+      earnedSats: 200n,
+      feeSnapshot: { state: "present", effectiveFeeBips: 500n },
+    } as const;
+
+    const stxOnly = await planManagerClaimRewards(fixture());
+    const withBond = await planManagerClaimRewards(bucketed([bucket], 1_034n));
+    // The list is a call argument, so naming a bucket must change the signed bytes.
+    expect(withBond.unsignedTransactionHex).not.toBe(stxOnly.unsignedTransactionHex);
+    expect(withBond.material.call.bondPeriods).toEqual(["2"]);
+
+    // Re-reading the same bucket at different values keeps the call identical but must not
+    // reuse the earlier intent hash: the operator approved a specific set of readings.
+    const restatedShares = await planManagerClaimRewards(
+      bucketed([{ ...bucket, managerSharesSats: 4_000n }], 1_034n),
+    );
+    expect(restatedShares.unsignedTransactionHex).toBe(withBond.unsignedTransactionHex);
+    expect(restatedShares.intentHash).not.toBe(withBond.intentHash);
+
+    const restatedFee = await planManagerClaimRewards(
+      bucketed([{ ...bucket, feeSnapshot: { state: "absent", effectiveFeeBips: 500n } }], 1_034n),
+    );
+    expect(restatedFee.unsignedTransactionHex).toBe(withBond.unsignedTransactionHex);
+    expect(restatedFee.intentHash).not.toBe(withBond.intentHash);
+  });
+
+  it("keeps a zero-earning bucket in the claim so its fee snapshot is pinned", async () => {
+    // PoX-5 returns a `bond-rewards` entry for every index passed, and the manager `map-insert`s a
+    // fee for each. Dropping a zero-earning bucket would leave its fee to a later, possibly
+    // different, configured value.
+    const plan = await planManagerClaimRewards(
+      withChange((value) => {
+        value.bondBuckets = [
+          {
+            bondIndex: 4n,
+            managerSharesSats: 9_000n,
+            earnedSats: 0n,
+            feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+          },
+        ];
+      }),
+    );
+
+    expect(plan.material.call.bondPeriods).toEqual(["4"]);
+    expect(plan.material.bondBuckets).toEqual([
+      {
+        bondIndex: "4",
+        managerSharesSats: "9000",
+        earnedSats: "0",
+        feeSnapshot: { state: "absent", effectiveFeeBips: "500" },
+      },
+    ]);
+    // The outflow is unchanged: a zero-earning bucket contributes nothing to the transfer.
+    expect(plan.material.expectedEffect.amount).toBe("1234");
+  });
+
   it("accepts the exact serialization limits", async () => {
     const input = withChange((value) => {
       value.rewardCycle = (1n << 128n) - 1n;
       value.chainAnchor.rewardCycle = value.rewardCycle;
       value.expectedSbtcOutflow = (1n << 64n) - 1n;
+      value.stxEarnedSats = value.expectedSbtcOutflow;
       value.nonce = (1n << 64n) - 1n;
       value.fee = (1n << 64n) - 1n;
     });
@@ -365,7 +434,7 @@ describe("reference-manager claim-rewards transaction planner", () => {
 
   it.each([
     ["unknown top-level field", (value: Record<string, unknown>) => (value.functionName = "evil")],
-    ["wrong adapter revision", (value: Record<string, unknown>) => (value.adapterRevision = 2)],
+    ["wrong adapter revision", (value: Record<string, unknown>) => (value.adapterRevision = 3)],
     [
       "unsupported network",
       (value: Record<string, unknown>) => (value.network = { kind: "devnet", chainId: 0x80000000 }),
@@ -399,10 +468,19 @@ describe("reference-manager claim-rewards transaction planner", () => {
     ],
     ["negative reward cycle", (value: Record<string, unknown>) => (value.rewardCycle = -1n)],
     ["uint128 overflow", (value: Record<string, unknown>) => (value.rewardCycle = 1n << 128n)],
-    ["zero expected outflow", (value: Record<string, unknown>) => (value.expectedSbtcOutflow = 0n)],
+    [
+      "zero expected outflow",
+      (value: Record<string, unknown>) => {
+        value.expectedSbtcOutflow = 0n;
+        value.stxEarnedSats = 0n;
+      },
+    ],
     [
       "postcondition overflow",
-      (value: Record<string, unknown>) => (value.expectedSbtcOutflow = 1n << 64n),
+      (value: Record<string, unknown>) => {
+        value.expectedSbtcOutflow = 1n << 64n;
+        value.stxEarnedSats = 1n << 64n;
+      },
     ],
     [
       "mismatched anchor cycle",
@@ -507,24 +585,86 @@ describe("reference-manager claim-rewards transaction planner", () => {
       "missing reward observation",
       (value: Record<string, unknown>) => delete value.rewardObservation,
     ],
+    ["missing bond buckets", (value: Record<string, unknown>) => delete value.bondBuckets],
+    ["missing STX earnings", (value: Record<string, unknown>) => delete value.stxEarnedSats],
     [
-      "unproven no-bond participation",
-      (value: Record<string, unknown>) =>
-        ((value.noBondParticipation as Record<string, unknown>).proven = false),
+      "more bond buckets than PoX-5 accepts",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = Array.from({ length: 7 }, (_unused, index) => ({
+          bondIndex: BigInt(index),
+          managerSharesSats: 1n,
+          earnedSats: 0n,
+          feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+        }));
+      },
     ],
     [
-      "invalid no-bond evidence digest",
-      (value: Record<string, unknown>) =>
-        ((value.noBondParticipation as Record<string, unknown>).evidenceDigest = "ef"),
+      "duplicate bond bucket",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = [0n, 0n].map((bondIndex) => ({
+          bondIndex,
+          managerSharesSats: 1n,
+          earnedSats: 0n,
+          feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+        }));
+      },
     ],
     [
-      "unknown no-bond evidence field",
-      (value: Record<string, unknown>) =>
-        ((value.noBondParticipation as Record<string, unknown>).bondPeriod = 1),
+      "descending bond buckets",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = [2n, 1n].map((bondIndex) => ({
+          bondIndex,
+          managerSharesSats: 1n,
+          earnedSats: 0n,
+          feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+        }));
+      },
     ],
     [
-      "missing no-bond evidence",
-      (value: Record<string, unknown>) => delete value.noBondParticipation,
+      "bond bucket with neither shares nor earnings",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = [
+          {
+            bondIndex: 0n,
+            managerSharesSats: 0n,
+            earnedSats: 0n,
+            feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+          },
+        ];
+      },
+    ],
+    [
+      "outflow that does not cover every claimed bucket",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = [
+          {
+            bondIndex: 0n,
+            managerSharesSats: 10n,
+            earnedSats: 7n,
+            feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+          },
+        ];
+      },
+    ],
+    [
+      "unknown bond bucket field",
+      (value: Record<string, unknown>) => {
+        value.stxEarnedSats = 1_234n;
+        value.bondBuckets = [
+          {
+            bondIndex: 0n,
+            managerSharesSats: 10n,
+            earnedSats: 0n,
+            isL1Lock: true,
+            feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
+          },
+        ];
+      },
     ],
     [
       "invalid fee-snapshot state",

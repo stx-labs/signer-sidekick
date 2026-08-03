@@ -718,4 +718,178 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
       simnet.callPublicFn(pox5Id, "unstake", [Cl.principal(managerId)], staker).result,
     ).toBeErr(Cl.uint(28));
   });
+
+  it("distributes and claims an sBTC bond bucket alongside the STX bucket", async () => {
+    initializePox5();
+    registerManager();
+    const stxStaker = simnet.getAccounts().get("wallet_1");
+    const bondStaker = simnet.getAccounts().get("wallet_2");
+    if (!stxStaker || !bondStaker) throw new Error("Clarinet wallet fixtures are missing");
+
+    // The regtest fixture ships the mainnet-boot bond admin, which simnet accepts as a sender, so
+    // the role can be handed to the deployer without patching the vendored contract.
+    expectOk(
+      simnet.callPublicFn(
+        pox5Id,
+        "set-bond-admin",
+        [Cl.principal(deployer)],
+        "SP000000000000000000002Q6VF78",
+      ).result,
+    );
+    expectOk(
+      simnet.callPublicFn(managerId, "update-fees", [Cl.uint(1_000)], deployer).result,
+      Cl.bool(true),
+    );
+
+    const bondSats = 100_000n;
+    const stxValueRatio = 1_000_000n;
+    const minUstxRatio = 10_000n;
+    expectOk(
+      simnet.callPublicFn(
+        pox5Id,
+        "setup-bond",
+        [
+          Cl.uint(0),
+          Cl.uint(500),
+          Cl.uint(stxValueRatio),
+          Cl.uint(minUstxRatio),
+          Cl.bufferFromHex("00"),
+          Cl.list([
+            Cl.tuple({ staker: Cl.principal(bondStaker), "max-sats": Cl.uint(bondSats * 2n) }),
+          ]),
+        ],
+        deployer,
+      ).result,
+    );
+
+    const requiredUstx = uintValue(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "min-ustx-for-sats-amount",
+        [Cl.uint(bondSats), Cl.uint(stxValueRatio), Cl.uint(minUstxRatio)],
+        deployer,
+      ).result,
+    );
+    simnet.mintFT(sbtcAssetId, bondStaker, bondSats);
+    const registration = simnet.callPublicFn(
+      pox5Id,
+      "register-for-bond",
+      [
+        Cl.uint(0),
+        Cl.principal(managerId),
+        Cl.uint(requiredUstx),
+        // `err` selects the sBTC-collateral path; `ok` would carry Bitcoin L1 lockup proofs.
+        Cl.error(Cl.uint(bondSats)),
+        Cl.none(),
+      ],
+      bondStaker,
+    );
+    expectOk(registration.result);
+    expect(
+      simnet.callReadOnlyFn(pox5Id, "get-bond-membership", [Cl.principal(bondStaker)], deployer)
+        .result,
+    ).toBeSome(
+      Cl.tuple({
+        "amount-sats": Cl.uint(bondSats),
+        "amount-ustx": Cl.uint(requiredUstx),
+        "bond-index": Cl.uint(0),
+        "is-l1-lock": Cl.bool(false),
+        signer: Cl.contractPrincipal(deployer, "signer-manager"),
+      }),
+    );
+    // A bond participant has no STX-only record: `register-for-bond` never writes one. This is the
+    // state that made the roster fail closed before bond membership was node-verified.
+    expect(
+      simnet.callReadOnlyFn(pox5Id, "get-staker-info", [Cl.principal(bondStaker)], deployer).result,
+    ).toBeNone();
+
+    stake(stxStaker);
+    const rewards = 2_000n;
+    simnet.mintFT(sbtcAssetId, deployer, rewards);
+    expectOk(
+      simnet.callPublicFn(
+        sbtcTokenId,
+        "transfer",
+        [Cl.uint(rewards), Cl.principal(deployer), Cl.principal(pox5Id), Cl.none()],
+        deployer,
+      ).result,
+      Cl.bool(true),
+    );
+    const cycleStart = uintValue(
+      simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
+    );
+    simnet.mineEmptyBurnBlocks(
+      Number(cycleStart + halfCycleLength - BigInt(simnet.burnBlockHeight)),
+    );
+
+    // The global calculator needs the complete active bond list; an empty one is rejected outright.
+    expect(
+      simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([])], deployer).result,
+    ).toBeErr(Cl.uint(33));
+    expectOk(
+      simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([Cl.uint(0)])], deployer).result,
+    );
+
+    const bondEarned = uintValue(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "get-earned",
+        [Cl.principal(managerId), Cl.uint(1), Cl.some(Cl.uint(0))],
+        deployer,
+      ).result,
+    );
+    expect(bondEarned).toBeGreaterThan(0n);
+
+    // One transaction sweeps both buckets, and the manager pins a fee snapshot for each. Claiming
+    // with an empty list would succeed but strand the bond bucket and leave its fee unpinned.
+    const claim = simnet.callPublicFn(
+      managerId,
+      "claim-rewards",
+      [Cl.list([Cl.uint(0)]), Cl.uint(1)],
+      deployer,
+    );
+    expectOk(claim.result);
+    expect(
+      simnet.callReadOnlyFn(managerId, "get-fee-bips-for-cycle", [Cl.uint(1), Cl.none()], deployer)
+        .result,
+    ).toBeUint(1_000);
+    expect(
+      simnet.callReadOnlyFn(
+        managerId,
+        "get-fee-bips-for-cycle",
+        [Cl.uint(1), Cl.some(Cl.uint(0))],
+        deployer,
+      ).result,
+    ).toBeUint(1_000);
+
+    // The bond staker settles their own bucket; the STX staker settles theirs. One call each.
+    const bondPayout = simnet.callPublicFn(
+      managerId,
+      "claim-staker-rewards",
+      [Cl.principal(bondStaker), Cl.uint(1), Cl.some(Cl.uint(0))],
+      deployer,
+    );
+    expectOk(bondPayout.result);
+    expect(sbtcBalance(bondStaker)).toBeGreaterThan(0n);
+    expect(
+      simnet.callReadOnlyFn(
+        managerId,
+        "get-earned-staker-rewards",
+        [Cl.principal(bondStaker), Cl.uint(1), Cl.some(Cl.uint(0))],
+        deployer,
+      ).result,
+    ).toBeTuple({ earned: Cl.uint(0), fees: Cl.uint(0) });
+
+    // Both buckets settle to zero for the manager, so the single claim really did sweep both.
+    for (const bucket of [Cl.none(), Cl.some(Cl.uint(0))]) {
+      expect(
+        simnet.callReadOnlyFn(
+          pox5Id,
+          "get-earned",
+          [Cl.principal(managerId), Cl.uint(1), bucket],
+          deployer,
+        ).result,
+      ).toBeUint(0);
+    }
+  });
 });

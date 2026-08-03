@@ -1,4 +1,5 @@
 import {
+  ArrowClockwise,
   ArrowRight,
   CheckCircle,
   Coins,
@@ -632,12 +633,20 @@ export function Manager({
   operatorStateStale,
   token,
   onOperatorStateChanged,
+  onRefreshStatus,
+  refreshingStatus,
+  sync,
+  syncing,
 }: {
   action: ManagerActionId | null;
   data: Snapshot;
   operatorStateStale: boolean;
   token: string;
   onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
+  onRefreshStatus?: (() => void | Promise<void>) | undefined;
+  refreshingStatus: boolean;
+  sync: () => void;
+  syncing: boolean;
 }) {
   const cycles = data.forecast?.cycles ?? [];
   const recognitionLabel =
@@ -656,6 +665,33 @@ export function Manager({
   );
   const actionAvailability = managerActionAvailability(data, operatorStateStale);
   const canPrepareAdminActions = actionAvailability.available;
+  const managerAvailabilityAction =
+    operatorStateStale || data.freshness?.status === "stale"
+      ? {
+          label: refreshingStatus ? "Refreshing…" : "Refresh status",
+          disabled: refreshingStatus,
+          onClick: onRefreshStatus,
+        }
+      : data.preflight.checks.some(
+            (check) =>
+              ["node-network", "api-network"].includes(check.id) && check.status !== "pass",
+          )
+        ? {
+            label: "Open Settings",
+            disabled: false,
+            onClick: () => {
+              location.hash = dashboardHash("settings");
+            },
+          }
+        : !data.manager.attachAllowed
+          ? {
+              label: "Open Initial Setup",
+              disabled: false,
+              onClick: () => {
+                location.hash = dashboardHash("setup");
+              },
+            }
+          : null;
 
   useEffect(() => {
     if (!action) return;
@@ -684,6 +720,20 @@ export function Manager({
             <strong>Manager actions are unavailable.</strong>
             <br />
             {actionAvailability.reason}
+            {managerAvailabilityAction ? (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary sm"
+                  disabled={
+                    managerAvailabilityAction.disabled || !managerAvailabilityAction.onClick
+                  }
+                  onClick={() => void managerAvailabilityAction.onClick?.()}
+                >
+                  {managerAvailabilityAction.label}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -739,6 +789,20 @@ export function Manager({
             <strong>Manager actions are unavailable.</strong>
             <br />
             {actionAvailability.reason}
+            {managerAvailabilityAction ? (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary sm"
+                  disabled={
+                    managerAvailabilityAction.disabled || !managerAvailabilityAction.onClick
+                  }
+                  onClick={() => void managerAvailabilityAction.onClick?.()}
+                >
+                  {managerAvailabilityAction.label}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -842,6 +906,37 @@ export function Manager({
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div className="section-title">Current manager admins</div>
+      <div className="card manager-admin-list">
+        {data.activity.admins?.status === "current" ? (
+          <>
+            <p className="muted">
+              Reconstructed from the deploying account and confirmed <code>update-admin</code>{" "}
+              events.
+            </p>
+            <div className="manager-admin-principals">
+              {data.activity.admins.principals.map((principal) => (
+                <CopyableIdentifier
+                  key={principal}
+                  value={principal}
+                  display={principal}
+                  label="manager admin principal"
+                  className="identifier"
+                />
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="manager-admin-sync">
+            <p className="muted">Load the manager’s full admin history before displaying it.</p>
+            <button type="button" className="btn btn-tertiary sm" onClick={sync} disabled={syncing}>
+              <ArrowClockwise className={syncing ? "spin" : ""} />
+              {syncing ? "Syncing" : "Sync admin history"}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="section-title">Manager administration</div>

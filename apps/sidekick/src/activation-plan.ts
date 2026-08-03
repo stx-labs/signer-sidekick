@@ -242,6 +242,7 @@ export function createAttachActivationPlan(
   const registrationValid = Boolean(registration?.registered);
   const grantValid = Boolean(registration?.signerKeyGrantValid);
   const nextEligibility = setup.eligibility.next;
+  const nextCycleFixed = setup.enrollmentWindow?.status === "prepare-phase";
   const steps: ActivationPlanStep[] = [
     {
       id: "preflight",
@@ -299,10 +300,14 @@ export function createAttachActivationPlan(
     {
       id: "verify-next-cycle-eligibility",
       status:
-        nextEligibility?.meetsThreshold && nextEligibility.inSignerSet ? "complete" : "attention",
+        nextCycleFixed || (nextEligibility?.meetsThreshold && nextEligibility.inSignerSet)
+          ? "complete"
+          : "attention",
       title: "Check next-cycle pool eligibility",
       detail: nextEligibility
-        ? `Cycle ${nextEligibility.cycleId} margin is ${nextEligibility.marginUstx} uSTX`
+        ? nextCycleFixed
+          ? `Cycle ${nextEligibility.cycleId} signer-set eligibility is fixed for this prepare phase`
+          : `Cycle ${nextEligibility.cycleId} margin is ${nextEligibility.marginUstx} uSTX`
         : "Next-cycle eligibility is not available from the connected node",
       command: `sidekick setup status ${shellQuote(manager.managerPrincipal)}`,
       requires: ["verify-signer-grant"],

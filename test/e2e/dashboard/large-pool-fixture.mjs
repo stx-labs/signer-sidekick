@@ -245,7 +245,25 @@ export const snapshot = {
       lastRewardComputeBurnHeight: "9230",
       lastComputedRewardCycle: "139",
       signerEarnedBeforeManagerClaimSats: "0",
+      signerEarnedAcrossBucketsSats: "0",
     },
+    calculation: {
+      state: "completed",
+      targetRewardCycle: 139,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: 9230,
+      observedLastRewardComputeBurnHeight: "9230",
+    },
+    buckets: [
+      {
+        bondIndex: null,
+        managerSharesSats: "0",
+        signerEarnedBeforeManagerClaimSats: "0",
+        rewardsPerToken: "0",
+        feeSnapshotBips: "100",
+        participating: false,
+      },
+    ],
     manager: {
       configuredFeeBips: "100",
       feeSnapshotBips: "100",
@@ -491,6 +509,37 @@ export function responseFor(url) {
       offset,
       limit,
       rewards: { ...snapshot.rewards, stakers: page(rewardStakers, offset, limit) },
+    };
+  }
+  if (request.pathname === "/api/v1/rewards/staker-claims") {
+    return {
+      generatedAt: snapshot.generatedAt,
+      rewardCycle: snapshot.rewards.rewardCycle,
+      page: {
+        stakerPrincipals: [roster[1].stakerPrincipal],
+        offset,
+        limit,
+        stakersTotal: 1,
+        nextCursor: null,
+      },
+      settlement: {
+        scope: "page",
+        stakersScanned: 1,
+        outstandingClaims: 1,
+        transactionCount: 1,
+        totalNetSats: "25000",
+        blockedClaims: 0,
+      },
+      candidates: [
+        {
+          stakerPrincipal: roster[1].stakerPrincipal,
+          bondIndex: null,
+          payout: { kind: "direct-sbtc", maxFeeSats: null },
+          rewards: { earnedSats: "25000", feeSats: "250", grossSats: "25250" },
+          claimable: true,
+          blockedReason: null,
+        },
+      ],
     };
   }
   if (request.pathname === "/api/v1/rewards/history") {
