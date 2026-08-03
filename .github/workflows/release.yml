@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Verify release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tags must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          }
+          commit="$(git rev-list -n 1 "$GITHUB_REF")"
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$commit" origin/main || {
+            echo "Release tag must point to a commit on main" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release
+        run: |
+          pnpm check
+          pnpm test:coverage
+          pnpm test:regtest
+
+      - name: Run dashboard browser suite
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e:dashboard
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish release image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="${{ steps.release.outputs.tag }}"
+          major="v${{ steps.release.outputs.version }}"
+          major="${major%%.*}"
+          if docker manifest inspect "$image:$tag" >/dev/null 2>&1; then
+            echo "Image tag $image:$tag already exists" >&2
+            exit 1
+          fi
+          docker build --target runtime \
+            --build-arg "VCS_REF=${{ steps.release.outputs.commit }}" \
+            --build-arg "VERSION=${{ steps.release.outputs.version }}" \
+            --tag "$image:$tag" \
+            --tag "$image:$major" \
+            .
+          docker push "$image:$tag"
+          docker push "$image:$major"
+          echo "reference=$image:$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" \
+            --verify-tag \
+            --title "Signer Sidekick ${{ steps.release.outputs.tag }}" \
+            --generate-notes \
+            --notes "Container image: \`${{ steps.image.outputs.reference }}\`"
