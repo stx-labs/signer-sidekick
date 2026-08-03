@@ -132,6 +132,27 @@
   flex-direction: row-reverse;
 }
 
+.eligibility-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.manager-admin-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.manager-admin-list p {
+  margin: 0;
+}
+
+.manager-admin-principals {
+  display: grid;
+  gap: 0.45rem;
+}
+
 .copy-identifier-button {
   display: inline-grid;
   flex: 0 0 24px;

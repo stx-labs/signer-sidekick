@@ -1242,7 +1242,13 @@ describe("live manager-claim observation", () => {
 
     await expect(service(store).observe(invalidInput)).resolves.toMatchObject({
       status: "blocked",
-      blocks: [{ code: "reward-checkpoint-mismatch" }],
+      blocks: [
+        {
+          code: "reward-checkpoint-mismatch",
+          message:
+            "Reward data is not aligned with the current claim checkpoint. Sidekick will retry as the chain advances",
+        },
+      ],
     });
   });
 

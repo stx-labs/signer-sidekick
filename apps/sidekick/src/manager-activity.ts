@@ -1,5 +1,7 @@
+import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import type {
   ManagerActivityPage,
+  StoredManagerAdminUpdate,
   StoredManagerClaim,
   StoredManagerWithdrawal,
 } from "./storage/store.js";
@@ -23,6 +25,8 @@ export interface ManagerActivityStore {
     chainId: number,
     contractId: string,
   ): { eventCount: number; latestBlockHeight: number | null };
+  getCursor?(sourceId: string, stream: string): { cursor: string | null } | null;
+  listManagerAdminUpdates?(chainId: number, contractId: string): StoredManagerAdminUpdate[];
 }
 
 export interface ManagerClaimActivity {
@@ -57,6 +61,11 @@ export interface ManagerActivity {
   claimTotal: number;
   withdrawalTotal: number;
   pendingWithdrawalTotal: number;
+  admins: {
+    status: "current" | "sync-required";
+    principals: string[];
+    updatesObserved: number;
+  };
 }
 
 export interface ManagerActivityOptions {
@@ -66,6 +75,7 @@ export interface ManagerActivityOptions {
   withdrawalLimit?: number;
   withdrawalOffset?: number;
   withdrawalState?: "pending" | "settled" | "reclaimed" | null;
+  sourceId?: string;
 }
 
 export function readManagerActivity(
@@ -88,6 +98,27 @@ export function readManagerActivity(
     limit: 1,
     state: "pending",
   });
+  const adminUpdates = store.listManagerAdminUpdates?.(chainId, managerPrincipal) ?? [];
+  const { address: deployingAdmin } = parseContractPrincipal(managerPrincipal);
+  const fullHistoryCursor =
+    options.sourceId && store.getCursor
+      ? store.getCursor(options.sourceId, `manager-logs:v2:${managerPrincipal}`)
+      : null;
+  const adminHistoryCurrent = fullHistoryCursor?.cursor === null;
+  const admins = new Set([deployingAdmin]);
+  if (adminHistoryCurrent) {
+    for (const update of adminUpdates) {
+      // A transaction index is required to establish the order of two admin changes in one block.
+      // New v2 event syncs persist it; until then, do not present a partial reconstruction as current.
+      if (update.transactionIndex === null) {
+        admins.clear();
+        break;
+      }
+      if (update.enabled) admins.add(update.adminPrincipal);
+      else admins.delete(update.adminPrincipal);
+    }
+  }
+  const adminStatus = adminHistoryCurrent && admins.size > 0 ? "current" : "sync-required";
   return {
     claims: claims.items,
     withdrawals: withdrawals.items,
@@ -95,5 +126,10 @@ export function readManagerActivity(
     claimTotal: claims.total,
     withdrawalTotal: withdrawals.total,
     pendingWithdrawalTotal: pending.total,
+    admins: {
+      status: adminStatus,
+      principals: adminStatus === "current" ? [...admins].sort() : [],
+      updatesObserved: adminUpdates.length,
+    },
   };
 }

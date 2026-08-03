@@ -90,6 +90,10 @@ export function Overview({
   const rewards = data.rewards;
   const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
   const blocksUntilPrepare = data.preflight.cycle.blocksUntilPreparePhase;
+  const currentCycleIsFixed =
+    data.setup?.enrollmentWindow.status === "prepare-phase" &&
+    current !== undefined &&
+    !current.contract.inSignerSet;
   const prepareEta =
     blocksUntilPrepare === null || !health?.burnBlockTiming
       ? null
@@ -336,9 +340,19 @@ export function Overview({
             </Badge>
           </StatLine>
           <StatLine label={`Signer set · ${current?.cycleId ?? "—"}`}>
-            <Badge state={current?.contract.inSignerSet ? "success" : "error"}>
-              {current?.contract.inSignerSet ? "Eligible" : "Not eligible"}
-            </Badge>
+            <span className="eligibility-status">
+              <Badge state={current?.contract.inSignerSet ? "success" : "error"}>
+                {current?.contract.inSignerSet ? "Eligible" : "Not eligible"}
+              </Badge>
+              {currentCycleIsFixed ? (
+                <span
+                  className="hint"
+                  title="The prepare phase has started, so stake changes cannot affect this cycle."
+                >
+                  Cycle is fixed
+                </span>
+              ) : null}
+            </span>
           </StatLine>
           <StatLine label="Source hash">
             <CopyableIdentifier

@@ -844,6 +844,33 @@ export function Manager({
         </div>
       </div>
 
+      <div className="section-title">Current manager admins</div>
+      <div className="card manager-admin-list">
+        {data.activity.admins?.status === "current" ? (
+          <>
+            <p className="muted">
+              Reconstructed from the deploying account and confirmed <code>update-admin</code>{" "}
+              events.
+            </p>
+            <div className="manager-admin-principals">
+              {data.activity.admins.principals.map((principal) => (
+                <CopyableIdentifier
+                  key={principal}
+                  value={principal}
+                  display={principal}
+                  label="manager admin principal"
+                  className="identifier"
+                />
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">
+            Run <strong>Sync now</strong> on Overview to load the manager’s full admin history.
+          </p>
+        )}
+      </div>
+
       <div className="section-title">Manager administration</div>
       <div className="grid cols-2 manager-action-grid">
         <button

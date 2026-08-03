@@ -323,6 +323,6 @@ describe("manager event synchronization", () => {
 
     await expect(synchronization).rejects.toThrow("shutdown requested");
     expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
-    expect(sidekickStore.getCursor(sourceId, `manager-logs:${manager}`)).toBeNull();
+    expect(sidekickStore.getCursor(sourceId, `manager-logs:v2:${manager}`)).toBeNull();
   });
 });

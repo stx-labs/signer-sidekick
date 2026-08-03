@@ -128,7 +128,20 @@ const managerActivityEnvelopeSchema = z.object({
       stakerPrincipal: z.string(),
       liabilityReleasedSats: unsignedIntegerTextSchema,
     }),
+    z.object({
+      kind: z.literal("update-admin"),
+      adminPrincipal: z.string().refine(validatePrincipal, "Invalid admin principal"),
+      enabled: z.boolean(),
+    }),
   ]),
+});
+
+const managerAdminUpdateRowSchema = z.object({
+  admin_principal: z.string().refine(validatePrincipal, "Invalid admin principal"),
+  enabled: z.union([z.literal(0), z.literal(1)]),
+  transaction_index: z.number().int().nonnegative().nullable(),
+  block_height: z.number().int().nonnegative(),
+  event_index: z.number().int().nonnegative(),
 });
 
 const managerClaimRowSchema = z.object({
@@ -741,6 +754,14 @@ export interface ManagerActivityPage<T> {
   total: number;
   offset: number;
   limit: number;
+}
+
+export interface StoredManagerAdminUpdate {
+  adminPrincipal: string;
+  enabled: boolean;
+  transactionIndex: number | null;
+  blockHeight: number;
+  eventIndex: number;
 }
 
 function toStoredChainEvent(row: unknown): StoredChainEvent {
@@ -1683,6 +1704,7 @@ export class SidekickStore {
     const parsed = managerActivityEnvelopeSchema.safeParse(value.decodedPayload);
     if (!parsed.success) return;
     const event = parsed.data.event;
+    if (event.kind === "update-admin") return;
     const isClaim = event.kind === "claim-staker-rewards";
     const amountSats =
       event.kind === "settle-accepted-withdrawal" ? event.liabilityReleasedSats : event.amountSats;
@@ -1825,6 +1847,37 @@ export class SidekickStore {
       offset,
       limit,
     };
+  }
+
+  listManagerAdminUpdates(chainId: number, managerPrincipal: string): StoredManagerAdminUpdate[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const rows = this.db
+      .prepare(
+        `SELECT
+           json_extract(decoded_payload_json, '$.event.adminPrincipal') AS admin_principal,
+           json_extract(decoded_payload_json, '$.event.enabled') AS enabled,
+           json_extract(raw_payload_json, '$.transactionIndex') AS transaction_index,
+           block_height,
+           event_index
+         FROM chain_events
+         WHERE chain_id = ?
+           AND contract_id = ?
+           AND canonical = 1
+           AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+           AND json_extract(decoded_payload_json, '$.event.kind') = 'update-admin'
+         ORDER BY block_height ASC, transaction_index ASC, event_index ASC`,
+      )
+      .all(chainId, manager);
+    return rows.map((row) => {
+      const value = managerAdminUpdateRowSchema.parse(row);
+      return {
+        adminPrincipal: value.admin_principal,
+        enabled: value.enabled === 1,
+        transactionIndex: value.transaction_index,
+        blockHeight: value.block_height,
+        eventIndex: value.event_index,
+      };
+    });
   }
 
   listManagerWithdrawals(

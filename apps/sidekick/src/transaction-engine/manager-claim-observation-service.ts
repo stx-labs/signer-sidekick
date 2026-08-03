@@ -539,7 +539,7 @@ function staticBlocks(
       block(
         blocks,
         "reward-checkpoint-mismatch",
-        "Reward data is stale. Sync chain data and try again",
+        "Reward data is not aligned with the current claim checkpoint. Sidekick will retry as the chain advances",
       );
     }
   }

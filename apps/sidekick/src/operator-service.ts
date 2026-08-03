@@ -293,9 +293,22 @@ export function buildAlerts(snapshot: {
         : { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   }
+  // A delegation only affects the next signer set while its enrollment window is open. Once the
+  // prepare phase (or its final pre-execution block) begins, that cycle is fixed; presenting its
+  // threshold as a required action would send an operator after an outcome they cannot change.
+  const enrollmentClosed =
+    snapshot.preflight.cycle.isPreparePhase === true ||
+    (snapshot.preflight.cycle.blocksUntilPreparePhase !== null &&
+      snapshot.preflight.cycle.blocksUntilPreparePhase <= 1);
+  const actionableCycleId =
+    snapshot.preflight.cycle.nextId === null
+      ? null
+      : snapshot.preflight.cycle.nextId + (enrollmentClosed ? 1 : 0);
   const affectedCycles =
-    snapshot.forecast?.status === "attention"
-      ? snapshot.forecast.cycles.slice(0, 2).filter(({ status }) => status === "attention")
+    snapshot.forecast?.status === "attention" && actionableCycleId !== null
+      ? snapshot.forecast.cycles.filter(
+          ({ cycleId, status }) => cycleId === actionableCycleId && status === "attention",
+        )
       : [];
   if (affectedCycles.length > 0) {
     const affected = affectedCycles.map(({ cycleId }) => cycleId).join(", ");
@@ -654,7 +667,10 @@ export class OperatorService {
     const chainId =
       config.expectedNetworkId ??
       (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
-    return readManagerActivity(this.options.store, chainId, this.options.managerPrincipal, options);
+    return readManagerActivity(this.options.store, chainId, this.options.managerPrincipal, {
+      ...options,
+      sourceId: createChainSourceId(config.network, config.apiUrl),
+    });
   }
 
   settings() {
@@ -895,6 +911,7 @@ export class OperatorService {
     const activity = readManagerActivity(store, preflight.node.networkId, managerPrincipal, {
       claimLimit: 4,
       withdrawalLimit: 50,
+      sourceId,
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
     const partial = {

@@ -503,6 +503,59 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
+  it("orders canonical administrator changes by transaction and event index", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    const putAdminUpdate = (
+      id: string,
+      eventIndex: number,
+      transactionIndex: number,
+      adminPrincipal: string,
+      enabled: boolean,
+    ) =>
+      store.putChainEvent({
+        chainId: 1,
+        txId: id,
+        eventIndex,
+        blockHeight: 8_600_000,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: true,
+        microblockCanonical: true,
+        contractId: manager,
+        topic: "update-admin",
+        rawPayload: { transactionIndex },
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          transactionStatus: "success",
+          event: { kind: "update-admin", adminPrincipal, enabled },
+        },
+        sourceId,
+        observedAt,
+      });
+    putAdminUpdate(txId, 1, 3, stakerOne, false);
+    putAdminUpdate(`0x${"66".repeat(32)}`, 0, 2, stakerOne, true);
+
+    expect(store.listManagerAdminUpdates(1, manager)).toEqual([
+      {
+        adminPrincipal: stakerOne,
+        enabled: true,
+        transactionIndex: 2,
+        blockHeight: 8_600_000,
+        eventIndex: 0,
+      },
+      {
+        adminPrincipal: stakerOne,
+        enabled: false,
+        transactionIndex: 3,
+        blockHeight: 8_600_000,
+        eventIndex: 1,
+      },
+    ]);
+  });
+
   it("paginates manager activity beyond the former 2,000-event read ceiling", async () => {
     const store = await memoryStore();
     registerSource(store);

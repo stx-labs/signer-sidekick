@@ -131,6 +131,14 @@ export async function readPoolSetupStatus(
       : [];
   const current = eligibility.find(({ cycleId }) => cycleId === preflight.cycle.currentId) ?? null;
   const next = eligibility.find(({ cycleId }) => cycleId === preflight.cycle.nextId) ?? null;
+  const enrollmentWindowStatus =
+    preflight.cycle.isPreparePhase === null
+      ? "unknown"
+      : preflight.cycle.isPreparePhase ||
+          (preflight.cycle.blocksUntilPreparePhase !== null &&
+            preflight.cycle.blocksUntilPreparePhase <= 1)
+        ? "prepare-phase"
+        : "open";
   const checks: SetupStatusCheck[] = [
     {
       id: "preflight",
@@ -196,11 +204,16 @@ export async function readPoolSetupStatus(
   } else {
     checks.push({
       id: "next-cycle-eligibility",
-      status: next.meetsThreshold && next.inSignerSet ? "pass" : "warn",
+      status:
+        enrollmentWindowStatus !== "open" || (next.meetsThreshold && next.inSignerSet)
+          ? "pass"
+          : "warn",
       message:
         next.meetsThreshold && next.inSignerSet
           ? `Manager is eligible for cycle ${next.cycleId}`
-          : `Manager is not yet eligible for cycle ${next.cycleId}`,
+          : enrollmentWindowStatus === "prepare-phase"
+            ? `Cycle ${next.cycleId} signer-set eligibility is fixed for this prepare phase`
+            : `Manager is not yet eligible for cycle ${next.cycleId}`,
     });
     if (!next.thresholdAndMembershipAgree) {
       checks.push({
@@ -211,17 +224,10 @@ export async function readPoolSetupStatus(
     }
   }
 
-  const enrollmentWindowStatus =
-    preflight.cycle.isPreparePhase === null
-      ? "unknown"
-      : preflight.cycle.isPreparePhase ||
-          (preflight.cycle.blocksUntilPreparePhase !== null &&
-            preflight.cycle.blocksUntilPreparePhase <= 1)
-        ? "prepare-phase"
-        : "open";
   checks.push({
     id: "enrollment-window",
-    status: enrollmentWindowStatus === "open" ? "pass" : "warn",
+    // A closed prepare window is normal protocol state, not an incomplete setup condition.
+    status: enrollmentWindowStatus === "unknown" ? "warn" : "pass",
     message:
       enrollmentWindowStatus === "open"
         ? `PoX-5 stake changes are open for cycle ${preflight.cycle.nextId ?? "unknown"}`

@@ -578,6 +578,11 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     claimTotal: number;
     withdrawalTotal: number;
     pendingWithdrawalTotal: number;
+    admins: {
+      status: "current" | "sync-required";
+      principals: string[];
+      updatesObserved: number;
+    };
     claims: Array<{
       txId: string;
       eventIndex: number;

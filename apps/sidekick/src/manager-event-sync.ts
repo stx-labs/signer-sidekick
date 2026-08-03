@@ -106,13 +106,13 @@ export async function syncManagerEvents(
   if (!Number.isSafeInteger(options.chainId) || options.chainId < 0) {
     throw new Error("chainId must be a non-negative safe integer");
   }
-  const stream = `manager-logs:${options.managerPrincipal}`;
+  // v2 adds the transaction index needed to reconstruct the current administrator set. A fresh
+  // full pass upgrades existing event rows before they are used for that display.
+  const stream = `manager-logs:v2:${options.managerPrincipal}`;
   const checkpoint = options.store.getCursor(options.sourceId, stream);
   let cursor = checkpoint?.cursor ?? null;
   const resumed = cursor !== null;
-  const incrementalScan =
-    cursor === null &&
-    options.store.hasChainEventsForContract(options.chainId, options.managerPrincipal);
+  const incrementalScan = checkpoint !== null && cursor === null;
   const requestedCursors = new Set<string | null>();
   let pagesProcessed = 0;
   let eventsProcessed = 0;
@@ -209,6 +209,7 @@ export async function syncManagerEvents(
         rawPayload: {
           schema: "stacks-api-v2-contract-log",
           transactionStatus: transaction.status,
+          transactionIndex: transaction.block.tx_index,
           bitcoinBlockHeight: transaction.bitcoin_block.height,
           contractLog: event.contract_log,
         },

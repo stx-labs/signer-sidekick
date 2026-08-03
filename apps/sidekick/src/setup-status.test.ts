@@ -165,7 +165,35 @@ describe("pool setup status", () => {
 
     expect(result.enrollmentWindow.status).toBe("prepare-phase");
     expect(result.checks).toContainEqual(
-      expect.objectContaining({ id: "enrollment-window", status: "warn" }),
+      expect.objectContaining({ id: "enrollment-window", status: "pass" }),
+    );
+  });
+
+  it("does not treat a missed enrollment window as incomplete setup", async () => {
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(uintCV(49_000_000_000n))
+      .mockResolvedValueOnce(falseCV())
+      .mockResolvedValueOnce(uintCV(49_000_000_000n))
+      .mockResolvedValueOnce(falseCV());
+
+    const result = await readPoolSetupStatus(
+      { callReadOnly },
+      {
+        ...preflight,
+        cycle: { ...preflight.cycle, isPreparePhase: true, blocksUntilPreparePhase: 0 },
+      },
+      manager,
+      registration,
+    );
+
+    expect(result.status).toBe("ready");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        id: "next-cycle-eligibility",
+        status: "pass",
+        message: "Cycle 142 signer-set eligibility is fixed for this prepare phase",
+      }),
     );
   });
 
