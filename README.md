@@ -7,6 +7,8 @@ from the operator's node and Stacks API.
 V1 provides monitoring, externally signed manager administration, and Observe reward claims.
 Assist is a separate, controlled release track; it is not available for unattended mainnet use.
 
+![Signer Sidekick dashboard overview](docs/assets/dashboard-overview.jpg)
+
 ## Documentation
 
 Start with [the documentation index](docs/README.md). Node and signer installation remain separate
