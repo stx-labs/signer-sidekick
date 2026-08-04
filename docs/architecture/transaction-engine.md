@@ -24,15 +24,15 @@ An Assist plan and its pre-broadcast recheck must agree on:
 
 1. the completed reward calculation and its exact checkpoint;
 2. the accepted reference-manager source/profile and compatibility attestation;
-3. a complete current manager roster with no bond participation;
-4. claimable, unpaused rewards and the expected manager fee snapshot;
+3. the complete applicable manager reward-bucket set and each bucket's fee snapshot;
+4. claimable, unpaused rewards;
 5. the gas payer's current nonce, sufficient balance, and bounded fee; and
 6. the fixed call, arguments, deny-mode postconditions, recipient, outflow cap, and expected
    post-state for the adapter revision.
 
-Changing authoritative facts supersedes uncommitted work. An approval binds the exact plan and
-policy hashes to a bounded expiry; it cannot authorize a replan, another checkpoint, or another
-adapter.
+Changing authoritative facts supersedes uncommitted work. A bucket that changes between approval
+and broadcast invalidates the plan. An approval binds the exact plan and policy hashes to a bounded
+expiry; it cannot authorize a replan, another checkpoint, or another adapter.
 
 ## Durable execution
 
