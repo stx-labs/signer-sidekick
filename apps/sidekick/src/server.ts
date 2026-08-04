@@ -53,7 +53,12 @@ import {
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
 import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
-import type { OperatorSynchronizationProgress } from "./operator-service.js";
+import type {
+  OperatorSynchronizationProgress,
+  PoolRosterSort,
+  RewardStakerSort,
+  SortDirection,
+} from "./operator-service.js";
 import {
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
@@ -105,16 +110,46 @@ interface OperatorSnapshotService {
   activity?(options?: {
     claimLimit?: number;
     claimOffset?: number;
+    claimSort?: "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
+    claimDirection?: SortDirection;
     rewardCycle?: string | null;
     withdrawalLimit?: number;
     withdrawalOffset?: number;
+    withdrawalSort?: "request" | "staker" | "amount" | "max-fee" | "state" | "block";
+    withdrawalDirection?: SortDirection;
     withdrawalState?: "pending" | "settled" | "reclaimed" | null;
   }): Promise<unknown>;
   summary?(force?: boolean): Promise<OperatorSnapshotShape>;
-  poolPage?(options?: { offset?: number; limit?: number; query?: string }): Promise<unknown>;
+  poolPage?(options?: {
+    offset?: number;
+    limit?: number;
+    query?: string;
+    sort?: PoolRosterSort;
+    direction?: SortDirection;
+  }): Promise<unknown>;
   poolHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
-  rewardsPage?(options?: { offset?: number; limit?: number }): Promise<unknown>;
-  rewardsHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
+  rewardsPage?(options?: {
+    offset?: number;
+    limit?: number;
+    sort?: RewardStakerSort;
+    direction?: SortDirection;
+  }): Promise<unknown>;
+  rewardsHistory?(options?: {
+    offset?: number;
+    limit?: number;
+    sort?:
+      | "cycle"
+      | "status"
+      | "stakers"
+      | "gross"
+      | "net"
+      | "fee"
+      | "configured-fee"
+      | "effective-fee"
+      | "actionable"
+      | "bitcoin-block";
+    direction?: SortDirection;
+  }): Promise<unknown>;
   stakerClaims?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
@@ -725,6 +760,22 @@ function parsePagination(
   }
 }
 
+function parseSort<Key extends string>(
+  requestUrl: string,
+  keys: readonly Key[],
+  names: { sort: string; direction: string } = { sort: "sort", direction: "direction" },
+): { sort: Key; direction: SortDirection } | null {
+  const search = new URL(requestUrl, "http://sidekick.local").searchParams;
+  const sort = search.get(names.sort);
+  if (sort === null) return null;
+  if (!keys.includes(sort as Key)) throw new OperatorApiError(400, "invalid_sort");
+  const direction = search.get(names.direction) ?? "asc";
+  if (direction !== "asc" && direction !== "desc") {
+    throw new OperatorApiError(400, "invalid_sort_direction");
+  }
+  return { sort: sort as Key, direction };
+}
+
 function engineActor(): string {
   return "local-operator";
 }
@@ -1098,6 +1149,16 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/pool", async (request, _reply) => {
     if (options.service?.poolPage) {
       const pageOptions = parsePagination(request.url, { includeQuery: true });
+      const sort = parseSort(request.url, [
+        "staker",
+        "amount",
+        "first-cycle",
+        "last-cycle",
+        "unlock-height",
+        "bond",
+        "status",
+      ] as const);
+      if (sort) Object.assign(pageOptions, sort);
       return await interactive(request, async () => options.service?.poolPage?.(pageOptions));
     }
     const snapshot = await interactive(request, async () => options.service?.snapshot());
@@ -1151,9 +1212,17 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/api/v1/rewards", async (request, _reply) => {
     if (options.service?.rewardsPage) {
-      return await interactive(request, async () =>
-        options.service?.rewardsPage?.(parsePagination(request.url)),
-      );
+      const pageOptions = parsePagination(request.url);
+      const sort = parseSort(request.url, [
+        "staker",
+        "gross",
+        "fee",
+        "net",
+        "destination",
+        "status",
+      ] as const);
+      if (sort) Object.assign(pageOptions, sort);
+      return await interactive(request, async () => options.service?.rewardsPage?.(pageOptions));
     }
     const snapshot = await interactive(request, async () => options.service?.snapshot());
     return {
@@ -1179,9 +1248,21 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/rewards/history", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const rewardsHistory = requireFeature(service.rewardsHistory, "reward_history_unavailable");
-    return await interactive(request, async () =>
-      rewardsHistory.call(service, parsePagination(request.url)),
-    );
+    const pageOptions = parsePagination(request.url);
+    const sort = parseSort(request.url, [
+      "cycle",
+      "status",
+      "stakers",
+      "gross",
+      "net",
+      "fee",
+      "configured-fee",
+      "effective-fee",
+      "actionable",
+      "bitcoin-block",
+    ] as const);
+    if (sort) Object.assign(pageOptions, sort);
+    return await interactive(request, async () => rewardsHistory.call(service, pageOptions));
   });
   server.get("/api/v1/alerts", async (request) => {
     const snapshot = await interactive(request, async () => options.service?.snapshot());
@@ -1202,12 +1283,26 @@ export function createServer(options: ServerOptions = {}) {
       if (state !== null && !["pending", "settled", "reclaimed"].includes(state)) {
         throw new OperatorApiError(400, "invalid_withdrawal_state");
       }
+      const claimSort = parseSort(
+        request.url,
+        ["cycle", "staker", "amount", "destination", "block", "transaction"] as const,
+        { sort: "claimSort", direction: "claimDirection" },
+      );
+      const withdrawalSort = parseSort(
+        request.url,
+        ["request", "staker", "amount", "max-fee", "state", "block"] as const,
+        { sort: "withdrawalSort", direction: "withdrawalDirection" },
+      );
       activityOptions = {
         claimLimit,
         claimOffset: integerQuery(search, "claimOffset", 0, 10_000_000),
+        ...(claimSort ? { claimSort: claimSort.sort, claimDirection: claimSort.direction } : {}),
         rewardCycle: optionalUnsignedIntegerQuery(search, "rewardCycle"),
         withdrawalLimit,
         withdrawalOffset: integerQuery(search, "withdrawalOffset", 0, 10_000_000),
+        ...(withdrawalSort
+          ? { withdrawalSort: withdrawalSort.sort, withdrawalDirection: withdrawalSort.direction }
+          : {}),
         withdrawalState: state as "pending" | "settled" | "reclaimed" | null,
       };
     } catch (error) {

@@ -197,7 +197,7 @@ export function SignerHealthPage({
       </div>
 
       {error ? (
-        <div className="callout callout-info">
+        <div className="callout callout-info content-notice">
           Could not refresh signer health: {operatorErrorSentence(error)} Showing the last sample.
         </div>
       ) : null}

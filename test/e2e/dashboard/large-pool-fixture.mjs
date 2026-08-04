@@ -19,6 +19,18 @@ export const roster = Array.from({ length: 237 }, (_, index) => ({
   },
 }));
 
+function sorted(rows, key, direction, value) {
+  if (!key) return rows;
+  const multiplier = direction === "desc" ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const leftValue = value(left, key);
+    const rightValue = value(right, key);
+    if (leftValue === null) return rightValue === null ? 0 : 1;
+    if (rightValue === null) return -1;
+    return (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0) * multiplier;
+  });
+}
+
 export const rewardStakers = roster.map((entry, index) => ({
   stakerPrincipal: entry.stakerPrincipal,
   payout: { kind: index % 3 === 0 ? "l1" : "direct", maxFeeSats: index % 3 === 0 ? "900" : null },
@@ -314,6 +326,22 @@ export const operationReadiness = {
   ],
 };
 
+export const engineStatus = {
+  schemaVersion: 1,
+  mode: "observe",
+  forcedObserve: { active: false, reason: null, actor: null, forcedAt: null },
+  adapters: [],
+  jobs: { active: 0, awaitingApproval: 0, ambiguous: 0 },
+  generatedAt: "2026-07-15T12:00:00.000Z",
+};
+
+export const engineJobs = {
+  schemaVersion: 1,
+  items: [],
+  nextCursor: null,
+  total: 0,
+};
+
 export const onboarding = {
   onboarding: null,
   wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
@@ -491,6 +519,8 @@ export function responseFor(url) {
   const limit = Number(request.searchParams.get("limit") ?? 50);
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
+  if (request.pathname === "/api/v1/engine") return engineStatus;
+  if (request.pathname === "/api/v1/engine/jobs") return engineJobs;
   if (request.pathname === "/api/v1/sync") return reconciliationResponse();
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
   if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
@@ -501,7 +531,16 @@ export function responseFor(url) {
     const filtered = query
       ? roster.filter(({ stakerPrincipal }) => stakerPrincipal.toLowerCase().includes(query))
       : roster;
-    return { total: filtered.length, offset, limit, roster: page(filtered, offset, limit) };
+    const ordered = sorted(
+      filtered,
+      request.searchParams.get("sort"),
+      request.searchParams.get("direction"),
+      (entry, sort) => {
+        if (sort === "amount") return BigInt(entry.position.amountUstx);
+        return entry.stakerPrincipal;
+      },
+    );
+    return { total: ordered.length, offset, limit, roster: page(ordered, offset, limit) };
   }
   if (request.pathname === "/api/v1/rewards") {
     return {

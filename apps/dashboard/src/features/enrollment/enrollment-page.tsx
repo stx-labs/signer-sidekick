@@ -26,7 +26,7 @@ export function PoolCardError({
 }) {
   if (!error) return null;
   return (
-    <div className="callout callout-critical" role="alert">
+    <div className="callout callout-critical content-notice" role="alert">
       <div className="body">
         {error}
         <div className="actions">

@@ -6,7 +6,13 @@ import {
 import { useEffect, useState } from "react";
 import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { Badge, PageHead, Pagination } from "../../shared/dashboard-ui.js";
+import {
+  Badge,
+  PageHead,
+  Pagination,
+  SortableHeader,
+  type TableSort,
+} from "../../shared/dashboard-ui.js";
 import { number, short, stx } from "../../shared/format.js";
 import {
   operatorActionError,
@@ -15,10 +21,19 @@ import {
 } from "../../shared/operator-error.js";
 
 type Snapshot = DashboardSnapshot;
+type RosterSort =
+  | "staker"
+  | "amount"
+  | "first-cycle"
+  | "last-cycle"
+  | "unlock-height"
+  | "bond"
+  | "status";
 
 export function Pool({ data, token }: { data: Snapshot; token: string }) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<TableSort<RosterSort>>({ key: "staker", direction: "asc" });
   const [roster, setRoster] = useState(data.roster);
   const [rosterTotal, setRosterTotal] = useState(data.rosterTotal ?? data.roster.length);
   const [rosterFreshness, setRosterFreshness] = useState(data.freshness ?? null);
@@ -37,6 +52,8 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       offset: String(page * pageSize),
       limit: String(pageSize),
       query,
+      sort: sort.key,
+      direction: sort.direction,
     });
     setRosterLoading(true);
     setRosterError(null);
@@ -63,7 +80,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         if (!controller.signal.aborted && !correctingPage) setRosterLoading(false);
       });
     return () => controller.abort();
-  }, [page, query, rosterRefreshKey, token]);
+  }, [page, query, rosterRefreshKey, sort, token]);
   const download = async (format: "csv" | "json") => {
     setDownloadBusy(format);
     setDownloadError(null);
@@ -115,12 +132,12 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         }
       />
       {rosterFreshness?.status === "stale" ? (
-        <div className="callout callout-caution" role="status">
+        <div className="callout callout-caution content-notice" role="status">
           Showing last known roster data while Sidekick refreshes chain data.
         </div>
       ) : null}
       {downloadError ? (
-        <div className="callout callout-critical" role="alert">
+        <div className="callout callout-critical content-notice" role="alert">
           {downloadError}
         </div>
       ) : null}
@@ -182,7 +199,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
       </div>
       <div className="section-title">Staker roster</div>
       {rosterError ? (
-        <div className="callout callout-critical" role="alert">
+        <div className="callout callout-critical content-notice" role="alert">
           <div className="body">
             <strong>Could not refresh the staker roster.</strong>{" "}
             {operatorErrorSentence(rosterError)}
@@ -199,7 +216,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
         </div>
       ) : null}
       {rosterLoading ? (
-        <div className="callout callout-neutral" role="status">
+        <div className="callout callout-neutral content-notice" role="status">
           Refreshing roster…
         </div>
       ) : null}
@@ -225,13 +242,70 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
             <table>
               <thead>
                 <tr>
-                  <th>Staker</th>
-                  <th className="right">Amount</th>
-                  <th>First cycle</th>
-                  <th>Last cycle</th>
-                  <th>Unlock Bitcoin block</th>
-                  <th>Bond</th>
-                  <th>Status</th>
+                  <SortableHeader
+                    column="staker"
+                    label="Staker"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    align="right"
+                    column="amount"
+                    label="Amount"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    column="first-cycle"
+                    label="First cycle"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    column="last-cycle"
+                    label="Last cycle"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    column="unlock-height"
+                    label="Unlock Bitcoin block"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    column="bond"
+                    label="Bond"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
+                  <SortableHeader
+                    column="status"
+                    label="Status"
+                    setSort={(next) => {
+                      setSort(next);
+                      setPage(0);
+                    }}
+                    sort={sort}
+                  />
                 </tr>
               </thead>
               <tbody>

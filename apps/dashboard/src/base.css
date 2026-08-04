@@ -862,6 +862,31 @@ thead th {
 thead th.right {
   text-align: right;
 }
+.table-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+thead th.right .table-sort {
+  justify-content: flex-end;
+  width: 100%;
+}
+.table-sort:hover,
+.table-sort:focus-visible {
+  color: var(--text-primary);
+}
+.table-sort svg {
+  width: 12px;
+  height: 12px;
+}
 tbody td {
   padding: 13px 16px;
   border-bottom: 1px solid var(--border-tertiary);

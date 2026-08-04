@@ -1794,7 +1794,13 @@ export class SidekickStore {
   listManagerClaims(
     chainId: number,
     managerPrincipal: string,
-    options: { limit?: number; offset?: number; rewardCycle?: string | null } = {},
+    options: {
+      limit?: number;
+      offset?: number;
+      rewardCycle?: string | null;
+      sort?: "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
+      direction?: "asc" | "desc";
+    } = {},
   ): ManagerActivityPage<StoredManagerClaim> {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
@@ -1813,6 +1819,15 @@ export class SidekickStore {
       options.rewardCycle === undefined || options.rewardCycle === null
         ? null
         : unsignedIntegerTextSchema.parse(options.rewardCycle);
+    const direction = options.direction === "asc" ? "ASC" : "DESC";
+    const claimOrder = {
+      cycle: "CAST(reward_cycle AS INTEGER)",
+      staker: "staker_principal",
+      amount: "CAST(amount_sats AS INTEGER)",
+      destination: "CASE WHEN request_id IS NULL THEN 'direct-sbtc' ELSE 'bitcoin-l1' END",
+      block: "block_height",
+      transaction: "tx_id",
+    }[options.sort ?? "block"];
     const where = `chain_id = ? AND manager_principal = ? AND canonical = 1
       AND kind = 'claim-staker-rewards' AND (? IS NULL OR reward_cycle = ?)`;
     const totalRow = this.db
@@ -1824,7 +1839,7 @@ export class SidekickStore {
           bond_index, amount_sats, request_id
          FROM manager_activity_events
          WHERE ${where}
-         ORDER BY block_height DESC, tx_id DESC, event_index DESC
+         ORDER BY ${claimOrder} ${direction}, tx_id ${direction}, event_index ${direction}
          LIMIT ? OFFSET ?`,
       )
       .all(parsedChainId, manager, rewardCycle, rewardCycle, limit, offset);
@@ -1887,6 +1902,8 @@ export class SidekickStore {
       limit?: number;
       offset?: number;
       state?: "pending" | "settled" | "reclaimed" | null;
+      sort?: "request" | "staker" | "amount" | "max-fee" | "state" | "block";
+      direction?: "asc" | "desc";
     } = {},
   ): ManagerActivityPage<StoredManagerWithdrawal> {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
@@ -1906,6 +1923,15 @@ export class SidekickStore {
       .enum(["pending", "settled", "reclaimed"])
       .nullable()
       .parse(options.state ?? null);
+    const direction = options.direction === "asc" ? "ASC" : "DESC";
+    const withdrawalOrder = {
+      request: "CAST(request_id AS INTEGER)",
+      staker: "staker_principal",
+      amount: "CAST(amount_sats AS INTEGER)",
+      "max-fee": "CAST(max_fee_sats AS INTEGER)",
+      state: "state",
+      block: "initiated_block_height",
+    }[options.sort ?? "block"];
     const cte = `WITH withdrawal_state AS (
       SELECT
         initiation.request_id,
@@ -1969,7 +1995,7 @@ export class SidekickStore {
            resolved_tx_id, resolved_block_height
          FROM withdrawal_state
          WHERE (? IS NULL OR state = ?)
-         ORDER BY initiated_block_height DESC, length(request_id) DESC, request_id DESC
+         ORDER BY ${withdrawalOrder} ${direction}, CAST(request_id AS INTEGER) ${direction}
          LIMIT ? OFFSET ?`,
       )
       .all(parsedChainId, manager, state, state, limit, offset);
@@ -3113,7 +3139,22 @@ export class SidekickStore {
 
   listRewardCycleSummaries(
     managerPrincipal: string,
-    options: { limit?: number; offset?: number } = {},
+    options: {
+      limit?: number;
+      offset?: number;
+      sort?:
+        | "cycle"
+        | "status"
+        | "stakers"
+        | "gross"
+        | "net"
+        | "fee"
+        | "configured-fee"
+        | "effective-fee"
+        | "actionable"
+        | "bitcoin-block";
+      direction?: "asc" | "desc";
+    } = {},
   ): ManagerActivityPage<StoredRewardCycleSummary> {
     const manager = principalSchema.parse(managerPrincipal);
     const limit = z
@@ -3127,6 +3168,19 @@ export class SidekickStore {
       .int()
       .nonnegative()
       .parse(options.offset ?? 0);
+    const direction = options.direction === "asc" ? "ASC" : "DESC";
+    const rewardOrder = {
+      cycle: "reward_cycle",
+      status: "status",
+      stakers: "staker_count",
+      gross: "CAST(gross_sats AS INTEGER)",
+      net: "CAST(earned_sats AS INTEGER)",
+      fee: "CAST(fee_sats AS INTEGER)",
+      "configured-fee": "CAST(configured_fee_bips AS INTEGER)",
+      "effective-fee": "CAST(fee_snapshot_bips AS INTEGER)",
+      actionable: "actionable_claims",
+      "bitcoin-block": "observed_burn_block_height",
+    }[options.sort ?? "cycle"];
     const totalRow = this.db
       .prepare(`SELECT count(*) AS count FROM reward_cycle_snapshots WHERE manager_principal = ?`)
       .get(manager) as { count: number };
@@ -3137,7 +3191,7 @@ export class SidekickStore {
           fee_sats, fee_snapshot_bips, fee_snapshot_present, configured_fee_bips,
           actionable_claims, l1_claims_waiting_for_fee_threshold, observed_at
          FROM reward_cycle_snapshots WHERE manager_principal = ?
-         ORDER BY reward_cycle DESC LIMIT ? OFFSET ?`,
+         ORDER BY ${rewardOrder} ${direction}, reward_cycle ${direction} LIMIT ? OFFSET ?`,
       )
       .all(manager, limit, offset);
     return {
