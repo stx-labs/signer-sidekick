@@ -1,0 +1,5 @@
+# Published-image overlay. Keep SIDEKICK_IMAGE_TAG pinned to a GitHub release tag.
+services:
+  sidekick:
+    build: !reset null
+    image: ghcr.io/stx-labs/signer-sidekick:${SIDEKICK_IMAGE_TAG:?Set SIDEKICK_IMAGE_TAG in .env}

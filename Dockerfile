@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=24.18.0
+ARG VERSION=dev
 
 FROM node:${NODE_VERSION}-bookworm-slim AS build
 
@@ -22,11 +23,13 @@ RUN pnpm install --frozen-lockfile \
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG VCS_REF=unknown
+ARG VERSION=dev
 
 LABEL org.opencontainers.image.title="Signer Sidekick" \
   org.opencontainers.image.description="PoX-5 operations tooling for Stacks signer and pool operators" \
   org.opencontainers.image.licenses="GPL-3.0-only" \
   org.opencontainers.image.revision="${VCS_REF}" \
+  org.opencontainers.image.version="${VERSION}" \
   org.opencontainers.image.source="https://github.com/stx-labs/signer-sidekick"
 
 ENV NODE_ENV=production \

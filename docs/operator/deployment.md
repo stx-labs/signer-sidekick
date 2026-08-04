@@ -11,7 +11,7 @@ using the current upstream documentation:
 Sidekick expects reachable node RPC and Stacks API endpoints. It does not need node/signer private
 keys or process access.
 
-## Install
+## Install a release
 
 The supplied Compose service is non-root, read-only, and loopback-bound by default. SQLite uses a
 named volume; profile directories are mounted read-only.
@@ -20,6 +20,8 @@ Docker Compose v2.24.4 or newer is required. Run `docker compose`, not the legac
 `docker-compose` v1 binary: it is unsupported and can fail recreating containers with current Docker.
 
 ```sh
+git clone --depth 1 --branch v1.0.0 https://github.com/stx-labs/signer-sidekick.git
+cd signer-sidekick
 umask 077
 cp .env.mainnet.example .env
 chmod 600 .env
@@ -33,6 +35,19 @@ terminal history or logs. Set the node URL and manager principal. Mainnet uses t
 default. Set `STACKS_API_KEY` for a Hiro plan or another keyed provider; public Hiro access can be
 rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. For Fresh setup, configure the
 future manager principal.
+
+Use the published image rather than building locally:
+
+```sh
+docker compose -f compose.yaml -f compose.release.yaml pull
+docker compose -f compose.yaml -f compose.release.yaml run --rm --no-deps sidekick doctor connectivity
+docker compose -f compose.yaml -f compose.release.yaml up -d
+curl --fail http://127.0.0.1:3998/health/live
+curl --fail http://127.0.0.1:3998/health/ready
+```
+
+`SIDEKICK_IMAGE_TAG` is pinned in `.env`; change it only as part of a deliberate upgrade. To build
+from source instead, use `docker compose build --pull` and omit `compose.release.yaml`.
 
 ## Connect to the node
 
@@ -51,14 +66,14 @@ base port publishing and adapts the container health probe to the configured lis
 
 ```sh
 ./scripts/require-docker-compose-v2.sh
-docker compose -f compose.yaml -f compose.host-network.yaml config
-docker compose -f compose.yaml -f compose.host-network.yaml build --pull
-docker compose -f compose.yaml -f compose.host-network.yaml run --rm --no-deps sidekick doctor connectivity
-docker compose -f compose.yaml -f compose.host-network.yaml up -d
+docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml config
+docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml pull
+docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml run --rm --no-deps sidekick doctor connectivity
+docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml up -d
 curl --fail http://127.0.0.1:3998/health/live
 ```
 
-Build, then verify the node from the same container network before starting Sidekick:
+For a source build, verify the node from the same container network before starting Sidekick:
 
 ```sh
 docker compose build --pull
@@ -110,19 +125,19 @@ broadcast. Keep mainnet deployments in this mode.
 
 ## Back up and upgrade
 
-These examples use the base Observe deployment. Never upgrade or restore while a submitted
-transaction is unresolved.
+Never upgrade or restore while a submitted transaction is unresolved. Keep the release image tag
+pinned until you are ready to upgrade it.
 
 ```sh
 mkdir -p backups
-docker compose exec -T sidekick \
+docker compose -f compose.yaml -f compose.release.yaml exec -T sidekick \
   node /app/dist/main.js database backup /data/pre-upgrade.sqlite
-docker compose cp sidekick:/data/pre-upgrade.sqlite backups/pre-upgrade.sqlite
+docker compose -f compose.yaml -f compose.release.yaml cp sidekick:/data/pre-upgrade.sqlite backups/pre-upgrade.sqlite
 
 ./scripts/require-docker-compose-v2.sh
-docker compose build --pull
-docker compose up -d
-curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
+docker compose -f compose.yaml -f compose.release.yaml pull
+docker compose -f compose.yaml -f compose.release.yaml up -d
+curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/health/ready"
 ```
 
 The backup command refuses to overwrite a file and checks the result. Protect the database and
@@ -133,11 +148,9 @@ backups: runtime API credentials may be stored in SQLite.
 Restore only while Sidekick is stopped. Confirm the Compose volume name before running this example.
 
 ```sh
-docker compose down
-docker run --rm --user 0 --entrypoint sh \
-  -v signer-sidekick_sidekick-data:/data \
-  -v "$PWD/backups:/backups:ro" \
-  signer-sidekick:local \
+docker compose -f compose.yaml -f compose.release.yaml down
+docker compose -f compose.yaml -f compose.release.yaml run --rm --no-deps --user 0 --entrypoint sh \
+  -v "$PWD/backups:/backups:ro" sidekick \
   -c 'set -eu
 quarantine=$(mktemp -d /data/restore-quarantine.XXXXXX)
 for file in /data/sidekick.sqlite /data/sidekick.sqlite-wal /data/sidekick.sqlite-shm; do
@@ -146,20 +159,20 @@ done
 cp /backups/pre-upgrade.sqlite /data/sidekick.sqlite
 chown 10001:10001 /data/sidekick.sqlite
 echo "Previous database files moved to $quarantine"'
-docker compose run --rm --no-deps sidekick doctor
-docker compose up -d
-curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
+docker compose -f compose.yaml -f compose.release.yaml run --rm --no-deps sidekick doctor
+docker compose -f compose.yaml -f compose.release.yaml up -d
+curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/health/ready"
 ```
 
 ## Diagnose
 
 ```sh
-docker compose exec -T sidekick node /app/dist/main.js doctor
-docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
-docker compose logs --tail=200 sidekick
-curl --fail "http://$(docker compose port sidekick 3998)/health/live"
-curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
-curl --fail "http://$(docker compose port sidekick 3998)/metrics"
+docker compose -f compose.yaml -f compose.release.yaml exec -T sidekick node /app/dist/main.js doctor
+docker compose -f compose.yaml -f compose.release.yaml exec -T sidekick node /app/dist/main.js doctor connectivity
+docker compose -f compose.yaml -f compose.release.yaml logs --tail=200 sidekick
+curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/health/live"
+curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/health/ready"
+curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/metrics"
 ```
 
 Use the dashboard support bundle for escalation. Review it and logs before sharing because public
