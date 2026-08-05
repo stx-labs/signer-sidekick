@@ -23,6 +23,12 @@ import {
   writeState,
 } from "../test/e2e/devnet/harness.mjs";
 import { createOperatorActor, DEVNET_ACCOUNTS } from "../test/e2e/devnet/operator-actor.mjs";
+import {
+  acquireHarnessLock,
+  deriveHarnessStatus,
+  releaseHarnessLock,
+  updateHarnessLock,
+} from "./devnet-harness-state.mjs";
 
 const command = process.argv[2] ?? "help";
 const arguments_ = new Set(process.argv.slice(3));
@@ -30,6 +36,11 @@ const keepOnFailure = arguments_.has("--keep-on-failure");
 const skipBuild = arguments_.has("--no-build") || process.env.SIDEKICK_E2E_BUILD === "0";
 const lock = JSON.parse(await readFile(resolve(harnessDirectory, "versions.lock.json"), "utf8"));
 const clarinetProject = "signer-sidekick-pox5-e2e";
+const harnessLockPath = resolve(
+  process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache"),
+  "signer-sidekick",
+  "devnet-harness.lock",
+);
 const browserArtifactDirectories = [
   resolve(harnessDirectory, "test-results"),
   resolve(harnessDirectory, "playwright-report"),
@@ -65,6 +76,16 @@ async function existingState() {
     if (error.code === "ENOENT") return null;
     throw error;
   }
+}
+
+async function setBootstrapPhase(state, phase, message) {
+  state.bootstrap = { phase, updatedAt: new Date().toISOString() };
+  await writeState(state);
+  await updateHarnessLock(harnessLockPath, state.runId, {
+    phase,
+    pid: state.pids.clarinet ?? process.pid,
+  });
+  log(message);
 }
 
 function platformKey() {
@@ -247,114 +268,136 @@ async function stopSidekick(container) {
 }
 
 async function up() {
-  const previous = await existingState();
-  if (
-    previous &&
-    (running(previous.pids?.clarinet) ||
-      running(previous.pids?.proxy) ||
-      running(previous.pids?.resource))
-  ) {
-    throw new Error(`Devnet is already running; use pnpm e2e:devnet:status or :down`);
-  }
-  if (previous) await down();
-  else removeOrphanedHarnessDockerResources();
-  await ensureDirectories();
-  await rm(resolve(harnessDirectory, "deployments"), { recursive: true, force: true });
-  run("docker", ["info"]);
-  run(process.execPath, ["scripts/verify-devnet-lock.mjs", "--offline"]);
-  const clarinet = await resolveClarinet();
   const runId = `${Date.now()}-${process.pid}`;
-  const state = {
-    schemaVersion: 1,
-    runId,
-    startedAt: new Date().toISOString(),
-    // Clarinet 3.21.1 embeds a stacks-core 3.4 snapshot. Using it with the
-    // released stacks-core 4.0 image can strand the miner during the Epoch 3
-    // run-loop transition, so every released-binary run uses a clean chain.
-    fromGenesis: true,
-    gitCommit: run("git", ["rev-parse", "HEAD"]),
-    managerPrincipal,
-    authToken: newAuthToken(),
-    sidekickImage: process.env.SIDEKICK_E2E_IMAGE ?? "signer-sidekick:e2e",
-    containerName: `signer-sidekick-e2e-${runId}`,
-    volumeName: `signer-sidekick-e2e-${runId}`,
-    pids: {},
-    logs: {
-      clarinet: resolve(runtimeDirectory, "clarinet.log"),
-      proxy: resolve(runtimeDirectory, "proxy.log"),
-      resourceMonitor: resolve(runtimeDirectory, "resource-monitor.log"),
-    },
-    resourceUsagePath: resolve(runtimeDirectory, "resource-usage.jsonl"),
-  };
-  await Promise.all(Object.values(state.logs).map((path) => writeFile(path, "", { mode: 0o600 })));
-  await writeFile(state.resourceUsagePath, "", { mode: 0o600 });
-  // Persist the cleanup manifest before starting any detached process. The test wrapper can now
-  // recover from failures at every subsequent bootstrap gate, even before `up()` returns.
-  await writeState(state);
+  await acquireHarnessLock(harnessLockPath, { runId, pid: process.pid, phase: "starting" });
+  try {
+    const previous = await existingState();
+    if (
+      previous &&
+      (running(previous.pids?.clarinet) ||
+        running(previous.pids?.proxy) ||
+        running(previous.pids?.resource))
+    ) {
+      throw new Error(`Devnet is already running; use pnpm e2e:devnet:status or :down`);
+    }
+    if (previous) await down();
+    else removeOrphanedHarnessDockerResources();
+    await ensureDirectories();
+    await rm(resolve(harnessDirectory, "deployments"), { recursive: true, force: true });
+    run("docker", ["info"]);
+    run(process.execPath, ["scripts/verify-devnet-lock.mjs", "--offline"]);
+    const clarinet = await resolveClarinet();
+    const state = {
+      schemaVersion: 1,
+      runId,
+      startedAt: new Date().toISOString(),
+      // Clarinet 3.21.1 embeds a stacks-core 3.4 snapshot. Using it with the
+      // released stacks-core 4.0 image can strand the miner during the Epoch 3
+      // run-loop transition, so every released-binary run uses a clean chain.
+      fromGenesis: true,
+      gitCommit: run("git", ["rev-parse", "HEAD"]),
+      managerPrincipal,
+      authToken: newAuthToken(),
+      sidekickImage: process.env.SIDEKICK_E2E_IMAGE ?? "signer-sidekick:e2e",
+      containerName: `signer-sidekick-e2e-${runId}`,
+      volumeName: `signer-sidekick-e2e-${runId}`,
+      bootstrap: { phase: "starting", updatedAt: new Date().toISOString() },
+      pids: {},
+      logs: {
+        clarinet: resolve(runtimeDirectory, "clarinet.log"),
+        proxy: resolve(runtimeDirectory, "proxy.log"),
+        resourceMonitor: resolve(runtimeDirectory, "resource-monitor.log"),
+      },
+      resourceUsagePath: resolve(runtimeDirectory, "resource-usage.jsonl"),
+    };
+    await Promise.all(
+      Object.values(state.logs).map((path) => writeFile(path, "", { mode: 0o600 })),
+    );
+    await writeFile(state.resourceUsagePath, "", { mode: 0o600 });
+    // Persist the cleanup manifest before starting any detached process. The test wrapper can now
+    // recover from failures at every subsequent bootstrap gate, even before `up()` returns.
+    await writeState(state);
 
-  state.pids.proxy = spawnDetached(
-    process.execPath,
-    ["scripts/devnet-proxy.mjs"],
-    state.logs.proxy,
-  );
-  await writeState(state);
-  await waitForHttp("http://127.0.0.1:21999/state", "failure-injection proxy");
-  if (process.env.SIDEKICK_E2E_FAIL_AFTER_PROXY === "1") {
-    throw new Error("Injected bootstrap failure after proxy startup");
+    state.pids.proxy = spawnDetached(
+      process.execPath,
+      ["scripts/devnet-proxy.mjs"],
+      state.logs.proxy,
+    );
+    await writeState(state);
+    await waitForHttp("http://127.0.0.1:21999/state", "failure-injection proxy");
+    if (process.env.SIDEKICK_E2E_FAIL_AFTER_PROXY === "1") {
+      throw new Error("Injected bootstrap failure after proxy startup");
+    }
+    state.pids.resource = spawnDetached(
+      process.execPath,
+      [
+        "scripts/devnet-resource-monitor.mjs",
+        "--output",
+        state.resourceUsagePath,
+        "--sidekick-prefix",
+        state.containerName,
+      ],
+      state.logs.resourceMonitor,
+    );
+    await writeState(state);
+    const clarinetArgs = [
+      "devnet",
+      "start",
+      "--manifest-path",
+      resolve(harnessDirectory, "Clarinet.toml"),
+      "--no-dashboard",
+      "--save-container-logs",
+      "--use-computed-deployment-plan",
+    ];
+    clarinetArgs.push("--from-genesis");
+    state.pids.clarinet = spawnDetached(clarinet, clarinetArgs, state.logs.clarinet);
+    await writeState(state);
+    await updateHarnessLock(harnessLockPath, state.runId, { pid: state.pids.clarinet });
+
+    log("Bootstrap: starting local chain, signer, API, and proxy");
+    await waitForLog(state.logs.clarinet, "Local Devnet network ready");
+    await Promise.all([
+      waitForHttp("http://127.0.0.1:20443/v2/info", "stacks-node", 300_000),
+      waitForHttp("http://127.0.0.1:3999/extended/v1/status", "Stacks API", 300_000),
+    ]);
+    await setBootstrapPhase(
+      state,
+      "chain-ready",
+      "Bootstrap: chain, signer, node, and API are ready",
+    );
+
+    const actor = createOperatorActor();
+    await setBootstrapPhase(
+      state,
+      "waiting-for-pox-5",
+      "Bootstrap: waiting for the local chain to activate PoX-5",
+    );
+    const pox = await waitFor(
+      async () => {
+        const response = await fetch("http://127.0.0.1:20443/v2/pox");
+        if (!response.ok) return null;
+        const value = await response.json();
+        return String(value.contract_id).endsWith(".pox-5") ? value : null;
+      },
+      "PoX-5 activation at Clarinet's controlled mining cadence",
+      300_000,
+      1_000,
+    );
+    const node = await actor.nodeInfo();
+    await actor.waitForTip(node.burn_block_height);
+    await setBootstrapPhase(state, "dashboard-starting", "Bootstrap: starting Sidekick dashboard");
+    await startSidekick(state);
+    await setBootstrapPhase(state, "ready", "Bootstrap: dashboard is ready");
+    log(`Dashboard: http://127.0.0.1:3998`);
+    log(`Manager: ${managerPrincipal}`);
+    log(`Reward cycle: ${pox.reward_cycle_id}; burn height: ${node.burn_block_height}`);
+    log(`Runtime state: ${statePath}`);
+    return state;
+  } catch (error) {
+    const state = await existingState();
+    if (!state || state.runId !== runId) await releaseHarnessLock(harnessLockPath, runId);
+    throw error;
   }
-  state.pids.resource = spawnDetached(
-    process.execPath,
-    [
-      "scripts/devnet-resource-monitor.mjs",
-      "--output",
-      state.resourceUsagePath,
-      "--sidekick-prefix",
-      state.containerName,
-    ],
-    state.logs.resourceMonitor,
-  );
-  await writeState(state);
-  const clarinetArgs = [
-    "devnet",
-    "start",
-    "--manifest-path",
-    resolve(harnessDirectory, "Clarinet.toml"),
-    "--no-dashboard",
-    "--save-container-logs",
-    "--use-computed-deployment-plan",
-  ];
-  clarinetArgs.push("--from-genesis");
-  state.pids.clarinet = spawnDetached(clarinet, clarinetArgs, state.logs.clarinet);
-  await writeState(state);
-
-  log("Waiting for Clarinet protocol deployment and real signer startup");
-  await waitForLog(state.logs.clarinet, "Local Devnet network ready");
-  await Promise.all([
-    waitForHttp("http://127.0.0.1:20443/v2/info", "stacks-node", 300_000),
-    waitForHttp("http://127.0.0.1:3999/extended/v1/status", "Stacks API", 300_000),
-  ]);
-
-  const actor = createOperatorActor();
-  const pox = await waitFor(
-    async () => {
-      const response = await fetch("http://127.0.0.1:20443/v2/pox");
-      if (!response.ok) return null;
-      const value = await response.json();
-      return String(value.contract_id).endsWith(".pox-5") ? value : null;
-    },
-    "PoX-5 activation at Clarinet's controlled mining cadence",
-    300_000,
-    1_000,
-  );
-  const node = await actor.nodeInfo();
-  await actor.waitForTip(node.burn_block_height);
-  await startSidekick(state);
-  await writeState(state);
-  log(`Dashboard: http://127.0.0.1:3998`);
-  log(`Manager: ${managerPrincipal}`);
-  log(`Reward cycle: ${pox.reward_cycle_id}; burn height: ${node.burn_block_height}`);
-  log(`Runtime state: ${statePath}`);
-  return state;
 }
 
 async function freshSetup(state) {
@@ -916,6 +959,7 @@ async function down(options = {}) {
   run("docker", ["volume", "rm", "--force", state.volumeName], { allowedExitCodes: [0, 1] });
   removeOrphanedHarnessDockerResources();
   if (!options.keepRuntime) await rm(runtimeDirectory, { recursive: true, force: true });
+  await releaseHarnessLock(harnessLockPath, state.runId);
   log("Devnet containers, processes, volume, and runtime credentials removed");
 }
 
@@ -931,13 +975,22 @@ async function status() {
   const api = await fetch("http://127.0.0.1:3999/extended/v1/status")
     .then((response) => (response.ok ? response.json() : null))
     .catch(() => null);
+  const dashboardReady = await fetch("http://127.0.0.1:3998/health/live")
+    .then((response) => response.ok)
+    .catch(() => false);
+  const phase = state.bootstrap?.phase ?? "starting";
+  const clarinetRunning = running(state.pids?.clarinet);
   console.log(
     JSON.stringify(
       {
-        status: running(state.pids?.clarinet) ? "running" : "stale",
+        status: deriveHarnessStatus({ phase, clarinetRunning, dashboardReady }),
         runId: state.runId,
         startedAt: state.startedAt,
-        dashboard: "http://127.0.0.1:3998",
+        bootstrap: { phase, updatedAt: state.bootstrap?.updatedAt ?? null },
+        dashboard: {
+          url: "http://127.0.0.1:3998",
+          status: dashboardReady ? "ready" : "unavailable",
+        },
         managerPrincipal: state.managerPrincipal,
         node: node
           ? { burnBlockHeight: node.burn_block_height, stacksTipHeight: node.stacks_tip_height }
