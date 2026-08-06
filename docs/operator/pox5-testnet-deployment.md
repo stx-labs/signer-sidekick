@@ -25,7 +25,7 @@ signer setup:
 
 ## Start Sidekick
 
-Follow the main [install guide](deployment.md#install), starting from
+Follow the main [install guide](deployment.md#install-a-release), starting from
 `.env.pox5-testnet.example` instead of the mainnet example. These values are already correct:
 
 ```dotenv
@@ -122,8 +122,8 @@ Transaction submission alone is not success.
 ## Validate the dashboard
 
 Open `http://127.0.0.1:3998`, reconcile, and review Overview, Manager, Pool, Rewards, Operations,
-Signer Health, Initial Setup, Settings, and Public Pool Page. Allow the API indexer to catch up
-before treating a lagging indexed view as a Sidekick defect.
+Signer Health, Initial Setup, and Settings. Allow the API indexer to catch up before treating a
+lagging indexed view as a Sidekick defect.
 
 Record the Sidekick commit, compatibility profile, node release, deployment artifacts, public grant
 JSON, transaction IDs, and verification heights. Review diagnostics before sharing them.

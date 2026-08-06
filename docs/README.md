@@ -10,6 +10,12 @@ Choose the shortest path for your task.
 | Signer-health reviewer | [Signer Health](product/signer-health.md) | Monitoring sources, behavior, and scope |
 | Assist reviewer | [Transaction engine safety contract](architecture/transaction-engine.md) | Authority and execution invariants before reviewing Assist |
 
+## Dashboard
+
+Representative fixture data showing a large pool's cycle projection and staker roster.
+
+![Pool dashboard](assets/dashboard-pool.jpg)
+
 ## Source of truth
 
 - Runtime configuration: [mainnet](../.env.mainnet.example),

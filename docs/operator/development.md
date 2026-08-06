@@ -62,9 +62,9 @@ pnpm --filter @stx-labs/signer-sidekick-api-contracts test
 pnpm --filter @stx-labs/signer-sidekick-dashboard test
 ```
 
-Manual Assist work is allowed only against an isolated test network and a disposable, dedicated,
-low-balance gas payer. Follow the exact variables and mounts in
-[Transaction engine modes](deployment.md#transaction-engine-modes). Keep raw keys outside the
+Assist is unreleased. Any isolated test-network work uses a disposable, dedicated, low-balance gas
+payer and follows the [safety contract](../architecture/transaction-engine.md) and
+[release gates](https://github.com/stx-labs/signer-sidekick/issues/6). Keep raw keys outside the
 repository, fixtures, command line, environment, screenshots, and logs; pass only an absolute
 read-only file path and matching public identity. Use reviewed attestation/trust files rather than
 weakening verification for development.

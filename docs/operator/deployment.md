@@ -16,6 +16,10 @@ keys or process access.
 The supplied Compose service is non-root, read-only, and loopback-bound by default. SQLite uses a
 named volume; profile directories are mounted read-only.
 
+Use the [latest release](https://github.com/stx-labs/signer-sidekick/releases/latest) for the
+current version, or browse the persistent [container image package](https://github.com/orgs/stx-labs/packages/container/package/signer-sidekick).
+Pin `SIDEKICK_IMAGE_TAG` to a specific release for production.
+
 Docker Compose v2.24.4 or newer is required. Run `docker compose`, not the legacy
 `docker-compose` v1 binary: it is unsupported and can fail recreating containers with current Docker.
 
