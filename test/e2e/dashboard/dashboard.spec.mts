@@ -509,12 +509,12 @@ test("keeps setup read-only until saved progress loads", async ({ page }) => {
   await login(page);
   await openPage(page, "setup", "Initial Setup");
   await expect(page.getByRole("button", { name: "Retry setup" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Attach Existing Manager" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toHaveCount(0);
   expect(startRequests).toBe(0);
 
   onboardingAvailable = true;
   await page.getByRole("button", { name: "Retry setup" }).click();
-  await expect(page.getByRole("button", { name: "Attach Existing Manager" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
   expect(startRequests).toBe(0);
   discardExpectedHttpConsoleError(page, 503);
 });
@@ -1002,8 +1002,8 @@ test("guides first-time operators to setup and remembers dismissal", async ({ pa
 
   await notice.getByRole("button", { name: "Open Initial Setup" }).click();
   await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Attach Existing Manager" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Deploy New Manager" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deploy New Contracts" })).toBeVisible();
 
   await openPage(page, "overview", "Overview");
   await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
@@ -1462,7 +1462,7 @@ test("keeps desktop settings chrome visible while the form scrolls", async ({ pa
 test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
   await login(page);
   await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Deploy New Manager" }).click();
+  await page.getByRole("button", { name: "Deploy New Contracts" }).click();
   await expect(page.getByText("Check prerequisites.")).toBeVisible();
   await expect(page.getByText(/Sidekick prepares the manager deployment/)).toBeVisible();
   await expect(page.getByRole("textbox", { name: /Manager admin principal/ })).toHaveAttribute(

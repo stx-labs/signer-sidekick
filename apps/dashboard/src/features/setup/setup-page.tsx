@@ -435,7 +435,7 @@ export function SetupPage({
                 disabled={busy}
                 onClick={() => void start("attach")}
               >
-                Attach Existing Manager
+                Attach Existing Contracts
               </button>
               <button
                 type="button"
@@ -443,7 +443,7 @@ export function SetupPage({
                 disabled={busy}
                 onClick={() => void start("fresh")}
               >
-                Deploy New Manager
+                Deploy New Contracts
               </button>
             </div>
             <button

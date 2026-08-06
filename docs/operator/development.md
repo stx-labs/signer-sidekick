@@ -90,8 +90,10 @@ pnpm e2e:devnet:down
 pnpm e2e:devnet:test
 ```
 
-Use `pnpm e2e:devnet:reset` after an interrupted run. Lock files under `test/e2e/devnet` define the
-released artifacts.
+`up` reports its bootstrap phase. It waits for the local chain to activate PoX-5 before it starts
+Sidekick; use `status` to follow that phase rather than starting a second run. Only one harness can
+use the fixed local ports at a time. Use `pnpm e2e:devnet:reset` after an interrupted run. The
+version locks under `test/e2e/devnet` define the released artifacts.
 
 ## Local dashboard
 

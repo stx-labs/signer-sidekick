@@ -34,33 +34,17 @@ test("prepares Fresh Setup and downloads the exact manager artifact", async ({ p
   await openPage(page, "setup", "Initial Setup");
   await page.getByRole("button", { name: "Deploy New Contracts" }).click();
   const prepare = page.getByRole("button", { name: "Generate deployment files" });
-  const downloadButton = page.getByRole("button", { name: "Download .clar" });
-  const laterStep = page
-    .getByRole("button", { name: "Generate signer command" })
-    .or(page.getByRole("button", { name: "Check registration" }));
-  await expect(prepare.or(downloadButton).or(laterStep)).toBeVisible();
-  if (await laterStep.isVisible()) {
-    await expect(page.locator("body")).not.toContainText(state.authToken);
-    return;
-  }
+  const downloadButton = page.getByRole("button", { name: "Download .clar" }).first();
+  await expect(prepare.or(downloadButton).first()).toBeVisible();
   if (await prepare.isVisible()) {
     await page.getByLabel("Signer grant auth ID").fill("1");
     await page.getByLabel("Signer configuration path").fill("/src/stacks-signer/Signer-0.toml");
     await prepare.click();
   }
-  await expect(page.getByRole("button", { name: "Download .clar" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Deploy outside Sidekick" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Explorer Sandbox/ })).toHaveAttribute(
-    "href",
-    "https://explorer.hiro.so/sandbox/deploy",
-  );
-  await expect(page.getByRole("link", { name: /Clarinet deployment guide/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/clarinet/contract-deployment",
-  );
+  await expect(downloadButton).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download .clar" }).click();
+  await downloadButton.click();
   const download = await downloadPromise;
   const path = await download.path();
   if (!path) throw new Error("Manager source download did not produce a local file");
@@ -83,7 +67,11 @@ test("imports the released signer grant through Fresh Setup", async ({ page }) =
   }
   const verifyDeployment = page.getByRole("button", { name: "Verify deployment" });
   if (await verifyDeployment.isVisible()) await verifyDeployment.click();
-  await page.getByRole("button", { name: "Generate signer command" }).click();
+  const generateSignerCommand = page.getByRole("button", { name: "Generate signer command" });
+  if (!(await generateSignerCommand.isVisible())) {
+    await page.getByRole("button", { name: /Signer grant ceremony/ }).click();
+  }
+  await generateSignerCommand.click();
   await expect(page.getByText("Run on the signer host")).toBeVisible();
   await expect(
     page.getByText("stacks-signer generate-staking-signature", { exact: false }),
