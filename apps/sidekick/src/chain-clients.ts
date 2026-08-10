@@ -16,6 +16,13 @@ const nodeInfoSchema = z.object({
   parent_network_id: z.number().int().nonnegative().optional(),
   burn_block_height: z.number().int().nonnegative(),
   stacks_tip_height: z.number().int().nonnegative(),
+  stacks_tip: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+    .transform(
+      (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
+    )
+    .optional(),
 });
 
 const contractPrincipalSchema = z.string().refine((value) => {
@@ -1112,6 +1119,47 @@ function sameApiTip(left: ApiStatus, right: ApiStatus): boolean {
   );
 }
 
+function apiStatusAtNodeTip(
+  apiStatus: ApiStatus,
+  nodeInfo: NodeInfo,
+  block: StacksBlockSummary,
+): ApiStatus {
+  if (
+    !nodeInfo.stacks_tip ||
+    !block.canonical ||
+    block.height !== nodeInfo.stacks_tip_height ||
+    block.hash !== nodeInfo.stacks_tip
+  ) {
+    throw new ChainAnchorError("API could not prove the node tip is canonical", {
+      retryable: true,
+    });
+  }
+  return {
+    ...apiStatus,
+    chain_tip: {
+      block_height: block.height,
+      block_hash: block.hash,
+      index_block_hash: block.index_block_hash,
+      burn_block_height: block.burn_block_height,
+    },
+  };
+}
+
+async function sharedApiStatus(
+  apiStatus: ApiStatus,
+  nodeInfo: NodeInfo,
+  api: StacksApiClient,
+): Promise<ApiStatus> {
+  if (nodeInfo.stacks_tip_height === apiStatus.chain_tip.block_height) return apiStatus;
+  // When the API has indexed exactly one newer Stacks block, the node's own tip is still a safe
+  // common position if the API can independently prove that exact block is canonical. Pin all
+  // subsequent node reads to its API-derived index hash instead of mixing the two live tips.
+  if (nodeInfo.stacks_tip && apiStatus.chain_tip.block_height === nodeInfo.stacks_tip_height + 1) {
+    return apiStatusAtNodeTip(apiStatus, nodeInfo, await api.getBlock(nodeInfo.stacks_tip));
+  }
+  return apiStatus;
+}
+
 export function createChainAnchor(
   nodeInfo: NodeInfo,
   apiStatus: ApiStatus,
@@ -1189,10 +1237,9 @@ export async function captureChainAnchor(
   api: StacksApiClient,
 ): Promise<ChainAnchor> {
   const before = await api.getStatus();
-  const [nodeInfo, poxInfo] = await Promise.all([
-    node.getInfo(),
-    node.getPoxInfo({ tip: before.chain_tip.index_block_hash }),
-  ]);
+  const nodeInfo = await node.getInfo();
+  const sharedStatus = await sharedApiStatus(before, nodeInfo, api);
+  const poxInfo = await node.getPoxInfo({ tip: sharedStatus.chain_tip.index_block_hash });
   const after = await api.getStatus();
   if (!sameApiTip(before, after)) {
     throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
@@ -1210,5 +1257,5 @@ export async function captureChainAnchor(
       },
     });
   }
-  return createChainAnchor(nodeInfo, after, poxInfo);
+  return createChainAnchor(nodeInfo, sharedStatus, poxInfo);
 }
