@@ -34,6 +34,7 @@ import {
 import { OnboardingService } from "./onboarding-service.js";
 import { createOperatorRecord } from "./operator-record.js";
 import { OperatorService } from "./operator-service.js";
+import { startSnapshotRefreshLoop } from "./operator-snapshot-refresh.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { runOperatorPreflight } from "./preflight.js";
 import { readStxRewardStatus } from "./reward-status.js";
@@ -187,6 +188,7 @@ export async function executeCliCommand({
         getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
+      let snapshotRefresh: { stop(): void } | null = null;
       const server = createServer({
         service,
         getRateLimitSettings: () => {
@@ -220,6 +222,7 @@ export async function executeCliCommand({
         );
       }
       server.addHook("onClose", async () => {
+        snapshotRefresh?.stop();
         health.stop();
         try {
           await engine.close();
@@ -231,6 +234,7 @@ export async function executeCliCommand({
       serverOwnsStore = true;
       health.start();
       engine.start();
+      snapshotRefresh = startSnapshotRefreshLoop(service, server.log);
       server.log.info("HTTP control plane is listening; initial manager observation is running");
       void engine
         .recoverActive()
