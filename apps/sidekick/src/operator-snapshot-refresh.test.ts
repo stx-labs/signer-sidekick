@@ -1,8 +1,56 @@
 import { describe, expect, it, vi } from "vitest";
 import { RateLimitedError } from "./chain-clients.js";
-import { startSnapshotRefreshLoop } from "./operator-snapshot-refresh.js";
+import {
+  SnapshotRefreshMetricsTracker,
+  startSnapshotRefreshLoop,
+} from "./operator-snapshot-refresh.js";
 
 describe("startSnapshotRefreshLoop", () => {
+  it("records refresh health, snapshot age, and source positions without another chain read", () => {
+    let now = Date.parse("2026-08-12T14:00:10.000Z");
+    const metrics = new SnapshotRefreshMetricsTracker(() => now, 60_000);
+    metrics.recordAttempt();
+    metrics.recordSuccess({
+      generatedAt: "2026-08-12T14:00:00.000Z",
+      preflight: {
+        node: { stacksTipHeight: 8_700_005, burnBlockHeight: 962_150 },
+        api: { stacksTipHeight: 8_700_000, burnBlockHeight: 962_150 },
+        pox: { burnBlockHeight: 962_149, rewardCycleId: 141 },
+      },
+    });
+
+    expect(metrics.snapshot()).toMatchObject({
+      attemptsTotal: 1,
+      successesTotal: 1,
+      failuresTotal: 0,
+      consecutiveFailures: 0,
+      retryBackoffSeconds: 0,
+      snapshotAgeSeconds: 10,
+      snapshotFresh: 1,
+      sourcePositions: {
+        nodeStacksHeight: 8_700_005,
+        apiStacksHeight: 8_700_000,
+        nodeBurnHeight: 962_150,
+        apiBurnHeight: 962_150,
+        poxBurnHeight: 962_149,
+        poxRewardCycle: 141,
+      },
+    });
+
+    now += 30_000;
+    metrics.recordAttempt();
+    metrics.recordFailure(15_000);
+    expect(metrics.snapshot()).toMatchObject({
+      attemptsTotal: 2,
+      successesTotal: 1,
+      failuresTotal: 1,
+      consecutiveFailures: 1,
+      retryBackoffSeconds: 15,
+      snapshotAgeSeconds: 40,
+      snapshotFresh: 0,
+    });
+  });
+
   it("warms the snapshot at startup and then on the configured cadence", async () => {
     vi.useFakeTimers();
     try {

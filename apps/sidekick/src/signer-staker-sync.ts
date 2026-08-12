@@ -104,13 +104,45 @@ export interface SyncSignerStakersResult {
   discrepanciesObservedThisInvocation: SignerStakerDiscrepancy[];
 }
 
+export interface SignerStakerAnchorEvidence {
+  anchor: {
+    stacksBlockHeight: number;
+    indexBlockHash: string;
+    burnBlockHeight: number;
+  };
+  apiTipBefore?: {
+    stacksBlockHeight: number;
+    indexBlockHash: string;
+    burnBlockHeight: number;
+  };
+  apiTipAfter?: {
+    stacksBlockHeight: number;
+    indexBlockHash: string;
+    burnBlockHeight: number;
+  };
+  indexedBlock?: {
+    canonical: boolean;
+    stacksBlockHeight: number;
+    indexBlockHash: string;
+    burnBlockHeight: number;
+  };
+}
+
 export class SignerStakerAnchorError extends Error {
   readonly invalidatesSealedRun: boolean;
+  readonly evidence: SignerStakerAnchorEvidence | null;
 
-  constructor(message: string, options: ErrorOptions & { invalidatesSealedRun?: boolean } = {}) {
+  constructor(
+    message: string,
+    options: ErrorOptions & {
+      invalidatesSealedRun?: boolean;
+      evidence?: SignerStakerAnchorEvidence;
+    } = {},
+  ) {
     super(message, options);
     this.name = "SignerStakerAnchorError";
     this.invalidatesSealedRun = options.invalidatesSealedRun ?? false;
+    this.evidence = options.evidence ?? null;
   }
 }
 
@@ -374,6 +406,40 @@ function blockMatchesAnchor(block: StacksBlockSummary, anchor: ChainAnchor): boo
   );
 }
 
+function anchorEvidence(
+  anchor: ChainAnchor,
+  input: {
+    before?: ApiStatus;
+    after?: ApiStatus;
+    block?: StacksBlockSummary;
+  } = {},
+): SignerStakerAnchorEvidence {
+  const apiTip = (status: ApiStatus) => ({
+    stacksBlockHeight: status.chain_tip.block_height,
+    indexBlockHash: status.chain_tip.index_block_hash,
+    burnBlockHeight: status.chain_tip.burn_block_height,
+  });
+  return {
+    anchor: {
+      stacksBlockHeight: anchor.stacksBlockHeight,
+      indexBlockHash: anchor.indexBlockHash,
+      burnBlockHeight: anchor.burnBlockHeight,
+    },
+    ...(input.before ? { apiTipBefore: apiTip(input.before) } : {}),
+    ...(input.after ? { apiTipAfter: apiTip(input.after) } : {}),
+    ...(input.block
+      ? {
+          indexedBlock: {
+            canonical: input.block.canonical,
+            stacksBlockHeight: input.block.height,
+            indexBlockHash: input.block.index_block_hash,
+            burnBlockHeight: input.block.burn_block_height,
+          },
+        }
+      : {}),
+  };
+}
+
 export async function proveSignerStakerAnchorRemainsCanonical(
   api: Required<Pick<SignerStakerApi, "getStatus" | "getBlock">>,
   anchor: ChainAnchor,
@@ -385,7 +451,9 @@ export async function proveSignerStakerAnchorRemainsCanonical(
       const before = await api.getStatus();
       signal?.throwIfAborted();
       if (before.chain_tip.block_height < anchor.stacksBlockHeight) {
-        throw new SignerStakerAnchorError("Signer-staker API is behind the sealed chain anchor");
+        throw new SignerStakerAnchorError("Signer-staker API is behind the sealed chain anchor", {
+          evidence: anchorEvidence(anchor, { before }),
+        });
       }
       const block = await api.getBlock(anchor.stacksBlockHeight);
       signal?.throwIfAborted();
@@ -395,11 +463,13 @@ export async function proveSignerStakerAnchorRemainsCanonical(
         if (attempt < 3) continue;
         throw new SignerStakerAnchorError(
           "Chain tip moved while revalidating the sealed signer-staker anchor",
+          { evidence: anchorEvidence(anchor, { before, after, block }) },
         );
       }
       if (!blockMatchesAnchor(block, anchor)) {
         throw new SignerStakerAnchorError("Sealed signer-staker anchor is no longer canonical", {
           invalidatesSealedRun: true,
+          evidence: anchorEvidence(anchor, { before, after, block }),
         });
       }
       return;

@@ -483,8 +483,8 @@ export class OperatorService {
   }
 
   /** Refresh the retained operator snapshot without requiring a browser request. */
-  async refreshSnapshot(): Promise<void> {
-    await this.refresh();
+  async refreshSnapshot() {
+    return await this.refresh();
   }
 
   private currentTime(): number {

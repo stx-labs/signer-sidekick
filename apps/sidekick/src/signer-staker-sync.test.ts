@@ -1016,9 +1016,33 @@ describe("signer-staker synchronization", () => {
       getBlock: vi.fn().mockResolvedValue(apiBlock({ canonical: false })),
     };
 
-    await expect(syncSignerStakers(options(sidekickStore, api, nodeReads()))).rejects.toThrow(
-      "Sealed signer-staker anchor is no longer canonical",
+    const failure = await syncSignerStakers(options(sidekickStore, api, nodeReads())).then(
+      () => null,
+      (error: unknown) => error,
     );
+    expect(failure).toMatchObject({
+      name: SignerStakerAnchorError.name,
+      message: "Sealed signer-staker anchor is no longer canonical",
+      invalidatesSealedRun: true,
+      evidence: {
+        anchor: {
+          stacksBlockHeight: chainAnchor.stacksBlockHeight,
+          indexBlockHash: chainAnchor.indexBlockHash,
+          burnBlockHeight: chainAnchor.burnBlockHeight,
+        },
+        apiTipBefore: {
+          stacksBlockHeight: chainAnchor.stacksBlockHeight,
+          indexBlockHash: chainAnchor.indexBlockHash,
+          burnBlockHeight: chainAnchor.burnBlockHeight,
+        },
+        indexedBlock: {
+          canonical: false,
+          stacksBlockHeight: chainAnchor.stacksBlockHeight,
+          indexBlockHash: chainAnchor.indexBlockHash,
+          burnBlockHeight: chainAnchor.burnBlockHeight,
+        },
+      },
+    });
     expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toBeNull();
     expect(sidekickStore.listSignerStakers(manager)).toEqual([]);
     expect(sidekickStore.getResumableSignerStakerRun(sourceId, manager)).toBeNull();

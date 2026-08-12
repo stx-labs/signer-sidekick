@@ -8,7 +8,9 @@ import {
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
 import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
+import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
+import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -706,10 +708,23 @@ describe("local API", () => {
       }),
       synchronize: async () => ({}),
     };
+    const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker(() =>
+      Date.parse("2026-07-14T12:00:10.000Z"),
+    );
+    snapshotRefreshMetrics.recordAttempt();
+    snapshotRefreshMetrics.recordSuccess({
+      generatedAt: "2026-07-14T12:00:00.000Z",
+      preflight: {
+        node: { stacksTipHeight: 100, burnBlockHeight: 50 },
+        api: { stacksTipHeight: 99, burnBlockHeight: 50 },
+        pox: { burnBlockHeight: 49, rewardCycleId: 141 },
+      },
+    });
     const server = createServer({
       service,
       authToken: "test-operator-token-with-32-chars",
       logger: false,
+      snapshotRefreshMetrics,
     });
     servers.push(server);
 
@@ -717,6 +732,14 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.statusCode).toBe(200);
     expect(metrics.body).toContain("sidekick_http_requests_total");
+    expect(metrics.body).toContain("sidekick_operator_snapshot_refresh_successes_total 1");
+    expect(metrics.body).toContain("sidekick_operator_snapshot_age_seconds 10");
+    expect(metrics.body).toContain(
+      'sidekick_operator_snapshot_source_stacks_height{source="node"} 100',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_operator_snapshot_source_burn_height{source="pox"} 49',
+    );
   });
 
   it("keeps readiness available from a recent stale observation", async () => {
@@ -839,6 +862,51 @@ describe("local API", () => {
       node: walletIntentAnchorMismatch.node,
       api: walletIntentAnchorMismatch.api,
       poxBurnBlockHeight: walletIntentAnchorMismatch.poxBurnBlockHeight,
+    });
+  });
+
+  it("returns sanitized anchor evidence for signer-staker reconciliation failures", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const evidence = {
+      anchor: {
+        stacksBlockHeight: 8_600_000,
+        indexBlockHash: `0x${"11".repeat(32)}`,
+        burnBlockHeight: 960_240,
+      },
+      apiTipBefore: {
+        stacksBlockHeight: 8_600_005,
+        indexBlockHash: `0x${"22".repeat(32)}`,
+        burnBlockHeight: 960_240,
+      },
+      indexedBlock: {
+        canonical: false,
+        stacksBlockHeight: 8_600_000,
+        indexBlockHash: `0x${"33".repeat(32)}`,
+        burnBlockHeight: 960_240,
+      },
+    };
+    const service = {
+      snapshot: async () => ({ generatedAt: "2026-07-19T18:00:00.000Z" }),
+      synchronize: async () => {
+        throw new SignerStakerAnchorError("sealed anchor changed", { evidence });
+      },
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    await server.inject({ method: "POST", url: "/api/v1/sync", headers });
+    await vi.waitFor(async () => {
+      const response = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+      expect(response.json().operation.status).toBe("failed");
+    });
+    const operation = (await server.inject({ method: "GET", url: "/api/v1/sync", headers })).json()
+      .operation;
+    expect(operation.error).toEqual({
+      error: "signer_staker_anchor_unstable",
+      message: "Signer roster data changed during synchronization. Retry the chain data sync.",
+      retryable: true,
+      anchorEvidence: evidence,
     });
   });
 

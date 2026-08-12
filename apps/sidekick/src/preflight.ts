@@ -46,6 +46,7 @@ export interface PreflightResult {
     burnBlockLag: number;
   };
   pox: {
+    burnBlockHeight: number;
     activeContractId: string;
     rewardCycleId: number;
     rewardCycleLength: number;
@@ -431,6 +432,7 @@ export function evaluatePreflight(
       burnBlockLag,
     },
     pox: {
+      burnBlockHeight: nodePoxInfo.current_burnchain_block_height,
       activeContractId: nodePoxInfo.contract_id,
       rewardCycleId: nodePoxInfo.reward_cycle_id,
       rewardCycleLength: nodePoxInfo.reward_cycle_length,

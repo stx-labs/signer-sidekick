@@ -83,11 +83,12 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
       "Chain position moved while the setup snapshot was being assembled",
     );
   }
-  // Preflight is deliberately live health data. It may be one Bitcoin block ahead of the shared
-  // API anchor, but it must not describe a different Stacks tip or PoX reward cycle than the
-  // pinned manager and eligibility reads in this snapshot.
+  // Preflight is deliberately live health data. The node may have processed newer Nakamoto
+  // blocks (and one newer Bitcoin block) than the stable API anchor, but it must still contain
+  // that anchor and describe the same PoX reward cycle as the pinned manager and eligibility
+  // reads. The second captured anchor below fences any API movement during the snapshot.
   if (
-    preflight.node.stacksTipHeight !== before.stacksBlockHeight ||
+    preflight.node.stacksTipHeight < before.stacksBlockHeight ||
     preflight.node.burnBlockHeight < before.burnBlockHeight ||
     preflight.cycle.currentId !== before.rewardCycle
   ) {
