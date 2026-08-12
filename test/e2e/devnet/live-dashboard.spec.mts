@@ -22,9 +22,11 @@ async function login(page: Page) {
 }
 
 async function openPage(page: Page, id: string, heading: string) {
-  const picker = page.getByLabel("Dashboard page");
-  if (await picker.isVisible()) await picker.selectOption(id);
-  else await page.locator(`.sidebar a[href="#${id}"]`).click();
+  const picker = page.getByRole("button", { name: "Dashboard page", exact: true });
+  if (await picker.isVisible()) {
+    await picker.click();
+    await page.locator(`.mobile-page-menu a[href="#${id}"]`).click();
+  } else await page.locator(`.sidebar a[href="#${id}"]`).click();
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
 }
 

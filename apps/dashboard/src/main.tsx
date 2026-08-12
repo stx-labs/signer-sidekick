@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  CaretDown,
   Coins,
   Gauge,
   GearSix,
@@ -60,6 +61,80 @@ const nav: Array<{ group?: string; id?: DashboardPage; label?: string; icon?: ty
   { id: "settings", label: "Settings", icon: GearSix },
   { id: "enrollment", label: "Public Pool Page", icon: ShareNetwork },
 ];
+
+function MobilePageMenu({ page, alertCount }: { page: DashboardPage; alertCount: number }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const activeItem = nav.find((item) => item.id === page);
+  const ActiveIcon = activeItem?.icon;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromKeyboard);
+    };
+  }, [open]);
+
+  return (
+    <div className="mobile-page-menu" ref={rootRef}>
+      <button
+        aria-controls="mobile-dashboard-pages"
+        aria-expanded={open}
+        aria-label="Dashboard page"
+        className="mobile-page-menu-trigger"
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+        type="button"
+      >
+        <span className="mobile-page-menu-current">
+          {ActiveIcon ? <ActiveIcon /> : null}
+          <span>{activeItem?.label ?? "Choose page"}</span>
+        </span>
+        <CaretDown className="mobile-page-menu-chevron" />
+      </button>
+      <nav
+        aria-label="Dashboard pages"
+        className="mobile-page-menu-popover"
+        hidden={!open}
+        id="mobile-dashboard-pages"
+      >
+        {nav.map((item) =>
+          item.group ? (
+            <div className="mobile-page-menu-group" key={item.group}>
+              {item.group}
+            </div>
+          ) : (
+            <a
+              aria-current={page === item.id ? "page" : undefined}
+              className={`mobile-page-menu-item ${page === item.id ? "active" : ""}`}
+              href={`#${item.id}`}
+              key={item.id}
+              onClick={() => setOpen(false)}
+            >
+              {item.icon ? <item.icon /> : null}
+              <span>{item.label}</span>
+              {item.id === "operations" && alertCount ? (
+                <span className="mobile-page-menu-count">{alertCount}</span>
+              ) : null}
+            </a>
+          ),
+        )}
+      </nav>
+    </div>
+  );
+}
 
 function StacksGlyph() {
   return (
@@ -633,24 +708,7 @@ function App() {
       </aside>
       <div className={`content ${page === "settings" ? "content-settings" : ""}`}>
         <div className="topbar">
-          <select
-            aria-label="Dashboard page"
-            className="mobile-page-picker"
-            value={page}
-            onChange={(event) => {
-              location.hash = event.target.value;
-            }}
-          >
-            {nav
-              .filter((item): item is (typeof nav)[number] & { id: DashboardPage; label: string } =>
-                Boolean(item.id && item.label),
-              )
-              .map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-          </select>
+          <MobilePageMenu key={page} page={page} alertCount={data?.alerts.length ?? 0} />
           <div className="crumbs">
             Signer Sidekick / <strong>{nav.find((item) => item.id === page)?.label}</strong>
           </div>

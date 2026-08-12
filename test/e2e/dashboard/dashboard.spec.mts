@@ -52,6 +52,43 @@ test("opens the dashboard from an authenticated proxy session", async ({ page })
   await expect(page.getByLabel("Operator credential")).toHaveCount(0);
 });
 
+test("provides viewport-contained touch navigation on smaller screens", async ({ page }) => {
+  await login(page);
+  const picker = page.getByRole("button", { name: "Dashboard page" });
+  const viewport = page.viewportSize();
+  if (!viewport || viewport.width > 1080) {
+    await expect(picker).toBeHidden();
+    return;
+  }
+
+  await picker.click();
+  const navigation = page.getByRole("navigation", { name: "Dashboard pages" });
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByText("Operate", { exact: true })).toBeVisible();
+  await expect(navigation.getByText("Configure", { exact: true })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Overview" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+
+  const navigationBox = await navigation.boundingBox();
+  expect(navigationBox).not.toBeNull();
+  expect(navigationBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((navigationBox?.x ?? 0) + (navigationBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+  const poolLink = navigation.getByRole("link", { name: "Pool", exact: true });
+  const poolLinkBox = await poolLink.boundingBox();
+  expect(poolLinkBox?.height).toBeGreaterThanOrEqual(44);
+
+  await page.keyboard.press("Escape");
+  await expect(navigation).toBeHidden();
+  await expect(picker).toBeFocused();
+
+  await picker.click();
+  await poolLink.click();
+  await expect(page.getByRole("heading", { name: "Pool positions", exact: true })).toBeVisible();
+  await expect(navigation).toBeHidden();
+});
+
 function discardExpectedHttpConsoleError(page: Page, status: number) {
   consoleErrors.set(
     page,
@@ -62,9 +99,11 @@ function discardExpectedHttpConsoleError(page: Page, status: number) {
 }
 
 async function openPage(page: Page, id: string, heading: string) {
-  const picker = page.getByLabel("Dashboard page");
-  if (await picker.isVisible()) await picker.selectOption(id);
-  else await page.locator(`.sidebar a[href="#${id}"]`).click();
+  const picker = page.getByRole("button", { name: "Dashboard page", exact: true });
+  if (await picker.isVisible()) {
+    await picker.click();
+    await page.locator(`.mobile-page-menu a[href="#${id}"]`).click();
+  } else await page.locator(`.sidebar a[href="#${id}"]`).click();
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
 }
 
