@@ -23,6 +23,25 @@ const nodeInfoSchema = z.object({
       (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
     )
     .optional(),
+  is_fully_synced: z.boolean().optional(),
+});
+
+const nodeHealthSchema = z.object({
+  difference_from_max_peer: z.number().int().nonnegative(),
+  max_stacks_height_of_neighbors: z.number().int().nonnegative(),
+  max_stacks_neighbor_address: z.string(),
+  node_stacks_tip_height: z.number().int().nonnegative(),
+});
+
+const nodeTenureInfoSchema = z.object({
+  tip_block_id: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+    .transform(
+      (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
+    ),
+  tip_height: z.number().int().nonnegative(),
+  reward_cycle: z.number().int().nonnegative(),
 });
 
 const contractPrincipalSchema = z.string().refine((value) => {
@@ -287,6 +306,8 @@ const mempoolPageSchema = z
   .strict();
 
 export type NodeInfo = z.infer<typeof nodeInfoSchema>;
+export type NodeHealth = z.infer<typeof nodeHealthSchema>;
+export type NodeTenureInfo = z.infer<typeof nodeTenureInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
 export type BurnBlockPage = z.infer<typeof burnBlockPageSchema>;
@@ -388,12 +409,6 @@ function canonicalMempoolSnapshot(transactions: readonly MempoolTransaction[]): 
 export interface ChainReadOptions {
   tip: ChainAnchor["indexBlockHash"];
 }
-
-/**
- * A node can receive the next Bitcoin block before the indexed API has processed it, while both
- * still report the same Stacks tip. Accept only that one-block indexing lead as a shared anchor.
- */
-export const MAX_SHARED_ANCHOR_BURN_LAG = 1;
 
 type Fetch = typeof fetch;
 
@@ -627,6 +642,14 @@ export class StacksNodeClient {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema);
   }
 
+  getHealth(): Promise<NodeHealth> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/health`, nodeHealthSchema);
+  }
+
+  getTenureInfo(): Promise<NodeTenureInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/tenures/info`, nodeTenureInfoSchema);
+  }
+
   getPoxInfo(options?: ChainReadOptions): Promise<PoxInfo> {
     return fetchJson(
       this.fetchImpl,
@@ -755,22 +778,18 @@ export class StacksApiClient {
     this.headers = apiKey ? { [apiKeyHeader]: apiKey } : undefined;
   }
 
-  getNodeInfo(): Promise<NodeInfo> {
-    return fetchJson(
-      this.fetchImpl,
-      `${this.baseUrl}/v2/info`,
-      nodeInfoSchema,
-      this.headers ? { headers: this.headers } : {},
-    );
+  getNodeInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(this.headers ? { headers: this.headers } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
-  getStatus(): Promise<ApiStatus> {
-    return fetchJson(
-      this.fetchImpl,
-      `${this.baseUrl}/extended/v1/status`,
-      apiStatusSchema,
-      this.headers ? { headers: this.headers } : {},
-    );
+  getStatus(options: { signal?: AbortSignal } = {}): Promise<ApiStatus> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/extended/v1/status`, apiStatusSchema, {
+      ...(this.headers ? { headers: this.headers } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
   async getBurnBlocks(limit = 200): Promise<BurnBlockPage> {
@@ -1168,14 +1187,13 @@ export function createChainAnchor(
   const apiTip = apiStatus.chain_tip;
   const nodeBurnLag = nodeInfo.burn_block_height - apiTip.burn_block_height;
   // The API tip is the shared anchor: it is fenced before and after this read, while the node
-  // proves it can execute PoX queries at that exact index block hash. A node may lead the API by
-  // one Bitcoin block while both retain the same Stacks tip, but anything further is stale.
+  // proves it can execute PoX queries at that exact index block hash. An older API anchor remains
+  // safe for indexed reads for as long as the local node can still execute at that exact tip.
   // PoX reports the node's live burn tip even when the chainstate query is tip-pinned, so derive
   // the anchor's cycle facts from the API burn height below instead of comparing it to the API.
   if (
     nodeInfo.stacks_tip_height < apiTip.block_height ||
     nodeBurnLag < 0 ||
-    nodeBurnLag > MAX_SHARED_ANCHOR_BURN_LAG ||
     poxInfo.current_burnchain_block_height !== nodeInfo.burn_block_height
   ) {
     throw new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -1230,6 +1248,81 @@ export function createChainAnchor(
     phase,
     checkpoint,
   });
+}
+
+export function createNodeChainAnchor(
+  nodeInfo: NodeInfo,
+  tenureInfo: NodeTenureInfo,
+  poxInfo: PoxInfo,
+): ChainAnchor {
+  if (
+    nodeInfo.stacks_tip_height !== tenureInfo.tip_height ||
+    nodeInfo.burn_block_height !== poxInfo.current_burnchain_block_height
+  ) {
+    throw new ChainAnchorError("Node and PoX tips do not describe one chain position", {
+      retryable: true,
+    });
+  }
+  const anchor = createChainAnchor(
+    nodeInfo,
+    {
+      server_version: "local-stacks-node",
+      status: "ready",
+      chain_tip: {
+        block_height: tenureInfo.tip_height,
+        block_hash: tenureInfo.tip_block_id,
+        index_block_hash: tenureInfo.tip_block_id,
+        burn_block_height: nodeInfo.burn_block_height,
+      },
+    },
+    poxInfo,
+  );
+  if (anchor.rewardCycle !== tenureInfo.reward_cycle) {
+    throw new ChainAnchorError("Node tenure and PoX reward-cycle facts disagree", {
+      retryable: true,
+    });
+  }
+  return anchor;
+}
+
+function sameNodeTip(
+  leftInfo: NodeInfo,
+  leftTenure: NodeTenureInfo,
+  rightInfo: NodeInfo,
+  rightTenure: NodeTenureInfo,
+): boolean {
+  return (
+    leftInfo.stacks_tip_height === rightInfo.stacks_tip_height &&
+    leftInfo.burn_block_height === rightInfo.burn_block_height &&
+    leftTenure.tip_height === rightTenure.tip_height &&
+    leftTenure.tip_block_id === rightTenure.tip_block_id &&
+    leftTenure.reward_cycle === rightTenure.reward_cycle
+  );
+}
+
+/** Capture the local node's current canonical position without consulting an external indexer. */
+export async function captureNodeChainAnchor(node: StacksNodeClient): Promise<ChainAnchor> {
+  const maxAttempts = 3;
+  let lastError: ChainAnchorError | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const [beforeInfo, beforeTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+      const poxInfo = await node.getPoxInfo({ tip: beforeTenure.tip_block_id });
+      const [afterInfo, afterTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+      if (!sameNodeTip(beforeInfo, beforeTenure, afterInfo, afterTenure)) {
+        throw new ChainAnchorError("Node tip moved while the anchor was being captured", {
+          retryable: true,
+        });
+      }
+      return createNodeChainAnchor(beforeInfo, beforeTenure, poxInfo);
+    } catch (error) {
+      if (!(error instanceof ChainAnchorError) || !error.retryable || attempt === maxAttempts) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw lastError ?? new ChainAnchorError("Unable to capture a stable local node anchor");
 }
 
 export async function captureChainAnchor(

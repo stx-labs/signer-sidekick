@@ -70,6 +70,11 @@ async function service() {
         },
       ],
     }),
+    getTenureInfo: async () => ({
+      tip_block_id: `0x${"02".repeat(32)}`,
+      tip_height: 8_600_000,
+      reward_cycle: 141,
+    }),
     getContractSource: async (principal: string) => {
       if (principal === managerPrincipal) throw new UpstreamHttpError("not found", 404);
       return { source: pox5Source, publish_height: 8_500_000 };
@@ -163,7 +168,7 @@ describe("onboarding service", () => {
     ).toMatchObject({
       status: "pending",
       detail:
-        "Manager contract is not deployed at the shared chain anchor yet. Submit or wait for the deployment transaction, then verify again.",
+        "Manager contract is not deployed at the local node anchor yet. Submit or wait for the deployment transaction, then verify again.",
     });
   });
 

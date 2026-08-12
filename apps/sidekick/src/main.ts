@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createAttachActivationPlan, createFreshActivationPlan } from "./activation-plan.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
-import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import {
   type CliInvocation,
   dispatchCli,
@@ -39,7 +39,7 @@ import {
   startSnapshotRefreshLoop,
 } from "./operator-snapshot-refresh.js";
 import { readPoolForecast } from "./pool-forecast.js";
-import { runOperatorPreflight } from "./preflight.js";
+import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
 import { readStxRewardStatus } from "./reward-status.js";
 import { RuntimeSettingsController } from "./runtime-settings.js";
 import { createServer } from "./server.js";
@@ -124,6 +124,8 @@ export async function executeCliCommand({
     if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required for serve");
     const authToken = env.SIDEKICK_AUTH_TOKEN;
     if (!authToken) throw new Error("SIDEKICK_AUTH_TOKEN is required for serve");
+    const authTrustedHeader = env.SIDEKICK_AUTH_TRUSTED_HEADER;
+    const authBasicUsername = env.SIDEKICK_AUTH_BASIC_USERNAME;
     const portValue = env.SIDEKICK_HTTP_PORT ?? "3998";
     if (!/^[0-9]+$/.test(portValue)) {
       throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
@@ -207,6 +209,8 @@ export async function executeCliCommand({
         engine: engine.api,
         snapshotRefreshMetrics,
         authToken,
+        ...(authTrustedHeader ? { authTrustedHeader } : {}),
+        ...(authBasicUsername ? { authBasicUsername } : {}),
         ...(staticDirectory ? { staticDirectory: resolve(staticDirectory) } : {}),
       });
       reportTransactionEngineError = (error) =>
@@ -445,17 +449,19 @@ export async function executeCliCommand({
   } else if (command === "pool" && arguments_[0] === "sync-stakers") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick pool sync-stakers <manager-principal>");
-    const { config, node, api, preflight, manager, chainAnchor } = await setupContext(
-      managerPrincipal,
-      env,
-    );
-    if (preflight.status === "fail" || !preflight.pox.pox5ContractId) {
+    const { config, node, api, preflight, manager } = await setupContext(managerPrincipal, env);
+    if (
+      preflight.status === "fail" ||
+      !indexedApiCompatible(preflight) ||
+      !preflight.pox.pox5ContractId
+    ) {
       throw preflightBlocked("Signer-staker sync");
     }
     const pox5ContractId = preflight.pox.pox5ContractId;
     if (!manager.attachAllowed) {
       throw managerCompatibilityBlocked("Signer-staker sync");
     }
+    const indexedAnchor = await captureChainAnchor(node, api);
 
     const observedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
@@ -486,10 +492,10 @@ export async function executeCliCommand({
           managerPrincipal,
           pox5ContractId,
           observedAt,
-          burnBlockHeight: chainAnchor.burnBlockHeight,
-          stacksTipHeight: chainAnchor.stacksBlockHeight,
-          currentRewardCycle: chainAnchor.rewardCycle,
-          chainAnchor,
+          burnBlockHeight: indexedAnchor.burnBlockHeight,
+          stacksTipHeight: indexedAnchor.stacksBlockHeight,
+          currentRewardCycle: indexedAnchor.rewardCycle,
+          chainAnchor: indexedAnchor,
           pageLimit: config.stakerPageLimit,
         });
         const events = await syncManagerEvents({
@@ -507,20 +513,20 @@ export async function executeCliCommand({
           sourceId,
           managerPrincipal,
           pox5ContractId,
-          currentRewardCycle: chainAnchor.rewardCycle,
+          currentRewardCycle: indexedAnchor.rewardCycle,
           horizonCycles: config.forecastHorizonCycles,
           observedAt,
-          burnBlockHeight: chainAnchor.burnBlockHeight,
-          stacksTipHeight: chainAnchor.stacksBlockHeight,
-          chainAnchor,
+          burnBlockHeight: indexedAnchor.burnBlockHeight,
+          stacksTipHeight: indexedAnchor.stacksBlockHeight,
+          chainAnchor: indexedAnchor,
         });
         writeCliJson(output, {
           config: redactConfig(config),
           migrationBackupCreated: backupPath,
           observedAt: {
-            burnBlockHeight: chainAnchor.burnBlockHeight,
-            stacksTipHeight: chainAnchor.stacksBlockHeight,
-            indexBlockHash: chainAnchor.indexBlockHash,
+            burnBlockHeight: indexedAnchor.burnBlockHeight,
+            stacksTipHeight: indexedAnchor.stacksBlockHeight,
+            indexBlockHash: indexedAnchor.indexBlockHash,
           },
           result,
           events,
@@ -532,7 +538,9 @@ export async function executeCliCommand({
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
     const { config, api, preflight, manager } = await setupContext(managerPrincipal, env);
-    if (preflight.status === "fail") throw preflightBlocked("Event sync");
+    if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
+      throw preflightBlocked("Event sync");
+    }
     if (!manager.attachAllowed) throw managerCompatibilityBlocked("Event sync");
     const observedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
@@ -848,6 +856,8 @@ Environment:
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
   SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
   SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
+  SIDEKICK_AUTH_TRUSTED_HEADER  Optional proxy-injected API-key header
+  SIDEKICK_AUTH_BASIC_USERNAME  Optional HTTP Basic username; API key is the password
   SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory
   SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR  Optional read-only installed profile directory`,
     );

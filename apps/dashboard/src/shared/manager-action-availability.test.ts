@@ -9,6 +9,7 @@ function context(): ManagerActionContext {
     preflight: {
       checks: [
         { id: "node-network", status: "pass", message: "Node network matches" },
+        { id: "node-sync", status: "pass", message: "Node is synchronized" },
         { id: "api-network", status: "pass", message: "API and node networks agree" },
       ],
       compatibility: {
@@ -86,7 +87,7 @@ describe("managerActionAvailability", () => {
 
   it.each([
     "node-network",
-    "api-network",
+    "node-sync",
   ])("blocks when the %s routing check does not pass", (checkId) => {
     const value = context();
     const check = value.preflight.checks.find(({ id }) => id === checkId);
@@ -99,6 +100,15 @@ describe("managerActionAvailability", () => {
       reason: `${checkId} mismatch`,
       warning: null,
     });
+  });
+
+  it("does not block local manager actions when only the API routing check fails", () => {
+    const value = context();
+    const check = value.preflight.checks.find(({ id }) => id === "api-network");
+    if (!check) throw new Error("Missing api-network fixture");
+    check.status = "fail";
+
+    expect(managerActionAvailability(value)).toMatchObject({ available: true });
   });
 
   it("reports the manager network or interface failure", () => {

@@ -19,15 +19,16 @@ export function managerActionAvailability(
     };
   }
   const networkChecks = new Map(data.preflight.checks.map((check) => [check.id, check]));
-  const failedNetworkCheck = ["node-network", "api-network"].find(
-    (id) => networkChecks.get(id)?.status !== "pass",
-  );
+  const failedNetworkCheck = ["node-network", "node-sync"].find((id) => {
+    const check = networkChecks.get(id);
+    return check ? check.status !== "pass" : false;
+  });
   if (failedNetworkCheck) {
     return {
       available: false,
       reason:
         networkChecks.get(failedNetworkCheck)?.message ??
-        "Sidekick could not verify that the node and API use the configured network.",
+        "Sidekick could not verify the local node's network and synchronization state.",
       warning: null,
     };
   }

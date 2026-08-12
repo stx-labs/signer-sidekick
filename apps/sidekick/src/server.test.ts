@@ -27,7 +27,7 @@ const walletIntentAnchorMismatch = {
   poxBurnBlockHeight: 4_819,
 } as const;
 const chainSourcesOutOfSyncMessage =
-  "The node and API are temporarily out of sync. Retry after the indexed API catches up.";
+  "The local node is behind or inconsistent with the configured chain sources. Check node synchronization and retry.";
 
 function retryableWalletIntentAnchorError(): ChainAnchorError {
   return new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -118,6 +118,66 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("accepts the API key from an explicitly configured trusted proxy header", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({
+      service,
+      authToken: token,
+      authTrustedHeader: "X-Sidekick-Operator",
+      logger: false,
+    });
+    servers.push(server);
+
+    const denied = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { "x-sidekick-operator": "wrong-operator-token-with-32-chars" },
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { "x-sidekick-operator": token },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authenticated: true, method: "trusted-header" });
+  });
+
+  it("accepts HTTP Basic with the configured username and API key password", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const username = "operator";
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({
+      service,
+      authToken: token,
+      authBasicUsername: username,
+      logger: false,
+    });
+    servers.push(server);
+
+    const denied = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${username}:wrong-operator-token-with-32-chars`).toString("base64")}`,
+      },
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.headers["www-authenticate"]).toContain("Basic");
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authenticated: true, method: "basic" });
   });
 
   it("treats a normal one-block node lead as an unstable anchor, not source drift", async () => {
@@ -698,6 +758,17 @@ describe("local API", () => {
         logger: false,
       }),
     ).toThrow("SIDEKICK_AUTH_TOKEN");
+  });
+
+  it("rejects unsafe automatic-authentication settings", () => {
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const authToken = "test-operator-token-with-32-chars";
+    expect(() =>
+      createServer({ service, authToken, authTrustedHeader: "Authorization", logger: false }),
+    ).toThrow("SIDEKICK_AUTH_TRUSTED_HEADER");
+    expect(() =>
+      createServer({ service, authToken, authBasicUsername: "bad:user", logger: false }),
+    ).toThrow("SIDEKICK_AUTH_BASIC_USERNAME");
   });
 
   it("reports readiness and Prometheus counters without authentication", async () => {

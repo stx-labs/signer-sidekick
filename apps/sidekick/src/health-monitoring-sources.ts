@@ -4,6 +4,7 @@ import { fetchHealthSource, HealthSourceError } from "./health-http.js";
 import type {
   HealthObservation,
   HiroStatus,
+  NodeHealth,
   NodeInfo,
   NodeMetricValues,
   SignerInfo,
@@ -22,6 +23,13 @@ const nodeInfoSchema: z.ZodType<NodeInfo> = z.object({
   network_id: z.number().int(),
   burn_block_height: z.number().int().nonnegative(),
   stacks_tip_height: z.number().int().nonnegative(),
+  is_fully_synced: z.boolean().optional(),
+});
+
+const nodeHealthSchema: z.ZodType<NodeHealth> = z.object({
+  difference_from_max_peer: z.number().int().nonnegative(),
+  max_stacks_height_of_neighbors: z.number().int().nonnegative(),
+  node_stacks_tip_height: z.number().int().nonnegative(),
 });
 
 const hiroStatusSchema: z.ZodType<HiroStatus> = z.object({
@@ -189,10 +197,14 @@ export async function collectHealthObservation(
   config: SidekickConfig,
   observedAt: string,
 ): Promise<HealthObservation> {
-  const [nodeRpc, nodeMetrics, hiro, signerInfo, signerHeartbeat, signerMetrics] =
+  const [nodeRpc, nodeHealth, nodeMetrics, hiro, signerInfo, signerHeartbeat, signerMetrics] =
     await Promise.all([
       readJson(endpoint(config.nodeRpcUrl, "/v2/info"), nodeInfoSchema).catch((error) => ({
         source: sourceFailure(error),
+        value: null,
+      })),
+      readJson(endpoint(config.nodeRpcUrl, "/v3/health"), nodeHealthSchema).catch(() => ({
+        source: null,
         value: null,
       })),
       config.nodeMetricsUrl
@@ -235,6 +247,7 @@ export async function collectHealthObservation(
     observedAt,
     nodeRpc: nodeRpc.source,
     nodeInfo: nodeRpc.value,
+    nodeHealth: nodeHealth.value,
     nodeMetricsSource: nodeMetrics?.source ?? null,
     nodeMetrics: nodeMetrics?.samples ? nodeMetricValues(nodeMetrics.samples) : null,
     hiroSource: hiro?.source ?? null,

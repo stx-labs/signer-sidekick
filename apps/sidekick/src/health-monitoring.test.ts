@@ -50,6 +50,18 @@ describe("HealthMonitoringService", () => {
             network_id: 1,
             burn_block_height: 910_000,
             stacks_tip_height: 200_000,
+            is_fully_synced: true,
+          }),
+        );
+        return;
+      }
+      if (request.url === "/v3/health") {
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            difference_from_max_peer: 0,
+            max_stacks_height_of_neighbors: 200_000,
+            node_stacks_tip_height: 200_000,
           }),
         );
         return;
@@ -136,7 +148,12 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
 
     const initial = await health.refresh();
     expect(initial.overallStatus).toBe("healthy");
-    expect(initial.node).toMatchObject({ inboundPeers: 8, outboundPeers: 12 });
+    expect(initial.node).toMatchObject({
+      inboundPeers: 8,
+      outboundPeers: 12,
+      isFullySynced: true,
+      peerHeightDifference: 0,
+    });
     expect(initial.hiro).toMatchObject({ localStacksDifference: -1, localBurnDifference: 0 });
     expect(initial.signer).toMatchObject({
       version: "4.0.1.0.0",

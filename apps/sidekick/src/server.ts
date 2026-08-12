@@ -42,7 +42,6 @@ import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } fr
 import { z } from "zod";
 import {
   ChainAnchorError,
-  MAX_SHARED_ANCHOR_BURN_LAG,
   type RateLimitApiSource,
   RateLimitedError,
   rateLimitInfo,
@@ -191,11 +190,11 @@ function operationReadiness(
             : "ready",
       detail:
         preflight === "pass"
-          ? "Node, API, network, lag, and PoX-5 checks pass."
+          ? "Local node, network, PoX-5, and indexed API checks pass."
           : preflight === "warn"
-            ? "One or more node, API, network, lag, or PoX-5 checks need review."
+            ? "Local operation remains available, but one or more optional or compatibility checks need review."
             : preflight === "fail"
-              ? "Node, API, network, lag, or PoX-5 checks failed."
+              ? "The local node, network, or PoX-5 checks failed."
               : "No preflight result is available.",
     },
     {
@@ -267,6 +266,8 @@ export interface TransactionEngineApiService {
 export interface ServerOptions {
   service?: OperatorSnapshotService;
   authToken?: string;
+  authTrustedHeader?: string;
+  authBasicUsername?: string;
   getRateLimitSettings?(): RateLimitApiSource;
   logger?: boolean;
   staticDirectory?: string | null;
@@ -305,7 +306,7 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   operator_service_unavailable:
     "The operator service is unavailable. Restart Sidekick and review the startup logs.",
   unauthorized:
-    "The operator credential is missing or invalid. Enter the configured credential and retry.",
+    "The operator credential is missing or invalid. Check proxy authentication or enter the configured credential and retry.",
   invalid_health_source: "Choose a supported health source and enter a valid URL.",
   invalid_pagination: "Pagination values are invalid. Correct the request and retry.",
   limit_must_be_positive:
@@ -355,7 +356,7 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   invalid_adapter_disable_request:
     "The adapter disable request is invalid. Confirm the decision and reason, then retry.",
   chain_sources_out_of_sync:
-    "The node and API are temporarily out of sync. Retry after the indexed API catches up.",
+    "The local node is behind or inconsistent with the configured chain sources. Check node synchronization and retry.",
   chain_anchor_unstable: "Chain data changed while Sidekick was reading it. Retry in a moment.",
   chain_anchor_invalid:
     "Node, API, or PoX data is inconsistent. Check the configured chain sources before retrying.",
@@ -433,9 +434,8 @@ function chainSourcesDiffer(error: ChainAnchorError): boolean {
   const { tips } = error;
   return Boolean(
     tips &&
-      (tips.node.stacksTipHeight !== tips.api.stacksTipHeight ||
+      (tips.node.stacksTipHeight < tips.api.stacksTipHeight ||
         tips.node.burnBlockHeight < tips.api.burnBlockHeight ||
-        tips.node.burnBlockHeight - tips.api.burnBlockHeight > MAX_SHARED_ANCHOR_BURN_LAG ||
         tips.poxBurnBlockHeight !== tips.node.burnBlockHeight),
   );
 }
@@ -639,9 +639,9 @@ function walletIntentAnchorError(
     const { tips } = error;
     const sourcesDiffer =
       tips !== null &&
-      (tips.node.stacksTipHeight !== tips.api.stacksTipHeight ||
-        tips.node.burnBlockHeight !== tips.api.burnBlockHeight ||
-        tips.poxBurnBlockHeight !== tips.api.burnBlockHeight);
+      (tips.node.stacksTipHeight < tips.api.stacksTipHeight ||
+        tips.node.burnBlockHeight < tips.api.burnBlockHeight ||
+        tips.poxBurnBlockHeight !== tips.node.burnBlockHeight);
     return sourcesDiffer
       ? {
           error: "wallet_intent_anchor_mismatch",
@@ -668,11 +668,56 @@ function replyToWalletIntentAnchorError(
   return reply.code(503).send(body);
 }
 
-function authorized(header: string | undefined, expected: string): boolean {
-  if (!header?.startsWith("Bearer ")) return false;
-  const provided = Buffer.from(header.slice(7));
+type OperatorAuthMethod = "bearer" | "trusted-header" | "basic";
+
+function secureEqual(provided: string, expected: string): boolean {
+  const providedBuffer = Buffer.from(provided);
   const wanted = Buffer.from(expected);
-  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  return providedBuffer.length === wanted.length && timingSafeEqual(providedBuffer, wanted);
+}
+
+function bearerAuthorized(header: string | undefined, expected: string): boolean {
+  return Boolean(header?.startsWith("Bearer ") && secureEqual(header.slice(7), expected));
+}
+
+function basicAuthorized(
+  header: string | undefined,
+  expectedUsername: string | undefined,
+  expectedPassword: string,
+): boolean {
+  if (!expectedUsername || !header?.startsWith("Basic ")) return false;
+  const encoded = header.slice(6);
+  if (!/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(encoded)) {
+    return false;
+  }
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.toString("base64") !== encoded) return false;
+  const separator = decoded.indexOf(0x3a);
+  if (separator < 0) return false;
+  return (
+    secureEqual(decoded.subarray(0, separator).toString("utf8"), expectedUsername) &&
+    secureEqual(decoded.subarray(separator + 1).toString("utf8"), expectedPassword)
+  );
+}
+
+function operatorAuthMethod(
+  headers: FastifyRequest["headers"],
+  options: ServerOptions,
+): OperatorAuthMethod | null {
+  const expected = options.authToken ?? "";
+  if (bearerAuthorized(headers.authorization, expected)) return "bearer";
+  if (options.authTrustedHeader) {
+    const provided = headers[options.authTrustedHeader];
+    if (typeof provided === "string" && secureEqual(provided, expected)) return "trusted-header";
+  }
+  if (basicAuthorized(headers.authorization, options.authBasicUsername, expected)) return "basic";
+  return null;
+}
+
+function authenticationChallenges(options: ServerOptions): string {
+  return options.authBasicUsername
+    ? 'Basic realm="Signer Sidekick", charset="UTF-8", Bearer'
+    : "Bearer";
 }
 
 function csvCell(value: unknown): string {
@@ -791,6 +836,26 @@ export function createServer(options: ServerOptions = {}) {
       options.authToken === "replace-with-at-least-24-random-characters")
   ) {
     throw new Error("The operator API requires SIDEKICK_AUTH_TOKEN with at least 24 characters");
+  }
+  if (
+    options.authTrustedHeader &&
+    (!/^[!#$%&'*+.^_`|~\w-]+$/.test(options.authTrustedHeader) ||
+      ["authorization", "cookie", "host"].includes(options.authTrustedHeader.toLowerCase()))
+  ) {
+    throw new Error("SIDEKICK_AUTH_TRUSTED_HEADER must be a valid non-standard HTTP header name");
+  }
+  if (
+    options.authBasicUsername !== undefined &&
+    (!options.authBasicUsername ||
+      options.authBasicUsername.includes(":") ||
+      options.authBasicUsername.length > 128)
+  ) {
+    throw new Error(
+      "SIDEKICK_AUTH_BASIC_USERNAME must be 1 through 128 characters and must not contain a colon",
+    );
+  }
+  if (options.authTrustedHeader) {
+    options = { ...options, authTrustedHeader: options.authTrustedHeader.toLowerCase() };
   }
   const server = Fastify({ logger: options.logger ?? true });
   const rateLimitSettings = (): RateLimitApiSource | undefined => {
@@ -1001,8 +1066,8 @@ export function createServer(options: ServerOptions = {}) {
     requestCount += 1;
     if (!request.url.startsWith("/api/")) return;
     if (!options.service) throw new OperatorApiError(503, "operator_service_unavailable");
-    if (!authorized(request.headers.authorization, options.authToken ?? "")) {
-      reply.header("www-authenticate", "Bearer");
+    if (!operatorAuthMethod(request.headers, options)) {
+      reply.header("www-authenticate", authenticationChallenges(options));
       throw new OperatorApiError(401, "unauthorized");
     }
   });
@@ -1016,6 +1081,10 @@ export function createServer(options: ServerOptions = {}) {
     },
   }));
   server.get("/health/live", async () => ({ status: "ok" }));
+  server.get("/api/v1/auth/session", async (request) => ({
+    authenticated: true,
+    method: operatorAuthMethod(request.headers, options),
+  }));
   server.get("/health/ready", async (request, reply) => {
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
     const service = options.service;

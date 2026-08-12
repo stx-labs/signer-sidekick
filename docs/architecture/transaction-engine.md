@@ -20,6 +20,13 @@ for actionable contract, account, and PoX state. The Stacks API provides indexed
 history; it cannot override node state. SQLite is durable evidence and coordination state, not
 transaction authority.
 
+Sidekick therefore keeps two chain positions separate. Current setup, manager, reward, and wallet
+facts use a stable local-node anchor. Indexed roster, event, history, and canonical-ancestry reads
+use the newest stable API anchor that the node can still read. An API that is behind or unavailable
+degrades only those indexed capabilities. A local node that is behind the API or its observed peers
+fails readiness, while Assist remains fail-closed whenever an API-specific completeness proof is
+unavailable.
+
 An Assist plan and its pre-broadcast recheck must agree on:
 
 1. the completed reward calculation and its exact checkpoint;

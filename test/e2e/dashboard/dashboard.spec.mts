@@ -37,6 +37,21 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 }
 
+test("opens the dashboard from an authenticated proxy session", async ({ page }) => {
+  await page.route("**/api/v1/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ authenticated: true, method: "trusted-header" }),
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(page.getByLabel("Operator credential")).toHaveCount(0);
+});
+
 function discardExpectedHttpConsoleError(page: Page, status: number) {
   consoleErrors.set(
     page,
@@ -2343,6 +2358,26 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 test("paginates and searches a pool with hundreds of stakers", async ({ page }) => {
   await login(page);
   await openPage(page, "pool", "Pool positions");
+  const forecast = page.locator(".forecast-card");
+  const forecastSummary = forecast.getByRole("region", { name: "Pool forecast summary" });
+  await expect(forecastSummary).toBeVisible();
+  const forecastChart = forecast.getByRole("img", { name: "Pool total forecast" });
+  await expect(forecastChart).toBeVisible();
+  await expect(forecastSummary.getByText("16,800,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("Cycle 140", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("−200,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("15,800,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("−1,000,000 STX · −6%", { exact: true })).toBeVisible();
+  const axisLabels = await forecast.locator(".forecast-axis-label").allTextContents();
+  expect(axisLabels).toHaveLength(3);
+  expect(axisLabels.every((label) => label.endsWith(" STX"))).toBe(true);
+  expect(axisLabels.some((label) => label.includes("%"))).toBe(false);
+  const chartOverflow = await forecastChart.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(chartOverflow).toBeLessThanOrEqual(1);
+  const forecastBox = await forecast.boundingBox();
+  expect(forecastBox?.height).toBeLessThan(340);
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
   const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
   await expect(amountSort).toHaveCount(1);

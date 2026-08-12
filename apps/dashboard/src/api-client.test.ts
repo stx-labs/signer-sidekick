@@ -49,6 +49,22 @@ describe("dashboard API client", () => {
     expect(request.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("preserves browser-managed authentication when no bearer token is supplied", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiJson("", "/api/v1/status", readySchema)).resolves.toEqual({
+      status: "ready",
+    });
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(request.headers).has("authorization")).toBe(false);
+  });
+
   it("clears rejected credentials and emits the shared logout event", async () => {
     const removeItem = vi.fn();
     const dispatchEvent = vi.fn();

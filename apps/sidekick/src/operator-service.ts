@@ -2,6 +2,7 @@ import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts"
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
+  captureChainAnchor,
   RateLimitedError,
   type RateLimitInfo,
   rateLimitInfo,
@@ -20,7 +21,7 @@ import {
 } from "./manager-verification.js";
 import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
 import { readPoolForecast } from "./pool-forecast.js";
-import type { runOperatorPreflight } from "./preflight.js";
+import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
 import {
   discoverStakerClaims,
   readStxRewardStatus,
@@ -243,12 +244,13 @@ export async function resolveRosterProjectionAnchor(options: {
   sourceId: string;
   managerPrincipal: string;
   liveAnchor: ChainAnchor;
+  indexedApiAvailable?: boolean;
 }): Promise<ChainAnchor> {
   const run = options.store.getLatestCompletedSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
   );
-  if (!run?.chainAnchor) return options.liveAnchor;
+  if (!run?.chainAnchor || options.indexedApiAvailable === false) return options.liveAnchor;
   try {
     await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
     return run.chainAnchor;
@@ -878,7 +880,7 @@ export class OperatorService {
     for (let attempt = 1; attempt <= maxAnchorAttempts; attempt += 1) {
       options.signal?.throwIfAborted();
       const observedAt = new Date().toISOString();
-      const { chainAnchor, preflight, manager } = await readSetupSnapshot({
+      const { preflight, manager } = await readSetupSnapshot({
         config,
         node,
         api,
@@ -887,13 +889,19 @@ export class OperatorService {
       });
       const trustTransition = this.recordManagerTrustState(manager, observedAt);
       if (trustTransition) this.pendingTrustTransition = trustTransition;
-      if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
+      if (
+        preflight.status === "fail" ||
+        !indexedApiCompatible(preflight) ||
+        !preflight.pox.pox5ContractId ||
+        !manager.attachAllowed
+      ) {
         throw new OperatorWorkflowError(
           422,
           "synchronization_sources_incompatible",
           "Sync is blocked by node, API, PoX-5, or manager compatibility checks. Review preflight and manager verification, then retry",
         );
       }
+      const indexedAnchor = await captureChainAnchor(node, api);
       store.upsertChainSource({
         sourceId,
         kind: "api",
@@ -918,10 +926,10 @@ export class OperatorService {
           managerPrincipal,
           pox5ContractId: preflight.pox.pox5ContractId,
           observedAt,
-          burnBlockHeight: chainAnchor.burnBlockHeight,
-          stacksTipHeight: chainAnchor.stacksBlockHeight,
-          currentRewardCycle: chainAnchor.rewardCycle,
-          chainAnchor,
+          burnBlockHeight: indexedAnchor.burnBlockHeight,
+          stacksTipHeight: indexedAnchor.stacksBlockHeight,
+          currentRewardCycle: indexedAnchor.rewardCycle,
+          chainAnchor: indexedAnchor,
           pageLimit: config.stakerPageLimit,
           ...(options.signal ? { signal: options.signal } : {}),
           onProgress: async (progress) => {
@@ -1011,6 +1019,7 @@ export class OperatorService {
       sourceId,
       managerPrincipal,
       liveAnchor: chainAnchor,
+      indexedApiAvailable: indexedApiCompatible(preflight),
     });
     const rewardCalculation = deriveRewardCalculationTarget(projectionAnchor);
     const [forecast, rewards] =

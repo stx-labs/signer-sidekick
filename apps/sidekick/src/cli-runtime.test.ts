@@ -90,6 +90,8 @@ describe("CLI dispatch", () => {
         SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
         SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
         SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
+        SIDEKICK_AUTH_TRUSTED_HEADER  Optional proxy-injected API-key header
+        SIDEKICK_AUTH_BASIC_USERNAME  Optional HTTP Basic username; API key is the password
         SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory
         SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR  Optional read-only installed profile directory
       "

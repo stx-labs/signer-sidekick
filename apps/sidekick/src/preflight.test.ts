@@ -83,7 +83,7 @@ describe("operator preflight", () => {
     expect(result.pox).toMatchObject({ pox5Available: false, pox5ContractId: null });
   });
 
-  it("fails closed on a node/API network mismatch", () => {
+  it("degrades indexed features without failing local-node readiness on an API mismatch", () => {
     const result = evaluatePreflight(
       config,
       sources({
@@ -92,12 +92,26 @@ describe("operator preflight", () => {
           burn_block_height: 194_760,
           stacks_tip_height: 4_042_210,
         },
+        apiStatus: {
+          server_version: "stacks-blockchain-api v9.0.0 (HEAD:3aa0ae7)",
+          status: "ready",
+          chain_tip: {
+            block_height: 8_500_010,
+            block_hash: "0x03",
+            index_block_hash: "0x04",
+            burn_block_height: 958_101,
+          },
+        },
       }),
     );
 
-    expect(result.status).toBe("fail");
+    expect(result.status).toBe("warn");
+    expect(result.api.networkCompatible).toBe(false);
     expect(result.checks.find((check) => check.id === "api-network")).toMatchObject({
-      status: "fail",
+      status: "warn",
+    });
+    expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
+      status: "warn",
     });
   });
 
@@ -145,7 +159,7 @@ describe("operator preflight", () => {
     });
   });
 
-  it("warns when the API is unexpectedly ahead of the configured node", () => {
+  it("fails readiness when the local node is behind the API", () => {
     const result = evaluatePreflight(
       config,
       sources({
@@ -164,8 +178,8 @@ describe("operator preflight", () => {
 
     expect(result.api.burnBlockLag).toBe(20);
     expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
-      status: "warn",
-      message: "API Bitcoin tip is 20 Bitcoin blocks ahead of the node",
+      status: "fail",
+      message: "The local node trails the API by 20 Bitcoin blocks and 100 Stacks blocks",
     });
   });
 
@@ -189,7 +203,31 @@ describe("operator preflight", () => {
     expect(result.api.burnBlockLag).toBe(20);
     expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
       status: "warn",
-      message: "API Bitcoin tip is 20 Bitcoin blocks behind the node",
+      message: "API chain data is behind the local node by 20 Bitcoin blocks and 100 Stacks blocks",
+    });
+  });
+
+  it("keeps local-node preflight usable when the Reference API is unavailable", () => {
+    const baseline = sources();
+    const result = evaluatePreflight(config, {
+      ...baseline,
+      apiNodeInfo: null,
+      apiStatus: null,
+      apiError: "reference API unavailable",
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.api).toMatchObject({
+      available: false,
+      networkCompatible: false,
+      position: "unavailable",
+      error: "reference API unavailable",
+    });
+    expect(result.checks.find((check) => check.id === "api-availability")).toMatchObject({
+      status: "warn",
+    });
+    expect(result.checks.find((check) => check.id === "node-network")).toMatchObject({
+      status: "pass",
     });
   });
 

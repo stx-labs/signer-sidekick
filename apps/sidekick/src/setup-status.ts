@@ -143,7 +143,7 @@ export async function readPoolSetupStatus(
     {
       id: "preflight",
       status: preflight.status,
-      message: `Node, API, and protocol preflight status is ${preflight.status}`,
+      message: `Local node and protocol preflight status is ${preflight.status}; indexed API warnings do not block local operations`,
     },
     {
       id: "manager-attachment",

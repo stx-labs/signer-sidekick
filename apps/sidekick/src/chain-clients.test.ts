@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ChainAnchorError,
   captureChainAnchor,
+  captureNodeChainAnchor,
   createChainAnchor,
+  createNodeChainAnchor,
   StacksApiClient,
   StacksNodeClient,
   UpstreamHttpError,
@@ -1097,8 +1099,8 @@ describe("Stacks node client", () => {
     });
   });
 
-  it("rejects an API anchor that trails the node by more than one Bitcoin block", () => {
-    expect(() =>
+  it("accepts a stable API anchor that trails a healthy local node", () => {
+    expect(
       createChainAnchor(
         {
           network_id: 1,
@@ -1134,7 +1136,62 @@ describe("Stacks node client", () => {
           },
         },
       ),
-    ).toThrow(ChainAnchorError);
+    ).toMatchObject({
+      stacksBlockHeight: 8_667_384,
+      burnBlockHeight: 960_262,
+      indexBlockHash,
+    });
+  });
+
+  it("captures the current local node anchor without consulting an indexed API", async () => {
+    const localIndexBlockHash = `0x${"45".repeat(32)}`;
+    const nodeInfo = {
+      network_id: 1,
+      burn_block_height: 960_264,
+      stacks_tip_height: 8_667_390,
+      is_fully_synced: true,
+    };
+    const tenureInfo = {
+      tip_block_id: localIndexBlockHash,
+      tip_height: 8_667_390,
+      reward_cycle: 141,
+    };
+    const poxInfo = {
+      current_burnchain_block_height: 960_264,
+      reward_cycle_id: 141,
+      reward_cycle_length: 2_100,
+      prepare_cycle_length: 100,
+      contract_id: "SP000000000000000000002Q6VF78.pox-5",
+      contract_versions: [],
+      next_cycle: {
+        id: 142,
+        min_threshold_ustx: 1,
+        min_increment_ustx: 1,
+        stacked_ustx: 1,
+        prepare_phase_start_block_height: 961_000,
+        blocks_until_prepare_phase: 736,
+        reward_phase_start_block_height: 961_100,
+        blocks_until_reward_phase: 836,
+      },
+    };
+    expect(createNodeChainAnchor(nodeInfo, tenureInfo, poxInfo)).toMatchObject({
+      stacksBlockHeight: 8_667_390,
+      burnBlockHeight: 960_264,
+      indexBlockHash: localIndexBlockHash,
+      rewardCycle: 141,
+    });
+    const node = {
+      getInfo: vi.fn().mockResolvedValue(nodeInfo),
+      getTenureInfo: vi.fn().mockResolvedValue(tenureInfo),
+      getPoxInfo: vi.fn().mockResolvedValue(poxInfo),
+    } as unknown as StacksNodeClient;
+    await expect(captureNodeChainAnchor(node)).resolves.toMatchObject({
+      indexBlockHash: localIndexBlockHash,
+      burnBlockHeight: 960_264,
+    });
+    expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: localIndexBlockHash });
+    expect(node.getInfo).toHaveBeenCalledTimes(2);
+    expect(node.getTenureInfo).toHaveBeenCalledTimes(2);
   });
 
   it("derives prior-cycle anchor facts when the one-block lead crosses a reward-cycle boundary", () => {

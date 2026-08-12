@@ -19,6 +19,13 @@ export interface NodeInfo {
   network_id: number;
   burn_block_height: number;
   stacks_tip_height: number;
+  is_fully_synced?: boolean | undefined;
+}
+
+export interface NodeHealth {
+  difference_from_max_peer: number;
+  max_stacks_height_of_neighbors: number;
+  node_stacks_tip_height: number;
 }
 
 export interface HiroStatus {
@@ -61,6 +68,7 @@ export interface HealthObservation {
   observedAt: string;
   nodeRpc: SourceObservation;
   nodeInfo: NodeInfo | null;
+  nodeHealth: NodeHealth | null;
   nodeMetricsSource: SourceObservation | null;
   nodeMetrics: NodeMetricValues | null;
   hiroSource: SourceObservation | null;

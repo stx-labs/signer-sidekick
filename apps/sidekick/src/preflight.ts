@@ -3,6 +3,7 @@ import { claritySourceSha256 } from "@stx-labs/signer-sidekick-protocol/manager-
 import type {
   ApiStatus,
   ContractSource,
+  NodeHealth,
   NodeInfo,
   PoxInfo,
   StacksApiClient,
@@ -38,12 +39,20 @@ export interface PreflightResult {
     commit: string | null;
     burnBlockHeight: number;
     stacksTipHeight: number;
+    isFullySynced: boolean | null;
+    peerHeightDifference: number | null;
   };
   api: {
+    available: boolean;
+    networkCompatible: boolean;
+    status: string | null;
     serverVersion: string;
     burnBlockHeight: number;
     stacksTipHeight: number;
     burnBlockLag: number;
+    stacksTipLag: number;
+    position: "equal" | "behind" | "ahead" | "unavailable";
+    error: string | null;
   };
   pox: {
     burnBlockHeight: number;
@@ -95,11 +104,23 @@ export interface PreflightResult {
 export interface PreflightSources {
   nodeInfo: NodeInfo;
   nodePoxInfo: PoxInfo;
-  apiNodeInfo: NodeInfo;
-  apiStatus: ApiStatus;
+  nodeHealth?: NodeHealth | null;
+  apiNodeInfo?: NodeInfo | null;
+  apiStatus?: ApiStatus | null;
+  apiError?: string | null;
   pox5Source?: ContractSource | null;
   pox5SourceError?: string | null;
   compatibilityStore?: NetworkCompatibilityStore;
+}
+
+/** Whether API-indexed workflows may trust this source. API freshness is deliberately separate. */
+export function indexedApiCompatible(preflight: PreflightResult): boolean {
+  if (!preflight.api) return false;
+  if (preflight.api.available === false || preflight.api.networkCompatible === false) return false;
+  return ["api-network", "api-version", "api-status"].every((id) => {
+    const check = preflight.checks.find((candidate) => candidate.id === id);
+    return !check || check.status === "pass";
+  });
 }
 
 function pox5VersionFrom(info: PoxInfo) {
@@ -115,17 +136,32 @@ export async function runOperatorPreflight(
   node: StacksNodeClient,
   api: StacksApiClient,
 ): Promise<PreflightResult> {
-  const [nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus, compatibilityStore] = await Promise.all([
-    node.getInfo(),
-    node.getPoxInfo(),
-    api.getNodeInfo(),
-    api.getStatus(),
-    loadNetworkCompatibilityProfiles({
-      ...(config.compatibilityProfilesDirectory
-        ? { directory: config.compatibilityProfilesDirectory }
-        : {}),
-    }),
-  ]);
+  const apiSignal = AbortSignal.timeout(2_500);
+  const [nodeInfo, nodePoxInfo, nodeHealth, apiObservation, compatibilityStore] = await Promise.all(
+    [
+      node.getInfo(),
+      node.getPoxInfo(),
+      Promise.resolve()
+        .then(() => node.getHealth())
+        .catch(() => null),
+      Promise.all([
+        api.getNodeInfo({ signal: apiSignal }),
+        api.getStatus({ signal: apiSignal }),
+      ]).then(
+        ([apiNodeInfo, apiStatus]) => ({ apiNodeInfo, apiStatus, apiError: null }),
+        (error: unknown) => ({
+          apiNodeInfo: null,
+          apiStatus: null,
+          apiError: error instanceof Error ? error.message : String(error),
+        }),
+      ),
+      loadNetworkCompatibilityProfiles({
+        ...(config.compatibilityProfilesDirectory
+          ? { directory: config.compatibilityProfilesDirectory }
+          : {}),
+      }),
+    ],
+  );
   const pox5Version = pox5VersionFrom(nodePoxInfo);
   const pox5Active =
     nodePoxInfo.contract_id.endsWith(".pox-5") ||
@@ -148,8 +184,8 @@ export async function runOperatorPreflight(
   return evaluatePreflight(config, {
     nodeInfo,
     nodePoxInfo,
-    apiNodeInfo,
-    apiStatus,
+    nodeHealth,
+    ...apiObservation,
     pox5Source,
     pox5SourceError,
     compatibilityStore,
@@ -258,7 +294,10 @@ export function evaluatePreflight(
   config: SidekickConfig,
   sources: PreflightSources,
 ): PreflightResult {
-  const { nodeInfo, nodePoxInfo, apiNodeInfo, apiStatus } = sources;
+  const { nodeInfo, nodePoxInfo, nodeHealth = null } = sources;
+  const apiNodeInfo = sources.apiNodeInfo ?? null;
+  const apiStatus = sources.apiStatus ?? null;
+  const apiAvailable = apiNodeInfo !== null && apiStatus !== null;
   const checks: PreflightCheck[] = [];
   const expectedNetworkId = config.expectedNetworkId ?? networkIds[config.network];
 
@@ -270,17 +309,46 @@ export function evaluatePreflight(
         ? `Node network ID matches ${config.network}`
         : `Node network ID ${nodeInfo.network_id} does not match ${config.network}`,
   });
+  const peerHeightDifference = nodeHealth?.difference_from_max_peer ?? null;
+  const nodeExplicitlyBehind =
+    nodeInfo.is_fully_synced === false ||
+    (peerHeightDifference !== null && peerHeightDifference > 0);
   checks.push({
-    id: "api-network",
-    status:
-      apiNodeInfo.network_id === expectedNetworkId && apiNodeInfo.network_id === nodeInfo.network_id
-        ? "pass"
-        : "fail",
-    message:
-      apiNodeInfo.network_id === expectedNetworkId && apiNodeInfo.network_id === nodeInfo.network_id
+    id: "node-sync",
+    status: nodeExplicitlyBehind ? "fail" : "pass",
+    message: nodeExplicitlyBehind
+      ? nodeInfo.is_fully_synced === false
+        ? "The local node reports that it is not fully synchronized"
+        : `The local node is ${peerHeightDifference} Stacks ${peerHeightDifference === 1 ? "block" : "blocks"} behind its observed peers`
+      : nodeHealth
+        ? "The local node is at the highest Stacks tip observed from its peers"
+        : nodeInfo.is_fully_synced === true
+          ? "The local node reports that it is fully synchronized"
+          : "The local node RPC is healthy; peer-relative synchronization was not reported",
+  });
+
+  const apiNetworkCompatible = Boolean(
+    apiNodeInfo &&
+      apiNodeInfo.network_id === expectedNetworkId &&
+      apiNodeInfo.network_id === nodeInfo.network_id,
+  );
+  if (!apiAvailable) {
+    checks.push({
+      id: "api-availability",
+      status: "warn",
+      message:
+        "The Reference API is unavailable; local-node operations remain available while indexed data waits",
+    });
+  }
+  if (apiAvailable) {
+    checks.push({
+      id: "api-network",
+      status: apiNetworkCompatible ? "pass" : "warn",
+      message: apiNetworkCompatible
         ? "API and node network IDs agree"
         : `API network ID ${apiNodeInfo.network_id} disagrees with configured/node network`,
-  });
+    });
+  }
 
   const build = nodeBuild(nodeInfo.server_version);
   checks.push({
@@ -291,34 +359,58 @@ export function evaluatePreflight(
       : "Node did not report its build; compatibility is determined from live capabilities and contracts",
   });
 
-  const apiMajorMatch = /stacks-blockchain-api v(\d+)\./.exec(apiStatus.server_version);
+  const apiMajorMatch = apiStatus
+    ? /stacks-blockchain-api v(\d+)\./.exec(apiStatus.server_version)
+    : null;
   const apiMajor = apiMajorMatch?.[1] ? Number(apiMajorMatch[1]) : null;
-  checks.push({
-    id: "api-version",
-    status: apiMajor !== null && apiMajor >= 9 ? "pass" : "fail",
-    message:
-      apiMajor !== null && apiMajor >= 9
-        ? `Stacks API major version ${apiMajor} is supported`
-        : `Unable to confirm Stacks API v9+ from ${apiStatus.server_version}`,
-  });
-  checks.push({
-    id: "api-status",
-    status: apiStatus.status === "ready" ? "pass" : "fail",
-    message: `Stacks API status is ${apiStatus.status}`,
-  });
+  if (apiStatus) {
+    checks.push({
+      id: "api-version",
+      status: apiMajor !== null && apiMajor >= 9 ? "pass" : "warn",
+      message:
+        apiMajor !== null && apiMajor >= 9
+          ? `Stacks API major version ${apiMajor} is supported`
+          : `Unable to confirm Stacks API v9+ from ${apiStatus.server_version}`,
+    });
+    checks.push({
+      id: "api-status",
+      status: apiStatus.status === "ready" ? "pass" : "warn",
+      message: `Stacks API status is ${apiStatus.status}`,
+    });
+  }
 
-  const burnBlockDifference = nodeInfo.burn_block_height - apiStatus.chain_tip.burn_block_height;
-  const burnBlockLag = Math.abs(burnBlockDifference);
-  const apiTipPosition =
-    burnBlockDifference === 0 ? "at the node tip" : burnBlockDifference > 0 ? "behind" : "ahead of";
-  checks.push({
-    id: "api-lag",
-    status: burnBlockLag <= config.maxApiBurnBlockLag ? "pass" : "warn",
-    message:
-      burnBlockDifference === 0
-        ? "API Bitcoin tip is at the node Bitcoin tip"
-        : `API Bitcoin tip is ${bitcoinBlockCount(burnBlockLag)} ${apiTipPosition} the node`,
-  });
+  const apiBurnBlockHeight = apiStatus?.chain_tip.burn_block_height ?? nodeInfo.burn_block_height;
+  const apiStacksTipHeight = apiStatus?.chain_tip.block_height ?? nodeInfo.stacks_tip_height;
+  const burnBlockDifference = nodeInfo.burn_block_height - apiBurnBlockHeight;
+  const stacksTipDifference = nodeInfo.stacks_tip_height - apiStacksTipHeight;
+  const burnBlockLag = apiAvailable ? Math.abs(burnBlockDifference) : 0;
+  const stacksTipLag = apiAvailable ? Math.abs(stacksTipDifference) : 0;
+  const apiPosition = !apiAvailable
+    ? "unavailable"
+    : burnBlockDifference < 0 || stacksTipDifference < 0
+      ? "ahead"
+      : burnBlockDifference > 0 || stacksTipDifference > 0
+        ? "behind"
+        : "equal";
+  if (apiAvailable) {
+    checks.push({
+      id: "api-lag",
+      status: !apiNetworkCompatible
+        ? "warn"
+        : apiPosition === "ahead"
+          ? "fail"
+          : apiPosition === "behind" && burnBlockLag > config.maxApiBurnBlockLag
+            ? "warn"
+            : "pass",
+      message: !apiNetworkCompatible
+        ? "API tip comparison is unavailable because the API is on a different network"
+        : apiPosition === "equal"
+          ? "API chain tip is at the local node tip"
+          : apiPosition === "ahead"
+            ? `The local node trails the API by ${bitcoinBlockCount(burnBlockLag)} and ${stacksTipLag} Stacks ${stacksTipLag === 1 ? "block" : "blocks"}`
+            : `API chain data is behind the local node by ${bitcoinBlockCount(burnBlockLag)} and ${stacksTipLag} Stacks ${stacksTipLag === 1 ? "block" : "blocks"}`,
+    });
+  }
 
   const pox5Version = pox5VersionFrom(nodePoxInfo);
   const activationBurnHeight =
@@ -424,12 +516,20 @@ export function evaluatePreflight(
       commit: build.commit,
       burnBlockHeight: nodeInfo.burn_block_height,
       stacksTipHeight: nodeInfo.stacks_tip_height,
+      isFullySynced: nodeInfo.is_fully_synced ?? null,
+      peerHeightDifference,
     },
     api: {
-      serverVersion: apiStatus.server_version,
-      burnBlockHeight: apiStatus.chain_tip.burn_block_height,
-      stacksTipHeight: apiStatus.chain_tip.block_height,
+      available: apiAvailable,
+      networkCompatible: apiNetworkCompatible,
+      status: apiStatus?.status ?? null,
+      serverVersion: apiStatus?.server_version ?? "unavailable",
+      burnBlockHeight: apiBurnBlockHeight,
+      stacksTipHeight: apiStacksTipHeight,
       burnBlockLag,
+      stacksTipLag,
+      position: apiPosition,
+      error: sources.apiError ?? null,
     },
     pox: {
       burnBlockHeight: nodePoxInfo.current_burnchain_block_height,

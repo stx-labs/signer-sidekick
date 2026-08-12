@@ -1,6 +1,6 @@
 import { type ChainAnchor, chainAnchorsEqual } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
-import { ChainAnchorError, captureChainAnchor } from "./chain-clients.js";
+import { ChainAnchorError, captureNodeChainAnchor } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import {
   inspectDeployedManager,
@@ -46,7 +46,7 @@ async function waitBeforeSnapshotRetry(attempt: number): Promise<void> {
 }
 
 async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
-  const before = await captureChainAnchor(options.node, options.api);
+  const before = await captureNodeChainAnchor(options.node);
   const readOptions = { tip: before.indexBlockHash };
   const managerReader = options.reportMissingManager
     ? inspectManagerOrReportMissing
@@ -77,16 +77,15 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
     registration,
     readOptions,
   );
-  const after = await captureChainAnchor(options.node, options.api);
+  const after = await captureNodeChainAnchor(options.node);
   if (!chainAnchorsEqual(before, after)) {
     throw new SetupSnapshotCoherenceError(
       "Chain position moved while the setup snapshot was being assembled",
     );
   }
-  // Preflight is deliberately live health data. The node may have processed newer Nakamoto
-  // blocks (and one newer Bitcoin block) than the stable API anchor, but it must still contain
-  // that anchor and describe the same PoX reward cycle as the pinned manager and eligibility
-  // reads. The second captured anchor below fences any API movement during the snapshot.
+  // Preflight is deliberately live health data. The node may process newer Nakamoto blocks while
+  // the pinned manager and eligibility reads are assembled, but it must still contain the captured
+  // anchor and describe the same PoX reward cycle. The second local capture fences that movement.
   if (
     preflight.node.stacksTipHeight < before.stacksBlockHeight ||
     preflight.node.burnBlockHeight < before.burnBlockHeight ||

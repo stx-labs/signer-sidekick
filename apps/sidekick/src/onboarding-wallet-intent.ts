@@ -159,11 +159,12 @@ function transactionMatchesAction(
 }
 
 function walletNetworkChecksPass(snapshot: SetupSnapshot, chainId: number): boolean {
+  const nodeNetwork = snapshot.preflight.checks.find((check) => check.id === "node-network");
+  const nodeSync = snapshot.preflight.checks.find((check) => check.id === "node-sync");
   return (
     snapshot.preflight.node.networkId === chainId &&
-    ["node-network", "api-network"].every((id) =>
-      snapshot.preflight.checks.some((check) => check.id === id && check.status === "pass"),
-    )
+    nodeNetwork?.status === "pass" &&
+    (!nodeSync || nodeSync.status === "pass")
   );
 }
 
@@ -816,13 +817,10 @@ export class OnboardingWalletIntentService {
     if (current.network !== manifest.network || current.chainId !== manifest.chainId) {
       throw new Error("Sidekick's configured network changed. Prepare a new transaction");
     }
-    const [nodeInfo, apiInfo] = await Promise.all([
-      clients.node.getInfo(),
-      clients.api.getNodeInfo(),
-    ]);
-    if (nodeInfo.network_id !== manifest.chainId || apiInfo.network_id !== manifest.chainId) {
+    const nodeInfo = await clients.node.getInfo();
+    if (nodeInfo.network_id !== manifest.chainId) {
       throw new Error(
-        "The node or Reference API no longer matches this transaction's network. Check Settings, then retry",
+        "The local node no longer matches this transaction's network. Check Settings, then retry",
       );
     }
   }
@@ -1803,35 +1801,7 @@ export class OnboardingWalletIntentService {
     }
     try {
       const { config, node, api } = clients;
-      const [summary, block] = await Promise.all([
-        api.getTransaction(stored.txid ?? ""),
-        api.getBlock(blockHeight),
-      ]);
-      if (
-        summary.tx_id !== stored.txid ||
-        summary.block.height !== blockHeight ||
-        summary.block.index_hash !== indexed.indexBlockHash ||
-        !block.canonical ||
-        block.index_block_hash !== indexed.indexBlockHash
-      ) {
-        const next =
-          stored.state === "superseded" ? stored : this.transition(stored, "reobserve", observedAt);
-        this.recordObservation(
-          next,
-          {
-            outcome: "noncanonical",
-            observedAt,
-            canonical: false,
-            blockHeight,
-            indexBlockHash: indexed.indexBlockHash,
-            detail:
-              "The node and Reference API disagree on the transaction's canonical inclusion. Sidekick will keep checking",
-          },
-          decoded,
-        );
-        return this.publicIntent(next);
-      }
-      if (summary.status !== "success") {
+      if (!verifiedByApi && !indexed.resultRepr.trimStart().startsWith("(ok")) {
         const next = stored.state === "superseded" ? stored : this.toFailed(stored, observedAt);
         this.recordObservation(
           next,
@@ -1841,7 +1811,8 @@ export class OnboardingWalletIntentService {
             canonical: true,
             blockHeight,
             indexBlockHash: indexed.indexBlockHash,
-            detail: `Transaction failed on-chain: ${summary.status.replaceAll("_", " ")}. Prepare a new transaction if the action is still needed`,
+            detail:
+              "Transaction failed on-chain. Prepare a new transaction if the action is still needed",
           },
           decoded,
         );
@@ -2100,7 +2071,28 @@ export class OnboardingWalletIntentService {
     clients: WalletRuntimeClients,
   ): Promise<BrowserWalletIntent | null> {
     try {
+      const apiInfo = await clients.api.getNodeInfo();
+      if (apiInfo.network_id !== manifest.chainId) {
+        this.recordUnavailable(
+          stored,
+          observedAt,
+          "Configured API does not match this transaction's network. Check Settings, then retry",
+        );
+        return this.publicIntent(stored);
+      }
       const details = await clients.api.getTransactionDetails(stored.txid ?? "");
+      if (details.tx_status !== "success") {
+        const next = stored.state === "superseded" ? stored : this.toFailed(stored, observedAt);
+        this.recordObservation(next, {
+          outcome: "abort",
+          observedAt,
+          canonical: details.canonical,
+          blockHeight: details.block_height,
+          indexBlockHash: null,
+          detail: `Transaction failed on-chain: ${details.tx_status.replaceAll("_", " ")}. Prepare a new transaction if the action is still needed`,
+        });
+        return this.publicIntent(next);
+      }
       if (!details.canonical || !details.block_hash) {
         this.recordUnavailable(
           stored,
@@ -2122,8 +2114,8 @@ export class OnboardingWalletIntentService {
         );
         return this.publicIntent(stored);
       }
-      // The API does not publish a transaction-level chain ID. refresh() already required this
-      // API and the local node to report the manifest's network ID before this fallback begins.
+      // The API does not publish a transaction-level chain ID. The explicit API network check
+      // above binds this fallback without making normal local-node verification depend on it.
       const verified = this.verifyApiIndexedTransaction(stored, manifest, details, observedAt);
       if (!verified) return this.publicIntent(this.requireStored(stored.id));
       return await this.refreshIndexed(

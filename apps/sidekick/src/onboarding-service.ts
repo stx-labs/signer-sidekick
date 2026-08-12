@@ -643,7 +643,7 @@ export class OnboardingService {
           detail: manager.attachAllowed
             ? `Manager source verified at Stacks block ${manager.publishHeight}`
             : managerNotDeployed
-              ? "Manager contract is not deployed at the shared chain anchor yet. Submit or wait for the deployment transaction, then verify again."
+              ? "Manager contract is not deployed at the local node anchor yet. Submit or wait for the deployment transaction, then verify again."
               : manager.reasons.join("; "),
         };
       }

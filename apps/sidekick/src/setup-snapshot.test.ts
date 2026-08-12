@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   inspectManagerOrReportMissing: vi.fn(),
   verifyManagerRegistration: vi.fn(),
   readPoolSetupStatus: vi.fn(),
-  captureChainAnchor: vi.fn(),
+  captureNodeChainAnchor: vi.fn(),
 }));
 
 vi.mock("./preflight.js", () => ({ runOperatorPreflight: mocks.runOperatorPreflight }));
@@ -20,7 +20,7 @@ vi.mock("./registration-verification.js", () => ({
 vi.mock("./setup-status.js", () => ({ readPoolSetupStatus: mocks.readPoolSetupStatus }));
 vi.mock("./chain-clients.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./chain-clients.js")>()),
-  captureChainAnchor: mocks.captureChainAnchor,
+  captureNodeChainAnchor: mocks.captureNodeChainAnchor,
 }));
 
 import { ChainAnchorError } from "./chain-clients.js";
@@ -46,7 +46,7 @@ const chainAnchor = {
 describe("setup snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.captureChainAnchor.mockResolvedValue(chainAnchor);
+    mocks.captureNodeChainAnchor.mockResolvedValue(chainAnchor);
   });
 
   it("returns one canonical quartet and verifies registration when it is readable", async () => {
@@ -144,7 +144,7 @@ describe("setup snapshot", () => {
 
   it("retries the whole setup snapshot when its exact chain anchor moves", async () => {
     const moved = { ...chainAnchor, indexBlockHash: `0x${"cd".repeat(32)}` };
-    mocks.captureChainAnchor.mockResolvedValueOnce(chainAnchor).mockResolvedValueOnce(moved);
+    mocks.captureNodeChainAnchor.mockResolvedValueOnce(chainAnchor).mockResolvedValueOnce(moved);
     mocks.runOperatorPreflight.mockResolvedValue({
       node: { stacksTipHeight: 10, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -163,7 +163,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledTimes(2);
     expect(mocks.readPoolSetupStatus).toHaveBeenCalledTimes(2);
@@ -171,7 +171,7 @@ describe("setup snapshot", () => {
   });
 
   it("retries the whole setup snapshot when anchor capture observes a moving tip", async () => {
-    mocks.captureChainAnchor
+    mocks.captureNodeChainAnchor
       .mockRejectedValueOnce(new ChainAnchorError("tip moved", { retryable: true }))
       .mockResolvedValue(chainAnchor);
     mocks.runOperatorPreflight.mockResolvedValue({
@@ -192,7 +192,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(3);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(3);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
     expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
@@ -200,7 +200,7 @@ describe("setup snapshot", () => {
   it("uses 250ms and 500ms backoff before exhausting three anchor attempts", async () => {
     vi.useFakeTimers();
     try {
-      mocks.captureChainAnchor.mockRejectedValue(
+      mocks.captureNodeChainAnchor.mockRejectedValue(
         new ChainAnchorError("tip moved", { retryable: true }),
       );
       const outcome = readSetupSnapshot({
@@ -215,15 +215,15 @@ describe("setup snapshot", () => {
       );
 
       await vi.advanceTimersByTimeAsync(249);
-      expect(mocks.captureChainAnchor).toHaveBeenCalledOnce();
+      expect(mocks.captureNodeChainAnchor).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(1);
-      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+      expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(499);
-      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+      expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(1);
 
       await expect(outcome).resolves.toMatchObject({ name: ChainAnchorError.name });
-      expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(3);
+      expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(3);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -253,7 +253,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
     expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
       node,
@@ -284,7 +284,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
     expect(waitBeforeRetry).not.toHaveBeenCalled();
     expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
@@ -321,7 +321,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
@@ -352,14 +352,14 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).resolves.toMatchObject({ chainAnchor });
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(4);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
   it("fails closed after three incoherent setup snapshot attempts", async () => {
     const moved = { ...chainAnchor, indexBlockHash: `0x${"cd".repeat(32)}` };
-    mocks.captureChainAnchor
+    mocks.captureNodeChainAnchor
       .mockResolvedValueOnce(chainAnchor)
       .mockResolvedValueOnce(moved)
       .mockResolvedValueOnce(chainAnchor)
@@ -384,7 +384,7 @@ describe("setup snapshot", () => {
         waitBeforeRetry,
       }),
     ).rejects.toThrow("Chain position moved");
-    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(6);
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(6);
     expect(waitBeforeRetry).toHaveBeenCalledTimes(2);
   });
 
@@ -406,7 +406,7 @@ describe("setup snapshot", () => {
         managerVerification: undefined,
       }),
     ).rejects.toBe(managerFailure);
-    expect(mocks.captureChainAnchor).toHaveBeenCalledOnce();
+    expect(mocks.captureNodeChainAnchor).toHaveBeenCalledOnce();
     expect(mocks.inspectDeployedManager).toHaveBeenCalledOnce();
   });
 });

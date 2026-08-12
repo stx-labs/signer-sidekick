@@ -707,8 +707,7 @@ export function Manager({
           onClick: onRefreshStatus,
         }
       : data.preflight.checks.some(
-            (check) =>
-              ["node-network", "api-network"].includes(check.id) && check.status !== "pass",
+            (check) => ["node-network", "node-sync"].includes(check.id) && check.status !== "pass",
           )
         ? {
             label: "Open Settings",

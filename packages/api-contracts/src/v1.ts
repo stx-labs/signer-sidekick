@@ -84,6 +84,8 @@ export const healthSnapshotSchema = z.looseObject({
     networkId: z.number().nullable(),
     stacksTipHeight: z.number().nullable(),
     burnBlockHeight: z.number().nullable(),
+    isFullySynced: z.boolean().nullable().optional(),
+    peerHeightDifference: z.number().nullable().optional(),
     lastTipAdvanceAt: z.string().nullable(),
     inboundPeers: z.number().nullable(),
     outboundPeers: z.number().nullable(),
@@ -480,12 +482,20 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     node: OperatorSnapshot["preflight"]["node"] & {
       networkId: number;
       stacksTipHeight: number;
+      isFullySynced?: boolean | null;
+      peerHeightDifference?: number | null;
     };
     api: {
+      available?: boolean;
+      networkCompatible?: boolean;
+      status?: string | null;
       serverVersion: string;
       burnBlockHeight: number;
       stacksTipHeight: number;
       burnBlockLag: number;
+      stacksTipLag?: number;
+      position?: "equal" | "behind" | "ahead" | "unavailable";
+      error?: string | null;
     };
     pox: OperatorSnapshot["preflight"]["pox"] & {
       rewardCycleId: number;

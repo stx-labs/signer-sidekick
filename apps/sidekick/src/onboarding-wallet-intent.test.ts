@@ -230,6 +230,9 @@ function readerHarness(fixture: SubmittedIntentFixture) {
     restoreIndexed() {
       indexed = observed;
     },
+    setResult(resultRepr: string) {
+      indexed = { ...observed, value: { ...observed.value, resultRepr } };
+    },
     setPending(value: PendingLookup) {
       pending = value;
     },
@@ -1397,7 +1400,7 @@ describe("onboarding wallet intent reconciliation", () => {
         indexBlockHash,
       },
     });
-    expect(runtime.api.getTransaction).toHaveBeenCalledWith(fixture.txid);
+    expect(runtime.api.getTransaction).not.toHaveBeenCalled();
     expect(readSetupSnapshotMock).toHaveBeenCalledOnce();
   });
 
@@ -1425,19 +1428,21 @@ describe("onboarding wallet intent reconciliation", () => {
   it.each([
     ["transaction id", { summaryTxid: `0x${"ab".repeat(32)}` }],
     ["block identity", { summaryIndexBlockHash: otherIndexBlockHash }],
-  ] as const)("rejects API %s disagreement", async (_kind, overrides) => {
+  ] as const)("uses the authoritative local index despite API %s disagreement", async (_kind, overrides) => {
     const { store } = await openSidekickStore(":memory:", "2026-07-18T18:00:00.000Z");
     stores.push(store);
     const fixture = await createDeploymentIntent(store);
     const reader = readerHarness(fixture);
     const runtime = runtimeHarness(fixture, overrides);
     const wallet = reconciler(store, runtime.runtimeSettings, reader);
+    readSetupSnapshotMock.mockResolvedValue(deploymentSnapshot(true));
 
     await expect(wallet.refresh(fixture.id, "2026-07-18T18:03:00.000Z")).resolves.toMatchObject({
-      status: "reobserve",
-      verification: { outcome: "noncanonical", canonical: false },
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
     });
-    expect(readSetupSnapshotMock).not.toHaveBeenCalled();
+    expect(runtime.api.getTransaction).not.toHaveBeenCalled();
+    expect(runtime.api.getBlock).not.toHaveBeenCalled();
   });
 
   it("records a canonical abort as failed without consulting poststate", async () => {
@@ -1445,7 +1450,8 @@ describe("onboarding wallet intent reconciliation", () => {
     stores.push(store);
     const fixture = await createDeploymentIntent(store);
     const reader = readerHarness(fixture);
-    const runtime = runtimeHarness(fixture, { status: "abort_by_response" });
+    reader.setResult("(err u1)");
+    const runtime = runtimeHarness(fixture);
     const wallet = reconciler(store, runtime.runtimeSettings, reader);
 
     await expect(wallet.refresh(fixture.id, "2026-07-18T18:03:00.000Z")).resolves.toMatchObject({
@@ -1454,7 +1460,7 @@ describe("onboarding wallet intent reconciliation", () => {
         outcome: "abort",
         canonical: true,
         detail:
-          "Transaction failed on-chain: abort by response. Prepare a new transaction if the action is still needed",
+          "Transaction failed on-chain. Prepare a new transaction if the action is still needed",
       },
     });
     expect(readSetupSnapshotMock).not.toHaveBeenCalled();
@@ -1465,7 +1471,8 @@ describe("onboarding wallet intent reconciliation", () => {
     stores.push(store);
     const fixture = await createDeploymentIntent(store);
     const reader = readerHarness(fixture);
-    const abortRuntime = runtimeHarness(fixture, { status: "abort_by_response" });
+    reader.setResult("(err u1)");
+    const abortRuntime = runtimeHarness(fixture);
     const wallet = reconciler(store, abortRuntime.runtimeSettings, reader);
 
     await expect(wallet.refresh(fixture.id, "2026-07-18T18:03:00.000Z")).resolves.toMatchObject({
@@ -1478,6 +1485,7 @@ describe("onboarding wallet intent reconciliation", () => {
     expect(replacement.id).not.toBe(fixture.id);
     expect(store.walletIntents.get(fixture.id)).toMatchObject({ state: "superseded" });
 
+    reader.restoreIndexed();
     const reorgWallet = reconciler(store, runtimeHarness(fixture).runtimeSettings, reader);
     readSetupSnapshotMock.mockResolvedValueOnce(deploymentSnapshot(true));
     await expect(
@@ -1625,7 +1633,9 @@ describe("onboarding wallet intent reconciliation", () => {
     });
     const replacementId = createDeploymentReplacement(store, fixture.id);
     const reader = readerHarness(fixture);
-    if (outcome !== "abort") {
+    if (outcome === "abort") {
+      reader.setResult("(err u1)");
+    } else {
       reader.setIndexed({
         status: "observed",
         httpStatus: 200,
@@ -1641,9 +1651,7 @@ describe("onboarding wallet intent reconciliation", () => {
         },
       });
     }
-    const runtime = runtimeHarness(fixture, {
-      status: outcome === "abort" ? "abort_by_response" : "success",
-    });
+    const runtime = runtimeHarness(fixture);
     const wallet = reconciler(store, runtime.runtimeSettings, reader);
 
     await expect(wallet.refresh(replacementId, "2026-07-18T18:21:00.000Z")).resolves.toMatchObject({
@@ -2266,10 +2274,7 @@ describe("manager wallet action preparation", () => {
     expect(readerFactory).not.toHaveBeenCalled();
   });
 
-  it.each([
-    "api-network",
-    "node-chain-id",
-  ] as const)("rejects external actions when the %s binding fails", async (failure) => {
+  it("rejects external actions when the local node chain ID binding fails", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
     const snapshot = trustedManagerSnapshot({});
@@ -2277,12 +2282,7 @@ describe("manager wallet action preparation", () => {
       ...snapshot,
       preflight: {
         ...snapshot.preflight,
-        node: { networkId: failure === "node-chain-id" ? 2 : 1 },
-        checks: snapshot.preflight.checks.map((check) =>
-          failure === "api-network" && check.id === "api-network"
-            ? { ...check, status: "fail" }
-            : check,
-        ),
+        node: { networkId: 2 },
       },
     });
     const callReadOnly = vi.fn();
@@ -2307,6 +2307,46 @@ describe("manager wallet action preparation", () => {
       }),
     ).rejects.toMatchObject({ code: "wallet_execution_unavailable" });
     expect(callReadOnly).not.toHaveBeenCalled();
+  });
+
+  it("keeps external wallet actions available when only the API network check fails", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const snapshot = trustedManagerSnapshot({});
+    readSetupSnapshotMock.mockResolvedValue({
+      ...snapshot,
+      preflight: {
+        ...snapshot.preflight,
+        checks: snapshot.preflight.checks.map((check) =>
+          check.id === "api-network" ? { ...check, status: "fail" as const } : check,
+        ),
+      },
+    });
+    const wallet = new OnboardingWalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {
+            callReadOnly: vi.fn(async () => trueCV()),
+            getDataVar: vi.fn(async () => uintCV(100)),
+          },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readFreshState: deploymentFreshState,
+      readWalletState: deploymentFreshState,
+    });
+
+    await expect(
+      wallet.prepare({
+        action: "update-fees",
+        actorPrincipal: requiredSender,
+        feeBips: "250",
+      }),
+    ).resolves.toMatchObject({
+      transaction: { method: "stx_callContract", params: { functionName: "update-fees" } },
+    });
   });
 
   it("rejects a persisted generic signer grant after PoX-5 consumed it", async () => {

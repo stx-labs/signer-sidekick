@@ -40,6 +40,11 @@ default. Set `STACKS_API_KEY` for a Hiro plan or another keyed provider; public 
 rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. For Fresh setup, configure the
 future manager principal.
 
+The configured Stacks node is authoritative for current operational state. The API supplies indexed
+roster, event, and history capabilities. API lag or an API outage is shown as indexed-data
+degradation and does not make the local operator dashboard unavailable; API-specific synchronization
+and Assist proofs still wait or fail closed when their required indexed evidence is unavailable.
+
 Use the published image rather than building locally:
 
 ```sh
@@ -112,6 +117,46 @@ restrict port 3998 with the host firewall and network ACLs. The `docker compose 
 commands above adapt to either bind. Browser-wallet actions work over private HTTP, but HTTP exposes
 the UI and auth token to that network. Use TLS for any untrusted or public network; never publish the
 operator API directly to the internet.
+
+### Reverse-proxy authentication
+
+Bearer-token login remains the default. Sidekick can also recognize the existing
+`SIDEKICK_AUTH_TOKEN` when a trusted reverse proxy injects it into a dedicated header, or when a
+browser sends it as the password for HTTP Basic authentication. Both modes are disabled unless
+configured.
+
+For a proxy-injected header, choose a non-standard header name:
+
+```dotenv
+SIDEKICK_AUTH_TRUSTED_HEADER=X-Sidekick-Operator
+```
+
+The proxy must remove any client-supplied copy of that header and set its value to the raw
+`SIDEKICK_AUTH_TOKEN` only after the proxy has authenticated and authorized the request. For
+example, a Caddy service with the same token in its protected environment can use:
+
+```caddyfile
+reverse_proxy 127.0.0.1:3998 {
+	header_up -X-Sidekick-Operator
+	header_up X-Sidekick-Operator {$SIDEKICK_AUTH_TOKEN}
+}
+```
+
+Do not inject this header for an unrestricted public route: every request that reaches that route
+would receive operator access. Keep Sidekick bound to loopback or a private interface so clients
+cannot bypass the authenticating proxy.
+
+For HTTP Basic authentication, configure a username:
+
+```dotenv
+SIDEKICK_AUTH_BASIC_USERNAME=operator
+```
+
+The Basic password is the existing `SIDEKICK_AUTH_TOKEN`. Sidekick challenges unauthorized API
+requests for both Bearer and Basic credentials, and the dashboard automatically detects an existing
+trusted-header or browser Basic session. Use HTTPS: Basic credentials are encoded, not encrypted.
+If a reverse proxy terminates Basic authentication itself, prefer having it inject the dedicated
+header above after successful authentication.
 
 Public-network Fresh setup requires a matched compatibility profile; failure or inconsistency is a
 stop condition. Profiles under

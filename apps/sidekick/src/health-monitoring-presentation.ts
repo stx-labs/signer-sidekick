@@ -17,6 +17,8 @@ function evaluateHealthFindings(
   nodeRpc: HealthSourceState,
   signerInfo: HealthSourceState,
   signerHeartbeat: HealthSourceState,
+  nodeInfo: HealthObservation["nodeInfo"],
+  nodeHealth: HealthObservation["nodeHealth"],
 ): HealthFinding[] {
   const findings: HealthFinding[] = [];
   if (nodeRpc.consecutiveFailures >= 3) {
@@ -44,6 +46,18 @@ function evaluateHealthFindings(
       title: "Signer cannot reach its Stacks node",
       detail: "The signer heartbeat failed its node connection check three consecutive times.",
       source: "signer",
+    });
+  }
+  if (nodeInfo?.is_fully_synced === false || (nodeHealth?.difference_from_max_peer ?? 0) > 0) {
+    findings.push({
+      id: "node-behind-network",
+      severity: "critical",
+      title: "Stacks node is behind the network",
+      detail:
+        nodeInfo?.is_fully_synced === false
+          ? "The local node reports that it is not fully synchronized."
+          : `The local node is ${nodeHealth?.difference_from_max_peer ?? 0} Stacks blocks behind its observed peers.`,
+      source: "node",
     });
   }
   return findings;
@@ -90,11 +104,17 @@ export function buildHealthSnapshot({
     "signerMetricsSource",
     Boolean(config.signerMonitoringUrl),
   );
-  const findings = evaluateHealthFindings(nodeRpc, signerInfoState, signerHeartbeatState);
-
   const nodeValues = latest?.nodeMetrics ?? null;
   const signerValues = latest?.signerMetrics ?? null;
   const nodeInfo = latest?.nodeInfo ?? null;
+  const nodeHealth = latest?.nodeHealth ?? null;
+  const findings = evaluateHealthFindings(
+    nodeRpc,
+    signerInfoState,
+    signerHeartbeatState,
+    nodeInfo,
+    nodeHealth,
+  );
   const hiro = latest?.hiro ?? null;
   const signerInfo = latest?.signerInfo ?? null;
   const proposals = counterIncrease(
@@ -116,6 +136,8 @@ export function buildHealthSnapshot({
     nodeInfo?.server_version ?? null,
     nodeInfo?.stacks_tip_height ?? null,
     nodeInfo?.burn_block_height ?? null,
+    nodeInfo?.is_fully_synced ?? null,
+    nodeHealth?.difference_from_max_peer ?? null,
     nodeValues?.inboundPeers ?? null,
     nodeValues?.outboundPeers ?? null,
     nodeValues?.warningTotal ?? null,
@@ -168,6 +190,8 @@ export function buildHealthSnapshot({
       networkId: nodeInfo?.network_id ?? null,
       stacksTipHeight: nodeInfo?.stacks_tip_height ?? nodeValues?.stacksTipHeight ?? null,
       burnBlockHeight: nodeInfo?.burn_block_height ?? nodeValues?.burnBlockHeight ?? null,
+      isFullySynced: nodeInfo?.is_fully_synced ?? null,
+      peerHeightDifference: nodeHealth?.difference_from_max_peer ?? null,
       lastTipAdvanceAt: lastTipAdvanceAt(observations),
       inboundPeers: nodeValues?.inboundPeers ?? null,
       outboundPeers: nodeValues?.outboundPeers ?? null,

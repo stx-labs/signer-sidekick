@@ -517,7 +517,7 @@ describe("manager-claim browser-wallet binding", () => {
     ).rejects.toThrow("no longer matches the verified manager");
   });
 
-  it("rejects claim preparation when node and API network routing do not agree", async () => {
+  it("allows local claim preparation when only the API network routing check fails", async () => {
     const { store, input, result } = await plannedMainnet();
     const snapshot = mainnetSetupSnapshot(input);
     snapshot.preflight.checks[1] = {
@@ -548,8 +548,8 @@ describe("manager-claim browser-wallet binding", () => {
         actorPrincipal: mainnetWalletActor,
         jobId: result.job.jobId,
       }),
-    ).rejects.toMatchObject({ code: "wallet_execution_unavailable" });
-    expect(observeManagerClaimWalletJob).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ status: "prepared", action: "claim-rewards" });
+    expect(observeManagerClaimWalletJob).toHaveBeenCalled();
   });
 
   it("rejects configured Assist, Assist-sealed jobs, and mismatched network bindings", async () => {

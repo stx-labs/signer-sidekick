@@ -2,7 +2,7 @@ import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
 import { validateHealthEndpointForSave } from "./health-http.js";
-import { runOperatorPreflight } from "./preflight.js";
+import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
 import type { SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -198,8 +198,13 @@ export class RuntimeSettingsController {
       api,
     ) => {
       const preflight = await runOperatorPreflight(config, node, api);
-      if (preflight.status === "fail") {
-        const reason = preflight.checks.find(({ status }) => status === "fail")?.message;
+      if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
+        const reason = preflight.checks.find(
+          ({ id, status }) =>
+            status === "fail" ||
+            (["api-availability", "api-network", "api-version", "api-status"].includes(id) &&
+              status !== "pass"),
+        )?.message;
         throw new OperatorWorkflowError(
           422,
           "runtime_settings_sources_rejected",

@@ -517,6 +517,7 @@ export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
   const limit = Number(request.searchParams.get("limit") ?? 50);
+  if (request.pathname === "/api/v1/auth/session") return { authenticated: false };
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
   if (request.pathname === "/api/v1/engine") return engineStatus;

@@ -103,7 +103,15 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function Login({ onLogin, error }: { onLogin: (token: string) => void; error: string | null }) {
+function Login({
+  onLogin,
+  error,
+  checkingAutomaticAuth,
+}: {
+  onLogin: (token: string) => void;
+  error: string | null;
+  checkingAutomaticAuth: boolean;
+}) {
   const [token, setToken] = useState("");
   return (
     <main className="login-shell">
@@ -140,7 +148,11 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
             Open console
           </button>
         </form>
-        <small>Stored in this browser tab only.</small>
+        <small>
+          {checkingAutomaticAuth
+            ? "Checking for trusted proxy or HTTP Basic access…"
+            : "Stored in this browser tab only."}
+        </small>
       </div>
     </main>
   );
@@ -148,6 +160,10 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
 
 function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem("sidekick-token") ?? "");
+  const [automaticAuth, setAutomaticAuth] = useState<"checking" | "authenticated" | "unavailable">(
+    () => (sessionStorage.getItem("sidekick-token") ? "unavailable" : "checking"),
+  );
+  const authenticated = Boolean(token) || automaticAuth === "authenticated";
   const [route, setRoute] = useState(() => parseDashboardHash(location.hash));
   const page = route.page;
   const [theme, setTheme] = useState<"light" | "dark">(() =>
@@ -168,8 +184,39 @@ function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncOperation, setSyncOperation] = useState<ReconciliationOperation | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (token) {
+      setAutomaticAuth("unavailable");
+      return;
+    }
+    const controller = new AbortController();
+    setAutomaticAuth("checking");
+    void fetch("/api/v1/auth/session", {
+      credentials: "same-origin",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const body: unknown = await response.json().catch(() => null);
+        return (
+          typeof body === "object" &&
+          body !== null &&
+          "authenticated" in body &&
+          body.authenticated === true
+        );
+      })
+      .then((available) => {
+        if (!controller.signal.aborted) {
+          setAutomaticAuth(available ? "authenticated" : "unavailable");
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setAutomaticAuth("unavailable");
+      });
+    return () => controller.abort();
+  }, [token]);
   const loadOnboardingState = useCallback(async () => {
-    if (!token) return;
+    if (!authenticated) return;
     try {
       const result = await apiJson(token, "/api/v1/onboarding", onboardingEnvelopeSchema);
       setOnboardingStarted(result.onboarding !== null);
@@ -177,10 +224,10 @@ function App() {
       // Setup guidance is optional UI state; do not hide the operator dashboard if it is unavailable.
       setOnboardingStarted(null);
     }
-  }, [token]);
+  }, [authenticated, token]);
   const load = useCallback(
     async (background = false, includeOnboarding = false, force = false) => {
-      if (!token || (background && activeStatusRequests.current > 0)) return false;
+      if (!authenticated || (background && activeStatusRequests.current > 0)) return false;
       const requestGeneration = ++statusRequestGeneration.current;
       activeStatusRequests.current += 1;
       try {
@@ -217,7 +264,7 @@ function App() {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
       }
     },
-    [loadOnboardingState, token],
+    [authenticated, loadOnboardingState, token],
   );
   useEffect(() => {
     void load(false, true);
@@ -235,6 +282,7 @@ function App() {
       setSyncing(false);
       setOnboardingStarted(null);
       settingsThemeApplied.current = false;
+      setAutomaticAuth("unavailable");
       setToken("");
     };
     window.addEventListener(AUTH_REJECTED_EVENT, rejectAuth);
@@ -293,6 +341,7 @@ function App() {
     setSyncing(false);
     setOnboardingStarted(null);
     settingsThemeApplied.current = false;
+    setAutomaticAuth("unavailable");
     setToken(value);
   };
   const monitorSync = useCallback(
@@ -369,7 +418,7 @@ function App() {
     }
   };
   useEffect(() => {
-    if (!token) return;
+    if (!authenticated) return;
     const controller = new AbortController();
     syncController.current?.abort();
     syncController.current = controller;
@@ -406,7 +455,7 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [monitorSync, token]);
+  }, [authenticated, monitorSync, token]);
   const refreshOperatorState = useCallback(async () => {
     const refreshed = await load();
     if (!refreshed) throw new Error("The latest operator state is not available yet.");
@@ -445,6 +494,18 @@ function App() {
   );
   const rateLimit = data?.freshness?.rateLimit ?? statusRateLimit;
   const rateLimited = data?.freshness?.reason === "rate-limited" || statusRateLimit !== null;
+  const indexedApiChecksPass = Boolean(
+    data &&
+      data.preflight.api.available !== false &&
+      data.preflight.api.networkCompatible !== false &&
+      ["api-network", "api-version", "api-status"].every((id) => {
+        const check = data.preflight.checks.find((candidate) => candidate.id === id);
+        return !check || check.status === "pass";
+      }),
+  );
+  const indexedDataDelayed = Boolean(
+    data && (!indexedApiChecksPass || data.preflight.api.position === "behind"),
+  );
   const ageLabel =
     ageMs === null
       ? "age unavailable"
@@ -527,7 +588,15 @@ function App() {
         return null;
     }
   })();
-  if (!token) return <Login onLogin={login} error={loginError} />;
+  if (!authenticated) {
+    return (
+      <Login
+        onLogin={login}
+        error={loginError}
+        checkingAutomaticAuth={automaticAuth === "checking"}
+      />
+    );
+  }
   return (
     <div className="app" data-network={data?.network ?? "mainnet"}>
       <aside className="sidebar">
@@ -600,7 +669,9 @@ function App() {
             </button>
           </div>
         </div>
-        <div className={`freshness ${stale || data?.preflight.status === "fail" ? "stale" : ""}`}>
+        <div
+          className={`freshness ${stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
+        >
           <span className="dot" />
           <span>
             {!data
@@ -613,15 +684,25 @@ function App() {
                     : "Data may be stale"
                 : data.preflight.status === "fail"
                   ? "Chain sources need attention"
-                  : "Live"}
+                  : indexedDataDelayed
+                    ? "Local node live · Indexed data delayed"
+                    : "Live"}
           </span>
           <span className="sep">·</span>
           <span className="mono">
             {data
-              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node/API gap ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
+              ? data.preflight.api.available === false
+                ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
+                : !indexedApiChecksPass
+                  ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
+                  : data.preflight.api.position === "behind"
+                    ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                    : data.preflight.api.position === "ahead"
+                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                      : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
               : "loading status"}
           </span>
-          {stale && !rateLimited ? (
+          {(stale || indexedDataDelayed) && !rateLimited ? (
             <button
               type="button"
               className="btn btn-tertiary sm"
