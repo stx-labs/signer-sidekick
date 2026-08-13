@@ -1230,7 +1230,7 @@ describe("Stacks node client", () => {
     });
   });
 
-  it("discards an anchor when the API tip changes during capture", async () => {
+  it("retries and discards an anchor when the API tip keeps changing during capture", async () => {
     const firstStatus = {
       server_version: "stacks-blockchain-api v9",
       status: "ready",
@@ -1249,7 +1249,14 @@ describe("Stacks node client", () => {
       },
     };
     const api = {
-      getStatus: vi.fn().mockResolvedValueOnce(firstStatus).mockResolvedValueOnce(movedStatus),
+      getStatus: vi
+        .fn()
+        .mockResolvedValueOnce(firstStatus)
+        .mockResolvedValueOnce(movedStatus)
+        .mockResolvedValueOnce(firstStatus)
+        .mockResolvedValueOnce(movedStatus)
+        .mockResolvedValueOnce(firstStatus)
+        .mockResolvedValueOnce(movedStatus),
     } as unknown as StacksApiClient;
     const node = {
       getInfo: vi.fn().mockResolvedValue({
@@ -1287,6 +1294,218 @@ describe("Stacks node client", () => {
       },
     });
     expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
+    expect(api.getStatus).toHaveBeenCalledTimes(6);
+  });
+
+  it("uses a stable API anchor while the node is several Nakamoto blocks ahead", async () => {
+    const apiStatus = {
+      server_version: "stacks-blockchain-api v9",
+      status: "ready",
+      chain_tip: {
+        block_height: 8_600_000,
+        block_hash: `0x${"cd".repeat(32)}`,
+        index_block_hash: indexBlockHash,
+        burn_block_height: 960_240,
+      },
+    };
+    const api = {
+      getStatus: vi.fn().mockResolvedValue(apiStatus),
+    } as unknown as StacksApiClient;
+    const node = {
+      getInfo: vi.fn().mockResolvedValue({
+        network_id: 1,
+        burn_block_height: 960_240,
+        stacks_tip_height: 8_600_007,
+        stacks_tip: `0x${"12".repeat(32)}`,
+      }),
+      getPoxInfo: vi.fn().mockResolvedValue({
+        current_burnchain_block_height: 960_240,
+        reward_cycle_id: 141,
+        reward_cycle_length: 2_100,
+        prepare_cycle_length: 100,
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        contract_versions: [],
+        next_cycle: {
+          id: 142,
+          min_threshold_ustx: 1,
+          min_increment_ustx: 1,
+          stacked_ustx: 1,
+          prepare_phase_start_block_height: 961_000,
+          blocks_until_prepare_phase: 760,
+          reward_phase_start_block_height: 961_100,
+          blocks_until_reward_phase: 860,
+        },
+      }),
+    } as unknown as StacksNodeClient;
+
+    await expect(captureChainAnchor(node, api)).resolves.toMatchObject({
+      stacksBlockHeight: 8_600_000,
+      indexBlockHash,
+      burnBlockHeight: 960_240,
+    });
+    expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
+  });
+
+  it("recaptures all sources after a one-time API tip move", async () => {
+    const firstStatus = {
+      server_version: "stacks-blockchain-api v9",
+      status: "ready",
+      chain_tip: {
+        block_height: 8_600_000,
+        block_hash: `0x${"cd".repeat(32)}`,
+        index_block_hash: indexBlockHash,
+        burn_block_height: 960_240,
+      },
+    };
+    const stableStatus = {
+      ...firstStatus,
+      chain_tip: {
+        ...firstStatus.chain_tip,
+        block_height: 8_600_001,
+        index_block_hash: `0x${"ef".repeat(32)}`,
+      },
+    };
+    const api = {
+      getStatus: vi
+        .fn()
+        .mockResolvedValueOnce(firstStatus)
+        .mockResolvedValueOnce(stableStatus)
+        .mockResolvedValue(stableStatus),
+    } as unknown as StacksApiClient;
+    const node = {
+      getInfo: vi.fn().mockResolvedValue({
+        network_id: 1,
+        burn_block_height: 960_240,
+        stacks_tip_height: 8_600_005,
+      }),
+      getPoxInfo: vi.fn().mockResolvedValue({
+        current_burnchain_block_height: 960_240,
+        reward_cycle_id: 141,
+        reward_cycle_length: 2_100,
+        prepare_cycle_length: 100,
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        contract_versions: [],
+        next_cycle: {
+          id: 142,
+          min_threshold_ustx: 1,
+          min_increment_ustx: 1,
+          stacked_ustx: 1,
+          prepare_phase_start_block_height: 961_000,
+          blocks_until_prepare_phase: 760,
+          reward_phase_start_block_height: 961_100,
+          blocks_until_reward_phase: 860,
+        },
+      }),
+    } as unknown as StacksNodeClient;
+
+    await expect(captureChainAnchor(node, api)).resolves.toMatchObject({
+      stacksBlockHeight: 8_600_001,
+      indexBlockHash: stableStatus.chain_tip.index_block_hash,
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(4);
+    expect(node.getInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the node tip when the API is exactly one canonical Stacks block ahead", async () => {
+    const nodeTipHash = `0x${"12".repeat(32)}`;
+    const nodeTipIndexHash = `0x${"34".repeat(32)}`;
+    const apiTip = {
+      server_version: "stacks-blockchain-api v9",
+      status: "ready",
+      chain_tip: {
+        block_height: 8_600_001,
+        block_hash: `0x${"56".repeat(32)}`,
+        index_block_hash: `0x${"78".repeat(32)}`,
+        burn_block_height: 960_240,
+      },
+    };
+    const api = {
+      getStatus: vi.fn().mockResolvedValue(apiTip),
+      getBlock: vi.fn().mockResolvedValue({
+        canonical: true,
+        height: 8_600_000,
+        hash: nodeTipHash,
+        index_block_hash: nodeTipIndexHash,
+        parent_block_hash: `0x${"9a".repeat(32)}`,
+        parent_index_block_hash: `0x${"bc".repeat(32)}`,
+        burn_block_height: 960_240,
+      }),
+    } as unknown as StacksApiClient;
+    const node = {
+      getInfo: vi.fn().mockResolvedValue({
+        network_id: 1,
+        burn_block_height: 960_240,
+        stacks_tip_height: 8_600_000,
+        stacks_tip: nodeTipHash,
+      }),
+      getPoxInfo: vi.fn().mockResolvedValue({
+        current_burnchain_block_height: 960_240,
+        reward_cycle_id: 141,
+        reward_cycle_length: 2_100,
+        prepare_cycle_length: 100,
+        contract_id: "SP000000000000000000002Q6VF78.pox-5",
+        contract_versions: [],
+        next_cycle: {
+          id: 142,
+          min_threshold_ustx: 1,
+          min_increment_ustx: 1,
+          stacked_ustx: 1,
+          prepare_phase_start_block_height: 961_000,
+          blocks_until_prepare_phase: 760,
+          reward_phase_start_block_height: 961_100,
+          blocks_until_reward_phase: 860,
+        },
+      }),
+    } as unknown as StacksNodeClient;
+
+    await expect(captureChainAnchor(node, api)).resolves.toMatchObject({
+      stacksBlockHeight: 8_600_000,
+      indexBlockHash: nodeTipIndexHash,
+      burnBlockHeight: 960_240,
+    });
+    expect(api.getBlock).toHaveBeenCalledWith(nodeTipHash);
+    expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: nodeTipIndexHash });
+  });
+
+  it("rejects an unproven node tip when the API is one Stacks block ahead", async () => {
+    const nodeTipHash = `0x${"12".repeat(32)}`;
+    const api = {
+      getStatus: vi.fn().mockResolvedValue({
+        server_version: "stacks-blockchain-api v9",
+        status: "ready",
+        chain_tip: {
+          block_height: 8_600_001,
+          block_hash: `0x${"56".repeat(32)}`,
+          index_block_hash: `0x${"78".repeat(32)}`,
+          burn_block_height: 960_240,
+        },
+      }),
+      getBlock: vi.fn().mockResolvedValue({
+        canonical: false,
+        height: 8_600_000,
+        hash: nodeTipHash,
+        index_block_hash: `0x${"34".repeat(32)}`,
+        parent_block_hash: `0x${"9a".repeat(32)}`,
+        parent_index_block_hash: `0x${"bc".repeat(32)}`,
+        burn_block_height: 960_240,
+      }),
+    } as unknown as StacksApiClient;
+    const node = {
+      getInfo: vi.fn().mockResolvedValue({
+        network_id: 1,
+        burn_block_height: 960_240,
+        stacks_tip_height: 8_600_000,
+        stacks_tip: nodeTipHash,
+      }),
+      getPoxInfo: vi.fn(),
+    } as unknown as StacksNodeClient;
+
+    await expect(captureChainAnchor(node, api)).rejects.toMatchObject({
+      name: ChainAnchorError.name,
+      message: "API could not prove the node tip is canonical",
+      retryable: true,
+    });
+    expect(node.getPoxInfo).not.toHaveBeenCalled();
   });
 
   it("retains node build evidence and PoX-5 sBTC contract capabilities", async () => {
@@ -1297,6 +1516,7 @@ describe("Stacks node client", () => {
         parent_network_id: 3_669_344_250,
         burn_block_height: 202,
         stacks_tip_height: 500,
+        stacks_tip: "AB".repeat(32),
       },
       {
         current_burnchain_block_height: 202,
@@ -1322,6 +1542,7 @@ describe("Stacks node client", () => {
       server_version: expect.stringContaining("9.9.9"),
       network_id: 256,
       parent_network_id: 3_669_344_250,
+      stacks_tip: `0x${"ab".repeat(32)}`,
     });
     await expect(client.getPoxInfo()).resolves.toMatchObject({
       pox_5_sbtc_contract: expect.stringContaining(".sbtc-token"),

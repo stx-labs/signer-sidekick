@@ -482,6 +482,11 @@ export class OperatorService {
     return (await this.snapshotWithFreshness(force)).value;
   }
 
+  /** Refresh the retained operator snapshot without requiring a browser request. */
+  async refreshSnapshot() {
+    return await this.refresh();
+  }
+
   private currentTime(): number {
     return this.options.now?.() ?? Date.now();
   }

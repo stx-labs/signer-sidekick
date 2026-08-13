@@ -7,6 +7,10 @@ services:
     init: true
     restart: unless-stopped
     read_only: true
+    logging:
+      driver: journald
+      options:
+        tag: signer-sidekick
     ports:
       - "${SIDEKICK_PUBLISH_ADDRESS:-127.0.0.1}:3998:3998"
     environment:

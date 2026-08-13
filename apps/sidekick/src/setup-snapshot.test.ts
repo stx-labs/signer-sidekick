@@ -264,7 +264,39 @@ describe("setup snapshot", () => {
     );
   });
 
-  it("retries when preflight reports a different Stacks tip", async () => {
+  it("keeps pinned setup reads when the live node advances by Nakamoto blocks", async () => {
+    const preflight = {
+      node: { stacksTipHeight: 11, burnBlockHeight: 5 },
+      cycle: { currentId: 2 },
+      pox: { pox5ContractId: null },
+    };
+    mocks.runOperatorPreflight.mockResolvedValue(preflight);
+    mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
+    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+
+    await expect(
+      readSetupSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: undefined,
+        waitBeforeRetry,
+      }),
+    ).resolves.toMatchObject({ chainAnchor });
+    expect(mocks.captureChainAnchor).toHaveBeenCalledTimes(2);
+    expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
+    expect(waitBeforeRetry).not.toHaveBeenCalled();
+    expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
+      node,
+      config.network,
+      managerPrincipal,
+      undefined,
+      { tip: chainAnchor.indexBlockHash },
+    );
+  });
+
+  it("retries when preflight cannot prove the shared anchor is present on the node", async () => {
     const matchingPreflight = {
       node: { stacksTipHeight: 10, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -273,7 +305,7 @@ describe("setup snapshot", () => {
     mocks.runOperatorPreflight
       .mockResolvedValueOnce({
         ...matchingPreflight,
-        node: { stacksTipHeight: 11, burnBlockHeight: 5 },
+        node: { stacksTipHeight: 9, burnBlockHeight: 5 },
       })
       .mockResolvedValue(matchingPreflight);
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });

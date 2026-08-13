@@ -59,6 +59,7 @@ import type {
   RewardStakerSort,
   SortDirection,
 } from "./operator-service.js";
+import type { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import {
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
@@ -279,6 +280,7 @@ export interface ServerOptions {
     ): Promise<unknown>;
   };
   engine?: TransactionEngineApiService;
+  snapshotRefreshMetrics?: SnapshotRefreshMetricsTracker;
 }
 
 class OperatorApiError extends Error {
@@ -509,6 +511,7 @@ function classifySafeOperatorError(
     return safeClassification(503, "signer_staker_anchor_unstable", {
       retryable: true,
       retryAfterSeconds: 1,
+      ...(error.evidence ? { details: { anchorEvidence: error.evidence } } : {}),
     });
   }
   if (error instanceof RateLimitedError) {
@@ -955,7 +958,13 @@ export function createServer(options: ServerOptions = {}) {
         const failedAt = new Date().toISOString();
         const classified = classifySafeOperatorError(error, rateLimitSettings());
         request.log.warn(
-          { err: error, responseCode: classified.body.error },
+          {
+            err: error,
+            responseCode: classified.body.error,
+            ...(error instanceof SignerStakerAnchorError && error.evidence
+              ? { anchorEvidence: error.evidence }
+              : {}),
+          },
           "background reconciliation failed",
         );
         reconciliationOperation = {
@@ -1028,7 +1037,19 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/metrics", async (_request, reply) => {
     reply.type("text/plain; version=0.0.4; charset=utf-8");
-    return [
+    const refresh = options.snapshotRefreshMetrics?.snapshot() ?? {
+      attemptsTotal: 0,
+      successesTotal: 0,
+      failuresTotal: 0,
+      consecutiveFailures: 0,
+      retryBackoffSeconds: 0,
+      lastSuccessTimestampSeconds: 0,
+      snapshotGeneratedTimestampSeconds: 0,
+      snapshotAgeSeconds: 0,
+      snapshotFresh: 0 as const,
+      sourcePositions: null,
+    };
+    const metrics = [
       "# HELP sidekick_http_requests_total HTTP requests handled by this process.",
       "# TYPE sidekick_http_requests_total counter",
       `sidekick_http_requests_total ${requestCount}`,
@@ -1041,8 +1062,52 @@ export function createServer(options: ServerOptions = {}) {
       "# HELP sidekick_sync_failures_total Failed synchronization attempts.",
       "# TYPE sidekick_sync_failures_total counter",
       `sidekick_sync_failures_total ${syncFailureCount}`,
-      "",
-    ].join("\n");
+      "# HELP sidekick_operator_snapshot_refresh_attempts_total Autonomous snapshot refresh attempts.",
+      "# TYPE sidekick_operator_snapshot_refresh_attempts_total counter",
+      `sidekick_operator_snapshot_refresh_attempts_total ${refresh.attemptsTotal}`,
+      "# HELP sidekick_operator_snapshot_refresh_successes_total Successful autonomous snapshot refreshes.",
+      "# TYPE sidekick_operator_snapshot_refresh_successes_total counter",
+      `sidekick_operator_snapshot_refresh_successes_total ${refresh.successesTotal}`,
+      "# HELP sidekick_operator_snapshot_refresh_failures_total Failed autonomous snapshot refreshes.",
+      "# TYPE sidekick_operator_snapshot_refresh_failures_total counter",
+      `sidekick_operator_snapshot_refresh_failures_total ${refresh.failuresTotal}`,
+      "# HELP sidekick_operator_snapshot_refresh_consecutive_failures Consecutive autonomous snapshot refresh failures.",
+      "# TYPE sidekick_operator_snapshot_refresh_consecutive_failures gauge",
+      `sidekick_operator_snapshot_refresh_consecutive_failures ${refresh.consecutiveFailures}`,
+      "# HELP sidekick_operator_snapshot_retry_backoff_seconds Delay before the next autonomous refresh attempt.",
+      "# TYPE sidekick_operator_snapshot_retry_backoff_seconds gauge",
+      `sidekick_operator_snapshot_retry_backoff_seconds ${refresh.retryBackoffSeconds}`,
+      "# HELP sidekick_operator_snapshot_last_success_timestamp_seconds Unix timestamp of the last successful autonomous refresh.",
+      "# TYPE sidekick_operator_snapshot_last_success_timestamp_seconds gauge",
+      `sidekick_operator_snapshot_last_success_timestamp_seconds ${refresh.lastSuccessTimestampSeconds}`,
+      "# HELP sidekick_operator_snapshot_generated_timestamp_seconds Unix timestamp carried by the retained operator snapshot.",
+      "# TYPE sidekick_operator_snapshot_generated_timestamp_seconds gauge",
+      `sidekick_operator_snapshot_generated_timestamp_seconds ${refresh.snapshotGeneratedTimestampSeconds}`,
+      "# HELP sidekick_operator_snapshot_age_seconds Age of the retained operator snapshot.",
+      "# TYPE sidekick_operator_snapshot_age_seconds gauge",
+      `sidekick_operator_snapshot_age_seconds ${refresh.snapshotAgeSeconds}`,
+      "# HELP sidekick_operator_snapshot_fresh Whether the autonomous snapshot refresh is current and healthy.",
+      "# TYPE sidekick_operator_snapshot_fresh gauge",
+      `sidekick_operator_snapshot_fresh ${refresh.snapshotFresh}`,
+    ];
+    if (refresh.sourcePositions) {
+      metrics.push(
+        "# HELP sidekick_operator_snapshot_source_stacks_height Stacks height observed in the last successful refresh.",
+        "# TYPE sidekick_operator_snapshot_source_stacks_height gauge",
+        `sidekick_operator_snapshot_source_stacks_height{source="node"} ${refresh.sourcePositions.nodeStacksHeight}`,
+        `sidekick_operator_snapshot_source_stacks_height{source="api"} ${refresh.sourcePositions.apiStacksHeight}`,
+        "# HELP sidekick_operator_snapshot_source_burn_height Bitcoin burn height observed in the last successful refresh.",
+        "# TYPE sidekick_operator_snapshot_source_burn_height gauge",
+        `sidekick_operator_snapshot_source_burn_height{source="node"} ${refresh.sourcePositions.nodeBurnHeight}`,
+        `sidekick_operator_snapshot_source_burn_height{source="api"} ${refresh.sourcePositions.apiBurnHeight}`,
+        `sidekick_operator_snapshot_source_burn_height{source="pox"} ${refresh.sourcePositions.poxBurnHeight}`,
+        "# HELP sidekick_operator_snapshot_pox_reward_cycle PoX reward cycle observed in the last successful refresh.",
+        "# TYPE sidekick_operator_snapshot_pox_reward_cycle gauge",
+        `sidekick_operator_snapshot_pox_reward_cycle ${refresh.sourcePositions.poxRewardCycle}`,
+      );
+    }
+    metrics.push("");
+    return metrics.join("\n");
   });
 
   server.get("/api/v1/status", async (request) => {
