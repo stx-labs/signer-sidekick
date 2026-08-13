@@ -47,7 +47,7 @@ export interface ConnectedContextDependencies<
   loadConfig(): Config;
   clientsFromConfig(config: Config): { node: Node; api: Api };
   verificationContext(config: Config): Promise<Verification>;
-  readSetupSnapshot(options: {
+  readOperatorAnchorSnapshot(options: {
     config: Config;
     node: Node;
     api: Api;
@@ -73,7 +73,7 @@ export async function withConnectedContext<
   const config = dependencies.loadConfig();
   const { node, api } = dependencies.clientsFromConfig(config);
   const managerVerification = await dependencies.verificationContext(config);
-  const snapshot = await dependencies.readSetupSnapshot({
+  const snapshot = await dependencies.readOperatorAnchorSnapshot({
     config,
     node,
     api,

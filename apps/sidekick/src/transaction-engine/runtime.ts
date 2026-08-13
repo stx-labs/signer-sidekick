@@ -14,8 +14,11 @@ import {
 import type { SidekickConfig } from "../config.js";
 import { managerActionCapability } from "../manager-capabilities.js";
 import type { ManagerVerificationContext } from "../manager-verification.js";
+import {
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "../operator-anchor-snapshot.js";
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
-import { readSetupSnapshot, type SetupSnapshot } from "../setup-snapshot.js";
 import { createChainSourceId, type SidekickStore } from "../storage/store.js";
 import type { TransactionAdmissionInput } from "./admission.js";
 import { RepositoryTransactionEngineApiService } from "./api-service.js";
@@ -64,7 +67,7 @@ export interface TransactionEngineRuntimeContext {
 }
 
 export interface TransactionEngineObservationHookInput {
-  setup: SetupSnapshot;
+  setup: OperatorAnchorSnapshot;
   rewards: StxRewardStatus | null;
   sourceId: string;
   observedAt: string;
@@ -740,7 +743,7 @@ export async function createSidekickTransactionEngineRuntime(
       buildAdmission,
       readFreshObservation: async (context) => {
         const observedAt = exactNow(clock).toISOString();
-        const setup = await readSetupSnapshot({
+        const setup = await readOperatorAnchorSnapshot({
           config: context.config,
           node: context.node,
           api: context.api,

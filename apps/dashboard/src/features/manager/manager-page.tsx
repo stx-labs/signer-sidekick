@@ -14,9 +14,9 @@ import type {
   BrowserWalletIntentCreateRequest,
   DashboardSnapshot,
   ManagerActionCapabilityId,
-  OnboardingState,
+  SignerGrantSession,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { onboardingActionResponseSchema } from "@stx-labs/signer-sidekick-api-contracts";
+import { signerGrantSessionResponseSchema } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
@@ -29,6 +29,7 @@ import {
   StatLine,
   type TableSort,
 } from "../../shared/dashboard-ui.js";
+import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { number, short, stx } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorActionError } from "../../shared/operator-error.js";
@@ -43,7 +44,7 @@ type EligibilitySort = "cycle" | "delegated" | "margin" | "eligibility" | "sourc
 
 const canonicalUintPattern = /^(?:0|[1-9][0-9]*)$/;
 const canonicalPositiveUintPattern = /^[1-9][0-9]*$/;
-type SignerGrantState = OnboardingState["signerGrant"];
+type SignerGrantState = SignerGrantSession;
 
 const actionCopy: Record<ManagerActionId, { title: string; detail: string; manual: string }> = {
   "register-self": {
@@ -127,13 +128,13 @@ function SignerGrantCeremony({
       const result = await apiJson(
         token,
         "/api/v1/manager/signer-grant/prepare",
-        onboardingActionResponseSchema,
+        signerGrantSessionResponseSchema,
         {
           method: "POST",
           body: JSON.stringify({ authId, signerConfigPath: signerConfigPath.trim() }),
         },
       );
-      setSignerGrant(result.onboarding.signerGrant);
+      setSignerGrant(result.signerGrant);
       setSignerOutput("");
     } catch (cause) {
       setError(
@@ -163,10 +164,10 @@ function SignerGrantCeremony({
       const result = await apiJson(
         token,
         "/api/v1/manager/signer-grant/verify",
-        onboardingActionResponseSchema,
+        signerGrantSessionResponseSchema,
         { method: "POST", body: JSON.stringify({ signerOutput: publicSignerOutput }) },
       );
-      setSignerGrant(result.onboarding.signerGrant);
+      setSignerGrant(result.signerGrant);
     } catch (cause) {
       setError(
         operatorActionError(
@@ -753,6 +754,35 @@ export function Manager({
   return (
     <>
       <PageHead title="Manager" lede="Manager status, signer authorization, and administration." />
+      {!data.manager.attachAllowed ? (
+        <div className="callout callout-info manager-required-state" role="status">
+          <WarningCircle className="ic" />
+          <div className="body">
+            <strong>Connect a running signer manager.</strong>
+            <br />
+            Sidekick does not deploy or perform first-time signer setup. Complete that flow in Zero
+            to Signing, configure its manager principal for this Sidekick deployment, and refresh.
+            <div className="actions">
+              <a
+                className="btn btn-secondary sm"
+                href={DOCUMENT_LINKS.zeroToSigning}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open Zero to Signing
+              </a>
+              <button
+                type="button"
+                className="btn btn-tertiary sm"
+                disabled={refreshingStatus}
+                onClick={() => void onRefreshStatus?.()}
+              >
+                {refreshingStatus ? "Refreshing…" : "Refresh manager"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {actionAvailability.warning ? (
         <div className="callout callout-caution manager-required-state" role="status">
           <WarningCircle className="ic" />

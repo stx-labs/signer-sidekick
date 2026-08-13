@@ -2,10 +2,8 @@ import {
   ArrowClockwise,
   CheckCircle,
   DownloadSimple,
-  SlidersHorizontal,
   Warning,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import type { DashboardSnapshot, HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useState } from "react";
@@ -55,15 +53,11 @@ export function Overview({
   token,
   sync,
   syncing,
-  showSetupNotice,
-  dismissSetupNotice,
 }: {
   data: Snapshot;
   token: string;
   sync: () => void;
   syncing: boolean;
-  showSetupNotice: boolean;
-  dismissSetupNotice: () => void;
 }) {
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [healthUnavailable, setHealthUnavailable] = useState(false);
@@ -94,7 +88,7 @@ export function Overview({
   const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
   const blocksUntilPrepare = data.preflight.cycle.blocksUntilPreparePhase;
   const currentCycleIsFixed =
-    data.setup?.enrollmentWindow.status === "prepare-phase" &&
+    (data.readiness ?? data.setup)?.enrollmentWindow.status === "prepare-phase" &&
     current !== undefined &&
     !current.contract.inSignerSet;
   const prepareEta =
@@ -150,40 +144,6 @@ export function Overview({
         }
       />
       <ErrorCallout error={supportDownloadError} />
-      {showSetupNotice ? (
-        <section className="card-standout setup-notice" aria-labelledby="setup-notice-title">
-          <div className="setup-notice-icon" aria-hidden="true">
-            <SlidersHorizontal />
-          </div>
-          <div className="setup-notice-body">
-            <p className="eyebrow">GET STARTED</p>
-            <h2 id="setup-notice-title">Start with Initial Setup</h2>
-            <p>Complete Initial Setup before operating this pool.</p>
-            <div className="actions">
-              <button
-                type="button"
-                className="btn btn-accent"
-                onClick={() => {
-                  location.hash = "setup";
-                }}
-              >
-                Open Initial Setup
-              </button>
-              <button type="button" className="btn btn-tertiary" onClick={dismissSetupNotice}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-          <button
-            type="button"
-            className="setup-notice-close"
-            aria-label="Dismiss initial setup notice"
-            onClick={dismissSetupNotice}
-          >
-            <X />
-          </button>
-        </section>
-      ) : null}
       <div className="cycle-clock card">
         <div>
           <span>Reward cycle</span>
@@ -344,8 +304,10 @@ export function Overview({
         <div className="card">
           <div className="card-head">
             <h2>Registration &amp; eligibility</h2>
-            <Badge state={data.setup?.status === "ready" ? "success" : "caution"}>
-              {data.setup?.status ?? "Unavailable"}
+            <Badge
+              state={(data.readiness ?? data.setup)?.status === "ready" ? "success" : "caution"}
+            >
+              {(data.readiness ?? data.setup)?.status ?? "Unavailable"}
             </Badge>
           </div>
           <StatLine label="Manager">

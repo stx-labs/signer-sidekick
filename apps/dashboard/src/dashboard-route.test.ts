@@ -36,6 +36,14 @@ describe("dashboard routes", () => {
     });
   });
 
+  it.each(["setup", "enrollment"])("maps removed %s routes to Manager", (page) => {
+    expect(parseDashboardHash(`#${page}`)).toEqual({
+      page: "manager",
+      action: null,
+      legacy: true,
+    });
+  });
+
   it("builds only typed Manager action links", () => {
     expect(dashboardHash("manager", "withdraw-fees")).toBe("#manager?action=withdraw-fees");
     expect(dashboardHash("rewards")).toBe("#rewards");

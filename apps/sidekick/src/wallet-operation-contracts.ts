@@ -1,19 +1,18 @@
 import type {
-  BrowserWalletIntentAction,
   BrowserWalletTransaction,
   ManagerActionCapabilityId,
+  RecurringWalletIntentAction,
 } from "@stx-labs/signer-sidekick-api-contracts";
 
 export type WalletOperationAuthority =
-  | "setup-admin"
   | "manager-admin"
   | "manager-admin-and-signer-grant"
   | "permissionless";
 
 export interface WalletOperationContract {
-  action: BrowserWalletIntentAction;
-  lifecycle: "setup-only" | "recurring";
-  capability: ManagerActionCapabilityId | null;
+  action: RecurringWalletIntentAction;
+  lifecycle: "recurring";
+  capability: ManagerActionCapabilityId;
   authority: WalletOperationAuthority;
   functionName: string | null;
   completionEvidence: "contract-source" | "canonical-post-state" | "immutable-engine-job";
@@ -25,14 +24,6 @@ export interface WalletOperationContract {
  * authority from silently drifting while onboarding is removed around the recurring operations.
  */
 export const WALLET_OPERATION_CONTRACTS = {
-  "deploy-manager": {
-    action: "deploy-manager",
-    lifecycle: "setup-only",
-    capability: null,
-    authority: "setup-admin",
-    functionName: null,
-    completionEvidence: "contract-source",
-  },
   "register-self": {
     action: "register-self",
     lifecycle: "recurring",
@@ -97,26 +88,25 @@ export const WALLET_OPERATION_CONTRACTS = {
     functionName: "claim-staker-rewards",
     completionEvidence: "canonical-post-state",
   },
-} as const satisfies Record<BrowserWalletIntentAction, WalletOperationContract>;
+} as const satisfies Record<RecurringWalletIntentAction, WalletOperationContract>;
 
 export function walletOperationContract(
-  action: BrowserWalletIntentAction,
+  action: RecurringWalletIntentAction,
 ): WalletOperationContract {
   return WALLET_OPERATION_CONTRACTS[action];
 }
 
 export function managerCapabilityForWalletAction(
-  action: BrowserWalletIntentAction,
-): ManagerActionCapabilityId | null {
+  action: RecurringWalletIntentAction,
+): ManagerActionCapabilityId {
   return walletOperationContract(action).capability;
 }
 
 export function walletIntentTransactionMatchesAction(
-  action: BrowserWalletIntentAction,
+  action: RecurringWalletIntentAction,
   transaction: BrowserWalletTransaction,
 ): boolean {
   const contract = walletOperationContract(action);
-  if (contract.lifecycle === "setup-only") return transaction.method === "stx_deployContract";
   return (
     transaction.method === "stx_callContract" &&
     transaction.params.functionName === contract.functionName

@@ -1,9 +1,9 @@
 import { falseCV, trueCV, uintCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import type { ManagerVerificationReport } from "./manager-verification.js";
+import { readOperatorReadiness } from "./operator-readiness.js";
 import type { PreflightResult } from "./preflight.js";
 import type { RegistrationVerification } from "./registration-verification.js";
-import { readPoolSetupStatus } from "./setup-status.js";
 
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
 const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";
@@ -106,7 +106,7 @@ describe("pool setup status", () => {
       .mockResolvedValueOnce(uintCV(51_000_000_000n))
       .mockResolvedValueOnce(trueCV());
 
-    const result = await readPoolSetupStatus({ callReadOnly }, preflight, manager, registration);
+    const result = await readOperatorReadiness({ callReadOnly }, preflight, manager, registration);
 
     expect(result.status).toBe("ready");
     expect(result.eligibility.current).toMatchObject({
@@ -136,7 +136,7 @@ describe("pool setup status", () => {
       .mockResolvedValueOnce(trueCV());
     const options = { tip: `0x${"ab".repeat(32)}` as const };
 
-    await readPoolSetupStatus({ callReadOnly }, preflight, manager, registration, options);
+    await readOperatorReadiness({ callReadOnly }, preflight, manager, registration, options);
 
     for (const call of callReadOnly.mock.calls) expect(call[4]).toEqual(options);
   });
@@ -149,7 +149,7 @@ describe("pool setup status", () => {
       .mockResolvedValueOnce(uintCV(51_000_000_000n))
       .mockResolvedValueOnce(falseCV());
 
-    const result = await readPoolSetupStatus({ callReadOnly }, preflight, manager, registration);
+    const result = await readOperatorReadiness({ callReadOnly }, preflight, manager, registration);
 
     expect(result.status).toBe("attention");
     expect(result.eligibility.next?.thresholdAndMembershipAgree).toBe(false);
@@ -169,7 +169,7 @@ describe("pool setup status", () => {
       .mockResolvedValueOnce(uintCV(50_000_000_000n))
       .mockResolvedValueOnce(trueCV());
 
-    const result = await readPoolSetupStatus(
+    const result = await readOperatorReadiness(
       { callReadOnly },
       {
         ...preflight,
@@ -193,7 +193,7 @@ describe("pool setup status", () => {
       .mockResolvedValueOnce(uintCV(49_000_000_000n))
       .mockResolvedValueOnce(falseCV());
 
-    const result = await readPoolSetupStatus(
+    const result = await readOperatorReadiness(
       { callReadOnly },
       {
         ...preflight,
@@ -214,7 +214,7 @@ describe("pool setup status", () => {
   });
 
   it("blocks setup when registration and PoX-5 state are unavailable", async () => {
-    const result = await readPoolSetupStatus(
+    const result = await readOperatorReadiness(
       { callReadOnly: vi.fn() },
       {
         ...preflight,

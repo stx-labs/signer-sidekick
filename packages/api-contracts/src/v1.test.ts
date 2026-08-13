@@ -6,10 +6,45 @@ import {
   reconciliationOperationSchema,
   reconciliationSummarySchema,
   runtimeSettingsSchema,
+  signerGrantSessionResponseSchema,
   syncResponseSchema,
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("signer grant contracts", () => {
+  it("accepts the complete public grant returned by the signer grant service", () => {
+    expect(
+      signerGrantSessionResponseSchema.safeParse({
+        signerGrant: {
+          preparation: {
+            managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+            pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+            authId: "8",
+            expectedMessageHashHex: "07".repeat(32),
+            command: "stacks-signer generate-staking-signature --auth-id 8 --json",
+          },
+          verified: {
+            managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+            pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+            authId: "8",
+            signerKeyHex: `02${"11".repeat(32)}`,
+            signerSignatureHex: "22".repeat(65),
+            expectedMessageHashHex: "07".repeat(32),
+            signatureValid: true,
+            registerSelfCall: {
+              contract: "SP000000000000000000002Q6VF78.signer-manager",
+              functionName: "register-self",
+              arguments: ["0x01"],
+              signingPrincipal: "SP000000000000000000002Q6VF78",
+              signingAuthority: "external-offline-admin",
+            },
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe("reconciliation contracts", () => {
   const reconciliation = {

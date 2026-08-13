@@ -64,20 +64,14 @@ describe("CLI dispatch", () => {
         sidekick doctor  Open, migrate, and verify the local SQLite store
         sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
-        sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
-        sidekick init attach <manager>  Build an activation plan from a running manager
         sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-        sidekick attach <manager>  Verify and attach an existing manager in Observe mode
+        sidekick attach <manager>  Verify a configured manager and operator readiness
         sidekick manager verify <manager>  Verify deployed source and interface compatibility
-        sidekick setup status <manager>  Verify registration and current/next eligibility
-        sidekick setup record <manager> <pool-config.json> [record-metadata.json]
-        sidekick pool enrollment-info <manager> <pool-config.json>
         sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
         sidekick events sync <manager>  Backfill and update canonical manager events
         sidekick pool status <manager>  Reconcile current and future pool totals
         sidekick rewards status <manager> [cycle]  Read STX reward and payout state
-        sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
-        sidekick manager render <admin> <name> <output-dir>
+        sidekick export support-bundle <manager>  Collect the comprehensive support artifact
         sidekick manager trust <manager> --output <profile.json> [--observe-only]
         sidekick signer-grant prepare <manager> <auth-id> [signer-config]
         sidekick signer-grant verify <manager> <auth-id> <signer-output.json>
@@ -247,7 +241,7 @@ describe("CLI lifecycle helpers", () => {
     const node = { kind: "node" };
     const api = { kind: "api" };
     const managerVerification = { kind: "verification" };
-    const readSetupSnapshot = vi.fn(async () => ({
+    const readOperatorAnchorSnapshot = vi.fn(async () => ({
       preflight: { status: "pass" },
       chainAnchor: { rewardCycle: 91 },
     }));
@@ -258,7 +252,7 @@ describe("CLI lifecycle helpers", () => {
         loadConfig: () => config,
         clientsFromConfig: () => ({ node, api }),
         verificationContext: async () => managerVerification,
-        readSetupSnapshot,
+        readOperatorAnchorSnapshot,
       },
       (context) => ({
         network: context.config.network,
@@ -266,7 +260,7 @@ describe("CLI lifecycle helpers", () => {
       }),
     );
 
-    expect(readSetupSnapshot).toHaveBeenCalledWith({
+    expect(readOperatorAnchorSnapshot).toHaveBeenCalledWith({
       config,
       node,
       api,

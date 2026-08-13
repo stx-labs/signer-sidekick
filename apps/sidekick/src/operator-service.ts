@@ -1,5 +1,4 @@
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
-import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
@@ -10,7 +9,6 @@ import {
   type StacksNodeClient,
 } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
-import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
@@ -24,7 +22,11 @@ import {
   invalidateManagerVerificationCache,
   type ManagerVerificationContext,
 } from "./manager-verification.js";
-import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
+import {
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "./operator-anchor-snapshot.js";
+import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
 import {
@@ -33,8 +35,6 @@ import {
   type StxRewardStatus,
 } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
-import type { readPoolSetupStatus } from "./setup-status.js";
 import {
   proveSignerStakerAnchorRemainsCanonical,
   SignerStakerAnchorError,
@@ -53,7 +53,7 @@ export interface OperatorAlert {
     | {
         kind: "navigate";
         label: string;
-        target: "setup" | "settings" | "pool" | "rewards" | "operations";
+        target: "settings" | "pool" | "rewards" | "operations" | "manager";
       }
     | {
         kind: "navigate";
@@ -192,7 +192,7 @@ export function sortRewardStakers(
 
 export interface TransactionEngineObservationHook {
   observe(input: {
-    setup: SetupSnapshot;
+    setup: OperatorAnchorSnapshot;
     rewards: StxRewardStatus | null;
     sourceId: string;
     observedAt: string;
@@ -299,7 +299,7 @@ function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: st
 export function buildAlerts(snapshot: {
   preflight: Awaited<ReturnType<typeof runOperatorPreflight>>;
   manager: Awaited<ReturnType<typeof inspectDeployedManager>>;
-  setup: Awaited<ReturnType<typeof readPoolSetupStatus>> | null;
+  readiness: Awaited<ReturnType<typeof readOperatorReadiness>> | null;
   forecast: Awaited<ReturnType<typeof readPoolForecast>> | null;
   rewards: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
   activity: ReturnType<typeof readManagerActivity>;
@@ -384,15 +384,15 @@ export function buildAlerts(snapshot: {
           }),
     });
   }
-  if (snapshot.setup?.status === "blocked") {
-    const failedCheck = snapshot.setup.checks.find(({ status }) => status === "fail");
-    const blockedReason = failedCheck?.message ?? "A required manager setup check failed";
+  if (snapshot.readiness?.status === "blocked") {
+    const failedCheck = snapshot.readiness.checks.find(({ status }) => status === "fail");
+    const blockedReason = failedCheck?.message ?? "A required operator readiness check failed";
     const signerRepair =
       failedCheck !== undefined && ["signer-registration", "signer-grant"].includes(failedCheck.id);
     alerts.push({
-      id: "setup:blocked",
+      id: "readiness:blocked",
       severity: "critical",
-      title: "Pool Setup Is Blocked",
+      title: "Operator Readiness Is Blocked",
       detail: asSentence(blockedReason),
       action: signerRepair
         ? {
@@ -401,7 +401,7 @@ export function buildAlerts(snapshot: {
             target: "manager",
             managerAction: "register-self",
           }
-        : { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+        : { kind: "navigate", label: "Review manager", target: "manager" },
     });
   }
   // A delegation only affects the next signer set while its enrollment window is open. Once the
@@ -460,13 +460,6 @@ export function buildAlerts(snapshot: {
     });
   }
   return alerts;
-}
-
-export function classifySupportContact(
-  value: string,
-): { email: string } | { url: string } | undefined {
-  if (!value) return undefined;
-  return z.email().safeParse(value).success ? { email: value } : { url: value };
 }
 
 export class OperatorService {
@@ -847,39 +840,6 @@ export class OperatorService {
     return result;
   }
 
-  async poolCard(mode: PoolCardMode) {
-    if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
-    const snapshot = await this.snapshot(true);
-    if (!snapshot.setup) {
-      throw new OperatorWorkflowError(
-        409,
-        "pool_setup_not_complete",
-        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry",
-      );
-    }
-    const settings = this.options.runtimeSettings.publicSettings();
-    const support = classifySupportContact(settings.pool.supportContact);
-    const enrollment = createPoolEnrollmentDocument(
-      {
-        schemaVersion: 1,
-        displayName: settings.pool.displayName,
-        ...(settings.pool.websiteUrl ? { websiteUrl: settings.pool.websiteUrl } : {}),
-        ...(support ? { support } : {}),
-        currentFeeBips: Number(snapshot.rewards?.manager.configuredFeeBips ?? 0),
-        rewardDestinations: { directSbtc: true, bitcoinL1: true },
-        durationPolicy: { minimumCycles: 1, maximumCycles: 96 },
-        officialPlatforms: [
-          { id: "leather", label: "Leather Stacking", url: settings.pool.leatherUrl },
-        ],
-      },
-      snapshot.preflight,
-      snapshot.manager,
-      snapshot.registration,
-      snapshot.setup,
-    );
-    return createPoolCardArtifact(enrollment, mode, settings.embed.publicApiUrl);
-  }
-
   private async runSynchronization(options: OperatorSynchronizationOptions) {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
@@ -895,7 +855,7 @@ export class OperatorService {
     for (let attempt = 1; attempt <= maxAnchorAttempts; attempt += 1) {
       options.signal?.throwIfAborted();
       const observedAt = new Date().toISOString();
-      const { preflight, manager } = await readSetupSnapshot({
+      const { preflight, manager } = await readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -1011,7 +971,7 @@ export class OperatorService {
     const { config, node, api } = this.runtimeContext();
     const generatedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
-    const setupSnapshot = await readSetupSnapshot({
+    const operatorSnapshot = await readOperatorAnchorSnapshot({
       config,
       node,
       api,
@@ -1019,7 +979,7 @@ export class OperatorService {
       managerVerification: this.options.managerVerification,
       reportMissingManager: true,
     });
-    const { chainAnchor, preflight, manager, registration, setup } = setupSnapshot;
+    const { chainAnchor, preflight, manager, registration, readiness } = operatorSnapshot;
     const pox5ContractId = preflight.pox.pox5ContractId;
     const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
     const trustAudit = store.listManagerTrustAudit(managerPrincipal);
@@ -1082,7 +1042,7 @@ export class OperatorService {
           })
         : null;
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
-      setup: setupSnapshot,
+      setup: operatorSnapshot,
       rewards,
       sourceId,
       observedAt: generatedAt,
@@ -1098,7 +1058,8 @@ export class OperatorService {
       preflight,
       manager,
       registration,
-      setup,
+      readiness,
+      setup: readiness,
       forecast,
       rewards,
       activity,
@@ -1115,6 +1076,7 @@ export class OperatorService {
         : {}),
       managerPrincipal,
       ...partial,
+      readiness,
       trustAudit,
       alerts: buildAlerts(partial),
     };

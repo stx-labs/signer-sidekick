@@ -4,8 +4,8 @@ This directory contains cross-cutting design notes and decisions that are not ob
 
 ## Notes
 
-- [Onboarding and settings](onboarding-and-settings.md): custody boundary, resumability, runtime
-  configuration, and public artifacts.
+- [Operations and settings](operations-and-settings.md): product boundary, custody, durable
+  reconciliation, and runtime configuration.
 - [Scaling](scaling.md): bounded reads, retained evidence, and large-pool expectations.
 - [Transaction engine safety contract](transaction-engine.md): Assist authority, admission, and
   durable-execution invariants.

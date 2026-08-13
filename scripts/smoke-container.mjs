@@ -164,8 +164,7 @@ try {
   invariant(attach.registration?.registered === true, "Manager is not registered");
   invariant(attach.registration?.signerKeyGrantValid === true, "Manager signer grant is invalid");
 
-  const setup = runCli(["setup", "status", managerPrincipal], [0, 2]);
-  invariant(setup.setup.status !== "blocked", "Manager setup is blocked");
+  invariant(attach.readiness.status !== "blocked", "Operator readiness is blocked");
 
   const synchronizations = [];
   for (let run = 0; run < 2; run += 1) {
@@ -308,7 +307,7 @@ console.log(JSON.stringify({
         expectedNetworkId: configuration.config.expectedNetworkId ?? null,
         managerPrincipal,
         preflight: preflight.result.status,
-        setup: setup.setup.status,
+        readiness: attach.readiness.status,
         synchronizations,
         forecast: pool.forecast.status,
         rewards: rewards.rewards.status,

@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createAttachActivationPlan, createFreshActivationPlan } from "./activation-plan.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import {
@@ -13,12 +12,10 @@ import {
   writeCliText,
 } from "./cli-runtime.js";
 import { loadConfig, redactConfig } from "./config.js";
-import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { managerEventVocabularyFor } from "./manager-event-vocabulary.js";
-import { assertManagerRenderPreflight, renderManagerDeployment } from "./manager-render.js";
 import {
   createInstalledManagerProfile,
   parseManagerTrustArguments,
@@ -29,12 +26,8 @@ import {
   inspectDeployedManager,
   type ManagerVerificationContext,
 } from "./manager-verification.js";
-import {
-  compatibilityProfileByIdentity,
-  loadNetworkCompatibilityProfiles,
-} from "./network-compatibility-store.js";
-import { OnboardingService } from "./onboarding-service.js";
-import { createOperatorRecord } from "./operator-record.js";
+import { loadNetworkCompatibilityProfiles } from "./network-compatibility-store.js";
+import { readOperatorAnchorSnapshot } from "./operator-anchor-snapshot.js";
 import { OperatorService } from "./operator-service.js";
 import {
   SnapshotRefreshMetricsTracker,
@@ -45,8 +38,8 @@ import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
 import { readStxRewardStatus } from "./reward-status.js";
 import { RuntimeSettingsController } from "./runtime-settings.js";
 import { createServer } from "./server.js";
-import { readSetupSnapshot } from "./setup-snapshot.js";
 import { prepareSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
+import { SignerGrantService } from "./signer-grant-service.js";
 import { syncSignerStakers } from "./signer-staker-sync.js";
 import {
   backupSidekickDatabase,
@@ -54,8 +47,9 @@ import {
   createNodeSourceId,
   openSidekickStore,
 } from "./storage/store.js";
-import { createSupportBundle, operatorSupportApplication } from "./support-bundle.js";
+import { createOperatorSupportBundle, operatorSupportApplication } from "./support-bundle.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
+import { WalletIntentService } from "./wallet-intent-service.js";
 
 function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
   return {
@@ -85,21 +79,17 @@ function verificationContext(config: ReturnType<typeof loadConfig>, env: NodeJS.
   return verificationContextPromise;
 }
 
-async function setupContext(managerPrincipal: string, env: NodeJS.ProcessEnv) {
+async function operatorContext(managerPrincipal: string, env: NodeJS.ProcessEnv) {
   return withConnectedContext(
     managerPrincipal,
     {
       loadConfig: () => loadConfig(env),
       clientsFromConfig,
       verificationContext: (config) => verificationContext(config, env),
-      readSetupSnapshot,
+      readOperatorAnchorSnapshot,
     },
     (context) => context,
   );
-}
-
-async function readJson(path: string): Promise<unknown> {
-  return JSON.parse(await readFile(resolve(path), "utf8")) as unknown;
 }
 
 function preflightBlocked(action: string): Error {
@@ -180,15 +170,18 @@ export async function executeCliCommand({
           onError: (error) => reportTransactionEngineError(error),
         },
       });
-      const onboarding = new OnboardingService({
-        store,
+      const signerGrant = new SignerGrantService({
         runtimeSettings,
         managerPrincipal,
-        contractsDirectory: contractsDirectory(env),
+      });
+      const wallet = new WalletIntentService({
+        store,
+        runtimeSettings,
         managerVerification,
         transactionEngineRequestedMode: engine.requestedMode,
         observeManagerClaimWalletJob: async (jobId) =>
           await engine.observeManagerClaimWalletJob(jobId),
+        readState: () => signerGrant.walletState(),
       });
       const health = new HealthMonitoringService({
         getConfig: () => runtimeSettings.effectiveConfig(),
@@ -206,7 +199,8 @@ export async function executeCliCommand({
             apiKeyConfigured: Boolean(current.apiKey),
           };
         },
-        onboarding,
+        wallet,
+        signerGrant,
         health,
         engine: engine.api,
         supportApplication: () => operatorSupportApplication(env),
@@ -331,37 +325,6 @@ export async function executeCliCommand({
         : resolve(env.SIDEKICK_DATABASE_PATH ?? "data/sidekick.sqlite");
     const result = await backupSidekickDatabase(databasePath, destination);
     writeCliJson(output, result);
-  } else if (command === "init" && arguments_[0] === "fresh") {
-    const [, adminPrincipal, contractName, outputDirectory, authId, signerConfigPath] = arguments_;
-    if (!adminPrincipal || !contractName || !outputDirectory || !authId) {
-      throw new Error(
-        "Usage: sidekick init fresh <admin-principal> <contract-name> <output-directory> <auth-id> [signer-config-path]",
-      );
-    }
-    const config = loadConfig(env);
-    const { node, api } = clientsFromConfig(config);
-    const preflight = await runOperatorPreflight(config, node, api);
-    const activationPlan = createFreshActivationPlan({
-      network: config.network,
-      preflight,
-      adminPrincipal,
-      contractName,
-      outputDirectory,
-      authId,
-      ...(signerConfigPath ? { signerConfigPath } : {}),
-    });
-    writeCliJson(output, { config: redactConfig(config), preflight, activationPlan });
-    if (activationPlan.status === "blocked") output.setExitCode(2);
-  } else if (command === "init" && arguments_[0] === "attach") {
-    const [, managerPrincipal] = arguments_;
-    if (!managerPrincipal) throw new Error("Usage: sidekick init attach <manager-principal>");
-    const { config, preflight, manager, registration, setup } = await setupContext(
-      managerPrincipal,
-      env,
-    );
-    const activationPlan = createAttachActivationPlan(preflight, manager, registration, setup);
-    writeCliJson(output, { config: redactConfig(config), activationPlan });
-    if (activationPlan.status === "blocked") output.setExitCode(2);
   } else if (command === "preflight") {
     const config = loadConfig(env);
     const { node, api } = clientsFromConfig(config);
@@ -371,9 +334,20 @@ export async function executeCliCommand({
   } else if (command === "attach") {
     const [managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick attach <manager-contract-principal>");
-    const { config, preflight, manager, registration } = await setupContext(managerPrincipal, env);
-    writeCliJson(output, { config: redactConfig(config), preflight, manager, registration });
-    if (preflight.status === "fail" || !manager.attachAllowed) output.setExitCode(2);
+    const { config, preflight, manager, registration, readiness } = await operatorContext(
+      managerPrincipal,
+      env,
+    );
+    writeCliJson(output, {
+      config: redactConfig(config),
+      preflight,
+      manager,
+      registration,
+      readiness,
+    });
+    if (preflight.status === "fail" || !manager.attachAllowed || readiness.status === "blocked") {
+      output.setExitCode(2);
+    }
   } else if (command === "manager" && arguments_[0] === "verify") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick manager verify <manager-principal>");
@@ -423,37 +397,10 @@ export async function executeCliCommand({
         ? "Mount the containing directory read-only at SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR and restart Sidekick"
         : "No installed profile is required",
     });
-  } else if (command === "setup" && arguments_[0] === "status") {
-    const [, managerPrincipal] = arguments_;
-    if (!managerPrincipal) throw new Error("Usage: sidekick setup status <manager-principal>");
-    const { config, preflight, manager, registration, setup } = await setupContext(
-      managerPrincipal,
-      env,
-    );
-    writeCliJson(output, { config: redactConfig(config), preflight, manager, registration, setup });
-    if (setup.status === "blocked") output.setExitCode(2);
-  } else if (command === "pool" && arguments_[0] === "enrollment-info") {
-    const [, managerPrincipal, poolConfigPath] = arguments_;
-    if (!managerPrincipal || !poolConfigPath) {
-      throw new Error(
-        "Usage: sidekick pool enrollment-info <manager-principal> <pool-config.json>",
-      );
-    }
-    const poolConfig = await readJson(poolConfigPath);
-    const { preflight, manager, registration, setup } = await setupContext(managerPrincipal, env);
-    const enrollment = createPoolEnrollmentDocument(
-      poolConfig,
-      preflight,
-      manager,
-      registration,
-      setup,
-    );
-    writeCliJson(output, enrollment);
-    if (!enrollment.readiness.enrollmentReady) output.setExitCode(2);
   } else if (command === "pool" && arguments_[0] === "sync-stakers") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick pool sync-stakers <manager-principal>");
-    const { config, node, api, preflight, manager } = await setupContext(managerPrincipal, env);
+    const { config, node, api, preflight, manager } = await operatorContext(managerPrincipal, env);
     if (
       preflight.status === "fail" ||
       !indexedApiCompatible(preflight) ||
@@ -542,7 +489,7 @@ export async function executeCliCommand({
   } else if (command === "events" && arguments_[0] === "sync") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
-    const { config, api, preflight, manager } = await setupContext(managerPrincipal, env);
+    const { config, api, preflight, manager } = await operatorContext(managerPrincipal, env);
     if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
       throw preflightBlocked("Event sync");
     }
@@ -575,7 +522,7 @@ export async function executeCliCommand({
   } else if (command === "pool" && arguments_[0] === "status") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick pool status <manager-principal>");
-    const { config, node, preflight, manager, chainAnchor } = await setupContext(
+    const { config, node, preflight, manager, chainAnchor } = await operatorContext(
       managerPrincipal,
       env,
     );
@@ -613,40 +560,15 @@ export async function executeCliCommand({
       },
     );
   } else if (command === "setup" && arguments_[0] === "record") {
-    const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
-    if (!managerPrincipal || !poolConfigPath) {
-      throw new Error(
-        "Usage: sidekick setup record <manager-principal> <pool-config.json> [record-metadata.json]",
-      );
-    }
-    const [poolConfig, recordMetadata] = await Promise.all([
-      readJson(poolConfigPath),
-      recordMetadataPath ? readJson(recordMetadataPath) : { schemaVersion: 1 },
-    ]);
-    const { preflight, manager, registration, setup } = await setupContext(managerPrincipal, env);
-    const enrollment = createPoolEnrollmentDocument(
-      poolConfig,
-      preflight,
-      manager,
-      registration,
-      setup,
+    throw new Error(
+      "The setup record was a public-enrollment artifact and is no longer generated by Sidekick. Use the operator support bundle for support handoff",
     );
-    const record = createOperatorRecord(
-      recordMetadata,
-      preflight,
-      manager,
-      registration,
-      setup,
-      enrollment,
-    );
-    writeCliJson(output, record);
-    if (setup.status === "blocked") output.setExitCode(2);
   } else if (command === "rewards" && arguments_[0] === "status") {
     const [, managerPrincipal, rewardCycleArgument] = arguments_;
     if (!managerPrincipal) {
       throw new Error("Usage: sidekick rewards status <manager-principal> [reward-cycle]");
     }
-    const { config, node, preflight, manager, chainAnchor } = await setupContext(
+    const { config, node, preflight, manager, chainAnchor } = await operatorContext(
       managerPrincipal,
       env,
     );
@@ -708,73 +630,56 @@ export async function executeCliCommand({
       },
     );
   } else if (command === "export" && arguments_[0] === "support-bundle") {
-    const [, managerPrincipal, poolConfigPath, recordMetadataPath] = arguments_;
+    const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) {
-      throw new Error(
-        "Usage: sidekick export support-bundle <manager-principal> [pool-config.json] [record-metadata.json]",
-      );
-    }
-    const [poolConfig, recordMetadata] = await Promise.all([
-      poolConfigPath ? readJson(poolConfigPath) : null,
-      recordMetadataPath ? readJson(recordMetadataPath) : { schemaVersion: 1 },
-    ]);
-    const { config, preflight, manager, registration, setup } = await setupContext(
-      managerPrincipal,
-      env,
-    );
-    const enrollment = poolConfig
-      ? createPoolEnrollmentDocument(poolConfig, preflight, manager, registration, setup)
-      : null;
-    const record = createOperatorRecord(
-      recordMetadata,
-      preflight,
-      manager,
-      registration,
-      setup,
-      enrollment,
-    );
-    const bundle = createSupportBundle(
-      config,
-      preflight,
-      manager,
-      registration,
-      setup,
-      record,
-      enrollment,
-      env.npm_package_version,
-    );
-    writeCliJson(output, bundle);
-  } else if (command === "manager" && arguments_[0] === "render") {
-    const [, adminPrincipal, contractName, outputDirectory] = arguments_;
-    if (!adminPrincipal || !contractName || !outputDirectory) {
-      throw new Error(
-        "Usage: sidekick manager render <admin-principal> <contract-name> <output-directory>",
-      );
+      throw new Error("Usage: sidekick export support-bundle <manager-principal>");
     }
     const config = loadConfig(env);
-    const { node, api } = clientsFromConfig(config);
-    const preflight = await runOperatorPreflight(config, node, api);
-    assertManagerRenderPreflight(config.network, preflight);
-    const compatibilityStore = await loadNetworkCompatibilityProfiles({
-      ...(config.compatibilityProfilesDirectory
-        ? { directory: config.compatibilityProfilesDirectory }
-        : {}),
-    });
-    const compatibilityProfile = compatibilityProfileByIdentity(
-      compatibilityStore,
-      preflight.compatibility.profileId,
-      preflight.compatibility.profileRevision,
-    )?.profile;
-    const managerContractsDirectory = contractsDirectory(env);
-    const rendered = await renderManagerDeployment({
-      network: config.network,
-      adminPrincipal,
-      contractName,
-      outputDirectory,
-      contractsDirectory: managerContractsDirectory,
-      ...(compatibilityProfile ? { compatibilityProfile } : {}),
-    });
-    writeCliJson(output, { preflight, ...rendered });
+    await withStore(
+      () => openSidekickStore(config.databasePath),
+      async ({ store }) => {
+        const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+        const { config: effectiveConfig, node, api } = runtimeSettings.clients();
+        const managerVerification = await verificationContext(config, env);
+        const engine = await createSidekickTransactionEngineRuntime({
+          env,
+          store,
+          managerPrincipal,
+          managerVerification,
+          runtimeContext: () => runtimeSettings.clients(),
+        });
+        try {
+          const service = new OperatorService({
+            config: effectiveConfig,
+            managerPrincipal,
+            store,
+            node,
+            api,
+            runtimeSettings,
+            managerVerification,
+          });
+          const health = new HealthMonitoringService({
+            getConfig: () => runtimeSettings.effectiveConfig(),
+            getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
+          });
+          const bundle = await createOperatorSupportBundle({
+            application: operatorSupportApplication(env),
+            operator: async () => service.supportSnapshot(true),
+            health: async () => health.refresh(),
+            engine: async () => engine.api.status(),
+            recentOperations: async () => engine.api.listJobs({ cursor: null, limit: 50 }),
+            database: () => store.databaseStatus(),
+          });
+          writeCliJson(output, bundle);
+        } finally {
+          await engine.close();
+        }
+      },
+    );
+  } else if (command === "manager" && arguments_[0] === "render") {
+    throw new Error(
+      "Signer-manager deployment moved to https://stx.fan/zero_to/signing/. Configure SIDEKICK_MANAGER_PRINCIPAL after setup, then run sidekick attach",
+    );
   } else if (command === "signer-grant" && arguments_[0] === "prepare") {
     const [, managerPrincipal, authId, signerConfigPath] = arguments_;
     if (!managerPrincipal || !authId) {
@@ -843,20 +748,14 @@ Usage:
   sidekick doctor  Open, migrate, and verify the local SQLite store
   sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
   sidekick database backup <output.sqlite>  Create and integrity-check an online backup
-  sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
-  sidekick init attach <manager>  Build an activation plan from a running manager
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-  sidekick attach <manager>  Verify and attach an existing manager in Observe mode
+  sidekick attach <manager>  Verify a configured manager and operator readiness
   sidekick manager verify <manager>  Verify deployed source and interface compatibility
-  sidekick setup status <manager>  Verify registration and current/next eligibility
-  sidekick setup record <manager> <pool-config.json> [record-metadata.json]
-  sidekick pool enrollment-info <manager> <pool-config.json>
   sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
   sidekick events sync <manager>  Backfill and update canonical manager events
   sidekick pool status <manager>  Reconcile current and future pool totals
   sidekick rewards status <manager> [cycle]  Read STX reward and payout state
-  sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
-  sidekick manager render <admin> <name> <output-dir>
+  sidekick export support-bundle <manager>  Collect the comprehensive support artifact
   sidekick manager trust <manager> --output <profile.json> [--observe-only]
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
   sidekick signer-grant verify <manager> <auth-id> <signer-output.json>

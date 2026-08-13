@@ -8,16 +8,13 @@ import {
   ListChecks,
   Moon,
   SealCheck,
-  ShareNetwork,
   ShieldCheck,
-  SlidersHorizontal,
   Sun,
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
-  onboardingEnvelopeSchema,
   type RateLimitInfo,
   type ReconciliationOperation,
   statusResponseSchema,
@@ -30,14 +27,12 @@ import "./base.css";
 import "./styles.css";
 import { ApiRequestError, AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
 import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
-import { EnrollmentPage } from "./features/enrollment/enrollment-page.js";
 import { Manager } from "./features/manager/manager-page.js";
 import { Operations } from "./features/operations/operations-page.js";
 import { Overview } from "./features/overview/overview-page.js";
 import { Pool } from "./features/pool/pool-page.js";
 import { Rewards } from "./features/rewards/rewards-page.js";
 import { SettingsPage } from "./features/settings/settings-page.js";
-import { SetupPage } from "./features/setup/setup-page.js";
 import { number } from "./shared/format.js";
 import { operatorActionError, operatorErrorDetail } from "./shared/operator-error.js";
 import {
@@ -57,9 +52,7 @@ const nav: Array<{ group?: string; id?: DashboardPage; label?: string; icon?: ty
   { id: "operations", label: "Operations", icon: ListChecks },
   { id: "health", label: "Signer Health", icon: Heartbeat },
   { group: "Configure" },
-  { id: "setup", label: "Initial Setup", icon: SlidersHorizontal },
   { id: "settings", label: "Settings", icon: GearSix },
-  { id: "enrollment", label: "Public Pool Page", icon: ShareNetwork },
 ];
 
 function MobilePageMenu({ page, alertCount }: { page: DashboardPage; alertCount: number }) {
@@ -249,8 +242,6 @@ function App() {
   const statusRequestGeneration = useRef(0);
   const syncController = useRef<AbortController | null>(null);
   const [data, setData] = useState<Snapshot | null>(null);
-  const [onboardingStarted, setOnboardingStarted] = useState<boolean | null>(null);
-  const [dismissedSetupNoticeKey, setDismissedSetupNoticeKey] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusRateLimit, setStatusRateLimit] = useState<RateLimitInfo | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -290,18 +281,8 @@ function App() {
       });
     return () => controller.abort();
   }, [token]);
-  const loadOnboardingState = useCallback(async () => {
-    if (!authenticated) return;
-    try {
-      const result = await apiJson(token, "/api/v1/onboarding", onboardingEnvelopeSchema);
-      setOnboardingStarted(result.onboarding !== null);
-    } catch {
-      // Setup guidance is optional UI state; do not hide the operator dashboard if it is unavailable.
-      setOnboardingStarted(null);
-    }
-  }, [authenticated, token]);
   const load = useCallback(
-    async (background = false, includeOnboarding = false, force = false) => {
+    async (background = false, force = false) => {
       if (!authenticated || (background && activeStatusRequests.current > 0)) return false;
       const requestGeneration = ++statusRequestGeneration.current;
       activeStatusRequests.current += 1;
@@ -313,7 +294,6 @@ function App() {
         );
         if (requestGeneration !== statusRequestGeneration.current) return false;
         setData(snapshot);
-        if (includeOnboarding) await loadOnboardingState();
         setStatusError(null);
         setStatusRateLimit(null);
         return true;
@@ -339,10 +319,10 @@ function App() {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
       }
     },
-    [authenticated, loadOnboardingState, token],
+    [authenticated, token],
   );
   useEffect(() => {
-    void load(false, true);
+    void load();
   }, [load]);
   useEffect(() => {
     const rejectAuth = () => {
@@ -355,7 +335,6 @@ function App() {
       setSyncError(null);
       setSyncOperation(null);
       setSyncing(false);
-      setOnboardingStarted(null);
       settingsThemeApplied.current = false;
       setAutomaticAuth("unavailable");
       setToken("");
@@ -368,7 +347,7 @@ function App() {
       // A visible operator expects the current Stacks tip, not merely the retained server cache.
       // Forced reads are coalesced server-side and preserve the last snapshot if an upstream source
       // is temporarily unavailable or rate limited.
-      if (document.visibilityState === "visible") void load(true, false, true);
+      if (document.visibilityState === "visible") void load(true, true);
     };
     const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
     document.addEventListener("visibilitychange", refreshIfVisible);
@@ -417,7 +396,6 @@ function App() {
     setSyncError(null);
     setSyncOperation(null);
     setSyncing(false);
-    setOnboardingStarted(null);
     settingsThemeApplied.current = false;
     setAutomaticAuth("unavailable");
     setToken(value);
@@ -541,24 +519,11 @@ function App() {
   const refreshStatus = useCallback(async () => {
     setRefreshingStatus(true);
     try {
-      await load(false, false, true);
+      await load(false, true);
     } finally {
       setRefreshingStatus(false);
     }
   }, [load]);
-  const markOnboardingStarted = useCallback(() => setOnboardingStarted(true), []);
-  const setupNoticeKey = data
-    ? `sidekick-setup-notice:${data.network}:${data.managerPrincipal}`
-    : null;
-  const setupNoticeDismissed = setupNoticeKey
-    ? dismissedSetupNoticeKey === setupNoticeKey ||
-      localStorage.getItem(setupNoticeKey) === "dismissed"
-    : false;
-  const dismissSetupNotice = () => {
-    if (!setupNoticeKey) return;
-    localStorage.setItem(setupNoticeKey, "dismissed");
-    setDismissedSetupNoticeKey(setupNoticeKey);
-  };
   const lastStatusAt = data
     ? Date.parse(data.freshness?.snapshotGeneratedAt ?? data.generatedAt)
     : Number.NaN;
@@ -601,7 +566,7 @@ function App() {
                   network: data.preflight.compatibility.profileLabel ?? data.network,
                   currentCycle: data.preflight.cycle.currentId,
                   registration: data.registration,
-                  eligibility: data.setup?.eligibility ?? null,
+                  eligibility: data.readiness?.eligibility ?? data.setup?.eligibility ?? null,
                 }
               : null
           }
@@ -621,16 +586,7 @@ function App() {
     if (!data) return null;
     switch (page) {
       case "overview":
-        return (
-          <Overview
-            data={data}
-            token={token}
-            sync={sync}
-            syncing={syncing}
-            showSetupNotice={onboardingStarted === false && !setupNoticeDismissed}
-            dismissSetupNotice={dismissSetupNotice}
-          />
-        );
+        return <Overview data={data} token={token} sync={sync} syncing={syncing} />;
       case "manager":
         return (
           <Manager
@@ -651,17 +607,6 @@ function App() {
         return <Rewards data={data} operatorStateStale={stale} token={token} />;
       case "operations":
         return <Operations data={data} token={token} sync={sync} syncing={syncing} />;
-      case "setup":
-        return (
-          <SetupPage
-            data={data}
-            token={token}
-            onOnboardingStarted={markOnboardingStarted}
-            onOperatorStateChanged={refreshOperatorState}
-          />
-        );
-      case "enrollment":
-        return <EnrollmentPage token={token} />;
       default:
         return null;
     }

@@ -242,9 +242,9 @@ describe("dashboard API client", () => {
     );
 
     await expect(
-      apiDownload(token, "/api/v1/onboarding/artifacts/source", {
-        expectedContentTypes: ["text/plain"],
-        fallbackFilename: "manager.clar",
+      apiDownload(token, "/api/v1/support-bundle", {
+        expectedContentTypes: ["application/json"],
+        fallbackFilename: "sidekick-support.json",
       }),
     ).rejects.toMatchObject({ kind: "http", status: 404, code: "artifact_not_found" });
     expect(createElement).not.toHaveBeenCalled();

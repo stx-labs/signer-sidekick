@@ -7,5 +7,6 @@ export const DOCUMENT_LINKS = {
     "https://github.com/stacks-network/stacks-core/blob/efc34a07a225c4b950ab9404a1652aa5e14affaf/contrib/core-contract-tests/contracts/signer-manager.clar",
   signerConfiguration: "https://docs.stacks.co/reference/node-operations/signer-configuration",
   signerQuickstart: "https://docs.stacks.co/operate/run-a-signer/signer-quickstart",
+  zeroToSigning: "https://stx.fan/zero_to/signing/",
   sandboxDeploy: "https://explorer.hiro.so/sandbox/deploy",
 } as const;

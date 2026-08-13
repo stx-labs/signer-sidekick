@@ -402,45 +402,30 @@ async function up() {
 
 async function freshSetup(state) {
   const actor = createOperatorActor();
-  run("pnpm", ["test:e2e:dashboard:live"], {
-    env: { SIDEKICK_LIVE_PHASE: "fresh-artifact" },
-  });
-  const source = await sidekickFetch(state, "/api/v1/onboarding/artifacts/source");
+  // Day-zero deployment belongs to the external setup harness. Sidekick starts observing once the
+  // manager exists and then owns the recurring operator lifecycle.
+  const source = await readFile(resolve(root, lock.manager.source), "utf8");
   if (sha256(source) !== lock.manager.sha256) {
-    throw new Error(`Sidekick artifact hash mismatch: ${sha256(source)}`);
+    throw new Error(`Pinned manager source hash mismatch: ${sha256(source)}`);
   }
   const deployment = await actor.deployManager(source);
   const grant = generateSignerGrant("1");
-  const grantPath = resolve(runtimeDirectory, "signer-grant.json");
-  await writeFile(grantPath, `${JSON.stringify(grant)}\n`, { mode: 0o600 });
-  state.signerGrantPath = grantPath;
-  await writeState(state);
-  try {
-    run("pnpm", ["test:e2e:dashboard:live"], {
-      env: { SIDEKICK_LIVE_PHASE: "signer-grant" },
-    });
-  } finally {
-    await rm(grantPath, { force: true });
-    delete state.signerGrantPath;
-    await writeState(state);
-  }
   const registration = await actor.registerManager(grant);
-  const refreshed = await sidekickFetch(state, "/api/v1/onboarding/fresh/refresh", {
-    method: "POST",
-    body: "{}",
-  });
-  if (
-    !refreshed.onboarding.activationPlan.steps
-      .find((step) => step.id === "register-manager")
-      ?.status.includes("complete")
-  ) {
-    throw new Error("Sidekick did not observe manager registration through node reads");
-  }
+  const observed = await waitFor(
+    async () => {
+      const status = await sidekickFetch(state, "/api/v1/status?refresh=1");
+      return status.registration?.registered ? status : null;
+    },
+    "Sidekick to observe the externally completed manager registration",
+    120_000,
+    1_000,
+  );
   return {
     artifactSha256: sha256(source),
     deployTxid: deployment.txid ?? null,
     registerTxid: registration.txid,
     signerKey: grant.signerKey,
+    readiness: observed.readiness?.status ?? observed.setup?.status ?? "unavailable",
   };
 }
 
@@ -565,13 +550,12 @@ async function attachWithCleanDatabase(state) {
   await stopSidekick(originalContainer);
   try {
     await startSidekick(state, { container: attachContainer, volume: attachVolume });
-    run("pnpm", ["test:e2e:dashboard:live"], {
-      env: { SIDEKICK_LIVE_PHASE: "attach" },
-    });
-    const attached = await sidekickFetch(state, "/api/v1/onboarding");
-    if (attached.onboarding.status === "blocked")
-      throw new Error("Clean Attach Existing was blocked");
-    return { status: attached.onboarding.status, currentStep: attached.onboarding.currentStep };
+    const attached = await sidekickFetch(state, "/api/v1/status?refresh=1");
+    if (!attached.manager?.attachAllowed) throw new Error("Clean manager observation was blocked");
+    return {
+      managerTier: attached.manager.source.tier,
+      readiness: attached.readiness?.status ?? attached.setup?.status ?? "unavailable",
+    };
   } finally {
     await stopSidekick(attachContainer);
     run("docker", ["volume", "rm", "--force", attachVolume], { allowedExitCodes: [0, 1] });

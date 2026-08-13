@@ -8,22 +8,22 @@ import {
   type ManagerVerificationContext,
   type ManagerVerificationReport,
 } from "./manager-verification.js";
+import { type OperatorReadinessStatus, readOperatorReadiness } from "./operator-readiness.js";
 import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
 import {
   type RegistrationVerification,
   verifyManagerRegistration,
 } from "./registration-verification.js";
-import { type PoolSetupStatus, readPoolSetupStatus } from "./setup-status.js";
 
-export interface SetupSnapshot {
+export interface OperatorAnchorSnapshot {
   chainAnchor: ChainAnchor;
   preflight: PreflightResult;
   manager: ManagerVerificationReport;
   registration: RegistrationVerification | null;
-  setup: PoolSetupStatus;
+  readiness: OperatorReadinessStatus;
 }
 
-type SetupSnapshotOptions = {
+type OperatorAnchorSnapshotOptions = {
   config: SidekickConfig;
   node: StacksNodeClient;
   api: StacksApiClient;
@@ -33,10 +33,10 @@ type SetupSnapshotOptions = {
   waitBeforeRetry?: (attempt: number) => Promise<void>;
 };
 
-class SetupSnapshotCoherenceError extends ChainAnchorError {
+class OperatorAnchorSnapshotCoherenceError extends ChainAnchorError {
   constructor(message: string) {
     super(message, { retryable: true });
-    this.name = "SetupSnapshotCoherenceError";
+    this.name = "OperatorAnchorSnapshotCoherenceError";
   }
 }
 
@@ -45,7 +45,9 @@ async function waitBeforeSnapshotRetry(attempt: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
+async function readOperatorAnchorSnapshotAttempt(
+  options: OperatorAnchorSnapshotOptions,
+): Promise<OperatorAnchorSnapshot> {
   const before = await captureNodeChainAnchor(options.node);
   const readOptions = { tip: before.indexBlockHash };
   const managerReader = options.reportMissingManager
@@ -70,7 +72,7 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
           readOptions,
         )
       : null;
-  const setup = await readPoolSetupStatus(
+  const readiness = await readOperatorReadiness(
     options.node,
     preflight,
     manager,
@@ -79,8 +81,8 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
   );
   const after = await captureNodeChainAnchor(options.node);
   if (!chainAnchorsEqual(before, after)) {
-    throw new SetupSnapshotCoherenceError(
-      "Chain position moved while the setup snapshot was being assembled",
+    throw new OperatorAnchorSnapshotCoherenceError(
+      "Chain position moved while the operator snapshot was being assembled",
     );
   }
   // Preflight is deliberately live health data. The node may process newer Nakamoto blocks while
@@ -91,20 +93,22 @@ async function readSetupSnapshotAttempt(options: SetupSnapshotOptions): Promise<
     preflight.node.burnBlockHeight < before.burnBlockHeight ||
     preflight.cycle.currentId !== before.rewardCycle
   ) {
-    throw new SetupSnapshotCoherenceError(
-      "Preflight facts do not match the setup snapshot chain anchor",
+    throw new OperatorAnchorSnapshotCoherenceError(
+      "Preflight facts do not match the operator snapshot chain anchor",
     );
   }
-  return { chainAnchor: before, preflight, manager, registration, setup };
+  return { chainAnchor: before, preflight, manager, registration, readiness };
 }
 
-export async function readSetupSnapshot(options: SetupSnapshotOptions): Promise<SetupSnapshot> {
+export async function readOperatorAnchorSnapshot(
+  options: OperatorAnchorSnapshotOptions,
+): Promise<OperatorAnchorSnapshot> {
   const maxAttempts = 3;
   const waitBeforeRetry = options.waitBeforeRetry ?? waitBeforeSnapshotRetry;
   let lastError: ChainAnchorError | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await readSetupSnapshotAttempt(options);
+      return await readOperatorAnchorSnapshotAttempt(options);
     } catch (error) {
       const retryable = error instanceof ChainAnchorError && error.retryable;
       if (!retryable || attempt === maxAttempts) throw error;
@@ -112,5 +116,8 @@ export async function readSetupSnapshot(options: SetupSnapshotOptions): Promise<
       await waitBeforeRetry(attempt);
     }
   }
-  throw lastError ?? new SetupSnapshotCoherenceError("Unable to assemble a stable setup snapshot");
+  throw (
+    lastError ??
+    new OperatorAnchorSnapshotCoherenceError("Unable to assemble a stable operator snapshot")
+  );
 }

@@ -44,11 +44,15 @@ const mainnetWalletActor = getAddressFromPublicKey(
 const attestationKeys = generateKeyPairSync("ed25519");
 const stores: SidekickStore[] = [];
 
-const { readSetupSnapshotMock } = vi.hoisted(() => ({ readSetupSnapshotMock: vi.fn() }));
-vi.mock("../setup-snapshot.js", () => ({ readSetupSnapshot: readSetupSnapshotMock }));
+const { readOperatorAnchorSnapshotMock } = vi.hoisted(() => ({
+  readOperatorAnchorSnapshotMock: vi.fn(),
+}));
+vi.mock("../operator-anchor-snapshot.js", () => ({
+  readOperatorAnchorSnapshot: readOperatorAnchorSnapshotMock,
+}));
 
 afterEach(() => {
-  readSetupSnapshotMock.mockReset();
+  readOperatorAnchorSnapshotMock.mockReset();
   for (const store of stores.splice(0)) store.close();
 });
 
@@ -257,7 +261,7 @@ async function plannedPrivate(chainId: number) {
   return { ...opened, input, result };
 }
 
-function mainnetSetupSnapshot(input: ManagerClaimObserveFacts) {
+function mainnetOperatorAnchorSnapshot(input: ManagerClaimObserveFacts) {
   return {
     chainAnchor: input.chainAnchor,
     preflight: {
@@ -301,7 +305,7 @@ function mainnetWalletState() {
   };
 }
 
-function privateSetupSnapshot(
+function privateOperatorAnchorSnapshot(
   input: ManagerClaimObserveFacts,
   network: "devnet" | "regtest",
   chainId: number,
@@ -496,7 +500,9 @@ describe("manager-claim browser-wallet binding", () => {
     { network: "regtest" as const, chainId: 0x8000_0000 },
   ])("propagates $network through the onboarding wallet manifest", async ({ network, chainId }) => {
     const { store, input, result } = await plannedPrivate(chainId);
-    readSetupSnapshotMock.mockResolvedValue(privateSetupSnapshot(input, network, chainId));
+    readOperatorAnchorSnapshotMock.mockResolvedValue(
+      privateOperatorAnchorSnapshot(input, network, chainId),
+    );
     const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
@@ -510,8 +516,7 @@ describe("manager-claim browser-wallet binding", () => {
           api: {},
         }),
       } as unknown as RuntimeSettingsController,
-      readFreshState: privateWalletState,
-      readWalletState: privateWalletState,
+      readState: privateWalletState,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => observation(result)),
     });
@@ -553,13 +558,13 @@ describe("manager-claim browser-wallet binding", () => {
 
   it("allows local claim preparation when only the API network routing check fails", async () => {
     const { store, input, result } = await plannedMainnet();
-    const snapshot = mainnetSetupSnapshot(input);
+    const snapshot = mainnetOperatorAnchorSnapshot(input);
     snapshot.preflight.checks[1] = {
       id: "api-network",
       status: "fail",
       message: "API network mismatch",
     };
-    readSetupSnapshotMock.mockResolvedValue(snapshot);
+    readOperatorAnchorSnapshotMock.mockResolvedValue(snapshot);
     const observeManagerClaimWalletJob = vi.fn(async () => observation(result));
     const wallet = new WalletIntentService({
       store,
@@ -570,8 +575,7 @@ describe("manager-claim browser-wallet binding", () => {
           api: {},
         }),
       } as unknown as RuntimeSettingsController,
-      readFreshState: mainnetWalletState,
-      readWalletState: mainnetWalletState,
+      readState: mainnetWalletState,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob,
     });
@@ -710,7 +714,7 @@ describe("manager-claim browser-wallet binding", () => {
   }) => {
     const { store } = await openSidekickStore(":memory:", observedAt);
     stores.push(store);
-    readSetupSnapshotMock.mockResolvedValue({
+    readOperatorAnchorSnapshotMock.mockResolvedValue({
       chainAnchor: {
         stacksBlockHeight: 9_000,
         indexBlockHash: `0x${"ab".repeat(32)}`,
@@ -762,8 +766,7 @@ describe("manager-claim browser-wallet binding", () => {
           api: {},
         }),
       } as unknown as RuntimeSettingsController,
-      readFreshState: () => state,
-      readWalletState: () => state,
+      readState: () => state,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => {
         throw runtimeError;
@@ -846,7 +849,7 @@ describe("manager-claim browser-wallet binding", () => {
     const { store, input, result } = await plannedMainnet();
     const actorPrivateKey = `${"22".repeat(32)}01`;
     const engineObservation = observation(result);
-    readSetupSnapshotMock.mockResolvedValue(mainnetSetupSnapshot(input));
+    readOperatorAnchorSnapshotMock.mockResolvedValue(mainnetOperatorAnchorSnapshot(input));
     const api = {
       getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
       getTransaction: vi.fn(),
@@ -863,8 +866,7 @@ describe("manager-claim browser-wallet binding", () => {
           api,
         }),
       } as unknown as RuntimeSettingsController,
-      readFreshState: mainnetWalletState,
-      readWalletState: mainnetWalletState,
+      readState: mainnetWalletState,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => engineObservation),
       readerFactory: () => ({
@@ -922,7 +924,7 @@ describe("manager-claim browser-wallet binding", () => {
       index_block_hash: `0x${"cd".repeat(32)}`,
     });
     await wallet.submit(prepared.id, txid, "2026-07-19T12:01:00.000Z");
-    readSetupSnapshotMock.mockRejectedValue(
+    readOperatorAnchorSnapshotMock.mockRejectedValue(
       new Error("Post-broadcast reconciliation must use the immutable stored manager binding"),
     );
     await expect(wallet.refresh(prepared.id, "2026-07-19T12:02:00.000Z")).resolves.toMatchObject({
@@ -949,7 +951,7 @@ describe("manager-claim browser-wallet binding", () => {
 
   it("supersedes a prepared browser claim when Force Observe is enabled before signing", async () => {
     const { store, input, result } = await plannedMainnet();
-    readSetupSnapshotMock.mockResolvedValue(mainnetSetupSnapshot(input));
+    readOperatorAnchorSnapshotMock.mockResolvedValue(mainnetOperatorAnchorSnapshot(input));
     const readerFactory = vi.fn();
     const wallet = new WalletIntentService({
       store,
@@ -960,8 +962,7 @@ describe("manager-claim browser-wallet binding", () => {
           api: {},
         }),
       } as unknown as RuntimeSettingsController,
-      readFreshState: mainnetWalletState,
-      readWalletState: mainnetWalletState,
+      readState: mainnetWalletState,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => observation(result)),
       readerFactory,

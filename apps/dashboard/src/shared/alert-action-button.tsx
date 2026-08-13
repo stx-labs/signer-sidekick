@@ -27,7 +27,7 @@ export function AlertActionButton({
       onClick={() => {
         location.hash =
           action.target === "manager"
-            ? dashboardHash("manager", action.managerAction)
+            ? dashboardHash("manager", "managerAction" in action ? action.managerAction : undefined)
             : dashboardHash(action.target);
       }}
     >

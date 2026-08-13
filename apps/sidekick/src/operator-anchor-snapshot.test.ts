@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   inspectDeployedManager: vi.fn(),
   inspectManagerOrReportMissing: vi.fn(),
   verifyManagerRegistration: vi.fn(),
-  readPoolSetupStatus: vi.fn(),
+  readOperatorReadiness: vi.fn(),
   captureNodeChainAnchor: vi.fn(),
 }));
 
@@ -17,14 +17,14 @@ vi.mock("./manager-verification.js", () => ({
 vi.mock("./registration-verification.js", () => ({
   verifyManagerRegistration: mocks.verifyManagerRegistration,
 }));
-vi.mock("./setup-status.js", () => ({ readPoolSetupStatus: mocks.readPoolSetupStatus }));
+vi.mock("./operator-readiness.js", () => ({ readOperatorReadiness: mocks.readOperatorReadiness }));
 vi.mock("./chain-clients.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./chain-clients.js")>()),
   captureNodeChainAnchor: mocks.captureNodeChainAnchor,
 }));
 
 import { ChainAnchorError } from "./chain-clients.js";
-import { readSetupSnapshot } from "./setup-snapshot.js";
+import { readOperatorAnchorSnapshot } from "./operator-anchor-snapshot.js";
 
 const config = { network: "mainnet" } as never;
 const node = {} as never;
@@ -43,7 +43,7 @@ const chainAnchor = {
   checkpoint: "first-half",
 } as const;
 
-describe("setup snapshot", () => {
+describe("operator anchor snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.captureNodeChainAnchor.mockResolvedValue(chainAnchor);
@@ -61,17 +61,17 @@ describe("setup snapshot", () => {
     mocks.runOperatorPreflight.mockResolvedValue(preflight);
     mocks.inspectDeployedManager.mockResolvedValue(manager);
     mocks.verifyManagerRegistration.mockResolvedValue(registration);
-    mocks.readPoolSetupStatus.mockResolvedValue(setup);
+    mocks.readOperatorReadiness.mockResolvedValue(setup);
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
         managerPrincipal,
         managerVerification: undefined,
       }),
-    ).resolves.toEqual({ chainAnchor, preflight, manager, registration, setup });
+    ).resolves.toEqual({ chainAnchor, preflight, manager, registration, readiness: setup });
     expect(mocks.verifyManagerRegistration).toHaveBeenCalledWith(
       node,
       preflight.pox.pox5ContractId,
@@ -85,12 +85,18 @@ describe("setup snapshot", () => {
       undefined,
       { tip: chainAnchor.indexBlockHash },
     );
-    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, registration, {
-      tip: chainAnchor.indexBlockHash,
-    });
+    expect(mocks.readOperatorReadiness).toHaveBeenCalledWith(
+      node,
+      preflight,
+      manager,
+      registration,
+      {
+        tip: chainAnchor.indexBlockHash,
+      },
+    );
   });
 
-  it("preserves blocked setup detail when registration cannot be read", async () => {
+  it("preserves blocked readiness detail when registration cannot be read", async () => {
     const preflight = {
       node: { stacksTipHeight: 10, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -100,19 +106,19 @@ describe("setup snapshot", () => {
     const setup = { status: "blocked" };
     mocks.runOperatorPreflight.mockResolvedValue(preflight);
     mocks.inspectDeployedManager.mockResolvedValue(manager);
-    mocks.readPoolSetupStatus.mockResolvedValue(setup);
+    mocks.readOperatorReadiness.mockResolvedValue(setup);
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
         managerPrincipal,
         managerVerification: undefined,
       }),
-    ).resolves.toEqual({ chainAnchor, preflight, manager, registration: null, setup });
+    ).resolves.toEqual({ chainAnchor, preflight, manager, registration: null, readiness: setup });
     expect(mocks.verifyManagerRegistration).not.toHaveBeenCalled();
-    expect(mocks.readPoolSetupStatus).toHaveBeenCalledWith(node, preflight, manager, null, {
+    expect(mocks.readOperatorReadiness).toHaveBeenCalledWith(node, preflight, manager, null, {
       tip: chainAnchor.indexBlockHash,
     });
   });
@@ -127,9 +133,9 @@ describe("setup snapshot", () => {
     const setup = { status: "blocked" };
     mocks.runOperatorPreflight.mockResolvedValue(preflight);
     mocks.inspectManagerOrReportMissing.mockResolvedValue(manager);
-    mocks.readPoolSetupStatus.mockResolvedValue(setup);
+    mocks.readOperatorReadiness.mockResolvedValue(setup);
 
-    await readSetupSnapshot({
+    await readOperatorAnchorSnapshot({
       config,
       node,
       api,
@@ -151,10 +157,10 @@ describe("setup snapshot", () => {
       pox: { pox5ContractId: null },
     });
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -166,7 +172,7 @@ describe("setup snapshot", () => {
     expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(4);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledTimes(2);
-    expect(mocks.readPoolSetupStatus).toHaveBeenCalledTimes(2);
+    expect(mocks.readOperatorReadiness).toHaveBeenCalledTimes(2);
     expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
@@ -180,10 +186,10 @@ describe("setup snapshot", () => {
       pox: { pox5ContractId: null },
     });
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -203,7 +209,7 @@ describe("setup snapshot", () => {
       mocks.captureNodeChainAnchor.mockRejectedValue(
         new ChainAnchorError("tip moved", { retryable: true }),
       );
-      const outcome = readSetupSnapshot({
+      const outcome = readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -241,10 +247,10 @@ describe("setup snapshot", () => {
       node: { stacksTipHeight: 10, burnBlockHeight: 6 },
     });
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -272,10 +278,10 @@ describe("setup snapshot", () => {
     };
     mocks.runOperatorPreflight.mockResolvedValue(preflight);
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -309,10 +315,10 @@ describe("setup snapshot", () => {
       })
       .mockResolvedValue(matchingPreflight);
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -340,10 +346,10 @@ describe("setup snapshot", () => {
       })
       .mockResolvedValue(matchingPreflight);
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -372,10 +378,10 @@ describe("setup snapshot", () => {
       pox: { pox5ContractId: null },
     });
     mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
-    mocks.readPoolSetupStatus.mockResolvedValue({ status: "blocked" });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -398,7 +404,7 @@ describe("setup snapshot", () => {
     mocks.inspectDeployedManager.mockRejectedValue(managerFailure);
 
     await expect(
-      readSetupSnapshot({
+      readOperatorAnchorSnapshot({
         config,
         node,
         api,

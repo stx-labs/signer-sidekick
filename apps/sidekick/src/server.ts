@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   type ApiError,
-  browserWalletIntentCreateRequestSchema,
   browserWalletIntentSubmissionRequestSchema,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
@@ -25,16 +24,12 @@ import {
   managerSignerGrantPrepareRequestSchema,
   type OperationReadiness,
   type OperationReadinessCheck,
-  onboardingAttachRequestSchema,
-  onboardingBrowserWalletIntentCreateRequestSchema,
-  onboardingGrantVerifyRequestSchema,
-  onboardingProgressRequestSchema,
-  onboardingStartRequestSchema,
   operationReadinessSchema,
-  poolCardGenerateRequestSchema,
   type ReconciliationOperation,
   type ReconciliationSummary,
   reconciliationSummarySchema,
+  recurringBrowserWalletIntentCreateRequestSchema,
+  signerGrantVerifyRequestSchema,
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -51,7 +46,6 @@ import {
   UpstreamUnavailableError,
 } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
-import type { OnboardingService } from "./onboarding-service.js";
 import type {
   OperatorSynchronizationProgress,
   PoolRosterSort,
@@ -70,6 +64,7 @@ import {
   RosterReconciliationRetryError,
   startRosterReconciliationLoop,
 } from "./roster-reconciliation-refresh.js";
+import type { SignerGrantService } from "./signer-grant-service.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import {
   createOperatorSupportBundle,
@@ -77,7 +72,7 @@ import {
   operatorSupportApplication,
 } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
-import { WalletIntentError } from "./wallet-intent-service.js";
+import { WalletIntentError, type WalletIntentService } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
@@ -103,6 +98,7 @@ interface OperatorSnapshotShape {
   preflight?: { status?: string };
   manager?: unknown;
   registration?: unknown;
+  readiness?: unknown;
   setup?: unknown;
   forecast?: unknown;
   rewards?: unknown;
@@ -165,7 +161,6 @@ interface OperatorSnapshotService {
   stakerClaims?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
-  poolCard?(mode: "live" | "static"): Promise<unknown>;
 }
 
 function snapshotStatus<const Status extends string>(
@@ -307,7 +302,8 @@ export interface ServerOptions {
   getRateLimitSettings?(): RateLimitApiSource;
   logger?: boolean;
   staticDirectory?: string | null;
-  onboarding?: OnboardingService;
+  wallet?: WalletIntentService;
+  signerGrant?: SignerGrantService;
   health?: {
     current(): Promise<unknown>;
     refresh(): Promise<unknown>;
@@ -364,24 +360,21 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "Activity page limits must be positive whole numbers. Correct the request and retry.",
   invalid_withdrawal_state: "Choose a pending, settled, or reclaimed withdrawal state.",
   invalid_query: "The activity query is invalid. Correct its filters and retry.",
-  invalid_onboarding_path: "Choose attach or fresh setup, then retry.",
-  invalid_fresh_setup_input:
-    "Enter a valid admin principal, contract name, authorization ID, and signer configuration path.",
-  fresh_setup_sources_incompatible:
-    "Fresh setup is blocked by node, API, PoX-5, or network compatibility checks. Review preflight, resolve the failures, and retry.",
   signer_grant_sources_incompatible:
     "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
-  pool_setup_not_complete:
-    "Pool information is unavailable until setup completes. Finish Initial Setup, then retry.",
-  onboarding_not_started: "Setup has not started. Choose an onboarding path first.",
-  onboarding_path_conflict:
-    "This action belongs to the other onboarding path. Return to Initial Setup and choose the intended path.",
+  signer_grant_unavailable:
+    "Signer registration repair is unavailable. Restart Sidekick and review the startup logs.",
+  signer_grant_not_prepared: "Generate a signer command before verifying its output.",
+  signer_grant_changed:
+    "A newer signer command replaced this authorization. Verify the latest command output.",
   invalid_manager_principal: "Enter a valid manager contract principal and retry.",
   invalid_signer_output: "Signer output is invalid. Paste the complete JSON output and retry.",
   invalid_signer_grant_input:
     "Enter a valid authorization ID and signer configuration path, then retry.",
   invalid_wallet_intent_action:
     "The wallet transaction request is invalid. Review the action fields and retry.",
+  wallet_intent_unavailable:
+    "Wallet-signed operations are unavailable. Restart Sidekick and review the startup logs.",
   wallet_intent_not_found:
     "The wallet transaction request was not found. Prepare a new transaction.",
   invalid_wallet_intent_submission:
@@ -390,9 +383,6 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "The wallet transaction request is invalid. Prepare a new transaction.",
   invalid_wallet_intent_replacement:
     "The wallet transaction request is invalid. Prepare a new transaction.",
-  invalid_onboarding_step: "The setup step is invalid. Refresh setup and retry.",
-  artifact_not_found: "The setup artifact was not found. Generate deployment files and retry.",
-  invalid_pool_card_mode: "Choose live or static pool card mode.",
   invalid_engine_pagination: "The transaction job page is invalid. Refresh Operations.",
   invalid_engine_job_id: "The transaction job ID is invalid. Refresh Operations and retry.",
   engine_job_not_found: "This transaction job no longer exists. Refresh Operations.",
@@ -1478,6 +1468,7 @@ export function createServer(options: ServerOptions = {}) {
       preflight: snapshot?.preflight,
       manager: snapshot?.manager,
       registration: snapshot?.registration,
+      readiness: snapshot?.readiness,
       setup: snapshot?.setup,
     };
   });
@@ -1646,19 +1637,6 @@ export function createServer(options: ServerOptions = {}) {
     }
     return await interactive(request, async () => activity.call(service, activityOptions));
   });
-  server.get("/api/v1/setup", async (request) => {
-    const snapshot = await interactive(request, async () => options.service?.snapshot());
-    return {
-      generatedAt: snapshot?.generatedAt,
-      network: snapshot?.network,
-      managerPrincipal: snapshot?.managerPrincipal,
-      preflight: snapshot?.preflight,
-      manager: snapshot?.manager,
-      registration: snapshot?.registration,
-      setup: snapshot?.setup,
-      onboarding: options.onboarding?.get() ?? null,
-    };
-  });
   server.get("/api/v1/settings", async (_request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     return requireFeature(service.settings, "runtime_settings_unavailable").call(service);
@@ -1668,111 +1646,31 @@ export function createServer(options: ServerOptions = {}) {
     const updateSettings = requireFeature(service.updateSettings, "runtime_settings_unavailable");
     return await interactive(request, async () => updateSettings.call(service, request.body));
   });
-  server.get("/api/v1/onboarding", async (_request, _reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return {
-      onboarding: onboarding.get(),
-      wizard: onboarding.wizardState(),
-    };
-  });
-  server.post("/api/v1/onboarding/dismiss", async (_request, _reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return {
-      onboarding: onboarding.get(),
-      wizard: onboarding.dismissWizard(),
-    };
-  });
-  server.post("/api/v1/onboarding/resume", async (_request, _reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return {
-      onboarding: onboarding.get(),
-      wizard: onboarding.resumeWizard(),
-    };
-  });
-  server.post("/api/v1/onboarding/start", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingStartRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_onboarding_path");
-    return { onboarding: onboarding.start(parsed.data.path, parsed.data.reset ?? false) };
-  });
-  server.post("/api/v1/onboarding/attach/verify", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingAttachRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_manager_principal");
-    return {
-      onboarding: await interactive(request, async () =>
-        onboarding.verifyAttach(parsed.data.managerPrincipal),
-      ),
-    };
-  });
-  server.post("/api/v1/onboarding/fresh/prepare", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return {
-      onboarding: await interactive(request, async () => onboarding.prepareFresh(request.body)),
-    };
-  });
-  server.post("/api/v1/onboarding/fresh/grant/prepare", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return {
-      onboarding: await interactive(request, async () => onboarding.prepareGrant()),
-    };
-  });
-  server.post("/api/v1/onboarding/fresh/grant/verify", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_output");
-    return {
-      onboarding: await interactive(request, async () =>
-        onboarding.verifyGrant(parsed.data.signerOutput),
-      ),
-    };
-  });
   server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+    const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");
     const parsed = managerSignerGrantPrepareRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_grant_input");
     return {
-      onboarding: await interactive(request, async () =>
-        onboarding.prepareManagerSignerGrant(parsed.data),
-      ),
+      signerGrant: await interactive(request, async () => signerGrant.prepare(parsed.data)),
     };
   });
   server.post("/api/v1/manager/signer-grant/verify", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingGrantVerifyRequestSchema.safeParse(request.body);
+    const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");
+    const parsed = signerGrantVerifyRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_signer_output");
     return {
-      onboarding: await interactive(request, async () =>
-        onboarding.verifyManagerSignerGrant(parsed.data.signerOutput),
+      signerGrant: await interactive(request, async () =>
+        signerGrant.verify(parsed.data.signerOutput),
       ),
     };
   });
-  server.post("/api/v1/onboarding/wallet-intents", async (request, reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_wallet_intent_action");
-    try {
-      return {
-        intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
-      };
-    } catch (error) {
-      const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
-        action: parsed.data.action,
-      });
-      if (anchorReply) return anchorReply;
-      if (error instanceof WalletIntentError) {
-        return sendClassifiedError(request, reply, error);
-      }
-      throw error;
-    }
-  });
   server.post("/api/v1/wallet-intents", async (request, reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = browserWalletIntentCreateRequestSchema.safeParse(request.body);
+    const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
+    const parsed = recurringBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_wallet_intent_action");
     try {
       return {
-        intent: await interactive(request, async () => onboarding.wallet.prepare(parsed.data)),
+        intent: await interactive(request, async () => wallet.prepare(parsed.data)),
       };
     } catch (error) {
       const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
@@ -1787,11 +1685,11 @@ export function createServer(options: ServerOptions = {}) {
   });
   const registerWalletIntentLifecycleRoutes = (prefix: string): void => {
     server.get(`${prefix}/:id`, async (request, reply) => {
-      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
       const parsed = z.object({ id: z.uuid() }).strict().safeParse(request.params);
       if (!parsed.success) throw new OperatorApiError(404, "wallet_intent_not_found");
       try {
-        return { intent: onboarding.wallet.get(parsed.data.id) };
+        return { intent: wallet.get(parsed.data.id) };
       } catch (error) {
         if (error instanceof WalletIntentError) {
           return sendClassifiedError(request, reply, error);
@@ -1800,7 +1698,7 @@ export function createServer(options: ServerOptions = {}) {
       }
     });
     server.post(`${prefix}/:id/submission`, async (request, reply) => {
-      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
       const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
       const body = browserWalletIntentSubmissionRequestSchema.safeParse(request.body);
       if (!params.success || !body.success) {
@@ -1809,7 +1707,7 @@ export function createServer(options: ServerOptions = {}) {
       try {
         return {
           intent: await interactive(request, async () =>
-            onboarding.wallet.submit(params.data.id, body.data.txid),
+            wallet.submit(params.data.id, body.data.txid),
           ),
         };
       } catch (error) {
@@ -1820,7 +1718,7 @@ export function createServer(options: ServerOptions = {}) {
       }
     });
     server.post(`${prefix}/:id/refresh`, async (request, reply) => {
-      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
       const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
       const body = z
         .object({})
@@ -1831,7 +1729,7 @@ export function createServer(options: ServerOptions = {}) {
       }
       try {
         return {
-          intent: await interactive(request, async () => onboarding.wallet.refresh(params.data.id)),
+          intent: await interactive(request, async () => wallet.refresh(params.data.id)),
         };
       } catch (error) {
         const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
@@ -1846,7 +1744,7 @@ export function createServer(options: ServerOptions = {}) {
       }
     });
     server.post(`${prefix}/:id/replacement`, async (request, reply) => {
-      const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
+      const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
       const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
       const body = z
         .object({})
@@ -1857,7 +1755,7 @@ export function createServer(options: ServerOptions = {}) {
       }
       try {
         return {
-          intent: await interactive(request, async () => onboarding.wallet.replace(params.data.id)),
+          intent: await interactive(request, async () => wallet.replace(params.data.id)),
         };
       } catch (error) {
         const anchorReply = replyToWalletIntentAnchorError(request, reply, error, {
@@ -1873,35 +1771,7 @@ export function createServer(options: ServerOptions = {}) {
     });
   };
 
-  for (const prefix of ["/api/v1/onboarding/wallet-intents", "/api/v1/wallet-intents"] as const) {
-    registerWalletIntentLifecycleRoutes(prefix);
-  }
-  server.post("/api/v1/onboarding/fresh/refresh", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    return await interactive(request, async () => onboarding.refreshFresh());
-  });
-  server.patch("/api/v1/onboarding/progress", async (request) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = onboardingProgressRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_onboarding_step");
-    return { onboarding: onboarding.setCurrentStep(parsed.data.currentStep) };
-  });
-  server.get("/api/v1/onboarding/artifacts/:kind", async (request, reply) => {
-    const onboarding = requireFeature(options.onboarding, "onboarding_unavailable");
-    const parsed = z.object({ kind: z.enum(["source", "manifest"]) }).safeParse(request.params);
-    if (!parsed.success) throw new OperatorApiError(404, "artifact_not_found");
-    const artifact = onboarding.artifact(parsed.data.kind);
-    reply.type(artifact.contentType);
-    reply.header("content-disposition", `attachment; filename="${artifact.filename}"`);
-    return artifact.body;
-  });
-  server.post("/api/v1/pool-card/generate", async (request) => {
-    const service = requireFeature(options.service, "operator_service_unavailable");
-    const poolCard = requireFeature(service.poolCard, "pool_card_generation_unavailable");
-    const parsed = poolCardGenerateRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new OperatorApiError(400, "invalid_pool_card_mode");
-    return await interactive(request, async () => poolCard.call(service, parsed.data.mode));
-  });
+  registerWalletIntentLifecycleRoutes("/api/v1/wallet-intents");
   server.post("/api/v1/sync", async (request, reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     syncRequestCount += 1;

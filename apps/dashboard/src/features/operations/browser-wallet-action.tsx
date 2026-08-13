@@ -98,7 +98,7 @@ function withoutRecoveryRecord(
 export function BrowserWalletActionPanel({
   createRequest,
   chainId,
-  intentApiBase = "/api/v1/onboarding/wallet-intents",
+  intentApiBase = "/api/v1/wallet-intents",
   managerPrincipal,
   network,
   onVerified,
@@ -106,7 +106,7 @@ export function BrowserWalletActionPanel({
 }: {
   createRequest: BrowserWalletIntentRequest;
   chainId: number;
-  intentApiBase?: "/api/v1/onboarding/wallet-intents" | "/api/v1/wallet-intents";
+  intentApiBase?: "/api/v1/wallet-intents";
   managerPrincipal: string;
   network: string;
   onVerified?: (() => void | Promise<void>) | undefined;

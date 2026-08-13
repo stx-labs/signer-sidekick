@@ -11,6 +11,11 @@ using the current upstream documentation:
 Sidekick expects reachable node RPC and Stacks API endpoints. It does not need node/signer private
 keys or process access.
 
+Before deploying Sidekick, use [Zero to Signing](https://stx.fan/zero_to/signing/) to complete the
+wallet-signed signer-manager flow and configure `SIDEKICK_MANAGER_PRINCIPAL` to that deployed
+manager. Node and signer infrastructure belongs in upstream tooling or
+[stacksup](https://github.com/stx-labs/stacksup).
+
 ## Install a release
 
 The supplied Compose service is non-root, read-only, and loopback-bound by default. SQLite uses a
@@ -37,8 +42,8 @@ openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
 Store the generated token in a password manager, then paste it into `.env`; avoid printing it in
 terminal history or logs. Set the node URL and manager principal. Mainnet uses the Hiro API by
 default. Set `STACKS_API_KEY` for a Hiro plan or another keyed provider; public Hiro access can be
-rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. For Fresh setup, configure the
-future manager principal.
+rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. Configure the already-deployed
+manager principal.
 
 The configured Stacks node is authoritative for current operational state. The API supplies indexed
 roster, event, and history capabilities. API lag or an API outage is shown as indexed-data
@@ -47,8 +52,9 @@ and Assist proofs still wait or fail closed when their required indexed evidence
 
 While the dashboard is visible, it requests a coalesced current operator snapshot every 15 seconds
 so new Stacks blocks appear without manual refreshes. Sidekick also reconciles the authoritative
-staking roster shortly after startup and every 30 minutes after manager setup exists, even when no
-browser is open. A failed automatic reconciliation retains the last verified roster and retries
+staking roster shortly after startup and every 30 minutes after the configured manager is
+available, even when no browser is open. A failed automatic reconciliation retains the last
+verified roster and retries
 with bounded backoff; **Sync now** remains available for an immediate operator-triggered
 reconciliation.
 
@@ -102,10 +108,10 @@ docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
 
 Docker `healthy` checks liveness only. `/health/ready` reports a current or last-good control-plane
 observation, but does not change during ordinary engine observation or trigger restarts. Check that
-its `freshness` is `current` before onboarding. `doctor connectivity` checks node, API, network,
-lag, and PoX-5. The authenticated Operations readiness panel (`/api/v1/operations/readiness`) also
-reports manager setup and engine blockers. Do not begin onboarding until connectivity reports no
-failed checks.
+its `freshness` is `current` before an operator action. `doctor connectivity` checks node, API,
+network, lag, and PoX-5. The authenticated Operations readiness panel
+(`/api/v1/operations/readiness`) also reports manager and engine blockers. Resolve failed
+connectivity checks before signing an operation.
 
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.
@@ -165,14 +171,14 @@ trusted-header or browser Basic session. Use HTTPS: Basic credentials are encode
 If a reverse proxy terminates Basic authentication itself, prefer having it inject the dedicated
 header above after successful authentication.
 
-Public-network Fresh setup requires a matched compatibility profile; failure or inconsistency is a
-stop condition. Profiles under
+Network compatibility profiles under
 [`network-compatibility`](../../network-compatibility/README.md) and
 [`trusted-managers`](../../trusted-managers/README.md) load at startup, so restart after changes.
 
-Fixed externally signed manager actions have a narrower gate: the configured manager, required
-interface, and node/API network routing must agree. Manager source/profile trust is a warning, not a
-blocker; review every wallet or manual signing request.
+Externally signed manager actions require the configured manager, the action's baseline interface,
+and node network routing to agree. Manager source/profile trust is a warning for baseline actions,
+not a blocker; reviewed adapters gate optional manager-specific behavior and Assist. Review every
+wallet or manual signing request.
 
 ## Operation mode
 

@@ -1,25 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  ChainAnchorError,
-  RateLimitedError,
-  UpstreamHttpError,
-  UpstreamSchemaError,
-} from "./chain-clients.js";
+import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
-import type { OnboardingService } from "./onboarding-service.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { WalletIntentError } from "./wallet-intent-service.js";
-import { OperatorWorkflowError } from "./workflow-error.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
-const walletIntentPrefixes = [
-  "/api/v1/onboarding/wallet-intents",
-  "/api/v1/wallet-intents",
-] as const;
+const walletIntentPrefixes = ["/api/v1/wallet-intents"] as const;
 const walletIntentAnchorMismatch = {
   error: "wallet_intent_anchor_mismatch",
   retryable: true,
@@ -303,64 +293,6 @@ describe("local API", () => {
     expect(summary).toHaveBeenCalledWith(true);
   });
 
-  it("returns stable workflow codes with safe operator guidance", async () => {
-    const token = "test-operator-token-with-32-chars";
-    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const onboarding = {
-      start: () => {
-        throw new OperatorWorkflowError(
-          409,
-          "onboarding_reset_confirmation_required",
-          "Switching onboarding paths requires explicit reset confirmation",
-        );
-      },
-    } as unknown as OnboardingService;
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
-    servers.push(server);
-
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/v1/onboarding/start",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { path: "attach" },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "onboarding_reset_confirmation_required",
-      message: "Switching onboarding paths requires explicit reset confirmation",
-      retryable: false,
-    });
-  });
-
-  it("replaces code-only workflow messages with safe operator guidance", async () => {
-    const token = "test-operator-token-with-32-chars";
-    const service = {
-      snapshot: async () => ({}),
-      synchronize: async () => ({}),
-      poolCard: async () => {
-        throw new OperatorWorkflowError(409, "pool_setup_not_complete");
-      },
-    };
-    const server = createServer({ service, authToken: token, logger: false });
-    servers.push(server);
-
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/v1/pool-card/generate",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { mode: "live" },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "pool_setup_not_complete",
-      message:
-        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry.",
-      retryable: false,
-    });
-  });
-
   it("protects and forwards signer health reads, refreshes, and source tests", async () => {
     const token = "test-operator-token-with-32-chars";
     const health = {
@@ -410,7 +342,7 @@ describe("local API", () => {
     const token = "test-operator-token-with-32-chars";
     const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
     const txid = `0x${"ab".repeat(32)}`;
-    const intent = { schemaVersion: 1, id: intentId, action: "deploy-manager" };
+    const intent = { schemaVersion: 2, id: intentId, action: "update-fees" };
     const wallet = {
       prepare: vi.fn().mockResolvedValue(intent),
       get: vi.fn().mockReturnValue(intent),
@@ -418,15 +350,16 @@ describe("local API", () => {
       refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
       replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
     };
-    const prepareManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
-    const verifyManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
-    const onboarding = {
-      wallet,
-      prepareManagerSignerGrant,
-      verifyManagerSignerGrant,
-    } as unknown as OnboardingService;
+    const prepareManagerSignerGrant = vi
+      .fn()
+      .mockResolvedValue({ preparation: {}, verified: null });
+    const verifyManagerSignerGrant = vi.fn().mockResolvedValue({ preparation: {}, verified: {} });
+    const signerGrant = {
+      prepare: prepareManagerSignerGrant,
+      verify: verifyManagerSignerGrant,
+    };
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, signerGrant, authToken: token, logger: false });
     servers.push(server);
     const headers = { authorization: `Bearer ${token}` };
 
@@ -434,25 +367,13 @@ describe("local API", () => {
       (
         await server.inject({
           method: "POST",
-          url: "/api/v1/onboarding/wallet-intents",
+          url: "/api/v1/wallet-intents",
           headers,
           payload: { action: "deploy-manager", transaction: "arbitrary" },
         })
       ).statusCode,
     ).toBe(400);
     expect(wallet.prepare).not.toHaveBeenCalled();
-
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/onboarding/wallet-intents",
-          headers,
-          payload: { action: "deploy-manager" },
-        })
-      ).json(),
-    ).toEqual({ intent });
-    expect(wallet.prepare).toHaveBeenCalledWith({ action: "deploy-manager" });
 
     expect(
       (
@@ -523,18 +444,14 @@ describe("local API", () => {
     const wallet = {
       prepare: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
-    const payload =
-      prefix === "/api/v1/onboarding/wallet-intents"
-        ? { action: "deploy-manager" }
-        : {
-            action: "update-fees",
-            actorPrincipal: "SP000000000000000000002Q6VF78",
-            feeBips: "250",
-          };
+    const payload = {
+      action: "update-fees",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      feeBips: "250",
+    };
 
     const response = await server.inject({
       method: "POST",
@@ -596,9 +513,8 @@ describe("local API", () => {
       refresh: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
       replace: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
 
     for (const prefix of walletIntentPrefixes) {
@@ -630,9 +546,8 @@ describe("local API", () => {
       refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
       replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
     const headers = { authorization: `Bearer ${token}` };
 
@@ -730,24 +645,19 @@ describe("local API", () => {
       "The wallet transaction changed. Prepare a new transaction.",
     );
     Object.assign(error, { internalDetail: "must-not-leak" });
-    const onboarding = {
-      wallet: { prepare: vi.fn().mockRejectedValue(error) },
-    } as unknown as OnboardingService;
+    const wallet = { prepare: vi.fn().mockRejectedValue(error) };
     const server = createServer({
       service: { snapshot: async () => ({}), synchronize: async () => ({}) },
-      onboarding,
+      wallet,
       authToken: token,
       logger: false,
     });
     servers.push(server);
-    const payload =
-      prefix === "/api/v1/onboarding/wallet-intents"
-        ? { action: "deploy-manager" }
-        : {
-            action: "update-fees",
-            actorPrincipal: "SP000000000000000000002Q6VF78",
-            feeBips: "250",
-          };
+    const payload = {
+      action: "update-fees",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      feeBips: "250",
+    };
 
     const response = await server.inject({
       method: "POST",
@@ -786,7 +696,7 @@ describe("local API", () => {
     };
     const server = createServer({
       service: { snapshot: async () => ({}), synchronize: async () => ({}) },
-      onboarding: { wallet } as unknown as OnboardingService,
+      wallet,
       authToken: token,
       logger: false,
     });
@@ -1148,7 +1058,7 @@ describe("local API", () => {
     servers.splice(servers.indexOf(server), 1);
   });
 
-  it("classifies transient, content, malformed, and unexpected operator failures", async () => {
+  it("classifies transient, malformed, and unexpected operator failures", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
       snapshot: async () => ({}),
@@ -1158,7 +1068,6 @@ describe("local API", () => {
         .mockRejectedValueOnce(new Error("must-not-leak")),
       synchronize: async () => reconciliationResult(),
       updateSettings: vi.fn().mockRejectedValue(new RateLimitedError("limited", 3_000)),
-      poolCard: vi.fn().mockRejectedValue(new UpstreamSchemaError("bad upstream body")),
     };
     const health = {
       current: async () => ({}),
@@ -1217,22 +1126,6 @@ describe("local API", () => {
         message:
           "A configured chain source is rate limiting Sidekick. Retry after the indicated delay.",
         retryable: true,
-      },
-    ]);
-
-    const invalidContent = await server.inject({
-      method: "POST",
-      url: "/api/v1/pool-card/generate",
-      headers,
-      payload: { mode: "live" },
-    });
-    expect([invalidContent.statusCode, invalidContent.json()]).toEqual([
-      502,
-      {
-        error: "upstream_response_invalid",
-        message:
-          "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
-        retryable: false,
       },
     ]);
 
@@ -1735,19 +1628,13 @@ describe("local API", () => {
     });
   });
 
-  it("validates authenticated runtime settings and pool-card actions", async () => {
+  it("validates authenticated runtime settings", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
       snapshot: async () => ({ generatedAt: "2026-07-15T12:00:00.000Z" }),
       synchronize: async () => ({}),
       settings: vi.fn().mockReturnValue({ revision: 2, dataSources: { apiKeyConfigured: true } }),
       updateSettings: vi.fn().mockReturnValue({ revision: 3 }),
-      poolCard: vi.fn().mockResolvedValue({
-        mode: "live",
-        filename: "signer-sidekick-pool.html",
-        contentType: "text/html; charset=utf-8",
-        body: "<!doctype html>",
-      }),
     };
     const server = createServer({ service, authToken: token, logger: false });
     servers.push(server);
@@ -1768,27 +1655,5 @@ describe("local API", () => {
       ).json(),
     ).toEqual({ revision: 3 });
     expect(service.updateSettings).toHaveBeenCalledWith(settingsBody);
-
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/pool-card/generate",
-          headers,
-          payload: { mode: "live" },
-        })
-      ).json(),
-    ).toMatchObject({ filename: "signer-sidekick-pool.html" });
-    expect(service.poolCard).toHaveBeenCalledWith("live");
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/pool-card/generate",
-          headers,
-          payload: { mode: "dynamic" },
-        })
-      ).statusCode,
-    ).toBe(400);
   });
 });

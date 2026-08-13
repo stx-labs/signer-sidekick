@@ -31,13 +31,13 @@ export interface PoolCycleEligibility {
   thresholdAndMembershipAgree: boolean;
 }
 
-export interface SetupStatusCheck {
+export interface OperatorReadinessCheck {
   id: string;
   status: PreflightCheckStatus;
   message: string;
 }
 
-export interface PoolSetupStatus {
+export interface OperatorReadinessStatus {
   status: "ready" | "attention" | "blocked";
   managerPrincipal: string;
   pox5ContractId: string | null;
@@ -55,7 +55,7 @@ export interface PoolSetupStatus {
     current: PoolCycleEligibility | null;
     next: PoolCycleEligibility | null;
   };
-  checks: SetupStatusCheck[];
+  checks: OperatorReadinessCheck[];
 }
 
 function signedMargin(value: bigint): string {
@@ -101,19 +101,21 @@ async function readCycleEligibility(
   };
 }
 
-function overallStatus(checks: readonly SetupStatusCheck[]): PoolSetupStatus["status"] {
+function overallStatus(
+  checks: readonly OperatorReadinessCheck[],
+): OperatorReadinessStatus["status"] {
   if (checks.some((check) => check.status === "fail")) return "blocked";
   if (checks.some((check) => check.status === "warn")) return "attention";
   return "ready";
 }
 
-export async function readPoolSetupStatus(
+export async function readOperatorReadiness(
   node: ReadOnlyCaller,
   preflight: PreflightResult,
   manager: ManagerVerificationReport,
   registration: RegistrationVerification | null,
   options?: ChainReadOptions,
-): Promise<PoolSetupStatus> {
+): Promise<OperatorReadinessStatus> {
   const pox5ContractId = preflight.pox.pox5ContractId;
   const canReadEligibility = Boolean(pox5ContractId && manager.attachAllowed);
   const cycleIds = canReadEligibility
@@ -139,7 +141,7 @@ export async function readPoolSetupStatus(
             preflight.cycle.blocksUntilPreparePhase <= 1)
         ? "prepare-phase"
         : "open";
-  const checks: SetupStatusCheck[] = [
+  const checks: OperatorReadinessCheck[] = [
     {
       id: "preflight",
       status: preflight.status,

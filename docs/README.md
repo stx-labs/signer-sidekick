@@ -5,7 +5,7 @@ Choose the shortest path for your task.
 | Audience | Start here | Use it for |
 | --- | --- | --- |
 | Mainnet operator | [Container deployment](operator/deployment.md) | Install, configure, upgrade, restore, diagnose |
-| PoX-5 Testnet evaluator | [PoX-5 Testnet runbook](operator/pox5-testnet-deployment.md) | Exercise Attach and Fresh setup against the dedicated PoX-5 network |
+| PoX-5 Testnet evaluator | [PoX-5 Testnet runbook](operator/pox5-testnet-deployment.md) | Exercise recurring signer and pool operations on the dedicated PoX-5 network |
 | Contributor | [Development](operator/development.md) | Build, test, and run locally |
 | Product and architecture reviewer | [Scope reset plan](product/scope-reset-plan-2026-08-13.md) | Proposed operator-only boundary, event reconciliation, and rewards roadmap |
 | Scope-reset implementer | [Implementation plan](product/scope-reset-implementation-plan-2026-08-13.md) | Milestone boundary, ordered slices, invariants, and validation gates |
@@ -29,8 +29,8 @@ Representative fixture data showing a large pool's cycle projection and staker r
 - HTTP behavior: route schemas and tests under `apps/sidekick/src`.
 - Database structure: migrations and repositories under `apps/sidekick/src/storage`.
 - Protocol inputs: [contract provenance](../contracts/PROVENANCE.md).
-- Configuration examples: [operator record metadata](examples/operator-record-metadata.example.json)
-  and [public pool enrollment](examples/pool-enrollment-config.example.json).
+- First-time signer-manager setup: [Zero to Signing](https://stx.fan/zero_to/signing/).
+- Node and signer lifecycle direction: [stacksup](https://github.com/stx-labs/stacksup).
 
 Documentation explains intent, safety boundaries, and operator procedures. It does not duplicate
 code-level schemas, command inventories, or upstream node/signer setup.

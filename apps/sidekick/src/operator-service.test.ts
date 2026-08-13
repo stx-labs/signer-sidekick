@@ -10,7 +10,6 @@ import { RateLimitedError, type StacksApiClient, type StacksNodeClient } from ".
 import type { SidekickConfig } from "./config.js";
 import {
   buildAlerts,
-  classifySupportContact,
   OperatorService,
   type OperatorServiceOptions,
   observeTransactionEngineSafely,
@@ -27,7 +26,7 @@ afterEach(() => {
 
 function alertInput(options: {
   belowThreshold?: boolean;
-  setupBlocked?: boolean;
+  readinessBlocked?: boolean;
   cycles?: Array<{
     cycleId: number;
     status: "ready" | "attention";
@@ -47,7 +46,7 @@ function alertInput(options: {
       source: { tier: "reference-built-in" },
       installedProfiles: { issues: [] },
     },
-    setup: options.setupBlocked
+    readiness: options.readinessBlocked
       ? {
           status: "blocked",
           checks: [{ id: "signer-grant", status: "fail", message: "Grant is revoked" }],
@@ -266,8 +265,8 @@ describe("operator service", () => {
     );
   });
 
-  it("uses the live threshold, routes to the pool, and preserves setup alerts", () => {
-    const alerts = buildAlerts(alertInput({ belowThreshold: true, setupBlocked: true }));
+  it("uses the live threshold, routes to the pool, and preserves readiness alerts", () => {
+    const alerts = buildAlerts(alertInput({ belowThreshold: true, readinessBlocked: true }));
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "pool:forecast-attention",
@@ -278,7 +277,7 @@ describe("operator service", () => {
     );
     expect(alerts).toContainEqual(
       expect.objectContaining({
-        id: "setup:blocked",
+        id: "readiness:blocked",
         detail: "Grant is revoked.",
         action: {
           kind: "navigate",
@@ -784,13 +783,5 @@ describe("operator service", () => {
       { transition: "lost" },
       { transition: "gained" },
     ]);
-  });
-
-  it("classifies support contacts by email validity rather than an at-sign heuristic", () => {
-    expect(classifySupportContact("pool@example.com")).toEqual({ email: "pool@example.com" });
-    expect(classifySupportContact("https://user@example.com/support")).toEqual({
-      url: "https://user@example.com/support",
-    });
-    expect(classifySupportContact("")).toBeUndefined();
   });
 });

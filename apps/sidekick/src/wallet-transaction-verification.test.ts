@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   verifyWalletTransactionHex,
   WalletTransactionMismatchError,
-} from "./onboarding-wallet-verification.js";
+} from "./wallet-transaction-verification.js";
 
 const senderKey = "1".padStart(64, "0");
 const sender = getAddressFromPrivateKey(senderKey, "mainnet");

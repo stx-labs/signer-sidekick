@@ -199,6 +199,7 @@ export type BrowserWalletIntentAction =
   | "sweep-fee-refunds"
   | "claim-rewards"
   | "claim-staker-rewards";
+export type RecurringWalletIntentAction = Exclude<BrowserWalletIntentAction, "deploy-manager">;
 export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
 export type OnboardingBrowserWalletIntentCreateRequest =
@@ -227,6 +228,36 @@ export type BrowserWalletIntentCreateRequest =
 export type BrowserWalletIntentRequest =
   | OnboardingBrowserWalletIntentCreateRequest
   | BrowserWalletIntentCreateRequest;
+export type RecurringBrowserWalletIntentCreateRequest = Exclude<
+  BrowserWalletIntentCreateRequest,
+  { action: "deploy-manager" }
+>;
+
+export interface SignerGrantSession {
+  preparation: null | {
+    managerPrincipal: string;
+    pox5ContractId: string;
+    command: string;
+    expectedMessageHashHex: string;
+    authId: string;
+  };
+  verified: null | {
+    managerPrincipal: string;
+    pox5ContractId: string;
+    authId: string;
+    signerKeyHex: string;
+    signerSignatureHex: string;
+    expectedMessageHashHex: string;
+    signatureValid: true;
+    registerSelfCall: {
+      contract: string;
+      functionName: string;
+      arguments: string[];
+      signingPrincipal: string;
+      signingAuthority: "external-offline-admin";
+    };
+  };
+}
 export type BrowserWalletIntentStatus =
   | "prepared"
   | "submitted"
@@ -374,6 +405,7 @@ export interface ManagerCapabilities {
 export interface OperatorSnapshot {
   managerPrincipal: string;
   network: string;
+  readiness?: OperatorSnapshot["setup"];
   setup: null | {
     status: "ready" | "attention" | "blocked";
     enrollmentWindow: {
@@ -445,7 +477,7 @@ export interface DashboardAlert {
     | {
         kind: "navigate";
         label: string;
-        target: "setup" | "settings" | "pool" | "rewards" | "operations";
+        target: "settings" | "pool" | "rewards" | "operations" | "manager";
       }
     | {
         kind: "navigate";
@@ -996,6 +1028,47 @@ export type ManagerSignerGrantPrepareRequest = z.infer<
   typeof managerSignerGrantPrepareRequestSchema
 >;
 
+export const signerGrantVerifyRequestSchema = z.object({ signerOutput: z.unknown() }).strict();
+export type SignerGrantVerifyRequest = z.infer<typeof signerGrantVerifyRequestSchema>;
+
+const signerGrantSessionSchema = z
+  .object({
+    preparation: z
+      .looseObject({
+        managerPrincipal: z.string().min(1),
+        pox5ContractId: z.string().min(1),
+        command: z.string().min(1),
+        expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+        authId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+      })
+      .nullable(),
+    verified: z
+      .looseObject({
+        managerPrincipal: z.string().min(1),
+        pox5ContractId: z.string().min(1),
+        authId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+        signerKeyHex: z.string().regex(/^(?:02|03)[0-9a-f]{64}$/),
+        signerSignatureHex: z.string().regex(/^[0-9a-f]{130}$/),
+        expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+        signatureValid: z.literal(true),
+        registerSelfCall: z
+          .object({
+            contract: z.string().min(1),
+            functionName: z.string().min(1),
+            arguments: z.array(z.string()),
+            signingPrincipal: z.string().min(1),
+            signingAuthority: z.literal("external-offline-admin"),
+          })
+          .strict(),
+      })
+      .nullable(),
+  })
+  .strict();
+export const signerGrantSessionResponseSchema = z
+  .object({ signerGrant: signerGrantSessionSchema })
+  .strict();
+export type SignerGrantSessionResponse = z.infer<typeof signerGrantSessionResponseSchema>;
+
 export const onboardingProgressRequestSchema = z
   .object({ currentStep: z.string().min(1) })
   .strict();
@@ -1108,6 +1181,14 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     })
     .strict(),
 ]);
+export const recurringBrowserWalletIntentCreateRequestSchema =
+  browserWalletIntentCreateRequestSchema
+    .refine(
+      (value): value is RecurringBrowserWalletIntentCreateRequest =>
+        value.action !== "deploy-manager",
+      "Manager deployment is not a recurring Sidekick operation",
+    )
+    .transform((value) => value as RecurringBrowserWalletIntentCreateRequest);
 
 /** One settleable tuple and why it is or is not worth a transaction. */
 export interface StakerClaimCandidate {

@@ -246,7 +246,7 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
-  it("persists redacted runtime settings history and resumable onboarding state", async () => {
+  it("persists redacted runtime settings history", async () => {
     const store = await memoryStore();
     store.putRuntimeSettings({
       settings: { schemaVersion: 1, displayName: "Test pool" },
@@ -264,46 +264,6 @@ describe("Sidekick SQLite store", () => {
         changedFields: ["dataSources.apiKey", "pool.displayName"],
         changedAt: observedAt,
       },
-    ]);
-
-    store.putOnboardingState({
-      path: "fresh",
-      currentStep: "deploy-manager",
-      status: "in-progress",
-      state: { schemaVersion: 1, managerPrincipal: manager },
-      updatedAt: later,
-      auditAction: "fresh-prepared",
-    });
-    expect(store.getOnboardingState()).toEqual({
-      path: "fresh",
-      currentStep: "deploy-manager",
-      status: "in-progress",
-      state: { schemaVersion: 1, managerPrincipal: manager },
-      updatedAt: later,
-    });
-    expect(store.listOnboardingAudit()).toEqual([
-      {
-        action: "fresh-prepared",
-        path: "fresh",
-        currentStep: "deploy-manager",
-        status: "in-progress",
-        changedAt: later,
-      },
-    ]);
-
-    store.setOnboardingWizardDismissed(true, later);
-    expect(store.getOnboardingWizardPreference()).toEqual({
-      dismissedAt: later,
-      updatedAt: later,
-    });
-    store.setOnboardingWizardDismissed(false, "2026-07-15T13:00:00.000Z");
-    expect(store.getOnboardingWizardPreference()).toEqual({
-      dismissedAt: null,
-      updatedAt: "2026-07-15T13:00:00.000Z",
-    });
-    expect(store.listOnboardingWizardAudit()).toEqual([
-      { action: "resumed", changedAt: "2026-07-15T13:00:00.000Z" },
-      { action: "dismissed", changedAt: later },
     ]);
   });
 

@@ -14,8 +14,8 @@ import {
 import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
+import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import type { StxRewardStatus } from "../reward-status.js";
-import type { SetupSnapshot } from "../setup-snapshot.js";
 import {
   openSidekickStore,
   type SidekickStore,
@@ -159,7 +159,7 @@ afterEach(() => {
   for (const store of stores.splice(0)) store.close();
 });
 
-function setup(): SetupSnapshot {
+function setup(): OperatorAnchorSnapshot {
   return {
     chainAnchor: anchor,
     preflight: {
@@ -190,7 +190,7 @@ function setup(): SetupSnapshot {
     },
     registration: null,
     setup: { status: "ready" },
-  } as unknown as SetupSnapshot;
+  } as unknown as OperatorAnchorSnapshot;
 }
 
 function rewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {

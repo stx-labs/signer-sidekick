@@ -7,7 +7,6 @@ import {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
-import { CopyIdentifierButton } from "../../copyable-identifier.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { operatorActionError } from "../../shared/operator-error.js";
@@ -44,7 +43,7 @@ export function SettingsPage({
     state: "testing" | "connected" | "failed";
     detail: string;
   } | null>(null);
-  const [activeSection, setActiveSection] = useState("identity");
+  const [activeSection, setActiveSection] = useState("display");
   const settingsLoadController = useRef<AbortController | null>(null);
   const sourceTestController = useRef<AbortController | null>(null);
 
@@ -241,7 +240,6 @@ export function SettingsPage({
         <nav className="set-nav">
           {(
             [
-              ["identity", "Pool identity"],
               ["display", "Display"],
               ["sources", "Data sources"],
               ["security", "Access & security"],
@@ -262,61 +260,6 @@ export function SettingsPage({
           ))}
         </nav>
         <fieldset className="settings-scroll settings-fields" disabled={busy}>
-          <section className="card-standout set-section form-grid" id="identity">
-            <div className="card-head">
-              <h2>Pool identity</h2>
-              <span className="muted">shown in the dashboard and generated pool card</span>
-            </div>
-            <Field label="Manager principal">
-              <span className="copyable-input">
-                <input
-                  className="input mono"
-                  readOnly
-                  value={data?.managerPrincipal ?? "Operator state temporarily unavailable"}
-                />
-                <CopyIdentifierButton value={data?.managerPrincipal} label="manager principal" />
-              </span>
-            </Field>
-            <Field label="Display name">
-              <input
-                className="input"
-                value={settings.pool.displayName}
-                onChange={(event) =>
-                  update("pool", { ...settings.pool, displayName: event.target.value })
-                }
-              />
-            </Field>
-            <Field label="Website URL">
-              <input
-                className="input"
-                type="url"
-                value={settings.pool.websiteUrl}
-                onChange={(event) =>
-                  update("pool", { ...settings.pool, websiteUrl: event.target.value })
-                }
-              />
-            </Field>
-            <Field label="Support email or URL">
-              <input
-                className="input"
-                value={settings.pool.supportContact}
-                onChange={(event) =>
-                  update("pool", { ...settings.pool, supportContact: event.target.value })
-                }
-              />
-            </Field>
-            <Field label="Leather enrollment URL">
-              <input
-                className="input"
-                type="url"
-                value={settings.pool.leatherUrl}
-                onChange={(event) =>
-                  update("pool", { ...settings.pool, leatherUrl: event.target.value })
-                }
-              />
-            </Field>
-          </section>
-
           <section className="card-standout set-section form-grid" id="display">
             <div className="card-head">
               <h2>Display preferences</h2>

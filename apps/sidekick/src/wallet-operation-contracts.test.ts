@@ -6,16 +6,8 @@ import {
 } from "./wallet-operation-contracts.js";
 
 describe("wallet operation contracts", () => {
-  it("keeps setup-only deployment separate from recurring operations", () => {
-    expect(WALLET_OPERATION_CONTRACTS["deploy-manager"]).toMatchObject({
-      lifecycle: "setup-only",
-      capability: null,
-    });
-    expect(
-      Object.values(WALLET_OPERATION_CONTRACTS)
-        .filter(({ lifecycle }) => lifecycle === "recurring")
-        .map(({ action }) => action),
-    ).toEqual([
+  it("contains only recurring operator actions", () => {
+    expect(Object.values(WALLET_OPERATION_CONTRACTS).map(({ action }) => action)).toEqual([
       "register-self",
       "add-admin",
       "remove-admin",

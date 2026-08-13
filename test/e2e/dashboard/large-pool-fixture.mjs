@@ -237,7 +237,7 @@ export const snapshot = {
     signerKeyGrantValid: true,
     reason: "registered",
   },
-  setup: {
+  readiness: {
     status: "ready",
     enrollmentWindow: {
       status: "open",
@@ -386,11 +386,6 @@ export const engineJobs = {
   items: [],
   nextCursor: null,
   total: 0,
-};
-
-export const onboarding = {
-  onboarding: null,
-  wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
 };
 
 export const health = {
@@ -573,7 +568,6 @@ export function responseFor(url) {
   if (request.pathname === "/api/v1/settings") return runtimeSettings;
   if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/health/refresh")
     return health;
-  if (request.pathname === "/api/v1/onboarding") return onboarding;
   if (request.pathname === "/api/v1/pool") {
     const query = (request.searchParams.get("query") ?? "").toLowerCase();
     const filtered = query

@@ -18,13 +18,13 @@ import {
   type BrowserWalletIntent,
   type BrowserWalletIntentAction,
   type BrowserWalletIntentNetwork,
-  type BrowserWalletIntentRequest,
   type BrowserWalletIntentStatus,
   type BrowserWalletTransaction,
-  browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
-  onboardingBrowserWalletIntentCreateRequestSchema,
+  type RecurringBrowserWalletIntentCreateRequest,
+  type RecurringWalletIntentAction,
+  recurringBrowserWalletIntentCreateRequestSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
@@ -37,40 +37,17 @@ import {
   encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
-import {
-  canonicalizeClaritySource,
-  claritySourceSha256,
-} from "@stx-labs/signer-sidekick-protocol/manager-adapter";
-import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import { managerActionCapability } from "./manager-capabilities.js";
-import {
-  type ManagerDeploymentManifest,
-  managerDeploymentManifestSchema,
-} from "./manager-render.js";
 import type { ManagerVerificationContext } from "./manager-verification.js";
 import {
-  compatibilityProfileByIdentity,
-  loadNetworkCompatibilityProfiles,
-} from "./network-compatibility-store.js";
-import {
-  createWalletTransactionNetworkBinding,
-  defaultPrivateChainId,
-  mainnetChainId,
-  mainnetWalletNetwork,
-  pox5TestnetChainId,
-  pox5TestnetWalletNetwork,
-  type VerifiedWalletTransaction,
-  verifyWalletTransactionHex,
-  WalletTransactionMismatchError,
-  type WalletTransactionNetworkBinding,
-} from "./onboarding-wallet-verification.js";
-import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "./operator-anchor-snapshot.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import { type VerifiedSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
 import type { SidekickStore } from "./storage/store.js";
 import {
@@ -95,6 +72,18 @@ import {
   walletIntentTransactionMatchesAction,
   walletOperationContract,
 } from "./wallet-operation-contracts.js";
+import {
+  createWalletTransactionNetworkBinding,
+  defaultPrivateChainId,
+  mainnetChainId,
+  mainnetWalletNetwork,
+  pox5TestnetChainId,
+  pox5TestnetWalletNetwork,
+  type VerifiedWalletTransaction,
+  verifyWalletTransactionHex,
+  WalletTransactionMismatchError,
+  type WalletTransactionNetworkBinding,
+} from "./wallet-transaction-verification.js";
 
 const intentLifetimeMs = 15 * 60 * 1_000;
 const replacementGraceMs = 15 * 60 * 1_000;
@@ -148,12 +137,9 @@ const storedManifestV1Schema = z
     }
   });
 
-const walletIntentRequestSchema = z.union([
-  onboardingBrowserWalletIntentCreateRequestSchema,
-  browserWalletIntentCreateRequestSchema,
-]);
+const walletIntentRequestSchema = recurringBrowserWalletIntentCreateRequestSchema;
 
-function walletNetworkChecksPass(snapshot: SetupSnapshot, chainId: number): boolean {
+function walletNetworkChecksPass(snapshot: OperatorAnchorSnapshot, chainId: number): boolean {
   const nodeNetwork = snapshot.preflight.checks.find((check) => check.id === "node-network");
   const nodeSync = snapshot.preflight.checks.find((check) => check.id === "node-sync");
   return (
@@ -170,7 +156,6 @@ const storedManifestV2Schema = z
     schemaVersion: z.literal(2),
     id: z.uuid(),
     action: z.enum([
-      "deploy-manager",
       "register-self",
       "add-admin",
       "remove-admin",
@@ -272,13 +257,8 @@ const observationEvidenceSchema = z
 
 export interface WalletIntentRuntimeState {
   managerPrincipal: string;
-  freshInput: null | { adminPrincipal: string; authId: string };
-  managerArtifact: null | { source: string; manifest: ManagerDeploymentManifest };
   signerGrant: { verified: VerifiedSignerGrant | null };
 }
-
-/** @deprecated Compatibility name for the Slice 2 onboarding facade. */
-export type WalletFreshState = WalletIntentRuntimeState;
 
 type WalletReader = Pick<
   LiveTransactionReader,
@@ -296,7 +276,7 @@ interface AuthoritativeIntentFacts {
 }
 
 interface EquivalentIntentFacts {
-  action: BrowserWalletIntentAction;
+  action: RecurringWalletIntentAction;
   scope: string;
   factsSha256: string;
 }
@@ -304,7 +284,7 @@ interface EquivalentIntentFacts {
 /** `sbtc-withdrawal` asserts `(> amount DUST_LIMIT)`; the withdrawn amount is net minus fee budget. */
 const SBTC_WITHDRAWAL_DUST_LIMIT = 546n;
 
-export class OnboardingWalletIntentError extends Error {
+export class WalletIntentError extends Error {
   constructor(
     readonly code:
       | "wallet_execution_unavailable"
@@ -317,15 +297,15 @@ export class OnboardingWalletIntentError extends Error {
     readonly retryable = false,
   ) {
     super(message);
-    this.name = "OnboardingWalletIntentError";
+    this.name = "WalletIntentError";
   }
 }
 
 function asIntentError(error: unknown): never {
-  if (error instanceof OnboardingWalletIntentError) throw error;
+  if (error instanceof WalletIntentError) throw error;
   if (error instanceof WalletIntentRepositoryError) {
     const code = error.code === "expired" ? "wallet_intent_expired" : "wallet_intent_conflict";
-    throw new OnboardingWalletIntentError(code, error.message);
+    throw new WalletIntentError(code, error.message);
   }
   throw error;
 }
@@ -333,7 +313,7 @@ function asIntentError(error: unknown): never {
 function nowPlusLifetime(observedAt: string): string {
   const milliseconds = Date.parse(observedAt);
   if (!Number.isFinite(milliseconds)) {
-    throw new OnboardingWalletIntentError("wallet_intent_invalid", "Invalid observation time");
+    throw new WalletIntentError("wallet_intent_invalid", "Invalid observation time");
   }
   return new Date(milliseconds + intentLifetimeMs).toISOString();
 }
@@ -341,7 +321,7 @@ function nowPlusLifetime(observedAt: string): string {
 function normalizedTxid(txid: string): `0x${string}` {
   const value = txid.toLowerCase();
   if (!/^0x[0-9a-f]{64}$/.test(value)) {
-    throw new OnboardingWalletIntentError(
+    throw new WalletIntentError(
       "wallet_intent_invalid",
       "Transaction ID must be 0x followed by 64 hexadecimal characters",
     );
@@ -353,14 +333,13 @@ function textSha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export class OnboardingWalletIntentService {
+export class WalletIntentService {
   constructor(
     private readonly options: {
       store: SidekickStore;
       runtimeSettings: RuntimeSettingsController;
       managerVerification?: ManagerVerificationContext;
-      readFreshState: () => WalletIntentRuntimeState;
-      readWalletState?: () => WalletIntentRuntimeState;
+      readState: () => WalletIntentRuntimeState;
       transactionEngineRequestedMode?: "observe" | "assist";
       observeManagerClaimWalletJob?: (
         jobId: string,
@@ -370,7 +349,7 @@ export class OnboardingWalletIntentService {
   ) {}
 
   async prepare(
-    requestInput: BrowserWalletIntentRequest | BrowserWalletIntentAction,
+    requestInput: RecurringBrowserWalletIntentCreateRequest,
     observedAt = new Date().toISOString(),
     ignoredSupersededId?: string,
   ): Promise<BrowserWalletIntent> {
@@ -403,7 +382,6 @@ export class OnboardingWalletIntentService {
             const current = this.requireStored(active.id);
             const verification = this.latestVerification(current.id);
             const completedActionCanRepeat =
-              action !== "deploy-manager" &&
               this.hasCanonicalExecution(current.id, action) &&
               verification?.canonical === true &&
               (verification.outcome === "canonical-success" || verification.outcome === "complete");
@@ -439,7 +417,6 @@ export class OnboardingWalletIntentService {
           let current = this.requireStored(active.id);
           const verification = this.latestVerification(current.id);
           const completedActionCanRepeat =
-            action !== "deploy-manager" &&
             this.hasCanonicalExecution(current.id, action) &&
             verification?.canonical === true &&
             (verification.outcome === "canonical-success" || verification.outcome === "complete");
@@ -500,7 +477,7 @@ export class OnboardingWalletIntentService {
         return asIntentError(error);
       }
     }
-    throw new OnboardingWalletIntentError(
+    throw new WalletIntentError(
       "wallet_intent_conflict",
       "Setup state changed while preparing the transaction. Review the latest state and try again",
     );
@@ -509,7 +486,7 @@ export class OnboardingWalletIntentService {
   get(id: string): BrowserWalletIntent {
     const stored = this.options.store.walletIntents.get(z.uuid().parse(id));
     if (!stored) {
-      throw new OnboardingWalletIntentError("wallet_intent_not_found", "Wallet intent not found");
+      throw new WalletIntentError("wallet_intent_not_found", "Wallet intent not found");
     }
     return this.publicIntent(stored);
   }
@@ -554,7 +531,7 @@ export class OnboardingWalletIntentService {
         initial = this.retireFailedIntent(initial, observedAt);
       }
     }
-    if (initial.state === "prepared") {
+    if (initial.state === "prepared" && initial.action !== "deploy-manager") {
       const blocker = await this.reconcileHistoricalScope(
         initial.action,
         initial.scope,
@@ -573,8 +550,15 @@ export class OnboardingWalletIntentService {
         });
         return this.publicIntent(superseded);
       }
-    } else if (initial.state !== "superseded") {
-      const completed = await this.reconcileSuperseded(initial, observedAt);
+    } else if (initial.state !== "superseded" && initial.action !== "deploy-manager") {
+      const completed = await this.reconcileSuperseded(
+        {
+          action: initial.action,
+          scope: initial.scope,
+          factsSha256: initial.factsSha256,
+        },
+        observedAt,
+      );
       if (completed && initial.state !== "complete") {
         return this.publicIntent(this.requireStored(initial.id));
       }
@@ -606,7 +590,7 @@ export class OnboardingWalletIntentService {
       try {
         authoritative = await this.authoritativeFacts(this.requestFromManifest(manifest));
       } catch (error) {
-        if (!(error instanceof OnboardingWalletIntentError)) throw error;
+        if (!(error instanceof WalletIntentError)) throw error;
         const superseded = this.transition(stored, "superseded", observedAt);
         this.recordObservation(superseded, {
           outcome: "superseded",
@@ -702,20 +686,20 @@ export class OnboardingWalletIntentService {
   async replace(id: string, observedAt = new Date().toISOString()): Promise<BrowserWalletIntent> {
     const before = this.requireStored(id);
     if (before.state !== "reobserve" || !before.submittedAt) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_conflict",
         "This transaction is not eligible for replacement",
       );
     }
     if (Date.parse(observedAt) < Date.parse(before.submittedAt) + replacementGraceMs) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_conflict",
         "Wait at least 15 minutes after submission before replacing a transaction",
       );
     }
     const refreshed = await this.refresh(id, observedAt);
     if (refreshed.status !== "reobserve" || refreshed.verification?.outcome !== "not-found") {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_conflict",
         "The transaction is still visible to the node. Wait before replacing it",
       );
@@ -749,53 +733,38 @@ export class OnboardingWalletIntentService {
   }
 
   private parsePrepareRequest(
-    input: BrowserWalletIntentRequest | BrowserWalletIntentAction,
-  ): BrowserWalletIntentRequest {
-    if (typeof input === "string") {
-      return onboardingBrowserWalletIntentCreateRequestSchema.parse({ action: input });
-    }
+    input: RecurringBrowserWalletIntentCreateRequest,
+  ): RecurringBrowserWalletIntentCreateRequest {
     return walletIntentRequestSchema.parse(input);
   }
 
-  private requestFromManifest(manifest: StoredManifest): BrowserWalletIntentRequest {
+  private requestFromManifest(manifest: StoredManifest): RecurringBrowserWalletIntentCreateRequest {
     if (manifest.schemaVersion === 2) return manifest.request;
-    return manifest.action === "deploy-manager"
-      ? { action: "deploy-manager" }
-      : { action: "register-self" };
+    throw new WalletIntentError(
+      "wallet_intent_invalid",
+      "Legacy setup transactions cannot be prepared again; start the recurring operation again",
+    );
   }
 
-  private readFreshState(): WalletIntentRuntimeState {
+  private readState(): WalletIntentRuntimeState {
     try {
-      return this.options.readFreshState();
+      return this.options.readState();
     } catch {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
-        "Initial Setup is no longer active. Restart setup and prepare the transaction again",
+        "Manager operation state is unavailable. Refresh the Manager page and try again",
       );
     }
   }
 
-  private readWalletState(): WalletIntentRuntimeState {
-    try {
-      return (this.options.readWalletState ?? this.options.readFreshState)();
-    } catch {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_invalid",
-        "Manager state is unavailable. Attach a manager or complete Initial Setup, then try again",
-      );
-    }
-  }
-
-  private freshStateSha256(
-    action: BrowserWalletIntentAction,
-    fresh: WalletIntentRuntimeState,
+  private runtimeStateSha256(
+    action: RecurringWalletIntentAction,
+    state: WalletIntentRuntimeState,
   ): string {
     return canonicalJsonSha256({
       action,
-      managerPrincipal: fresh.managerPrincipal,
-      freshInput: fresh.freshInput,
-      managerArtifact: fresh.managerArtifact,
-      signerGrant: action === "register-self" ? fresh.signerGrant.verified : null,
+      managerPrincipal: state.managerPrincipal,
+      signerGrant: action === "register-self" ? state.signerGrant.verified : null,
     });
   }
 
@@ -826,36 +795,11 @@ export class OnboardingWalletIntentService {
     }
   }
 
-  private assertTrustedManager(
-    snapshot: SetupSnapshot,
-    managerPrincipal: string,
-    network: WalletTransactionNetworkBinding,
-  ): void {
-    const trustedTier =
-      snapshot.manager.source.tier === "reference-built-in" ||
-      snapshot.manager.source.tier === "reference-render";
-    if (
-      snapshot.manager.managerPrincipal !== managerPrincipal ||
-      !snapshot.manager.attachAllowed ||
-      !snapshot.manager.source.recognized ||
-      !trustedTier ||
-      !walletNetworkChecksPass(snapshot, network.chainId) ||
-      snapshot.preflight.compatibility.status !== "matched" ||
-      snapshot.manager.source.profileId !== snapshot.preflight.compatibility.managerProfileId ||
-      snapshot.manager.source.sha256 !== snapshot.preflight.compatibility.managerSourceSha256
-    ) {
-      throw new OnboardingWalletIntentError(
-        "wallet_execution_unavailable",
-        "This action requires a verified reference manager on the configured network",
-      );
-    }
-  }
-
   private assertManagerActionTarget(
-    snapshot: SetupSnapshot,
+    snapshot: OperatorAnchorSnapshot,
     managerPrincipal: string,
     network: WalletTransactionNetworkBinding,
-    action: BrowserWalletIntentAction,
+    action: RecurringWalletIntentAction,
   ): void {
     const capabilityId = managerCapabilityForWalletAction(action);
     const capability = capabilityId
@@ -867,7 +811,7 @@ export class OnboardingWalletIntentService {
       !capability?.executionAvailable ||
       !walletNetworkChecksPass(snapshot, network.chainId)
     ) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_execution_unavailable",
         capability?.reason ??
           "The configured manager is unavailable or lacks a reviewed capability on this network",
@@ -875,148 +819,14 @@ export class OnboardingWalletIntentService {
     }
   }
 
-  private async assertTrustedSavedManagerArtifact(
-    state: WalletIntentRuntimeState,
-    config: SidekickConfig,
-    preflight: PreflightResult,
-    network: WalletTransactionNetworkBinding,
-  ): Promise<ManagerDeploymentManifest> {
-    if (!state.freshInput || !state.managerArtifact) {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_invalid",
-        "The reviewed manager artifact is unavailable",
-      );
-    }
-    const parsedManifest = managerDeploymentManifestSchema.safeParse(
-      state.managerArtifact.manifest,
-    );
-    if (!parsedManifest.success) {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_conflict",
-        "The saved manager deployment manifest failed strict validation",
-      );
-    }
-    const manifest = parsedManifest.data;
-    let canonicalSourceSha256: string;
-    try {
-      canonicalSourceSha256 = claritySourceSha256(
-        canonicalizeClaritySource(state.managerArtifact.source),
-      );
-    } catch {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_conflict",
-        "The saved manager source cannot be canonicalized safely",
-      );
-    }
-    const sourceSha256 = claritySourceSha256(state.managerArtifact.source);
-    if (
-      sourceSha256 !== manifest.artifact.sourceSha256 ||
-      canonicalSourceSha256 !== manifest.artifact.canonicalSourceSha256
-    ) {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_conflict",
-        "The saved manager source does not match its reviewed manifest hashes",
-      );
-    }
-    if (
-      preflight.compatibility.status !== "matched" ||
-      preflight.node.networkId !== network.chainId
-    ) {
-      throw new OnboardingWalletIntentError(
-        "wallet_execution_unavailable",
-        "The live network no longer matches a supported compatibility profile",
-      );
-    }
-    const compatibilityStore = await loadNetworkCompatibilityProfiles({
-      ...(config.compatibilityProfilesDirectory
-        ? { directory: config.compatibilityProfilesDirectory }
-        : {}),
-    });
-    const loaded = compatibilityProfileByIdentity(
-      compatibilityStore,
-      preflight.compatibility.profileId,
-      preflight.compatibility.profileRevision,
-    );
-    if (!loaded) {
-      throw new OnboardingWalletIntentError(
-        "wallet_execution_unavailable",
-        "The currently matched network compatibility profile is unavailable",
-      );
-    }
-    const profile = loaded.profile;
-    const reviewed = managerArtifactFromNetworkProfile(profile);
-    if (
-      profile.network !== config.network ||
-      profile.networkId !== network.chainId ||
-      preflight.compatibility.managerProfileId !== reviewed.profile.id ||
-      preflight.compatibility.managerSourceSha256 !== reviewed.sourceSha256 ||
-      preflight.pox.pox5ContractId !== profile.pox5.contractId ||
-      preflight.pox.sbtcTokenContract !== profile.sbtc.tokenContract
-    ) {
-      throw new OnboardingWalletIntentError(
-        "wallet_execution_unavailable",
-        "The live network facts do not match the selected compatibility profile",
-      );
-    }
-    const contractName = manifest.transaction.contractName;
-    const expectedBinding = {
-      schemaVersion: 1,
-      network: config.network,
-      adminPrincipal: state.freshInput.adminPrincipal,
-      managerPrincipal: state.managerPrincipal,
-      profile: {
-        id: reviewed.profile.id,
-        upstreamTag: reviewed.profile.upstream.tag,
-        upstreamCommit: reviewed.profile.upstream.commit,
-        compatibilityProfileId: profile.id,
-        compatibilityProfileRevision: profile.revision,
-      },
-      contracts: reviewed.profile.contracts,
-      artifact: {
-        sourceFile: `${contractName}.clar`,
-        sourceSha256: reviewed.sourceSha256,
-        canonicalSourceSha256: reviewed.canonicalSha256,
-        replacements: reviewed.profile.expectedReplacements,
-      },
-      transaction: {
-        type: "smart-contract-deploy",
-        contractName,
-        clarityVersion: 6,
-        anchorMode: "any",
-        postConditionMode: "deny",
-        signingAuthority: "external-offline-admin",
-      },
-    };
-    const actualBinding = {
-      schemaVersion: manifest.schemaVersion,
-      network: manifest.network,
-      adminPrincipal: manifest.adminPrincipal,
-      managerPrincipal: manifest.managerPrincipal,
-      profile: manifest.profile,
-      contracts: manifest.contracts,
-      artifact: manifest.artifact,
-      transaction: manifest.transaction,
-    };
-    if (
-      manifest.managerPrincipal !== `${manifest.adminPrincipal}.${contractName}` ||
-      canonicalJsonSha256(actualBinding) !== canonicalJsonSha256(expectedBinding)
-    ) {
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_conflict",
-        "The saved manager artifact is not the exact artifact for the current compatibility profile",
-      );
-    }
-    return manifest;
-  }
-
   private assertActionPrincipal(principal: string, network: BrowserWalletIntentNetwork): void {
     if (!validatePrincipal(principal)) {
-      throw new OnboardingWalletIntentError("wallet_intent_invalid", "Invalid Stacks principal");
+      throw new WalletIntentError("wallet_intent_invalid", "Invalid Stacks principal");
     }
     const address = principal.split(".", 1)[0] ?? "";
     const isMainnet = address.startsWith("SP") || address.startsWith("SM");
     if (isMainnet !== (network === "mainnet")) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
         "The action principal does not match the configured network",
       );
@@ -1024,93 +834,25 @@ export class OnboardingWalletIntentService {
   }
 
   private async authoritativeFacts(
-    request: BrowserWalletIntentRequest,
+    request: RecurringBrowserWalletIntentCreateRequest,
   ): Promise<AuthoritativeIntentFacts> {
     const action = request.action;
     const { config, node, api } = this.options.runtimeSettings.clients();
     const network = this.walletNetwork(config);
-    const setupRequest = !("actorPrincipal" in request);
-    const state = setupRequest ? this.readFreshState() : this.readWalletState();
-    const stateSha256 = this.freshStateSha256(action, state);
+    const state = this.readState();
+    const stateSha256 = this.runtimeStateSha256(action, state);
     const assertStateUnchanged = () => {
-      const latest = setupRequest ? this.readFreshState() : this.readWalletState();
-      if (this.freshStateSha256(action, latest) !== stateSha256) {
-        throw new OnboardingWalletIntentError(
+      const latest = this.readState();
+      if (this.runtimeStateSha256(action, latest) !== stateSha256) {
+        throw new WalletIntentError(
           "wallet_intent_conflict",
           "Manager or signer authorization changed. Review the latest state and prepare again",
         );
       }
     };
 
-    if (action === "deploy-manager") {
-      if (!state.freshInput || !state.managerArtifact) {
-        throw new OnboardingWalletIntentError(
-          "wallet_intent_invalid",
-          "Generate the manager files before preparing the deployment transaction",
-        );
-      }
-      const artifact = state.managerArtifact;
-      const preflight = await runOperatorPreflight(config, node, api);
-      const manifest = await this.assertTrustedSavedManagerArtifact(
-        state,
-        config,
-        preflight,
-        network,
-      );
-      try {
-        await node.getContractSource(state.managerPrincipal);
-      } catch (error) {
-        if (!(error instanceof UpstreamHttpError) || error.status !== 404) throw error;
-        assertStateUnchanged();
-        return {
-          scope: state.managerPrincipal,
-          requiredSender: state.freshInput.adminPrincipal,
-          network: network.network,
-          chainId: network.chainId,
-          facts: {
-            schemaVersion: 2,
-            request,
-            managerPrincipal: state.managerPrincipal,
-            profile: manifest.profile,
-            sourceSha256: manifest.artifact.sourceSha256,
-            canonicalSourceSha256: manifest.artifact.canonicalSourceSha256,
-            transaction: manifest.transaction,
-          },
-          transaction: {
-            method: "stx_deployContract",
-            params: {
-              name: manifest.transaction.contractName,
-              clarityCode: artifact.source,
-              clarityVersion: 6,
-              network: network.network,
-              address: state.freshInput.adminPrincipal,
-              sponsored: false,
-              postConditionMode: "deny",
-              postConditions: [],
-            },
-          },
-          review: {
-            title: "Deploy signer manager",
-            summary: `Deploy ${state.managerPrincipal}.`,
-            expectedPostState: "The reviewed manager contract source is confirmed on-chain.",
-            fields: [
-              { label: "Manager", value: state.managerPrincipal },
-              { label: "Sender", value: state.freshInput.adminPrincipal },
-              { label: "Network", value: network.network },
-              { label: "Source SHA-256", value: manifest.artifact.sourceSha256 },
-            ],
-          },
-        };
-      }
-      assertStateUnchanged();
-      throw new OnboardingWalletIntentError(
-        "wallet_intent_invalid",
-        "The signer manager contract is already deployed",
-      );
-    }
-
     const managerPrincipal = state.managerPrincipal;
-    const snapshot = await readSetupSnapshot({
+    const snapshot = await readOperatorAnchorSnapshot({
       config,
       node,
       api,
@@ -1119,38 +861,16 @@ export class OnboardingWalletIntentService {
       reportMissingManager: true,
     });
     if (snapshot.preflight.node.networkId !== network.chainId) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_execution_unavailable",
         "The node does not match the selected wallet network. Check Settings and try again",
       );
     }
-    if (setupRequest && state.managerArtifact) {
-      this.assertTrustedManager(snapshot, managerPrincipal, network);
-      const manifest = await this.assertTrustedSavedManagerArtifact(
-        state,
-        config,
-        snapshot.preflight,
-        network,
-      );
-      if (
-        !snapshot.manager.attachAllowed ||
-        snapshot.manager.source.sha256 !== manifest.artifact.sourceSha256 ||
-        snapshot.manager.source.canonicalSha256 !== manifest.artifact.canonicalSourceSha256
-      ) {
-        throw new OnboardingWalletIntentError(
-          "wallet_intent_invalid",
-          "The deployed manager must match the reviewed source before registration",
-        );
-      }
-    } else if (setupRequest) {
-      this.assertTrustedManager(snapshot, managerPrincipal, network);
-    } else {
-      this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
-    }
+    this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
     if (action === "register-self") {
       const verified = state.signerGrant.verified;
       if (!verified) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "Generate and verify a signer authorization before registration",
         );
@@ -1160,17 +880,16 @@ export class OnboardingWalletIntentService {
         snapshot.registration.signerKeyHex === verified.signerKeyHex &&
         snapshot.registration.signerKeyGrantValid
       ) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "This signer key is already registered and authorized",
         );
       }
     }
 
-    const actorPrincipal =
-      "actorPrincipal" in request ? request.actorPrincipal : state.freshInput?.adminPrincipal;
+    const actorPrincipal = request.actorPrincipal;
     if (!actorPrincipal || !validateStacksAddress(actorPrincipal)) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
         "Connect a valid Stacks account for this network",
       );
@@ -1182,7 +901,7 @@ export class OnboardingWalletIntentService {
     if (action === "claim-rewards") {
       const profileId = snapshot.manager.source.profileId;
       if (!profileId) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_execution_unavailable",
           "The trusted manager profile is unavailable for this claim job",
         );
@@ -1190,7 +909,7 @@ export class OnboardingWalletIntentService {
       try {
         const observeManagerClaimWalletJob = this.options.observeManagerClaimWalletJob;
         if (!observeManagerClaimWalletJob) {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_execution_unavailable",
             "Browser-wallet claims are unavailable because the transaction engine is not running",
           );
@@ -1221,9 +940,9 @@ export class OnboardingWalletIntentService {
         assertStateUnchanged();
         return prepared;
       } catch (error) {
-        if (error instanceof OnboardingWalletIntentError) throw error;
+        if (error instanceof WalletIntentError) throw error;
         if (error instanceof ManagerClaimWalletIntentError) {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             error.code === "unavailable"
               ? "wallet_execution_unavailable"
               : "wallet_intent_conflict",
@@ -1247,7 +966,7 @@ export class OnboardingWalletIntentService {
         "is-admin",
       );
       if (!isAdmin) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "Connect a current manager-admin account",
         );
@@ -1293,13 +1012,13 @@ export class OnboardingWalletIntentService {
     if (action === "register-self") {
       const verified = state.signerGrant.verified;
       if (!verified) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "Generate and verify a signer authorization before registration",
         );
       }
       if (snapshot.preflight.pox.pox5ContractId !== verified.pox5ContractId) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_conflict",
           "The active PoX-5 contract changed. Generate and verify a new signer authorization",
         );
@@ -1309,7 +1028,7 @@ export class OnboardingWalletIntentService {
         snapshot.registration.signerKeyHex === verified.signerKeyHex &&
         snapshot.registration.signerKeyGrantValid
       ) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "This signer key is already registered and authorized",
         );
@@ -1343,7 +1062,7 @@ export class OnboardingWalletIntentService {
         currentUsedGrant.type === ClarityType.OptionalSome &&
         decodeBoolean(currentUsedGrant.value, "used-signer-key-grants")
       ) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "This signer authorization has already been used. Generate and verify a new one",
         );
@@ -1381,14 +1100,14 @@ export class OnboardingWalletIntentService {
 
     if (action === "add-admin" || action === "remove-admin") {
       if (!validateStacksAddress(request.adminPrincipal)) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "Manager admins must be standard Stacks account principals",
         );
       }
       this.assertActionPrincipal(request.adminPrincipal, network.network);
       if (action === "remove-admin" && request.adminPrincipal === actorPrincipal) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "An admin cannot remove itself through Sidekick",
         );
@@ -1405,7 +1124,7 @@ export class OnboardingWalletIntentService {
         "is-admin",
       );
       if (currentlyEnabled === enabled) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           enabled
             ? "This account is already a manager admin"
@@ -1443,7 +1162,7 @@ export class OnboardingWalletIntentService {
         "fees-bips",
       );
       if (currentFees === nextFees) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "The manager already uses this fee rate",
         );
@@ -1476,7 +1195,7 @@ export class OnboardingWalletIntentService {
 
     const sbtcTokenContract = snapshot.preflight.pox.sbtcTokenContract;
     if (!sbtcTokenContract) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_execution_unavailable",
         "The matched network does not expose the trusted sBTC token contract",
       );
@@ -1543,32 +1262,32 @@ export class OnboardingWalletIntentService {
       // Every refusal below is a call the manager or sBTC would reject. Sidekick must not spend a
       // transaction discovering that.
       if (rewards.earned === 0n) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "This bucket has nothing settled for the staker",
         );
       }
       if (feeBips === null) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "The manager has not claimed this bucket yet; claim manager rewards first",
         );
       }
       if (unclaimed < gross) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "The manager has not claimed these rewards yet; claim manager rewards first",
         );
       }
       if (payout !== null) {
         if (rewards.earned < payout.maxFee) {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             "The payout does not cover the staker's maximum Bitcoin withdrawal fee",
           );
         }
         if (rewards.earned - payout.maxFee <= SBTC_WITHDRAWAL_DUST_LIMIT) {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             `A Bitcoin L1 withdrawal must exceed the ${SBTC_WITHDRAWAL_DUST_LIMIT}-sat dust limit after the fee budget`,
           );
@@ -1636,7 +1355,7 @@ export class OnboardingWalletIntentService {
     }
 
     if (!("recipient" in request)) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
         "Wallet action request is missing its recipient",
       );
@@ -1655,7 +1374,7 @@ export class OnboardingWalletIntentService {
         "get-earned-fees",
       );
       if (amount > earnedFees) {
-        throw new OnboardingWalletIntentError(
+        throw new WalletIntentError(
           "wallet_intent_invalid",
           "Withdrawal amount exceeds the currently earned manager fees",
         );
@@ -1728,7 +1447,7 @@ export class OnboardingWalletIntentService {
     const reserved = earnedFees + liability + unclaimed;
     const sweepable = balance >= reserved ? balance - reserved : 0n;
     if (sweepable === 0n) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
         "No fee refunds are currently available to sweep",
       );
@@ -1838,19 +1557,19 @@ export class OnboardingWalletIntentService {
       let customAssetSemanticsUnattested = false;
       if (manifest.action === "deploy-manager") {
         if (manifest.transaction.method !== "stx_deployContract") {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             "Deployment intent contains the wrong transaction method",
           );
         }
         if (decoded.payload.kind !== "deploy-contract") {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             "Deployment verification contains the wrong decoded payload",
           );
         }
         const managerPrincipal = `${manifest.requiredSender}.${manifest.transaction.params.name}`;
-        const snapshot = await readSetupSnapshot({
+        const snapshot = await readOperatorAnchorSnapshot({
           config,
           node,
           api,
@@ -1863,13 +1582,13 @@ export class OnboardingWalletIntentService {
           snapshot.manager.source.sha256 === textSha256(manifest.transaction.params.clarityCode);
       } else {
         if (manifest.transaction.method !== "stx_callContract") {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             "Contract-call intent contains the wrong transaction method",
           );
         }
         if (decoded.payload.kind !== "call-contract") {
-          throw new OnboardingWalletIntentError(
+          throw new WalletIntentError(
             "wallet_intent_invalid",
             "Contract-call verification contains the wrong decoded payload",
           );
@@ -1878,7 +1597,7 @@ export class OnboardingWalletIntentService {
         const request = this.requestFromManifest(manifest);
         if (manifest.action === "claim-rewards") {
           if (!("jobId" in request) || !("actorPrincipal" in request)) {
-            throw new OnboardingWalletIntentError(
+            throw new WalletIntentError(
               "wallet_intent_invalid",
               "Manager-claim intent is missing its exact job binding",
             );
@@ -1901,7 +1620,7 @@ export class OnboardingWalletIntentService {
             canonicalJsonSha256(bound.facts) !== stored.factsSha256 ||
             canonicalJsonSha256(bound.transaction) !== canonicalJsonSha256(manifest.transaction)
           ) {
-            throw new OnboardingWalletIntentError(
+            throw new WalletIntentError(
               "wallet_transaction_mismatch",
               "Canonical manager claim does not bind the stored engine job",
             );
@@ -1930,7 +1649,7 @@ export class OnboardingWalletIntentService {
           }
           complete = jobStatus === "complete";
         } else if (manifest.action === "register-self") {
-          const snapshot = await readSetupSnapshot({
+          const snapshot = await readOperatorAnchorSnapshot({
             config,
             node,
             api,
@@ -1946,7 +1665,7 @@ export class OnboardingWalletIntentService {
           );
         } else if (manifest.action === "add-admin" || manifest.action === "remove-admin") {
           if (!("adminPrincipal" in request)) {
-            throw new OnboardingWalletIntentError(
+            throw new WalletIntentError(
               "wallet_intent_invalid",
               "Admin intent is missing its target principal",
             );
@@ -1961,7 +1680,7 @@ export class OnboardingWalletIntentService {
             (manifest.action === "add-admin");
         } else if (manifest.action === "update-fees") {
           if (!("feeBips" in request)) {
-            throw new OnboardingWalletIntentError(
+            throw new WalletIntentError(
               "wallet_intent_invalid",
               "Fee intent is missing its target rate",
             );
@@ -1971,7 +1690,7 @@ export class OnboardingWalletIntentService {
             BigInt(request.feeBips);
         } else if (manifest.action === "claim-staker-rewards") {
           if (!("stakerPrincipal" in request) || !("rewardCycle" in request)) {
-            throw new OnboardingWalletIntentError(
+            throw new WalletIntentError(
               "wallet_intent_invalid",
               "Staker-claim intent is missing its settlement tuple",
             );
@@ -1996,7 +1715,7 @@ export class OnboardingWalletIntentService {
           );
           complete = settled.earned === 0n;
         } else {
-          const snapshot = await readSetupSnapshot({
+          const snapshot = await readOperatorAnchorSnapshot({
             config,
             node,
             api,
@@ -2305,7 +2024,7 @@ export class OnboardingWalletIntentService {
   }
 
   private async reconcileHistoricalScope(
-    action: BrowserWalletIntentAction,
+    action: RecurringWalletIntentAction,
     scope: string,
     _factsSha256: string,
     observedAt: string,
@@ -2321,8 +2040,7 @@ export class OnboardingWalletIntentService {
         input.state === "failed" ? this.retireFailedIntent(input, observedAt) : input;
       const refreshed = await this.refreshStored(candidate, observedAt);
       const verification = this.latestVerification(candidate.id) ?? refreshed.verification;
-      const completedPriorAction =
-        action !== "deploy-manager" && this.hasCanonicalExecution(candidate.id, action);
+      const completedPriorAction = this.hasCanonicalExecution(candidate.id, action);
       if (
         verification &&
         historicalScopeBlockers.has(verification.outcome) &&
@@ -2447,7 +2165,7 @@ export class OnboardingWalletIntentService {
       manifest.data.seal.factsSha256 !== stored.factsSha256 ||
       canonicalJsonSha256(manifest.data) !== stored.manifestSha256
     ) {
-      throw new OnboardingWalletIntentError(
+      throw new WalletIntentError(
         "wallet_intent_invalid",
         "Stored transaction request failed its integrity check. Prepare a new transaction",
       );
@@ -2458,7 +2176,7 @@ export class OnboardingWalletIntentService {
   private requireStored(id: string): StoredWalletIntent {
     const stored = this.options.store.walletIntents.get(z.uuid().parse(id));
     if (!stored) {
-      throw new OnboardingWalletIntentError("wallet_intent_not_found", "Wallet intent not found");
+      throw new WalletIntentError("wallet_intent_not_found", "Wallet intent not found");
     }
     return stored;
   }
@@ -2540,9 +2258,3 @@ export class OnboardingWalletIntentService {
     });
   }
 }
-
-/** Generic names for day-2 callers; onboarding aliases remain until Slice 3 removes setup routes. */
-export {
-  OnboardingWalletIntentError as WalletIntentError,
-  OnboardingWalletIntentService as WalletIntentService,
-};

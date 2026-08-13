@@ -7,8 +7,6 @@ export const dashboardPages = [
   "pool",
   "rewards",
   "operations",
-  "setup",
-  "enrollment",
   "settings",
 ] as const;
 
@@ -41,7 +39,7 @@ export function isManagerActionId(value: string | null): value is ManagerActionI
 
 export function parseDashboardHash(hash: string): DashboardRoute {
   const [rawPage = "", rawQuery = ""] = hash.replace(/^#/, "").split("?", 2);
-  const legacy = rawPage === "registration";
+  const legacy = ["registration", "setup", "enrollment"].includes(rawPage);
   const page = legacy ? "manager" : isDashboardPage(rawPage) ? rawPage : "overview";
   const candidate = page === "manager" ? new URLSearchParams(rawQuery).get("action") : null;
   return {
