@@ -938,7 +938,7 @@ describe("Stacks node client", () => {
     const responses = [
       pox,
       { source: "(define-public (ping) (ok true))", publish_height: 8_600_000 },
-      { functions: [] },
+      { clarity_version: "Clarity6", epoch: "Epoch2_05", functions: [] },
       { okay: true, result: cvToHex(uintCV(141n)) },
       { data: cvToHex(uintCV(500n)) },
       { data: cvToHex(someCV(uintCV(0n))) },
@@ -955,7 +955,11 @@ describe("Stacks node client", () => {
 
     await client.getPoxInfo(readOptions);
     await client.getContractSource(manager, readOptions);
-    await client.getContractInterface(manager, readOptions);
+    await expect(client.getContractInterface(manager, readOptions)).resolves.toMatchObject({
+      clarity_version: "Clarity6",
+      epoch: "Epoch2_05",
+      functions: [],
+    });
     await client.callReadOnly(
       "SP000000000000000000002Q6VF78.pox-5",
       "reward-cycle-to-burn-height",

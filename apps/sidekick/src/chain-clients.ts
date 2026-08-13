@@ -105,6 +105,14 @@ const contractSourceSchema = z.object({
 });
 
 const contractInterfaceSchema = z.object({
+  clarity_version: z
+    .string()
+    .regex(/^Clarity[1-9][0-9]*$/)
+    .optional(),
+  epoch: z
+    .string()
+    .regex(/^Epoch[0-9]+(?:_[0-9]+)*$/)
+    .optional(),
   functions: z.array(
     z.object({
       name: z.string(),

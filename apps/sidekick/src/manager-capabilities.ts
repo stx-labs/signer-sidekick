@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ManagerActionCapability,
   ManagerActionCapabilityId,
@@ -86,6 +87,21 @@ function canonicalAbiValue(value: unknown): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalAbiValue(entry)}`)
     .join(",")}}`;
+}
+
+export function managerInterfaceSha256(contractInterface: ContractInterface): string {
+  const functions = [...contractInterface.functions].sort((left, right) =>
+    canonicalAbiValue(left).localeCompare(canonicalAbiValue(right)),
+  );
+  return createHash("sha256")
+    .update(
+      canonicalAbiValue({
+        clarityVersion: contractInterface.clarity_version ?? null,
+        epoch: contractInterface.epoch ?? null,
+        functions,
+      }),
+    )
+    .digest("hex");
 }
 
 const EXPECTED_TRAIT_ARGUMENT_TYPES: readonly unknown[] = [
@@ -234,6 +250,9 @@ export function inspectManagerCapabilities(input: {
     sourceReview: {
       exactReviewed: input.exactSourceReviewed,
       reason: input.sourceReviewReason,
+      clarityVersion: input.contractInterface.clarity_version ?? null,
+      epoch: input.contractInterface.epoch ?? null,
+      interfaceSha256: managerInterfaceSha256(input.contractInterface),
     },
     eventVocabulary,
     actions,

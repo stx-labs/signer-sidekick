@@ -24,6 +24,7 @@ import {
 import type { SidekickNetwork } from "./config.js";
 import {
   inspectManagerCapabilities,
+  managerInterfaceSha256,
   missingReferenceManagerFunctions,
 } from "./manager-capabilities.js";
 import {
@@ -61,6 +62,9 @@ export interface ManagerVerificationReport {
   interface: {
     compatible: boolean;
     missingFunctions: string[];
+    clarityVersion: string | null;
+    epoch: string | null;
+    sha256: string | null;
   };
   capabilities: ManagerCapabilities;
   installedProfiles: {
@@ -553,6 +557,9 @@ export function verifyManagerArtifact(
     interface: {
       compatible: interfaceCompatible,
       missingFunctions,
+      clarityVersion: contractInterface.clarity_version ?? null,
+      epoch: contractInterface.epoch ?? null,
+      sha256: managerInterfaceSha256(contractInterface),
     },
     capabilities,
     installedProfiles: {
@@ -641,6 +648,9 @@ export async function inspectManagerOrReportMissing(
       interface: {
         compatible: false,
         missingFunctions: ["validate-stake!"],
+        clarityVersion: null,
+        epoch: null,
+        sha256: null,
       },
       capabilities: inspectManagerCapabilities({
         contractInterface: { functions: [] },

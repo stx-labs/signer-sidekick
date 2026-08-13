@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-08-13T19:38:44.586Z",
+  "capturedAt": "2026-08-13T19:59:33.073Z",
   "purpose": "research-and-test-input-only",
   "authority": {
     "chainState": "anchored-local-stacks-node",
@@ -9,10 +9,10 @@
   },
   "anchor": {
     "networkId": 1,
-    "stacksTipHeight": 8755223,
-    "stacksTip": "0x2628c69f4116db7a307bd132cac8d752ce44e43563ebfb8168e1a64e0fbe3ae0",
-    "burnBlockHeight": 962325,
-    "poxBurnBlockHeight": 962325,
+    "stacksTipHeight": 8755381,
+    "stacksTip": "0xe1d6d9f1bd4d4159d2a5057f61d03fa9d946719ae011ef5ccab41cdce777ff2b",
+    "burnBlockHeight": 962326,
+    "poxBurnBlockHeight": 962326,
     "poxContract": "SP000000000000000000002Q6VF78.pox-5",
     "currentCycle": 141,
     "nextCycle": 142
@@ -100,7 +100,18 @@
   "sourceFamilies": [
     {
       "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-      "interfaceSha256": "4f2e0c27baa82dff4c63b40c66da4dd8f798486088c470ccf6d86cc9099b2fc7",
+      "interfaceSha256s": [
+        "4f2e0c27baa82dff4c63b40c66da4dd8f798486088c470ccf6d86cc9099b2fc7",
+        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+      ],
+      "clarityVersions": [
+        "Clarity4",
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
       "deployments": [
         "SP1PHZZW24DHBA4SJB27XEAD0Z4HTG7219S428RFA.signer-manager",
         "SP1RWRWKM2364FY3XZTWFFK8K4MVBQYQX5V1E2KVC.signer-manager",
@@ -142,7 +153,16 @@
     },
     {
       "sourceSha256": "19eb290785cb57e47254fc62e61cee17c77504273ce3c0b6f5abbe07f25d5c2f",
-      "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+      "interfaceSha256s": [
+        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
       "deployments": [
         "SP21D6BW36TSGWAZS8K4JAJVTNXWKQN9G3TH5MG6A.signer-manager-bd-contract"
       ],
@@ -176,7 +196,16 @@
     },
     {
       "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-      "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+      "interfaceSha256s": [
+        "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
       "deployments": [
         "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.signer-manager-blockdaemon-v1",
         "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.signer-manager-foundry-v1",
@@ -205,7 +234,16 @@
     },
     {
       "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-      "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+      "interfaceSha256s": [
+        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
       "deployments": [
         "SP1N8F8BBBC60XF6HJBNJHKPRGJ7WZBRGNDJX4YDR.signer-manager",
         "SP1Q1CZV7X4N1MCW5G96FR3B1MT8XGFB0YTZWAX85.signer-manager-hiro",
@@ -256,7 +294,16 @@
     },
     {
       "sourceSha256": "72b3d5ea72f0b8fd7b1dcaa154d5d88d81ee1fe04e955a6c11be4e8c03eb9fa5",
-      "interfaceSha256": "ddade199691d590dd3b0b08884b9eba3356413484ae932f8c69d131f8a2651c2",
+      "interfaceSha256s": [
+        "ddade199691d590dd3b0b08884b9eba3356413484ae932f8c69d131f8a2651c2"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "f8bfdff230ea7901416efad76ea374503e99dce9bfdc6a84f9d081ef6006e4d1",
       "deployments": [
         "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.native-pool-signer-manager"
       ],
@@ -274,7 +321,16 @@
     },
     {
       "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-      "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+      "interfaceSha256s": [
+        "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
       "deployments": [
         "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.signer-manager-bond-1-v1",
         "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.signer-manager-bond-2-v1",
@@ -300,7 +356,16 @@
     },
     {
       "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
-      "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+      "interfaceSha256s": [
+        "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695"
+      ],
+      "clarityVersions": [
+        "Clarity4"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
       "deployments": [
         "SP8HK160YD5GHXP69VGA0TC7AQJ1X4CDW3XVERSE.xverse-signer-manager-1",
         "SP8HK160YD5GHXP69VGA0TC7AQJ1X4CDW3XVERSE.xverse-signer-manager-2",
@@ -336,7 +401,16 @@
     },
     {
       "sourceSha256": "c172f3bb339c9a1c04fb9cb976bf77f85622023f060949854f65f0771f1f2eb4",
-      "interfaceSha256": "1f93418ba712ac98d3760e352df644ff084551e4ccd788ee77bb67d8fa6867a3",
+      "interfaceSha256s": [
+        "1f93418ba712ac98d3760e352df644ff084551e4ccd788ee77bb67d8fa6867a3"
+      ],
+      "clarityVersions": [
+        "Clarity5"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "86648803abe024fc432ae8464a60176f879047a2ef03fe2b624684fa46b5f6a4",
       "deployments": [
         "SPV9K21TBFAK4KNRJXF5DFP8N7W46G4V9RCJDC22.juice-pool-stx-signer"
       ],
@@ -385,7 +459,18 @@
     },
     {
       "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
-      "interfaceSha256": "fc0b9f863d84e76b650e43f393d2da00dd8b8f0bd09050b538da2c3caff524b1",
+      "interfaceSha256s": [
+        "dc356d2f0ba70223bb7c2396983e22ae9c7d10d3a483c444aa0e2051f113e332",
+        "fc0b9f863d84e76b650e43f393d2da00dd8b8f0bd09050b538da2c3caff524b1"
+      ],
+      "clarityVersions": [
+        "Clarity4",
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "60e6fec04ae95036538cec5ed483391911d9ee51acd9d8d5b6a9a501086632b1",
       "deployments": [
         "SPMPMA1V6P430M8C91QS1G9XJ95S59JS1TZFZ4Q4.fastpool-max500-signer-manager",
         "SPZACCJ8XPZ14P7K7NGFMT1BWQYF2JA9DFA2ZR8A.signer-manager"
@@ -439,7 +524,16 @@
     },
     {
       "sourceSha256": "f2473cfb53c3e5284149ec9f1d38f0ad66d70c8b1d04df1a7daa07e715b9bc3d",
-      "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+      "interfaceSha256s": [
+        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+      ],
+      "clarityVersions": [
+        "Clarity6"
+      ],
+      "epochs": [
+        "Epoch40"
+      ],
+      "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
       "deployments": [
         "SP21YTSM60CAY6D011EZVEVNKXVW8FVZE198XEFFP.fastpool-1-signer-manager"
       ],
@@ -506,6 +600,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -568,6 +665,9 @@
         "clarityVersion": 4,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "4f2e0c27baa82dff4c63b40c66da4dd8f798486088c470ccf6d86cc9099b2fc7",
+        "interfaceClarityVersion": "Clarity4",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -628,6 +728,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -688,6 +791,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -748,6 +854,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -808,6 +917,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -868,6 +980,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -928,6 +1043,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -991,6 +1109,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1051,6 +1172,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1114,6 +1238,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1177,6 +1304,9 @@
         "clarityVersion": null,
         "sourceSha256": "19eb290785cb57e47254fc62e61cee17c77504273ce3c0b6f5abbe07f25d5c2f",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1240,6 +1370,9 @@
         "clarityVersion": 6,
         "sourceSha256": "f2473cfb53c3e5284149ec9f1d38f0ad66d70c8b1d04df1a7daa07e715b9bc3d",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1303,6 +1436,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1366,6 +1502,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1410,6 +1549,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1470,6 +1612,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1533,6 +1678,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1593,6 +1741,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1656,6 +1807,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1719,6 +1873,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1763,6 +1920,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -1826,6 +1986,9 @@
         "clarityVersion": null,
         "sourceSha256": "72b3d5ea72f0b8fd7b1dcaa154d5d88d81ee1fe04e955a6c11be4e8c03eb9fa5",
         "interfaceSha256": "ddade199691d590dd3b0b08884b9eba3356413484ae932f8c69d131f8a2651c2",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "f8bfdff230ea7901416efad76ea374503e99dce9bfdc6a84f9d081ef6006e4d1",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -1872,6 +2035,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -1919,6 +2085,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -1966,6 +2135,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2013,6 +2185,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2060,6 +2235,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2107,6 +2285,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2154,6 +2335,9 @@
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2203,6 +2387,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2252,6 +2439,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2301,6 +2491,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2350,6 +2543,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2381,6 +2577,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2430,6 +2629,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2479,6 +2681,9 @@
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
         "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "public:claim-rewards:2bc0fb9f92d4af73b186c90ccb6d21f3ddb8ba9a423bd0b843531237bf0559cd",
@@ -2529,6 +2734,9 @@
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
         "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceClarityVersion": "Clarity4",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2592,6 +2800,9 @@
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
         "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceClarityVersion": "Clarity4",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2655,6 +2866,9 @@
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
         "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceClarityVersion": "Clarity4",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2717,6 +2931,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2780,6 +2997,9 @@
         "clarityVersion": 6,
         "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
         "interfaceSha256": "fc0b9f863d84e76b650e43f393d2da00dd8b8f0bd09050b538da2c3caff524b1",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "60e6fec04ae95036538cec5ed483391911d9ee51acd9d8d5b6a9a501086632b1",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2862,6 +3082,9 @@
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2922,6 +3145,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -2985,6 +3211,9 @@
         "clarityVersion": 5,
         "sourceSha256": "c172f3bb339c9a1c04fb9cb976bf77f85622023f060949854f65f0771f1f2eb4",
         "interfaceSha256": "1f93418ba712ac98d3760e352df644ff084551e4ccd788ee77bb67d8fa6867a3",
+        "interfaceClarityVersion": "Clarity5",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "86648803abe024fc432ae8464a60176f879047a2ef03fe2b624684fa46b5f6a4",
         "interfaceSignatures": [
           "private:assert-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:do-withdraw-fees:fb8d07135a1a208763ab725935740b9717f2c211eb0a7d5bd9f09aaf28a30bfa",
@@ -3063,6 +3292,9 @@
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
         "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceClarityVersion": "Clarity6",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
@@ -3126,6 +3358,9 @@
         "clarityVersion": 4,
         "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
         "interfaceSha256": "dc356d2f0ba70223bb7c2396983e22ae9c7d10d3a483c444aa0e2051f113e332",
+        "interfaceClarityVersion": "Clarity4",
+        "interfaceEpoch": "Epoch40",
+        "clarityTokenSha256": "60e6fec04ae95036538cec5ed483391911d9ee51acd9d8d5b6a9a501086632b1",
         "interfaceSignatures": [
           "private:authorize-admin:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",
           "private:authorize-pox-5:6c2afc7d9d603e4009999133e7adadb64dd1bb00ba1da0f13a6c0f59ad1ef59b",

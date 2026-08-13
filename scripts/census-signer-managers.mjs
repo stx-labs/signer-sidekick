@@ -52,6 +52,64 @@ export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function clarityTokenSha256(source) {
+  const tokens = [];
+  const delimiters = "(){}[],:";
+  for (let index = 0; index < source.length; ) {
+    const character = source[index];
+    if (/\s/.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === ";" && source[index + 1] === ";") {
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (character === '"') {
+      let token = character;
+      index += 1;
+      let escaped = false;
+      let terminated = false;
+      while (index < source.length) {
+        const current = source[index];
+        token += current;
+        index += 1;
+        if (escaped) escaped = false;
+        else if (current === "\\") escaped = true;
+        else if (current === '"') {
+          terminated = true;
+          break;
+        }
+      }
+      if (!terminated) throw new Error("Clarity source contains an unterminated string");
+      tokens.push(token);
+      continue;
+    }
+    if (delimiters.includes(character)) {
+      tokens.push(character);
+      index += 1;
+      continue;
+    }
+    let token = "";
+    while (index < source.length) {
+      const current = source[index];
+      if (
+        /\s/.test(current) ||
+        delimiters.includes(current) ||
+        current === '"' ||
+        (current === ";" && source[index + 1] === ";")
+      ) {
+        break;
+      }
+      token += current;
+      index += 1;
+    }
+    if (token.length === 0) throw new Error(`Cannot tokenize Clarity source at byte ${index}`);
+    tokens.push(token);
+  }
+  return sha256(canonicalJson(tokens));
+}
+
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -477,6 +535,16 @@ function parseContractDeployment(value, index) {
   };
 }
 
+function interfaceClarityVersion(abi) {
+  const version = abi.clarity_version;
+  return typeof version === "string" && /^Clarity[1-9][0-9]*$/.test(version) ? version : null;
+}
+
+function interfaceEpoch(abi) {
+  const epoch = abi.epoch;
+  return typeof epoch === "string" && /^Epoch[0-9]+(?:_[0-9]+)*$/.test(epoch) ? epoch : null;
+}
+
 async function discoverTraitContracts(fetchImpl, apiUrl, apiHeaders) {
   const deployments = [];
   const seen = new Set();
@@ -565,11 +633,29 @@ function summarizeSourceFamilies(managers) {
     const key = manager.deployment.sourceSha256;
     const family = families.get(key) ?? {
       sourceSha256: key,
-      interfaceSha256: manager.deployment.interfaceSha256,
+      interfaceSha256s: [],
+      clarityVersions: [],
+      epochs: [],
+      clarityTokenSha256: manager.deployment.clarityTokenSha256,
       deployments: [],
       lifecycleCounts: {},
       interfaceSignatures: manager.deployment.interfaceSignatures,
     };
+    if (!family.interfaceSha256s.includes(manager.deployment.interfaceSha256)) {
+      family.interfaceSha256s.push(manager.deployment.interfaceSha256);
+    }
+    if (
+      manager.deployment.interfaceClarityVersion !== null &&
+      !family.clarityVersions.includes(manager.deployment.interfaceClarityVersion)
+    ) {
+      family.clarityVersions.push(manager.deployment.interfaceClarityVersion);
+    }
+    if (
+      manager.deployment.interfaceEpoch !== null &&
+      !family.epochs.includes(manager.deployment.interfaceEpoch)
+    ) {
+      family.epochs.push(manager.deployment.interfaceEpoch);
+    }
     family.deployments.push(manager.principal);
     family.lifecycleCounts[manager.lifecycle] =
       (family.lifecycleCounts[manager.lifecycle] ?? 0) + 1;
@@ -578,6 +664,9 @@ function summarizeSourceFamilies(managers) {
   return [...families.values()]
     .map((family) => ({
       ...family,
+      interfaceSha256s: family.interfaceSha256s.sort(),
+      clarityVersions: family.clarityVersions.sort(),
+      epochs: family.epochs.sort(),
       deployments: family.deployments.sort(),
     }))
     .sort((left, right) => left.sourceSha256.localeCompare(right.sourceSha256));
@@ -654,6 +743,9 @@ export async function collectManagerCensus({
             clarityVersion: rawDeployment.clarityVersion,
             sourceSha256: sha256(rawDeployment.source),
             interfaceSha256: sha256(canonicalJson(rawDeployment.abi)),
+            interfaceClarityVersion: interfaceClarityVersion(rawDeployment.abi),
+            interfaceEpoch: interfaceEpoch(rawDeployment.abi),
+            clarityTokenSha256: clarityTokenSha256(rawDeployment.source),
             interfaceSignatures: interfaceSignatures(rawDeployment.abi),
           };
     return {

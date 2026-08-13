@@ -35,7 +35,7 @@ The compatibility rule is:
 
 The reproducible snapshot in
 [`research/signer-manager-census/mainnet-2026-08-13.json`](../../research/signer-manager-census/mainnet-2026-08-13.json)
-captured a stable local-node anchor at Stacks height 8,755,223, Bitcoin height 962,325, current
+captured a stable local-node anchor at Stacks height 8,755,381, Bitcoin height 962,326, current
 reward cycle 141, and next cycle 142. It enumerated PoX-5's current and next signer-set linked lists
 at that exact index-block hash, retained only indexed registration/activity events included at or
 before the anchor, and verified every registration candidate through the anchored local node's
@@ -65,9 +65,9 @@ deriving lifecycle only from node-verified registration and signer-set state.
 
 | Behavior family | Deployments | Lifecycle at anchor | Observed behavior | Compatibility consequence |
 | --- | ---: | --- | --- | --- |
-| Current reference-like | 26 across four byte variants | 17 active; 6 historical; 3 not registered | Registration; multi-admin updates; fee updates; aggregate claim followed by per-staker claims; fee withdrawal/refunds; withdrawal-liability recovery | Good first reusable adapter, but the adapter should match exact callable/return behavior rather than the contract name or source hash |
+| Current reference-like | 26 across four byte variants | 14 active; 10 historical; 2 not registered | Registration; multi-admin updates; fee updates; aggregate claim followed by per-staker claims; fee withdrawal/refunds; withdrawal-liability recovery | Good first reusable adapter, but the adapter should match exact callable/return behavior rather than the contract name or source hash |
 | Legacy reference-like | 3 Xverse deployments | 3 active | Nearly the reference flow, but `claim-staker-rewards` returns a `uint` rather than the newer `{ earned, withdrawal-request }` tuple | Requires a distinct response decoder and post-state behavior; a matching function name is not enough |
-| Restricted-recipient / allowlist | 14 deployments: eight pool/operator and six bond-labeled contracts | 4 active; 10 historical | External admin contract, allowed-staker map, one reward recipient, aggregate claimed rewards transferred to that recipient | Does not expose the reference per-staker fee/withdrawal model; Sidekick should present allowlist/recipient capabilities rather than reference claims |
+| Restricted-recipient / allowlist | 14 deployments: eight pool/operator and six bond-labeled contracts | 7 active; 6 historical; 1 not registered | External admin contract, allowed-staker map, one reward recipient, aggregate claimed rewards transferred to that recipient | Does not expose the reference per-staker fee/withdrawal model; Sidekick should present allowlist/recipient capabilities rather than reference claims |
 | max500 advanced | 2 deployments | 2 active | Five-percent fee cap, delayed fee increases, last-admin guard, payout configuration, minimum claims, pending payouts, per-cycle buckets, and staker refund accounting | Reusable advanced adapter candidate; several behaviors intentionally differ from the reference family |
 | Native-pool | 1 deployment | 1 active | Eligibility delegated to an external native-pool contract; stakers claim their own rewards; no common fee/admin surface beyond external admin | Pool membership and claim semantics depend on an external contract and need their own capability adapter |
 | Juice Pool STX | 1 deployment | 1 active | Custom STX-denominated redistribution, tranches, fee proposal/confirmation, pause and OG controls | Preserve generic source/ABI/events in core; specialized tranche and STX redistribution tooling stays custom unless separately standardized |
@@ -76,6 +76,13 @@ The current reference-like count includes 24 exact/reference-newline deployments
 variant whose substantive difference is header comments, and one reformatted `fastpool-1` source.
 One of the reference deployments is
 `SP2369QN53586176SYRF4XFGF4E84V0J0EWKRG0ZH.signer-manager`.
+
+All four byte-distinct reference-like sources produce the same comment/format-insensitive Clarity
+token digest. Source equivalence is not sufficient capability evidence by itself: those deployments
+span Clarity 4 and Clarity 6, and the same source hash appears with different interface hashes.
+Executable evidence must therefore bind the exact source SHA-256, Clarity version/epoch, and
+canonical callable interface hash. The census records all observed values instead of collapsing a
+source family to one ABI.
 
 ### Current reference-like surface
 
@@ -160,7 +167,8 @@ manager-derived accounting views may be unavailable.
 ### Level 2: reviewed behavioral adapters
 
 One adapter should describe one reusable capability or tightly coupled behavior family, not bless a
-whole contract. It must define:
+whole contract. Its deployment evidence key is the exact source SHA-256 plus Clarity version/epoch
+and canonical callable interface SHA-256. It must define:
 
 - exact function, argument, response, and error shapes;
 - authorization and referenced-contract assumptions;

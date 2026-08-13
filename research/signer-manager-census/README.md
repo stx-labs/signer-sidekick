@@ -48,6 +48,11 @@ artifact. It writes:
 - each distinct exact source under `sources/<sha256>.clar`; and
 - each distinct canonicalized ABI under `interfaces/<sha256>.json`.
 
+The manifest also records a comment/format-insensitive Clarity token digest for research grouping,
+plus every observed interface hash, Clarity version, and epoch for each exact source. Token
+equivalence is never executable evidence: the same token stream can run under different Clarity
+language versions.
+
 Run `pnpm test:census:managers` before trusting collector changes.
 
 ## Refresh and review policy

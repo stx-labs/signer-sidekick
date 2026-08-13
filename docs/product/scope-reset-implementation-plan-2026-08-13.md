@@ -225,3 +225,7 @@ the reviewed slice for operator signing.
   capability-adapter change, after a PoX/Stacks Core protocol upgrade, when monitoring discovers a
   new source/interface, and at least monthly while the deployed population is changing. Census
   evidence prioritizes review but never grants a runtime capability.
+- **Capability deployment identity (2026-08-13):** source bytes alone do not identify executable
+  semantics because the same source is deployed under multiple Clarity versions. Capability
+  evidence binds exact source SHA-256, Clarity version/epoch, and canonical callable-interface
+  SHA-256; comment/format-insensitive token hashes remain research evidence only.

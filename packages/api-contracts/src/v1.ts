@@ -388,6 +388,9 @@ export interface ManagerCapabilities {
   sourceReview: {
     exactReviewed: boolean;
     reason: string;
+    clarityVersion?: string | null;
+    epoch?: string | null;
+    interfaceSha256?: string;
   };
   eventVocabulary: {
     id: "reference-manager-v1";

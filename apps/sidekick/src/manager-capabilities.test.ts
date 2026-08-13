@@ -3,6 +3,7 @@ import type { ContractInterface } from "./chain-clients.js";
 import {
   inspectManagerCapabilities,
   managerActionCapability,
+  managerInterfaceSha256,
   missingReferenceManagerFunctions,
 } from "./manager-capabilities.js";
 
@@ -115,6 +116,28 @@ describe("manager capabilities", () => {
       adapter: null,
       reason: expect.stringContaining("byte-exact source is not reviewed"),
     });
+  });
+
+  it("binds interface evidence to callable ABI, Clarity version, and epoch", () => {
+    const clarity4 = {
+      ...referenceInterface(),
+      clarity_version: "Clarity4",
+      epoch: "Epoch40",
+    };
+    const clarity6 = { ...clarity4, clarity_version: "Clarity6" };
+    const otherEpoch = { ...clarity4, epoch: "Epoch31" };
+    const changedAbi = {
+      ...clarity4,
+      functions: clarity4.functions.map((entry) =>
+        entry.name === "update-fees" ? { ...entry, outputs: { type: "bool" } } : entry,
+      ),
+    };
+    const reorderedAbi = { ...clarity4, functions: [...clarity4.functions].reverse() };
+
+    expect(managerInterfaceSha256(clarity4)).not.toBe(managerInterfaceSha256(clarity6));
+    expect(managerInterfaceSha256(clarity4)).not.toBe(managerInterfaceSha256(otherEpoch));
+    expect(managerInterfaceSha256(clarity4)).not.toBe(managerInterfaceSha256(changedAbi));
+    expect(managerInterfaceSha256(clarity4)).toBe(managerInterfaceSha256(reorderedAbi));
   });
 
   it("enables reviewed capabilities for an exact reviewed source", () => {

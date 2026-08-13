@@ -15,6 +15,7 @@ import {
 } from "@stacks/transactions";
 import {
   canonicalJson,
+  clarityTokenSha256,
   classifyManager,
   collectManagerCensus,
   decodePoxPrintEvent,
@@ -33,6 +34,8 @@ const managerTraitOnly = `${boot}.manager-test-unused`;
 const tip = `0x${"11".repeat(32)}`;
 const source = "(define-public (validate-stake! (staker principal)) (ok true))\n";
 const abi = {
+  clarity_version: "Clarity6",
+  epoch: "Epoch2_05",
   functions: [
     {
       name: "validate-stake!",
@@ -190,6 +193,16 @@ test("canonical JSON and hashes are stable across object key order", () => {
   assert.equal(sha256(first), sha256(second));
 });
 
+test("Clarity token hashes ignore formatting and comments but preserve string contents", () => {
+  const compact = '(define-public (ping) (ok "hello world"))';
+  const formatted = `;; comment\n(define-public\n  (ping)\n  (ok "hello world")\n)\n`;
+  assert.equal(clarityTokenSha256(compact), clarityTokenSha256(formatted));
+  assert.notEqual(
+    clarityTokenSha256(compact),
+    clarityTokenSha256('(define-public (ping) (ok "hello  world"))'),
+  );
+});
+
 test("decodes registration and generic PoX print evidence", () => {
   assert.deepEqual(
     decodePoxPrintEvent(eventHex("register-signer", managerA, `02${"ab".repeat(32)}`)),
@@ -255,6 +268,11 @@ test("builds a node-anchored census and writes checksummed evidence", async () =
   assert.equal(result.artifact.summary.nextSignerSet, 1);
   assert.equal(result.artifact.authority.runtimeAllowlist, false);
   assert.equal(result.artifact.sourceFamilies.length, 1);
+  assert.deepEqual(result.artifact.sourceFamilies[0].clarityVersions, ["Clarity6"]);
+  assert.deepEqual(result.artifact.sourceFamilies[0].epochs, ["Epoch2_05"]);
+  assert.deepEqual(result.artifact.sourceFamilies[0].interfaceSha256s, [
+    sha256(canonicalJson(abi)),
+  ]);
   const traitOnly = result.artifact.managers.find(
     ({ principal }) => principal === managerTraitOnly,
   );

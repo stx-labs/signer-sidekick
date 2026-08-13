@@ -269,7 +269,13 @@ describe("deployed manager verification", () => {
       contractInterface,
     );
 
-    expect(report.interface).toEqual({ compatible: true, missingFunctions: [] });
+    expect(report.interface).toMatchObject({
+      compatible: true,
+      missingFunctions: [],
+      clarityVersion: null,
+      epoch: null,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(report.attachAllowed).toBe(true);
     expect(
       report.capabilities.actions.find(({ id }) => id === "reference-reward-claims"),
