@@ -209,7 +209,6 @@ the reviewed slice for operator signing.
 
 - Capability adapter approver and source-fingerprint review process: before adding a non-reference
   executable adapter.
-- Census refresh cadence: before automating Slice 4.
 - Network reference/confidence rules and signer-health retention: before alerting in Slice 7.
 - Support-artifact seam: before claiming single-artifact incident handoff.
 - Reward confidence and permissionless-calculation policy: before presenting forecasts/actions as
@@ -222,3 +221,7 @@ the reviewed slice for operator signing.
   `https://stx.fan/zero_to/signing/` as the supported day-zero handoff. The URL is centralized in the
   dashboard and documentation rather than treated as a compatibility contract; it can be updated if
   the maintained destination changes.
+- **Manager census cadence (2026-08-13):** refresh the checked-in anchored census before a
+  capability-adapter change, after a PoX/Stacks Core protocol upgrade, when monitoring discovers a
+  new source/interface, and at least monthly while the deployed population is changing. Census
+  evidence prioritizes review but never grants a runtime capability.

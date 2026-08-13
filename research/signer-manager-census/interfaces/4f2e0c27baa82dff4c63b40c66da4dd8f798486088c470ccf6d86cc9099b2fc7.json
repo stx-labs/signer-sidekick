@@ -1,0 +1,800 @@
+{
+  "maps": [
+    {
+      "key": "principal",
+      "name": "admins",
+      "value": "bool"
+    },
+    {
+      "key": {
+        "tuple": [
+          {
+            "name": "bond-index",
+            "type": {
+              "optional": "uint128"
+            }
+          },
+          {
+            "name": "reward-cycle",
+            "type": "uint128"
+          }
+        ]
+      },
+      "name": "fee-bips-for-cycle",
+      "value": "uint128"
+    },
+    {
+      "key": "principal",
+      "name": "pox-addrs",
+      "value": {
+        "tuple": [
+          {
+            "name": "max-fee",
+            "type": "uint128"
+          },
+          {
+            "name": "pox-addr",
+            "type": {
+              "tuple": [
+                {
+                  "name": "hashbytes",
+                  "type": {
+                    "buffer": {
+                      "length": 32
+                    }
+                  }
+                },
+                {
+                  "name": "version",
+                  "type": {
+                    "buffer": {
+                      "length": 1
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "uint128",
+      "name": "withdrawal-requests",
+      "value": "principal"
+    }
+  ],
+  "epoch": "Epoch40",
+  "functions": [
+    {
+      "args": [],
+      "name": "authorize-admin",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "authorize-pox-5",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "bond-info",
+          "type": {
+            "tuple": [
+              {
+                "name": "bond-index",
+                "type": "uint128"
+              },
+              {
+                "name": "earned",
+                "type": "uint128"
+              },
+              {
+                "name": "rewards-per-token",
+                "type": "uint128"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "snapshot-bond-fee",
+      "access": "private",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "bond-periods",
+          "type": {
+            "list": {
+              "type": "uint128",
+              "length": 6
+            }
+          }
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "claim-rewards",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": {
+              "tuple": [
+                {
+                  "name": "bond-rewards",
+                  "type": {
+                    "list": {
+                      "type": {
+                        "tuple": [
+                          {
+                            "name": "bond-index",
+                            "type": "uint128"
+                          },
+                          {
+                            "name": "earned",
+                            "type": "uint128"
+                          },
+                          {
+                            "name": "rewards-per-token",
+                            "type": "uint128"
+                          }
+                        ]
+                      },
+                      "length": 6
+                    }
+                  }
+                },
+                {
+                  "name": "bond-totals",
+                  "type": "uint128"
+                },
+                {
+                  "name": "stx-rewards",
+                  "type": {
+                    "tuple": [
+                      {
+                        "name": "earned",
+                        "type": "uint128"
+                      },
+                      {
+                        "name": "rewards-per-token",
+                        "type": "uint128"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "total-rewards",
+                  "type": "uint128"
+                }
+              ]
+            },
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "claim-staker-rewards",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": {
+              "tuple": [
+                {
+                  "name": "earned",
+                  "type": "uint128"
+                },
+                {
+                  "name": "withdrawal-request",
+                  "type": {
+                    "optional": "uint128"
+                  }
+                }
+              ]
+            },
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "request-id",
+          "type": "uint128"
+        }
+      ],
+      "name": "reclaim-failed-withdrawal",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "signer-manager",
+          "type": "trait_reference"
+        },
+        {
+          "name": "signer-key",
+          "type": {
+            "buffer": {
+              "length": 33
+            }
+          }
+        },
+        {
+          "name": "auth-id",
+          "type": "uint128"
+        },
+        {
+          "name": "signer-sig",
+          "type": {
+            "buffer": {
+              "length": 65
+            }
+          }
+        }
+      ],
+      "name": "register-self",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": {
+              "tuple": [
+                {
+                  "name": "signer",
+                  "type": "principal"
+                },
+                {
+                  "name": "signer-key",
+                  "type": {
+                    "buffer": {
+                      "length": 33
+                    }
+                  }
+                }
+              ]
+            },
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "request-id",
+          "type": "uint128"
+        }
+      ],
+      "name": "settle-accepted-withdrawal",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "recipient",
+          "type": "principal"
+        }
+      ],
+      "name": "sweep-fee-refunds",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "admin",
+          "type": "principal"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ],
+      "name": "update-admin",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "principal",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "new-fees",
+          "type": "uint128"
+        }
+      ],
+      "name": "update-fees",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "first-index",
+          "type": "uint128"
+        },
+        {
+          "name": "num-indexes",
+          "type": "uint128"
+        },
+        {
+          "name": "amount-ustx",
+          "type": "uint128"
+        },
+        {
+          "name": "amount-sats",
+          "type": "uint128"
+        },
+        {
+          "name": "is-bond",
+          "type": "bool"
+        },
+        {
+          "name": "signer-calldata",
+          "type": {
+            "optional": {
+              "buffer": {
+                "length": 500
+              }
+            }
+          }
+        }
+      ],
+      "name": "validate-stake!",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "amount",
+          "type": "uint128"
+        },
+        {
+          "name": "recipient",
+          "type": "principal"
+        }
+      ],
+      "name": "withdraw-fees",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "pox-addr",
+          "type": {
+            "tuple": [
+              {
+                "name": "hashbytes",
+                "type": {
+                  "buffer": {
+                    "length": 32
+                  }
+                }
+              },
+              {
+                "name": "version",
+                "type": {
+                  "buffer": {
+                    "length": 1
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "name": "check-pox-addr",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "get-earned-fees",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "get-earned-staker-rewards",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "tuple": [
+            {
+              "name": "earned",
+              "type": "uint128"
+            },
+            {
+              "name": "fees",
+              "type": "uint128"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "get-fee-bips-for-cycle",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        }
+      ],
+      "name": "get-pox-addr",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "optional": {
+            "tuple": [
+              {
+                "name": "max-fee",
+                "type": "uint128"
+              },
+              {
+                "name": "pox-addr",
+                "type": {
+                  "tuple": [
+                    {
+                      "name": "hashbytes",
+                      "type": {
+                        "buffer": {
+                          "length": 32
+                        }
+                      }
+                    },
+                    {
+                      "name": "version",
+                      "type": {
+                        "buffer": {
+                          "length": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "get-unclaimed-staker-rewards",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [],
+      "name": "get-withdrawal-liability",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "withdrawal-request",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-withdrawal-request-staker",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "optional": "principal"
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "caller",
+          "type": "principal"
+        }
+      ],
+      "name": "is-admin",
+      "access": "read_only",
+      "outputs": {
+        "type": "bool"
+      }
+    }
+  ],
+  "variables": [
+    {
+      "name": "ERR_INSUFFICIENT_FEES",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_INVALID_CALLDATA",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_INVALID_FEES_BIPS",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_INVALID_POX_ADDR",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NO_CLAIMABLE_REWARDS",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NO_REFUNDS",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_UNAUTHORIZED_ADMIN",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_UNAUTHORIZED_CALLER",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_UNKNOWN_WITHDRAWAL_REQUEST",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_WITHDRAWAL_NOT_ACCEPTED",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_WITHDRAWAL_NOT_REJECTED",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "MAX_ADDRESS_VERSION",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "MAX_ADDRESS_VERSION_BUFF_20",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "MAX_BIPS",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "earned-fees",
+      "type": "uint128",
+      "access": "variable"
+    },
+    {
+      "name": "fees-bips",
+      "type": "uint128",
+      "access": "variable"
+    },
+    {
+      "name": "unclaimed-staker-rewards",
+      "type": "uint128",
+      "access": "variable"
+    },
+    {
+      "name": "withdrawal-liability",
+      "type": "uint128",
+      "access": "variable"
+    }
+  ],
+  "clarity_version": "Clarity4",
+  "fungible_tokens": [],
+  "non_fungible_tokens": []
+}
