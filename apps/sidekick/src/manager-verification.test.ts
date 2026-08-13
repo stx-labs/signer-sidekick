@@ -56,7 +56,27 @@ function compatibleInterface(): ContractInterface {
   ];
   return {
     functions: [
-      ...publicFunctions.map((name) => ({ name, access: "public", args: [], outputs: null })),
+      ...publicFunctions.map((name) =>
+        name === "validate-stake!"
+          ? {
+              name,
+              access: "public",
+              args: [
+                { name: "staker", type: "principal" },
+                { name: "first-index", type: "uint128" },
+                { name: "num-indexes", type: "uint128" },
+                { name: "amount-ustx", type: "uint128" },
+                { name: "amount-sats", type: "uint128" },
+                { name: "is-bond", type: "bool" },
+                {
+                  name: "signer-calldata",
+                  type: { optional: { buffer: { length: 500 } } },
+                },
+              ],
+              outputs: { type: { response: { ok: "bool", error: "uint128" } } },
+            }
+          : { name, access: "public", args: [], outputs: null },
+      ),
       ...readOnlyFunctions.map((name) => ({
         name,
         access: "read_only",
@@ -107,7 +127,9 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
-    expect(report.automationEligibilityReason).toBe("Manager source is unverified");
+    expect(report.automationEligibilityReason).toContain(
+      "No reviewed byte-exact capability fingerprint",
+    );
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {
@@ -151,11 +173,11 @@ describe("deployed manager verification", () => {
         origin: "operator-installed",
       },
       attachAllowed: true,
-      automationEligible: true,
+      automationEligible: false,
       recommendedMode: "observe",
     });
     expect(report.automationEligibilityReason).toContain(
-      "production approval is not required for Assist on testnet",
+      "Operator-provided network data cannot grant executable manager capabilities",
     );
   });
 
@@ -235,7 +257,7 @@ describe("deployed manager verification", () => {
     expect(report).toMatchObject({ networkMatches: false, attachAllowed: false });
   });
 
-  it("reports required ABI functions that are absent", () => {
+  it("attaches through the trait while reporting a missing reference capability", () => {
     const contractInterface = compatibleInterface();
     contractInterface.functions = contractInterface.functions.filter(
       (entry) => entry.name !== "claim-staker-rewards",
@@ -247,11 +269,37 @@ describe("deployed manager verification", () => {
       contractInterface,
     );
 
-    expect(report.interface).toEqual({
-      compatible: false,
+    expect(report.interface).toEqual({ compatible: true, missingFunctions: [] });
+    expect(report.attachAllowed).toBe(true);
+    expect(
+      report.capabilities.actions.find(({ id }) => id === "reference-reward-claims"),
+    ).toMatchObject({
+      interfaceAvailable: false,
+      executionAvailable: false,
       missingFunctions: ["claim-staker-rewards"],
     });
-    expect(report.attachAllowed).toBe(false);
+  });
+
+  it("rejects attachment when validate-stake! does not match the trait signature", () => {
+    const contractInterface = compatibleInterface();
+    const trait = contractInterface.functions.find(({ name }) => name === "validate-stake!");
+    if (!trait) throw new Error("Missing validate-stake! fixture");
+    trait.outputs = { type: { response: { ok: "uint128", error: "uint128" } } };
+
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source: "(ok true)", publish_height: 1 },
+      contractInterface,
+    );
+
+    expect(report).toMatchObject({
+      attachAllowed: false,
+      interface: { compatible: false, missingFunctions: ["validate-stake!"] },
+      capabilities: {
+        signerManagerTrait: { compatible: false, reason: expect.stringContaining("response") },
+      },
+    });
   });
 
   it("reports an expected pre-deployment 404 without hiding other node failures", async () => {

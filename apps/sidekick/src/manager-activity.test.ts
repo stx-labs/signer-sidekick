@@ -140,10 +140,28 @@ describe("manager activity projection", () => {
       { ...common, getCursor: () => ({ cursor: null }) },
       1,
       manager,
-      { sourceId: "api:mainnet:test" },
+      { sourceId: "api:mainnet:test", eventVocabulary: "reference-manager-v1" },
     );
     const incomplete = readManagerActivity(
       { ...common, getCursor: () => ({ cursor: "older-page" }) },
+      1,
+      manager,
+      { sourceId: "api:mainnet:test", eventVocabulary: "reference-manager-v1" },
+    );
+    const generic = readManagerActivity(
+      { ...common, getCursor: () => ({ cursor: null }) },
+      1,
+      manager,
+      { sourceId: "api:mainnet:test", eventVocabulary: "generic-v1" },
+    );
+    const inferredReference = readManagerActivity(
+      {
+        ...common,
+        getCursor: (_sourceId, stream) =>
+          stream.includes("reference-manager-v1")
+            ? { cursor: null, updatedAt: "2026-08-13T12:01:00.000Z" }
+            : { cursor: null, updatedAt: "2026-08-13T12:00:00.000Z" },
+      },
       1,
       manager,
       { sourceId: "api:mainnet:test" },
@@ -159,5 +177,11 @@ describe("manager activity projection", () => {
       principals: [],
       updatesObserved: 2,
     });
+    expect(generic.admins).toEqual({
+      status: "sync-required",
+      principals: [],
+      updatesObserved: 2,
+    });
+    expect(inferredReference.admins.status).toBe("current");
   });
 });

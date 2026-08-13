@@ -64,6 +64,22 @@ const manager: ManagerVerificationReport = {
     reason: "Built-in profile",
   },
   interface: { compatible: true, missingFunctions: [] },
+  capabilities: {
+    signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+    observedFunctions: { public: ["validate-stake!"], readOnly: [] },
+    sourceReview: { exactReviewed: true, reason: "Reviewed source" },
+    eventVocabulary: {
+      id: "reference-manager-v1",
+      normalizationAvailable: true,
+      adapter: {
+        id: "reference-manager-print-events",
+        revision: 1,
+        reviewedSourceSha256: "a".repeat(64),
+      },
+      reason: "Reviewed event vocabulary",
+    },
+    actions: [],
+  },
   installedProfiles: { directory: null, loaded: 0, issues: [] },
   attachAllowed: true,
   automationEligible: false,

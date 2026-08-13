@@ -157,7 +157,7 @@ export function createInstalledManagerProfile(input: {
 
   if (!input.observeOnly) {
     throw new Error(
-      `Manager is interface-compatible but is not a reproducible reference render: ${referenceFailure}. Re-run with --observe-only to record it as custom without granting Assist`,
+      `Manager is signer-manager-trait compatible but is not a reproducible reference render: ${referenceFailure}. Re-run with --observe-only to record its source without granting executable capabilities`,
     );
   }
   return {
@@ -166,7 +166,7 @@ export function createInstalledManagerProfile(input: {
       tier: "custom-observe",
     }),
     status: "created",
-    summary: `Custom manager source recorded; fixed external actions remain available, but reference-manager Assist is disabled (${referenceFailure})`,
+    summary: `Custom manager source recorded; PoX-5 baseline observation remains available, while manager actions require separately reviewed capability fingerprints (${referenceFailure})`,
   };
 }
 

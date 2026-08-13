@@ -127,6 +127,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -159,6 +160,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -170,6 +172,50 @@ describe("manager event synchronization", () => {
     });
     expect(overlapApi.getSmartContractLogs).toHaveBeenCalledTimes(1);
     expect(overlapApi.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it("stores lookalike custom events as generic raw data and removes stale projections", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSmartContractLogs: vi
+        .fn()
+        .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+      getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+    };
+
+    await syncManagerEvents({
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
+      observedAt,
+      pageLimit: 100,
+    });
+    expect(sidekickStore.listManagerClaims(1, manager).total).toBe(1);
+
+    const genericResult = await syncManagerEvents({
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      eventVocabulary: "generic-v1",
+      observedAt: "2026-07-14T12:01:00.000Z",
+      pageLimit: 100,
+    });
+
+    expect(genericResult.decodeFailures).toBe(0);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toMatchObject({
+      topic: "print",
+      decodedSchemaVersion: null,
+      decodedPayload: null,
+    });
+    expect(sidekickStore.listManagerClaims(1, manager).total).toBe(0);
+    expect(
+      sidekickStore.getCursor(sourceId, `manager-logs:v3:generic-v1:${manager}`),
+    ).toMatchObject({ cursor: null });
   });
 
   it("resumes from the page cursor committed before an interruption", async () => {
@@ -189,6 +235,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -207,6 +254,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -227,6 +275,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 100,
     });
@@ -243,6 +292,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt: "2026-07-14T12:01:00.000Z",
         pageLimit: 100,
       }),
@@ -264,6 +314,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 1,
     });
@@ -286,6 +337,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt: "2026-07-14T12:01:00.000Z",
         pageLimit: 1,
       }),
@@ -313,6 +365,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 100,
       signal: controller.signal,
@@ -323,6 +376,8 @@ describe("manager event synchronization", () => {
 
     await expect(synchronization).rejects.toThrow("shutdown requested");
     expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
-    expect(sidekickStore.getCursor(sourceId, `manager-logs:v2:${manager}`)).toBeNull();
+    expect(
+      sidekickStore.getCursor(sourceId, `manager-logs:v3:reference-manager-v1:${manager}`),
+    ).toBeNull();
   });
 });

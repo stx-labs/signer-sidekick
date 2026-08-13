@@ -279,6 +279,7 @@ function mainnetSetupSnapshot(input: ManagerClaimObserveFacts) {
     manager: {
       managerPrincipal: mainnetManager,
       attachAllowed: true,
+      capabilities: reviewedRewardCapabilities(),
       source: {
         recognized: true,
         tier: "reference-render",
@@ -327,6 +328,7 @@ function privateSetupSnapshot(
     manager: {
       managerPrincipal: manager,
       attachAllowed: true,
+      capabilities: reviewedRewardCapabilities(),
       source: {
         recognized: true,
         tier: "reference-render",
@@ -336,6 +338,38 @@ function privateSetupSnapshot(
       },
     },
     registration: null,
+  };
+}
+
+function reviewedRewardCapabilities() {
+  return {
+    signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+    observedFunctions: { public: ["validate-stake!", "claim-rewards"], readOnly: [] },
+    sourceReview: { exactReviewed: true, reason: "Exact reviewed source" },
+    eventVocabulary: {
+      id: "reference-manager-v1" as const,
+      normalizationAvailable: true,
+      adapter: {
+        id: "reference-manager-print-events",
+        revision: 1,
+        reviewedSourceSha256: sourceSha256,
+      },
+      reason: "Reviewed event vocabulary",
+    },
+    actions: [
+      {
+        id: "reference-reward-claims" as const,
+        interfaceAvailable: true,
+        executionAvailable: true,
+        missingFunctions: [],
+        adapter: {
+          id: "reference-manager-claim-rewards",
+          revision: 1,
+          reviewedSourceSha256: sourceSha256,
+        },
+        reason: "Exact reviewed capability",
+      },
+    ],
   };
 }
 
@@ -702,6 +736,7 @@ describe("manager-claim browser-wallet binding", () => {
       manager: {
         managerPrincipal: mainnetManager,
         attachAllowed: true,
+        capabilities: reviewedRewardCapabilities(),
         source: {
           recognized: true,
           tier: "reference-render",

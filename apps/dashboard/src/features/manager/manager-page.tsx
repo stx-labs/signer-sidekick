@@ -13,6 +13,7 @@ import {
 import type {
   BrowserWalletIntentCreateRequest,
   DashboardSnapshot,
+  ManagerActionCapabilityId,
   OnboardingState,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { onboardingActionResponseSchema } from "@stx-labs/signer-sidekick-api-contracts";
@@ -89,6 +90,11 @@ function validFeeBips(value: string): boolean {
 
 function openManagerAction(action: ManagerActionId): void {
   location.hash = dashboardHash("manager", action);
+}
+
+function capabilityIdForAction(action: ManagerActionId): ManagerActionCapabilityId {
+  if (action === "add-admin" || action === "remove-admin") return "update-admin";
+  return action;
 }
 
 function SignerGrantCeremony({
@@ -685,20 +691,31 @@ export function Manager({
   }, [data.forecast?.cycles, eligibilitySort]);
   const recognitionLabel =
     data.manager.source.tier === "reference-built-in"
-      ? "Built-in reference"
+      ? "Built-in source"
       : data.manager.source.tier === "reference-render"
-        ? "Verified reference"
+        ? "Reviewed source"
         : data.manager.source.tier === "custom-observe"
-          ? "Custom manager"
-          : "Unverified manager";
-  const referenceRecognized =
-    data.manager.source.tier === "reference-built-in" ||
-    data.manager.source.tier === "reference-render";
+          ? "Recorded custom source"
+          : "Custom source";
   const registrationReady = Boolean(
     data.registration?.registered && data.registration.signerKeyGrantValid,
   );
-  const actionAvailability = managerActionAvailability(data, operatorStateStale);
-  const canPrepareAdminActions = actionAvailability.available;
+  const availabilityFor = (managerAction: ManagerActionId) =>
+    managerActionAvailability(data, capabilityIdForAction(managerAction), operatorStateStale);
+  const registerAvailability = availabilityFor("register-self");
+  const adminAvailability = availabilityFor("add-admin");
+  const updateFeesAvailability = availabilityFor("update-fees");
+  const withdrawFeesAvailability = availabilityFor("withdraw-fees");
+  const sweepRefundsAvailability = availabilityFor("sweep-fee-refunds");
+  const actionAvailability = action ? availabilityFor(action) : registerAvailability;
+  const canPrepareSelectedAction = Boolean(action && actionAvailability.available);
+  const canPrepareAnyAction = [
+    registerAvailability,
+    adminAvailability,
+    updateFeesAvailability,
+    withdrawFeesAvailability,
+    sweepRefundsAvailability,
+  ].some(({ available }) => available);
   const managerAvailabilityAction =
     operatorStateStale || data.freshness?.status === "stale"
       ? {
@@ -718,10 +735,10 @@ export function Manager({
           }
         : !data.manager.attachAllowed
           ? {
-              label: "Open Initial Setup",
+              label: "Open Settings",
               disabled: false,
               onClick: () => {
-                location.hash = dashboardHash("setup");
+                location.hash = dashboardHash("settings");
               },
             }
           : null;
@@ -746,7 +763,7 @@ export function Manager({
           </div>
         </div>
       ) : null}
-      {!canPrepareAdminActions && !action ? (
+      {!canPrepareAnyAction && !action ? (
         <div className="callout callout-caution manager-required-state" role="status">
           <WarningCircle className="ic" />
           <div className="body">
@@ -797,7 +814,8 @@ export function Manager({
               <button
                 type="button"
                 className="btn btn-accent sm"
-                disabled={!canPrepareAdminActions}
+                disabled={!registerAvailability.available}
+                title={registerAvailability.reason}
                 onClick={() => openManagerAction("register-self")}
               >
                 Review signer registration
@@ -807,7 +825,7 @@ export function Manager({
         </div>
       )}
 
-      {action && canPrepareAdminActions ? (
+      {action && canPrepareSelectedAction ? (
         <ManagerActionWorkspace
           key={action}
           action={action}
@@ -845,7 +863,11 @@ export function Manager({
         <div className="card">
           <div className="card-head">
             <h2>Manager &amp; signer</h2>
-            <Badge state={referenceRecognized ? "success" : "caution"}>{recognitionLabel}</Badge>
+            <Badge
+              state={data.manager.capabilities.signerManagerTrait.compatible ? "success" : "error"}
+            >
+              {recognitionLabel}
+            </Badge>
           </div>
           <StatLine label="Manager principal">
             <CopyableIdentifier
@@ -857,6 +879,23 @@ export function Manager({
           </StatLine>
           <StatLine label="Source profile">
             {data.manager.source.profileId ?? "No installed profile"}
+          </StatLine>
+          <StatLine label="PoX-5 manager trait">
+            <Badge
+              state={data.manager.capabilities.signerManagerTrait.compatible ? "success" : "error"}
+            >
+              {data.manager.capabilities.signerManagerTrait.compatible
+                ? "Compatible"
+                : "Incompatible"}
+            </Badge>
+          </StatLine>
+          <StatLine label="Reviewed actions">
+            {
+              data.manager.capabilities.actions.filter(
+                ({ executionAvailable }) => executionAvailable,
+              ).length
+            }
+            /{data.manager.capabilities.actions.length}
           </StatLine>
           <StatLine label="Profile origin">
             {data.manager.source.origin === "operator-installed"
@@ -932,7 +971,8 @@ export function Manager({
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!canPrepareAdminActions}
+              disabled={!registerAvailability.available}
+              title={registerAvailability.reason}
               onClick={() => openManagerAction("register-self")}
             >
               <Key /> Review signer rotation
@@ -977,7 +1017,8 @@ export function Manager({
         <button
           type="button"
           className="card manager-action-card"
-          disabled={!canPrepareAdminActions}
+          disabled={!adminAvailability.available}
+          title={adminAvailability.reason}
           onClick={() => openManagerAction("add-admin")}
         >
           <UserPlus />
@@ -990,7 +1031,8 @@ export function Manager({
         <button
           type="button"
           className="card manager-action-card"
-          disabled={!canPrepareAdminActions}
+          disabled={!adminAvailability.available}
+          title={adminAvailability.reason}
           onClick={() => openManagerAction("remove-admin")}
         >
           <UserMinus />
@@ -1007,7 +1049,8 @@ export function Manager({
         <button
           type="button"
           className="card manager-action-card"
-          disabled={!canPrepareAdminActions}
+          disabled={!updateFeesAvailability.available}
+          title={updateFeesAvailability.reason}
           onClick={() => openManagerAction("update-fees")}
         >
           <Percent />
@@ -1020,7 +1063,8 @@ export function Manager({
         <button
           type="button"
           className="card manager-action-card"
-          disabled={!canPrepareAdminActions}
+          disabled={!withdrawFeesAvailability.available}
+          title={withdrawFeesAvailability.reason}
           onClick={() => openManagerAction("withdraw-fees")}
         >
           <Coins />
@@ -1033,7 +1077,8 @@ export function Manager({
         <button
           type="button"
           className="card manager-action-card"
-          disabled={!canPrepareAdminActions}
+          disabled={!sweepRefundsAvailability.available}
+          title={sweepRefundsAvailability.reason}
           onClick={() => openManagerAction("sweep-fee-refunds")}
         >
           <Coins />

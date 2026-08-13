@@ -3,6 +3,11 @@
 Signer Health gives a pool operator one page for the operational state of the Stacks node and signer.
 It is local monitoring, not a replacement for a full observability stack.
 
+This page documents the current V1 implementation. The proposed target in the
+[scope reset plan](scope-reset-plan-2026-08-13.md#signer-and-network-health-boundary) expands it into
+an evidence-backed network-versus-local diagnosis, durable incident history, and support handoff
+while retaining the same infrastructure boundary.
+
 Detailed findings appear only on **Signer Health**. The Overview shows compact node and signer
 traffic lights that link to that page. V1 does not send notifications or add global badges.
 

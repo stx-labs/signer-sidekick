@@ -26,6 +26,38 @@ function context(): ManagerActionContext {
       attachAllowed: true,
       automationEligible: false,
       automationEligibilityReason: "Profile is not production-approved",
+      capabilities: {
+        signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+        observedFunctions: {
+          public: ["validate-stake!", "update-admin"],
+          readOnly: ["is-admin"],
+        },
+        sourceReview: { exactReviewed: true, reason: "Exact reviewed source" },
+        eventVocabulary: {
+          id: "reference-manager-v1",
+          normalizationAvailable: true,
+          adapter: {
+            id: "reference-manager-print-events",
+            revision: 1,
+            reviewedSourceSha256: "ab".repeat(32),
+          },
+          reason: "Reviewed event vocabulary",
+        },
+        actions: [
+          {
+            id: "update-admin",
+            interfaceAvailable: true,
+            executionAvailable: true,
+            missingFunctions: [],
+            adapter: {
+              id: "reference-manager-update-admin",
+              revision: 1,
+              reviewedSourceSha256: "ab".repeat(32),
+            },
+            reason: "Exact reviewed capability",
+          },
+        ],
+      },
       source: {
         recognized: true,
         profileId: "reference-testnet-manager",
@@ -49,9 +81,9 @@ describe("managerActionAvailability", () => {
     const value = context();
 
     expect(value.manager.automationEligible).toBe(false);
-    expect(managerActionAvailability(value)).toEqual({
+    expect(managerActionAvailability(value, "update-admin")).toEqual({
       available: true,
-      reason: "Manager actions are available.",
+      reason: "Exact reviewed capability",
       warning: null,
     });
   });
@@ -61,7 +93,7 @@ describe("managerActionAvailability", () => {
     value.preflight.compatibility.status = "inconsistent";
     value.preflight.compatibility.reason = "No matching compatibility profile";
 
-    expect(managerActionAvailability(value)).toMatchObject({ available: true });
+    expect(managerActionAvailability(value, "update-admin")).toMatchObject({ available: true });
   });
 
   it("blocks action preparation from a last-good stale snapshot", () => {
@@ -73,7 +105,7 @@ describe("managerActionAvailability", () => {
       reason: "refresh-failed",
     };
 
-    expect(managerActionAvailability(value)).toEqual({
+    expect(managerActionAvailability(value, "update-admin")).toEqual({
       available: false,
       reason:
         "Manager actions are paused because the displayed data is stale. Refresh to continue.",
@@ -82,7 +114,9 @@ describe("managerActionAvailability", () => {
   });
 
   it("blocks when the browser has aged an otherwise current snapshot", () => {
-    expect(managerActionAvailability(context(), true)).toMatchObject({ available: false });
+    expect(managerActionAvailability(context(), "update-admin", true)).toMatchObject({
+      available: false,
+    });
   });
 
   it.each([
@@ -95,7 +129,7 @@ describe("managerActionAvailability", () => {
     check.status = "fail";
     check.message = `${checkId} mismatch`;
 
-    expect(managerActionAvailability(value)).toEqual({
+    expect(managerActionAvailability(value, "update-admin")).toEqual({
       available: false,
       reason: `${checkId} mismatch`,
       warning: null,
@@ -108,7 +142,7 @@ describe("managerActionAvailability", () => {
     if (!check) throw new Error("Missing api-network fixture");
     check.status = "fail";
 
-    expect(managerActionAvailability(value)).toMatchObject({ available: true });
+    expect(managerActionAvailability(value, "update-admin")).toMatchObject({ available: true });
   });
 
   it("reports the manager network or interface failure", () => {
@@ -116,21 +150,27 @@ describe("managerActionAvailability", () => {
     value.manager.attachAllowed = false;
     value.manager.reasons = ["Manager interface is missing 2 required functions"];
 
-    expect(managerActionAvailability(value)).toEqual({
+    expect(managerActionAvailability(value, "update-admin")).toEqual({
       available: false,
       reason: "Manager interface is missing 2 required functions",
       warning: null,
     });
   });
 
-  it("allows custom and unrecognized managers with a nonblocking warning", () => {
+  it("blocks execution when the source is not reviewed for the capability", () => {
     const custom = context();
     custom.manager.source.tier = "custom-observe";
     custom.manager.source.origin = "operator-installed";
     custom.manager.provenance.status = "not-applicable";
-    expect(managerActionAvailability(custom)).toMatchObject({
-      available: true,
-      warning: expect.stringContaining("wallet or manual signing"),
+    const customCapability = custom.manager.capabilities.actions[0];
+    if (!customCapability) throw new Error("Missing update-admin capability");
+    customCapability.executionAvailable = false;
+    customCapability.adapter = null;
+    customCapability.reason = "Source is not reviewed for update-admin";
+    expect(managerActionAvailability(custom, "update-admin")).toEqual({
+      available: false,
+      reason: "Source is not reviewed for update-admin",
+      warning: null,
     });
 
     const unverified = context();
@@ -139,9 +179,14 @@ describe("managerActionAvailability", () => {
     unverified.manager.source.origin = null;
     unverified.manager.provenance.status = "failed";
     unverified.manager.provenance.reason = "Reference-render proof failed";
-    expect(managerActionAvailability(unverified)).toMatchObject({
-      available: true,
-      warning: expect.stringContaining("Assist is unavailable"),
+    const unverifiedCapability = unverified.manager.capabilities.actions[0];
+    if (!unverifiedCapability) throw new Error("Missing update-admin capability");
+    unverifiedCapability.executionAvailable = false;
+    unverifiedCapability.adapter = null;
+    unverifiedCapability.reason = "No reviewed exact source match";
+    expect(managerActionAvailability(unverified, "update-admin")).toMatchObject({
+      available: false,
+      reason: "No reviewed exact source match",
     });
   });
 
@@ -151,7 +196,7 @@ describe("managerActionAvailability", () => {
     value.manager.source.origin = "operator-installed";
     value.manager.provenance.status = "verified";
 
-    expect(managerActionAvailability(value)).toMatchObject({
+    expect(managerActionAvailability(value, "update-admin")).toMatchObject({
       available: true,
       warning: null,
     });

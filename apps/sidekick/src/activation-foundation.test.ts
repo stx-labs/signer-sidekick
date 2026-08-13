@@ -23,12 +23,32 @@ const managerPrincipal = `${adminPrincipal}.signer-manager`;
 function compatibleInterface(): ContractInterface {
   return {
     functions: [
-      ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.map((name) => ({
-        name,
-        access: "public" as const,
-        args: [],
-        outputs: null,
-      })),
+      ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.map((name) =>
+        name === "validate-stake!"
+          ? {
+              name,
+              access: "public" as const,
+              args: [
+                { name: "staker", type: "principal" },
+                { name: "first-index", type: "uint128" },
+                { name: "num-indexes", type: "uint128" },
+                { name: "amount-ustx", type: "uint128" },
+                { name: "amount-sats", type: "uint128" },
+                { name: "is-bond", type: "bool" },
+                {
+                  name: "signer-calldata",
+                  type: { optional: { buffer: { length: 500 } } },
+                },
+              ],
+              outputs: { type: { response: { ok: "bool", error: "uint128" } } },
+            }
+          : {
+              name,
+              access: "public" as const,
+              args: [],
+              outputs: null,
+            },
+      ),
       ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS.map((name) => ({
         name,
         access: "read_only" as const,

@@ -201,11 +201,11 @@ describe("operator service", () => {
     expect(buildAlerts(input)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: "manager:not-recognized-read-only",
-          severity: "warning",
-          title: "Manager Source Not Recognized",
-          detail: expect.stringContaining("wallet or manual signing"),
-          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+          id: "manager:custom-capabilities",
+          severity: "info",
+          title: "Custom Manager Attached",
+          detail: expect.stringContaining("PoX-5 baseline state remains available"),
+          action: { kind: "navigate", label: "Review capabilities", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
@@ -255,7 +255,7 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "manager:unsupported",
           detail: "Manager network does not match.",
-          action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+          action: { kind: "navigate", label: "Open Settings", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:profile-load-issues",
@@ -417,11 +417,11 @@ describe("operator service", () => {
     const input = alertInput({});
     input.forecast = null;
     input.manager.source.tier = "custom-observe";
-    const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-read-only");
+    const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-capabilities");
     expect(alert).toMatchObject({
       severity: "info",
-      title: "Custom Manager",
-      detail: expect.stringContaining("wallet or manual signing"),
+      title: "Custom Manager Attached",
+      detail: expect.stringContaining("reviewed capability fingerprint"),
     });
     expect(alert).not.toHaveProperty("action");
   });
@@ -726,8 +726,25 @@ describe("operator service", () => {
           ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.map((name) => ({
             name,
             access: "public",
-            args: [],
-            outputs: null,
+            args:
+              name === "validate-stake!"
+                ? [
+                    { name: "staker", type: "principal" },
+                    { name: "first-index", type: "uint128" },
+                    { name: "num-indexes", type: "uint128" },
+                    { name: "amount-ustx", type: "uint128" },
+                    { name: "amount-sats", type: "uint128" },
+                    { name: "is-bond", type: "bool" },
+                    {
+                      name: "signer-calldata",
+                      type: { optional: { buffer: { length: 500 } } },
+                    },
+                  ]
+                : [],
+            outputs:
+              name === "validate-stake!"
+                ? { type: { response: { ok: "bool", error: "uint128" } } }
+                : null,
           })),
           ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS.map((name) => ({
             name,

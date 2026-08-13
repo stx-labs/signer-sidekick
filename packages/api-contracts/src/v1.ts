@@ -324,6 +324,53 @@ interface Eligibility {
   inSignerSet: boolean;
 }
 
+export type ManagerActionCapabilityId =
+  | "register-self"
+  | "update-admin"
+  | "update-fees"
+  | "withdraw-fees"
+  | "sweep-fee-refunds"
+  | "reference-reward-claims";
+
+export interface ManagerActionCapability {
+  id: ManagerActionCapabilityId;
+  interfaceAvailable: boolean;
+  executionAvailable: boolean;
+  missingFunctions: string[];
+  adapter: null | {
+    id: string;
+    revision: number;
+    reviewedSourceSha256: string;
+  };
+  reason: string;
+}
+
+export interface ManagerCapabilities {
+  signerManagerTrait: {
+    compatible: boolean;
+    reason: string;
+  };
+  observedFunctions: {
+    public: string[];
+    readOnly: string[];
+  };
+  sourceReview: {
+    exactReviewed: boolean;
+    reason: string;
+  };
+  eventVocabulary: {
+    id: "reference-manager-v1";
+    normalizationAvailable: boolean;
+    adapter: null | {
+      id: string;
+      revision: number;
+      reviewedSourceSha256: string;
+    };
+    reason: string;
+  };
+  actions: ManagerActionCapability[];
+}
+
 export interface OperatorSnapshot {
   managerPrincipal: string;
   network: string;
@@ -374,6 +421,7 @@ export interface OperatorSnapshot {
   manager?: {
     automationEligible: boolean;
     automationEligibilityReason: string;
+    capabilities: ManagerCapabilities;
     source: {
       profileId: string | null;
       tier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";

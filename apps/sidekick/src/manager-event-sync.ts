@@ -4,6 +4,7 @@ import {
   type ManagerPrintEvent,
 } from "@stx-labs/signer-sidekick-protocol/manager-events";
 import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
+import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
 import type {
   ChainCursor,
   ChainCursorInput,
@@ -42,6 +43,7 @@ export interface SyncManagerEventsOptions {
   sourceId: string;
   chainId: number;
   managerPrincipal: string;
+  eventVocabulary: ManagerEventVocabulary;
   observedAt: string;
   pageLimit?: number;
   signal?: AbortSignal;
@@ -106,9 +108,10 @@ export async function syncManagerEvents(
   if (!Number.isSafeInteger(options.chainId) || options.chainId < 0) {
     throw new Error("chainId must be a non-negative safe integer");
   }
-  // v2 adds the transaction index needed to reconstruct the current administrator set. A fresh
-  // full pass upgrades existing event rows before they are used for that display.
-  const stream = `manager-logs:v2:${options.managerPrincipal}`;
+  // v3 scopes the cursor to the reviewed decoding vocabulary. Moving from generic storage to a
+  // reviewed adapter (or removing one) forces a complete replay instead of reusing projections
+  // produced under different semantic assumptions.
+  const stream = managerEventStream(options.managerPrincipal, options.eventVocabulary);
   const checkpoint = options.store.getCursor(options.sourceId, stream);
   let cursor = checkpoint?.cursor ?? null;
   const resumed = cursor !== null;
@@ -186,8 +189,9 @@ export async function syncManagerEvents(
     const storedEvents: ChainEventInput[] = page.results.map((event, index) => {
       const transaction = transactionById.get(event.tx_id);
       if (!transaction) throw new Error(`Missing transaction enrichment for ${event.tx_id}`);
-      const decoded = decodeEvent(event.contract_log.value.hex);
-      if (!decoded) decodeFailures += 1;
+      const decodeReferenceEvent = options.eventVocabulary === "reference-manager-v1";
+      const decoded = decodeReferenceEvent ? decodeEvent(event.contract_log.value.hex) : null;
+      if (decodeReferenceEvent && !decoded) decodeFailures += 1;
       if (knownEvents[index]) {
         replayedEvents += 1;
       } else {

@@ -149,8 +149,8 @@ export async function readPoolSetupStatus(
       id: "manager-attachment",
       status: manager.attachAllowed ? "pass" : "fail",
       message: manager.attachAllowed
-        ? "Manager network and interface are compatible"
-        : "Manager cannot be attached on the configured network",
+        ? "Manager network and PoX-5 signer-manager trait are compatible"
+        : manager.capabilities.signerManagerTrait.reason,
     },
     {
       id: "manager-artifact",
@@ -164,8 +164,8 @@ export async function readPoolSetupStatus(
           : manager.source.tier === "reference-render"
             ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager source is recorded; fixed external actions remain available, but Assist is disabled"
-              : "Manager source is not recognized; fixed external actions remain available, but Assist is disabled",
+              ? "Custom manager source is recorded; PoX-5 baseline state remains available and actions depend on reviewed capabilities"
+              : "Manager source is not recognized; PoX-5 baseline state remains available and executable actions require a reviewed capability fingerprint",
     },
     {
       id: "signer-registration",

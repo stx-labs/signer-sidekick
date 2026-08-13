@@ -1,10 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-  parseManagerProfile,
-  REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
-  REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
-} from "@stx-labs/signer-sidekick-protocol";
+import type { ManagerCapabilities } from "@stx-labs/signer-sidekick-api-contracts";
+import { parseManagerProfile } from "@stx-labs/signer-sidekick-protocol";
 import { KNOWN_MANAGER_ARTIFACTS } from "@stx-labs/signer-sidekick-protocol/known-managers";
 import {
   canonicalizeClaritySource,
@@ -25,6 +22,10 @@ import {
   UpstreamHttpError,
 } from "./chain-clients.js";
 import type { SidekickNetwork } from "./config.js";
+import {
+  inspectManagerCapabilities,
+  missingReferenceManagerFunctions,
+} from "./manager-capabilities.js";
 import {
   type InstalledManagerProfileStore,
   loadInstalledManagerProfileStore,
@@ -61,6 +62,7 @@ export interface ManagerVerificationReport {
     compatible: boolean;
     missingFunctions: string[];
   };
+  capabilities: ManagerCapabilities;
   installedProfiles: {
     directory: string | null;
     loaded: number;
@@ -176,16 +178,6 @@ function isExpectedNetwork(network: SidekickNetwork, principalNetwork: "mainnet"
   return network === "mainnet" ? principalNetwork === "mainnet" : principalNetwork === "testnet";
 }
 
-function missingManagerFunctions(contractInterface: ContractInterface): string[] {
-  const functions = new Map(
-    contractInterface.functions.map((entry) => [entry.name, entry.access] as const),
-  );
-  return [
-    ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.filter((name) => functions.get(name) !== "public"),
-    ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS.filter((name) => functions.get(name) !== "read_only"),
-  ];
-}
-
 function emptyProfileStore(): InstalledManagerProfileStore {
   return { directory: null, profiles: [], issues: [] };
 }
@@ -217,6 +209,7 @@ function proveReferenceRender(input: {
   automationEligible: boolean;
   reason: string;
   upstreamProfileId: string;
+  sourceMatch?: SourceMatch;
 } {
   const { profile } = input;
   const upstreamArtifact = input.managerArtifacts.find(
@@ -342,6 +335,7 @@ function proveReferenceRender(input: {
     return {
       verified: true,
       automationEligible,
+      sourceMatch: renderMatch,
       reason:
         profile.network !== "mainnet"
           ? `Reference render is reproducible; production approval is not required for Assist on ${profile.network}`
@@ -429,8 +423,31 @@ export function verifyManagerArtifact(
     (installed && installedMatch === "unknown"
       ? "Deployed source hashes do not match the installed profile"
       : null);
-  const missingFunctions = missingManagerFunctions(contractInterface);
-  const interfaceCompatible = missingFunctions.length === 0;
+  const exactSourceReviewed = Boolean(
+    (builtIn && builtIn.recognition.match === "exact" && !operatorProvidedArtifact) ||
+      (proof?.verified && proof.sourceMatch === "exact" && installedMatch === "exact"),
+  );
+  const sourceReviewReason = exactSourceReviewed
+    ? builtIn && !operatorProvidedArtifact
+      ? `Deployed source exactly matches reviewed built-in profile ${builtIn.artifact.profile.id}`
+      : `Deployed source exactly matches proven reference render ${installed?.profile.id}`
+    : builtIn?.recognition.match === "canonical" ||
+        installedMatch === "canonical" ||
+        (proof?.verified && proof.sourceMatch === "canonical")
+      ? "Source has only a canonical/format-insensitive match; executable capabilities require a reviewed byte-exact fingerprint"
+      : operatorProvidedArtifact
+        ? "Operator-provided network data cannot grant executable manager capabilities"
+        : "No reviewed byte-exact capability fingerprint matches the deployed source";
+  const capabilities = inspectManagerCapabilities({
+    contractInterface,
+    sourceSha256,
+    exactSourceReviewed,
+    sourceReviewReason,
+  });
+  const missingFunctions = capabilities.signerManagerTrait.compatible ? [] : ["validate-stake!"];
+  const interfaceCompatible = capabilities.signerManagerTrait.compatible;
+  const missingReferenceFunctions = missingReferenceManagerFunctions(contractInterface);
+  const referenceInterfaceCompatible = missingReferenceFunctions.length === 0;
   const tier: ManagerRecognitionTier = builtIn
     ? operatorProvidedArtifact
       ? "reference-render"
@@ -444,10 +461,13 @@ export function verifyManagerArtifact(
   const automationEligible = Boolean(
     networkMatches &&
       interfaceCompatible &&
+      referenceInterfaceCompatible &&
+      exactSourceReviewed &&
       (builtIn?.recognition.automationAllowed ||
         (tier === "reference-render" && proof?.automationEligible)),
   );
-  const missingFunctionReason = `Manager interface is missing ${missingFunctions.length} required ${missingFunctions.length === 1 ? "function" : "functions"}`;
+  const missingFunctionReason = capabilities.signerManagerTrait.reason;
+  const missingReferenceFunctionReason = `Reference-manager execution interface is missing ${missingReferenceFunctions.length} required ${missingReferenceFunctions.length === 1 ? "function" : "functions"}`;
   const profileIssueReason = `${profileStore.issues.length} installed trusted-manager profile ${profileStore.issues.length === 1 ? "issue was" : "issues were"} ignored`;
   const automationEligibilityReason = automationEligible
     ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for Assist")
@@ -455,15 +475,21 @@ export function verifyManagerArtifact(
       ? "Manager principal does not match the configured network"
       : !interfaceCompatible
         ? missingFunctionReason
-        : builtIn
-          ? operatorProvidedArtifact
-            ? "Operator-provided network profiles cannot authorize Assist broadcasts"
-            : `Mainnet profile ${builtIn.artifact.profile.id} is not production-approved`
-          : (proof?.reason ??
-            installedFailureReason ??
-            (tier === "custom-observe"
-              ? "Manager uses a custom contract"
-              : "Manager source is unverified"));
+        : !referenceInterfaceCompatible
+          ? missingReferenceFunctionReason
+          : !exactSourceReviewed
+            ? proof?.verified
+              ? sourceReviewReason
+              : (proof?.reason ?? installedFailureReason ?? sourceReviewReason)
+            : builtIn
+              ? operatorProvidedArtifact
+                ? "Operator-provided network profiles cannot authorize Assist broadcasts"
+                : `Mainnet profile ${builtIn.artifact.profile.id} is not production-approved`
+              : (proof?.reason ??
+                installedFailureReason ??
+                (tier === "custom-observe"
+                  ? "Manager uses a custom contract"
+                  : "Manager source is unverified"));
   const reasons: string[] = [];
   if (!networkMatches) reasons.push("Manager principal does not match the configured network");
   if (!interfaceCompatible) {
@@ -528,6 +554,7 @@ export function verifyManagerArtifact(
       compatible: interfaceCompatible,
       missingFunctions,
     },
+    capabilities,
     installedProfiles: {
       directory: profileStore.directory,
       loaded: profileStore.profiles.length,
@@ -613,11 +640,14 @@ export async function inspectManagerOrReportMissing(
       },
       interface: {
         compatible: false,
-        missingFunctions: [
-          ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
-          ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
-        ],
+        missingFunctions: ["validate-stake!"],
       },
+      capabilities: inspectManagerCapabilities({
+        contractInterface: { functions: [] },
+        sourceSha256: "",
+        exactSourceReviewed: false,
+        sourceReviewReason: "Manager contract is not deployed yet",
+      }),
       installedProfiles: {
         directory: profileStore.directory,
         loaded: profileStore.profiles.length,

@@ -12,7 +12,12 @@ import {
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { readManagerActivity } from "./manager-activity.js";
+import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
+import {
+  type ManagerEventVocabulary,
+  managerEventVocabularyFor,
+} from "./manager-event-vocabulary.js";
 import {
   type inspectDeployedManager,
   inspectManagerOrReportMissing,
@@ -321,25 +326,26 @@ export function buildAlerts(snapshot: {
     alerts.push({
       id: "manager:unsupported",
       severity: "critical",
-      title: "Manager Cannot Be Attached",
+      title: "Manager Trait Check Failed",
       detail: asSentence(incompatibility),
-      action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
+      action: { kind: "navigate", label: "Open Settings", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
     alerts.push({
-      id: "manager:not-recognized-read-only",
-      severity: "warning",
-      title: "Manager Source Not Recognized",
-      detail: `Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable: ${snapshot.manager.automationEligibilityReason}.`,
-      action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+      id: "manager:custom-capabilities",
+      severity: "info",
+      title: "Custom Manager Attached",
+      detail:
+        "PoX-5 baseline state remains available. Each manager action is enabled only when its deployed byte-exact source matches a reviewed capability fingerprint.",
+      action: { kind: "navigate", label: "Review capabilities", target: "settings" },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
-      id: "manager:custom-read-only",
+      id: "manager:custom-capabilities",
       severity: "info",
-      title: "Custom Manager",
+      title: "Custom Manager Attached",
       detail:
-        "Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable.",
+        "PoX-5 baseline state remains available. Executable manager actions require a reviewed capability fingerprint.",
     });
   }
   const profileIssueCount = snapshot.manager.installedProfiles.issues.length;
@@ -882,6 +888,7 @@ export class OperatorService {
     let synchronized: {
       observedAt: string;
       chainId: number;
+      eventVocabulary: ManagerEventVocabulary;
       stakers: Awaited<ReturnType<typeof syncSignerStakers>>;
     } | null = null;
     const maxAnchorAttempts = 3;
@@ -950,7 +957,12 @@ export class OperatorService {
             });
           },
         });
-        synchronized = { observedAt, chainId: preflight.node.networkId, stakers };
+        synchronized = {
+          observedAt,
+          chainId: preflight.node.networkId,
+          eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+          stakers,
+        };
         break;
       } catch (error) {
         if (!(error instanceof SignerStakerAnchorError) || attempt === maxAnchorAttempts) {
@@ -972,6 +984,7 @@ export class OperatorService {
       sourceId,
       chainId: synchronized.chainId,
       managerPrincipal,
+      eventVocabulary: synchronized.eventVocabulary,
       observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -1030,38 +1043,44 @@ export class OperatorService {
       indexedApiAvailable: indexedApiCompatible(preflight),
     });
     const rewardCalculation = deriveRewardCalculationTarget(projectionAnchor);
-    const [forecast, rewards] =
+    const forecast =
       manager.attachAllowed && pox5ContractId
-        ? await Promise.all([
-            readPoolForecast({
-              store,
-              node,
-              sourceId,
-              managerPrincipal,
-              pox5ContractId,
-              currentRewardCycle: projectionAnchor.rewardCycle,
-              horizonCycles: config.forecastHorizonCycles,
-              observedAt: generatedAt,
-              burnBlockHeight: projectionAnchor.burnBlockHeight,
-              stacksTipHeight: projectionAnchor.stacksBlockHeight,
-              chainAnchor: projectionAnchor,
-            }),
-            rewardCalculation.status === "ready"
-              ? readStxRewardStatus({
-                  store,
-                  node,
-                  sourceId,
-                  managerPrincipal,
-                  pox5ContractId,
-                  rewardCycle: rewardCalculation.rewardCycle,
-                  observedAt: generatedAt,
-                  burnBlockHeight: projectionAnchor.burnBlockHeight,
-                  stacksTipHeight: projectionAnchor.stacksBlockHeight,
-                  chainAnchor: projectionAnchor,
-                })
-              : null,
-          ])
-        : [null, null];
+        ? await readPoolForecast({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId,
+            currentRewardCycle: projectionAnchor.rewardCycle,
+            horizonCycles: config.forecastHorizonCycles,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+          })
+        : null;
+    const rewardCapability = managerActionCapability(
+      manager.capabilities,
+      "reference-reward-claims",
+    );
+    const rewards =
+      manager.attachAllowed &&
+      pox5ContractId &&
+      rewardCapability.executionAvailable &&
+      rewardCalculation.status === "ready"
+        ? await readStxRewardStatus({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId,
+            rewardCycle: rewardCalculation.rewardCycle,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+          })
+        : null;
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
       setup: setupSnapshot,
       rewards,
@@ -1072,6 +1091,7 @@ export class OperatorService {
       claimLimit: 4,
       withdrawalLimit: 50,
       sourceId,
+      eventVocabulary: managerEventVocabularyFor(manager.capabilities),
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
     const partial = {

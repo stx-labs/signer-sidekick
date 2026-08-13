@@ -56,7 +56,7 @@ const stakerResult: SyncSignerStakersResult = {
   discrepanciesObservedThisInvocation: [],
 };
 const eventResult = {
-  stream: `manager-logs:v2:${managerPrincipal}`,
+  stream: `manager-logs:v3:reference-manager-v1:${managerPrincipal}`,
   resumed: false,
   pagesProcessed: 1,
   eventsProcessed: 0,

@@ -15,7 +15,9 @@ import {
 import { loadConfig, redactConfig } from "./config.js";
 import { createPoolEnrollmentDocument } from "./enrollment-info.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
+import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
+import { managerEventVocabularyFor } from "./manager-event-vocabulary.js";
 import { assertManagerRenderPreflight, renderManagerDeployment } from "./manager-render.js";
 import {
   createInstalledManagerProfile,
@@ -506,6 +508,7 @@ export async function executeCliCommand({
           sourceId,
           chainId: preflight.node.networkId,
           managerPrincipal,
+          eventVocabulary: managerEventVocabularyFor(manager.capabilities),
           observedAt,
           pageLimit: config.eventPageLimit,
         });
@@ -562,6 +565,7 @@ export async function executeCliCommand({
           sourceId,
           chainId: preflight.node.networkId,
           managerPrincipal,
+          eventVocabulary: managerEventVocabularyFor(manager.capabilities),
           observedAt,
           pageLimit: config.eventPageLimit,
         });
@@ -652,6 +656,13 @@ export async function executeCliCommand({
     const pox5ContractId = preflight.pox.pox5ContractId;
     if (!manager.attachAllowed) {
       throw managerCompatibilityBlocked("Reward status");
+    }
+    const rewardCapability = managerActionCapability(
+      manager.capabilities,
+      "reference-reward-claims",
+    );
+    if (!rewardCapability.executionAvailable) {
+      throw new Error(`Reward status is unavailable: ${rewardCapability.reason}`);
     }
     const defaultRewardCalculation = deriveRewardCalculationTarget(chainAnchor);
     if (!rewardCycleArgument && defaultRewardCalculation.status === "invalid") {

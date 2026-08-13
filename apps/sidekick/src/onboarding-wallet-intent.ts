@@ -24,6 +24,7 @@ import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
+  type ManagerActionCapabilityId,
   onboardingBrowserWalletIntentCreateRequestSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
@@ -46,6 +47,7 @@ import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals
 import { z } from "zod";
 import { UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import { managerActionCapability } from "./manager-capabilities.js";
 import {
   type ManagerDeploymentManifest,
   managerDeploymentManifestSchema,
@@ -156,6 +158,17 @@ function transactionMatchesAction(
   const expectedFunction =
     action === "add-admin" || action === "remove-admin" ? "update-admin" : action;
   return transaction.params.functionName === expectedFunction;
+}
+
+function capabilityIdForWalletAction(
+  action: BrowserWalletIntentAction,
+): ManagerActionCapabilityId | null {
+  if (action === "deploy-manager") return null;
+  if (action === "add-admin" || action === "remove-admin") return "update-admin";
+  if (action === "claim-rewards" || action === "claim-staker-rewards") {
+    return "reference-reward-claims";
+  }
+  return action;
 }
 
 function walletNetworkChecksPass(snapshot: SetupSnapshot, chainId: number): boolean {
@@ -854,15 +867,22 @@ export class OnboardingWalletIntentService {
     snapshot: SetupSnapshot,
     managerPrincipal: string,
     network: WalletTransactionNetworkBinding,
+    action: BrowserWalletIntentAction,
   ): void {
+    const capabilityId = capabilityIdForWalletAction(action);
+    const capability = capabilityId
+      ? managerActionCapability(snapshot.manager.capabilities, capabilityId)
+      : null;
     if (
       snapshot.manager.managerPrincipal !== managerPrincipal ||
       !snapshot.manager.attachAllowed ||
+      !capability?.executionAvailable ||
       !walletNetworkChecksPass(snapshot, network.chainId)
     ) {
       throw new OnboardingWalletIntentError(
         "wallet_execution_unavailable",
-        "The configured manager is unavailable or incompatible on this network",
+        capability?.reason ??
+          "The configured manager is unavailable or lacks a reviewed capability on this network",
       );
     }
   }
@@ -1134,10 +1154,10 @@ export class OnboardingWalletIntentService {
           "The deployed manager must match the reviewed source before registration",
         );
       }
-    } else if (setupRequest || action === "claim-rewards") {
+    } else if (setupRequest) {
       this.assertTrustedManager(snapshot, managerPrincipal, network);
     } else {
-      this.assertManagerActionTarget(snapshot, managerPrincipal, network);
+      this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
     }
     if (action === "register-self") {
       const verified = state.signerGrant.verified;

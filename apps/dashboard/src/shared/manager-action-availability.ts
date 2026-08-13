@@ -1,9 +1,13 @@
-import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
+import type {
+  DashboardSnapshot,
+  ManagerActionCapabilityId,
+} from "@stx-labs/signer-sidekick-api-contracts";
 
 type ManagerActionContext = Pick<DashboardSnapshot, "freshness" | "manager" | "preflight">;
 
 export function managerActionAvailability(
   data: ManagerActionContext,
+  capabilityId: ManagerActionCapabilityId,
   operatorStateStale = false,
 ): {
   available: boolean;
@@ -41,16 +45,17 @@ export function managerActionAvailability(
       warning: null,
     };
   }
-  const referenceVerified =
-    (data.manager.source.tier === "reference-built-in" &&
-      data.manager.provenance.status === "built-in") ||
-    (data.manager.source.tier === "reference-render" &&
-      data.manager.provenance.status === "verified");
+  const capability = data.manager.capabilities.actions.find(({ id }) => id === capabilityId);
+  if (!capability?.executionAvailable) {
+    return {
+      available: false,
+      reason: capability?.reason ?? `Sidekick did not report the ${capabilityId} capability.`,
+      warning: null,
+    };
+  }
   return {
     available: true,
-    reason: "Manager actions are available.",
-    warning: referenceVerified
-      ? null
-      : "Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable. Review each transaction carefully before signing.",
+    reason: capability.reason,
+    warning: null,
   };
 }

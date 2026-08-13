@@ -25,6 +25,7 @@ import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operato
 import { PipelineStage } from "../../shared/pipeline-stage.js";
 import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
 import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
+import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;
 type BucketSort = "bucket" | "shares" | "earned" | "fee" | "included";
@@ -97,8 +98,27 @@ export function Rewards({
 }) {
   const rewards = data.rewards;
   const [rewardsFreshness, setRewardsFreshness] = useState(data.freshness ?? null);
-  const actionAvailability = managerActionAvailability(data, operatorStateStale);
-  const managerActionsAvailable = actionAvailability.available;
+  const rewardClaimsAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("claim-rewards"),
+    operatorStateStale,
+  );
+  const updateFeesAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("update-fees"),
+    operatorStateStale,
+  );
+  const withdrawFeesAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("withdraw-fees"),
+    operatorStateStale,
+  );
+  const sweepFeeRefundsAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("sweep-fee-refunds"),
+    operatorStateStale,
+  );
+  const managerActionsAvailable = rewardClaimsAvailability.available;
   const [activity, setActivity] = useState(data.activity);
   const [stakerPage, setStakerPage] = useState(0);
   const [bucketSort, setBucketSort] = useState<TableSort<BucketSort>>({
@@ -426,12 +446,12 @@ export function Rewards({
       ) : null}
       {!managerActionsAvailable ? (
         <p className="tertiary balance-note" role="status">
-          <strong>Guided manager actions are unavailable.</strong> {actionAvailability.reason}
+          <strong>Guided reward claims are unavailable.</strong> {rewardClaimsAvailability.reason}
         </p>
       ) : null}
-      {actionAvailability.warning ? (
+      {rewardClaimsAvailability.warning ? (
         <p className="tertiary balance-note" role="status">
-          <strong>Unverified manager source.</strong> {actionAvailability.warning}
+          <strong>Unverified manager source.</strong> {rewardClaimsAvailability.warning}
         </p>
       ) : null}
       <div className="grid cols-2 reward-ledger">
@@ -465,7 +485,8 @@ export function Rewards({
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!managerActionsAvailable}
+              disabled={!updateFeesAvailability.available}
+              title={updateFeesAvailability.available ? undefined : updateFeesAvailability.reason}
               onClick={() => {
                 location.hash = dashboardHash("manager", "update-fees");
               }}
@@ -495,7 +516,11 @@ export function Rewards({
               type="button"
               className="btn btn-secondary"
               disabled={
-                !managerActionsAvailable || BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
+                !withdrawFeesAvailability.available ||
+                BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
+              }
+              title={
+                withdrawFeesAvailability.available ? undefined : withdrawFeesAvailability.reason
               }
               onClick={() => {
                 location.hash = dashboardHash("manager", "withdraw-fees");
@@ -506,7 +531,12 @@ export function Rewards({
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!managerActionsAvailable}
+              disabled={!sweepFeeRefundsAvailability.available}
+              title={
+                sweepFeeRefundsAvailability.available
+                  ? undefined
+                  : sweepFeeRefundsAvailability.reason
+              }
               onClick={() => {
                 location.hash = dashboardHash("manager", "sweep-fee-refunds");
               }}

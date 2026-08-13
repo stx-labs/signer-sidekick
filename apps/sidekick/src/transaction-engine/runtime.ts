@@ -12,6 +12,7 @@ import {
   type StacksNodeClient,
 } from "../chain-clients.js";
 import type { SidekickConfig } from "../config.js";
+import { managerActionCapability } from "../manager-capabilities.js";
 import type { ManagerVerificationContext } from "../manager-verification.js";
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
 import { readSetupSnapshot, type SetupSnapshot } from "../setup-snapshot.js";
@@ -750,7 +751,11 @@ export async function createSidekickTransactionEngineRuntime(
         const pox5ContractId = setup.preflight.pox.pox5ContractId;
         const rewardCalculation = deriveRewardCalculationTarget(setup.chainAnchor);
         const rewards =
-          setup.manager.attachAllowed && pox5ContractId && rewardCalculation.status === "ready"
+          setup.manager.attachAllowed &&
+          pox5ContractId &&
+          managerActionCapability(setup.manager.capabilities, "reference-reward-claims")
+            .executionAvailable &&
+          rewardCalculation.status === "ready"
             ? await readStxRewardStatus({
                 store: options.store,
                 node: context.node,

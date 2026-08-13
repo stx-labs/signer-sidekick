@@ -311,6 +311,51 @@ function deploymentFreshState(clarityCode = source): WalletFreshState {
   };
 }
 
+function reviewedManagerCapabilities(reviewed = true) {
+  const ids = [
+    "register-self",
+    "update-admin",
+    "update-fees",
+    "withdraw-fees",
+    "sweep-fee-refunds",
+    "reference-reward-claims",
+  ] as const;
+  return {
+    signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+    observedFunctions: { public: [], readOnly: [] },
+    sourceReview: {
+      exactReviewed: reviewed,
+      reason: reviewed ? "Exact reviewed source" : "No reviewed exact source match",
+    },
+    eventVocabulary: {
+      id: "reference-manager-v1" as const,
+      normalizationAvailable: reviewed,
+      adapter: reviewed
+        ? {
+            id: "reference-manager-print-events",
+            revision: 1,
+            reviewedSourceSha256: sourceSha256,
+          }
+        : null,
+      reason: reviewed ? "Reviewed event vocabulary" : "Generic events only",
+    },
+    actions: ids.map((id) => ({
+      id,
+      interfaceAvailable: true,
+      executionAvailable: reviewed,
+      missingFunctions: [],
+      adapter: reviewed
+        ? {
+            id: `reference-manager-${id}`,
+            revision: 1,
+            reviewedSourceSha256: sourceSha256,
+          }
+        : null,
+      reason: reviewed ? "Exact reviewed capability" : "No reviewed exact source match",
+    })),
+  };
+}
+
 function registrationSnapshot(signerKeyHex: string, signerKeyGrantValid = true) {
   return {
     chainAnchor: { indexBlockHash },
@@ -318,6 +363,7 @@ function registrationSnapshot(signerKeyHex: string, signerKeyGrantValid = true) 
     manager: {
       managerPrincipal,
       attachAllowed: true,
+      capabilities: reviewedManagerCapabilities(),
       source: {
         recognized: true,
         tier: "reference-render",
@@ -370,6 +416,7 @@ function trustedManagerSnapshot(options: {
     manager: {
       managerPrincipal: manager,
       attachAllowed: true,
+      capabilities: reviewedManagerCapabilities(),
       provenance: {
         status: "built-in",
         upstreamProfileId: profileId,
@@ -1750,7 +1797,7 @@ describe("manager wallet action preparation", () => {
     });
   });
 
-  it("allows a fixed external action without source or compatibility-profile trust", async () => {
+  it("blocks a reference-shaped action without an exact reviewed source", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
     const snapshot = trustedManagerSnapshot({});
@@ -1770,6 +1817,7 @@ describe("manager wallet action preparation", () => {
       manager: {
         ...snapshot.manager,
         automationEligible: false,
+        capabilities: reviewedManagerCapabilities(false),
         source: {
           ...snapshot.manager.source,
           recognized: false,
@@ -1795,16 +1843,15 @@ describe("manager wallet action preparation", () => {
       readWalletState: deploymentFreshState,
     });
 
-    const intent = await wallet.prepare({
-      action: "update-fees",
-      actorPrincipal: requiredSender,
-      feeBips: "250",
-    });
-
-    expect(intent).toMatchObject({ status: "prepared", action: "update-fees" });
-    expect(intent.review.fields).toContainEqual({
-      label: "Source assurance",
-      value: "Unverified or custom manager — review in signing tool",
+    await expect(
+      wallet.prepare({
+        action: "update-fees",
+        actorPrincipal: requiredSender,
+        feeBips: "250",
+      }),
+    ).rejects.toMatchObject({
+      code: "wallet_execution_unavailable",
+      message: "No reviewed exact source match",
     });
   });
 

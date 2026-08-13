@@ -1701,6 +1701,15 @@ export class SidekickStore {
 
   private putManagerActivityProjection(value: ChainEventInput): void {
     if (!value.contractId) return;
+    // A replay may intentionally downgrade an event from a reviewed vocabulary to generic raw
+    // storage. Remove any prior semantic projection before deciding whether the new observation
+    // is eligible to recreate it.
+    this.db
+      .prepare(
+        `DELETE FROM manager_activity_events
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
+      )
+      .run(value.chainId, value.txId, value.eventIndex);
     const parsed = managerActivityEnvelopeSchema.safeParse(value.decodedPayload);
     if (!parsed.success) return;
     const event = parsed.data.event;

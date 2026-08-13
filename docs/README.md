@@ -7,6 +7,9 @@ Choose the shortest path for your task.
 | Mainnet operator | [Container deployment](operator/deployment.md) | Install, configure, upgrade, restore, diagnose |
 | PoX-5 Testnet evaluator | [PoX-5 Testnet runbook](operator/pox5-testnet-deployment.md) | Exercise Attach and Fresh setup against the dedicated PoX-5 network |
 | Contributor | [Development](operator/development.md) | Build, test, and run locally |
+| Product and architecture reviewer | [Scope reset plan](product/scope-reset-plan-2026-08-13.md) | Proposed operator-only boundary, event reconciliation, and rewards roadmap |
+| Scope-reset implementer | [Implementation plan](product/scope-reset-implementation-plan-2026-08-13.md) | Milestone boundary, ordered slices, invariants, and validation gates |
+| Contract compatibility reviewer | [Deployed signer-manager baseline](reviews/deployed-signer-manager-baseline-2026-08-13.md) | Mainnet contract families, universal PoX-5 baseline, and capability-adapter policy |
 | Signer-health reviewer | [Signer Health](product/signer-health.md) | Monitoring sources, behavior, and scope |
 | Assist reviewer | [Transaction engine safety contract](architecture/transaction-engine.md) | Authority and execution invariants before reviewing Assist |
 
