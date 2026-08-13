@@ -911,6 +911,30 @@ test("summarizes the cycle clock and links health details", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "Signer Health", exact: true })).toBeVisible();
 });
 
+test("downloads the server-collected support bundle", async ({ page }) => {
+  let supportRequests = 0;
+  await page.route("**/api/v1/support-bundle", async (route) => {
+    supportRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {
+        "content-disposition":
+          'attachment; filename="signer-sidekick-support-2026-08-13T12-00-00Z.json"',
+      },
+      body: JSON.stringify({ documentType: "signer-sidekick-operator-support-bundle" }),
+    });
+  });
+
+  await login(page);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download support bundle" }).click();
+  const download = await downloadPromise;
+
+  expect(supportRequests).toBe(1);
+  expect(download.suggestedFilename()).toBe("signer-sidekick-support-2026-08-13T12-00-00Z.json");
+});
+
 test("required actions provide their resolving control and exclude informational notices", async ({
   page,
 }) => {

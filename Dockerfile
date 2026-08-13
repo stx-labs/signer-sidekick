@@ -12,7 +12,12 @@ WORKDIR /workspace
 RUN corepack enable
 
 COPY . .
-RUN pnpm install --frozen-lockfile \
+RUN find apps packages contracts network-compatibility trusted-managers scripts -type f -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  | sha256sum \
+  | cut -d ' ' -f 1 > /workspace/SOURCE_FINGERPRINT \
+  && pnpm install --frozen-lockfile \
   && pnpm protocol:verify \
   && pnpm check \
   && pnpm test \
@@ -33,6 +38,9 @@ LABEL org.opencontainers.image.title="Signer Sidekick" \
   org.opencontainers.image.source="https://github.com/stx-labs/signer-sidekick"
 
 ENV NODE_ENV=production \
+  SIDEKICK_BUILD_VERSION=${VERSION} \
+  SIDEKICK_BUILD_COMMIT=${VCS_REF} \
+  SIDEKICK_SOURCE_FINGERPRINT_PATH=/app/SOURCE_FINGERPRINT \
   SIDEKICK_HTTP_HOST=0.0.0.0 \
   SIDEKICK_HTTP_PORT=3998 \
   SIDEKICK_DATABASE_PATH=/data/sidekick.sqlite \
@@ -45,6 +53,7 @@ RUN groupadd --system --gid 10001 sidekick \
   && chown -R sidekick:sidekick /data /app
 
 COPY --from=build --chown=sidekick:sidekick /opt/sidekick /app
+COPY --from=build --chown=sidekick:sidekick /workspace/SOURCE_FINGERPRINT /app/SOURCE_FINGERPRINT
 COPY --from=build --chown=sidekick:sidekick /workspace/apps/dashboard/dist /app/dashboard
 COPY --from=build --chown=sidekick:sidekick /workspace/contracts /app/contracts
 COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /workspace/dist/THIRD_PARTY_LICENSES.txt /usr/share/doc/signer-sidekick/

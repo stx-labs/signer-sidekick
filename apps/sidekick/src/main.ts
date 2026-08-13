@@ -52,7 +52,7 @@ import {
   createNodeSourceId,
   openSidekickStore,
 } from "./storage/store.js";
-import { createSupportBundle } from "./support-bundle.js";
+import { createSupportBundle, operatorSupportApplication } from "./support-bundle.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
 
 function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
@@ -207,6 +207,8 @@ export async function executeCliCommand({
         onboarding,
         health,
         engine: engine.api,
+        supportApplication: () => operatorSupportApplication(env),
+        databaseStatus: () => store.databaseStatus(),
         snapshotRefreshMetrics,
         authToken,
         ...(authTrustedHeader ? { authTrustedHeader } : {}),

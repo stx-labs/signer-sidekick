@@ -231,8 +231,24 @@ curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml por
 curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/metrics"
 ```
 
-Use the dashboard support bundle for escalation. Review it and logs before sharing because public
-principals are operationally identifying.
+Use **Download support bundle** on the dashboard Overview page for escalation to Stacks Labs. The
+authenticated download performs a fresh, failure-tolerant collection and records each source as
+`ok`, `failed`, or `unavailable`, so a broken node or signer does not prevent the artifact from
+being created. It includes:
+
+- Sidekick build/runtime information, database state, refresh/reconciliation state, and the current
+  operator snapshot;
+- local Stacks node, signer, Hiro reference, and configured monitoring health;
+- manager registration, PoX-5 setup, pool roster/forecast/reward state, activity, alerts, and trust
+  history; and
+- transaction-engine status plus the 50 most recent operation summaries.
+
+The bundle intentionally includes operationally identifying public principals, transaction IDs,
+internal endpoint URLs, and filesystem paths. It excludes API-key values, operator credentials,
+passwords, cookies, private keys, mnemonics, signer signatures, signed transactions, environment
+dumps, and raw logs. The `safety` object records these boundaries in the artifact. Raw host, node,
+and signer logs remain deployment-specific; attach relevant log excerpts separately when support
+requests them.
 
 For the dedicated PoX-5 Testnet exercise, use the separate
 [PoX-5 Testnet runbook](pox5-testnet-deployment.md).

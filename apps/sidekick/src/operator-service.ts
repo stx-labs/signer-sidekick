@@ -622,6 +622,22 @@ export class OperatorService {
   }
 
   async summary(force = false) {
+    const snapshot = await this.supportSnapshot(force);
+    return {
+      ...snapshot,
+      rosterTotal: snapshot.roster.length,
+      rosterStats: {
+        deferredUnlocks: snapshot.roster.filter(({ position }) => position?.unlockBurnHeight)
+          .length,
+      },
+      roster: [],
+      rewards: snapshot.rewards ? { ...snapshot.rewards, stakers: [] } : null,
+      activity: { ...snapshot.activity, withdrawals: [] },
+    };
+  }
+
+  /** Full public operator state for a support artifact, including freshness provenance. */
+  async supportSnapshot(force = true) {
     const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness(force);
     const servedAt = new Date().toISOString();
     return {
@@ -633,14 +649,6 @@ export class OperatorService {
         reason,
         ...(rateLimit ? { rateLimit } : {}),
       },
-      rosterTotal: snapshot.roster.length,
-      rosterStats: {
-        deferredUnlocks: snapshot.roster.filter(({ position }) => position?.unlockBurnHeight)
-          .length,
-      },
-      roster: [],
-      rewards: snapshot.rewards ? { ...snapshot.rewards, stakers: [] } : null,
-      activity: { ...snapshot.activity, withdrawals: [] },
     };
   }
 

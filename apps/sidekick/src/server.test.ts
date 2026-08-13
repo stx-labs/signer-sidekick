@@ -11,6 +11,7 @@ import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
+import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -118,6 +119,76 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("downloads a server-collected support bundle without requiring every source", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const supportSnapshot = vi.fn(async () => ({
+      generatedAt: "2026-08-13T12:00:00.000Z",
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      preflight: { status: "pass" },
+      manager: {},
+      activity: { withdrawals: [] },
+      roster: [],
+      alerts: [],
+    }));
+    const service = {
+      snapshot: async () => ({}),
+      supportSnapshot,
+      synchronize: async () => ({}),
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      logger: false,
+      databaseStatus: () => ({
+        schemaVersion: 21,
+        journalMode: "wal",
+        synchronous: 2,
+        foreignKeys: true,
+      }),
+      supportApplication: () =>
+        operatorSupportApplication(
+          { SIDEKICK_BUILD_VERSION: "1.2.3", SIDEKICK_BUILD_COMMIT: "abcdef1" },
+          new Date("2026-08-13T12:01:00.000Z"),
+          120,
+        ),
+    });
+    servers.push(server);
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/support-bundle" })).statusCode).toBe(
+      401,
+    );
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/support-bundle",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.headers["content-disposition"]).toMatch(
+      /^attachment; filename="signer-sidekick-support-.+\.json"$/,
+    );
+    expect(response.json()).toMatchObject({
+      documentType: "signer-sidekick-operator-support-bundle",
+      collectionStatus: "partial",
+      application: { version: "1.2.3", buildCommit: "abcdef1" },
+      sections: {
+        operator: { status: "ok", data: { network: "mainnet" } },
+        nodeAndSignerHealth: { status: "unavailable", data: null },
+        recentSidekickErrors: {
+          status: "ok",
+          data: [{ severity: "warning", source: "operator-api", code: "unauthorized" }],
+        },
+        database: { status: "ok", data: { schemaVersion: 21 } },
+        automation: { status: "ok" },
+      },
+    });
+    expect(response.body).not.toContain(token);
+    expect(supportSnapshot).toHaveBeenCalledWith(true);
   });
 
   it("accepts the API key from an explicitly configured trusted proxy header", async () => {

@@ -71,6 +71,11 @@ import {
   startRosterReconciliationLoop,
 } from "./roster-reconciliation-refresh.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
+import {
+  createOperatorSupportBundle,
+  type OperatorSupportApplication,
+  operatorSupportApplication,
+} from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -108,6 +113,7 @@ interface OperatorSnapshotShape {
 
 interface OperatorSnapshotService {
   snapshot(force?: boolean): Promise<OperatorSnapshotShape>;
+  supportSnapshot?(force?: boolean): Promise<OperatorSnapshotShape>;
   synchronize(options?: {
     signal?: AbortSignal;
     onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
@@ -286,6 +292,8 @@ export interface ServerOptions {
     ): Promise<unknown>;
   };
   engine?: TransactionEngineApiService;
+  supportApplication?(): OperatorSupportApplication;
+  databaseStatus?(): unknown;
   snapshotRefreshMetrics?: SnapshotRefreshMetricsTracker;
   rosterReconciliationIntervalMs?: number;
   rosterReconciliationInitialDelayMs?: number;
@@ -307,6 +315,15 @@ interface SafeErrorClassification {
   statusCode: number;
   body: ApiError & Record<string, unknown>;
   retryAfterSeconds?: number;
+}
+
+interface SupportDiagnosticEvent {
+  recordedAt: string;
+  severity: "warning" | "error";
+  source: "operator-api" | "reconciliation";
+  code: string;
+  message: string;
+  requestId: string | null;
 }
 
 const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
@@ -598,6 +615,7 @@ function sendClassifiedError(
   reply: FastifyReply,
   error: unknown,
   configuredApi?: RateLimitApiSource,
+  recordDiagnostic?: (event: SupportDiagnosticEvent) => void,
 ): FastifyReply {
   const classified = classifySafeOperatorError(error, configuredApi);
   const body =
@@ -608,6 +626,14 @@ function sendClassifiedError(
           requestId: request.id,
         }
       : classified.body;
+  recordDiagnostic?.({
+    recordedAt: new Date().toISOString(),
+    severity: classified.statusCode >= 500 ? "error" : "warning",
+    source: "operator-api",
+    code: body.error,
+    message: body.message ?? body.error,
+    requestId: request.id,
+  });
   if (classified.retryAfterSeconds !== undefined) {
     reply.header("retry-after", String(classified.retryAfterSeconds));
   }
@@ -876,6 +902,12 @@ export function createServer(options: ServerOptions = {}) {
   let syncRequestCount = 0;
   let syncCount = 0;
   let syncFailureCount = 0;
+  const recentSidekickErrors: SupportDiagnosticEvent[] = [];
+  const recordDiagnostic = (event: SupportDiagnosticEvent) => {
+    recentSidekickErrors.push(event);
+    if (recentSidekickErrors.length > 50)
+      recentSidekickErrors.splice(0, recentSidekickErrors.length - 50);
+  };
   const rosterReconciliationMetrics = new RosterReconciliationMetricsTracker();
   let rosterReconciliationLoop: { stop(): void } | null = null;
   const idleReconciliationOperation = (): ReconciliationOperation => ({
@@ -1038,6 +1070,14 @@ export function createServer(options: ServerOptions = {}) {
         syncFailureCount += 1;
         const failedAt = new Date().toISOString();
         const classified = classifySafeOperatorError(error, rateLimitSettings());
+        recordDiagnostic({
+          recordedAt: failedAt,
+          severity: "error",
+          source: "reconciliation",
+          code: classified.body.error,
+          message: classified.body.message ?? classified.body.error,
+          requestId: null,
+        });
         reconciliationRetryAfterSeconds =
           error instanceof RateLimitedError
             ? Math.max(1, Math.ceil((error.retryAfterMs ?? 60_000) / 1_000))
@@ -1093,7 +1133,7 @@ export function createServer(options: ServerOptions = {}) {
   }
 
   server.setErrorHandler((error: FastifyError, request, reply) => {
-    return sendClassifiedError(request, reply, error, rateLimitSettings());
+    return sendClassifiedError(request, reply, error, rateLimitSettings(), recordDiagnostic);
   });
 
   server.addHook("onReady", async () => {
@@ -1269,6 +1309,59 @@ export function createServer(options: ServerOptions = {}) {
         ? options.service.summary(refresh)
         : options.service?.snapshot(refresh),
     );
+  });
+  server.get("/api/v1/support-bundle", async (_request, reply) => {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const application = options.supportApplication?.() ?? operatorSupportApplication();
+    const bundle = await createOperatorSupportBundle({
+      application,
+      operator: async () =>
+        service.supportSnapshot
+          ? service.supportSnapshot(true)
+          : service.summary
+            ? service.summary(true)
+            : service.snapshot(true),
+      ...(options.health ? { health: async () => options.health?.refresh() } : {}),
+      ...(options.engine
+        ? {
+            engine: async () => options.engine?.status(),
+            recentOperations: async () => options.engine?.listJobs({ cursor: null, limit: 50 }),
+          }
+        : {}),
+      ...(options.databaseStatus ? { database: options.databaseStatus } : {}),
+      recentSidekickErrors: () => recentSidekickErrors,
+      automation: () => ({
+        processRequests: {
+          total: requestCount,
+          syncRequests: syncRequestCount,
+          syncRuns: syncCount,
+          syncFailures: syncFailureCount,
+        },
+        operatorSnapshotRefresh: options.snapshotRefreshMetrics?.snapshot() ?? {
+          attemptsTotal: 0,
+          successesTotal: 0,
+          failuresTotal: 0,
+          consecutiveFailures: 0,
+          retryBackoffSeconds: 0,
+          lastSuccessTimestampSeconds: 0,
+          snapshotGeneratedTimestampSeconds: 0,
+          snapshotAgeSeconds: 0,
+          snapshotFresh: 0,
+          sourcePositions: null,
+        },
+        rosterReconciliation: rosterReconciliationMetrics.snapshot(),
+        currentReconciliation: reconciliationOperation,
+      }),
+    });
+    const timestamp = bundle.generatedAt.replaceAll(":", "-").replace(".000Z", "Z");
+    return reply
+      .header("cache-control", "no-store")
+      .header(
+        "content-disposition",
+        `attachment; filename="signer-sidekick-support-${timestamp}.json"`,
+      )
+      .type("application/json; charset=utf-8")
+      .send(bundle);
   });
   server.get("/api/v1/engine", async () => {
     return await requireFeature(options.engine, "transaction_engine_unavailable").status();

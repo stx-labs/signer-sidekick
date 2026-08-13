@@ -9,11 +9,12 @@ import {
 } from "@phosphor-icons/react";
 import type { DashboardSnapshot, HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useState } from "react";
+import { apiDownload } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { AlertActionButton } from "../../shared/alert-action-button.js";
-import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
-import { downloadJson } from "../../shared/download.js";
+import { Badge, ErrorCallout, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { compactDuration, number, sbtc, short, stx } from "../../shared/format.js";
+import { operatorActionError } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
 import { fetchHealthSnapshot } from "../../signer-health.js";
 
@@ -66,6 +67,8 @@ export function Overview({
 }) {
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [healthUnavailable, setHealthUnavailable] = useState(false);
+  const [supportDownloadBusy, setSupportDownloadBusy] = useState(false);
+  const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
     const loadHealth = async () => {
@@ -106,6 +109,23 @@ export function Overview({
   const signerHealthLabel = healthUnavailable
     ? "unknown; latest health read failed"
     : healthLightLabel(signerHealth);
+  const downloadSupportBundle = async () => {
+    setSupportDownloadBusy(true);
+    setSupportDownloadError(null);
+    try {
+      await apiDownload(token, "/api/v1/support-bundle", {
+        expectedContentTypes: ["application/json"],
+        fallbackFilename: "signer-sidekick-support.json",
+        timeoutMs: 90_000,
+      });
+    } catch (cause) {
+      setSupportDownloadError(
+        operatorActionError(cause, "Could not download the support bundle", "Retrying is safe"),
+      );
+    } finally {
+      setSupportDownloadBusy(false);
+    }
+  };
   return (
     <>
       <PageHead
@@ -120,14 +140,16 @@ export function Overview({
             <button
               type="button"
               className="btn btn-secondary sm"
-              onClick={() => downloadJson("signer-sidekick-status.json", data)}
+              disabled={supportDownloadBusy}
+              onClick={() => void downloadSupportBundle()}
             >
               <DownloadSimple />
-              Support snapshot
+              {supportDownloadBusy ? "Collecting support bundle" : "Download support bundle"}
             </button>
           </>
         }
       />
+      <ErrorCallout error={supportDownloadError} />
       {showSetupNotice ? (
         <section className="card-standout setup-notice" aria-labelledby="setup-notice-title">
           <div className="setup-notice-icon" aria-hidden="true">
