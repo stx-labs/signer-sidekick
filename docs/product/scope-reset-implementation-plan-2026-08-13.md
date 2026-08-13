@@ -33,6 +33,11 @@ it is required to remove the old boundary safely.
 6. Signer keys and wallet/admin private keys never enter Sidekick.
 7. Removing setup must not weaken anchored reads, deterministic transaction bytes,
    post-conditions, post-state verification, ambiguity handling, or audit evidence.
+8. Connection, signer readiness, data coverage, and per-action availability remain independent;
+   no optional API, telemetry source, registration fact, eligibility result, or capability adapter
+   becomes a product-wide connection gate.
+9. A successfully connected database is bound to one network and manager principal; Sidekick never
+   writes through an identity mismatch or silently merges operator histories.
 
 ## Scope-reset milestone
 
@@ -118,21 +123,56 @@ Gate:
 
 Purpose: complete the actual complexity reset.
 
+The normative UX, terminology, gate, recovery matrix, and persistence behavior are defined in the
+[First-run connection contract](first-run-connection-2026-08-13.md).
+
 - Remove contract rendering/deployment, first-time grant/registration, setup wizard/progress,
   activation plans, Initial Setup page, public pool page, enrollment artifacts, and setup-only
   commands/routes/persistence/tests.
-- Replace the first run with configured-manager connection, trait, signer identity, registration,
-  eligibility, participant-type, and source-coverage checks.
-- Point an unattached operator to the maintained Zero to Signing experience.
+- Add a bounded authenticated connection-assessment response that depends only on the local node,
+  configured network, PoX-5 availability, manager deployment, and exact trait check. It must not
+  wait for the comprehensive operator snapshot, indexed API, roster/history sync, reward reads, or
+  signer telemetry.
+- Return stable connection outcome codes for node unavailability, node/principal network mismatch,
+  PoX-5 unavailability, missing deployment, trait mismatch, and stored deployment-identity
+  mismatch; do not require the dashboard to parse backend prose.
+- Replace the first run with the focused connection page only when that minimal assessment is
+  blocked or has never succeeded. Route directly to Overview once it passes.
+- Keep registration, grant, eligibility, runtime-key, participant-type, source-coverage, and
+  capability results independent and render them on the ordinary operator pages.
+- Point an operator to the maintained Zero to Signing experience only when the configured contract
+  is not deployed or the operator explicitly needs the general first-time flow.
+- Persist a versioned network/manager deployment identity on first successful connection. Enforce
+  read-only diagnostic safe mode before any writes or actions when later configuration disagrees,
+  and migrate legacy unbound databases only when their stored evidence agrees unambiguously.
+- Replace operator-facing Fresh/Attach/setup terminology with the language contract: Sidekick
+  connects; the manager is deployed; the signer is registered and authorized; cycle eligibility
+  and signing health are separate evidence-based results.
+- Remove the setup-era `sidekick attach <manager>` behavior. Its read-only replacement must consume
+  the same configured manager as `serve` and must not return failure merely because registration,
+  eligibility, optional sources, or an action adapter needs attention.
 - Rewrite README, deployment, architecture, testnet, and Devnet acceptance around an already-running
   signer and manager.
 
 Gate:
 
 - no runtime setup/public-staker route or artifact remains;
-- a new deployment reaches a useful operator screen without offering deployment;
+- no replacement wizard, steps, Continue action, or setup-progress persistence exists;
+- a new deployment reaches either a focused, actionable connection recovery page or Overview
+  without waiting for indexed data or full domain projections;
+- registration/grant, API, telemetry, eligibility, and capability gaps do not produce a failed
+  connection;
+- wrong-network, missing-contract, and trait-mismatch recovery states show the configured and
+  observed evidence and use the approved language/actions;
+- first-run node unavailability is reported as unable to check, while a refresh failure after a
+  proved connection preserves explicitly stale last-success evidence;
+- matching-bound, mismatched-bound, new, and legacy-unbound database cases enforce the deployment
+  identity contract without silent rebinds or mixed histories;
+- identity-mismatch safe mode leaves liveness, read-only Settings, and support export available,
+  reports non-readiness, and starts no reconciliation, event ingestion, projection writes, plans,
+  or Assist work;
 - the Zero to Signing ownership/support decision is recorded;
-- the attach/observe/action Devnet acceptance path replaces the setup acceptance path.
+- the connect/observe/action Devnet acceptance path replaces the setup acceptance path.
 
 ## V2 roadmap
 

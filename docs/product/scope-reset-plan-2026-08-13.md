@@ -129,24 +129,35 @@ domain, rather than repeat broad status summaries.
 
 ### The first-run experience after removing setup
 
-“Sets nothing up” must not mean a blank or cryptic first launch. Sidekick still needs to attach to a
-configured manager.
+“Sets nothing up” must not mean a blank or cryptic first launch, but Sidekick must not replace the
+removed setup workflow with another wizard. The approved screen flow, gate, language, recovery
+states, data-loading boundary, and database-identity behavior are normative in the
+[First-run connection contract](first-run-connection-2026-08-13.md).
 
-- Deployment configuration supplies the network, local node, optional API, signer monitoring URL,
-  and signer-manager principal.
-- First launch runs read-only connection, trait, capability, and signer-identity checks. It never
-  deploys or registers anything.
-- If no manager exists, the page explains that setup occurs in Zero to Signing and links there.
-- If the contract satisfies the signer-manager trait, Sidekick attaches and provides the universal
-  PoX-5 baseline regardless of its source hash or whether Sidekick has seen that deployment before.
-- If a guarded operation has no matching capability adapter, Sidekick names that operation as
-  unavailable without labelling the manager globally unsupported.
-- The first useful screen identifies the running signer, compares it with the on-chain signer key,
-  shows registration/current-next-cycle eligibility, reports both participant types, and explains
-  any diagnostic-source gaps.
-- Ongoing registration repair and signer-key rotation remain on Manager because they are day-2
-  operations. Sidekick validates the public grant output and prepares the wallet call; StacksUp or
-  the upstream signer CLI generates the signature on the signer host.
+In summary:
+
+- Deployment configuration supplies the network, local node, optional API/telemetry sources, and
+  required signer-manager principal. Sidekick does not offer an in-app principal picker.
+- First launch performs a bounded, read-only local-node connection assessment. It never deploys,
+  registers, stakes, imports setup state, or waits for indexed history and full projections.
+- Connection means only that Sidekick can prove the intended local chain, PoX-5 contract, deployed
+  manager, and exact signer-manager trait. Registration, eligibility, data coverage, signing
+  health, and per-action availability remain independent dimensions.
+- A successful connection opens Overview immediately. Missing registration/grant, optional API or
+  telemetry, threshold, eligibility, and manager-action adapters appear as focused operational
+  states rather than a global setup or attachment failure.
+- A missing deployed manager points to Zero to Signing; a wrong network or trait-incompatible
+  contract points to configuration/contract selection. Recheck repeats reads, while environment
+  changes require a restart.
+- The first useful screen identifies the registered and runtime signer keys separately, shows
+  registration/current-next-cycle eligibility, reports both participant types, and names every
+  diagnostic-source gap without inferring that a registered signer is actively signing.
+- Ongoing registration repair and signer-key rotation remain recurring Manager operations.
+  Sidekick validates the public grant output and prepares the wallet call; StacksUp or the upstream
+  signer CLI generates the signature on the signer host.
+- The first successful connection durably binds the database to the network and manager principal.
+  A later mismatch enters read-only diagnostic safe mode instead of mixing histories or silently
+  rebinding.
 
 ### Signer and network health boundary
 
@@ -673,8 +684,8 @@ money-moving behavior merely because it was discovered by the census.
   public enrollment/page generation.
 - Rewrite README, deployment, testnet, dashboard, and architecture docs around an already-running
   manager.
-- Replace the setup Devnet acceptance path with attach, observe, action-plan, and reconciliation
-  acceptance.
+- Replace the setup Devnet acceptance path with connect, observe, action-plan, and reconciliation
+  acceptance, using the configured connection check rather than a setup-era Attach workflow.
 
 ### 4. Add the event inbox and domain scheduler
 
@@ -725,7 +736,8 @@ money-moving behavior merely because it was discovered by the census.
 
 The scope reset is complete when:
 
-- a new Sidekick deployment attaches read-only to an existing manager without offering chain setup;
+- a new Sidekick deployment connects read-only to an existing manager without offering chain setup
+  or another wizard;
 - any trait-compliant manager receives the universal PoX-5 baseline without a recognized source or
   version, while unavailable actions are reported per capability rather than as global manager
   incompatibility;
@@ -747,7 +759,7 @@ The scope reset is complete when:
   or pre-calculation balance as claimable;
 - pool and fee projections reproduce contract arithmetic, expose assumptions/range, and disappear
   when required evidence is incomplete;
-- Zero to Signing's trait-compliant manager handoff passes an end-to-end attach/baseline test
+- Zero to Signing's trait-compliant manager handoff passes an end-to-end connection/baseline test
   without a shared manager-profile requirement;
 - Sidekick exposes and documents its PoX-5 status, event-observer, grant-verification,
   transaction-planning, and support-artifact seams, and the overlapping StacksUp issues are
