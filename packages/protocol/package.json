@@ -29,6 +29,10 @@
       "types": "./dist/manager-claim-staker-rewards.d.ts",
       "default": "./dist/manager-claim-staker-rewards.js"
     },
+    "./manager-interface-fingerprint": {
+      "types": "./dist/manager-interface-fingerprint.d.ts",
+      "default": "./dist/manager-interface-fingerprint.js"
+    },
     "./manager-artifact": {
       "types": "./dist/manager-artifact.d.ts",
       "default": "./dist/manager-artifact.js"

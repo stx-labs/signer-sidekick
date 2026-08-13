@@ -1,14 +1,16 @@
-import { createHash } from "node:crypto";
 import type {
   ManagerActionCapability,
   ManagerActionCapabilityId,
   ManagerCapabilities,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
+  managerInterfaceSha256,
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
   REFERENCE_MANAGER_READ_ONLY_FUNCTIONS,
 } from "@stx-labs/signer-sidekick-protocol";
 import type { ContractInterface } from "./chain-clients.js";
+
+export { managerInterfaceSha256 } from "@stx-labs/signer-sidekick-protocol";
 
 type RequiredAccess = "public" | "read_only";
 
@@ -87,21 +89,6 @@ function canonicalAbiValue(value: unknown): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalAbiValue(entry)}`)
     .join(",")}}`;
-}
-
-export function managerInterfaceSha256(contractInterface: ContractInterface): string {
-  const functions = [...contractInterface.functions].sort((left, right) =>
-    canonicalAbiValue(left).localeCompare(canonicalAbiValue(right)),
-  );
-  return createHash("sha256")
-    .update(
-      canonicalAbiValue({
-        clarityVersion: contractInterface.clarity_version ?? null,
-        epoch: contractInterface.epoch ?? null,
-        functions,
-      }),
-    )
-    .digest("hex");
 }
 
 const EXPECTED_TRAIT_ARGUMENT_TYPES: readonly unknown[] = [

@@ -55,6 +55,8 @@ function compatibleInterface(): ContractInterface {
     "check-pox-addr",
   ];
   return {
+    clarity_version: "Clarity6",
+    epoch: "Epoch40",
     functions: [
       ...publicFunctions.map((name) =>
         name === "validate-stake!"
@@ -110,6 +112,32 @@ describe("deployed manager verification", () => {
     });
     expect(report.reasons).toContain(
       "Mainnet profile stacks-4.0.0-mainnet-reference-manager is not production-approved",
+    );
+  });
+
+  it("does not unlock execution when reviewed source bytes use different Clarity semantics", async () => {
+    const source = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const contractInterface = compatibleInterface();
+    contractInterface.clarity_version = "Clarity4";
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      contractInterface,
+    );
+
+    expect(report).toMatchObject({
+      attachAllowed: true,
+      capabilities: { sourceReview: { exactReviewed: false } },
+    });
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+    expect(report.capabilities.sourceReview.reason).toContain(
+      "deployed execution semantics Clarity4/Epoch40",
     );
   });
 
@@ -272,8 +300,8 @@ describe("deployed manager verification", () => {
     expect(report.interface).toMatchObject({
       compatible: true,
       missingFunctions: [],
-      clarityVersion: null,
-      epoch: null,
+      clarityVersion: "Clarity6",
+      epoch: "Epoch40",
       sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(report.attachAllowed).toBe(true);

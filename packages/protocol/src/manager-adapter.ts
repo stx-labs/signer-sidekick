@@ -24,6 +24,8 @@ export interface ReviewedManagerArtifact {
   profile: ManagerProfile;
   sourceSha256: string;
   canonicalSha256: string;
+  clarityVersion?: string;
+  epoch?: string;
 }
 
 export function claritySourceSha256(value: string): string {
@@ -94,11 +96,14 @@ export function canonicalizeClaritySource(source: string): string {
 export function createReferenceManagerAdapter(
   profile: ManagerProfile,
   reviewedSource: string,
+  deployment: { clarityVersion: string; epoch: string },
 ): ManagerAdapter {
   return createManagerAdapterFromHashes({
     profile,
     sourceSha256: claritySourceSha256(reviewedSource),
     canonicalSha256: claritySourceSha256(canonicalizeClaritySource(reviewedSource)),
+    clarityVersion: deployment.clarityVersion,
+    epoch: deployment.epoch,
   });
 }
 

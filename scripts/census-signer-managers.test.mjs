@@ -20,6 +20,7 @@ import {
   collectManagerCensus,
   decodePoxPrintEvent,
   enumerateSignerSet,
+  managerInterfaceSha256,
   sha256,
   verifyManagerCensus,
   writeManagerCensus,
@@ -271,7 +272,7 @@ test("builds a node-anchored census and writes checksummed evidence", async () =
   assert.deepEqual(result.artifact.sourceFamilies[0].clarityVersions, ["Clarity6"]);
   assert.deepEqual(result.artifact.sourceFamilies[0].epochs, ["Epoch2_05"]);
   assert.deepEqual(result.artifact.sourceFamilies[0].interfaceSha256s, [
-    sha256(canonicalJson(abi)),
+    managerInterfaceSha256(abi),
   ]);
   const traitOnly = result.artifact.managers.find(
     ({ principal }) => principal === managerTraitOnly,

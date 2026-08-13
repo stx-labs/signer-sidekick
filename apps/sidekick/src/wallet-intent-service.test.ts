@@ -11,8 +11,10 @@ import {
   noneCV,
   Pc,
   PostConditionMode,
+  postConditionToHex,
   principalCV,
   privateKeyToPublic,
+  responseOkCV,
   signMessageHashRsv,
   someCV,
   trueCV,
@@ -28,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256 } from "./storage/wallet-intent-repository.js";
+import type { IndexedTransactionObservation } from "./transaction-engine/live-transaction-reader.js";
 import { type WalletIntentRuntimeState, WalletIntentService } from "./wallet-intent-service.js";
 
 const {
@@ -428,6 +431,175 @@ async function proveRecurringManagerAction(input: {
   );
 }
 
+type IndexedLookup =
+  | { status: "not-found"; httpStatus: 404 }
+  | { status: "unavailable"; httpStatus: number | null; reason: "http-error" }
+  | { status: "observed"; httpStatus: 200; value: IndexedTransactionObservation };
+
+async function submittedFeeActionHarness() {
+  const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+  stores.push(store);
+  readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+  let currentFeeBips = 100n;
+  let indexed: IndexedLookup = { status: "not-found", httpStatus: 404 };
+  let txid = `0x${"00".repeat(32)}` as `0x${string}`;
+  const node = {
+    getInfo: vi.fn(async () => ({ network_id: 1 })),
+    callReadOnly: vi.fn(async () => trueCV()),
+    getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
+  };
+  const api = { getNodeInfo: vi.fn(async () => ({ network_id: 1 })) };
+  const runtimeSettings = {
+    clients: () => ({
+      config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+      node,
+      api,
+    }),
+  } as unknown as RuntimeSettingsController;
+  const readerFactory = () => ({
+    lookupIndexedTransaction: async () => indexed,
+    lookupUnconfirmedTransaction: async () => ({ status: "not-found" as const, httpStatus: 404 }),
+  });
+  const createWallet = () =>
+    new WalletIntentService({
+      store,
+      runtimeSettings,
+      readState: deploymentFreshState,
+      readerFactory,
+    });
+  const wallet = createWallet();
+  const prepared = await wallet.prepare(
+    { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+    "2026-07-19T12:01:00.000Z",
+  );
+  if (prepared.transaction.method !== "stx_callContract") {
+    throw new Error("Expected fee update contract call");
+  }
+  const transaction = await makeContractCall({
+    contractAddress: requiredSender,
+    contractName: "signer-manager",
+    functionName: prepared.transaction.params.functionName,
+    functionArgs: prepared.transaction.params.functionArgs.map(hexToCV),
+    senderKey,
+    network: "mainnet",
+    fee: 1_000,
+    nonce: 9,
+    sponsored: false,
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: [],
+  });
+  txid = `0x${transaction.txid()}`;
+  const observed: IndexedLookup = {
+    status: "observed",
+    httpStatus: 200,
+    value: {
+      txid,
+      transactionHex: Buffer.from(transaction.serializeBytes()).toString("hex"),
+      nonce: 9n,
+      feeUstx: 1_000n,
+      indexBlockHash,
+      blockHeight: BigInt(blockHeight),
+      isCanonical: true,
+      resultRepr: "(ok true)",
+    },
+  };
+  indexed = observed;
+  await wallet.submit(prepared.id, txid, "2026-07-19T12:02:00.000Z");
+  return {
+    store,
+    wallet,
+    prepared,
+    observed,
+    createWallet,
+    setCurrentFee(value: bigint) {
+      currentFeeBips = value;
+    },
+    setIndexed(value: IndexedLookup) {
+      indexed = value;
+    },
+  };
+}
+
+async function createLegacySubmittedRegistration(input: {
+  store: SidekickStore;
+  signerKeyHex: string;
+}) {
+  const functionArgs = [
+    contractPrincipalCV(requiredSender, "signer-manager"),
+    bufferCV(Buffer.from(input.signerKeyHex, "hex")),
+    uintCV(7),
+    bufferCV(Uint8Array.from({ length: 65 }, () => 3)),
+  ];
+  const transaction = await makeContractCall({
+    contractAddress: requiredSender,
+    contractName: "signer-manager",
+    functionName: "register-self",
+    functionArgs,
+    senderKey,
+    network: "mainnet",
+    fee: 1_000,
+    nonce: 8,
+    sponsored: false,
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: [],
+  });
+  const id = randomUUID();
+  const txid = `0x${transaction.txid()}` as `0x${string}`;
+  const factsSha256 = canonicalJsonSha256({
+    action: "register-self",
+    signerKeyHex: input.signerKeyHex,
+    functionArgs: functionArgs.map(cvToHex),
+  });
+  const manifest = {
+    schemaVersion: 1 as const,
+    id,
+    action: "register-self" as const,
+    network: "mainnet" as const,
+    chainId: 1 as const,
+    requiredSender,
+    createdAt: "2026-07-19T12:01:00.000Z",
+    expiresAt: "2026-07-19T12:16:00.000Z",
+    transaction: {
+      method: "stx_callContract" as const,
+      params: {
+        contract: managerPrincipal,
+        functionName: "register-self" as const,
+        functionArgs: functionArgs.map(cvToHex),
+        network: "mainnet" as const,
+        address: requiredSender,
+        sponsored: false as const,
+        postConditionMode: "deny" as const,
+        postConditions: [] as string[],
+      },
+    },
+    review: {
+      title: "Register manager",
+      summary: "Register the sealed signer key",
+      expectedPostState: "The exact signer key is registered",
+    },
+    seal: { factsSha256 },
+  };
+  input.store.walletIntents.create({
+    id,
+    action: "register-self",
+    scope: managerPrincipal,
+    factsSha256,
+    manifest,
+    manifestSha256: canonicalJsonSha256(manifest),
+    requiredSender,
+    network: "mainnet",
+    chainId: 1,
+    createdAt: manifest.createdAt,
+    expiresAt: manifest.expiresAt,
+  });
+  input.store.walletIntents.submit({ id, txid, submittedAt: "2026-07-19T12:02:00.000Z" });
+  return {
+    id,
+    txid,
+    transactionHex: Buffer.from(transaction.serializeBytes()).toString("hex"),
+  };
+}
+
 beforeEach(() => {
   runOperatorPreflightMock.mockResolvedValue(matchedPreflight());
   loadNetworkCompatibilityProfilesMock.mockResolvedValue({
@@ -603,6 +775,165 @@ describe("manager wallet action preparation", () => {
     });
   });
 
+  it("demotes a completed recurring action when its canonical transaction disappears", async () => {
+    const harness = await submittedFeeActionHarness();
+    harness.setCurrentFee(250n);
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
+    });
+
+    harness.setIndexed({ status: "not-found", httpStatus: 404 });
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:04:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "reobserve",
+      verification: { outcome: "not-found", canonical: null },
+    });
+  });
+
+  it("recovers a submitted recurring action from the durable store after restart", async () => {
+    const harness = await submittedFeeActionHarness();
+    harness.setCurrentFee(250n);
+    const restarted = harness.createWallet();
+
+    await expect(
+      restarted.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
+    });
+  });
+
+  it("records a nullable-height noncanonical recurring action without losing it", async () => {
+    const harness = await submittedFeeActionHarness();
+    if (harness.observed.status !== "observed") throw new Error("Observed fixture is incomplete");
+    harness.setIndexed({
+      ...harness.observed,
+      value: {
+        ...harness.observed.value,
+        blockHeight: null,
+        isCanonical: false,
+      },
+    });
+
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "reobserve",
+      verification: {
+        outcome: "noncanonical",
+        canonical: false,
+        blockHeight: null,
+        indexBlockHash: null,
+      },
+    });
+  });
+
+  it("retires an unsigned replacement when its superseded transaction reappears", async () => {
+    const harness = await submittedFeeActionHarness();
+    harness.setIndexed({ status: "not-found", httpStatus: 404 });
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:18:00.000Z"),
+    ).resolves.toMatchObject({ status: "reobserve", verification: { outcome: "not-found" } });
+    const replacement = await harness.wallet.replace(
+      harness.prepared.id,
+      "2026-07-19T12:20:00.000Z",
+    );
+    expect(replacement).toMatchObject({ status: "prepared", txid: null });
+
+    harness.setCurrentFee(250n);
+    harness.setIndexed(harness.observed);
+    await expect(
+      harness.wallet.refresh(replacement.id, "2026-07-19T12:21:00.000Z"),
+    ).resolves.toMatchObject({ status: "superseded" });
+    expect(harness.wallet.get(harness.prepared.id)).toMatchObject({
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
+    });
+  });
+
+  it("retires a failed recurring attempt and blocks its replacement if a reorg makes it succeed", async () => {
+    const harness = await submittedFeeActionHarness();
+    if (harness.observed.status !== "observed") throw new Error("Observed fixture is incomplete");
+    harness.setIndexed({
+      ...harness.observed,
+      value: { ...harness.observed.value, resultRepr: "(err u1)" },
+    });
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "failed",
+      verification: { outcome: "abort", canonical: true },
+    });
+
+    const replacement = await harness.wallet.prepare(
+      { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      "2026-07-19T12:04:00.000Z",
+    );
+    expect(replacement).toMatchObject({ status: "prepared", txid: null });
+    expect(replacement.id).not.toBe(harness.prepared.id);
+
+    harness.setCurrentFee(250n);
+    harness.setIndexed(harness.observed);
+    await expect(
+      harness.createWallet().refresh(replacement.id, "2026-07-19T12:05:00.000Z"),
+    ).resolves.toMatchObject({
+      id: replacement.id,
+      status: "superseded",
+      verification: { outcome: "superseded" },
+    });
+    expect(harness.wallet.get(harness.prepared.id)).toMatchObject({
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
+    });
+  });
+
+  it.each([
+    "abort",
+    "mismatch",
+    "noncanonical",
+  ] as const)("keeps a replacement signable after a superseded recurring %s", async (outcome) => {
+    const harness = await submittedFeeActionHarness();
+    harness.setIndexed({ status: "not-found", httpStatus: 404 });
+    await harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:18:00.000Z");
+    const replacement = await harness.wallet.replace(
+      harness.prepared.id,
+      "2026-07-19T12:20:00.000Z",
+    );
+    if (harness.observed.status !== "observed") throw new Error("Observed fixture is incomplete");
+    harness.setIndexed(
+      outcome === "abort"
+        ? {
+            ...harness.observed,
+            value: { ...harness.observed.value, resultRepr: "(err u1)" },
+          }
+        : outcome === "mismatch"
+          ? {
+              ...harness.observed,
+              value: { ...harness.observed.value, transactionHex: "00" },
+            }
+          : {
+              ...harness.observed,
+              value: { ...harness.observed.value, isCanonical: false },
+            },
+    );
+
+    await expect(
+      harness.wallet.refresh(replacement.id, "2026-07-19T12:21:00.000Z"),
+    ).resolves.toMatchObject({
+      id: replacement.id,
+      status: "prepared",
+      verification: null,
+    });
+    expect(harness.wallet.get(harness.prepared.id)).toMatchObject({
+      status: "superseded",
+      verification: { outcome },
+    });
+  });
+
   it("falls back to the configured API when node transaction indexing is unavailable", async () => {
     let currentFeeBips = 100n;
     await proveRecurringManagerAction({
@@ -753,6 +1084,75 @@ describe("manager wallet action preparation", () => {
         earnedFees = 500n;
       },
     });
+  });
+
+  it("seals a fee-refund sweep to the exact unreserved sBTC balance", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+    let balance = 1_000n;
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {
+            callReadOnly: vi.fn(
+              async (principal: string, functionName: string): Promise<ClarityValue> => {
+                if (functionName === "is-admin") return trueCV();
+                if (principal === sbtcTokenContract && functionName === "get-balance") {
+                  return responseOkCV(uintCV(balance));
+                }
+                if (functionName === "get-earned-fees") return uintCV(100);
+                if (functionName === "get-withdrawal-liability") return uintCV(200);
+                if (functionName === "get-unclaimed-staker-rewards") return uintCV(300);
+                throw new Error(`Unexpected read-only call ${principal}.${functionName}`);
+              },
+            ),
+          },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+    });
+
+    const intent = await wallet.prepare({
+      action: "sweep-fee-refunds",
+      actorPrincipal: requiredSender,
+      recipient: otherAdmin,
+    });
+    const expectedPostCondition = postConditionToHex(
+      Pc.principal(managerPrincipal)
+        .willSendEq(400n)
+        .ft(sbtcTokenContract as `${string}.${string}`, "sbtc-token"),
+    );
+    expect(intent).toMatchObject({
+      action: "sweep-fee-refunds",
+      transaction: {
+        method: "stx_callContract",
+        params: {
+          functionName: "sweep-fee-refunds",
+          functionArgs: [cvToHex(principalCV(otherAdmin))],
+          postConditionMode: "deny",
+          postConditions: [expectedPostCondition],
+        },
+      },
+    });
+    expect(intent.review.fields).toEqual(
+      expect.arrayContaining([
+        { label: "Sweep amount (sats)", value: "400" },
+        { label: "Reserved balance (sats)", value: "600" },
+      ]),
+    );
+
+    balance = 600n;
+    await expect(
+      wallet.prepare({
+        action: "sweep-fee-refunds",
+        actorPrincipal: requiredSender,
+        recipient: otherAdmin,
+      }),
+    ).rejects.toThrow("No fee refunds are currently available to sweep");
   });
 
   it("requires a current admin actor and prohibits self-removal", async () => {
@@ -1124,6 +1524,67 @@ describe("manager wallet action preparation", () => {
     await expect(
       wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
     ).rejects.toThrow("already been used");
+  });
+
+  it("reconciles a submitted V1 registration against the signer key sealed in its transaction", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const sealedSignerKey = `02${"11".repeat(32)}`;
+    const laterSignerKey = `03${"22".repeat(32)}`;
+    const fixture = await createLegacySubmittedRegistration({
+      store,
+      signerKeyHex: sealedSignerKey,
+    });
+    const registeredSnapshot = (signerKeyHex: string) => {
+      const snapshot = trustedManagerSnapshot({ signerKeyHex });
+      return {
+        ...snapshot,
+        registration: { registered: true, signerKeyGrantValid: true, signerKeyHex },
+      };
+    };
+    readOperatorAnchorSnapshotMock
+      .mockResolvedValueOnce(registeredSnapshot(sealedSignerKey))
+      .mockResolvedValueOnce(registeredSnapshot(laterSignerKey));
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: { getInfo: vi.fn(async () => ({ network_id: 1 })) },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: () => registrationFreshState(laterSignerKey),
+      readerFactory: () => ({
+        lookupIndexedTransaction: async () => ({
+          status: "observed" as const,
+          httpStatus: 200,
+          value: {
+            txid: fixture.txid,
+            transactionHex: fixture.transactionHex,
+            nonce: 8n,
+            feeUstx: 1_000n,
+            indexBlockHash,
+            blockHeight: BigInt(blockHeight),
+            isCanonical: true,
+            resultRepr: "(ok true)",
+          },
+        }),
+        lookupUnconfirmedTransaction: async () => ({
+          status: "not-found" as const,
+          httpStatus: 404,
+        }),
+      }),
+    });
+
+    await expect(wallet.refresh(fixture.id, "2026-07-19T12:03:00.000Z")).resolves.toMatchObject({
+      status: "complete",
+      verification: { outcome: "complete", canonical: true },
+    });
+    await expect(wallet.refresh(fixture.id, "2026-07-19T12:04:00.000Z")).resolves.toMatchObject({
+      status: "reobserve",
+      verification: { outcome: "canonical-success", canonical: true },
+    });
   });
 
   describe("staker reward claims", () => {

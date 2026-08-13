@@ -740,6 +740,9 @@ export class WalletIntentService {
 
   private requestFromManifest(manifest: StoredManifest): RecurringBrowserWalletIntentCreateRequest {
     if (manifest.schemaVersion === 2) return manifest.request;
+    if (manifest.action === "register-self") {
+      return { action: "register-self", actorPrincipal: manifest.requiredSender };
+    }
     throw new WalletIntentError(
       "wallet_intent_invalid",
       "Legacy setup transactions cannot be prepared again; start the recurring operation again",

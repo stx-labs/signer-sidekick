@@ -8,11 +8,25 @@ import {
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
 
 const dashboardSnapshot = {
+  schemaVersion: 1,
   generatedAt: "2026-08-13T12:00:00.000Z",
   network: "mainnet",
   managerPrincipal,
   preflight: { status: "pass" },
-  manager: {},
+  manager: {
+    capabilities: {
+      signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+      observedFunctions: { public: [], readOnly: [] },
+      sourceReview: { exactReviewed: false, reason: "Observe-only fixture" },
+      eventVocabulary: {
+        id: "reference-manager-v1",
+        normalizationAvailable: false,
+        adapter: null,
+        reason: "Observe-only fixture",
+      },
+      actions: [],
+    },
+  },
   activity: { withdrawals: [] },
   roster: [],
   alerts: [],

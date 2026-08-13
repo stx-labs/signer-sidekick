@@ -66,6 +66,8 @@ function compatibleInterface(): ContractInterface {
     "check-pox-addr",
   ];
   return {
+    clarity_version: "Clarity6",
+    epoch: "Epoch40",
     functions: [
       ...publicFunctions.map((name) =>
         name === "validate-stake!"

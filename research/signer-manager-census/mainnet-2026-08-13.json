@@ -101,8 +101,8 @@
     {
       "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
       "interfaceSha256s": [
-        "4f2e0c27baa82dff4c63b40c66da4dd8f798486088c470ccf6d86cc9099b2fc7",
-        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+        "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
+        "74248ce39f85803ff1d073e2672788ba0d78241e671522c9e8a52604141f0efb"
       ],
       "clarityVersions": [
         "Clarity4",
@@ -154,7 +154,7 @@
     {
       "sourceSha256": "19eb290785cb57e47254fc62e61cee17c77504273ce3c0b6f5abbe07f25d5c2f",
       "interfaceSha256s": [
-        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+        "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -197,7 +197,7 @@
     {
       "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
       "interfaceSha256s": [
-        "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c"
+        "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -235,7 +235,7 @@
     {
       "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
       "interfaceSha256s": [
-        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+        "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -295,7 +295,7 @@
     {
       "sourceSha256": "72b3d5ea72f0b8fd7b1dcaa154d5d88d81ee1fe04e955a6c11be4e8c03eb9fa5",
       "interfaceSha256s": [
-        "ddade199691d590dd3b0b08884b9eba3356413484ae932f8c69d131f8a2651c2"
+        "da01c0618789e121c77874688ffb95506f386b828c27e4d80277d649f49b9f00"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -322,7 +322,7 @@
     {
       "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
       "interfaceSha256s": [
-        "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c"
+        "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -357,7 +357,7 @@
     {
       "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
       "interfaceSha256s": [
-        "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695"
+        "600e9a580078b892376e664cd46202b33b1464204b71ce016a9e5119ca06650d"
       ],
       "clarityVersions": [
         "Clarity4"
@@ -402,7 +402,7 @@
     {
       "sourceSha256": "c172f3bb339c9a1c04fb9cb976bf77f85622023f060949854f65f0771f1f2eb4",
       "interfaceSha256s": [
-        "1f93418ba712ac98d3760e352df644ff084551e4ccd788ee77bb67d8fa6867a3"
+        "af86a85575b89f4c67056e06cdaf48a87e27fa7fa9fe40e1273f38ba878d1f51"
       ],
       "clarityVersions": [
         "Clarity5"
@@ -460,8 +460,8 @@
     {
       "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
       "interfaceSha256s": [
-        "dc356d2f0ba70223bb7c2396983e22ae9c7d10d3a483c444aa0e2051f113e332",
-        "fc0b9f863d84e76b650e43f393d2da00dd8b8f0bd09050b538da2c3caff524b1"
+        "5b3c42912065f3b54a14f6084c2c43428fa4da89171557bba4b37272e6982486",
+        "85425055f8fe5dca9e82fffc93781d15ff40cf0ea18fdef834ae7739e6be3b9f"
       ],
       "clarityVersions": [
         "Clarity4",
@@ -525,7 +525,7 @@
     {
       "sourceSha256": "f2473cfb53c3e5284149ec9f1d38f0ad66d70c8b1d04df1a7daa07e715b9bc3d",
       "interfaceSha256s": [
-        "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb"
+        "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2"
       ],
       "clarityVersions": [
         "Clarity6"
@@ -599,7 +599,7 @@
         "blockHeight": 8700771,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -664,7 +664,7 @@
         "blockHeight": 8742551,
         "clarityVersion": 4,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "4f2e0c27baa82dff4c63b40c66da4dd8f798486088c470ccf6d86cc9099b2fc7",
+        "interfaceSha256": "74248ce39f85803ff1d073e2672788ba0d78241e671522c9e8a52604141f0efb",
         "interfaceClarityVersion": "Clarity4",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -727,7 +727,7 @@
         "blockHeight": 8667435,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -790,7 +790,7 @@
         "blockHeight": 8666328,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -853,7 +853,7 @@
         "blockHeight": 8666296,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -916,7 +916,7 @@
         "blockHeight": 8666221,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -979,7 +979,7 @@
         "blockHeight": 8665952,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1042,7 +1042,7 @@
         "blockHeight": 8707262,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1108,7 +1108,7 @@
         "blockHeight": 8715213,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1171,7 +1171,7 @@
         "blockHeight": 8705676,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1237,7 +1237,7 @@
         "blockHeight": 8667300,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1303,7 +1303,7 @@
         "blockHeight": 8711204,
         "clarityVersion": null,
         "sourceSha256": "19eb290785cb57e47254fc62e61cee17c77504273ce3c0b6f5abbe07f25d5c2f",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1369,7 +1369,7 @@
         "blockHeight": 8665752,
         "clarityVersion": 6,
         "sourceSha256": "f2473cfb53c3e5284149ec9f1d38f0ad66d70c8b1d04df1a7daa07e715b9bc3d",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1435,7 +1435,7 @@
         "blockHeight": 8667367,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1501,7 +1501,7 @@
         "blockHeight": 8702837,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1548,7 +1548,7 @@
         "blockHeight": 8694263,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1611,7 +1611,7 @@
         "blockHeight": 8695985,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1677,7 +1677,7 @@
         "blockHeight": 8700729,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1740,7 +1740,7 @@
         "blockHeight": 8697643,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1806,7 +1806,7 @@
         "blockHeight": 8700658,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1872,7 +1872,7 @@
         "blockHeight": 8665708,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1919,7 +1919,7 @@
         "blockHeight": 8717987,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -1985,7 +1985,7 @@
         "blockHeight": 8665689,
         "clarityVersion": null,
         "sourceSha256": "72b3d5ea72f0b8fd7b1dcaa154d5d88d81ee1fe04e955a6c11be4e8c03eb9fa5",
-        "interfaceSha256": "ddade199691d590dd3b0b08884b9eba3356413484ae932f8c69d131f8a2651c2",
+        "interfaceSha256": "da01c0618789e121c77874688ffb95506f386b828c27e4d80277d649f49b9f00",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "f8bfdff230ea7901416efad76ea374503e99dce9bfdc6a84f9d081ef6006e4d1",
@@ -2034,7 +2034,7 @@
         "blockHeight": 8667116,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2084,7 +2084,7 @@
         "blockHeight": 8667210,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2134,7 +2134,7 @@
         "blockHeight": 8667212,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2184,7 +2184,7 @@
         "blockHeight": 8667214,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2234,7 +2234,7 @@
         "blockHeight": 8667216,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2284,7 +2284,7 @@
         "blockHeight": 8667217,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2334,7 +2334,7 @@
         "blockHeight": 8667219,
         "clarityVersion": null,
         "sourceSha256": "82b89cbfc6f5a7e3e7e21f078bea02b2313ba8d00246095b228b7d5eacaff9c6",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2386,7 +2386,7 @@
         "blockHeight": 8667119,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2438,7 +2438,7 @@
         "blockHeight": 8667121,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2490,7 +2490,7 @@
         "blockHeight": 8667123,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2542,7 +2542,7 @@
         "blockHeight": 8667125,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2576,7 +2576,7 @@
         "blockHeight": 8667127,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2628,7 +2628,7 @@
         "blockHeight": 8667131,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2680,7 +2680,7 @@
         "blockHeight": 8667129,
         "clarityVersion": null,
         "sourceSha256": "4585077af0601600166bde4843fd780c5916e4fa4d522951fc73841e90eff1f1",
-        "interfaceSha256": "69fab0e344fc374bff5b5fe873ad2204057f17b1113e04d345c986a2df90f52c",
+        "interfaceSha256": "e89d63d15061b8a57fb40ce718aaf33df30eebd63633bceb658f08a091bd8b9a",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "4b010a14c14fc03f514b39e73529e08dc40f20eb098a6c486a34387550813b16",
@@ -2733,7 +2733,7 @@
         "blockHeight": 8665663,
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
-        "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceSha256": "600e9a580078b892376e664cd46202b33b1464204b71ce016a9e5119ca06650d",
         "interfaceClarityVersion": "Clarity4",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
@@ -2799,7 +2799,7 @@
         "blockHeight": 8665672,
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
-        "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceSha256": "600e9a580078b892376e664cd46202b33b1464204b71ce016a9e5119ca06650d",
         "interfaceClarityVersion": "Clarity4",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
@@ -2865,7 +2865,7 @@
         "blockHeight": 8665673,
         "clarityVersion": 4,
         "sourceSha256": "c0a2cc8e83de2b1bc60e07c5e0f5da8991c6f79eb05d077bba8cb984eee226b3",
-        "interfaceSha256": "c5361f6ae246876bfe33a30d7643befce1072246870376e034dddc8e379fc695",
+        "interfaceSha256": "600e9a580078b892376e664cd46202b33b1464204b71ce016a9e5119ca06650d",
         "interfaceClarityVersion": "Clarity4",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "cf6de538c2ef339ca7a66aa1ab05580c5d668016601ddd53bf8cffe224c87b00",
@@ -2930,7 +2930,7 @@
         "blockHeight": 8747595,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -2996,7 +2996,7 @@
         "blockHeight": 8674707,
         "clarityVersion": 6,
         "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
-        "interfaceSha256": "fc0b9f863d84e76b650e43f393d2da00dd8b8f0bd09050b538da2c3caff524b1",
+        "interfaceSha256": "5b3c42912065f3b54a14f6084c2c43428fa4da89171557bba4b37272e6982486",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "60e6fec04ae95036538cec5ed483391911d9ee51acd9d8d5b6a9a501086632b1",
@@ -3081,7 +3081,7 @@
         "blockHeight": 8703169,
         "clarityVersion": null,
         "sourceSha256": "48d22cf832f2b61118327265b6b7f303c911a98bdb5af2a54a931a1cf432e316",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -3144,7 +3144,7 @@
         "blockHeight": 8707423,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -3210,7 +3210,7 @@
         "blockHeight": 8671025,
         "clarityVersion": 5,
         "sourceSha256": "c172f3bb339c9a1c04fb9cb976bf77f85622023f060949854f65f0771f1f2eb4",
-        "interfaceSha256": "1f93418ba712ac98d3760e352df644ff084551e4ccd788ee77bb67d8fa6867a3",
+        "interfaceSha256": "af86a85575b89f4c67056e06cdaf48a87e27fa7fa9fe40e1273f38ba878d1f51",
         "interfaceClarityVersion": "Clarity5",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "86648803abe024fc432ae8464a60176f879047a2ef03fe2b624684fa46b5f6a4",
@@ -3291,7 +3291,7 @@
         "blockHeight": 8673560,
         "clarityVersion": null,
         "sourceSha256": "05aaf409ed285f02d8b6d5d540f94feb8baea139a14263b7e7de7ba9f054d3c5",
-        "interfaceSha256": "c192f082cbb837fc7bd75393022c4883a88d1f0450825817d19b71ba9b505bbb",
+        "interfaceSha256": "326eb5395c00fdd55beac6e85d04158684b72ac55edf60771cf53494f628f7d2",
         "interfaceClarityVersion": "Clarity6",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "54b5c4f5c286374055dbb50c6b1273d051b3c205fcce087494c55dd7f34b6acc",
@@ -3357,7 +3357,7 @@
         "blockHeight": 8707650,
         "clarityVersion": 4,
         "sourceSha256": "e80395f43dd6dd0008131ed2ba64eef11d4dde54eba1aa8e31c5e5eaa3a30608",
-        "interfaceSha256": "dc356d2f0ba70223bb7c2396983e22ae9c7d10d3a483c444aa0e2051f113e332",
+        "interfaceSha256": "85425055f8fe5dca9e82fffc93781d15ff40cf0ea18fdef834ae7739e6be3b9f",
         "interfaceClarityVersion": "Clarity4",
         "interfaceEpoch": "Epoch40",
         "clarityTokenSha256": "60e6fec04ae95036538cec5ed483391911d9ee51acd9d8d5b6a9a501086632b1",

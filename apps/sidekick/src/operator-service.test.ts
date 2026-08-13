@@ -721,6 +721,8 @@ describe("operator service", () => {
     const node = {
       getContractSource: async () => ({ source, publish_height: 100 }),
       getContractInterface: async () => ({
+        clarity_version: "Clarity6",
+        epoch: "Epoch40",
         functions: [
           ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.map((name) => ({
             name,

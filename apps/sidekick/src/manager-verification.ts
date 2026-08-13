@@ -128,8 +128,22 @@ export async function createManagerVerificationContext(options: {
   );
   const operatorProvidedManagerProfileIds = new Set<string>();
   for (const loaded of compatibilityProfiles.profiles) {
-    const artifact = managerArtifactFromNetworkProfile(loaded.profile);
-    const existing = managerArtifactsById.get(artifact.profile.id);
+    const networkArtifact = managerArtifactFromNetworkProfile(loaded.profile);
+    const existing = managerArtifactsById.get(networkArtifact.profile.id);
+    let artifact: ReviewedManagerArtifact = networkArtifact;
+    if (
+      existing?.clarityVersion &&
+      existing.epoch &&
+      existing.profile.network === networkArtifact.profile.network &&
+      existing.sourceSha256 === networkArtifact.sourceSha256 &&
+      existing.canonicalSha256 === networkArtifact.canonicalSha256
+    ) {
+      artifact = {
+        ...networkArtifact,
+        clarityVersion: existing.clarityVersion,
+        epoch: existing.epoch,
+      };
+    }
     if (existing && existing.profile.network !== artifact.profile.network) {
       // Manager profile IDs are global identifiers. Never let an operator-provided network
       // profile reinterpret an existing manager ID for the other address namespace.
@@ -195,6 +209,16 @@ function matchForHashes(
   if (sourceSha256 === expectedSourceSha256) return "exact";
   if (canonicalSha256 === expectedCanonicalSha256) return "canonical";
   return "unknown";
+}
+
+function artifactExecutionSemanticsMatch(
+  artifact: ReviewedManagerArtifact,
+  contractInterface: ContractInterface,
+): boolean {
+  return (
+    contractInterface.clarity_version === artifact.clarityVersion &&
+    contractInterface.epoch === artifact.epoch
+  );
 }
 
 function proveReferenceRender(input: {
@@ -427,21 +451,43 @@ export function verifyManagerArtifact(
     (installed && installedMatch === "unknown"
       ? "Deployed source hashes do not match the installed profile"
       : null);
+  const provenReferenceArtifact = proof?.verified
+    ? managerArtifacts.find(({ profile }) => profile.id === proof.upstreamProfileId)
+    : undefined;
+  const builtInSemanticsMatch = Boolean(
+    builtIn && artifactExecutionSemanticsMatch(builtIn.artifact, contractInterface),
+  );
+  const referenceRenderSemanticsMatch = Boolean(
+    provenReferenceArtifact &&
+      artifactExecutionSemanticsMatch(provenReferenceArtifact, contractInterface),
+  );
   const exactSourceReviewed = Boolean(
-    (builtIn && builtIn.recognition.match === "exact" && !operatorProvidedArtifact) ||
-      (proof?.verified && proof.sourceMatch === "exact" && installedMatch === "exact"),
+    (builtIn &&
+      builtIn.recognition.match === "exact" &&
+      !operatorProvidedArtifact &&
+      builtInSemanticsMatch) ||
+      (proof?.verified &&
+        proof.sourceMatch === "exact" &&
+        installedMatch === "exact" &&
+        referenceRenderSemanticsMatch),
   );
   const sourceReviewReason = exactSourceReviewed
     ? builtIn && !operatorProvidedArtifact
-      ? `Deployed source exactly matches reviewed built-in profile ${builtIn.artifact.profile.id}`
-      : `Deployed source exactly matches proven reference render ${installed?.profile.id}`
-    : builtIn?.recognition.match === "canonical" ||
-        installedMatch === "canonical" ||
-        (proof?.verified && proof.sourceMatch === "canonical")
-      ? "Source has only a canonical/format-insensitive match; executable capabilities require a reviewed byte-exact fingerprint"
-      : operatorProvidedArtifact
-        ? "Operator-provided network data cannot grant executable manager capabilities"
-        : "No reviewed byte-exact capability fingerprint matches the deployed source";
+      ? `Deployed source and ${builtIn.artifact.clarityVersion}/${builtIn.artifact.epoch} execution semantics exactly match reviewed built-in profile ${builtIn.artifact.profile.id}`
+      : `Deployed source and ${provenReferenceArtifact?.clarityVersion}/${provenReferenceArtifact?.epoch} execution semantics exactly match proven reference render ${installed?.profile.id}`
+    : operatorProvidedArtifact
+      ? "Operator-provided network data cannot grant executable manager capabilities"
+      : (builtIn?.recognition.match === "exact" && !builtInSemanticsMatch) ||
+          (proof?.verified &&
+            proof.sourceMatch === "exact" &&
+            installedMatch === "exact" &&
+            !referenceRenderSemanticsMatch)
+        ? `Source bytes match a reviewed artifact, but deployed execution semantics ${contractInterface.clarity_version ?? "unknown Clarity version"}/${contractInterface.epoch ?? "unknown epoch"} do not match the reviewed artifact`
+        : builtIn?.recognition.match === "canonical" ||
+            installedMatch === "canonical" ||
+            (proof?.verified && proof.sourceMatch === "canonical")
+          ? "Source has only a canonical/format-insensitive match; executable capabilities require a reviewed byte-exact fingerprint"
+          : "No reviewed byte-exact capability fingerprint matches the deployed source";
   const capabilities = inspectManagerCapabilities({
     contractInterface,
     sourceSha256,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
+  dashboardSnapshotSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   reconciliationOperationSchema,
   reconciliationSummarySchema,
@@ -11,6 +12,69 @@ import {
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("dashboard snapshot contract", () => {
+  const base = {
+    schemaVersion: 1,
+    generatedAt: "2026-08-13T12:00:00.000Z",
+    network: "mainnet",
+    managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+    preflight: {},
+    manager: {},
+    activity: {},
+    roster: [],
+    alerts: [],
+  };
+
+  it("rejects a version-skewed manager without capability data", () => {
+    expect(dashboardSnapshotSchema.safeParse(base).success).toBe(false);
+  });
+
+  it("accepts the capability boundary consumed by the dashboard", () => {
+    expect(
+      dashboardSnapshotSchema.safeParse({
+        ...base,
+        manager: {
+          capabilities: {
+            signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+            observedFunctions: { public: ["update-fees"], readOnly: ["is-admin"] },
+            sourceReview: {
+              exactReviewed: true,
+              reason: "Reviewed artifact",
+              clarityVersion: "Clarity6",
+              epoch: "Epoch40",
+              interfaceSha256: "11".repeat(32),
+            },
+            eventVocabulary: {
+              id: "reference-manager-v1",
+              normalizationAvailable: true,
+              adapter: {
+                id: "reference-manager-print-events",
+                revision: 1,
+                reviewedSourceSha256: "22".repeat(32),
+              },
+              reason: "Reviewed events",
+            },
+            actions: [
+              {
+                id: "update-fees",
+                interfaceAvailable: true,
+                executionAvailable: true,
+                missingFunctions: [],
+                adapter: {
+                  id: "reference-manager-update-fees",
+                  revision: 1,
+                  reviewedSourceSha256: "22".repeat(32),
+                },
+                reason: "Reviewed action",
+              },
+            ],
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe("signer grant contracts", () => {
   it("accepts the complete public grant returned by the signer grant service", () => {

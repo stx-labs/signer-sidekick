@@ -114,11 +114,25 @@ describe("local API", () => {
   it("downloads a server-collected support bundle without requiring every source", async () => {
     const token = "test-operator-token-with-32-chars";
     const supportSnapshot = vi.fn(async () => ({
+      schemaVersion: 1,
       generatedAt: "2026-08-13T12:00:00.000Z",
       network: "mainnet",
       managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
       preflight: { status: "pass" },
-      manager: {},
+      manager: {
+        capabilities: {
+          signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+          observedFunctions: { public: [], readOnly: [] },
+          sourceReview: { exactReviewed: false, reason: "Observe-only fixture" },
+          eventVocabulary: {
+            id: "reference-manager-v1",
+            normalizationAvailable: false,
+            adapter: null,
+            reason: "Observe-only fixture",
+          },
+          actions: [],
+        },
+      },
       activity: { withdrawals: [] },
       roster: [],
       alerts: [],

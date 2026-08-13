@@ -14,7 +14,7 @@ Each snapshot combines four kinds of evidence:
 3. PoX-5 registration and activity candidates discovered from indexed print events, then verified
    against `get-signer-info` at the local-node anchor.
 4. Canonical trait-matching deployments discovered through the public indexer, with exact source
-   and ABI files stored by SHA-256.
+   files stored by SHA-256 and ABI files stored by the runtime's canonical interface fingerprint.
 
 The local node is authoritative for chain state. The public indexer only supplies bounded candidate
 discovery and deployment material. A manager absent from indexed discovery must still remain usable
@@ -46,7 +46,8 @@ artifact. It writes:
 
 - the JSON census and a sibling `.sha256` checksum;
 - each distinct exact source under `sources/<sha256>.clar`; and
-- each distinct canonicalized ABI under `interfaces/<sha256>.json`.
+- each distinct ABI under `interfaces/<sha256>.json`, keyed by the same sorted-functions + Clarity
+  version + epoch fingerprint used at runtime.
 
 The manifest also records a comment/format-insensitive Clarity token digest for research grouping,
 plus every observed interface hash, Clarity version, and epoch for each exact source. Token

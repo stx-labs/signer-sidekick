@@ -547,6 +547,7 @@ export interface RewardCycleSummary {
 }
 
 export interface DashboardSnapshot extends OperatorSnapshot {
+  schemaVersion: 1;
   generatedAt: string;
   freshness?: {
     status: "current" | "stale";
@@ -727,18 +728,93 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasRecord(value: Record<string, unknown>, key: string): boolean {
+function hasRecord<Key extends string>(
+  value: Record<string, unknown>,
+  key: Key,
+): value is Record<string, unknown> & Record<Key, Record<string, unknown>> {
   return isRecord(value[key]);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+const managerActionCapabilityIds = new Set<ManagerActionCapabilityId>([
+  "register-self",
+  "update-admin",
+  "update-fees",
+  "withdraw-fees",
+  "sweep-fee-refunds",
+  "reference-reward-claims",
+]);
+
+function isManagerCapabilityAdapter(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      typeof value.id === "string" &&
+      typeof value.revision === "number" &&
+      Number.isInteger(value.revision) &&
+      typeof value.reviewedSourceSha256 === "string")
+  );
+}
+
+function isManagerCapabilities(value: unknown): value is ManagerCapabilities {
+  if (!isRecord(value)) return false;
+  const trait = value.signerManagerTrait;
+  const observed = value.observedFunctions;
+  const sourceReview = value.sourceReview;
+  const vocabulary = value.eventVocabulary;
+  if (
+    !isRecord(trait) ||
+    typeof trait.compatible !== "boolean" ||
+    typeof trait.reason !== "string" ||
+    !isRecord(observed) ||
+    !isStringArray(observed.public) ||
+    !isStringArray(observed.readOnly) ||
+    !isRecord(sourceReview) ||
+    typeof sourceReview.exactReviewed !== "boolean" ||
+    typeof sourceReview.reason !== "string" ||
+    (sourceReview.clarityVersion !== undefined &&
+      sourceReview.clarityVersion !== null &&
+      typeof sourceReview.clarityVersion !== "string") ||
+    (sourceReview.epoch !== undefined &&
+      sourceReview.epoch !== null &&
+      typeof sourceReview.epoch !== "string") ||
+    (sourceReview.interfaceSha256 !== undefined &&
+      typeof sourceReview.interfaceSha256 !== "string") ||
+    !isRecord(vocabulary) ||
+    vocabulary.id !== "reference-manager-v1" ||
+    typeof vocabulary.normalizationAvailable !== "boolean" ||
+    !isManagerCapabilityAdapter(vocabulary.adapter) ||
+    typeof vocabulary.reason !== "string" ||
+    !Array.isArray(value.actions)
+  ) {
+    return false;
+  }
+  return value.actions.every(
+    (action) =>
+      isRecord(action) &&
+      typeof action.id === "string" &&
+      managerActionCapabilityIds.has(action.id as ManagerActionCapabilityId) &&
+      typeof action.interfaceAvailable === "boolean" &&
+      typeof action.executionAvailable === "boolean" &&
+      isStringArray(action.missingFunctions) &&
+      isManagerCapabilityAdapter(action.adapter) &&
+      typeof action.reason === "string",
+  );
 }
 
 function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
   return (
     isRecord(value) &&
+    value.schemaVersion === 1 &&
     typeof value.generatedAt === "string" &&
     typeof value.network === "string" &&
     typeof value.managerPrincipal === "string" &&
     hasRecord(value, "preflight") &&
     hasRecord(value, "manager") &&
+    isManagerCapabilities(value.manager.capabilities) &&
     hasRecord(value, "activity") &&
     Array.isArray(value.roster) &&
     Array.isArray(value.alerts)

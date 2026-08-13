@@ -5,6 +5,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ClarityType, cvToHex, hexToCV, principalCV, uintCV } from "@stacks/transactions";
+import { managerInterfaceSha256 } from "../packages/protocol/src/manager-interface-fingerprint.ts";
+
+export { managerInterfaceSha256 };
 
 const mainnetPox5 = "SP000000000000000000002Q6VF78.pox-5";
 const mainnetBootAddress = "SP000000000000000000002Q6VF78";
@@ -742,7 +745,7 @@ export async function collectManagerCensus({
             blockHeight: rawDeployment.blockHeight,
             clarityVersion: rawDeployment.clarityVersion,
             sourceSha256: sha256(rawDeployment.source),
-            interfaceSha256: sha256(canonicalJson(rawDeployment.abi)),
+            interfaceSha256: managerInterfaceSha256(rawDeployment.abi),
             interfaceClarityVersion: interfaceClarityVersion(rawDeployment.abi),
             interfaceEpoch: interfaceEpoch(rawDeployment.abi),
             clarityTokenSha256: clarityTokenSha256(rawDeployment.source),
@@ -766,7 +769,7 @@ export async function collectManagerCensus({
     deploymentsAtAnchor.map(({ source }) => [sha256(source), source]),
   );
   const interfaces = Object.fromEntries(
-    deploymentsAtAnchor.map(({ abi }) => [sha256(canonicalJson(abi)), abi]),
+    deploymentsAtAnchor.map(({ abi }) => [managerInterfaceSha256(abi), abi]),
   );
   const artifact = {
     schemaVersion: 1,
@@ -861,7 +864,7 @@ export async function verifyManagerCensus(inputPath) {
   for (const digest of interfaceHashes) {
     const text = await readFile(join(directory, "interfaces", `${digest}.json`), "utf8");
     const abi = JSON.parse(text);
-    if (sha256(canonicalJson(abi)) !== digest) {
+    if (managerInterfaceSha256(abi) !== digest) {
       throw new Error(`Interface artifact ${digest} failed canonical SHA-256`);
     }
   }
