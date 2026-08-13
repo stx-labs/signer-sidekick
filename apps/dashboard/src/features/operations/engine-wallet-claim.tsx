@@ -1,8 +1,8 @@
 import type { EngineJobDetail, EngineStatus } from "@stx-labs/signer-sidekick-api-contracts";
 import { useMemo, useState } from "react";
 import { Field } from "../../shared/dashboard-ui.js";
-import { browserWalletIntentNetwork } from "../setup/browser-wallet.js";
-import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
+import { browserWalletIntentNetwork } from "./browser-wallet.js";
+import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
 
 const claimAdapterId = "reference-manager-claim-rewards";
 const standardPrincipalPattern = /^S[PMTN][0-9A-Z]{20,50}$/;

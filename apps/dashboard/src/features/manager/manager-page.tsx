@@ -32,7 +32,7 @@ import {
 import { number, short, stx } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorActionError } from "../../shared/operator-error.js";
-import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
+import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import {
   managerActionRecipient,
   standardManagerActionPrincipal,

@@ -375,11 +375,12 @@ function resolveManagerClaimWalletIntent(input: {
     );
   }
   if (
-    (job.state === "preflighted" &&
+    input.requirePrepared &&
+    ((job.state === "preflighted" &&
       input.repository.getActiveLogicalJobForScope(job.operationScopeKey)?.jobId !== job.jobId) ||
-    input.repository.getLatestApproval(job.jobId) !== null ||
-    input.repository.getNonceReservationForJob(job.jobId) !== null ||
-    input.repository.listAttempts(job.jobId).length !== 0
+      input.repository.getLatestApproval(job.jobId) !== null ||
+      input.repository.getNonceReservationForJob(job.jobId) !== null ||
+      input.repository.listAttempts(job.jobId).length !== 0)
   ) {
     unavailable("This claim job already has Assist or transaction activity. Refresh Operations");
   }
@@ -568,6 +569,40 @@ export function readManagerClaimWalletIntent(
   input: Omit<Parameters<typeof resolveManagerClaimWalletIntent>[0], "requirePrepared">,
 ): ManagerClaimWalletIntentFacts {
   return resolveManagerClaimWalletIntent({ ...input, requirePrepared: false });
+}
+
+/**
+ * Reconstruct an already-submitted claim from its immutable job identity. Capability and source
+ * review are new-work gates; they must not make canonical observation disappear after broadcast.
+ * Current network routing is still supplied and verified by the wallet-intent service.
+ */
+export function readBoundManagerClaimWalletIntent(input: {
+  repository: ClaimWalletRepository;
+  jobId: string;
+  actorPrincipal: string;
+  network: ManagerClaimWalletLiveIdentity["network"];
+  managerPrincipal: string;
+}): ManagerClaimWalletIntentFacts {
+  const job = exactJob(input.repository, input.jobId);
+  const intent = parseManagerClaimIntentRecord(job.intent);
+  if (job.managerPrincipal !== input.managerPrincipal) {
+    invalid("The submitted claim no longer matches its stored manager binding");
+  }
+  return resolveManagerClaimWalletIntent({
+    repository: input.repository,
+    jobId: input.jobId,
+    actorPrincipal: input.actorPrincipal,
+    live: {
+      requestedMode: "observe",
+      network: input.network,
+      manager: {
+        principal: job.managerPrincipal,
+        profileId: intent.managerProfile.id,
+        sourceSha256: intent.managerProfile.expectedSourceSha256,
+      },
+    },
+    requirePrepared: false,
+  });
 }
 
 /** Classify only the already-bound engine job; this function never plans or mutates work. */

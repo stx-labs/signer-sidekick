@@ -615,7 +615,8 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
         status: "attention",
         detail: "One or more node, API, network, lag, or PoX-5 checks need review.",
       },
-      { id: "setup", status: "blocked", detail: "Manager setup is blocked." },
+      { id: "manager", status: "blocked", detail: "Manager attachment is blocked." },
+      { id: "signer", status: "ready", detail: "Signer registration is ready." },
       { id: "engine", status: "ready", detail: "Transaction engine adapters are available." },
     ],
     status: "blocked",
@@ -639,8 +640,8 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
 
   await openPage(page, "operations", "Operations");
-  await readinessCard.getByRole("button", { name: "Open Initial Setup" }).click();
-  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
+  await readinessCard.getByRole("button", { name: "Open Manager" }).click();
+  await expect(page.getByRole("heading", { name: "Manager", exact: true })).toBeVisible();
 });
 
 test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
@@ -1190,7 +1191,7 @@ test("refreshes signer health without declaring an empty JSON body", async ({ pa
 test("explains the manager trust tier on Manager and Settings", async ({ page }) => {
   await login(page);
   await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Built-in reference", { exact: true })).toBeVisible();
+  await expect(page.getByText("Built-in source", { exact: true })).toBeVisible();
   await expect(page.getByText("Built into Sidekick")).toBeVisible();
   const managerRow = page.locator(".statline", { hasText: "Manager principal" });
   const copyBox = await managerRow.locator(".copy-identifier-button").boundingBox();
@@ -2370,7 +2371,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 
   await login(page);
   await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Unverified manager", { exact: true })).toBeVisible();
+  await expect(page.getByText("Custom source", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
   await page.evaluate(() => {
     location.hash = "#manager?action=update-fees";
@@ -2381,13 +2382,13 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   tier = "custom-observe";
   await page.reload();
   await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Custom manager", { exact: true })).toBeVisible();
+  await expect(page.getByText("Recorded custom source", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
 
   tier = "reference-render";
   await page.reload();
   await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Verified reference", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
   await expect(
     page.locator(".statline", { hasText: "Assist" }).getByText("Unavailable", { exact: true }),

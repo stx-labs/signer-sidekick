@@ -183,6 +183,51 @@ export const snapshot = {
       upstreamProfileId: "pox5-testnet-reference-manager",
       reason: "Source matches PoX-5 Testnet reference profile",
     },
+    capabilities: {
+      signerManagerTrait: {
+        compatible: true,
+        reason: "Manager exposes the exact PoX-5 signer-manager trait.",
+      },
+      observedFunctions: {
+        public: [
+          "register-self",
+          "update-admin",
+          "update-fees",
+          "withdraw-fees",
+          "sweep-fee-refunds",
+          "claim-rewards",
+          "claim-staker-rewards",
+          "validate-stake!",
+        ],
+        readOnly: ["is-admin", "get-earned-fees", "get-earned-staker-rewards"],
+      },
+      sourceReview: { exactReviewed: true, reason: "Fixture source is reviewed." },
+      eventVocabulary: {
+        id: "reference-manager-v1",
+        normalizationAvailable: true,
+        adapter: {
+          id: "reference-manager-print-events",
+          revision: 1,
+          reviewedSourceSha256: "ca97d964",
+        },
+        reason: "Fixture events are reviewed.",
+      },
+      actions: [
+        ["register-self", "reference-manager-register-self"],
+        ["update-admin", "reference-manager-update-admin"],
+        ["update-fees", "reference-manager-update-fees"],
+        ["withdraw-fees", "reference-manager-withdraw-fees"],
+        ["sweep-fee-refunds", "reference-manager-sweep-fee-refunds"],
+        ["reference-reward-claims", "reference-manager-claim-rewards"],
+      ].map(([id, adapterId]) => ({
+        id,
+        interfaceAvailable: true,
+        executionAvailable: true,
+        missingFunctions: [],
+        adapter: { id: adapterId, revision: 1, reviewedSourceSha256: "ca97d964" },
+        reason: "Fixture capability is reviewed.",
+      })),
+    },
     installedProfiles: { directory: null, loaded: 0, issues: [] },
     reasons: [],
   },
@@ -316,12 +361,13 @@ export const snapshot = {
 };
 
 export const operationReadiness = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   status: "ready",
   generatedAt: "2026-07-15T12:00:00.000Z",
   checks: [
     { id: "control-plane", status: "ready", detail: "Control plane is ready." },
-    { id: "setup", status: "ready", detail: "Manager setup is ready." },
+    { id: "manager", status: "ready", detail: "Manager attachment is ready." },
+    { id: "signer", status: "ready", detail: "Signer registration is ready." },
     { id: "engine", status: "ready", detail: "Transaction engine is ready." },
   ],
 };
@@ -460,6 +506,7 @@ export function reconciliationResponse(status = "idle") {
     operation: {
       schemaVersion: 1,
       operationId: status === "idle" ? null : "8c665428-04e4-4801-87aa-d6dcff225af1",
+      trigger: status === "idle" ? null : "manual",
       status,
       phase: completed ? "complete" : running ? "reconciling-events" : "idle",
       processLocal: true,

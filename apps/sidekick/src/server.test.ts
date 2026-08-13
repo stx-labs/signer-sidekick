@@ -7,12 +7,12 @@ import {
 } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
-import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { WalletIntentError } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -725,7 +725,7 @@ describe("local API", () => {
     walletIntentPrefixes,
   )("returns safe wallet-intent guidance at %s without internal details", async (prefix) => {
     const token = "test-operator-token-with-32-chars";
-    const error = new OnboardingWalletIntentError(
+    const error = new WalletIntentError(
       "wallet_intent_conflict",
       "The wallet transaction changed. Prepare a new transaction.",
     );
@@ -771,14 +771,14 @@ describe("local API", () => {
       prepare: vi
         .fn()
         .mockRejectedValueOnce(
-          new OnboardingWalletIntentError(
+          new WalletIntentError(
             "wallet_execution_unavailable",
             "Claim eligibility could not be refreshed. Retry in a moment.",
             true,
           ),
         )
         .mockRejectedValueOnce(
-          new OnboardingWalletIntentError(
+          new WalletIntentError(
             "wallet_execution_unavailable",
             "This claim is not eligible for browser-wallet execution.",
           ),
@@ -1619,7 +1619,8 @@ describe("local API", () => {
       snapshot: async () => ({
         generatedAt: "2026-07-17T12:00:00.000Z",
         preflight: { status: "pass" },
-        setup: { status: "ready" },
+        manager: { attachAllowed: true },
+        registration: { registered: true, signerKeyGrantValid: true },
       }),
       synchronize: async () => ({}),
     };
@@ -1663,10 +1664,12 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      schemaVersion: 2,
       status: "blocked",
       checks: [
         { id: "control-plane", status: "ready" },
-        { id: "setup", status: "ready" },
+        { id: "manager", status: "ready" },
+        { id: "signer", status: "ready" },
         { id: "engine", status: "blocked", detail: "Chain tips disagree" },
       ],
     });

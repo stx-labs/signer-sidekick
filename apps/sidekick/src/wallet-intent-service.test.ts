@@ -32,13 +32,10 @@ import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-prot
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UpstreamHttpError } from "./chain-clients.js";
 import type { ManagerDeploymentManifest } from "./manager-render.js";
-import {
-  OnboardingWalletIntentService,
-  type WalletFreshState,
-} from "./onboarding-wallet-intent.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256 } from "./storage/wallet-intent-repository.js";
+import { type WalletIntentRuntimeState, WalletIntentService } from "./wallet-intent-service.js";
 
 const { loadNetworkCompatibilityProfilesMock, readSetupSnapshotMock, runOperatorPreflightMock } =
   vi.hoisted(() => ({
@@ -291,7 +288,7 @@ function deploymentSnapshot(matches: boolean) {
   };
 }
 
-function deploymentFreshState(clarityCode = source): WalletFreshState {
+function deploymentFreshState(clarityCode = source): WalletIntentRuntimeState {
   const claritySha256 = createHash("sha256").update(clarityCode).digest("hex");
   return {
     managerPrincipal,
@@ -440,7 +437,7 @@ function registrationFreshState(
   signerKeyHex: string,
   signerSignatureHex = "03".repeat(65),
   expectedMessageHashHex = "ab".repeat(32),
-): WalletFreshState {
+): WalletIntentRuntimeState {
   const functionArgs = [
     cvToHex(contractPrincipalCV(requiredSender, "signer-manager")),
     cvToHex(bufferCV(Buffer.from(signerKeyHex, "hex"))),
@@ -473,7 +470,7 @@ function registrationFreshState(
 function validRegistrationFreshState(
   signerPrivateKey: string,
   expectedMessageHashHex: string,
-): WalletFreshState {
+): WalletIntentRuntimeState {
   const signerKeyHex = privateKeyToPublic(signerPrivateKey);
   const signerSignatureHex = signMessageHashRsv({
     messageHash: expectedMessageHashHex,
@@ -693,9 +690,9 @@ function reconciler(
   store: SidekickStore,
   runtimeSettings: RuntimeSettingsController,
   reader: ReturnType<typeof readerHarness>,
-  readFreshState: () => WalletFreshState = deploymentFreshState,
-): OnboardingWalletIntentService {
-  return new OnboardingWalletIntentService({
+  readFreshState: () => WalletIntentRuntimeState = deploymentFreshState,
+): WalletIntentService {
+  return new WalletIntentService({
     store,
     runtimeSettings,
     readFreshState,
@@ -761,7 +758,7 @@ async function proveRecurringManagerAction(input: {
       index_block_hash: indexBlockHash,
     })),
   };
-  const wallet = new OnboardingWalletIntentService({
+  const wallet = new WalletIntentService({
     store,
     runtimeSettings: {
       clients: () => ({
@@ -962,7 +959,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: { getNodeInfo: async () => ({ network_id: 1 }) },
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => {
@@ -1015,7 +1012,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => fresh,
@@ -1063,7 +1060,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => fresh,
@@ -1097,7 +1094,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: deploymentFreshState,
@@ -1122,7 +1119,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: deploymentFreshState,
@@ -1141,7 +1138,7 @@ describe("onboarding wallet intent reconciliation", () => {
     const state = deploymentFreshState();
     if (!state.managerArtifact) throw new Error("Expected deployment artifact");
     state.managerArtifact.source = "(define-public (tampered) (ok true))";
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -1176,7 +1173,7 @@ describe("onboarding wallet intent reconciliation", () => {
       preflight: matchedPreflight(staleProfile),
     });
     const state = registrationFreshState(`02${"11".repeat(32)}`);
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -1202,7 +1199,7 @@ describe("onboarding wallet intent reconciliation", () => {
     const signerKeyHex = state.signerGrant.verified?.signerKeyHex;
     if (!signerKeyHex) throw new Error("Signer fixture is incomplete");
     readSetupSnapshotMock.mockResolvedValue(registrationSnapshot(signerKeyHex, false));
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -1238,7 +1235,7 @@ describe("onboarding wallet intent reconciliation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => registrationFreshState(signerKeyHex),
@@ -1760,7 +1757,7 @@ describe("manager wallet action preparation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: deploymentFreshState,
@@ -1836,7 +1833,7 @@ describe("manager wallet action preparation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: deploymentFreshState,
@@ -1864,7 +1861,7 @@ describe("manager wallet action preparation", () => {
       manager: { ...snapshot.manager, attachAllowed: false },
     });
     const callReadOnly = vi.fn();
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -2070,7 +2067,7 @@ describe("manager wallet action preparation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: deploymentFreshState,
@@ -2099,7 +2096,7 @@ describe("manager wallet action preparation", () => {
     stores.push(store);
     const testnetActor = getAddressFromPrivateKey(senderKey, "testnet");
     const testnetManager = `${testnetActor}.signer-manager`;
-    const state: WalletFreshState = {
+    const state: WalletIntentRuntimeState = {
       managerPrincipal: testnetManager,
       freshInput: null,
       managerArtifact: null,
@@ -2122,7 +2119,7 @@ describe("manager wallet action preparation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => state,
@@ -2154,7 +2151,7 @@ describe("manager wallet action preparation", () => {
     stores.push(store);
     const actorPrincipal = getAddressFromPrivateKey(senderKey, "testnet");
     const privateManager = `${actorPrincipal}.signer-manager`;
-    const state: WalletFreshState = {
+    const state: WalletIntentRuntimeState = {
       managerPrincipal: privateManager,
       freshInput: null,
       managerArtifact: null,
@@ -2191,7 +2188,7 @@ describe("manager wallet action preparation", () => {
         },
       },
     });
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -2294,7 +2291,7 @@ describe("manager wallet action preparation", () => {
       submittedAt: "2026-07-19T12:01:00.000Z",
     });
     const readerFactory = vi.fn();
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -2333,7 +2330,7 @@ describe("manager wallet action preparation", () => {
       },
     });
     const callReadOnly = vi.fn();
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -2369,7 +2366,7 @@ describe("manager wallet action preparation", () => {
         ),
       },
     });
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -2421,7 +2418,7 @@ describe("manager wallet action preparation", () => {
         api: {},
       }),
     } as unknown as RuntimeSettingsController;
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings,
       readFreshState: () => state,
@@ -2448,7 +2445,7 @@ describe("manager wallet action preparation", () => {
       const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
       stores.push(store);
       readSetupSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
-      return new OnboardingWalletIntentService({
+      return new WalletIntentService({
         store,
         runtimeSettings: {
           clients: () => ({
@@ -2459,7 +2456,9 @@ describe("manager wallet action preparation", () => {
                 reads.feeSnapshot === null ? noneCV() : someCV(uintCV(reads.feeSnapshot ?? 1_000n)),
               ),
               callReadOnly: vi.fn(async (_manager: string, functionName: string) => {
-                if (functionName === "is-admin") return trueCV();
+                if (functionName === "is-admin") {
+                  throw new Error("Permissionless staker claims must not read manager-admin state");
+                }
                 if (functionName === "get-earned-staker-rewards") {
                   return tupleCV({ earned: uintCV(reads.earned), fees: uintCV(reads.fees) });
                 }
@@ -2499,6 +2498,15 @@ describe("manager wallet action preparation", () => {
       expect(prepared.review.fields).toEqual(
         expect.arrayContaining([{ label: "Staker receives (sats)", value: "9000" }]),
       );
+    });
+
+    it("does not require the fee payer to be a manager admin", async () => {
+      const wallet = await stakerClaimWallet({ earned: 9_000n, fees: 1_000n, unclaimed: 10_000n });
+
+      await expect(wallet.prepare(request, "2026-07-19T12:01:00.000Z")).resolves.toMatchObject({
+        action: "claim-staker-rewards",
+        requiredSender,
+      });
     });
 
     it("claims a bond bucket by naming its index", async () => {

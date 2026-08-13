@@ -24,7 +24,7 @@ import { managerActionAvailability } from "../../shared/manager-action-availabil
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
 import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
-import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
+import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;

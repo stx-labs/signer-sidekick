@@ -15,9 +15,9 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
 import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OnboardingWalletIntentService } from "../onboarding-wallet-intent.js";
 import type { RuntimeSettingsController } from "../runtime-settings.js";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
+import { WalletIntentService } from "../wallet-intent-service.js";
 import {
   type ManagerClaimObserveFacts,
   ObserveManagerClaimPlanner,
@@ -497,7 +497,7 @@ describe("manager-claim browser-wallet binding", () => {
   ])("propagates $network through the onboarding wallet manifest", async ({ network, chainId }) => {
     const { store, input, result } = await plannedPrivate(chainId);
     readSetupSnapshotMock.mockResolvedValue(privateSetupSnapshot(input, network, chainId));
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -561,7 +561,7 @@ describe("manager-claim browser-wallet binding", () => {
     };
     readSetupSnapshotMock.mockResolvedValue(snapshot);
     const observeManagerClaimWalletJob = vi.fn(async () => observation(result));
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -753,7 +753,7 @@ describe("manager-claim browser-wallet binding", () => {
       managerArtifact: null,
       signerGrant: { verified: null },
     };
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -842,7 +842,7 @@ describe("manager-claim browser-wallet binding", () => {
     ).toBe("complete");
   });
 
-  it("keeps a canonical browser claim confirmed until the exact engine job reconciles", async () => {
+  it("keeps observing a submitted claim when current manager review is unavailable", async () => {
     const { store, input, result } = await plannedMainnet();
     const actorPrivateKey = `${"22".repeat(32)}01`;
     const engineObservation = observation(result);
@@ -854,7 +854,7 @@ describe("manager-claim browser-wallet binding", () => {
     };
     let transactionHex = "";
     let txid = "";
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
@@ -922,6 +922,9 @@ describe("manager-claim browser-wallet binding", () => {
       index_block_hash: `0x${"cd".repeat(32)}`,
     });
     await wallet.submit(prepared.id, txid, "2026-07-19T12:01:00.000Z");
+    readSetupSnapshotMock.mockRejectedValue(
+      new Error("Post-broadcast reconciliation must use the immutable stored manager binding"),
+    );
     await expect(wallet.refresh(prepared.id, "2026-07-19T12:02:00.000Z")).resolves.toMatchObject({
       status: "confirmed",
       verification: { outcome: "canonical-success", canonical: true },
@@ -948,7 +951,7 @@ describe("manager-claim browser-wallet binding", () => {
     const { store, input, result } = await plannedMainnet();
     readSetupSnapshotMock.mockResolvedValue(mainnetSetupSnapshot(input));
     const readerFactory = vi.fn();
-    const wallet = new OnboardingWalletIntentService({
+    const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({

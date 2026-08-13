@@ -25,7 +25,7 @@ import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboa
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { formatUstx } from "../../shared/format.js";
 import { operatorActionError } from "../../shared/operator-error.js";
-import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
+import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import {
   attachLabels,
   attachWorkflowSteps,

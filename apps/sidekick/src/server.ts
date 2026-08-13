@@ -24,6 +24,7 @@ import {
   healthSourceTestRequestSchema,
   managerSignerGrantPrepareRequestSchema,
   type OperationReadiness,
+  type OperationReadinessCheck,
   onboardingAttachRequestSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   onboardingGrantVerifyRequestSchema,
@@ -51,7 +52,6 @@ import {
 } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
 import type { OnboardingService } from "./onboarding-service.js";
-import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
 import type {
   OperatorSynchronizationProgress,
   PoolRosterSort,
@@ -77,6 +77,7 @@ import {
   operatorSupportApplication,
 } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { WalletIntentError } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
@@ -177,12 +178,20 @@ function snapshotStatus<const Status extends string>(
   return status as Status;
 }
 
+function snapshotBoolean(value: unknown, key: string): boolean | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "boolean" ? candidate : null;
+}
+
 function operationReadiness(
   snapshot: OperatorSnapshotShape,
   engine: EngineStatus | null,
 ): OperationReadiness {
   const preflight = snapshotStatus(snapshot.preflight, ["pass", "warn", "fail"]);
-  const setup = snapshotStatus(snapshot.setup, ["ready", "attention", "blocked"]);
+  const managerAttached = snapshotBoolean(snapshot.manager, "attachAllowed");
+  const signerRegistered = snapshotBoolean(snapshot.registration, "registered");
+  const signerGrantValid = snapshotBoolean(snapshot.registration, "signerKeyGrantValid");
   const engineAvailability = engine?.adapters.some((adapter) => adapter.availability === "blocked")
     ? "blocked"
     : engine?.adapters.some((adapter) => adapter.availability === "disabled")
@@ -190,7 +199,7 @@ function operationReadiness(
       : engine
         ? "ready"
         : "attention";
-  const checks: OperationReadiness["checks"] = [
+  const checks: OperationReadinessCheck[] = [
     {
       id: "control-plane",
       status:
@@ -209,16 +218,32 @@ function operationReadiness(
               : "No preflight result is available.",
     },
     {
-      id: "setup",
-      status: setup ?? "attention",
+      id: "manager",
+      status:
+        managerAttached === true ? "ready" : managerAttached === false ? "blocked" : "attention",
       detail:
-        setup === "ready"
-          ? "Manager setup is ready."
-          : setup === "attention"
-            ? "Manager setup needs operator attention."
-            : setup === "blocked"
-              ? "Manager setup is blocked."
-              : "No manager setup result is available.",
+        managerAttached === true
+          ? "The configured manager is attached and satisfies the PoX-5 signer-manager trait."
+          : managerAttached === false
+            ? "The configured manager is missing, on the wrong network, or trait-incompatible."
+            : "No manager attachment result is available.",
+    },
+    {
+      id: "signer",
+      status:
+        signerRegistered === true && signerGrantValid === true
+          ? "ready"
+          : signerRegistered === false || signerGrantValid === false
+            ? "blocked"
+            : "attention",
+      detail:
+        signerRegistered === true && signerGrantValid === true
+          ? "The manager is registered with an authorized signer key."
+          : signerRegistered === false
+            ? "The manager is not registered with a signer key."
+            : signerGrantValid === false
+              ? "The registered signer key grant is not valid."
+              : "Signer registration or grant status is unavailable.",
     },
     {
       id: "engine",
@@ -240,7 +265,7 @@ function operationReadiness(
       ? "attention"
       : "ready";
   return operationReadinessSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     status,
     generatedAt: snapshot.generatedAt ?? engine?.generatedAt ?? new Date().toISOString(),
     checks,
@@ -495,7 +520,7 @@ function classifySafeOperatorError(
       ...(error.message === error.responseCode ? {} : { message: error.message }),
     });
   }
-  if (error instanceof OnboardingWalletIntentError) {
+  if (error instanceof WalletIntentError) {
     return safeClassification(error.retryable ? 503 : walletIntentHttpStatus(error), error.code, {
       message: error.message,
       retryable: error.retryable,
@@ -658,7 +683,7 @@ function requireFeature<T>(value: T | undefined, responseCode: string): T {
   return value;
 }
 
-function walletIntentHttpStatus(error: OnboardingWalletIntentError): number {
+function walletIntentHttpStatus(error: WalletIntentError): number {
   if (error.code === "wallet_intent_not_found") return 404;
   if (error.code === "wallet_intent_conflict" || error.code === "wallet_intent_expired") return 409;
   if (error.code === "wallet_execution_unavailable") return 422;
@@ -1735,7 +1760,7 @@ export function createServer(options: ServerOptions = {}) {
         action: parsed.data.action,
       });
       if (anchorReply) return anchorReply;
-      if (error instanceof OnboardingWalletIntentError) {
+      if (error instanceof WalletIntentError) {
         return sendClassifiedError(request, reply, error);
       }
       throw error;
@@ -1754,7 +1779,7 @@ export function createServer(options: ServerOptions = {}) {
         action: parsed.data.action,
       });
       if (anchorReply) return anchorReply;
-      if (error instanceof OnboardingWalletIntentError) {
+      if (error instanceof WalletIntentError) {
         return sendClassifiedError(request, reply, error);
       }
       throw error;
@@ -1768,7 +1793,7 @@ export function createServer(options: ServerOptions = {}) {
       try {
         return { intent: onboarding.wallet.get(parsed.data.id) };
       } catch (error) {
-        if (error instanceof OnboardingWalletIntentError) {
+        if (error instanceof WalletIntentError) {
           return sendClassifiedError(request, reply, error);
         }
         throw error;
@@ -1788,7 +1813,7 @@ export function createServer(options: ServerOptions = {}) {
           ),
         };
       } catch (error) {
-        if (error instanceof OnboardingWalletIntentError) {
+        if (error instanceof WalletIntentError) {
           return sendClassifiedError(request, reply, error);
         }
         throw error;
@@ -1814,7 +1839,7 @@ export function createServer(options: ServerOptions = {}) {
           operation: "refresh",
         });
         if (anchorReply) return anchorReply;
-        if (error instanceof OnboardingWalletIntentError) {
+        if (error instanceof WalletIntentError) {
           return sendClassifiedError(request, reply, error);
         }
         throw error;
@@ -1840,7 +1865,7 @@ export function createServer(options: ServerOptions = {}) {
           operation: "replacement",
         });
         if (anchorReply) return anchorReply;
-        if (error instanceof OnboardingWalletIntentError) {
+        if (error instanceof WalletIntentError) {
           return sendClassifiedError(request, reply, error);
         }
         throw error;

@@ -175,6 +175,19 @@ describe("transaction engine v1 API contracts", () => {
         ],
       }).status,
     ).toBe("blocked");
+    expect(
+      operationReadinessSchema.parse({
+        schemaVersion: 2,
+        status: "ready",
+        generatedAt: now,
+        checks: [
+          { id: "control-plane", status: "ready", detail: "Chain checks pass." },
+          { id: "manager", status: "ready", detail: "Manager attached." },
+          { id: "signer", status: "ready", detail: "Signer registered." },
+          { id: "engine", status: "ready", detail: "Engine ready." },
+        ],
+      }).schemaVersion,
+    ).toBe(2);
   });
 
   it("rejects private keys, signed transaction bytes, and undeclared nested material", () => {

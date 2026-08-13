@@ -97,6 +97,9 @@ Gate:
 
 Purpose: separate valuable day-2 operations from onboarding before deleting onboarding code.
 
+The retained action contract, authority, and evidence matrix is maintained in
+[Recurring operation contracts](recurring-operation-contracts-2026-08-13.md).
+
 - Move generic wallet-intent lifecycle, canonical transaction observation, signer registration/key
   rotation, manager administration, and reward actions out of onboarding modules.
 - Split action construction by capability adapter.

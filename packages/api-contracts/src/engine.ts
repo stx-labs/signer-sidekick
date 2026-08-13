@@ -335,23 +335,51 @@ export const engineStatusSchema = z
   .strict();
 export type EngineStatus = z.infer<typeof engineStatusSchema>;
 
-export const operationReadinessCheckSchema = z
+const operationReadinessV1CheckSchema = z
   .object({
     id: z.enum(["control-plane", "setup", "engine"]),
     status: z.enum(["ready", "attention", "blocked"]),
     detail: z.string().min(1).max(1_000),
   })
   .strict();
+
+const operationReadinessV2CheckSchema = z
+  .object({
+    id: z.enum(["control-plane", "manager", "signer", "engine"]),
+    status: z.enum(["ready", "attention", "blocked"]),
+    detail: z.string().min(1).max(1_000),
+  })
+  .strict();
+
+export const operationReadinessCheckSchema = z.union([
+  operationReadinessV1CheckSchema,
+  operationReadinessV2CheckSchema,
+]);
 export type OperationReadinessCheck = z.infer<typeof operationReadinessCheckSchema>;
 
-export const operationReadinessSchema = z
+const operationReadinessV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     status: z.enum(["ready", "attention", "blocked"]),
     generatedAt: instantSchema,
-    checks: z.array(operationReadinessCheckSchema).length(3),
+    checks: z.array(operationReadinessV1CheckSchema).length(3),
   })
   .strict();
+
+const operationReadinessV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    status: z.enum(["ready", "attention", "blocked"]),
+    generatedAt: instantSchema,
+    checks: z.array(operationReadinessV2CheckSchema).length(4),
+  })
+  .strict();
+
+/** V1 remains readable for previously downloaded support data; live Sidekick emits V2. */
+export const operationReadinessSchema = z.union([
+  operationReadinessV1Schema,
+  operationReadinessV2Schema,
+]);
 export type OperationReadiness = z.infer<typeof operationReadinessSchema>;
 
 export const engineApprovalRequestSchema = z

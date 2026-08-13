@@ -48,10 +48,14 @@ function stateLabel(value: string): string {
 
 function readinessAction(check: OperationReadiness["checks"][number]): {
   label: string;
-  target: "settings" | "setup";
+  target: "settings" | "manager" | "setup";
 } | null {
   if (check.status === "ready") return null;
   if (check.id === "control-plane") return { label: "Open Settings", target: "settings" };
+  if (check.id === "manager" || check.id === "signer") {
+    return { label: "Open Manager", target: "manager" };
+  }
+  // Backward compatibility for a V1 readiness payload from an older Sidekick server.
   if (check.id === "setup") return { label: "Open Initial Setup", target: "setup" };
   return null;
 }
@@ -400,7 +404,8 @@ export function EngineOperations({
                   </div>
                 ) : (
                   <p className="muted">
-                    Control plane, manager setup, and transaction engine are ready.
+                    Control plane, manager attachment, signer registration, and transaction engine
+                    are ready.
                   </p>
                 )}
               </div>
