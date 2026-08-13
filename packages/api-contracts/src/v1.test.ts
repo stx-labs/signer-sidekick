@@ -42,6 +42,7 @@ describe("reconciliation contracts", () => {
     const operation = {
       schemaVersion: 1,
       operationId: "10000000-0000-4000-8000-000000000001",
+      trigger: "automatic",
       status: "succeeded",
       phase: "complete",
       processLocal: true,

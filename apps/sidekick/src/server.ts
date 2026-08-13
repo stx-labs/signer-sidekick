@@ -65,6 +65,11 @@ import {
   withInteractiveRequestDeadline,
   withOperatorRequestSignal,
 } from "./request-context.js";
+import {
+  RosterReconciliationMetricsTracker,
+  RosterReconciliationRetryError,
+  startRosterReconciliationLoop,
+} from "./roster-reconciliation-refresh.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -282,6 +287,8 @@ export interface ServerOptions {
   };
   engine?: TransactionEngineApiService;
   snapshotRefreshMetrics?: SnapshotRefreshMetricsTracker;
+  rosterReconciliationIntervalMs?: number;
+  rosterReconciliationInitialDelayMs?: number;
 }
 
 class OperatorApiError extends Error {
@@ -869,9 +876,12 @@ export function createServer(options: ServerOptions = {}) {
   let syncRequestCount = 0;
   let syncCount = 0;
   let syncFailureCount = 0;
+  const rosterReconciliationMetrics = new RosterReconciliationMetricsTracker();
+  let rosterReconciliationLoop: { stop(): void } | null = null;
   const idleReconciliationOperation = (): ReconciliationOperation => ({
     schemaVersion: 1,
     operationId: null,
+    trigger: null,
     status: "idle",
     phase: "idle",
     processLocal: true,
@@ -891,6 +901,7 @@ export function createServer(options: ServerOptions = {}) {
   let reconciliationOperation = idleReconciliationOperation();
   let reconciliationTask: Promise<void> | null = null;
   let reconciliationController: AbortController | null = null;
+  let reconciliationRetryAfterSeconds: number | null = null;
 
   async function interactive<T>(request: FastifyRequest, work: () => Promise<T>): Promise<T> {
     const controller = new AbortController();
@@ -944,18 +955,20 @@ export function createServer(options: ServerOptions = {}) {
   }
 
   function startReconciliation(
-    request: FastifyRequest,
     service: OperatorSnapshotService,
+    trigger: "manual" | "automatic",
+    logger: Pick<FastifyRequest["log"], "warn">,
   ): ReconciliationOperation {
-    syncRequestCount += 1;
     if (reconciliationTask) return reconciliationOperation;
     syncCount += 1;
+    reconciliationRetryAfterSeconds = null;
     const controller = new AbortController();
     reconciliationController = controller;
     const startedAt = new Date().toISOString();
     reconciliationOperation = {
       schemaVersion: 1,
       operationId: randomUUID(),
+      trigger,
       status: "running",
       phase: "reconciling-stakers-discovery",
       processLocal: true,
@@ -967,7 +980,10 @@ export function createServer(options: ServerOptions = {}) {
         totalSteps: 4,
         itemsCompleted: 0,
         itemsTotal: null,
-        message: "Starting signer delegation discovery",
+        message:
+          trigger === "automatic"
+            ? "Starting automatic signer delegation discovery"
+            : "Starting signer delegation discovery",
       },
       result: null,
       error: null,
@@ -1022,7 +1038,11 @@ export function createServer(options: ServerOptions = {}) {
         syncFailureCount += 1;
         const failedAt = new Date().toISOString();
         const classified = classifySafeOperatorError(error, rateLimitSettings());
-        request.log.warn(
+        reconciliationRetryAfterSeconds =
+          error instanceof RateLimitedError
+            ? Math.max(1, Math.ceil((error.retryAfterMs ?? 60_000) / 1_000))
+            : null;
+        logger.warn(
           {
             err: error,
             responseCode: classified.body.error,
@@ -1053,11 +1073,49 @@ export function createServer(options: ServerOptions = {}) {
     return reconciliationOperation;
   }
 
+  async function runAutomaticRosterReconciliation(
+    service: OperatorSnapshotService,
+  ): Promise<"synchronized" | "skipped"> {
+    if (reconciliationTask) return "skipped";
+    const snapshot = await service.snapshot();
+    const setup = snapshotStatus(snapshot.setup, ["ready", "attention", "blocked"]);
+    if (setup === null || setup === "blocked") return "skipped";
+    if (reconciliationTask) return "skipped";
+    startReconciliation(service, "automatic", server.log);
+    const task = reconciliationTask;
+    if (!task) return "skipped";
+    await task;
+    if (reconciliationOperation.status === "succeeded") return "synchronized";
+    throw new RosterReconciliationRetryError(
+      reconciliationOperation.error?.message ?? "Automatic roster reconciliation failed",
+      reconciliationRetryAfterSeconds === null ? null : reconciliationRetryAfterSeconds * 1_000,
+    );
+  }
+
   server.setErrorHandler((error: FastifyError, request, reply) => {
     return sendClassifiedError(request, reply, error, rateLimitSettings());
   });
 
+  server.addHook("onReady", async () => {
+    const service = options.service;
+    if (!service) return;
+    rosterReconciliationLoop = startRosterReconciliationLoop(
+      { reconcileRoster: async () => runAutomaticRosterReconciliation(service) },
+      server.log,
+      {
+        metrics: rosterReconciliationMetrics,
+        ...(options.rosterReconciliationIntervalMs === undefined
+          ? {}
+          : { intervalMs: options.rosterReconciliationIntervalMs }),
+        ...(options.rosterReconciliationInitialDelayMs === undefined
+          ? {}
+          : { initialDelayMs: options.rosterReconciliationInitialDelayMs }),
+      },
+    );
+  });
+
   server.addHook("onClose", async () => {
+    rosterReconciliationLoop?.stop();
     reconciliationController?.abort(new InteractiveRequestCancelledError());
     await reconciliationTask;
   });
@@ -1118,6 +1176,7 @@ export function createServer(options: ServerOptions = {}) {
       snapshotFresh: 0 as const,
       sourcePositions: null,
     };
+    const rosterRefresh = rosterReconciliationMetrics.snapshot();
     const metrics = [
       "# HELP sidekick_http_requests_total HTTP requests handled by this process.",
       "# TYPE sidekick_http_requests_total counter",
@@ -1131,6 +1190,30 @@ export function createServer(options: ServerOptions = {}) {
       "# HELP sidekick_sync_failures_total Failed synchronization attempts.",
       "# TYPE sidekick_sync_failures_total counter",
       `sidekick_sync_failures_total ${syncFailureCount}`,
+      "# HELP sidekick_roster_reconciliation_attempts_total Automatic roster reconciliation attempts.",
+      "# TYPE sidekick_roster_reconciliation_attempts_total counter",
+      `sidekick_roster_reconciliation_attempts_total ${rosterRefresh.attemptsTotal}`,
+      "# HELP sidekick_roster_reconciliation_successes_total Successful automatic roster reconciliations.",
+      "# TYPE sidekick_roster_reconciliation_successes_total counter",
+      `sidekick_roster_reconciliation_successes_total ${rosterRefresh.successesTotal}`,
+      "# HELP sidekick_roster_reconciliation_skips_total Automatic roster reconciliations skipped because setup was incomplete or another sync was running.",
+      "# TYPE sidekick_roster_reconciliation_skips_total counter",
+      `sidekick_roster_reconciliation_skips_total ${rosterRefresh.skipsTotal}`,
+      "# HELP sidekick_roster_reconciliation_failures_total Failed automatic roster reconciliations.",
+      "# TYPE sidekick_roster_reconciliation_failures_total counter",
+      `sidekick_roster_reconciliation_failures_total ${rosterRefresh.failuresTotal}`,
+      "# HELP sidekick_roster_reconciliation_consecutive_failures Consecutive automatic roster reconciliation failures.",
+      "# TYPE sidekick_roster_reconciliation_consecutive_failures gauge",
+      `sidekick_roster_reconciliation_consecutive_failures ${rosterRefresh.consecutiveFailures}`,
+      "# HELP sidekick_roster_reconciliation_retry_backoff_seconds Delay before retrying a failed automatic roster reconciliation.",
+      "# TYPE sidekick_roster_reconciliation_retry_backoff_seconds gauge",
+      `sidekick_roster_reconciliation_retry_backoff_seconds ${rosterRefresh.retryBackoffSeconds}`,
+      "# HELP sidekick_roster_reconciliation_last_success_timestamp_seconds Unix timestamp of the last successful automatic roster reconciliation.",
+      "# TYPE sidekick_roster_reconciliation_last_success_timestamp_seconds gauge",
+      `sidekick_roster_reconciliation_last_success_timestamp_seconds ${rosterRefresh.lastSuccessTimestampSeconds}`,
+      "# HELP sidekick_roster_reconciliation_next_attempt_timestamp_seconds Unix timestamp of the next automatic roster reconciliation attempt.",
+      "# TYPE sidekick_roster_reconciliation_next_attempt_timestamp_seconds gauge",
+      `sidekick_roster_reconciliation_next_attempt_timestamp_seconds ${rosterRefresh.nextAttemptTimestampSeconds}`,
       "# HELP sidekick_operator_snapshot_refresh_attempts_total Autonomous snapshot refresh attempts.",
       "# TYPE sidekick_operator_snapshot_refresh_attempts_total counter",
       `sidekick_operator_snapshot_refresh_attempts_total ${refresh.attemptsTotal}`,
@@ -1703,7 +1786,8 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.post("/api/v1/sync", async (request, reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
-    return reply.code(202).send({ operation: startReconciliation(request, service) });
+    syncRequestCount += 1;
+    return reply.code(202).send({ operation: startReconciliation(service, "manual", request.log) });
   });
   server.get("/api/v1/sync", async () => {
     requireFeature(options.service, "operator_service_unavailable");

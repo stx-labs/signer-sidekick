@@ -145,7 +145,7 @@ function StacksGlyph() {
   );
 }
 
-const STATUS_POLL_MS = 30_000;
+const STATUS_POLL_MS = 15_000;
 const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
 
@@ -365,7 +365,10 @@ function App() {
   }, []);
   useEffect(() => {
     const refreshIfVisible = () => {
-      if (document.visibilityState === "visible") void load(true);
+      // A visible operator expects the current Stacks tip, not merely the retained server cache.
+      // Forced reads are coalesced server-side and preserve the last snapshot if an upstream source
+      // is temporarily unavailable or rate limited.
+      if (document.visibilityState === "visible") void load(true, false, true);
     };
     const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
     document.addEventListener("visibilitychange", refreshIfVisible);

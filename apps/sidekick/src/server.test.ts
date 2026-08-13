@@ -864,6 +864,7 @@ describe("local API", () => {
     const idle = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
     expect(idle.json().operation).toMatchObject({
       operationId: null,
+      trigger: null,
       status: "idle",
       phase: "idle",
       processLocal: true,
@@ -878,6 +879,7 @@ describe("local API", () => {
 
     const running = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
     expect(running.json().operation).toMatchObject({
+      trigger: "manual",
       status: "running",
       phase: "reconciling-stakers-verification",
       processLocal: true,
@@ -903,6 +905,70 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.body).toContain("sidekick_sync_total 1");
     expect(metrics.body).toContain("sidekick_sync_requests_total 2");
+  });
+
+  it("reconciles a configured roster automatically even when setup needs attention", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-07-19T18:00:02.000Z",
+        setup: { status: "attention" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(() => expect(service.synchronize).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => {
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/v1/sync",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.json().operation).toMatchObject({
+        trigger: "automatic",
+        status: "succeeded",
+      });
+    });
+
+    const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).toContain("sidekick_sync_total 1");
+    expect(metrics.body).toContain("sidekick_sync_requests_total 0");
+    expect(metrics.body).toContain("sidekick_roster_reconciliation_attempts_total 1");
+    expect(metrics.body).toContain("sidekick_roster_reconciliation_successes_total 1");
+  });
+
+  it("skips automatic reconciliation until manager setup is ready", async () => {
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-07-19T18:00:02.000Z",
+        setup: { status: "blocked" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(async () => {
+      const metrics = await server.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.body).toContain("sidekick_roster_reconciliation_skips_total 1");
+    });
+    expect(service.synchronize).not.toHaveBeenCalled();
   });
 
   it("stores structured retryable reconciliation failures for polling", async () => {

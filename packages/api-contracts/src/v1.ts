@@ -728,6 +728,7 @@ export type ReconciliationSummary = z.infer<typeof reconciliationSummarySchema>;
 export interface ReconciliationOperation {
   schemaVersion: 1;
   operationId: string | null;
+  trigger: "manual" | "automatic" | null;
   status: "idle" | "running" | "succeeded" | "failed";
   phase: ReconciliationOperationPhase;
   processLocal: true;
@@ -759,6 +760,7 @@ function isReconciliationOperation(value: unknown): value is ReconciliationOpera
   return (
     value.schemaVersion === 1 &&
     isNullableString(value.operationId) &&
+    (value.trigger === null || value.trigger === "manual" || value.trigger === "automatic") &&
     ["idle", "running", "succeeded", "failed"].includes(String(value.status)) &&
     [
       "idle",

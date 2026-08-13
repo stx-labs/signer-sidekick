@@ -45,6 +45,13 @@ roster, event, and history capabilities. API lag or an API outage is shown as in
 degradation and does not make the local operator dashboard unavailable; API-specific synchronization
 and Assist proofs still wait or fail closed when their required indexed evidence is unavailable.
 
+While the dashboard is visible, it requests a coalesced current operator snapshot every 15 seconds
+so new Stacks blocks appear without manual refreshes. Sidekick also reconciles the authoritative
+staking roster shortly after startup and every 30 minutes after manager setup exists, even when no
+browser is open. A failed automatic reconciliation retains the last verified roster and retries
+with bounded backoff; **Sync now** remains available for an immediate operator-triggered
+reconciliation.
+
 Use the published image rather than building locally:
 
 ```sh
