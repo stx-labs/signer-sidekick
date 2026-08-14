@@ -18,6 +18,7 @@ import {
 import type { ChainReadOptions } from "./chain-clients.js";
 import type {
   RewardCycleSnapshotInput,
+  RewardOutlookObservationInput,
   SignerStakerRun,
   StoredCycleMembership,
 } from "./storage/store.js";
@@ -54,6 +55,7 @@ export interface RewardStatusStore {
     sourceId?: string | null,
   ): StoredCycleMembership[];
   putRewardCycleSnapshot?(input: RewardCycleSnapshotInput): void;
+  putRewardOutlookObservation?(input: RewardOutlookObservationInput): void;
 }
 
 export interface RewardStatusOptions {
@@ -66,6 +68,16 @@ export interface RewardStatusOptions {
   observedAt: string;
   burnBlockHeight: number;
   stacksTipHeight: number;
+  chainAnchor?: ChainAnchor;
+  rewardOutlook?: RewardOutlookStatus;
+}
+
+export interface RewardOutlookOptions {
+  store: Pick<RewardStatusStore, "putRewardOutlookObservation">;
+  node: Pick<RewardStatusNode, "callReadOnly">;
+  managerPrincipal: string;
+  pox5ContractId: string;
+  observedAt: string;
   chainAnchor?: ChainAnchor;
 }
 
@@ -192,6 +204,25 @@ export interface RewardCalculationStatus {
   targetCheckpoint: "first-half" | "second-half" | null;
   expectedLastRewardComputeBurnHeight: number | null;
   observedLastRewardComputeBurnHeight: string;
+  next: null | {
+    state: "due" | "scheduled";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    eligibleBurnHeight: number;
+    blocksRemaining: number;
+  };
+}
+
+export interface RewardOutlookStatus {
+  pox5ContractId: string;
+  observedAt: string;
+  chainAnchor: ChainAnchor | null;
+  accrued: {
+    globalSats: string;
+    source: "pox5-get-new-rewards";
+  };
+  calculation: RewardCalculationStatus;
 }
 
 export interface StxRewardStatus {
@@ -211,6 +242,8 @@ export interface StxRewardStatus {
   global: {
     lastRewardComputeBurnHeight: string;
     lastComputedRewardCycle: string | null;
+    /** Exact PoX-5 `get-new-rewards`: global accrual since the last calculation. */
+    globalAccruedRewardsSats: string;
     rewardsPerToken: string;
     /** The STX-only bucket. Kept for compatibility; `buckets` carries the full picture. */
     signerEarnedBeforeManagerClaimSats: string;
@@ -239,7 +272,7 @@ export interface StxRewardStatus {
 }
 
 function callReadOnly(
-  node: RewardStatusNode,
+  node: Pick<RewardStatusNode, "callReadOnly">,
   principal: string,
   functionName: string,
   sender: string,
@@ -599,6 +632,7 @@ function rewardCalculationStatus(
       targetRewardCycle: null,
       targetCheckpoint: null,
       expectedLastRewardComputeBurnHeight: null,
+      next: null,
     };
   }
   const target = deriveRewardCalculationTarget(chainAnchor);
@@ -609,24 +643,111 @@ function rewardCalculationStatus(
       targetRewardCycle: null,
       targetCheckpoint: null,
       expectedLastRewardComputeBurnHeight: null,
+      next: null,
     };
   }
   const expected = BigInt(target.expectedLastRewardComputeBurnHeight);
+  const state =
+    observedLastRewardComputeBurnHeight === expected
+      ? "completed"
+      : observedLastRewardComputeBurnHeight < expected
+        ? "pending"
+        : "ahead";
+  let next: RewardCalculationStatus["next"] = null;
+  if (state === "pending") {
+    const eligibleBurnHeight = target.expectedLastRewardComputeBurnHeight + 1;
+    const blocksRemaining = Math.max(0, eligibleBurnHeight - chainAnchor.burnBlockHeight);
+    next = {
+      state: blocksRemaining === 0 ? "due" : "scheduled",
+      targetRewardCycle: target.rewardCycle,
+      targetCheckpoint: target.calculationCheckpoint,
+      calculationBurnHeight: target.expectedLastRewardComputeBurnHeight,
+      eligibleBurnHeight,
+      blocksRemaining,
+    };
+  } else if (state === "completed") {
+    const cycleStart = chainAnchor.burnBlockHeight - chainAnchor.cyclePosition;
+    const firstHalf = chainAnchor.checkpoint === "first-half";
+    const calculationBurnHeight = firstHalf
+      ? cycleStart + chainAnchor.rewardCycleLength / 2 - 1
+      : cycleStart + chainAnchor.rewardCycleLength - 1;
+    const eligibleBurnHeight = calculationBurnHeight + 1;
+    const blocksRemaining = Math.max(0, eligibleBurnHeight - chainAnchor.burnBlockHeight);
+    next = {
+      state: blocksRemaining === 0 ? "due" : "scheduled",
+      targetRewardCycle: chainAnchor.rewardCycle,
+      targetCheckpoint: firstHalf ? "first-half" : "second-half",
+      calculationBurnHeight,
+      eligibleBurnHeight,
+      blocksRemaining,
+    };
+  }
   return {
     ...base,
     // `pending` is the state that used to surface as stale local data: nobody has called the
     // permissionless `calculate-rewards` for this distribution yet, so there is nothing to claim
     // no matter how fresh Sidekick's reads are.
-    state:
-      observedLastRewardComputeBurnHeight === expected
-        ? "completed"
-        : observedLastRewardComputeBurnHeight < expected
-          ? "pending"
-          : "ahead",
+    state,
     targetRewardCycle: target.rewardCycle,
     targetCheckpoint: target.calculationCheckpoint,
     expectedLastRewardComputeBurnHeight: target.expectedLastRewardComputeBurnHeight,
+    next,
   };
+}
+
+/**
+ * Reads the PoX-5 global reward domain without depending on any signer-manager implementation.
+ * This is deliberately separate from manager settlement state: custom managers still need exact
+ * accrual and checkpoint visibility even when Sidekick cannot safely execute their manager calls.
+ */
+export async function readRewardOutlook(
+  options: RewardOutlookOptions,
+): Promise<RewardOutlookStatus> {
+  const readOptions = options.chainAnchor ? { tip: options.chainAnchor.indexBlockHash } : undefined;
+  const [lastRewardComputeHeightValue, globalAccruedRewardsValue] = await Promise.all([
+    callReadOnly(
+      options.node,
+      options.pox5ContractId,
+      "get-last-reward-compute-height",
+      options.managerPrincipal,
+      [],
+      readOptions,
+    ),
+    callReadOnly(
+      options.node,
+      options.pox5ContractId,
+      "get-new-rewards",
+      options.managerPrincipal,
+      [],
+      readOptions,
+    ),
+  ]);
+  const lastRewardComputeBurnHeight = decodeUInt(
+    lastRewardComputeHeightValue,
+    "get-last-reward-compute-height",
+  );
+  const globalSats = decodeUInt(globalAccruedRewardsValue, "get-new-rewards").toString();
+  const calculation = rewardCalculationStatus(lastRewardComputeBurnHeight, options.chainAnchor);
+  const outlook: RewardOutlookStatus = {
+    pox5ContractId: options.pox5ContractId,
+    observedAt: options.observedAt,
+    chainAnchor: options.chainAnchor ?? null,
+    accrued: { globalSats, source: "pox5-get-new-rewards" },
+    calculation,
+  };
+  if (options.chainAnchor) {
+    options.store.putRewardOutlookObservation?.({
+      managerPrincipal: options.managerPrincipal,
+      pox5ContractId: options.pox5ContractId,
+      observedAt: options.observedAt,
+      chainAnchor: options.chainAnchor,
+      globalAccruedRewardsSats: globalSats,
+      calculationState: calculation.state,
+      lastRewardComputeBurnHeight: calculation.observedLastRewardComputeBurnHeight,
+      nextCalculation: calculation.next,
+    });
+  }
+  return outlook;
 }
 
 export async function readStxRewardStatus(options: RewardStatusOptions): Promise<StxRewardStatus> {
@@ -660,8 +781,17 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
   const cycleArgs = [encodeUIntHex(BigInt(options.rewardCycle)), encodeOptionalUIntHex(null)];
   const signerCycleArgs = [encodePrincipalHex(options.managerPrincipal), ...cycleArgs];
   const readOptions = options.chainAnchor ? { tip: options.chainAnchor.indexBlockHash } : undefined;
+  const rewardOutlook =
+    options.rewardOutlook ??
+    (await readRewardOutlook({
+      store: options.store,
+      node: options.node,
+      managerPrincipal: options.managerPrincipal,
+      pox5ContractId: options.pox5ContractId,
+      observedAt: options.observedAt,
+      ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
+    }));
   const [
-    lastRewardComputeHeightValue,
     configuredFeeValue,
     feeSnapshotValue,
     earnedFeesValue,
@@ -671,14 +801,6 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     signerEarnedValue,
     stxSharesValue,
   ] = await Promise.all([
-    callReadOnly(
-      options.node,
-      options.pox5ContractId,
-      "get-last-reward-compute-height",
-      options.managerPrincipal,
-      [],
-      readOptions,
-    ),
     getDataVar(options.node, options.managerPrincipal, "fees-bips", readOptions),
     getMapEntry(
       options.node,
@@ -741,9 +863,8 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
       readOptions,
     ),
   ]);
-  const lastRewardComputeHeight = decodeUInt(
-    lastRewardComputeHeightValue,
-    "get-last-reward-compute-height",
+  const lastRewardComputeHeight = BigInt(
+    rewardOutlook.calculation.observedLastRewardComputeBurnHeight,
   );
   const lastComputedRewardCycle =
     lastRewardComputeHeight === 0n
@@ -822,6 +943,7 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     global: {
       lastRewardComputeBurnHeight: lastRewardComputeHeight.toString(),
       lastComputedRewardCycle: lastComputedRewardCycle?.toString() ?? null,
+      globalAccruedRewardsSats: rewardOutlook.accrued.globalSats,
       rewardsPerToken: decodeUInt(
         rewardsPerTokenValue,
         "get-rewards-per-token-for-cycle",
@@ -833,7 +955,7 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
         ),
       ).toString(),
     },
-    calculation: rewardCalculationStatus(lastRewardComputeHeight, options.chainAnchor),
+    calculation: rewardOutlook.calculation,
     buckets,
     manager: {
       configuredFeeBips: decodeUInt(configuredFeeValue, "fees-bips").toString(),

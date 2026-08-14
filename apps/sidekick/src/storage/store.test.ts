@@ -22,6 +22,7 @@ const indexBlockHash = `0x${"33".repeat(32)}`;
 const sourceId = createChainSourceId("mainnet", "https://api.mainnet.hiro.so");
 const nodeSourceId = createNodeSourceId("mainnet", "http://127.0.0.1:20443");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
+const pox5 = "SP000000000000000000002Q6VF78.pox-5";
 const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
 const openStores: SidekickStore[] = [];
@@ -71,6 +72,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE reward_outlook_observations;
     DROP TABLE observer_deliveries;
     DROP TABLE deployment_identity;
     DROP TABLE signer_staker_api_scan_items;
@@ -333,7 +335,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 25,
+      schemaVersion: 26,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -927,6 +929,95 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
+  it("coalesces same-state outlook refreshes while preserving a same-block calculation boundary", async () => {
+    const store = await memoryStore();
+    const observation = (globalAccruedRewardsSats: string, observedAt: string) => ({
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt,
+      chainAnchor,
+      globalAccruedRewardsSats,
+      calculationState: "completed" as const,
+      lastRewardComputeBurnHeight: "959190",
+      nextCalculation: {
+        state: "scheduled" as const,
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half" as const,
+        calculationBurnHeight: 960_240,
+        eligibleBurnHeight: 960_241,
+        blocksRemaining: 1,
+      },
+    });
+    store.putRewardOutlookObservation(observation("100", observedAt));
+    store.putRewardOutlookObservation(observation("200", later));
+    // A late refresh from the same burn block cannot replace newer anchored evidence.
+    store.putRewardOutlookObservation(observation("50", observedAt));
+
+    const nextAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: chainAnchor.burnBlockHeight + 1,
+      stacksBlockHeight: chainAnchor.stacksBlockHeight + 1,
+      indexBlockHash: `0x${"44".repeat(32)}`,
+      cyclePosition: chainAnchor.cyclePosition + 1,
+      checkpoint: "second-half" as const,
+    };
+    store.putRewardOutlookObservation({
+      ...observation("300", "2026-07-14T12:02:00.000Z"),
+      chainAnchor: nextAnchor,
+      calculationState: "pending",
+      nextCalculation: {
+        state: "due",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        eligibleBurnHeight: 960_241,
+        blocksRemaining: 0,
+      },
+    });
+    store.putRewardOutlookObservation({
+      ...observation("0", "2026-07-14T12:03:00.000Z"),
+      chainAnchor: nextAnchor,
+      lastRewardComputeBurnHeight: "960240",
+      nextCalculation: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 961_290,
+        eligibleBurnHeight: 961_291,
+        blocksRemaining: 1_050,
+      },
+    });
+
+    expect(store.listRewardOutlookObservations(manager, pox5)).toMatchObject({
+      total: 3,
+      items: [
+        {
+          chainAnchor: nextAnchor,
+          globalAccruedRewardsSats: "0",
+          calculationState: "completed",
+          nextCalculation: { blocksRemaining: 1_050 },
+        },
+        {
+          chainAnchor: nextAnchor,
+          globalAccruedRewardsSats: "300",
+          calculationState: "pending",
+          nextCalculation: { state: "due", blocksRemaining: 0 },
+        },
+        {
+          chainAnchor,
+          globalAccruedRewardsSats: "200",
+          observedAt: later,
+        },
+      ],
+    });
+    expect(
+      store.listRewardOutlookObservations(manager, pox5, { direction: "asc", limit: 1 }),
+    ).toMatchObject({
+      total: 3,
+      items: [{ globalAccruedRewardsSats: "200" }],
+    });
+  });
+
   it("resumes partial scans without deactivating unseen members until completion", async () => {
     const store = await memoryStore();
     registerSource(store);
@@ -1020,13 +1111,13 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 25,
+      schemaVersion: 26,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migration 23 once", async () => {
+  it("upgrades a persisted migration 13 database through the latest migration once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -1046,7 +1137,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(26);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1162,7 +1253,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(25);
+    expect(upgraded.store.schemaVersion()).toBe(26);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1224,6 +1315,7 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE reward_outlook_observations;
       DROP TABLE signer_staker_api_scan_items;
       DROP TABLE signer_staker_api_scans;
       DROP TABLE browser_wallet_intent_observations;
@@ -1243,7 +1335,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(26);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1394,7 +1486,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(26);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1516,6 +1608,7 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
@@ -1530,7 +1623,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(26);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1567,6 +1660,7 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;

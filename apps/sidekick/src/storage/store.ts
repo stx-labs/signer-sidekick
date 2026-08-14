@@ -530,6 +530,7 @@ const rewardCycleSnapshotInputSchema = z
       .object({
         lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
         lastComputedRewardCycle: unsignedIntegerTextSchema.nullable(),
+        globalAccruedRewardsSats: unsignedIntegerTextSchema.optional().default("0"),
         rewardsPerToken: unsignedIntegerTextSchema,
         signerEarnedBeforeManagerClaimSats: unsignedIntegerTextSchema,
         signerEarnedAcrossBucketsSats: unsignedIntegerTextSchema,
@@ -600,6 +601,75 @@ const rewardCycleSnapshotInputSchema = z
       });
     }
   });
+
+const rewardOutlookObservationInputSchema = z
+  .object({
+    managerPrincipal: principalSchema,
+    pox5ContractId: principalSchema,
+    observedAt: z.iso.datetime(),
+    chainAnchor: chainAnchorSchema,
+    globalAccruedRewardsSats: unsignedIntegerTextSchema,
+    calculationState: z.enum(["pending", "completed", "ahead", "unknown"]),
+    lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+    nextCalculation: z
+      .object({
+        state: z.enum(["due", "scheduled"]),
+        targetRewardCycle: z.number().int().nonnegative(),
+        targetCheckpoint: z.enum(["first-half", "second-half"]),
+        calculationBurnHeight: z.number().int().nonnegative(),
+        eligibleBurnHeight: z.number().int().nonnegative(),
+        blocksRemaining: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const next = value.nextCalculation;
+    if (!next) return;
+    if (next.eligibleBurnHeight !== next.calculationBurnHeight + 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "eligibleBurnHeight"],
+        message: "eligibleBurnHeight must immediately follow calculationBurnHeight",
+      });
+    }
+    const expectedBlocks = Math.max(0, next.eligibleBurnHeight - value.chainAnchor.burnBlockHeight);
+    if (next.blocksRemaining !== expectedBlocks) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "blocksRemaining"],
+        message: "blocksRemaining must be derived from the observation anchor",
+      });
+    }
+    const expectedState = expectedBlocks === 0 ? "due" : "scheduled";
+    if (next.state !== expectedState) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "state"],
+        message: `next calculation must be ${expectedState} at the observation anchor`,
+      });
+    }
+  });
+
+const rewardOutlookObservationRowSchema = z.object({
+  manager_principal: principalSchema,
+  pox5_contract_id: principalSchema,
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_stacks_tip_height: z.number().int().nonnegative(),
+  observed_index_block_hash: hashSchema,
+  chain_anchor_json: z.string(),
+  global_accrued_rewards_sats: unsignedIntegerTextSchema,
+  calculation_state: z.enum(["pending", "completed", "ahead", "unknown"]),
+  last_reward_compute_burn_height: unsignedIntegerTextSchema,
+  next_target_reward_cycle: z.number().int().nonnegative().nullable(),
+  next_target_checkpoint: z.enum(["first-half", "second-half"]).nullable(),
+  next_calculation_burn_height: z.number().int().nonnegative().nullable(),
+  next_eligible_burn_height: z.number().int().nonnegative().nullable(),
+  next_blocks_remaining: z.number().int().nonnegative().nullable(),
+  next_state: z.enum(["due", "scheduled"]).nullable(),
+  observed_at: z.iso.datetime(),
+});
 
 const rewardCycleSummaryRowSchema = z.object({
   manager_principal: z.string(),
@@ -719,6 +789,7 @@ export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
 export type SignerStakerApiCandidate = z.infer<typeof signerStakerApiCandidateSchema>;
 export type PoolCycleSnapshotInput = z.infer<typeof poolCycleSnapshotInputSchema>;
 export type RewardCycleSnapshotInput = z.infer<typeof rewardCycleSnapshotInputSchema>;
+export type RewardOutlookObservationInput = z.infer<typeof rewardOutlookObservationInputSchema>;
 
 export interface SignerStakerRun {
   runId: string;
@@ -845,6 +916,24 @@ export interface StoredRewardCycleSummary {
   observedAt: string;
 }
 
+export interface StoredRewardOutlookObservation {
+  managerPrincipal: string;
+  pox5ContractId: string;
+  chainAnchor: ChainAnchor;
+  globalAccruedRewardsSats: string;
+  calculationState: "pending" | "completed" | "ahead" | "unknown";
+  lastRewardComputeBurnHeight: string;
+  nextCalculation: null | {
+    state: "due" | "scheduled";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    eligibleBurnHeight: number;
+    blocksRemaining: number;
+  };
+  observedAt: string;
+}
+
 export interface StoredRuntimeSettings {
   settings: unknown;
   apiKeySecret: string | null;
@@ -934,6 +1023,38 @@ function toStoredChainEvent(row: unknown): StoredChainEvent {
     sourceId: value.source_id,
     firstSeenAt: value.first_seen_at,
     updatedAt: value.updated_at,
+  };
+}
+
+function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObservation {
+  const value = rewardOutlookObservationRowSchema.parse(row);
+  const chainAnchor = chainAnchorSchema.parse(JSON.parse(value.chain_anchor_json));
+  if (
+    chainAnchor.burnBlockHeight !== value.observed_burn_block_height ||
+    chainAnchor.stacksBlockHeight !== value.observed_stacks_tip_height ||
+    chainAnchor.indexBlockHash !== value.observed_index_block_hash
+  ) {
+    throw new Error("Stored reward outlook anchor columns do not match chain_anchor_json");
+  }
+  const hasNext = value.next_target_reward_cycle !== null;
+  return {
+    managerPrincipal: value.manager_principal,
+    pox5ContractId: value.pox5_contract_id,
+    chainAnchor,
+    globalAccruedRewardsSats: value.global_accrued_rewards_sats,
+    calculationState: value.calculation_state,
+    lastRewardComputeBurnHeight: value.last_reward_compute_burn_height,
+    nextCalculation: hasNext
+      ? {
+          state: value.next_state as "due" | "scheduled",
+          targetRewardCycle: value.next_target_reward_cycle as number,
+          targetCheckpoint: value.next_target_checkpoint as "first-half" | "second-half",
+          calculationBurnHeight: value.next_calculation_burn_height as number,
+          eligibleBurnHeight: value.next_eligible_burn_height as number,
+          blocksRemaining: value.next_blocks_remaining as number,
+        }
+      : null,
+    observedAt: value.observed_at,
   };
 }
 
@@ -3824,6 +3945,99 @@ export class SidekickStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  putRewardOutlookObservation(input: RewardOutlookObservationInput): void {
+    const value = rewardOutlookObservationInputSchema.parse(input);
+    const next = value.nextCalculation;
+    this.db
+      .prepare(
+        `INSERT INTO reward_outlook_observations (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          observed_stacks_tip_height, observed_index_block_hash, chain_anchor_json,
+          global_accrued_rewards_sats, calculation_state, last_reward_compute_burn_height,
+          next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
+          next_eligible_burn_height, next_blocks_remaining, next_state, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          last_reward_compute_burn_height
+        )
+        DO UPDATE SET
+          observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+          observed_index_block_hash = excluded.observed_index_block_hash,
+          chain_anchor_json = excluded.chain_anchor_json,
+          global_accrued_rewards_sats = excluded.global_accrued_rewards_sats,
+          calculation_state = excluded.calculation_state,
+          last_reward_compute_burn_height = excluded.last_reward_compute_burn_height,
+          next_target_reward_cycle = excluded.next_target_reward_cycle,
+          next_target_checkpoint = excluded.next_target_checkpoint,
+          next_calculation_burn_height = excluded.next_calculation_burn_height,
+          next_eligible_burn_height = excluded.next_eligible_burn_height,
+          next_blocks_remaining = excluded.next_blocks_remaining,
+          next_state = excluded.next_state,
+          observed_at = excluded.observed_at
+        WHERE excluded.observed_at >= reward_outlook_observations.observed_at`,
+      )
+      .run(
+        value.managerPrincipal,
+        value.pox5ContractId,
+        value.chainAnchor.burnBlockHeight,
+        value.chainAnchor.stacksBlockHeight,
+        value.chainAnchor.indexBlockHash,
+        JSON.stringify(value.chainAnchor),
+        value.globalAccruedRewardsSats,
+        value.calculationState,
+        value.lastRewardComputeBurnHeight,
+        next?.targetRewardCycle ?? null,
+        next?.targetCheckpoint ?? null,
+        next?.calculationBurnHeight ?? null,
+        next?.eligibleBurnHeight ?? null,
+        next?.blocksRemaining ?? null,
+        next?.state ?? null,
+        value.observedAt,
+      );
+  }
+
+  listRewardOutlookObservations(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    options: { limit?: number; offset?: number; direction?: "asc" | "desc" } = {},
+  ): ManagerActivityPage<StoredRewardOutlookObservation> {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(2_500)
+      .parse(options.limit ?? 500);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const direction = options.direction === "asc" ? "ASC" : "DESC";
+    const totalRow = this.db
+      .prepare(
+        `SELECT count(*) AS count FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?`,
+      )
+      .get(manager, contract) as { count: number };
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+         ORDER BY observed_burn_block_height ${direction}, observed_at ${direction}
+         LIMIT ? OFFSET ?`,
+      )
+      .all(manager, contract, limit, offset);
+    return {
+      items: rows.map(toStoredRewardOutlookObservation),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
   }
 
   listRewardCycleSummaries(

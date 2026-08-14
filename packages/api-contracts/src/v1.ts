@@ -682,6 +682,31 @@ export interface RewardCycleSummary {
   actionableClaims: number;
 }
 
+export interface RewardOutlookStatus {
+  pox5ContractId: string;
+  observedAt: string;
+  chainAnchor: EngineChainAnchor | null;
+  accrued: {
+    globalSats: string;
+    source: "pox5-get-new-rewards";
+  };
+  calculation: {
+    state: "pending" | "completed" | "ahead" | "unknown";
+    targetRewardCycle: number | null;
+    targetCheckpoint: "first-half" | "second-half" | null;
+    expectedLastRewardComputeBurnHeight: number | null;
+    observedLastRewardComputeBurnHeight: string;
+    next: null | {
+      state: "due" | "scheduled";
+      targetRewardCycle: number;
+      targetCheckpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      eligibleBurnHeight: number;
+      blocksRemaining: number;
+    };
+  };
+}
+
 export interface DashboardSnapshot extends OperatorSnapshot {
   schemaVersion: 1;
   generatedAt: string;
@@ -751,12 +776,16 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     ingestion: null | { activeDiscoveredStakers: number; completedAt: string };
     cycles: ForecastCycle[];
   };
+  /** PoX-5 global reward state, available independently of signer-manager action support. */
+  rewardOutlook?: RewardOutlookStatus | null;
   rewards: null | {
     status: "ready" | "attention";
     rewardCycle: number;
     global: {
       lastRewardComputeBurnHeight: string;
       lastComputedRewardCycle: string | null;
+      /** Exact global PoX-5 rewards accrued since the last calculation. */
+      globalAccruedRewardsSats: string;
       /** The STX-only bucket. `buckets` carries the whole picture. */
       signerEarnedBeforeManagerClaimSats: string;
       signerEarnedAcrossBucketsSats: string;
@@ -771,6 +800,14 @@ export interface DashboardSnapshot extends OperatorSnapshot {
       targetCheckpoint: "first-half" | "second-half" | null;
       expectedLastRewardComputeBurnHeight: number | null;
       observedLastRewardComputeBurnHeight: string;
+      next: null | {
+        state: "due" | "scheduled";
+        targetRewardCycle: number;
+        targetCheckpoint: "first-half" | "second-half";
+        calculationBurnHeight: number;
+        eligibleBurnHeight: number;
+        blocksRemaining: number;
+      };
     };
     /** The STX bucket first, then every bond period holding shares for this cycle. */
     buckets: Array<{
@@ -1105,6 +1142,7 @@ export type PoolPageResponse = z.infer<typeof poolPageResponseSchema>;
 
 export const rewardsPageResponseSchema = z.custom<{
   rewards: DashboardSnapshot["rewards"];
+  rewardOutlook?: DashboardSnapshot["rewardOutlook"];
   freshness?: DashboardSnapshot["freshness"];
 }>((value) => isRecord(value) && (value.rewards === null || isRecord(value.rewards)), {
   error: "Invalid rewards response",

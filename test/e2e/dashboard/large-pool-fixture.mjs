@@ -348,12 +348,34 @@ export const snapshot = {
           : { joiningStakers: index + 2, leavingStakers: index, changedAmountStakers: index + 1 },
     })),
   },
+  rewardOutlook: {
+    pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+    observedAt: "2026-08-14T12:00:00.000Z",
+    chainAnchor: null,
+    accrued: { globalSats: "2500000", source: "pox5-get-new-rewards" },
+    calculation: {
+      state: "completed",
+      targetRewardCycle: 139,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: 9230,
+      observedLastRewardComputeBurnHeight: "9230",
+      next: {
+        state: "scheduled",
+        targetRewardCycle: 139,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 10289,
+        eligibleBurnHeight: 10290,
+        blocksRemaining: 1050,
+      },
+    },
+  },
   rewards: {
     status: "ready",
     rewardCycle: 139,
     global: {
       lastRewardComputeBurnHeight: "9230",
       lastComputedRewardCycle: "139",
+      globalAccruedRewardsSats: "2500000",
       signerEarnedBeforeManagerClaimSats: "0",
       signerEarnedAcrossBucketsSats: "0",
     },
@@ -363,6 +385,14 @@ export const snapshot = {
       targetCheckpoint: "first-half",
       expectedLastRewardComputeBurnHeight: 9230,
       observedLastRewardComputeBurnHeight: "9230",
+      next: {
+        state: "scheduled",
+        targetRewardCycle: 139,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 10289,
+        eligibleBurnHeight: 10290,
+        blocksRemaining: 1050,
+      },
     },
     buckets: [
       {
@@ -755,6 +785,7 @@ export function responseFor(url) {
       offset,
       limit,
       rewards: { ...snapshot.rewards, stakers: page(rewardStakers, offset, limit) },
+      rewardOutlook: snapshot.rewardOutlook,
     };
   }
   if (request.pathname === "/api/v1/rewards/staker-claims") {

@@ -517,32 +517,37 @@ function poolSummary(snapshot: DashboardSnapshot): OverviewPage["pool"] {
 
 function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
   const rewards = snapshot.rewards;
+  const outlook = snapshot.rewardOutlook ?? null;
+  const available = outlook !== null || rewards !== null;
   const rewardEvidence = evidence({
-    status: !rewards
+    status: !available
       ? "unavailable"
       : snapshot.freshness?.status === "stale"
         ? "delayed"
         : "current",
     observedAt: snapshot.generatedAt,
     source: "local-node",
-    reason: rewards
+    reason: available
       ? snapshot.freshness?.status === "stale"
         ? "The local rewards projection is delayed."
         : null
-      : "No rewards projection is available.",
+      : "No PoX-5 reward outlook is available.",
   });
   return {
-    status: rewards
-      ? rewards.status === "attention"
+    status: available
+      ? rewards?.status === "attention"
         ? "needs-attention"
         : "ready"
       : "unavailable",
-    rewardCycleId: rewards?.rewardCycle ?? null,
-    globalAccruedSats: rewards?.global.signerEarnedAcrossBucketsSats ?? null,
+    rewardCycleId:
+      outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
+    globalAccruedSats:
+      outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
     estimatedPoolRewardSats: null,
     operatorFeeSats: null,
+    // This confidence describes the omitted pool/fee estimate, not the exact global accrual.
     confidence: "unavailable",
-    calculationState: rewards?.calculation.state ?? null,
+    calculationState: outlook?.calculation.state ?? rewards?.calculation.state ?? null,
     actionableClaims: rewards?.totals.actionableClaims ?? null,
     evidence: [rewardEvidence],
     detailsAction: rewardsAction("outlook", "Open rewards"),
@@ -1007,7 +1012,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     });
   }
 
-  const calculation = snapshot.rewards?.calculation;
+  const calculation = snapshot.rewardOutlook?.calculation ?? snapshot.rewards?.calculation;
   if (
     calculation?.state === "pending" &&
     calculation.expectedLastRewardComputeBurnHeight !== null &&

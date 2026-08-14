@@ -435,7 +435,7 @@ function CalculateRewardsOperation({
   const [actorPrincipal, setActorPrincipal] = useState("");
   const actor = actorPrincipal.trim().toUpperCase();
   const actorValid = standardManagerActionPrincipal(actor, data.network);
-  const calculation = data.rewards?.calculation ?? null;
+  const calculation = data.rewardOutlook?.calculation ?? data.rewards?.calculation ?? null;
   const pox5ContractId = data.preflight.pox.pox5ContractId;
   if (operatorStateStale) {
     return (

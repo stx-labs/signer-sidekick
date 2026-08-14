@@ -266,12 +266,22 @@ Gate:
 
 Implementation checkpoint (2026-08-14):
 
+- Exact anchored `get-new-rewards` accrual and due/scheduled calculation checkpoints are exposed as
+  a PoX-5 domain independent of signer-manager action support. Ordinary refreshes coalesce to one
+  canonical state per Bitcoin block while distinct pre/post-calculation states remain available to
+  the later projection and calibration model.
 - The reviewed `calculate-rewards` protocol adapter, complete anchored active-bond discovery,
   canonical ordering, immutable checkpoint binding, pre-wallet second witness, canonical
   post-state verification, and permissionless-race handling are implemented.
 - Golden execution vectors run the real vendored PoX-5 contract for STX-only and mixed STX/bond
-  distributions. The broader simulator, ranges, confidence/calibration, and realized-error history
-  remain open.
+  distributions. A source-derived pure integer simulator now reproduces those executions using
+  PoX-5's exact bond ordering, nested integer-division order, precision, reserve allocation,
+  cumulative reward-per-share updates, and Clarity uint overflow behavior. It omits a pool result
+  unless manager shares are complete across the STX and every active bond bucket.
+- Anchored input discovery and API presentation of the current pool estimate remain open, followed
+  by run-rate ranges, confidence/calibration, and realized-error history. Those layers can consume
+  the durable exact observation series and the contract-proven simulator instead of transient
+  dashboard reads or duplicated arithmetic.
 
 ### Slice 7: signer/network diagnosis and support handoff
 

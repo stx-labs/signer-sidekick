@@ -1783,4 +1783,81 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 26,
+    name: "reward_outlook_observations",
+    sql: `
+      -- The cycle ledger remains the latest manager settlement snapshot. Reward outlook needs a
+      -- separate burn-block series so projections can be derived from exact anchored PoX-5
+      -- accrual observations and later compared with realized calculations.
+      CREATE TABLE reward_outlook_observations (
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        observed_index_block_hash TEXT NOT NULL CHECK (
+          length(observed_index_block_hash) = 66
+          AND substr(observed_index_block_hash, 1, 2) = '0x'
+          AND substr(observed_index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        chain_anchor_json TEXT NOT NULL CHECK (json_valid(chain_anchor_json)),
+        global_accrued_rewards_sats TEXT NOT NULL CHECK (
+          length(global_accrued_rewards_sats) >= 1
+          AND global_accrued_rewards_sats NOT GLOB '*[^0-9]*'
+        ),
+        calculation_state TEXT NOT NULL CHECK (
+          calculation_state IN ('pending', 'completed', 'ahead', 'unknown')
+        ),
+        last_reward_compute_burn_height TEXT NOT NULL CHECK (
+          length(last_reward_compute_burn_height) >= 1
+          AND last_reward_compute_burn_height NOT GLOB '*[^0-9]*'
+        ),
+        next_target_reward_cycle INTEGER CHECK (
+          next_target_reward_cycle IS NULL OR next_target_reward_cycle >= 0
+        ),
+        next_target_checkpoint TEXT CHECK (
+          next_target_checkpoint IS NULL OR next_target_checkpoint IN ('first-half', 'second-half')
+        ),
+        next_calculation_burn_height INTEGER CHECK (
+          next_calculation_burn_height IS NULL OR next_calculation_burn_height >= 0
+        ),
+        next_eligible_burn_height INTEGER CHECK (
+          next_eligible_burn_height IS NULL OR next_eligible_burn_height >= 0
+        ),
+        next_blocks_remaining INTEGER CHECK (
+          next_blocks_remaining IS NULL OR next_blocks_remaining >= 0
+        ),
+        next_state TEXT CHECK (next_state IS NULL OR next_state IN ('due', 'scheduled')),
+        observed_at TEXT NOT NULL,
+        -- A permissionless calculation can complete in a Stacks block after an earlier sample in
+        -- the same Bitcoin block. Keep both sides of that boundary while coalescing ordinary
+        -- same-burn refreshes for the same last-compute state.
+        PRIMARY KEY (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          last_reward_compute_burn_height
+        ),
+        CHECK (
+          (next_target_reward_cycle IS NULL
+            AND next_target_checkpoint IS NULL
+            AND next_calculation_burn_height IS NULL
+            AND next_eligible_burn_height IS NULL
+            AND next_blocks_remaining IS NULL
+            AND next_state IS NULL)
+          OR
+          (next_target_reward_cycle IS NOT NULL
+            AND next_target_checkpoint IS NOT NULL
+            AND next_calculation_burn_height IS NOT NULL
+            AND next_eligible_burn_height IS NOT NULL
+            AND next_blocks_remaining IS NOT NULL
+            AND next_state IS NOT NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX reward_outlook_observations_history
+        ON reward_outlook_observations (
+          manager_principal, pox5_contract_id, observed_burn_block_height DESC,
+          last_reward_compute_burn_height DESC
+        );
+    `,
+  },
 ];

@@ -12,6 +12,7 @@ import type { ChainAnchor } from "./chain-anchor.js";
 import {
   discoverStakerClaims,
   type RewardStatusStore,
+  readRewardOutlook,
   readStxRewardStatus,
 } from "./reward-status.js";
 import type { SignerStakerRun, StoredCycleMembership } from "./storage/store.js";
@@ -65,6 +66,7 @@ function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
       .fn()
       .mockReturnValue([membership(stakerOne), membership(stakerTwo)]),
     putRewardCycleSnapshot: vi.fn(),
+    putRewardOutlookObservation: vi.fn(),
   };
 }
 
@@ -104,6 +106,7 @@ function nodeReads(
     stxEarned?: bigint;
     stxShares?: bigint;
     lastRewardComputeHeight?: bigint;
+    globalAccruedRewards?: bigint;
     managerUnclaimedSats?: bigint;
   } = {},
 ) {
@@ -118,6 +121,8 @@ function nodeReads(
       switch (functionName) {
         case "get-last-reward-compute-height":
           return uintCV(overrides.lastRewardComputeHeight ?? 960_000n);
+        case "get-new-rewards":
+          return uintCV(overrides.globalAccruedRewards ?? 25_000n);
         case "burn-height-to-reward-cycle":
           return uintCV(141n);
         case "bond-period-to-reward-cycle":
@@ -183,6 +188,67 @@ function l1Preference(maxFee: bigint) {
 }
 
 describe("STX-only reward status", () => {
+  it("reads and persists exact PoX-5 outlook without a signer-manager adapter", async () => {
+    const projectionStore = store();
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: { callReadOnly: nodeReads({ globalAccruedRewards: 123_456n }) },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      pox5ContractId: pox5,
+      accrued: { globalSats: "123456", source: "pox5-get-new-rewards" },
+      calculation: {
+        state: "ahead",
+        observedLastRewardComputeBurnHeight: "960000",
+      },
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        managerPrincipal: manager,
+        globalAccruedRewardsSats: "123456",
+        chainAnchor,
+      }),
+    );
+  });
+
+  it("schedules the second-half calculation after the first-half calculation completes", async () => {
+    const secondHalfAnchor: ChainAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: 961_200,
+      cyclePosition: 1_200,
+      checkpoint: "second-half",
+    };
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({ lastRewardComputeHeight: 961_049n }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor: secondHalfAnchor,
+    });
+
+    expect(outlook.calculation).toMatchObject({
+      state: "completed",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      next: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 962_099,
+        eligibleBurnHeight: 962_100,
+        blocksRemaining: 900,
+      },
+    });
+  });
+
   it("shows per-staker earnings, payout policy, and manager liabilities", async () => {
     const projectionStore = store();
     const callReadOnly = nodeReads({
@@ -200,6 +266,7 @@ describe("STX-only reward status", () => {
       global: {
         lastRewardComputeBurnHeight: "960000",
         lastComputedRewardCycle: "141",
+        globalAccruedRewardsSats: "25000",
         rewardsPerToken: "999",
         signerEarnedBeforeManagerClaimSats: "40000",
       },
@@ -246,6 +313,7 @@ describe("STX-only reward status", () => {
         ]),
       }),
     );
+    expect(projectionStore.putRewardOutlookObservation).not.toHaveBeenCalled();
   });
 
   it("keeps global and manager state visible when no local roster is available", async () => {
@@ -471,7 +539,22 @@ describe("STX-only reward status", () => {
       targetCheckpoint: "second-half",
       expectedLastRewardComputeBurnHeight: 959_999,
       observedLastRewardComputeBurnHeight: "959000",
+      next: {
+        state: "due",
+        targetRewardCycle: 140,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 959_999,
+        eligibleBurnHeight: 960_000,
+        blocksRemaining: 0,
+      },
     });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        globalAccruedRewardsSats: "25000",
+        calculationState: "pending",
+        chainAnchor,
+      }),
+    );
 
     const completed = await readStxRewardStatus(
       options(
@@ -481,6 +564,14 @@ describe("STX-only reward status", () => {
       ),
     );
     expect(completed.calculation.state).toBe("completed");
+    expect(completed.calculation.next).toEqual({
+      state: "scheduled",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+      eligibleBurnHeight: 961_050,
+      blocksRemaining: 810,
+    });
   });
 
   it("never labels a claim ready that wallet-intent preparation would refuse", async () => {

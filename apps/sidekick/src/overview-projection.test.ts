@@ -173,6 +173,7 @@ function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
       global: {
         lastRewardComputeBurnHeight: "962299",
         lastComputedRewardCycle: "141",
+        globalAccruedRewardsSats: "2500",
         signerEarnedBeforeManagerClaimSats: "1000",
         signerEarnedAcrossBucketsSats: "1500",
       },
@@ -182,6 +183,14 @@ function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
         targetCheckpoint: "first-half" as const,
         expectedLastRewardComputeBurnHeight: 962_299,
         observedLastRewardComputeBurnHeight: "962299",
+        next: {
+          state: "scheduled" as const,
+          targetRewardCycle: 141,
+          targetCheckpoint: "first-half" as const,
+          calculationBurnHeight: 962_349,
+          eligibleBurnHeight: 962_350,
+          blocksRemaining: 50,
+        },
       },
       buckets: [],
       manager: {
@@ -511,6 +520,35 @@ describe("Overview projection", () => {
       projectOverview({ snapshot: value, health: health(), connection: null }).cycle
         .nextRewardCalculation,
     ).toMatchObject({ burnBlockHeight: 962_349, blocksRemaining: 48 });
+  });
+
+  it("keeps exact PoX-5 outlook available when manager settlement actions are unsupported", () => {
+    const value = snapshot();
+    if (!value.rewards) throw new Error("Test fixture must include rewards");
+    const result = projectOverview({
+      snapshot: {
+        ...value,
+        rewards: null,
+        rewardOutlook: {
+          pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+          observedAt: generatedAt,
+          chainAnchor,
+          accrued: { globalSats: "2500", source: "pox5-get-new-rewards" },
+          calculation: value.rewards.calculation,
+        },
+      },
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.rewards).toMatchObject({
+      status: "ready",
+      globalAccruedSats: "2500",
+      confidence: "unavailable",
+      calculationState: "completed",
+      actionableClaims: null,
+    });
   });
 
   it("returns one safe-mode root cause and suppresses derived signer, health, and pool symptoms", () => {
@@ -871,6 +909,14 @@ describe("Overview projection", () => {
             targetCheckpoint: "first-half",
             expectedLastRewardComputeBurnHeight: 962_299,
             observedLastRewardComputeBurnHeight: "962000",
+            next: {
+              state: "due",
+              targetRewardCycle: 141,
+              targetCheckpoint: "first-half",
+              calculationBurnHeight: 962_299,
+              eligibleBurnHeight: 962_300,
+              blocksRemaining: 0,
+            },
           },
         },
       }),

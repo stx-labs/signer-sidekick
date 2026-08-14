@@ -9,6 +9,7 @@ import {
   signWithKey,
 } from "@stacks/transactions";
 import { beforeEach, describe, expect, it } from "vitest";
+import { simulatePox5CalculateRewards } from "../../../packages/protocol/src/pox5-calculate-rewards.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const deployer = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
@@ -168,21 +169,45 @@ function distributeRewards(rewards: bigint) {
     [Cl.list([])],
     permissionlessCaller,
   );
+  const simulation = simulatePox5CalculateRewards({
+    grossAccruedRewardsSats: rewards,
+    currentReserveBalanceSats: 0n,
+    cycleStakedUstx: minimumStake,
+    currentRewardsPerUstx: 0n,
+    managerStxSharesUstx: minimumStake,
+    bonds: [],
+  });
   expect(calculation.result).toBeOk(
     Cl.tuple({
       "bond-periods": Cl.list([]),
       "calculation-height": Cl.uint(cycleStart + halfCycleLength - 1n),
-      "gross-accrued-rewards": Cl.uint(rewards),
-      "total-bond-rewards": Cl.uint(0),
-      "reserve-deposit": Cl.uint(300),
-      "reserve-balance": Cl.uint(300),
+      "gross-accrued-rewards": Cl.uint(simulation.grossAccruedRewardsSats),
+      "total-bond-rewards": Cl.uint(simulation.totalBondRewardsSats),
+      "reserve-deposit": Cl.uint(simulation.reserveDepositSats),
+      "reserve-balance": Cl.uint(simulation.reserveBalanceSats),
       "stx-cycle": Cl.uint(1),
-      "total-stx-staker-rewards": Cl.uint(1_700),
-      "cycle-staked-ustx": Cl.uint(minimumStake),
-      "accrued-rewards-per-ustx": Cl.uint(34_000_000_000),
-      "cumulative-rewards-per-ustx": Cl.uint(34_000_000_000),
+      "total-stx-staker-rewards": Cl.uint(simulation.totalStxStakerRewardsSats),
+      "cycle-staked-ustx": Cl.uint(simulation.cycleStakedUstx),
+      "accrued-rewards-per-ustx": Cl.uint(simulation.accruedRewardsPerUstx),
+      "cumulative-rewards-per-ustx": Cl.uint(simulation.cumulativeRewardsPerUstx),
     }),
   );
+  expect(simulation).toMatchObject({
+    reserveDepositSats: 300n,
+    totalStxStakerRewardsSats: 1_700n,
+    accruedRewardsPerUstx: 34_000_000_000n,
+    manager: { grossRewardSats: 1_700n },
+  });
+  expect(
+    uintValue(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "get-earned",
+        [Cl.principal(managerId), Cl.uint(1), Cl.none()],
+        deployer,
+      ).result,
+    ),
+  ).toBe(simulation.manager?.grossRewardSats);
   const claim = simnet.callPublicFn(
     managerId,
     "claim-rewards",
@@ -846,21 +871,54 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
       [Cl.list([Cl.uint(0)])],
       deployer,
     );
+    const simulation = simulatePox5CalculateRewards({
+      grossAccruedRewardsSats: rewards,
+      currentReserveBalanceSats: 0n,
+      cycleStakedUstx: minimumStake,
+      currentRewardsPerUstx: 0n,
+      managerStxSharesUstx: minimumStake,
+      bonds: [
+        {
+          bondIndex: 0n,
+          targetRateBips: 500n,
+          stxValueRatio,
+          minUstxRatioBips: minUstxRatio,
+          totalSharesSats: bondSats,
+          currentRewardsPerSat: 0n,
+          managerSharesSats: bondSats,
+        },
+      ],
+    });
     expect(calculation.result).toBeOk(
       Cl.tuple({
         "bond-periods": Cl.list([Cl.uint(0)]),
         "calculation-height": Cl.uint(cycleStart + halfCycleLength - 1n),
-        "gross-accrued-rewards": Cl.uint(rewards),
-        "total-bond-rewards": Cl.uint(100),
-        "reserve-deposit": Cl.uint(285),
-        "reserve-balance": Cl.uint(285),
+        "gross-accrued-rewards": Cl.uint(simulation.grossAccruedRewardsSats),
+        "total-bond-rewards": Cl.uint(simulation.totalBondRewardsSats),
+        "reserve-deposit": Cl.uint(simulation.reserveDepositSats),
+        "reserve-balance": Cl.uint(simulation.reserveBalanceSats),
         "stx-cycle": Cl.uint(1),
-        "total-stx-staker-rewards": Cl.uint(1_615),
-        "cycle-staked-ustx": Cl.uint(minimumStake),
-        "accrued-rewards-per-ustx": Cl.uint(32_300_000_000),
-        "cumulative-rewards-per-ustx": Cl.uint(32_300_000_000),
+        "total-stx-staker-rewards": Cl.uint(simulation.totalStxStakerRewardsSats),
+        "cycle-staked-ustx": Cl.uint(simulation.cycleStakedUstx),
+        "accrued-rewards-per-ustx": Cl.uint(simulation.accruedRewardsPerUstx),
+        "cumulative-rewards-per-ustx": Cl.uint(simulation.cumulativeRewardsPerUstx),
       }),
     );
+    expect(simulation).toMatchObject({
+      totalBondRewardsSats: 100n,
+      reserveDepositSats: 285n,
+      totalStxStakerRewardsSats: 1_615n,
+      accruedRewardsPerUstx: 32_300_000_000n,
+      manager: { stxRewardSats: 1_615n, bondRewardSats: 100n, grossRewardSats: 1_715n },
+      bonds: [
+        {
+          bondIndex: 0n,
+          targetYieldSats: 100n,
+          bondRewardSats: 100n,
+          accruedRewardsPerSat: 1_000_000_000_000_000n,
+        },
+      ],
+    });
 
     const bondEarned = uintValue(
       simnet.callReadOnlyFn(
@@ -870,7 +928,17 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         deployer,
       ).result,
     );
-    expect(bondEarned).toBeGreaterThan(0n);
+    expect(bondEarned).toBe(simulation.bonds[0]?.managerRewardSats);
+    expect(
+      uintValue(
+        simnet.callReadOnlyFn(
+          pox5Id,
+          "get-earned",
+          [Cl.principal(managerId), Cl.uint(1), Cl.none()],
+          deployer,
+        ).result,
+      ),
+    ).toBe(simulation.manager?.stxRewardSats);
 
     // One transaction sweeps both buckets, and the manager pins a fee snapshot for each. Claiming
     // with an empty list would succeed but strand the bond bucket and leave its fee unpinned.

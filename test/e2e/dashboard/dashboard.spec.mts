@@ -1118,6 +1118,13 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  const accrualCard = page.getByRole("heading", { name: "Accruing globally" }).locator("../..");
+  const calculationCard = page
+    .getByRole("heading", { name: "Next global calculation" })
+    .locator("../..");
+  await expect(accrualCard).toBeVisible();
+  await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
+  await expect(calculationCard.getByText("#10,290", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
@@ -1163,6 +1170,20 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
   pendingSnapshot.rewards.calculation = {
     ...pendingSnapshot.rewards.calculation,
     state: "pending",
+  };
+  pendingSnapshot.rewardOutlook.calculation = {
+    ...pendingSnapshot.rewardOutlook.calculation,
+    state: "pending",
+    next: {
+      state: "due",
+      targetRewardCycle: pendingSnapshot.rewardOutlook.calculation.targetRewardCycle,
+      targetCheckpoint: pendingSnapshot.rewardOutlook.calculation.targetCheckpoint,
+      calculationBurnHeight:
+        pendingSnapshot.rewardOutlook.calculation.expectedLastRewardComputeBurnHeight,
+      eligibleBurnHeight:
+        pendingSnapshot.rewardOutlook.calculation.expectedLastRewardComputeBurnHeight + 1,
+      blocksRemaining: 0,
+    },
   };
   let settlementReads = 0;
 

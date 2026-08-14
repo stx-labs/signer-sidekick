@@ -31,6 +31,7 @@ import { readPoolForecast } from "./pool-forecast.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
 import {
   discoverStakerClaims,
+  readRewardOutlook,
   readStxRewardStatus,
   type StxRewardStatus,
 } from "./reward-status.js";
@@ -803,6 +804,7 @@ export class OperatorService {
       rewards: snapshot.rewards
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }
         : null,
+      rewardOutlook: snapshot.rewardOutlook ?? null,
       total: stakers.length,
       offset,
       limit,
@@ -1196,22 +1198,31 @@ export class OperatorService {
       manager.capabilities,
       "reference-reward-claims",
     );
+    const rewardOutlook =
+      manager.attachAllowed && pox5ContractId
+        ? await readRewardOutlook({
+            store,
+            node,
+            managerPrincipal,
+            pox5ContractId,
+            observedAt: generatedAt,
+            chainAnchor: projectionAnchor,
+          })
+        : null;
     const rewards =
-      manager.attachAllowed &&
-      pox5ContractId &&
-      rewardCapability.executionAvailable &&
-      rewardCalculation.status === "ready"
+      rewardOutlook && rewardCapability.executionAvailable && rewardCalculation.status === "ready"
         ? await readStxRewardStatus({
             store,
             node,
             sourceId,
             managerPrincipal,
-            pox5ContractId,
+            pox5ContractId: rewardOutlook.pox5ContractId,
             rewardCycle: rewardCalculation.rewardCycle,
             observedAt: generatedAt,
             burnBlockHeight: projectionAnchor.burnBlockHeight,
             stacksTipHeight: projectionAnchor.stacksBlockHeight,
             chainAnchor: projectionAnchor,
+            rewardOutlook,
           })
         : null;
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
@@ -1234,6 +1245,7 @@ export class OperatorService {
       readiness,
       setup: readiness,
       forecast,
+      rewardOutlook,
       rewards,
       activity,
       roster,

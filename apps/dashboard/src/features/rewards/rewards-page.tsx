@@ -95,6 +95,14 @@ export function Rewards({
   token: string;
 }) {
   const rewards = data.rewards;
+  const rewardOutlook = data.rewardOutlook ?? null;
+  const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
+  const globalAccruedSats =
+    rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
+  const lastRewardComputeBurnHeight =
+    rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
+    rewards?.global.lastRewardComputeBurnHeight ??
+    null;
   const [rewardsFreshness, setRewardsFreshness] = useState(data.freshness ?? null);
   const rewardClaimsAvailability = managerActionAvailability(
     data,
@@ -309,22 +317,71 @@ export function Rewards({
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
+      <div className="grid cols-2 reward-outlook">
+        <section className="card">
+          <div className="card-head">
+            <h2>Accruing globally</h2>
+            <Badge state={globalAccruedSats === null ? "neutral" : "success"}>
+              {globalAccruedSats === null ? "Unavailable" : "Exact"}
+            </Badge>
+          </div>
+          <StatLine label="Since the last calculation">
+            <span className="btc-value src src-chain">
+              {globalAccruedSats === null ? "Unavailable" : `${sbtc(globalAccruedSats)} sBTC`}
+            </span>
+          </StatLine>
+          <p className="tertiary balance-note">
+            PoX-5 global accrual, before bond, reserve, pool, and fee allocation.
+          </p>
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <h2>Next global calculation</h2>
+            <Badge state={calculation?.next?.state === "due" ? "caution" : "neutral"}>
+              {!calculation?.next
+                ? "Unavailable"
+                : calculation.next.state === "due"
+                  ? "Due now"
+                  : "Scheduled"}
+            </Badge>
+          </div>
+          <StatLine label="Eligible Bitcoin block">
+            <span className="mono">
+              {calculation?.next
+                ? `#${number(String(calculation.next.eligibleBurnHeight))}`
+                : "Unavailable"}
+            </span>
+          </StatLine>
+          <StatLine label="Distribution">
+            <span className="mono">
+              {calculation?.next
+                ? `Cycle ${calculation.next.targetRewardCycle} · ${calculation.next.targetCheckpoint}`
+                : "—"}
+            </span>
+          </StatLine>
+          <p className="tertiary balance-note">
+            {!calculation?.next
+              ? "A valid anchored PoX-5 checkpoint is required."
+              : calculation.next.state === "scheduled"
+                ? `${number(String(calculation.next.blocksRemaining))} Bitcoin blocks remaining.`
+                : "The permissionless calculation can be prepared now."}
+          </p>
+        </section>
+      </div>
       <div className="card-standout pipeline-wrap">
         <div className="pipeline">
           <PipelineStage
-            done={
-              rewards?.calculation.state === "completed" || rewards?.calculation.state === "ahead"
-            }
+            done={calculation?.state === "completed" || calculation?.state === "ahead"}
             title="Global calculated"
             value={
-              rewards?.calculation.state === "pending"
+              calculation?.state === "pending"
                 ? "Not run yet"
-                : BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) === 0n
+                : BigInt(lastRewardComputeBurnHeight ?? 0) === 0n
                   ? "Waiting"
-                  : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
+                  : `Bitcoin block #${number(lastRewardComputeBurnHeight)}`
             }
             detail={
-              rewards?.calculation.state === "pending"
+              calculation?.state === "pending"
                 ? "nobody has called calculate-rewards"
                 : "last reward calculation"
             }
@@ -353,13 +410,13 @@ export function Rewards({
           />
         </div>
       </div>
-      {rewards?.calculation.state === "pending" ? (
+      {calculation?.state === "pending" ? (
         <div className="callout callout-caution balance-note" role="status">
           <div className="body">
             <strong>Global reward calculation is due.</strong> PoX-5 credits nothing for cycle{" "}
-            {rewards.calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
+            {calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
             <code>calculate-rewards</code> at Bitcoin block #
-            {number(String(rewards.calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
+            {number(String(calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
             <div className="actions">
               <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
                 Review calculation
@@ -368,10 +425,7 @@ export function Rewards({
           </div>
         </div>
       ) : null}
-      <StakerSettlementPanel
-        calculationPending={rewards?.calculation.state === "pending"}
-        token={token}
-      />
+      <StakerSettlementPanel calculationPending={calculation?.state === "pending"} token={token} />
       {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
         <section className="card" aria-labelledby="reward-buckets">
           <h2 id="reward-buckets">Reward buckets</h2>
