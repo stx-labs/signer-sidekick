@@ -331,8 +331,8 @@ function activityGroup(
   code: string,
   displayStatus: ActivityGroupSummary["displayStatus"],
   outcome: ActivityGroupSummary["outcome"],
+  activityId = "engine-job:00000000-0000-4000-8000-000000000001",
 ): ActivityGroupSummary {
-  const activityId = "engine-job:00000000-0000-4000-8000-000000000001";
   return {
     schemaVersion: 1,
     activityId,
@@ -341,6 +341,13 @@ function activityGroup(
     code,
     title: "Claim rewards",
     summary: "The reward claim is waiting for approval.",
+    stage: "review-ready",
+    operationScope:
+      code === "claim-staker-rewards"
+        ? "claim-staker-rewards:141"
+        : code === "register-self"
+          ? "register-self"
+          : "claim-rewards:141",
     displayStatus,
     outcome,
     occurredAt: generatedAt,
@@ -494,6 +501,16 @@ describe("Overview projection", () => {
       burnBlockHeight: 962_349,
       blocksRemaining: 49,
     });
+  });
+
+  it("counts down an anchored reward checkpoint from the displayed local-node burn height", () => {
+    const value = snapshot();
+    value.preflight.node.burnBlockHeight = 962_301;
+
+    expect(
+      projectOverview({ snapshot: value, health: health(), connection: null }).cycle
+        .nextRewardCalculation,
+    ).toMatchObject({ burnBlockHeight: 962_349, blocksRemaining: 48 });
   });
 
   it("returns one safe-mode root cause and suppresses derived signer, health, and pool symptoms", () => {
@@ -699,6 +716,27 @@ describe("Overview projection", () => {
     });
   });
 
+  it("keeps distinct Activity groups even when they match the same domain reminder scope", () => {
+    const blocked = activityGroup(
+      "claim-rewards",
+      "needs-attention",
+      "failed",
+      "engine-job:00000000-0000-4000-8000-000000000001",
+    );
+    const actionable = activityGroup(
+      "claim-rewards",
+      "action-required",
+      "pending",
+      "engine-job:00000000-0000-4000-8000-000000000002",
+    );
+    const result = overview({ activity: activity([blocked, actionable]) });
+
+    expect(result.attention.map(({ attentionId }) => attentionId)).toEqual([
+      actionable.activityId,
+      blocked.activityId,
+    ]);
+  });
+
   it("replaces stale registration repair with a bounded evidence refresh", () => {
     const result = projectOverview({
       snapshot: snapshot({
@@ -901,6 +939,19 @@ describe("Overview projection", () => {
       relatedActivityId: active.activityId,
       primaryAction: { kind: "resume-activity", activityId: active.activityId },
     });
+
+    const stale = { ...active, operationScope: "claim-staker-rewards:140" };
+    const staleResult = projectOverview({
+      snapshot: claimSnapshot,
+      health: health(),
+      connection: null,
+      activity: activity([stale]),
+      now: new Date(generatedAt),
+    });
+    expect(staleResult.attention).toHaveLength(2);
+    expect(staleResult.attention.map(({ attentionId }) => attentionId)).toEqual(
+      expect.arrayContaining(["rewards:claims-due:141", stale.activityId]),
+    );
   });
 
   it("does not silently hide active operations when their source is unavailable", () => {
@@ -1017,6 +1068,57 @@ describe("Overview projection", () => {
         phase: "reward",
       }).map(({ attentionId }) => attentionId),
     ).toEqual(["activity"]);
+  });
+
+  it("does not let a suppressed symptom continue suppressing another reminder", () => {
+    expect(
+      correlateOverviewAttention(
+        [
+          { conditionKey: "derived", item: attention("derived", "needs-attention") },
+          {
+            conditionKey: "middle",
+            item: attention("middle", "needs-attention"),
+            suppresses: ["derived"],
+          },
+          {
+            conditionKey: "root",
+            item: attention("root", "urgent"),
+            suppresses: ["middle"],
+          },
+        ],
+        {
+          now: new Date(generatedAt),
+          burnBlockHeight: 100,
+          rewardCycleId: 141,
+          phase: "reward",
+        },
+      ).map(({ attentionId }) => attentionId),
+    ).toEqual(["root", "derived"]);
+  });
+
+  it("fails open when suppression metadata contains a cycle", () => {
+    expect(
+      correlateOverviewAttention(
+        [
+          {
+            conditionKey: "first",
+            item: attention("first", "needs-attention"),
+            suppresses: ["second"],
+          },
+          {
+            conditionKey: "second",
+            item: attention("second", "needs-attention"),
+            suppresses: ["first"],
+          },
+        ],
+        {
+          now: new Date(generatedAt),
+          burnBlockHeight: 100,
+          rewardCycleId: 141,
+          phase: "reward",
+        },
+      ).map(({ attentionId }) => attentionId),
+    ).toEqual(["first", "second"]);
   });
 
   const inclusionPolicyCases: Array<{
@@ -1145,10 +1247,11 @@ describe("Overview projection", () => {
     },
     {
       name: "Activity in progress",
-      run: () =>
-        overview({
-          activity: activity([activityGroup("claim-rewards", "in-progress", "pending")]),
-        }),
+      run: () => {
+        const group = activityGroup("claim-rewards", "in-progress", "pending");
+        group.stage = "broadcast";
+        return overview({ activity: activity([group]) });
+      },
       attentionIds: [],
       inProgressIds: ["engine-job:00000000-0000-4000-8000-000000000001"],
     },
@@ -1284,5 +1387,12 @@ describe("Overview projection", () => {
     const result = run();
     expect(result.attention.map(({ attentionId }) => attentionId)).toEqual(attentionIds);
     expect(result.inProgress.map(({ activityId }) => activityId)).toEqual(inProgressIds);
+  });
+
+  it("shows the authoritative Activity stage for in-progress work", () => {
+    const group = activityGroup("claim-rewards", "in-progress", "pending");
+    group.stage = "broadcast";
+
+    expect(overview({ activity: activity([group]) }).inProgress[0]?.stage).toBe("broadcast");
   });
 });

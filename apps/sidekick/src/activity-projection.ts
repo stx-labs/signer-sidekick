@@ -7,6 +7,7 @@ import {
   type ActivityGroupSummary,
   type ActivityOutcome,
   type ActivityResponse,
+  type ActivityStage,
   type ActivityTimelineEntry,
   activityDetailSchema,
   activityResponseSchema,
@@ -140,6 +141,59 @@ export function engineJobActivityState(state: TransactionJobState): {
       return { displayStatus: "complete", outcome: "succeeded" };
     case "superseded":
       return { displayStatus: "superseded", outcome: "superseded" };
+    default:
+      return assertNever(state);
+  }
+}
+
+export function walletIntentActivityStage(state: WalletIntentState): ActivityStage {
+  switch (state) {
+    case "prepared":
+      return "review-ready";
+    case "submitted":
+      return "submitted";
+    case "mempool":
+      return "mempool";
+    case "confirmed":
+      return "confirmed";
+    case "reobserve":
+      return "reobserving";
+    case "failed":
+      return "failed";
+    case "complete":
+      return "complete";
+    case "expired":
+    case "superseded":
+      return "superseded";
+    default:
+      return assertNever(state);
+  }
+}
+
+export function engineJobActivityStage(state: TransactionJobState): ActivityStage {
+  switch (state) {
+    case "prepared":
+      return "review-ready";
+    case "preflighted":
+      return "preflighted";
+    case "awaiting_approval":
+      return "awaiting-approval";
+    case "nonce_reserved":
+      return "nonce-reserved";
+    case "broadcast":
+      return "broadcast";
+    case "confirmed":
+      return "confirmed";
+    case "noncanonical_reobserve":
+      return "reobserving";
+    case "blocked":
+      return "blocked";
+    case "ambiguous":
+      return "ambiguous";
+    case "reconciled":
+      return "complete";
+    case "superseded":
+      return "superseded";
     default:
       return assertNever(state);
   }
@@ -427,6 +481,18 @@ const walletActionPresentation = {
   { domain: ActivityDomain; title: string }
 >;
 
+function walletIntentOperationScope(intent: StoredWalletIntent): string {
+  if (intent.action === "register-self") return "register-self";
+  if (intent.action !== "claim-staker-rewards") return intent.scope;
+  if (intent.manifest === null || typeof intent.manifest !== "object") return intent.scope;
+  const request = (intent.manifest as Record<string, unknown>).request;
+  if (request === null || typeof request !== "object") return intent.scope;
+  const rewardCycle = (request as Record<string, unknown>).rewardCycle;
+  return typeof rewardCycle === "number" || typeof rewardCycle === "string"
+    ? `claim-staker-rewards:${rewardCycle}`
+    : intent.scope;
+}
+
 function walletIntentSummary(
   intent: StoredWalletIntent,
   observations: readonly WalletIntentObservation[],
@@ -434,6 +500,7 @@ function walletIntentSummary(
   readOnly: boolean,
   supersedesActivityId: string | null,
   supersededByActivityId: string | null,
+  includeTimeline: boolean,
 ): ActivityRecord {
   const presentation = walletActionPresentation[intent.action];
   const base = walletIntentActivityState(intent.state);
@@ -468,23 +535,25 @@ function walletIntentSummary(
             : intent.state === "superseded"
               ? "A newer operation replaced this transaction review."
               : `The transaction is ${intent.state.replaceAll("_", " ")}.`;
-  const timeline: ActivityTimelineEntry[] = [
-    {
-      schemaVersion: 1,
-      eventId: `${activityId}:prepared`,
-      code: "plan-created",
-      title: "Transaction plan created",
-      detail: "Sidekick sealed a transaction review against current authority evidence.",
-      occurredAt: intent.createdAt,
-      source: "wallet-intents",
-      txid: null,
-      stacksBlockHeight: null,
-      indexBlockHash: null,
-      canonical: null,
-      finalized: null,
-    },
-  ];
-  if (intent.submittedAt !== null && intent.txid !== null) {
+  const timeline: ActivityTimelineEntry[] = includeTimeline
+    ? [
+        {
+          schemaVersion: 1,
+          eventId: `${activityId}:prepared`,
+          code: "plan-created",
+          title: "Transaction plan created",
+          detail: "Sidekick sealed a transaction review against current authority evidence.",
+          occurredAt: intent.createdAt,
+          source: "wallet-intents",
+          txid: null,
+          stacksBlockHeight: null,
+          indexBlockHash: null,
+          canonical: null,
+          finalized: null,
+        },
+      ]
+    : [];
+  if (includeTimeline && intent.submittedAt !== null && intent.txid !== null) {
     timeline.push({
       schemaVersion: 1,
       eventId: `${activityId}:submitted`,
@@ -500,7 +569,7 @@ function walletIntentSummary(
       finalized: null,
     });
   }
-  for (const observation of observations) {
+  for (const observation of includeTimeline ? observations : []) {
     timeline.push({
       schemaVersion: 1,
       eventId: `${activityId}:observation:${observation.id}`,
@@ -525,6 +594,8 @@ function walletIntentSummary(
       code: intent.action,
       title: presentation.title,
       summary,
+      stage: walletIntentActivityStage(intent.state),
+      operationScope: walletIntentOperationScope(intent),
       ...state,
       occurredAt: intent.createdAt,
       updatedAt: intent.updatedAt,
@@ -658,6 +729,7 @@ function engineRecord(
   readOnly: boolean,
   supersedesActivityId: string | null,
   now: Date,
+  includeTimeline: boolean,
 ): ActivityRecord {
   const activityId = `engine-job:${job.jobId}`;
   const mapped = engineJobActivityPresentation(job.state, job.updatedAt, now);
@@ -672,24 +744,26 @@ function engineRecord(
         ? { displayStatus: "needs-attention" as const, outcome: "failed" as const }
         : mapped;
   const txids = [...new Set(attempts.map(({ precomputedTxid }) => precomputedTxid))].sort();
-  const timeline: ActivityTimelineEntry[] = [
-    {
-      schemaVersion: 1,
-      eventId: `${activityId}:created`,
-      code: "plan-created",
-      title: "Reward operation planned",
-      detail: `Sidekick created a reviewed ${job.adapterId} operation plan.`,
-      occurredAt: job.createdAt,
-      source: "transaction-engine",
-      txid: null,
-      stacksBlockHeight: job.chainAnchor.stacksBlockHeight,
-      indexBlockHash: job.chainAnchor.indexBlockHash,
-      canonical: true,
-      finalized: null,
-    },
-    ...attempts.flatMap((attempt) => engineAttemptTimeline(activityId, attempt)),
-    ...reconciliations.map((observation) => reconciliationTimeline(activityId, observation)),
-  ];
+  const timeline: ActivityTimelineEntry[] = includeTimeline
+    ? [
+        {
+          schemaVersion: 1,
+          eventId: `${activityId}:created`,
+          code: "plan-created",
+          title: "Reward operation planned",
+          detail: `Sidekick created a reviewed ${job.adapterId} operation plan.`,
+          occurredAt: job.createdAt,
+          source: "transaction-engine",
+          txid: null,
+          stacksBlockHeight: job.chainAnchor.stacksBlockHeight,
+          indexBlockHash: job.chainAnchor.indexBlockHash,
+          canonical: true,
+          finalized: null,
+        },
+        ...attempts.flatMap((attempt) => engineAttemptTimeline(activityId, attempt)),
+        ...reconciliations.map((observation) => reconciliationTimeline(activityId, observation)),
+      ]
+    : [];
   return {
     summary: {
       schemaVersion: 1,
@@ -702,6 +776,8 @@ function engineRecord(
         job.state === "noncanonical_reobserve" && mapped.displayStatus === "needs-attention"
           ? "The transaction became noncanonical and did not recover before the five-minute re-observation deadline."
           : engineSummaryText(job),
+      stage: engineJobActivityStage(job.state),
+      operationScope: job.operationScopeKey,
       ...state,
       occurredAt: job.createdAt,
       updatedAt: job.updatedAt,
@@ -792,6 +868,8 @@ function chainEventRecord(
           ? kinds[0].replaceAll("-", " ")
           : "Manager contract activity",
       summary,
+      stage: "observed",
+      operationScope: null,
       displayStatus: "observed",
       outcome: "observed",
       occurredAt,
@@ -844,6 +922,8 @@ function settingsRecord(
       code: "runtime-settings-updated",
       title: "Runtime settings updated",
       summary: `Changed ${changed}.`,
+      stage: "recorded",
+      operationScope: null,
       displayStatus: "observed",
       outcome: "observed",
       occurredAt: audit.changedAt,
@@ -914,7 +994,7 @@ export class ActivityProjectionService {
 
   page(query: ActivityQuery, readOnly = false): ActivityResponse {
     const now = this.options.now?.() ?? new Date();
-    const loaded = this.load(readOnly, now);
+    const loaded = this.load(readOnly, now, false);
     const chainContext = this.options.context?.() ?? {
       burnBlockHeight: null,
       rewardCycleId: null,
@@ -933,7 +1013,7 @@ export class ActivityProjectionService {
 
   detail(activityId: string, readOnly = false): ActivityDetail | null {
     const requestedActivityId = activityIdSchema.parse(activityId);
-    const loaded = this.load(readOnly, this.options.now?.() ?? new Date());
+    const loaded = this.load(readOnly, this.options.now?.() ?? new Date(), true);
     const record = loaded.records.find(({ aliases }) => aliases.includes(requestedActivityId));
     if (!record) return null;
     return activityDetailSchema.parse({
@@ -949,6 +1029,7 @@ export class ActivityProjectionService {
   private load(
     readOnly: boolean,
     now: Date,
+    includeTimelines: boolean,
   ): { records: ActivityRecord[]; coverage: ActivityCoverage[] } {
     const recentWalletIntents = this.options.store.walletIntents.listForActivity(
       maximumAuthorityRecords + 1,
@@ -1056,6 +1137,11 @@ export class ActivityProjectionService {
       values.push(intent);
       walletByScope.set(key, values);
     }
+    const latestWalletObservations = includeTimelines
+      ? null
+      : this.options.store.walletIntents.listLatestObservationsForActivity(
+          walletIntents.map(({ id }) => id),
+        );
     const walletRecords = walletIntents.map((intent) => {
       const related = [...(walletByScope.get(`${intent.action}:${intent.scope}`) ?? [])].sort(
         (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
@@ -1063,9 +1149,14 @@ export class ActivityProjectionService {
       const index = related.findIndex(({ id }) => id === intent.id);
       const previous = index > 0 ? related[index - 1] : undefined;
       const next = index >= 0 ? related[index + 1] : undefined;
+      const latestObservation = latestWalletObservations?.get(intent.id);
       return walletIntentSummary(
         intent,
-        this.options.store.walletIntents.listObservations(intent.id),
+        includeTimelines
+          ? this.options.store.walletIntents.listObservations(intent.id)
+          : latestObservation
+            ? [latestObservation]
+            : [],
         walletRecordCoverage,
         readOnly,
         previous && ["expired", "superseded"].includes(previous.state)
@@ -1074,6 +1165,7 @@ export class ActivityProjectionService {
         ["expired", "superseded"].includes(intent.state) && next
           ? `wallet-intent:${next.id}`
           : null,
+        includeTimelines,
       );
     });
 
@@ -1083,15 +1175,25 @@ export class ActivityProjectionService {
         supersededEngineJobs.set(job.supersededByJobId, `engine-job:${job.jobId}`);
       }
     }
+    const attemptsByJob = includeTimelines
+      ? null
+      : this.options.store.transactionEngine.listAttemptsForActivity(
+          jobs.map(({ jobId }) => jobId),
+        );
     const engineRecords = jobs.map((job) =>
       engineRecord(
         job,
-        this.options.store.transactionEngine.listAttempts(job.jobId),
-        this.options.store.transactionEngine.listReconciliationObservations(job.jobId),
+        includeTimelines
+          ? this.options.store.transactionEngine.listAttempts(job.jobId)
+          : (attemptsByJob?.get(job.jobId) ?? []),
+        includeTimelines
+          ? this.options.store.transactionEngine.listReconciliationObservations(job.jobId)
+          : [],
         engineRecordCoverage,
         readOnly,
         supersededEngineJobs.get(job.jobId) ?? null,
         now,
+        includeTimelines,
       ),
     );
 

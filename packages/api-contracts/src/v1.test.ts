@@ -275,6 +275,8 @@ describe("Activity V1 contracts", () => {
     code: "claim-rewards",
     title: "Claim manager rewards",
     summary: "Transaction review is ready for the operator.",
+    stage: "review-ready" as const,
+    operationScope: "claim-rewards:141",
     displayStatus: "action-required" as const,
     outcome: "pending" as const,
     occurredAt: observedAt,
@@ -330,6 +332,11 @@ describe("Activity V1 contracts", () => {
         ).toBe(accepted.has(`${displayStatus}:${outcome}`));
       }
     }
+    expect(activityGroupSummarySchema.safeParse({ ...item, stage: "broadcasting" }).success).toBe(
+      false,
+    );
+    const { operationScope: _operationScope, ...missingScope } = item;
+    expect(activityGroupSummarySchema.safeParse(missingScope).success).toBe(false);
   });
 
   it("rejects mismatched resume targets and incomplete absorbed aliases", () => {

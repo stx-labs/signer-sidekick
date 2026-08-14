@@ -194,6 +194,49 @@ describe("WalletIntentRepository", () => {
     ).toBe("mempool-match");
   });
 
+  it("loads only the latest observation for each Activity intent in one batched read", async () => {
+    const store = await memoryStore();
+    const observed = store.walletIntents.create(
+      intentInput({ id: "10000000-0000-4000-8000-000000000001" }),
+    ).intent;
+    const unobserved = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000002",
+        scope: "fresh:SP000000000000000000002Q6VF78.other-manager",
+      }),
+    ).intent;
+    store.walletIntents.appendObservation({
+      id: "20000000-0000-4000-8000-000000000001",
+      intentId: observed.id,
+      outcome: "mempool-match",
+      canonical: null,
+      blockHeight: null,
+      indexBlockHash: null,
+      evidence: { txidMatched: true },
+      observedAt: "2026-07-18T12:06:00.000Z",
+    });
+    const latest = store.walletIntents.appendObservation({
+      id: "20000000-0000-4000-8000-000000000002",
+      intentId: observed.id,
+      outcome: "canonical-match",
+      canonical: true,
+      blockHeight: 1_234,
+      indexBlockHash,
+      evidence: { payloadMatched: true },
+      observedAt: "2026-07-18T12:07:00.000Z",
+    });
+
+    const observations = store.walletIntents.listLatestObservationsForActivity([
+      unobserved.id,
+      observed.id,
+      observed.id,
+    ]);
+
+    expect([...observations.keys()]).toEqual([observed.id]);
+    expect(observations.get(observed.id)).toEqual(latest);
+    expect(observations.has(unobserved.id)).toBe(false);
+  });
+
   it("expires prepared intents at the exact expiry boundary", async () => {
     const store = await memoryStore();
     const created = store.walletIntents.create(intentInput()).intent;

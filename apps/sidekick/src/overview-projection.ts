@@ -94,38 +94,86 @@ export function sortOverviewAttention(
   });
 }
 
-function candidatePriority(candidate: OverviewAttentionCandidate): number {
-  return candidate.authority === "activity" ? 0 : 1;
-}
-
 export function correlateOverviewAttention(
   candidates: readonly OverviewAttentionCandidate[],
   context: AttentionOrderContext,
 ): OverviewAttentionItem[] {
-  const activeConditions = new Set(candidates.map(({ conditionKey }) => conditionKey));
-  const unsuppressed = candidates.filter(
-    (candidate) =>
-      !candidate.suppressedBy?.some((key) => activeConditions.has(key)) &&
-      !candidates.some(
-        (other) =>
-          other !== candidate &&
-          (other.suppresses?.includes("*") || other.suppresses?.includes(candidate.conditionKey)),
-      ),
-  );
-  const byScope = new Map<string, OverviewAttentionCandidate>();
-  const unscoped: OverviewAttentionCandidate[] = [];
-  for (const candidate of unsuppressed) {
-    if (!candidate.operationScope) {
-      unscoped.push(candidate);
-      continue;
+  const byCondition = new Map<string, number[]>();
+  candidates.forEach((candidate, index) => {
+    const indices = byCondition.get(candidate.conditionKey) ?? [];
+    indices.push(index);
+    byCondition.set(candidate.conditionKey, indices);
+  });
+  const edges = candidates.map(() => new Set<number>());
+  const remainingIncoming = candidates.map(() => 0);
+  const addEdge = (from: number, to: number): void => {
+    if (from === to || edges[from]?.has(to)) return;
+    edges[from]?.add(to);
+    remainingIncoming[to] = (remainingIncoming[to] ?? 0) + 1;
+  };
+  candidates.forEach((candidate, index) => {
+    for (const condition of candidate.suppressedBy ?? []) {
+      for (const suppressor of byCondition.get(condition) ?? []) addEdge(suppressor, index);
     }
-    const existing = byScope.get(candidate.operationScope);
-    if (!existing || candidatePriority(candidate) < candidatePriority(existing)) {
-      byScope.set(candidate.operationScope, candidate);
+    for (const condition of candidate.suppresses ?? []) {
+      if (condition === "*") {
+        candidates.forEach((_target, target) => {
+          addEdge(index, target);
+        });
+      } else {
+        for (const target of byCondition.get(condition) ?? []) addEdge(index, target);
+      }
+    }
+  });
+  const queue = remainingIncoming.flatMap((degree, index) => (degree === 0 ? [index] : []));
+  const suppressed = new Set<number>();
+  const resolved = new Set<number>();
+  const removeSuppressedEdges = (source: number): void => {
+    for (const target of edges[source] ?? []) {
+      remainingIncoming[target] = Math.max(0, (remainingIncoming[target] ?? 0) - 1);
+      if (remainingIncoming[target] === 0 && !resolved.has(target) && !suppressed.has(target)) {
+        queue.push(target);
+      }
+    }
+  };
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const suppressor = queue[cursor];
+    if (suppressor === undefined || resolved.has(suppressor) || suppressed.has(suppressor))
+      continue;
+    resolved.add(suppressor);
+    for (const target of edges[suppressor] ?? []) {
+      if (resolved.has(target) || suppressed.has(target)) continue;
+      suppressed.add(target);
+      removeSuppressedEdges(target);
     }
   }
+  // Cycles are intentionally unresolved and survive: ambiguity must not silently hide work.
+  const unsuppressed = candidates.filter((_candidate, index) => !suppressed.has(index));
+  const activityScopes = new Set(
+    unsuppressed.flatMap((candidate) =>
+      candidate.authority === "activity" && candidate.operationScope
+        ? [candidate.operationScope]
+        : [],
+    ),
+  );
+  const selected: OverviewAttentionCandidate[] = [];
+  const domainScopes = new Set<string>();
+  for (const candidate of unsuppressed) {
+    if (candidate.authority === "activity" || !candidate.operationScope) {
+      selected.push(candidate);
+      continue;
+    }
+    if (
+      activityScopes.has(candidate.operationScope) ||
+      domainScopes.has(candidate.operationScope)
+    ) {
+      continue;
+    }
+    domainScopes.add(candidate.operationScope);
+    selected.push(candidate);
+  }
   const byId = new Map<string, OverviewAttentionItem>();
-  for (const { item } of [...unscoped, ...byScope.values()]) {
+  for (const { item } of selected) {
     if (!byId.has(item.attentionId)) byId.set(item.attentionId, item);
   }
   return sortOverviewAttention([...byId.values()], context);
@@ -216,18 +264,8 @@ function activityAttentionItem(activity: ActivityGroupSummary): OverviewAttentio
   });
 }
 
-function activityOperationScope(
-  activity: ActivityGroupSummary,
-  snapshot: DashboardSnapshot,
-): string {
-  if (activity.code === "register-self") return "register-self";
-  if (activity.code === "claim-rewards" || activity.code === "reference-manager-claim-rewards") {
-    return `claim-rewards:${snapshot.rewards?.rewardCycle ?? "unknown"}`;
-  }
-  if (activity.code === "claim-staker-rewards") {
-    return `claim-staker-rewards:${snapshot.rewards?.rewardCycle ?? "unknown"}`;
-  }
-  return activity.activityId;
+function activityOperationScope(activity: ActivityGroupSummary): string {
+  return activity.operationScope ?? activity.activityId;
 }
 
 function snapshotEvidence(snapshot: DashboardSnapshot): OverviewEvidence {
@@ -310,7 +348,9 @@ function nextCalculation(snapshot: DashboardSnapshot, averageBurnSeconds: number
     };
   }
   const burnBlockHeight = cycleStart + checkpointOffset;
-  const blocksRemaining = Math.max(0, burnBlockHeight - anchor.burnBlockHeight);
+  // The stable anchor defines the protocol checkpoint. Count down from the same current local
+  // node tip shown beside it so ordinary reference-indexer lag cannot skew the displayed timing.
+  const blocksRemaining = Math.max(0, burnBlockHeight - snapshot.preflight.node.burnBlockHeight);
   return {
     status: blocksRemaining === 0 ? ("due" as const) : ("scheduled" as const),
     burnBlockHeight,
@@ -1138,7 +1178,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     if (active.displayStatus === "needs-attention" || active.displayStatus === "action-required") {
       candidates.push({
         conditionKey: `activity:${active.activityId}`,
-        operationScope: activityOperationScope(active, snapshot),
+        operationScope: activityOperationScope(active),
         authority: "activity",
         item: activityAttentionItem(active),
       });
@@ -1159,7 +1199,7 @@ function inProgressItems(input: OverviewProjectionInput): OverviewPage["inProgre
         activityId: activity.activityId,
         domain: activity.domain,
         title: activity.title,
-        stage: activity.code.replaceAll(/[-_]/g, " "),
+        stage: activity.stage.replaceAll("-", " "),
         updatedAt: activity.updatedAt,
         evidence: activity.coverage.map(activityEvidence),
         primaryAction: {

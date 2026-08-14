@@ -1533,6 +1533,26 @@ export const activityCoverageSchema = z
   .strict();
 export type ActivityCoverage = z.infer<typeof activityCoverageSchema>;
 
+export const activityStageSchema = z.enum([
+  "review-ready",
+  "preflighted",
+  "awaiting-approval",
+  "nonce-reserved",
+  "submitted",
+  "mempool",
+  "broadcast",
+  "confirmed",
+  "reobserving",
+  "blocked",
+  "ambiguous",
+  "failed",
+  "complete",
+  "superseded",
+  "observed",
+  "recorded",
+]);
+export type ActivityStage = z.infer<typeof activityStageSchema>;
+
 const activityStatusOutcomePairs = new Set([
   "action-required:pending",
   "in-progress:pending",
@@ -1554,6 +1574,8 @@ export const activityGroupSummarySchema = z
     code: z.string().min(1).max(120),
     title: z.string().min(1).max(200),
     summary: z.string().min(1).max(1_000),
+    stage: activityStageSchema,
+    operationScope: z.string().min(1).max(500).nullable(),
     displayStatus: activityDisplayStatusSchema,
     outcome: activityOutcomeSchema,
     occurredAt: z.iso.datetime(),

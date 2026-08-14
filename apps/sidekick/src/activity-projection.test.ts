@@ -4,15 +4,17 @@ import type {
   ActivityGroupSummary,
   ActivityOutcome,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ActivityProjectionError,
   ActivityProjectionService,
   engineJobActivityPresentation,
+  engineJobActivityStage,
   engineJobActivityState,
   noncanonicalReobserveRecoveryMs,
   projectActivityPage,
   sortActiveActivity,
+  walletIntentActivityStage,
   walletIntentActivityState,
 } from "./activity-projection.js";
 import { managerEventStream } from "./manager-event-vocabulary.js";
@@ -51,6 +53,8 @@ function summary(
     code: "claim-rewards",
     title: "Claim rewards",
     summary: "Operator activity",
+    stage: "review-ready",
+    operationScope: "claim-rewards:141",
     displayStatus,
     outcome,
     occurredAt: "2026-08-14T10:00:00.000Z",
@@ -125,6 +129,30 @@ describe("Activity projection", () => {
       ["superseded", { displayStatus: "superseded", outcome: "superseded" }],
       ["ambiguous", { displayStatus: "needs-attention", outcome: "ambiguous" }],
       ["noncanonical_reobserve", { displayStatus: "in-progress", outcome: "pending" }],
+    ]);
+    expect(walletIntentStates.map((state) => [state, walletIntentActivityStage(state)])).toEqual([
+      ["prepared", "review-ready"],
+      ["submitted", "submitted"],
+      ["mempool", "mempool"],
+      ["confirmed", "confirmed"],
+      ["complete", "complete"],
+      ["expired", "superseded"],
+      ["superseded", "superseded"],
+      ["failed", "failed"],
+      ["reobserve", "reobserving"],
+    ]);
+    expect(transactionJobStates.map((state) => [state, engineJobActivityStage(state)])).toEqual([
+      ["prepared", "review-ready"],
+      ["preflighted", "preflighted"],
+      ["awaiting_approval", "awaiting-approval"],
+      ["nonce_reserved", "nonce-reserved"],
+      ["broadcast", "broadcast"],
+      ["confirmed", "confirmed"],
+      ["reconciled", "complete"],
+      ["blocked", "blocked"],
+      ["superseded", "superseded"],
+      ["ambiguous", "ambiguous"],
+      ["noncanonical_reobserve", "reobserving"],
     ]);
   });
 
@@ -400,6 +428,43 @@ describe("Activity projection", () => {
     expect(contextReads).toBe(1);
   });
 
+  it("uses batched summary evidence instead of per-record timeline reads on the polled page", async () => {
+    const store = await memoryStore();
+    const manifest = { schemaVersion: 2, action: "claim-rewards" };
+    store.walletIntents.create({
+      action: "claim-rewards",
+      scope: "claim-rewards:141",
+      factsSha256: "aa".repeat(32),
+      manifestSha256: canonicalJsonSha256(manifest),
+      manifest,
+      requiredSender: actorPrincipal,
+      network: "mainnet",
+      chainId: 1,
+      createdAt: "2026-08-14T10:00:00.000Z",
+      expiresAt: "2026-08-14T10:10:00.000Z",
+    });
+    const listObservations = vi.spyOn(store.walletIntents, "listObservations");
+    const listLatestObservations = vi.spyOn(
+      store.walletIntents,
+      "listLatestObservationsForActivity",
+    );
+    const listAttempts = vi.spyOn(store.transactionEngine, "listAttempts");
+    const listAttemptsForActivity = vi.spyOn(store.transactionEngine, "listAttemptsForActivity");
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+
+    expect(service.page(query()).active).toHaveLength(1);
+    expect(listLatestObservations).toHaveBeenCalledOnce();
+    expect(listAttemptsForActivity).toHaveBeenCalledOnce();
+    expect(listObservations).not.toHaveBeenCalled();
+    expect(listAttempts).not.toHaveBeenCalled();
+  });
+
   it("degrades bounded terminal coverage instead of failing the Activity page", () => {
     const settingsAudit = Array.from({ length: 10_001 }, (_, index) => ({
       revision: index + 1,
@@ -411,9 +476,11 @@ describe("Activity projection", () => {
         listForActivity: () => [],
         listActiveForActivity: () => [],
         listObservations: () => [],
+        listLatestObservationsForActivity: () => new Map(),
       },
       transactionEngine: {
         listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
+        listAttemptsForActivity: () => new Map(),
       },
       listManagerActivityChainEvents: () => [],
       listSettingsAudit: () => settingsAudit,

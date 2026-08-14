@@ -658,6 +658,26 @@ describe("transaction engine repository", () => {
     ]);
   });
 
+  it("loads Activity attempts for many jobs without per-job reads", async () => {
+    const { store, digest } = await memoryStore();
+    const { job, attempt } = approveAndCommit(store, digest);
+    const withoutAttempt = store.transactionEngine.createLogicalJob(
+      jobInput(digest, {
+        idempotencyKey: "claim:activity-without-attempt",
+        operationScopeKey: "claim:activity-without-attempt",
+      }),
+    ).job;
+
+    const attempts = store.transactionEngine.listAttemptsForActivity([
+      withoutAttempt.jobId,
+      job.jobId,
+      job.jobId,
+    ]);
+
+    expect(attempts.get(job.jobId)).toEqual([attempt]);
+    expect(attempts.has(withoutAttempt.jobId)).toBe(false);
+  });
+
   it("keeps reconciliation evidence append-only and restores all durable state after restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sidekick-engine-restart-"));
     temporaryDirectories.push(directory);

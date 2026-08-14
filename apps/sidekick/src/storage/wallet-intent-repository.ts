@@ -34,6 +34,7 @@ const identifierSchema = z.string().min(1).max(500);
 const instantSchema = z.iso.datetime().transform((value) => new Date(value).toISOString());
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const txidSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
+const sqliteBatchSize = 400;
 const networkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
 const principalSchema = z.string().max(500).refine(validatePrincipal, "Invalid Stacks principal");
 const outcomeSchema = z
@@ -840,6 +841,38 @@ export class WalletIntentRepository {
       )
       .all(uuidSchema.parse(id))
       .map(mapObservation);
+  }
+
+  /** Returns at most the latest observation for each requested intent without per-intent reads. */
+  listLatestObservationsForActivity(
+    intentIds: readonly string[],
+  ): Map<string, WalletIntentObservation> {
+    const ids = [...new Set(intentIds.map((id) => uuidSchema.parse(id)))];
+    const observations = new Map<string, WalletIntentObservation>();
+    for (let offset = 0; offset < ids.length; offset += sqliteBatchSize) {
+      const batch = ids.slice(offset, offset + sqliteBatchSize);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(", ");
+      const rows = this.db
+        .prepare(
+          `SELECT observation_id, intent_id, outcome, canonical, block_height,
+                  index_block_hash, evidence_json, observed_at
+           FROM (
+             SELECT *, ROW_NUMBER() OVER (
+               PARTITION BY intent_id ORDER BY observed_at DESC, rowid DESC
+             ) AS activity_rank
+             FROM browser_wallet_intent_observations
+             WHERE intent_id IN (${placeholders})
+           )
+           WHERE activity_rank = 1`,
+        )
+        .all(...batch);
+      for (const row of rows) {
+        const observation = mapObservation(row);
+        observations.set(observation.intentId, observation);
+      }
+    }
+    return observations;
   }
 
   latestObservation(

@@ -27,6 +27,7 @@ const txidSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 const unsignedIntegerTextSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 const principalSchema = z.string().refine(validatePrincipal, "Invalid Stacks principal");
 const issuerSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,99}$/);
+const sqliteBatchSize = 400;
 
 export class TransactionEngineConflictError extends Error {
   constructor(message: string) {
@@ -1535,6 +1536,31 @@ export class TransactionEngineRepository implements CompatibilityAttestationRepo
       .prepare("SELECT * FROM transaction_attempts WHERE job_id = ? ORDER BY attempt_number")
       .all(uuidSchema.parse(jobId))
       .map((row) => mapAttemptRow(attemptRowSchema.parse(row)));
+  }
+
+  /** Returns attempts grouped by job without issuing one query per Activity record. */
+  listAttemptsForActivity(jobIds: readonly string[]): Map<string, StoredTransactionAttempt[]> {
+    const ids = [...new Set(jobIds.map((jobId) => uuidSchema.parse(jobId)))];
+    const attempts = new Map<string, StoredTransactionAttempt[]>();
+    for (let offset = 0; offset < ids.length; offset += sqliteBatchSize) {
+      const batch = ids.slice(offset, offset + sqliteBatchSize);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(", ");
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM transaction_attempts
+           WHERE job_id IN (${placeholders})
+           ORDER BY job_id ASC, attempt_number ASC`,
+        )
+        .all(...batch);
+      for (const row of rows) {
+        const attempt = mapAttemptRow(attemptRowSchema.parse(row));
+        const values = attempts.get(attempt.jobId) ?? [];
+        values.push(attempt);
+        attempts.set(attempt.jobId, values);
+      }
+    }
+    return attempts;
   }
 
   transitionAttempt(input: {
