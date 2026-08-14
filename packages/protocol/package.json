@@ -21,6 +21,10 @@
       "types": "./dist/pox5-bonds.d.ts",
       "default": "./dist/pox5-bonds.js"
     },
+    "./pox5-calculate-rewards": {
+      "types": "./dist/pox5-calculate-rewards.d.ts",
+      "default": "./dist/pox5-calculate-rewards.js"
+    },
     "./manager-claim-rewards": {
       "types": "./dist/manager-claim-rewards.d.ts",
       "default": "./dist/manager-claim-rewards.js"

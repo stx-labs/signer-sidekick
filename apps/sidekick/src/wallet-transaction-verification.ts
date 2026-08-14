@@ -90,7 +90,8 @@ export interface VerifiedWalletTransaction {
           | "withdraw-fees"
           | "sweep-fee-refunds"
           | "claim-staker-rewards"
-          | "claim-rewards";
+          | "claim-rewards"
+          | "calculate-rewards";
         argumentsSha256: string;
         signerKeyHex: string | null;
       };

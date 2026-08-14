@@ -476,6 +476,7 @@ const walletActionPresentation = {
   "sweep-fee-refunds": { domain: "rewards", title: "Sweep fee refunds" },
   "claim-rewards": { domain: "rewards", title: "Claim manager rewards" },
   "claim-staker-rewards": { domain: "rewards", title: "Claim staker rewards" },
+  "calculate-rewards": { domain: "rewards", title: "Calculate PoX-5 rewards" },
 } as const satisfies Record<
   StoredWalletIntent["action"],
   { domain: ActivityDomain; title: string }

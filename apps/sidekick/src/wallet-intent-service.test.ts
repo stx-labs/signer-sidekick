@@ -180,6 +180,11 @@ function trustedManagerSnapshot(options: {
       indexBlockHash,
       burnBlockHeight: 8_000,
       rewardCycle: 5,
+      rewardCycleLength: 100,
+      prepareCycleLength: 10,
+      cyclePosition: 50,
+      phase: "reward",
+      checkpoint: "second-half",
     },
     preflight: {
       node: { networkId: options.networkId ?? 1 },
@@ -197,6 +202,8 @@ function trustedManagerSnapshot(options: {
       pox: {
         pox5ContractId,
         sbtcTokenContract,
+        pox5Available: true,
+        sourceSha256: compatibilityProfile.pox5.sourceSha256,
       },
     },
     manager: {
@@ -271,7 +278,7 @@ function validRegistrationFreshState(
 async function proveRecurringManagerAction(input: {
   request: Exclude<
     BrowserWalletIntentCreateRequest,
-    { action: "deploy-manager" | "register-self" | "claim-rewards" }
+    { action: "deploy-manager" | "register-self" | "claim-rewards" | "calculate-rewards" }
   >;
   node: Record<string, unknown>;
   setCanonicalPoststate: () => void;
@@ -523,6 +530,100 @@ async function submittedFeeActionHarness() {
   };
 }
 
+async function calculateRewardsWalletHarness() {
+  const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+  stores.push(store);
+  readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+  let lastComputeHeight = 7_949n;
+  let resultRepr = "(ok true)";
+  let transactionHex = "";
+  let txid = `0x${"00".repeat(32)}` as `0x${string}`;
+  const node = {
+    getInfo: vi.fn(async () => ({ network_id: 1 })),
+    callReadOnly: vi.fn(
+      async (_principal: string, functionName: string, _sender: string, args: string[]) => {
+        if (functionName === "get-last-reward-compute-height") {
+          return uintCV(lastComputeHeight);
+        }
+        if (functionName === "get-new-rewards") return uintCV(2_000);
+        if (functionName === "bond-period-to-reward-cycle") return uintCV(1);
+        if (functionName === "get-protocol-bond") return noneCV();
+        if (functionName === "is-bond-active-at-height") {
+          expect(args[1]).toBe(cvToHex(uintCV(7_999)));
+          return falseCV();
+        }
+        throw new Error(`Unexpected read-only call ${functionName}`);
+      },
+    ),
+    getDataVar: vi.fn(),
+    getMapEntry: vi.fn(),
+  };
+  const wallet = new WalletIntentService({
+    store,
+    runtimeSettings: {
+      clients: () => ({
+        config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+        node,
+        api: { getNodeInfo: vi.fn(async () => ({ network_id: 1 })) },
+      }),
+    } as unknown as RuntimeSettingsController,
+    readState: deploymentFreshState,
+    canRepairSignerRegistration,
+    readerFactory: () => ({
+      lookupIndexedTransaction: async () => ({
+        status: "observed" as const,
+        httpStatus: 200,
+        value: {
+          txid,
+          transactionHex,
+          nonce: 9n,
+          feeUstx: 1_000n,
+          indexBlockHash,
+          blockHeight: BigInt(blockHeight),
+          isCanonical: true,
+          resultRepr,
+        },
+      }),
+      lookupUnconfirmedTransaction: async () => ({
+        status: "not-found" as const,
+        httpStatus: 404,
+      }),
+    }),
+  });
+  const prepared = await wallet.prepare(
+    { action: "calculate-rewards", actorPrincipal: requiredSender },
+    "2026-07-19T12:01:00.000Z",
+  );
+  if (prepared.transaction.method !== "stx_callContract") throw new Error("Expected call");
+  const transaction = await makeContractCall({
+    contractAddress: "SP000000000000000000002Q6VF78",
+    contractName: "pox-5",
+    functionName: "calculate-rewards",
+    functionArgs: prepared.transaction.params.functionArgs.map(hexToCV),
+    senderKey,
+    network: "mainnet",
+    fee: 1_000,
+    nonce: 9,
+    sponsored: false,
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: [],
+  });
+  txid = `0x${transaction.txid()}`;
+  transactionHex = Buffer.from(transaction.serializeBytes()).toString("hex");
+  return {
+    store,
+    wallet,
+    prepared,
+    txid,
+    setLastComputeHeight(value: bigint) {
+      lastComputeHeight = value;
+    },
+    setResultRepr(value: string) {
+      resultRepr = value;
+    },
+  };
+}
+
 async function createLegacySubmittedRegistration(input: {
   store: SidekickStore;
   signerKeyHex: string;
@@ -672,6 +773,104 @@ describe("manager wallet action preparation", () => {
       network: "mainnet",
       chainId: 1,
     });
+  });
+
+  it.each([
+    {
+      name: "canonically completes the reviewed permissionless PoX-5 calculation",
+      resultRepr: "(ok true)",
+      expectedStatus: "complete",
+      expectedOutcome: "complete",
+    },
+    {
+      name: "records a losing permissionless calculation race as superseded",
+      resultRepr: "(err u21)",
+      expectedStatus: "superseded",
+      expectedOutcome: "superseded",
+    },
+  ] as const)("$name", async ({ resultRepr, expectedStatus, expectedOutcome }) => {
+    const harness = await calculateRewardsWalletHarness();
+    const { prepared } = harness;
+    expect(prepared).toMatchObject({
+      action: "calculate-rewards",
+      request: { action: "calculate-rewards", actorPrincipal: requiredSender },
+      binding: {
+        kind: "calculate-rewards",
+        pox5ContractId,
+        targetRewardCycle: 5,
+        targetCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: 7_999,
+      },
+      transaction: {
+        method: "stx_callContract",
+        params: {
+          contract: pox5ContractId,
+          functionName: "calculate-rewards",
+          functionArgs: ["0x0b00000000"],
+          postConditions: [],
+        },
+      },
+    });
+    harness.setResultRepr(resultRepr);
+    await harness.wallet.submit(prepared.id, harness.txid, "2026-07-19T12:02:00.000Z");
+    harness.setLastComputeHeight(7_999n);
+    await expect(
+      harness.wallet.refresh(prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({
+      status: expectedStatus,
+      verification: { outcome: expectedOutcome, canonical: true },
+    });
+  });
+
+  it("supersedes an unsigned calculation when the reviewed checkpoint changes", async () => {
+    const harness = await calculateRewardsWalletHarness();
+    harness.setLastComputeHeight(7_999n);
+
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:02:00.000Z"),
+    ).resolves.toMatchObject({
+      status: "superseded",
+      verification: { outcome: "superseded", canonical: null },
+    });
+  });
+
+  it("refuses reward calculation without an exact reviewed PoX-5 profile", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const snapshot = trustedManagerSnapshot({});
+    readOperatorAnchorSnapshotMock.mockResolvedValue({
+      ...snapshot,
+      preflight: {
+        ...snapshot.preflight,
+        compatibility: {
+          ...snapshot.preflight.compatibility,
+          status: "unrecognized",
+          profileId: null,
+          profileRevision: null,
+        },
+      },
+    });
+    const callReadOnly = vi.fn();
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: { callReadOnly },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+      canRepairSignerRegistration,
+    });
+
+    await expect(
+      wallet.prepare({ action: "calculate-rewards", actorPrincipal: requiredSender }),
+    ).rejects.toMatchObject({
+      code: "wallet_execution_unavailable",
+      message: expect.stringContaining("matches an installed reviewed network profile"),
+    });
+    expect(callReadOnly).not.toHaveBeenCalled();
   });
 
   it("blocks a reference-shaped action without an exact reviewed source", async () => {

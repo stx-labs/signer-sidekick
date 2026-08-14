@@ -1426,6 +1426,12 @@ async function test() {
       });
       return { status: "pass" };
     });
+    await recordScenario(result, "walletAction", async () => {
+      run("pnpm", ["test:e2e:dashboard:live"], {
+        env: { SIDEKICK_LIVE_PHASE: "action" },
+      });
+      return { status: "pass", action: "update-fees" };
+    });
 
     const smokeEnvironment = {
       SIDEKICK_NETWORK: "devnet",

@@ -1194,6 +1194,13 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
     page.getByRole("button", { name: "Check what settling this cycle costs" }),
   ).toHaveCount(0);
   expect(settlementReads).toBe(0);
+
+  await page.getByRole("link", { name: "Review calculation" }).click();
+  await expect(page).toHaveURL(/#action\/calculate-rewards$/);
+  await expect(page.getByRole("heading", { name: "Calculate PoX-5 rewards" })).toBeVisible();
+  await expect(page.getByText("PERMISSIONLESS CHECKPOINT")).toBeVisible();
+  await page.getByLabel("Signing account").fill(snapshot.managerPrincipal.split(".")[0] ?? "");
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
 });
 
 test("does not list every zero-value staker in settlement discovery", async ({ page }) => {

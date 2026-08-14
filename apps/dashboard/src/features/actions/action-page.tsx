@@ -421,6 +421,93 @@ function StakerRewardOperation({
   );
 }
 
+function CalculateRewardsOperation({
+  data,
+  operatorStateStale,
+  onOperatorStateChanged,
+  token,
+}: {
+  data: Snapshot;
+  operatorStateStale: boolean;
+  onOperatorStateChanged: () => void | Promise<void>;
+  token: string;
+}) {
+  const [actorPrincipal, setActorPrincipal] = useState("");
+  const actor = actorPrincipal.trim().toUpperCase();
+  const actorValid = standardManagerActionPrincipal(actor, data.network);
+  const calculation = data.rewards?.calculation ?? null;
+  const pox5ContractId = data.preflight.pox.pox5ContractId;
+  if (operatorStateStale) {
+    return (
+      <UnavailableAction reason="Reward-calculation evidence is stale. Refresh status before preparing a transaction." />
+    );
+  }
+  if (!pox5ContractId || data.preflight.compatibility.status !== "matched") {
+    return (
+      <UnavailableAction reason="The active PoX-5 source must match an installed reviewed network profile before Sidekick can prepare this transaction." />
+    );
+  }
+  if (calculation?.state !== "pending") {
+    return (
+      <UnavailableAction reason="The current PoX-5 reward-calculation checkpoint is not pending." />
+    );
+  }
+  const request = actorValid
+    ? { action: "calculate-rewards" as const, actorPrincipal: actor }
+    : null;
+  return (
+    <section className="card-standout action-calculate-rewards">
+      <div className="card-head">
+        <div>
+          <span className="eyebrow">PERMISSIONLESS CHECKPOINT</span>
+          <h2>Review reward-calculation inputs</h2>
+        </div>
+      </div>
+      <StatLine label="Reward cycle">{calculation.targetRewardCycle ?? "—"}</StatLine>
+      <StatLine label="Checkpoint">{calculation.targetCheckpoint ?? "—"}</StatLine>
+      <StatLine label="Calculation Bitcoin block">
+        {calculation.expectedLastRewardComputeBurnHeight ?? "—"}
+      </StatLine>
+      <p className="muted">
+        Sidekick re-reads the complete ordered active-bond list and accrued global rewards at one
+        node anchor before sealing the wallet request. Any standard account may pay the fee.
+      </p>
+      <Field
+        label="Signing account"
+        help="This permissionless caller pays only the transaction fee; manager-admin authority is not required."
+      >
+        <input
+          autoComplete="off"
+          className="input mono"
+          placeholder={data.network === "mainnet" ? "SP…" : "ST…"}
+          value={actorPrincipal}
+          onChange={(event) => setActorPrincipal(event.target.value.toUpperCase())}
+        />
+        {actorPrincipal && !actorValid ? (
+          <span className="field-error">Enter a valid Stacks account principal.</span>
+        ) : null}
+      </Field>
+      {request ? (
+        <BrowserWalletActionPanel
+          chainId={data.preflight.node.networkId}
+          createRequest={request}
+          managerPrincipal={pox5ContractId}
+          network={data.network}
+          onVerified={onOperatorStateChanged}
+          token={token}
+        />
+      ) : (
+        <div className="callout callout-neutral" role="status">
+          <ShieldCheck className="ic" />
+          <div className="body">
+            Enter the public signing account to request a fresh anchored transaction review.
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function ActionPage({
   context,
   data,
@@ -484,6 +571,13 @@ export function ActionPage({
       ) : operation === "claim-staker-rewards" ? (
         <StakerRewardOperation
           context={context}
+          data={data}
+          operatorStateStale={operatorStateStale}
+          onOperatorStateChanged={onOperatorStateChanged}
+          token={token}
+        />
+      ) : operation === "calculate-rewards" ? (
+        <CalculateRewardsOperation
           data={data}
           operatorStateStale={operatorStateStale}
           onOperatorStateChanged={onOperatorStateChanged}

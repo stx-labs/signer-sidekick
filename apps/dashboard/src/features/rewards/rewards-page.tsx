@@ -354,13 +354,19 @@ export function Rewards({
         </div>
       </div>
       {rewards?.calculation.state === "pending" ? (
-        <p className="tertiary balance-note" role="status">
-          <strong>Waiting on the global reward calculation.</strong> PoX-5 credits nothing for cycle{" "}
-          {rewards.calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
-          <code>calculate-rewards</code> at Bitcoin block #
-          {number(String(rewards.calculation.expectedLastRewardComputeBurnHeight ?? 0))}. Sidekick
-          observes that call; it does not make it.
-        </p>
+        <div className="callout callout-caution balance-note" role="status">
+          <div className="body">
+            <strong>Global reward calculation is due.</strong> PoX-5 credits nothing for cycle{" "}
+            {rewards.calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
+            <code>calculate-rewards</code> at Bitcoin block #
+            {number(String(rewards.calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
+            <div className="actions">
+              <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
+                Review calculation
+              </a>
+            </div>
+          </div>
+        </div>
       ) : null}
       <StakerSettlementPanel
         calculationPending={rewards?.calculation.state === "pending"}

@@ -82,10 +82,14 @@ function registerIntent(): BrowserWalletIntent {
   } as BrowserWalletIntent;
 }
 
-// Staker claims are driven from the rewards page, not the manager-action switcher.
+// Reward actions are driven from the rewards page, not the manager-action switcher.
 type ManagerAction = Exclude<
   BrowserWalletIntent["action"],
-  "deploy-manager" | "register-self" | "claim-rewards" | "claim-staker-rewards"
+  | "deploy-manager"
+  | "register-self"
+  | "claim-rewards"
+  | "claim-staker-rewards"
+  | "calculate-rewards"
 >;
 
 function managerActionIntent(

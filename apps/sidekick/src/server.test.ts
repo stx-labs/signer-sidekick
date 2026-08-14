@@ -799,6 +799,20 @@ describe("local API", () => {
 
     await server.inject({
       method: "POST",
+      url: "/api/v1/wallet-intents",
+      headers,
+      payload: {
+        action: "calculate-rewards",
+        actorPrincipal: "SP000000000000000000002Q6VF78",
+      },
+    });
+    expect(wallet.prepare).toHaveBeenLastCalledWith({
+      action: "calculate-rewards",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+    });
+
+    await server.inject({
+      method: "POST",
       url: "/api/v1/manager/signer-grant/prepare",
       headers,
       payload: { authId: "9", signerConfigPath: "/etc/stacks-signer/signer.toml" },

@@ -12,7 +12,8 @@ export type WalletOperationAuthority =
 export interface WalletOperationContract {
   action: RecurringWalletIntentAction;
   lifecycle: "recurring";
-  capability: ManagerActionCapabilityId;
+  /** Manager capability, or null for a protocol-global operation. */
+  capability: ManagerActionCapabilityId | null;
   authority: WalletOperationAuthority;
   functionName: string | null;
   completionEvidence: "contract-source" | "canonical-post-state" | "immutable-engine-job";
@@ -88,6 +89,14 @@ export const WALLET_OPERATION_CONTRACTS = {
     functionName: "claim-staker-rewards",
     completionEvidence: "canonical-post-state",
   },
+  "calculate-rewards": {
+    action: "calculate-rewards",
+    lifecycle: "recurring",
+    capability: null,
+    authority: "permissionless",
+    functionName: "calculate-rewards",
+    completionEvidence: "canonical-post-state",
+  },
 } as const satisfies Record<RecurringWalletIntentAction, WalletOperationContract>;
 
 export function walletOperationContract(
@@ -98,7 +107,7 @@ export function walletOperationContract(
 
 export function managerCapabilityForWalletAction(
   action: RecurringWalletIntentAction,
-): ManagerActionCapabilityId {
+): ManagerActionCapabilityId | null {
   return walletOperationContract(action).capability;
 }
 

@@ -288,6 +288,7 @@ export async function browserWalletManifestSha256(intent: BrowserWalletIntent): 
     expiresAt: intent.expiresAt,
     transaction: intent.transaction,
     ...(intent.schemaVersion === 2 ? { request: intent.request } : {}),
+    ...(intent.binding ? { binding: intent.binding } : {}),
     review:
       intent.schemaVersion === 1
         ? {
@@ -343,6 +344,7 @@ const ACTION_FUNCTIONS: Readonly<Record<Exclude<BrowserWalletAction, "deploy-man
   "claim-staker-rewards": "claim-staker-rewards",
   "sweep-fee-refunds": "sweep-fee-refunds",
   "claim-rewards": "claim-rewards",
+  "calculate-rewards": "calculate-rewards",
 };
 
 const ASSET_POSTCONDITION_ACTIONS = new Set<BrowserWalletAction>([

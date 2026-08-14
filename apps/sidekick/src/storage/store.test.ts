@@ -333,7 +333,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 24,
+      schemaVersion: 25,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1020,7 +1020,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 24,
+      schemaVersion: 25,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1046,7 +1046,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(24);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1162,7 +1162,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(24);
+    expect(upgraded.store.schemaVersion()).toBe(25);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1243,7 +1243,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(24);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1394,7 +1394,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(24);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1530,7 +1530,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(24);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(25);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection

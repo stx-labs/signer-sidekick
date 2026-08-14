@@ -658,11 +658,20 @@ surfaces in the same change series. No compatibility redirects are required once
   admin, observer, and transaction-policy controls now live in Settings; engine and wallet history
   lives in Activity; all retained operations use contextual action routes. Manager, Operations,
   setup, enrollment, and registration hashes now resolve through the normal unknown-route rule to
-  Overview without compatibility parsing. Permissionless reward calculation remains read-only
-  until its reviewed execution adapter exists.
-- Consequently, the released-binary Devnet action leg is still an unmet Slice 8 gate. The existing
-  real-node observer/convergence leg is not a substitute for a controlled browser-wallet action
-  reaching a reconciled `complete` Activity group.
+  Overview without compatibility parsing.
+- Permissionless PoX-5 reward calculation is implemented through a reviewed protocol adapter. It
+  reads the complete bounded active-bond set at one node anchor, applies the contract's canonical
+  ordering, seals the exact PoX-5 source/profile and checkpoint binding, revalidates before wallet
+  signing, verifies the canonical post-state, and records a losing permissionless race as
+  superseded rather than failed. Real vendored-contract execution vectors cover both STX-only and
+  mixed STX/bond reward distributions.
+- The released-binary Devnet action gate is met. The acceptance harness injects a controlled
+  Leather-compatible provider into the real dashboard, reviews and signs Sidekick's exact
+  `update-fees` intent with the public Devnet fixture account, returns only the transaction ID,
+  and requires Sidekick to independently reconcile the Activity group to `complete`. The
+  2026-08-14 clean-chain run passed in 7.62 seconds for the wallet-action phase; the surrounding
+  observer, restart/recovery, external smoke, installed-profile, and failure-injection scenarios
+  passed in the same released-binary run.
 
 ## Required contract tests
 
@@ -712,6 +721,6 @@ surfaces in the same change series. No compatibility redirects are required once
 - The released-binary Devnet connect/observe/action leg exercises the shared action workspace and
   reaches a reconciled `complete` Activity group.
 
-The next implementation step is the reviewed permissionless reward-calculation adapter and its
-golden execution vectors, followed by the released-binary Devnet action leg that proves one shared
-workspace operation reaches a reconciled `complete` Activity group.
+The next implementation work is the remaining reward-outlook simulator, confidence, calibration,
+and realized-error history, followed by the calibrated signer/network diagnosis and support-handoff
+slice. The shared action workspace and released-binary action gate no longer block that work.

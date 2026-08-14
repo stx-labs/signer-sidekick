@@ -5,4 +5,5 @@ export * from "./manager-claim-rewards.js";
 export * from "./manager-interface-fingerprint.js";
 export * from "./network-compatibility.js";
 export * from "./network-manager-artifact.js";
+export * from "./pox5-calculate-rewards.js";
 export * from "./profile.js";

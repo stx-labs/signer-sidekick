@@ -1,0 +1,168 @@
+import {
+  decodeBoolean,
+  decodePox5ProtocolBond,
+  decodeUInt,
+  encodeUIntHex,
+} from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
+import {
+  encodePox5CalculateRewardsArguments,
+  orderPox5CalculationBonds,
+  POX5_CALCULATE_REWARDS_ADAPTER_ID,
+  POX5_CALCULATE_REWARDS_ADAPTER_REVISION,
+  type Pox5CalculationBond,
+} from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
+import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
+import type { ChainReadOptions } from "./chain-clients.js";
+import type { RewardStatusNode } from "./reward-status.js";
+
+export interface Pox5CalculateRewardsObservation {
+  adapter: {
+    id: typeof POX5_CALCULATE_REWARDS_ADAPTER_ID;
+    revision: typeof POX5_CALCULATE_REWARDS_ADAPTER_REVISION;
+  };
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  expectedLastRewardComputeBurnHeight: number;
+  observedLastRewardComputeBurnHeight: string;
+  grossAccruedRewardsSats: string;
+  activeBonds: Array<{
+    bondIndex: string;
+    targetRateBips: string;
+    stxValueRatio: string;
+    minUstxRatioBips: string;
+  }>;
+  functionArgs: [string];
+}
+
+export class Pox5CalculateRewardsError extends Error {
+  constructor(
+    readonly code: "invalid-target" | "already-computed" | "incomplete-bond-state",
+    message: string,
+  ) {
+    super(message);
+    this.name = "Pox5CalculateRewardsError";
+  }
+}
+
+function readOptions(chainAnchor: ChainAnchor): ChainReadOptions {
+  return { tip: chainAnchor.indexBlockHash };
+}
+
+/**
+ * Reads and seals every protocol-global input to `pox-5::calculate-rewards` at one node anchor.
+ *
+ * PoX-5 has no iterable map API. Its own validation examines at most the six periods overlapping
+ * the calculation cycle, so Sidekick derives that same bounded candidate window, reads each map
+ * entry and active predicate from the node, and orders the complete active set with the reviewed
+ * adapter before it ever opens a wallet.
+ */
+export async function readPox5CalculateRewardsObservation(input: {
+  node: RewardStatusNode;
+  pox5ContractId: string;
+  sender: string;
+  chainAnchor: ChainAnchor;
+}): Promise<Pox5CalculateRewardsObservation> {
+  const target = deriveRewardCalculationTarget(input.chainAnchor);
+  if (target.status === "invalid") {
+    throw new Pox5CalculateRewardsError(
+      "invalid-target",
+      `The current chain anchor has no valid PoX-5 reward-calculation target (${target.reason})`,
+    );
+  }
+  const options = readOptions(input.chainAnchor);
+  const [lastComputeValue, accruedValue, firstBondCycleValue] = await Promise.all([
+    input.node.callReadOnly(
+      input.pox5ContractId,
+      "get-last-reward-compute-height",
+      input.sender,
+      [],
+      options,
+    ),
+    input.node.callReadOnly(input.pox5ContractId, "get-new-rewards", input.sender, [], options),
+    input.node.callReadOnly(
+      input.pox5ContractId,
+      "bond-period-to-reward-cycle",
+      input.sender,
+      [encodeUIntHex(0n)],
+      options,
+    ),
+  ]);
+  const observedLastRewardComputeBurnHeight = decodeUInt(
+    lastComputeValue,
+    "get-last-reward-compute-height",
+  );
+  if (observedLastRewardComputeBurnHeight >= BigInt(target.expectedLastRewardComputeBurnHeight)) {
+    throw new Pox5CalculateRewardsError(
+      "already-computed",
+      `PoX-5 reward calculation already reached Bitcoin block ${observedLastRewardComputeBurnHeight}`,
+    );
+  }
+
+  const candidatePeriods = bondPeriodsForRewardCycle(
+    BigInt(target.rewardCycle),
+    decodeUInt(firstBondCycleValue, "bond-period-to-reward-cycle"),
+  );
+  const candidates = await Promise.all(
+    candidatePeriods.map(async (bondIndex): Promise<Pox5CalculationBond | null> => {
+      const [bondValue, activeValue] = await Promise.all([
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "get-protocol-bond",
+          input.sender,
+          [encodeUIntHex(bondIndex)],
+          options,
+        ),
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "is-bond-active-at-height",
+          input.sender,
+          [
+            encodeUIntHex(bondIndex),
+            encodeUIntHex(BigInt(target.expectedLastRewardComputeBurnHeight)),
+          ],
+          options,
+        ),
+      ]);
+      const bond = decodePox5ProtocolBond(bondValue, `get-protocol-bond(${bondIndex})`);
+      const active = decodeBoolean(activeValue, `is-bond-active-at-height(${bondIndex})`);
+      if (!bond) {
+        if (active) {
+          throw new Pox5CalculateRewardsError(
+            "incomplete-bond-state",
+            `PoX-5 reported bond period ${bondIndex} active without returning its definition`,
+          );
+        }
+        return null;
+      }
+      if (!active) return null;
+      return {
+        bondIndex,
+        targetRateBips: bond.targetRate,
+        stxValueRatio: bond.stxValueRatio,
+        minUstxRatioBips: bond.minUstxRatio,
+      };
+    }),
+  );
+  const activeBonds = orderPox5CalculationBonds(
+    candidates.filter((bond): bond is Pox5CalculationBond => bond !== null),
+  );
+  return {
+    adapter: {
+      id: POX5_CALCULATE_REWARDS_ADAPTER_ID,
+      revision: POX5_CALCULATE_REWARDS_ADAPTER_REVISION,
+    },
+    targetRewardCycle: target.rewardCycle,
+    targetCheckpoint: target.calculationCheckpoint,
+    expectedLastRewardComputeBurnHeight: target.expectedLastRewardComputeBurnHeight,
+    observedLastRewardComputeBurnHeight: observedLastRewardComputeBurnHeight.toString(),
+    grossAccruedRewardsSats: decodeUInt(accruedValue, "get-new-rewards").toString(),
+    activeBonds: activeBonds.map((bond) => ({
+      bondIndex: bond.bondIndex.toString(),
+      targetRateBips: bond.targetRateBips.toString(),
+      stxValueRatio: bond.stxValueRatio.toString(),
+      minUstxRatioBips: bond.minUstxRatioBips.toString(),
+    })),
+    functionArgs: encodePox5CalculateRewardsArguments(activeBonds),
+  };
+}

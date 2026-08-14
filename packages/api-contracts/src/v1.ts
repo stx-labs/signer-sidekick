@@ -314,7 +314,8 @@ export type BrowserWalletIntentAction =
   | "withdraw-fees"
   | "sweep-fee-refunds"
   | "claim-rewards"
-  | "claim-staker-rewards";
+  | "claim-staker-rewards"
+  | "calculate-rewards";
 export type RecurringWalletIntentAction = Exclude<BrowserWalletIntentAction, "deploy-manager">;
 export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
@@ -334,6 +335,7 @@ export type BrowserWalletIntentCreateRequest =
     }
   | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
   | { action: "claim-rewards"; actorPrincipal: string; jobId: string }
+  | { action: "calculate-rewards"; actorPrincipal: string }
   | {
       action: "claim-staker-rewards";
       actorPrincipal: string;
@@ -410,7 +412,8 @@ export type BrowserWalletTransaction =
           | "withdraw-fees"
           | "sweep-fee-refunds"
           | "claim-rewards"
-          | "claim-staker-rewards";
+          | "claim-staker-rewards"
+          | "calculate-rewards";
         functionArgs: string[];
         network: BrowserWalletConnectNetwork;
         address: string;
@@ -431,6 +434,16 @@ export interface BrowserWalletIntent {
   expiresAt: string;
   transaction: BrowserWalletTransaction;
   request?: BrowserWalletIntentRequest | undefined;
+  /** Immutable operation-specific completion binding. */
+  binding?:
+    | {
+        kind: "calculate-rewards";
+        pox5ContractId: string;
+        targetRewardCycle: number;
+        targetCheckpoint: "first-half" | "second-half";
+        expectedLastRewardComputeBurnHeight: number;
+      }
+    | undefined;
   review: {
     title: string;
     summary: string;
@@ -1289,6 +1302,7 @@ export const browserWalletIntentActionSchema = z.enum([
   "sweep-fee-refunds",
   "claim-rewards",
   "claim-staker-rewards",
+  "calculate-rewards",
 ]);
 export const recurringWalletIntentActionSchema = z.enum([
   "register-self",
@@ -1299,11 +1313,9 @@ export const recurringWalletIntentActionSchema = z.enum([
   "sweep-fee-refunds",
   "claim-rewards",
   "claim-staker-rewards",
+  "calculate-rewards",
 ]);
-export const operatorOperationCodeSchema = z.union([
-  recurringWalletIntentActionSchema,
-  z.literal("calculate-rewards"),
-]);
+export const operatorOperationCodeSchema = recurringWalletIntentActionSchema;
 export type OperatorOperationCode = z.infer<typeof operatorOperationCodeSchema>;
 
 const contextualActionLabelSchema = z.string().min(1).max(120);
@@ -2082,6 +2094,12 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     .strict(),
   z
     .object({
+      action: z.literal("calculate-rewards"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       // One `(staker, reward-cycle, bond-index)` per request. `claim-staker-rewards` takes a
       // single staker and has no batch form, so a settlement is one transaction per tuple.
       action: z.literal("claim-staker-rewards"),
@@ -2277,6 +2295,18 @@ export const browserWalletTransactionSchema = z.union([
   z
     .object({
       method: z.literal("stx_callContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("calculate-rewards"),
+          functionArgs: z.array(clarityHexSchema).length(1),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
       params: browserWalletAssetPostConditionParamsSchema
         .extend({
           contract: z.string().min(1),
@@ -2329,6 +2359,16 @@ export const browserWalletIntentSchema = z
         onboardingBrowserWalletIntentCreateRequestSchema,
         browserWalletIntentCreateRequestSchema,
       ])
+      .optional(),
+    binding: z
+      .object({
+        kind: z.literal("calculate-rewards"),
+        pox5ContractId: z.string().min(1),
+        targetRewardCycle: z.number().int().nonnegative(),
+        targetCheckpoint: z.enum(["first-half", "second-half"]),
+        expectedLastRewardComputeBurnHeight: z.number().int().nonnegative(),
+      })
+      .strict()
       .optional(),
     review: z
       .object({
@@ -2428,6 +2468,16 @@ export const browserWalletIntentSchema = z
           message: "Schema version 2 requires the immutable action request",
         });
       }
+      if (
+        (value.action === "calculate-rewards") !==
+        (value.binding?.kind === "calculate-rewards")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["binding"],
+          message: "Reward-calculation intents require their immutable completion binding",
+        });
+      }
     }
     const transaction = value.transaction;
     const actionMatches =
@@ -2452,7 +2502,10 @@ export const browserWalletIntentSchema = z
         transaction.params.functionName === "claim-rewards") ||
       (value.action === "claim-staker-rewards" &&
         transaction.method === "stx_callContract" &&
-        transaction.params.functionName === "claim-staker-rewards");
+        transaction.params.functionName === "claim-staker-rewards") ||
+      (value.action === "calculate-rewards" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "calculate-rewards");
     if (!actionMatches) {
       context.addIssue({
         code: "custom",

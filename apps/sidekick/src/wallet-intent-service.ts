@@ -47,6 +47,10 @@ import {
   type OperatorAnchorSnapshot,
   readOperatorAnchorSnapshot,
 } from "./operator-anchor-snapshot.js";
+import {
+  Pox5CalculateRewardsError,
+  readPox5CalculateRewardsObservation,
+} from "./pox5-calculate-rewards.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { type VerifiedSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
 import type { SidekickStore } from "./storage/store.js";
@@ -164,6 +168,7 @@ const storedManifestV2Schema = z
       "sweep-fee-refunds",
       "claim-rewards",
       "claim-staker-rewards",
+      "calculate-rewards",
     ]),
     request: walletIntentRequestSchema,
     network: z.enum(["mainnet", "pox5-testnet", "devnet", "regtest"]),
@@ -172,6 +177,16 @@ const storedManifestV2Schema = z
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     transaction: browserWalletTransactionSchema,
+    binding: z
+      .object({
+        kind: z.literal("calculate-rewards"),
+        pox5ContractId: z.string().min(1),
+        targetRewardCycle: z.number().int().nonnegative(),
+        targetCheckpoint: z.enum(["first-half", "second-half"]),
+        expectedLastRewardComputeBurnHeight: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
     review: z
       .object({
         title: z.string().min(1),
@@ -215,6 +230,13 @@ const storedManifestV2Schema = z
         code: "custom",
         path: ["transaction"],
         message: "Wallet intent action and transaction do not match",
+      });
+    }
+    if ((value.action === "calculate-rewards") !== (value.binding?.kind === "calculate-rewards")) {
+      context.addIssue({
+        code: "custom",
+        path: ["binding"],
+        message: "Reward-calculation intents require their immutable completion binding",
       });
     }
   });
@@ -273,6 +295,7 @@ interface AuthoritativeIntentFacts {
   chainId: number;
   transaction: BrowserWalletTransaction;
   review: BrowserWalletIntent["review"];
+  binding?: BrowserWalletIntent["binding"];
 }
 
 interface EquivalentIntentFacts {
@@ -456,6 +479,7 @@ export class WalletIntentService {
         createdAt: observedAt,
         expiresAt: nowPlusLifetime(observedAt),
         transaction: current.transaction,
+        ...(current.binding ? { binding: current.binding } : {}),
         review: current.review,
         seal: { factsSha256: currentFactsSha256 },
       });
@@ -604,11 +628,14 @@ export class WalletIntentService {
         return this.publicIntent(superseded);
       }
       const factsSha256 = canonicalJsonSha256(authoritative.facts);
+      const manifestBinding = "binding" in manifest ? manifest.binding : null;
       if (
         authoritative.scope !== stored.scope ||
         authoritative.requiredSender !== stored.requiredSender ||
         (manifest.schemaVersion === 2 && factsSha256 !== stored.factsSha256) ||
-        canonicalJsonSha256(authoritative.transaction) !== canonicalJsonSha256(manifest.transaction)
+        canonicalJsonSha256(authoritative.transaction) !==
+          canonicalJsonSha256(manifest.transaction) ||
+        canonicalJsonSha256(authoritative.binding ?? null) !== canonicalJsonSha256(manifestBinding)
       ) {
         const superseded = this.transition(stored, "superseded", observedAt);
         this.recordObservation(superseded, {
@@ -810,6 +837,7 @@ export class WalletIntentService {
       ? managerActionCapability(snapshot.manager.capabilities, capabilityId)
       : null;
     if (
+      capabilityId === null ||
       snapshot.manager.managerPrincipal !== managerPrincipal ||
       !snapshot.manager.attachAllowed ||
       !capability?.executionAvailable ||
@@ -821,6 +849,26 @@ export class WalletIntentService {
           "The configured manager is unavailable or lacks a reviewed capability on this network",
       );
     }
+  }
+
+  private assertPox5CalculationTarget(
+    snapshot: OperatorAnchorSnapshot,
+    network: WalletTransactionNetworkBinding,
+  ): string {
+    const pox5ContractId = snapshot.preflight.pox.pox5ContractId;
+    if (
+      !walletNetworkChecksPass(snapshot, network.chainId) ||
+      !pox5ContractId ||
+      snapshot.preflight.compatibility.status !== "matched" ||
+      !snapshot.preflight.compatibility.profileId ||
+      !snapshot.preflight.pox.sourceSha256
+    ) {
+      throw new WalletIntentError(
+        "wallet_execution_unavailable",
+        "Reward calculation requires an active PoX-5 contract whose live source matches an installed reviewed network profile",
+      );
+    }
+    return pox5ContractId;
   }
 
   private assertActionPrincipal(principal: string, network: BrowserWalletIntentNetwork): void {
@@ -870,7 +918,11 @@ export class WalletIntentService {
         "The node does not match the selected wallet network. Check Settings and try again",
       );
     }
-    this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
+    const pox5CalculationContract =
+      action === "calculate-rewards" ? this.assertPox5CalculationTarget(snapshot, network) : null;
+    if (action !== "calculate-rewards") {
+      this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
+    }
     if (action === "register-self") {
       const establishedParticipation = await this.options.canRepairSignerRegistration();
       if (!establishedParticipation) {
@@ -909,6 +961,95 @@ export class WalletIntentService {
     const readOptions = snapshot.chainAnchor?.indexBlockHash
       ? { tip: snapshot.chainAnchor.indexBlockHash }
       : undefined;
+    if (action === "calculate-rewards") {
+      if (!pox5CalculationContract) {
+        throw new WalletIntentError(
+          "wallet_execution_unavailable",
+          "The reviewed PoX-5 reward-calculation contract is unavailable",
+        );
+      }
+      try {
+        const observation = await readPox5CalculateRewardsObservation({
+          node,
+          pox5ContractId: pox5CalculationContract,
+          sender: actorPrincipal,
+          chainAnchor: snapshot.chainAnchor,
+        });
+        assertStateUnchanged();
+        const activeBondPeriods = observation.activeBonds.map(({ bondIndex }) => bondIndex);
+        return {
+          scope: `calculate-rewards:${observation.targetRewardCycle}:${observation.targetCheckpoint}`,
+          requiredSender: actorPrincipal,
+          network: network.network,
+          chainId: network.chainId,
+          facts: {
+            schemaVersion: 2,
+            request,
+            pox5ContractId: pox5CalculationContract,
+            pox5SourceSha256: snapshot.preflight.pox.sourceSha256,
+            compatibilityProfile: {
+              id: snapshot.preflight.compatibility.profileId,
+              revision: snapshot.preflight.compatibility.profileRevision,
+            },
+            chainAnchor: snapshot.chainAnchor,
+            observation,
+          },
+          transaction: {
+            method: "stx_callContract",
+            params: {
+              contract: pox5CalculationContract,
+              functionName: "calculate-rewards",
+              functionArgs: observation.functionArgs,
+              network: network.network,
+              address: actorPrincipal,
+              sponsored: false,
+              postConditionMode: "deny",
+              postConditions: [],
+            },
+          },
+          binding: {
+            kind: "calculate-rewards",
+            pox5ContractId: pox5CalculationContract,
+            targetRewardCycle: observation.targetRewardCycle,
+            targetCheckpoint: observation.targetCheckpoint,
+            expectedLastRewardComputeBurnHeight: observation.expectedLastRewardComputeBurnHeight,
+          },
+          review: {
+            title: "Calculate PoX-5 rewards",
+            summary: `Calculate the ${observation.targetCheckpoint} distribution for reward cycle ${observation.targetRewardCycle}.`,
+            expectedPostState: `PoX-5 records Bitcoin block ${observation.expectedLastRewardComputeBurnHeight} as the latest completed reward calculation.`,
+            fields: [
+              { label: "PoX-5 contract", value: pox5CalculationContract },
+              { label: "Sender", value: actorPrincipal },
+              { label: "Network", value: network.network },
+              {
+                label: "Reviewed protocol profile",
+                value: `${snapshot.preflight.compatibility.profileId}@${snapshot.preflight.compatibility.profileRevision}`,
+              },
+              { label: "Reward cycle", value: String(observation.targetRewardCycle) },
+              { label: "Checkpoint", value: observation.targetCheckpoint },
+              {
+                label: "Calculation Bitcoin block",
+                value: String(observation.expectedLastRewardComputeBurnHeight),
+              },
+              { label: "Accrued rewards (sats)", value: observation.grossAccruedRewardsSats },
+              {
+                label: "Active bond periods",
+                value: activeBondPeriods.length === 0 ? "None" : activeBondPeriods.join(", "),
+              },
+            ],
+          },
+        };
+      } catch (error) {
+        if (!(error instanceof Pox5CalculateRewardsError)) throw error;
+        throw new WalletIntentError(
+          error.code === "already-computed"
+            ? "wallet_intent_invalid"
+            : "wallet_execution_unavailable",
+          error.message,
+        );
+      }
+    }
     if (action === "claim-rewards") {
       const profileId = snapshot.manager.source.profileId;
       if (!profileId) {
@@ -1543,6 +1684,40 @@ export class WalletIntentService {
     try {
       const { config, node, api } = clients;
       if (!verifiedByApi && !indexed.resultRepr.trimStart().startsWith("(ok")) {
+        if (manifest.action === "calculate-rewards" && manifest.binding) {
+          const observedComputeHeight = decodeUInt(
+            await node.callReadOnly(
+              manifest.binding.pox5ContractId,
+              "get-last-reward-compute-height",
+              manifest.requiredSender,
+              [],
+              { tip: indexed.indexBlockHash },
+            ),
+            "get-last-reward-compute-height",
+          );
+          if (
+            observedComputeHeight >= BigInt(manifest.binding.expectedLastRewardComputeBurnHeight)
+          ) {
+            const next =
+              stored.state === "superseded"
+                ? stored
+                : this.transition(stored, "superseded", observedAt);
+            this.recordObservation(
+              next,
+              {
+                outcome: "superseded",
+                observedAt,
+                canonical: true,
+                blockHeight,
+                indexBlockHash: indexed.indexBlockHash,
+                detail:
+                  "Another permissionless caller completed this reward calculation before the submitted transaction executed",
+              },
+              decoded,
+            );
+            return this.publicIntent(next);
+          }
+        }
         const next = stored.state === "superseded" ? stored : this.toFailed(stored, observedAt);
         this.recordObservation(
           next,
@@ -1606,7 +1781,26 @@ export class WalletIntentService {
         }
         const managerPrincipal = manifest.transaction.params.contract;
         const request = this.requestFromManifest(manifest);
-        if (manifest.action === "claim-rewards") {
+        if (manifest.action === "calculate-rewards") {
+          if (!manifest.binding || manifest.binding.pox5ContractId !== managerPrincipal) {
+            throw new WalletIntentError(
+              "wallet_intent_invalid",
+              "Reward-calculation intent is missing its exact PoX-5 completion binding",
+            );
+          }
+          const observedComputeHeight = decodeUInt(
+            await node.callReadOnly(
+              managerPrincipal,
+              "get-last-reward-compute-height",
+              manifest.requiredSender,
+              [],
+              { tip: indexed.indexBlockHash },
+            ),
+            "get-last-reward-compute-height",
+          );
+          complete =
+            observedComputeHeight === BigInt(manifest.binding.expectedLastRewardComputeBurnHeight);
+        } else if (manifest.action === "claim-rewards") {
           if (!("jobId" in request) || !("actorPrincipal" in request)) {
             throw new WalletIntentError(
               "wallet_intent_invalid",

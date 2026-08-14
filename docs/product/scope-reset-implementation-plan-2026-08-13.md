@@ -264,6 +264,15 @@ Gate:
   when inputs are incomplete.
 - Prepare/observe wallet-signed `calculate-rewards`; leave unattended execution behind Assist.
 
+Implementation checkpoint (2026-08-14):
+
+- The reviewed `calculate-rewards` protocol adapter, complete anchored active-bond discovery,
+  canonical ordering, immutable checkpoint binding, pre-wallet second witness, canonical
+  post-state verification, and permissionless-race handling are implemented.
+- Golden execution vectors run the real vendored PoX-5 contract for STX-only and mixed STX/bond
+  distributions. The broader simulator, ranges, confidence/calibration, and realized-error history
+  remain open.
+
 ### Slice 7: signer/network diagnosis and support handoff
 
 - Persist cheap five-second node/signer evidence and useful rollups.
@@ -288,6 +297,12 @@ Gate:
   independent freshness/failure states and the approved visual composition.
 - Run the Activity/action and Overview contract, browser, accessibility, responsive, Devnet action,
   and support-snapshot acceptance suites.
+
+Implementation checkpoint (2026-08-14): the released-binary Devnet connect/observe/action gate is
+met. A controlled Leather-compatible provider executes one real shared-workspace `update-fees`
+intent, returns only the transaction ID, and the released Sidekick independently verifies canonical
+execution and projects a `complete` Activity group. The passing clean-chain run also covered the
+existing observer, restart/recovery, external smoke, installed-profile, and failure-injection legs.
 
 ### Slice 9: Assist re-evaluation
 

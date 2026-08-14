@@ -762,6 +762,62 @@ describe("browser-wallet intent contracts", () => {
     ).toBe(false);
   });
 
+  it("requires an immutable PoX-5 completion binding for reward calculations", () => {
+    const request = { action: "calculate-rewards" as const, actorPrincipal: actor };
+    const intent = {
+      schemaVersion: 2,
+      id: "10000000-0000-4000-8000-000000000004",
+      action: "calculate-rewards",
+      request,
+      binding: {
+        kind: "calculate-rewards",
+        pox5ContractId: `${actor}.pox-5`,
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: 962_249,
+      },
+      network: "pox5-testnet",
+      chainId: 0x80000005,
+      requiredSender: actor,
+      createdAt: "2026-07-19T12:00:00.000Z",
+      expiresAt: "2026-07-19T12:15:00.000Z",
+      transaction: {
+        method: "stx_callContract",
+        params: {
+          contract: `${actor}.pox-5`,
+          functionName: "calculate-rewards",
+          functionArgs: ["0x0b00000000"],
+          network: "pox5-testnet",
+          address: actor,
+          sponsored: false,
+          postConditionMode: "deny",
+          postConditions: [],
+        },
+      },
+      review: {
+        title: "Calculate rewards",
+        summary: "Calculate one exact global checkpoint",
+        expectedPostState: "PoX-5 records the checkpoint",
+        fields: [{ label: "Checkpoint", value: "first-half" }],
+      },
+      seal: { factsSha256: "a".repeat(64), manifestSha256: "b".repeat(64) },
+      status: "prepared",
+      txid: null,
+      verification: null,
+    };
+    expect(browserWalletIntentCreateRequestSchema.safeParse(request).success).toBe(true);
+    expect(browserWalletIntentSchema.safeParse(intent).success).toBe(true);
+    expect(browserWalletIntentSchema.safeParse({ ...intent, binding: undefined }).success).toBe(
+      false,
+    );
+    expect(
+      browserWalletIntentSchema.safeParse({
+        ...managerIntent("pox5-testnet", 0x80000005),
+        binding: intent.binding,
+      }).success,
+    ).toBe(false);
+  });
+
   it("binds V2 PoX-5 Testnet intents to the exact chain and immutable request", () => {
     const intent = managerIntent("pox5-testnet", 0x80000005);
     expect(browserWalletIntentSchema.safeParse(intent).success).toBe(true);

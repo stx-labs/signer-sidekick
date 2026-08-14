@@ -168,7 +168,21 @@ function distributeRewards(rewards: bigint) {
     [Cl.list([])],
     permissionlessCaller,
   );
-  expect(calculation.result.type).toBe("ok");
+  expect(calculation.result).toBeOk(
+    Cl.tuple({
+      "bond-periods": Cl.list([]),
+      "calculation-height": Cl.uint(cycleStart + halfCycleLength - 1n),
+      "gross-accrued-rewards": Cl.uint(rewards),
+      "total-bond-rewards": Cl.uint(0),
+      "reserve-deposit": Cl.uint(300),
+      "reserve-balance": Cl.uint(300),
+      "stx-cycle": Cl.uint(1),
+      "total-stx-staker-rewards": Cl.uint(1_700),
+      "cycle-staked-ustx": Cl.uint(minimumStake),
+      "accrued-rewards-per-ustx": Cl.uint(34_000_000_000),
+      "cumulative-rewards-per-ustx": Cl.uint(34_000_000_000),
+    }),
+  );
   const claim = simnet.callPublicFn(
     managerId,
     "claim-rewards",
@@ -826,8 +840,26 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
     expect(
       simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([])], deployer).result,
     ).toBeErr(Cl.uint(33));
-    expectOk(
-      simnet.callPublicFn(pox5Id, "calculate-rewards", [Cl.list([Cl.uint(0)])], deployer).result,
+    const calculation = simnet.callPublicFn(
+      pox5Id,
+      "calculate-rewards",
+      [Cl.list([Cl.uint(0)])],
+      deployer,
+    );
+    expect(calculation.result).toBeOk(
+      Cl.tuple({
+        "bond-periods": Cl.list([Cl.uint(0)]),
+        "calculation-height": Cl.uint(cycleStart + halfCycleLength - 1n),
+        "gross-accrued-rewards": Cl.uint(rewards),
+        "total-bond-rewards": Cl.uint(100),
+        "reserve-deposit": Cl.uint(285),
+        "reserve-balance": Cl.uint(285),
+        "stx-cycle": Cl.uint(1),
+        "total-stx-staker-rewards": Cl.uint(1_615),
+        "cycle-staked-ustx": Cl.uint(minimumStake),
+        "accrued-rewards-per-ustx": Cl.uint(32_300_000_000),
+        "cumulative-rewards-per-ustx": Cl.uint(32_300_000_000),
+      }),
     );
 
     const bondEarned = uintValue(

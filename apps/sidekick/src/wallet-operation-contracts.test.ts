@@ -16,6 +16,7 @@ describe("wallet operation contracts", () => {
       "sweep-fee-refunds",
       "claim-rewards",
       "claim-staker-rewards",
+      "calculate-rewards",
     ]);
   });
 
@@ -25,10 +26,12 @@ describe("wallet operation contracts", () => {
     );
     expect(WALLET_OPERATION_CONTRACTS["claim-rewards"].authority).toBe("permissionless");
     expect(WALLET_OPERATION_CONTRACTS["claim-staker-rewards"].authority).toBe("permissionless");
+    expect(WALLET_OPERATION_CONTRACTS["calculate-rewards"].authority).toBe("permissionless");
     expect(managerCapabilityForWalletAction("add-admin")).toBe("update-admin");
     expect(managerCapabilityForWalletAction("claim-staker-rewards")).toBe(
       "reference-reward-claims",
     );
+    expect(managerCapabilityForWalletAction("calculate-rewards")).toBeNull();
   });
 
   it("matches each recurring action to its adapter function", () => {

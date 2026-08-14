@@ -1,0 +1,126 @@
+import {
+  bufferCV,
+  cvToHex,
+  falseCV,
+  listCV,
+  noneCV,
+  someCV,
+  trueCV,
+  tupleCV,
+  uintCV,
+} from "@stacks/transactions";
+import { describe, expect, it, vi } from "vitest";
+import type { ChainAnchor } from "./chain-anchor.js";
+import {
+  type Pox5CalculateRewardsError,
+  readPox5CalculateRewardsObservation,
+} from "./pox5-calculate-rewards.js";
+
+const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";
+const sender = "SP000000000000000000002Q6VF78";
+const indexBlockHash = `0x${"ab".repeat(32)}`;
+const chainAnchor: ChainAnchor = {
+  stacksBlockHeight: 9_000,
+  indexBlockHash,
+  burnBlockHeight: 8_000,
+  rewardCycle: 5,
+  rewardCycleLength: 100,
+  prepareCycleLength: 10,
+  cyclePosition: 50,
+  phase: "reward",
+  checkpoint: "second-half",
+};
+
+function protocolBond(stxValueRatio: bigint) {
+  return someCV(
+    tupleCV({
+      "target-rate": uintCV(500),
+      "stx-value-ratio": uintCV(stxValueRatio),
+      "min-ustx-ratio": uintCV(10_000),
+      "early-unlock-bytes": bufferCV(Buffer.from("00", "hex")),
+    }),
+  );
+}
+
+function node(options: { lastCompute?: bigint; activeWithoutBond?: boolean } = {}) {
+  return {
+    callReadOnly: vi.fn(
+      async (
+        _principal: string,
+        functionName: string,
+        _sender: string,
+        args: readonly string[],
+        readOptions?: { tip?: string },
+      ) => {
+        expect(readOptions).toEqual({ tip: indexBlockHash });
+        if (functionName === "get-last-reward-compute-height") {
+          return uintCV(options.lastCompute ?? 7_949n);
+        }
+        if (functionName === "get-new-rewards") return uintCV(2_000);
+        if (functionName === "bond-period-to-reward-cycle") return uintCV(1);
+        const decodedIndex =
+          args[0] === cvToHex(uintCV(0)) ? 0n : args[0] === cvToHex(uintCV(1)) ? 1n : 2n;
+        if (functionName === "get-protocol-bond") {
+          if (decodedIndex === 0n) return protocolBond(100);
+          if (decodedIndex === 2n && !options.activeWithoutBond) return protocolBond(200);
+          return noneCV();
+        }
+        if (functionName === "is-bond-active-at-height") {
+          return decodedIndex === 1n ? falseCV() : trueCV();
+        }
+        throw new Error(`Unexpected read ${functionName}`);
+      },
+    ),
+    getDataVar: vi.fn(),
+    getMapEntry: vi.fn(),
+  };
+}
+
+describe("PoX-5 calculate-rewards observation", () => {
+  it("seals the complete active set in the contract's required order", async () => {
+    const reader = node();
+    await expect(
+      readPox5CalculateRewardsObservation({
+        node: reader,
+        pox5ContractId,
+        sender,
+        chainAnchor,
+      }),
+    ).resolves.toMatchObject({
+      adapter: { id: "pox5-calculate-rewards", revision: 1 },
+      targetRewardCycle: 5,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: 7_999,
+      observedLastRewardComputeBurnHeight: "7949",
+      grossAccruedRewardsSats: "2000",
+      activeBonds: [{ bondIndex: "2" }, { bondIndex: "0" }],
+      functionArgs: [cvToHex(listCV([uintCV(2), uintCV(0)]))],
+    });
+    expect(reader.callReadOnly).toHaveBeenCalledWith(
+      pox5ContractId,
+      "is-bond-active-at-height",
+      sender,
+      [cvToHex(uintCV(2)), cvToHex(uintCV(7_999))],
+      { tip: indexBlockHash },
+    );
+  });
+
+  it("rejects completed checkpoints and an active period without its definition", async () => {
+    await expect(
+      readPox5CalculateRewardsObservation({
+        node: node({ lastCompute: 7_999n }),
+        pox5ContractId,
+        sender,
+        chainAnchor,
+      }),
+    ).rejects.toMatchObject<Pox5CalculateRewardsError>({ code: "already-computed" });
+    await expect(
+      readPox5CalculateRewardsObservation({
+        node: node({ activeWithoutBond: true }),
+        pox5ContractId,
+        sender,
+        chainAnchor,
+      }),
+    ).rejects.toMatchObject<Pox5CalculateRewardsError>({ code: "incomplete-bond-state" });
+  });
+});
