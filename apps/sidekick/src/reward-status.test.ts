@@ -9,6 +9,7 @@ import {
 } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "./chain-anchor.js";
+import type { RewardForecastObservation } from "./reward-forecast.js";
 import {
   discoverStakerClaims,
   type RewardStatusStore,
@@ -67,6 +68,7 @@ function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
       .mockReturnValue([membership(stakerOne), membership(stakerTwo)]),
     putRewardCycleSnapshot: vi.fn(),
     putRewardOutlookObservation: vi.fn(),
+    listRewardForecastSamples: vi.fn().mockReturnValue([]),
   };
 }
 
@@ -198,6 +200,23 @@ function l1Preference(maxFee: bigint) {
   );
 }
 
+function outlookHistorySample(
+  burnBlockHeight: number,
+  globalAccruedRewardsSats: string,
+): RewardForecastObservation {
+  return {
+    observedBurnBlockHeight: burnBlockHeight,
+    observedAt: `2026-07-14T12:${String(burnBlockHeight - 960_000).padStart(2, "0")}:00.000Z`,
+    globalAccruedRewardsSats,
+    lastRewardComputeBurnHeight: "959999",
+    nextCalculation: {
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+    },
+  };
+}
+
 describe("STX-only reward status", () => {
   it("reads and persists exact PoX-5 outlook without a signer-manager adapter", async () => {
     const projectionStore = store();
@@ -325,6 +344,67 @@ describe("STX-only reward status", () => {
         globalAccruedRewardsSats: "25000",
         poolEstimate: null,
         poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+      }),
+    );
+  });
+
+  it("projects a checkpoint range from durable samples and replays each bound through PoX-5", async () => {
+    const projectionStore = store();
+    vi.mocked(projectionStore.listRewardForecastSamples).mockReturnValue([
+      outlookHistorySample(960_010, "1000"),
+      outlookHistorySample(960_020, "2200"),
+    ]);
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 100_000_000_000n,
+          stxShares: 50_000_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:30:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      forecastUnavailableReason: null,
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 961_049,
+        globalSats: { low: "98545", point: "108922", high: "122080" },
+        poolSats: { low: "41882", point: "46292", high: "51884" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_010,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 230,
+          elapsedBlocks: 241,
+          remainingBlocks: 809,
+        },
+        confidence: "low",
+      },
+    });
+    expect(projectionStore.listRewardForecastSamples).toHaveBeenCalledWith(manager, pox5, {
+      lastRewardComputeBurnHeight: "959999",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+      throughBurnBlockHeight: 960_240,
+      limit: 2_102,
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forecast: expect.objectContaining({
+          poolSats: { low: "41882", point: "46292", high: "51884" },
+        }),
+        forecastUnavailableReason: null,
       }),
     );
   });

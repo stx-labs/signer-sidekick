@@ -721,8 +721,9 @@ surfaces in the same change series. No compatibility redirects are required once
 - The released-binary Devnet connect/observe/action leg exercises the shared action workspace and
   reaches a reconciled `complete` Activity group.
 
-The reward-outlook path now includes the contract-proven simulator and a persisted, single-anchor
-`if-calculated-now` pool estimate. The next implementation work is the run-rate range, confidence,
-calibration, projected-fee, and realized-error layers, followed by calibrated signer/network
-diagnosis and support handoff. The shared action workspace and released-binary action gate no longer
-block that work.
+The reward-outlook path now includes the contract-proven simulator, a persisted single-anchor
+`if-calculated-now` pool estimate, and a sample-gated checkpoint run-rate range whose three bounds
+all use that exact simulator. The next implementation work is realized calculation-event capture,
+model-error calibration, calibrated confidence, and projected fees, followed by calibrated
+signer/network diagnosis and support handoff. The shared action workspace and released-binary
+action gate no longer block that work.

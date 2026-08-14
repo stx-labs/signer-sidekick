@@ -61,6 +61,29 @@ function poolEstimateUnavailableDetail(
   }
 }
 
+function rewardForecastUnavailableDetail(
+  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["forecastUnavailableReason"],
+): string {
+  switch (reason) {
+    case "chain-anchor-unavailable":
+      return "A stable local-node anchor is required.";
+    case "calculation-target-unavailable":
+      return "PoX-5 does not expose a valid next calculation target at this anchor.";
+    case "current-pool-estimate-unavailable":
+      return "The current anchored pool inputs are incomplete.";
+    case "insufficient-samples":
+      return "At least three observations spanning six Bitcoin blocks are required.";
+    case "non-monotonic-accrual":
+      return "The cumulative reward balance changed unexpectedly inside this interval.";
+    case "forecast-inputs-unavailable":
+      return "The durable observation window could not be read safely.";
+    case "contract-simulation-failed":
+      return "A projected bound could not produce a valid PoX-5 integer calculation.";
+    case null:
+      return "The checkpoint forecast is unavailable.";
+  }
+}
+
 function compareSortValues(
   left: bigint | number | string | boolean | null,
   right: bigint | number | string | boolean | null,
@@ -119,6 +142,7 @@ export function Rewards({
   const globalAccruedSats =
     rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
   const poolEstimate = rewardOutlook?.poolEstimate ?? null;
+  const rewardForecast = rewardOutlook?.forecast ?? null;
   const lastRewardComputeBurnHeight =
     rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
     rewards?.global.lastRewardComputeBurnHeight ??
@@ -406,6 +430,32 @@ export function Rewards({
               </span>
             </StatLine>
           ) : null}
+          <StatLine label="Checkpoint projection">
+            <span className="btc-value src src-calculated">
+              {rewardForecast ? `${sbtc(rewardForecast.poolSats.point)} sBTC` : "Unavailable"}
+            </span>
+          </StatLine>
+          {rewardForecast ? (
+            <>
+              <StatLine label="Observed-rate range">
+                <span className="mono">
+                  {sbtc(rewardForecast.poolSats.low)}–{sbtc(rewardForecast.poolSats.high)} sBTC
+                </span>
+              </StatLine>
+              <p className="tertiary balance-note">
+                {rewardForecast.confidence === "developing" ? "Developing" : "Low"} confidence from{" "}
+                {rewardForecast.sample.observations} observations across{" "}
+                {rewardForecast.sample.sampleBlocks} Bitcoin blocks. The range replays observed
+                global accrual rates through exact PoX-5 arithmetic using current shares.
+              </p>
+            </>
+          ) : (
+            <p className="tertiary balance-note">
+              {rewardForecastUnavailableDetail(
+                rewardOutlook?.forecastUnavailableReason ?? "forecast-inputs-unavailable",
+              )}
+            </p>
+          )}
           <p className="tertiary balance-note">
             {poolEstimate
               ? "Contract-exact for the current accrual, shares, and active bonds. This is not a checkpoint forecast."

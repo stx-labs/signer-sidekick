@@ -6,6 +6,7 @@ import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
 import type { SidekickNetwork } from "../config.js";
+import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
 import { type Migration, migrations } from "./migrations.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
@@ -655,6 +656,75 @@ const rewardPoolEstimateUnavailableReasonSchema = z.enum([
   "contract-simulation-failed",
 ]);
 
+const rewardSatsRangeSchema = z
+  .object({
+    low: unsignedIntegerTextSchema,
+    point: unsignedIntegerTextSchema,
+    high: unsignedIntegerTextSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (BigInt(value.low) > BigInt(value.point) || BigInt(value.point) > BigInt(value.high)) {
+      context.addIssue({
+        code: "custom",
+        path: ["point"],
+        message: "reward range must be ordered low, point, high",
+      });
+    }
+  });
+
+const rewardForecastSchema = z
+  .object({
+    kind: z.literal("checkpoint-run-rate"),
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    globalSats: rewardSatsRangeSchema,
+    poolSats: rewardSatsRangeSchema,
+    sample: z
+      .object({
+        observations: z.number().int().min(3),
+        firstObservedBurnHeight: z.number().int().nonnegative(),
+        lastObservedBurnHeight: z.number().int().nonnegative(),
+        sampleBlocks: z.number().int().min(6),
+        elapsedBlocks: z.number().int().positive(),
+        remainingBlocks: z.number().int().nonnegative(),
+      })
+      .strict(),
+    confidence: z.enum(["low", "developing"]),
+    assumptions: z.tuple([
+      z.literal("zero-accrual-after-last-calculation"),
+      z.literal("linear-global-accrual-run-rate"),
+      z.literal("current-cycle-shares"),
+      z.literal("current-active-bond-set"),
+      z.literal("unchanged-reserve-before-calculation"),
+      z.literal("contract-integer-rounding"),
+    ]),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.sample.sampleBlocks !==
+      value.sample.lastObservedBurnHeight - value.sample.firstObservedBurnHeight
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sample", "sampleBlocks"],
+        message: "sampleBlocks must match the observed burn-height window",
+      });
+    }
+  });
+
+const rewardForecastUnavailableReasonSchema = z.enum([
+  "chain-anchor-unavailable",
+  "calculation-target-unavailable",
+  "current-pool-estimate-unavailable",
+  "insufficient-samples",
+  "non-monotonic-accrual",
+  "forecast-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
 const rewardOutlookObservationInputSchema = z
   .object({
     managerPrincipal: principalSchema,
@@ -666,6 +736,8 @@ const rewardOutlookObservationInputSchema = z
     lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
     poolEstimate: rewardPoolEstimateSchema.nullable(),
     poolEstimateUnavailableReason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
+    forecast: rewardForecastSchema.nullable(),
+    forecastUnavailableReason: rewardForecastUnavailableReasonSchema.nullable(),
     nextCalculation: z
       .object({
         state: z.enum(["due", "scheduled"]),
@@ -687,6 +759,13 @@ const rewardOutlookObservationInputSchema = z
         message: "pool estimate and unavailable reason must be mutually exclusive",
       });
     }
+    if ((value.forecast === null) === (value.forecastUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecast"],
+        message: "forecast and unavailable reason must be mutually exclusive",
+      });
+    }
     const next = value.nextCalculation;
     if (!next) return;
     if (
@@ -699,6 +778,18 @@ const rewardOutlookObservationInputSchema = z
         code: "custom",
         path: ["poolEstimate"],
         message: "pool estimate target must match the next calculation",
+      });
+    }
+    if (
+      value.forecast &&
+      (value.forecast.targetRewardCycle !== next.targetRewardCycle ||
+        value.forecast.targetCheckpoint !== next.targetCheckpoint ||
+        value.forecast.calculationBurnHeight !== next.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecast"],
+        message: "forecast target must match the next calculation",
       });
     }
     if (next.eligibleBurnHeight !== next.calculationBurnHeight + 1) {
@@ -724,6 +815,45 @@ const rewardOutlookObservationInputSchema = z
         message: `next calculation must be ${expectedState} at the observation anchor`,
       });
     }
+    if (value.forecast) {
+      const lastComputeHeight = Number(value.lastRewardComputeBurnHeight);
+      if (
+        !Number.isSafeInteger(lastComputeHeight) ||
+        value.forecast.sample.elapsedBlocks !==
+          value.chainAnchor.burnBlockHeight - lastComputeHeight
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "elapsedBlocks"],
+          message: "elapsedBlocks must be measured from the last completed calculation",
+        });
+      }
+      if (value.forecast.sample.lastObservedBurnHeight !== value.chainAnchor.burnBlockHeight) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "lastObservedBurnHeight"],
+          message: "forecast sample must end at the observation anchor",
+        });
+      }
+      const forecastRemaining = Math.max(
+        0,
+        value.forecast.calculationBurnHeight - value.chainAnchor.burnBlockHeight,
+      );
+      if (value.forecast.sample.remainingBlocks !== forecastRemaining) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "remainingBlocks"],
+          message: "forecast remainingBlocks must be derived from the observation anchor",
+        });
+      }
+      if (BigInt(value.forecast.globalSats.low) < BigInt(value.globalAccruedRewardsSats)) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "globalSats", "low"],
+          message: "forecast cannot fall below already accrued global rewards",
+        });
+      }
+    }
   });
 
 const rewardOutlookObservationRowSchema = z.object({
@@ -744,8 +874,31 @@ const rewardOutlookObservationRowSchema = z.object({
   next_state: z.enum(["due", "scheduled"]).nullable(),
   pool_estimate_json: z.string().nullable(),
   pool_estimate_unavailable_reason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
+  forecast_json: z.string().nullable(),
+  forecast_unavailable_reason: rewardForecastUnavailableReasonSchema.nullable(),
   observed_at: z.iso.datetime(),
 });
+
+const rewardForecastObservationRowSchema = z.object({
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_at: z.iso.datetime(),
+  global_accrued_rewards_sats: unsignedIntegerTextSchema,
+  last_reward_compute_burn_height: unsignedIntegerTextSchema,
+  next_target_reward_cycle: z.number().int().nonnegative(),
+  next_target_checkpoint: z.enum(["first-half", "second-half"]),
+  next_calculation_burn_height: z.number().int().nonnegative(),
+});
+
+const rewardForecastSampleQuerySchema = z
+  .object({
+    lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    throughBurnBlockHeight: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(2_500).default(500),
+  })
+  .strict();
 
 const rewardCycleSummaryRowSchema = z.object({
   manager_principal: z.string(),
@@ -1001,6 +1154,8 @@ export interface StoredRewardOutlookObservation {
   lastRewardComputeBurnHeight: string;
   poolEstimate: z.infer<typeof rewardPoolEstimateSchema> | null;
   poolEstimateUnavailableReason: z.infer<typeof rewardPoolEstimateUnavailableReasonSchema> | null;
+  forecast: z.infer<typeof rewardForecastSchema> | null;
+  forecastUnavailableReason: z.infer<typeof rewardForecastUnavailableReasonSchema> | null;
   nextCalculation: null | {
     state: "due" | "scheduled";
     targetRewardCycle: number;
@@ -1127,6 +1282,11 @@ function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObse
         ? null
         : rewardPoolEstimateSchema.parse(JSON.parse(value.pool_estimate_json)),
     poolEstimateUnavailableReason: value.pool_estimate_unavailable_reason,
+    forecast:
+      value.forecast_json === null
+        ? null
+        : rewardForecastSchema.parse(JSON.parse(value.forecast_json)),
+    forecastUnavailableReason: value.forecast_unavailable_reason,
     nextCalculation: hasNext
       ? {
           state: value.next_state as "due" | "scheduled",
@@ -4117,8 +4277,9 @@ export class SidekickStore {
           global_accrued_rewards_sats, calculation_state, last_reward_compute_burn_height,
           next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
           next_eligible_burn_height, next_blocks_remaining, next_state,
-          pool_estimate_json, pool_estimate_unavailable_reason, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          pool_estimate_json, pool_estimate_unavailable_reason,
+          forecast_json, forecast_unavailable_reason, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (
           manager_principal, pox5_contract_id, observed_burn_block_height,
           last_reward_compute_burn_height
@@ -4138,6 +4299,8 @@ export class SidekickStore {
           next_state = excluded.next_state,
           pool_estimate_json = excluded.pool_estimate_json,
           pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
+          forecast_json = excluded.forecast_json,
+          forecast_unavailable_reason = excluded.forecast_unavailable_reason,
           observed_at = excluded.observed_at
         WHERE excluded.observed_at >= reward_outlook_observations.observed_at`,
       )
@@ -4159,6 +4322,8 @@ export class SidekickStore {
         next?.state ?? null,
         value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
         value.poolEstimateUnavailableReason,
+        value.forecast === null ? null : JSON.stringify(value.forecast),
+        value.forecastUnavailableReason,
         value.observedAt,
       );
   }
@@ -4202,6 +4367,68 @@ export class SidekickStore {
       offset,
       limit,
     };
+  }
+
+  listRewardForecastSamples(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    query: {
+      lastRewardComputeBurnHeight: string;
+      targetRewardCycle: number;
+      targetCheckpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      throughBurnBlockHeight: number;
+      limit?: number;
+    },
+  ): RewardForecastObservation[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const value = rewardForecastSampleQuerySchema.parse(query);
+    const rows = this.db
+      .prepare(
+        `SELECT
+           observed_burn_block_height,
+           observed_at,
+           global_accrued_rewards_sats,
+           last_reward_compute_burn_height,
+           next_target_reward_cycle,
+           next_target_checkpoint,
+           next_calculation_burn_height
+         FROM reward_outlook_observations
+         WHERE manager_principal = ?
+           AND pox5_contract_id = ?
+           AND last_reward_compute_burn_height = ?
+           AND next_target_reward_cycle = ?
+           AND next_target_checkpoint = ?
+           AND next_calculation_burn_height = ?
+           AND observed_burn_block_height <= ?
+         ORDER BY observed_burn_block_height DESC, observed_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        manager,
+        contract,
+        value.lastRewardComputeBurnHeight,
+        value.targetRewardCycle,
+        value.targetCheckpoint,
+        value.calculationBurnHeight,
+        value.throughBurnBlockHeight,
+        value.limit,
+      );
+    return rows.map((row) => {
+      const sample = rewardForecastObservationRowSchema.parse(row);
+      return {
+        observedBurnBlockHeight: sample.observed_burn_block_height,
+        observedAt: sample.observed_at,
+        globalAccruedRewardsSats: sample.global_accrued_rewards_sats,
+        lastRewardComputeBurnHeight: sample.last_reward_compute_burn_height,
+        nextCalculation: {
+          targetRewardCycle: sample.next_target_reward_cycle,
+          targetCheckpoint: sample.next_target_checkpoint,
+          calculationBurnHeight: sample.next_calculation_burn_height,
+        },
+      };
+    });
   }
 
   listRewardCycleSummaries(

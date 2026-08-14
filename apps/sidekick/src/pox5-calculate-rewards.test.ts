@@ -15,6 +15,8 @@ import {
   type Pox5CalculateRewardsError,
   readPox5CalculateRewardsObservation,
   readPox5CurrentPoolEstimate,
+  readPox5PoolSimulationSnapshot,
+  simulatePox5PoolEstimateAtGross,
 } from "./pox5-calculate-rewards.js";
 
 const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";
@@ -173,6 +175,28 @@ describe("PoX-5 calculate-rewards observation", () => {
           },
         ],
       },
+    });
+  });
+
+  it("reuses the anchored share snapshot for a projected gross reward without ratio shortcuts", async () => {
+    const snapshot = await readPox5PoolSimulationSnapshot({
+      node: node(),
+      pox5ContractId,
+      managerPrincipal: sender,
+      chainAnchor,
+      targetRewardCycle: 5,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 7_999,
+      grossAccruedRewardsSats: 2_000n,
+    });
+
+    expect(
+      simulatePox5PoolEstimateAtGross({ snapshot, grossAccruedRewardsSats: 4_000n }),
+    ).toMatchObject({
+      grossSats: "1700",
+      stxSats: "1640",
+      bondSats: "60",
+      inputs: snapshot.currentEstimate.inputs,
     });
   });
 });

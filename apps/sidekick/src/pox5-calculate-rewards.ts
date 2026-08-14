@@ -14,6 +14,7 @@ import {
   POX5_CALCULATE_REWARDS_ADAPTER_REVISION,
   type Pox5CalculationBond,
   Pox5RewardSimulationError,
+  type Pox5RewardSimulationInput,
   simulatePox5CalculateRewards,
 } from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
@@ -63,6 +64,11 @@ export interface Pox5CurrentPoolEstimate {
     | "current-active-bond-set"
     | "contract-integer-rounding"
   >;
+}
+
+export interface Pox5PoolSimulationSnapshot {
+  currentEstimate: Pox5CurrentPoolEstimate;
+  simulationInput: Pox5RewardSimulationInput;
 }
 
 export class Pox5CalculateRewardsError extends Error {
@@ -135,7 +141,59 @@ async function readActiveCalculationBonds(input: {
   );
 }
 
-export async function readPox5CurrentPoolEstimate(input: {
+function simulateManagerPoolEstimate(input: {
+  simulationInput: Pox5RewardSimulationInput;
+  grossAccruedRewardsSats: bigint;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+}): Pox5CurrentPoolEstimate {
+  const simulation = simulatePox5CalculateRewards({
+    ...input.simulationInput,
+    grossAccruedRewardsSats: input.grossAccruedRewardsSats,
+  });
+  if (!simulation.manager) {
+    throw new Pox5RewardSimulationError("manager shares are incomplete at the selected anchor");
+  }
+  const managerStxSharesUstx = input.simulationInput.managerStxSharesUstx;
+  if (managerStxSharesUstx === undefined) {
+    throw new Pox5RewardSimulationError("manager STX shares are missing at the selected anchor");
+  }
+  return {
+    kind: "if-calculated-now",
+    targetRewardCycle: input.targetRewardCycle,
+    targetCheckpoint: input.targetCheckpoint,
+    calculationBurnHeight: input.calculationBurnHeight,
+    grossSats: simulation.manager.grossRewardSats.toString(),
+    stxSats: simulation.manager.stxRewardSats.toString(),
+    bondSats: simulation.manager.bondRewardSats.toString(),
+    inputs: {
+      globalStxSharesUstx: simulation.cycleStakedUstx.toString(),
+      managerStxSharesUstx: managerStxSharesUstx.toString(),
+      activeBonds: input.simulationInput.bonds.map((bond) => {
+        if (bond.managerSharesSats === undefined) {
+          throw new Pox5RewardSimulationError(
+            `manager shares are missing for bond ${bond.bondIndex}`,
+          );
+        }
+        return {
+          bondIndex: bond.bondIndex.toString(),
+          targetRateBips: bond.targetRateBips.toString(),
+          globalSharesSats: bond.totalSharesSats.toString(),
+          managerSharesSats: bond.managerSharesSats.toString(),
+        };
+      }),
+    },
+    assumptions: [
+      "current-global-accrual",
+      "current-cycle-shares",
+      "current-active-bond-set",
+      "contract-integer-rounding",
+    ],
+  };
+}
+
+export async function readPox5PoolSimulationSnapshot(input: {
   node: Pick<RewardStatusNode, "callReadOnly">;
   pox5ContractId: string;
   managerPrincipal: string;
@@ -144,7 +202,7 @@ export async function readPox5CurrentPoolEstimate(input: {
   targetCheckpoint: "first-half" | "second-half";
   calculationBurnHeight: number;
   grossAccruedRewardsSats: bigint;
-}): Promise<Pox5CurrentPoolEstimate> {
+}): Promise<Pox5PoolSimulationSnapshot> {
   const options = readOptions(input.chainAnchor);
   const rewardCycle = BigInt(input.targetRewardCycle);
   const stxBucket = encodeOptionalUIntHex(null);
@@ -241,45 +299,44 @@ export async function readPox5CurrentPoolEstimate(input: {
       };
     }),
   );
-  const simulation = simulatePox5CalculateRewards({
+  const simulationInput: Pox5RewardSimulationInput = {
     grossAccruedRewardsSats: input.grossAccruedRewardsSats,
     currentReserveBalanceSats: decodeUInt(reserveValue, "get-reserve-balance"),
     cycleStakedUstx: decodeUInt(totalStxValue, "get-total-shares-staked-for-cycle(stx)"),
     currentRewardsPerUstx: decodeUInt(currentStxRptValue, "get-rewards-per-token-for-cycle(stx)"),
     managerStxSharesUstx: decodeUInt(managerStxValue, "get-signer-shares-staked-for-cycle(stx)"),
     bonds: simulationBonds,
-  });
-  if (!simulation.manager) {
-    throw new Pox5RewardSimulationError("manager shares are incomplete at the selected anchor");
-  }
-  return {
-    kind: "if-calculated-now",
-    targetRewardCycle: input.targetRewardCycle,
-    targetCheckpoint: input.targetCheckpoint,
-    calculationBurnHeight: input.calculationBurnHeight,
-    grossSats: simulation.manager.grossRewardSats.toString(),
-    stxSats: simulation.manager.stxRewardSats.toString(),
-    bondSats: simulation.manager.bondRewardSats.toString(),
-    inputs: {
-      globalStxSharesUstx: simulation.cycleStakedUstx.toString(),
-      managerStxSharesUstx: decodeUInt(
-        managerStxValue,
-        "get-signer-shares-staked-for-cycle(stx)",
-      ).toString(),
-      activeBonds: simulationBonds.map((bond) => ({
-        bondIndex: bond.bondIndex.toString(),
-        targetRateBips: bond.targetRateBips.toString(),
-        globalSharesSats: bond.totalSharesSats.toString(),
-        managerSharesSats: bond.managerSharesSats.toString(),
-      })),
-    },
-    assumptions: [
-      "current-global-accrual",
-      "current-cycle-shares",
-      "current-active-bond-set",
-      "contract-integer-rounding",
-    ],
   };
+  return {
+    simulationInput,
+    currentEstimate: simulateManagerPoolEstimate({
+      simulationInput,
+      grossAccruedRewardsSats: input.grossAccruedRewardsSats,
+      targetRewardCycle: input.targetRewardCycle,
+      targetCheckpoint: input.targetCheckpoint,
+      calculationBurnHeight: input.calculationBurnHeight,
+    }),
+  };
+}
+
+export async function readPox5CurrentPoolEstimate(
+  input: Parameters<typeof readPox5PoolSimulationSnapshot>[0],
+): Promise<Pox5CurrentPoolEstimate> {
+  return (await readPox5PoolSimulationSnapshot(input)).currentEstimate;
+}
+
+export function simulatePox5PoolEstimateAtGross(input: {
+  snapshot: Pox5PoolSimulationSnapshot;
+  grossAccruedRewardsSats: bigint;
+}): Pox5CurrentPoolEstimate {
+  const current = input.snapshot.currentEstimate;
+  return simulateManagerPoolEstimate({
+    simulationInput: input.snapshot.simulationInput,
+    grossAccruedRewardsSats: input.grossAccruedRewardsSats,
+    targetRewardCycle: current.targetRewardCycle,
+    targetCheckpoint: current.targetCheckpoint,
+    calculationBurnHeight: current.calculationBurnHeight,
+  });
 }
 
 /**

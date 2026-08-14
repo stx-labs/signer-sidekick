@@ -1878,4 +1878,30 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 28,
+    name: "reward_outlook_run_rate_forecasts",
+    sql: `
+      -- Forecasts remain distinct from the exact current-share simulation. Persist the range and
+      -- omission reason at each anchor so later realized calculations can calibrate the model.
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_json TEXT
+        CHECK (forecast_json IS NULL OR json_valid(forecast_json));
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_unavailable_reason TEXT
+        CHECK (
+          forecast_unavailable_reason IS NULL OR forecast_unavailable_reason IN (
+            'chain-anchor-unavailable', 'calculation-target-unavailable',
+            'current-pool-estimate-unavailable', 'insufficient-samples',
+            'non-monotonic-accrual', 'forecast-inputs-unavailable',
+            'contract-simulation-failed'
+          )
+        );
+
+      CREATE INDEX reward_outlook_forecast_samples
+        ON reward_outlook_observations (
+          manager_principal, pox5_contract_id, last_reward_compute_burn_height,
+          next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
+          observed_burn_block_height DESC
+        );
+    `,
+  },
 ];

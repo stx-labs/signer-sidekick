@@ -284,8 +284,14 @@ Implementation checkpoint (2026-08-14):
   Overview. The UI labels it `if calculated now`, includes the STX/bond split and assumptions, and
   never presents it as a checkpoint forecast. Incomplete bond evidence, missing anchors/targets,
   read failures, and simulation failures omit the estimate while preserving exact global accrual.
-- Run-rate ranges, confidence calibration, projected operator fees, and realized-error history
-  remain open. Those forecast layers can consume the durable exact observation series instead of
+- A persisted checkpoint forecast now requires at least three distinct observations spanning six
+  Bitcoin blocks in one calculation interval. Its point uses cumulative accrual since the prior
+  calculation; its low/high bounds use the slowest/fastest observed interval rates. Each global
+  bound is replayed through the exact simulator at the same current share/bond/reserve anchor, so
+  the pool range does not use a proportional shortcut. The UI keeps this low/developing-confidence
+  forecast separate from the contract-exact `if-calculated-now` result and explains every omission.
+- Realized calculation-event capture, model-error calibration, calibrated confidence, and projected
+  operator fees remain open. Those layers can consume the durable forecast series instead of
   transient dashboard reads or duplicated arithmetic.
 
 ### Slice 7: signer/network diagnosis and support handoff

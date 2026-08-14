@@ -20,8 +20,10 @@ import type { ChainReadOptions } from "./chain-clients.js";
 import {
   Pox5CalculateRewardsError,
   type Pox5CurrentPoolEstimate,
-  readPox5CurrentPoolEstimate,
+  readPox5PoolSimulationSnapshot,
+  simulatePox5PoolEstimateAtGross,
 } from "./pox5-calculate-rewards.js";
+import { projectGlobalRewardRunRate, type RewardForecastObservation } from "./reward-forecast.js";
 import type {
   RewardCycleSnapshotInput,
   RewardOutlookObservationInput,
@@ -62,6 +64,18 @@ export interface RewardStatusStore {
   ): StoredCycleMembership[];
   putRewardCycleSnapshot?(input: RewardCycleSnapshotInput): void;
   putRewardOutlookObservation?(input: RewardOutlookObservationInput): void;
+  listRewardForecastSamples?(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    query: {
+      lastRewardComputeBurnHeight: string;
+      targetRewardCycle: number;
+      targetCheckpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      throughBurnBlockHeight: number;
+      limit?: number;
+    },
+  ): RewardForecastObservation[];
 }
 
 export interface RewardStatusOptions {
@@ -79,7 +93,7 @@ export interface RewardStatusOptions {
 }
 
 export interface RewardOutlookOptions {
-  store: Pick<RewardStatusStore, "putRewardOutlookObservation">;
+  store: Pick<RewardStatusStore, "putRewardOutlookObservation" | "listRewardForecastSamples">;
   node: Pick<RewardStatusNode, "callReadOnly">;
   managerPrincipal: string;
   pox5ContractId: string;
@@ -234,6 +248,40 @@ export interface RewardOutlookStatus {
     | "calculation-target-unavailable"
     | "incomplete-active-bond-state"
     | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
+  forecast: null | {
+    kind: "checkpoint-run-rate";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    globalSats: { low: string; point: string; high: string };
+    poolSats: { low: string; point: string; high: string };
+    sample: {
+      observations: number;
+      firstObservedBurnHeight: number;
+      lastObservedBurnHeight: number;
+      sampleBlocks: number;
+      elapsedBlocks: number;
+      remainingBlocks: number;
+    };
+    confidence: "low" | "developing";
+    assumptions: [
+      "zero-accrual-after-last-calculation",
+      "linear-global-accrual-run-rate",
+      "current-cycle-shares",
+      "current-active-bond-set",
+      "unchanged-reserve-before-calculation",
+      "contract-integer-rounding",
+    ];
+  };
+  forecastUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "current-pool-estimate-unavailable"
+    | "insufficient-samples"
+    | "non-monotonic-accrual"
+    | "forecast-inputs-unavailable"
     | "contract-simulation-failed"
     | null;
   calculation: RewardCalculationStatus;
@@ -744,13 +792,17 @@ export async function readRewardOutlook(
   const calculation = rewardCalculationStatus(lastRewardComputeBurnHeight, options.chainAnchor);
   let poolEstimate: Pox5CurrentPoolEstimate | null = null;
   let poolEstimateUnavailableReason: RewardOutlookStatus["poolEstimateUnavailableReason"] = null;
+  let forecast: RewardOutlookStatus["forecast"] = null;
+  let forecastUnavailableReason: RewardOutlookStatus["forecastUnavailableReason"] = null;
   if (!options.chainAnchor) {
     poolEstimateUnavailableReason = "chain-anchor-unavailable";
+    forecastUnavailableReason = "chain-anchor-unavailable";
   } else if (!calculation.next) {
     poolEstimateUnavailableReason = "calculation-target-unavailable";
+    forecastUnavailableReason = "calculation-target-unavailable";
   } else {
     try {
-      poolEstimate = await readPox5CurrentPoolEstimate({
+      const simulationSnapshot = await readPox5PoolSimulationSnapshot({
         node: options.node,
         pox5ContractId: options.pox5ContractId,
         managerPrincipal: options.managerPrincipal,
@@ -760,13 +812,85 @@ export async function readRewardOutlook(
         calculationBurnHeight: calculation.next.calculationBurnHeight,
         grossAccruedRewardsSats: BigInt(globalSats),
       });
+      poolEstimate = simulationSnapshot.currentEstimate;
+      const historical =
+        options.store.listRewardForecastSamples?.(
+          options.managerPrincipal,
+          options.pox5ContractId,
+          {
+            lastRewardComputeBurnHeight: calculation.observedLastRewardComputeBurnHeight,
+            targetRewardCycle: calculation.next.targetRewardCycle,
+            targetCheckpoint: calculation.next.targetCheckpoint,
+            calculationBurnHeight: calculation.next.calculationBurnHeight,
+            throughBurnBlockHeight: options.chainAnchor.burnBlockHeight,
+            limit: Math.min(2_500, options.chainAnchor.rewardCycleLength + 2),
+          },
+        ) ?? [];
+      const currentForecastObservation: RewardForecastObservation = {
+        observedBurnBlockHeight: options.chainAnchor.burnBlockHeight,
+        observedAt: options.observedAt,
+        globalAccruedRewardsSats: globalSats,
+        lastRewardComputeBurnHeight: calculation.observedLastRewardComputeBurnHeight,
+        nextCalculation: calculation.next,
+      };
+      const projected = projectGlobalRewardRunRate({
+        observations: historical,
+        current: currentForecastObservation,
+        target: {
+          rewardCycle: calculation.next.targetRewardCycle,
+          checkpoint: calculation.next.targetCheckpoint,
+          calculationBurnHeight: calculation.next.calculationBurnHeight,
+        },
+      });
+      if (projected.status === "unavailable") {
+        forecastUnavailableReason = projected.reason;
+      } else {
+        const low = simulatePox5PoolEstimateAtGross({
+          snapshot: simulationSnapshot,
+          grossAccruedRewardsSats: BigInt(projected.forecast.globalSats.low),
+        });
+        const point = simulatePox5PoolEstimateAtGross({
+          snapshot: simulationSnapshot,
+          grossAccruedRewardsSats: BigInt(projected.forecast.globalSats.point),
+        });
+        const high = simulatePox5PoolEstimateAtGross({
+          snapshot: simulationSnapshot,
+          grossAccruedRewardsSats: BigInt(projected.forecast.globalSats.high),
+        });
+        if (!(BigInt(low.grossSats) <= BigInt(point.grossSats))) {
+          throw new Pox5RewardSimulationError("projected pool low exceeds point");
+        }
+        if (!(BigInt(point.grossSats) <= BigInt(high.grossSats))) {
+          throw new Pox5RewardSimulationError("projected pool point exceeds high");
+        }
+        forecast = {
+          ...projected.forecast,
+          poolSats: { low: low.grossSats, point: point.grossSats, high: high.grossSats },
+          assumptions: [
+            "zero-accrual-after-last-calculation",
+            "linear-global-accrual-run-rate",
+            "current-cycle-shares",
+            "current-active-bond-set",
+            "unchanged-reserve-before-calculation",
+            "contract-integer-rounding",
+          ],
+        };
+      }
     } catch (error) {
-      poolEstimateUnavailableReason =
-        error instanceof Pox5CalculateRewardsError && error.code === "incomplete-bond-state"
-          ? "incomplete-active-bond-state"
-          : error instanceof Pox5RewardSimulationError
+      if (poolEstimate === null) {
+        poolEstimateUnavailableReason =
+          error instanceof Pox5CalculateRewardsError && error.code === "incomplete-bond-state"
+            ? "incomplete-active-bond-state"
+            : error instanceof Pox5RewardSimulationError
+              ? "contract-simulation-failed"
+              : "anchored-inputs-unavailable";
+        forecastUnavailableReason = "current-pool-estimate-unavailable";
+      } else {
+        forecastUnavailableReason =
+          error instanceof Pox5RewardSimulationError
             ? "contract-simulation-failed"
-            : "anchored-inputs-unavailable";
+            : "forecast-inputs-unavailable";
+      }
     }
   }
   const outlook: RewardOutlookStatus = {
@@ -776,6 +900,8 @@ export async function readRewardOutlook(
     accrued: { globalSats, source: "pox5-get-new-rewards" },
     poolEstimate,
     poolEstimateUnavailableReason,
+    forecast,
+    forecastUnavailableReason,
     calculation,
   };
   if (options.chainAnchor) {
@@ -790,6 +916,8 @@ export async function readRewardOutlook(
       nextCalculation: calculation.next,
       poolEstimate,
       poolEstimateUnavailableReason,
+      forecast,
+      forecastUnavailableReason,
     });
   }
   return outlook;

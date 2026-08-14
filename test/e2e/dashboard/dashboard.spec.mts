@@ -1129,6 +1129,8 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
   await expect(calculationCard.getByText("#10,290", { exact: true })).toBeVisible();
   await expect(poolEstimateCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
+  await expect(poolEstimateCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
+  await expect(poolEstimateCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
   await expect(poolEstimateCard.getByText("Estimate", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);

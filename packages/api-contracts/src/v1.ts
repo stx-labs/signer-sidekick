@@ -722,6 +722,40 @@ export interface RewardOutlookStatus {
     | "anchored-inputs-unavailable"
     | "contract-simulation-failed"
     | null;
+  forecast: null | {
+    kind: "checkpoint-run-rate";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    globalSats: { low: string; point: string; high: string };
+    poolSats: { low: string; point: string; high: string };
+    sample: {
+      observations: number;
+      firstObservedBurnHeight: number;
+      lastObservedBurnHeight: number;
+      sampleBlocks: number;
+      elapsedBlocks: number;
+      remainingBlocks: number;
+    };
+    confidence: "low" | "developing";
+    assumptions: Array<
+      | "zero-accrual-after-last-calculation"
+      | "linear-global-accrual-run-rate"
+      | "current-cycle-shares"
+      | "current-active-bond-set"
+      | "unchanged-reserve-before-calculation"
+      | "contract-integer-rounding"
+    >;
+  };
+  forecastUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "current-pool-estimate-unavailable"
+    | "insufficient-samples"
+    | "non-monotonic-accrual"
+    | "forecast-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
   calculation: {
     state: "pending" | "completed" | "ahead" | "unknown";
     targetRewardCycle: number | null;

@@ -548,11 +548,12 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
     globalAccruedSats:
       outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
-    estimatedPoolRewardSats: outlook?.poolEstimate?.grossSats ?? null,
+    estimatedPoolRewardSats:
+      outlook?.forecast?.poolSats.point ?? outlook?.poolEstimate?.grossSats ?? null,
     operatorFeeSats: null,
     // The current-share result is contract-exact for its anchor but remains an estimate of the
     // future checkpoint because accrual, shares, or the active bond set can still change.
-    confidence: outlook?.poolEstimate ? "estimated" : "unavailable",
+    confidence: outlook?.forecast || outlook?.poolEstimate ? "estimated" : "unavailable",
     calculationState: outlook?.calculation.state ?? rewards?.calculation.state ?? null,
     actionableClaims: rewards?.totals.actionableClaims ?? null,
     evidence: [rewardEvidence],

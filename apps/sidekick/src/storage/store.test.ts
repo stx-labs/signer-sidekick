@@ -335,7 +335,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 27,
+      schemaVersion: 28,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -947,6 +947,8 @@ describe("Sidekick SQLite store", () => {
       lastRewardComputeBurnHeight: "959190",
       poolEstimate: null,
       poolEstimateUnavailableReason: "anchored-inputs-unavailable" as const,
+      forecast: null,
+      forecastUnavailableReason: "current-pool-estimate-unavailable" as const,
       nextCalculation: {
         state: "scheduled" as const,
         targetRewardCycle: 141,
@@ -1024,6 +1026,27 @@ describe("Sidekick SQLite store", () => {
       total: 3,
       items: [{ globalAccruedRewardsSats: "200" }],
     });
+    expect(
+      store.listRewardForecastSamples(manager, pox5, {
+        lastRewardComputeBurnHeight: "959190",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        throughBurnBlockHeight: 960_240,
+      }),
+    ).toEqual([
+      {
+        observedBurnBlockHeight: 960_240,
+        observedAt: later,
+        globalAccruedRewardsSats: "200",
+        lastRewardComputeBurnHeight: "959190",
+        nextCalculation: {
+          targetRewardCycle: 141,
+          targetCheckpoint: "first-half",
+          calculationBurnHeight: 960_240,
+        },
+      },
+    ]);
   });
 
   it("persists the anchored current-share pool estimate with its accrual observation", async () => {
@@ -1072,6 +1095,32 @@ describe("Sidekick SQLite store", () => {
         ],
       },
       poolEstimateUnavailableReason: null,
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_230,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 10,
+          elapsedBlocks: 1_050,
+          remainingBlocks: 0,
+        },
+        confidence: "low",
+        assumptions: [
+          "zero-accrual-after-last-calculation",
+          "linear-global-accrual-run-rate",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "unchanged-reserve-before-calculation",
+          "contract-integer-rounding",
+        ],
+      },
+      forecastUnavailableReason: null,
     });
 
     expect(store.listRewardOutlookObservations(manager, pox5).items[0]).toMatchObject({
@@ -1080,6 +1129,11 @@ describe("Sidekick SQLite store", () => {
       poolEstimate: {
         grossSats: "90",
         inputs: { activeBonds: [{ bondIndex: "2" }] },
+      },
+      forecastUnavailableReason: null,
+      forecast: {
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
       },
     });
   });
@@ -1177,7 +1231,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 27,
+      schemaVersion: 28,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1203,7 +1257,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(27);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1319,7 +1373,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(27);
+    expect(upgraded.store.schemaVersion()).toBe(28);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1401,7 +1455,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(27);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1552,7 +1606,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(27);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1689,7 +1743,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(27);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
