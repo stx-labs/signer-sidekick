@@ -121,7 +121,8 @@ Show nonterminal work that is actionable, progressing, or unresolved:
 - needs attention.
 
 The total sort order is `needs-attention`, then `action-required`, then `in-progress`. Within one
-status, overdue structured deadlines sort before future deadlines, followed by the earliest
+status, overdue structured deadlines sort before future deadlines and no-deadline items sort after
+both deadline groups, followed by the earliest
 normalized `urgencyAt` with `null` last, `updatedAt` newest first, and `activityId` ascending as the
 deterministic tie-breaker. `urgencyAt` is only a sorting normalization; the operator and every action
 preflight use the exact burn-block, reward-cycle, or time `deadline`. Do not sort an ambiguous
@@ -190,7 +191,7 @@ The initial mappings are:
 | Wallet intent `superseded` | `superseded` |
 | Engine job `prepared`, `preflighted`, or `awaiting_approval` | `action-required` |
 | Engine job `nonce_reserved`, `broadcast`, or `confirmed` | `in-progress` |
-| Engine job `noncanonical_reobserve` | `in-progress` initially; `needs-attention` only after its recovery deadline |
+| Engine job `noncanonical_reobserve` | `in-progress` for a five-minute recovery window from the state transition; `needs-attention` when that deadline expires |
 | Engine job `ambiguous` or unresolved `blocked` | `needs-attention` |
 | Engine job `reconciled` | `complete` |
 | Engine job `superseded` | `superseded` |
@@ -266,6 +267,13 @@ IDs, wallet-intent IDs, and engine-job IDs. It does not search raw callback JSON
 History uses opaque cursor pagination ordered by meaningful timestamp and stable activity ID. The
 cursor is bound to a hash of the active filters so it cannot be reused with a different query.
 Active work is returned separately and is not paginated with terminal history.
+
+The first read-model implementation always loads all active wallet-intent and engine authority
+records, while terminal source histories are bounded to the newest 10,000 records per authority.
+Crossing a terminal window marks that source's coverage `delayed`; it must never return a 503 or
+silently imply that active work is absent. Complete cursor reachability beyond that window requires
+source-aware repository pagination or a rebuildable materialized projection and remains a gate
+before claiming unbounded production history.
 
 Filters are encoded in the `#activity` query string so the page can be bookmarked. Detail routes
 return to the preserved filter state.
@@ -628,6 +636,25 @@ contract.
 Do not remove Manager or Operations before their actions and history are reachable through the new
 surfaces in the same change series. No compatibility redirects are required once they are removed.
 
+## Implementation checkpoint (2026-08-14)
+
+- The strict Activity group/detail, filter, cursor, source-coverage, deadline, and contextual-action
+  contracts and the read-only server projection are implemented. Wallet-intent and engine states
+  have exhaustive mappings, and Overview consumes this projection instead of interpreting engine
+  state again.
+- Active wallet and engine authority is loaded independently and remains complete. Terminal source
+  windows exceeding 10,000 records report delayed history coverage instead of failing the page;
+  source-aware cursor reachability beyond that window remains a release-claim gate.
+- Expired wallet intents link to their replacements, absorbed chain-transaction aliases resolve to
+  the canonical operation, and noncanonical engine work escalates after a stable five-minute
+  recovery deadline. Cached chain context supplies structured deadline ordering without a live read.
+- The Activity UI, shared contextual action route, six-page navigation cutover, and removal of the
+  old Manager/Operations routes are not implemented yet. The legacy routes remain intentionally
+  until retained actions are reachable in the replacement surfaces in the same change series.
+- Consequently, the released-binary Devnet action leg is still an unmet Slice 8 gate. The existing
+  real-node observer/convergence leg is not a substitute for a controlled browser-wallet action
+  reaching a reconciled `complete` Activity group.
+
 ## Required contract tests
 
 - The dashboard boundary schema rejects the old claims/withdrawals-only `/api/v1/activity` shape,
@@ -639,7 +666,8 @@ surfaces in the same change series. No compatibility redirects are required once
 - Status/outcome tests reject every combination outside the closed compatibility table, and filter
   tests prove Action required and every resolved status remain reachable.
 - Active-work ordering tests pin the full order: `needs-attention`, `action-required`, then
-  `in-progress`; overdue structured deadlines before future deadlines; earlier normalized
+  `in-progress`; overdue structured deadlines before future deadlines and no-deadline items last;
+  earlier normalized
   `urgencyAt`; newer `updatedAt`; and finally ascending `activityId`.
 - Correlation tests prove that an absorbed `chain-tx` ID resolves to the canonical operation detail,
   reports both IDs, and produces no duplicate feed row.
@@ -675,5 +703,5 @@ surfaces in the same change series. No compatibility redirects are required once
 - The released-binary Devnet connect/observe/action leg exercises the shared action workspace and
   reaches a reconciled `complete` Activity group.
 
-The next product-design step is the Overview attention model. It should consume the same typed
-`ContextualAction` and Activity IDs rather than inventing another action-routing layer.
+The next implementation step is the route-specific Activity UI and shared action workspace, using
+the completed Overview attention model and the same typed `ContextualAction` and Activity IDs.

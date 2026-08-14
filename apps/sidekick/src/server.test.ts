@@ -119,6 +119,7 @@ describe("local API", () => {
 
   it("serves the strict Overview projection from cached state without running reconciliation", async () => {
     const token = "test-operator-token-with-32-chars";
+    const generatedAt = "2026-08-14T12:00:00.000Z";
     const snapshot = vi.fn(async () => ({
       schemaVersion: 1,
       generatedAt: "2026-08-14T12:00:00.000Z",
@@ -190,14 +191,29 @@ describe("local API", () => {
       alerts: [],
     }));
     const synchronize = vi.fn(async () => ({}));
-    const engine = {
-      listJobs: vi
-        .fn()
-        .mockResolvedValue({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
-    } as unknown as TransactionEngineApiService;
+    const projectedActivity = activityResponseSchema.parse({
+      schemaVersion: 1,
+      generatedAt,
+      active: [],
+      items: [],
+      nextCursor: null,
+      coverage: [
+        {
+          source: "transaction-engine",
+          status: "current",
+          observedAt: generatedAt,
+          anchor: null,
+          reason: null,
+        },
+      ],
+    });
+    const activityProjection = {
+      page: vi.fn(() => projectedActivity),
+      detail: vi.fn(() => null),
+    };
     const server = createServer({
       service: { snapshot, supportSnapshot: snapshot, synchronize },
-      engine,
+      activityProjection,
       authToken: token,
       logger: false,
     });
@@ -221,23 +237,22 @@ describe("local API", () => {
     });
     expect(snapshot).toHaveBeenCalledWith(false);
     expect(synchronize).not.toHaveBeenCalled();
-    expect(engine.listJobs).toHaveBeenCalledWith({
-      cursor: null,
-      limit: 100,
-      states: [
-        "prepared",
-        "preflighted",
-        "awaiting_approval",
-        "nonce_reserved",
-        "broadcast",
-        "confirmed",
-        "blocked",
-        "ambiguous",
-        "noncanonical_reobserve",
-      ],
-    });
+    expect(activityProjection.page).toHaveBeenCalledWith(
+      {
+        status: "all",
+        type: "all",
+        domain: "all",
+        time: "all",
+        search: null,
+        cursor: null,
+        limit: 1,
+      },
+      false,
+    );
 
-    vi.mocked(engine.listJobs).mockRejectedValueOnce(new Error("database unavailable"));
+    activityProjection.page.mockImplementationOnce(() => {
+      throw new Error("database unavailable");
+    });
     const unavailableResponse = await server.inject({
       method: "GET",
       url: "/api/v1/overview",

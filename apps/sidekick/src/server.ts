@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
+  type ActivityDetail,
+  type ActivityResponse,
   type ApiError,
   browserWalletIntentSubmissionRequestSchema,
   type ConnectionAssessment,
@@ -19,7 +21,6 @@ import {
   type EngineJobDetail,
   type EngineJobPage,
   type EngineJobState,
-  type EngineJobSummary,
   type EngineStatus,
   engineApprovalRequestSchema,
   engineDisableAdapterRequestSchema,
@@ -174,8 +175,8 @@ interface OperatorSnapshotService {
 }
 
 interface ActivityProjectionApiService {
-  page(query: ActivityQuery, readOnly?: boolean): unknown;
-  detail(activityId: string, readOnly?: boolean): unknown | null;
+  page(query: ActivityQuery, readOnly?: boolean): ActivityResponse;
+  detail(activityId: string, readOnly?: boolean): ActivityDetail | null;
 }
 
 function observerAlerts(status: ObserverRuntimeStatus | undefined): DashboardAlert[] {
@@ -351,37 +352,6 @@ export interface TransactionEngineApiService {
     request: EngineDisableAdapterRequest,
     actor: string,
   ): Promise<EngineDisableAdapterResponse>;
-}
-
-const overviewEngineJobStates = [
-  "prepared",
-  "preflighted",
-  "awaiting_approval",
-  "nonce_reserved",
-  "broadcast",
-  "confirmed",
-  "blocked",
-  "ambiguous",
-  "noncanonical_reobserve",
-] as const satisfies readonly EngineJobState[];
-
-async function listOverviewEngineJobs(
-  engine: TransactionEngineApiService,
-): Promise<EngineJobSummary[]> {
-  const jobs: EngineJobSummary[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | null = null;
-  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-    const page = await engine.listJobs({ cursor, limit: 100, states: overviewEngineJobStates });
-    jobs.push(...page.items);
-    if (page.nextCursor === null) return jobs;
-    if (seenCursors.has(page.nextCursor)) {
-      throw new Error("Transaction engine pagination repeated a cursor");
-    }
-    seenCursors.add(page.nextCursor);
-    cursor = page.nextCursor;
-  }
-  throw new Error("Active operation projection exceeds the bounded 1000-job Overview read");
 }
 
 export interface ServerOptions {
@@ -1626,14 +1596,32 @@ export function createServer(options: ServerOptions = {}) {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const result = await interactive(request, async () => {
       const activityObservedAt = new Date().toISOString();
-      const [snapshotResult, healthResult, jobsResult] = await Promise.allSettled([
+      const activityProjection = options.activityProjection;
+      const readOnly =
+        options.connection !== undefined && options.connection.current()?.status !== "connected";
+      const [snapshotResult, healthResult, activityResult] = await Promise.allSettled([
         service.supportSnapshot ? service.supportSnapshot(refresh) : service.snapshot(refresh),
         options.health
           ? refresh
             ? options.health.refresh()
             : options.health.current()
           : Promise.resolve(null),
-        options.engine ? listOverviewEngineJobs(options.engine) : Promise.resolve([]),
+        activityProjection
+          ? Promise.resolve().then(() =>
+              activityProjection.page(
+                {
+                  status: "all",
+                  type: "all",
+                  domain: "all",
+                  time: "all",
+                  search: null,
+                  cursor: null,
+                  limit: 1,
+                },
+                readOnly,
+              ),
+            )
+          : Promise.resolve(null),
       ]);
       if (snapshotResult.status === "rejected") throw snapshotResult.reason;
       const snapshot = dashboardSnapshotSchema.parse(snapshotResult.value);
@@ -1642,20 +1630,23 @@ export function createServer(options: ServerOptions = {}) {
           ? healthSnapshotSchema.safeParse(healthResult.value)
           : null;
       const health = parsedHealth?.success ? parsedHealth.data : null;
-      const engineJobs = jobsResult.status === "fulfilled" ? jobsResult.value : [];
+      const activityAvailable =
+        activityResult.status === "fulfilled" && activityResult.value !== null;
+      const activity = activityAvailable ? activityResult.value : null;
       return overviewPageSchema.parse(
         projectOverview({
           snapshot,
           health,
           connection: options.connection?.current() ?? null,
-          engineJobs,
+          activity,
           activitySource: {
-            status: jobsResult.status === "fulfilled" ? "current" : "unavailable",
+            status: activityAvailable ? "current" : "unavailable",
             observedAt: activityObservedAt,
-            reason:
-              jobsResult.status === "fulfilled"
-                ? null
-                : "Sidekick could not read active operation state.",
+            reason: activityAvailable
+              ? null
+              : activityProjection
+                ? "Sidekick could not read active operation state."
+                : "The Activity projection is not configured.",
           },
           observerGap: options.observerStatus?.().gap ?? null,
         }),

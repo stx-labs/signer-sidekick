@@ -215,7 +215,7 @@ The server returns Attention in this total order:
 1. `urgent`;
 2. `action-required`;
 3. `needs-attention`;
-4. overdue deadlines before future deadlines;
+4. overdue deadlines before future deadlines, with no-deadline items after both deadline groups;
 5. earliest normalized `urgencyAt`, with `null` last;
 6. earliest non-null `openedAt`, with `null` last, so known long-running unresolved items do not
    sink; and
@@ -476,8 +476,12 @@ Implementation checkpoint (2026-08-14):
   Activity-over-domain operation deduplication, node-first source handling, protocol timing,
   health summaries, and independent Pool/Rewards evidence states. It writes no alert state.
 - `GET /api/v1/overview` reads the cached full operator snapshot, current health projection, and
-  local durable engine jobs. It never invokes full roster/history reconciliation; unavailable
-  optional health or engine data degrades only that part of the response.
+  canonical typed Activity projection. It never invokes full roster/history reconciliation;
+  unavailable optional health or Activity data degrades only that part of the response. Overview
+  does not maintain a second wallet-intent or engine-state mapper.
+- The implemented producer matrix covers every initial inclusion-policy row, including fixed-cycle
+  exclusion, roster-blocked threshold work, due reward calculation and claims, profile issues only
+  when they remove a due capability, stale-action rechecks, and Activity-over-domain deduplication.
 - The legacy Overview UI and `/api/v1/status` remain intact. The next implementation slice is the
   route-specific dashboard loader and approved responsive UI, followed by removal of duplicated
   legacy alert/status surfaces after all direct actions are reachable.

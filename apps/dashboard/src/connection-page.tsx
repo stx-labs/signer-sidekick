@@ -10,6 +10,7 @@ import type { ConnectionAssessment } from "@stx-labs/signer-sidekick-api-contrac
 import { useState } from "react";
 import { apiDownload } from "./api-client.js";
 import { connectionPresentation } from "./connection-presentation.js";
+import { DOCUMENT_LINKS } from "./shared/document-links.js";
 
 export function ConnectionPage({
   assessment,
@@ -138,7 +139,7 @@ export function ConnectionPage({
           {presentation.showZeroToSigning ? (
             <a
               className="btn btn-secondary"
-              href="https://stx.fan/zero_to/signing/"
+              href={DOCUMENT_LINKS.zeroToSigning}
               rel="noreferrer"
               target="_blank"
             >
@@ -154,6 +155,19 @@ export function ConnectionPage({
             <DownloadSimple /> Download support snapshot
           </button>
         </div>
+        {presentation.showZeroToSigning ? (
+          <small className="connection-restart-note">
+            Manual fallback: deploy the{" "}
+            <a href={DOCUMENT_LINKS.referenceManager} rel="noreferrer" target="_blank">
+              pinned upstream signer-manager
+            </a>{" "}
+            using the{" "}
+            <a href={DOCUMENT_LINKS.clarinetDeployment} rel="noreferrer" target="_blank">
+              Stacks contract deployment guide
+            </a>
+            , complete its public authorization calls, then configure the deployed principal here.
+          </small>
+        ) : null}
         {supportError ? <small className="connection-support-error">{supportError}</small> : null}
         <small className="connection-restart-note">
           Configuration changes take effect after Sidekick restarts. Recheck repeats only the public

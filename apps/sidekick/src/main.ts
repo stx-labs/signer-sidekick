@@ -290,6 +290,7 @@ export async function executeCliCommand({
           return createChainSourceId(current.network, current.apiUrl);
         },
         observerStatus: currentObserverStatus,
+        context: () => service.activityProjectionContext(),
       });
       const server = createServer({
         service,

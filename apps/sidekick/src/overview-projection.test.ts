@@ -1,6 +1,8 @@
 import {
+  type ActivityGroupSummary,
+  type ActivityResponse,
+  type ConnectionAssessment,
   type DashboardSnapshot,
-  type EngineJobSummary,
   type HealthSnapshot,
   type OverviewAttentionItem,
   overviewPageSchema,
@@ -194,7 +196,7 @@ function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
         grossSats: "1500",
         earnedSats: "1425",
         feeSats: "75",
-        actionableClaims: 2,
+        actionableClaims: 0,
         l1ClaimsWaitingForFeeThreshold: 0,
       },
       stakers: [],
@@ -325,24 +327,104 @@ function health(overrides: Partial<HealthSnapshot> = {}): HealthSnapshot {
   return { ...base, ...overrides };
 }
 
-function engineJob(
-  state: EngineJobSummary["state"],
-  approvalState: EngineJobSummary["approvalState"] = "not-required",
-): EngineJobSummary {
+function activityGroup(
+  code: string,
+  displayStatus: ActivityGroupSummary["displayStatus"],
+  outcome: ActivityGroupSummary["outcome"],
+): ActivityGroupSummary {
+  const activityId = "engine-job:00000000-0000-4000-8000-000000000001";
   return {
-    jobId: "00000000-0000-4000-8000-000000000001",
-    mode: "observe",
-    state,
-    blockReason: state === "blocked" ? "A required witness is unavailable." : null,
-    adapter: { id: "reference-reward-claims", revision: 1 },
-    network: "mainnet",
-    managerPrincipal,
-    contract: managerPrincipal,
-    functionName: "claim-rewards",
-    rewardCycle: 141,
-    approvalState,
+    schemaVersion: 1,
+    activityId,
+    kind: "operation",
+    domain: "rewards",
+    code,
+    title: "Claim rewards",
+    summary: "The reward claim is waiting for approval.",
+    displayStatus,
+    outcome,
+    occurredAt: generatedAt,
     updatedAt: generatedAt,
+    deadline: null,
+    urgencyAt: null,
+    actorPrincipal: null,
+    txids: [],
+    anchor: null,
+    supersedesActivityId: null,
+    supersededByActivityId: null,
+    primaryAction: { kind: "resume-activity", activityId, label: "Resume operation" },
+    coverage: [
+      {
+        source: "transaction-engine",
+        status: "current",
+        observedAt: generatedAt,
+        anchor: null,
+        reason: null,
+      },
+    ],
   };
+}
+
+function activity(active: ActivityGroupSummary[]): ActivityResponse {
+  return {
+    schemaVersion: 1,
+    generatedAt,
+    active,
+    items: [],
+    nextCursor: null,
+    coverage: active[0]?.coverage ?? [
+      {
+        source: "transaction-engine",
+        status: "current",
+        observedAt: generatedAt,
+        anchor: null,
+        reason: null,
+      },
+    ],
+  };
+}
+
+function connection(overrides: Partial<ConnectionAssessment> = {}): ConnectionAssessment {
+  return {
+    schemaVersion: 1,
+    status: "unavailable",
+    outcomeCode: "node-unreachable",
+    checkedAt: generatedAt,
+    stale: false,
+    configured: {
+      network: "mainnet",
+      networkId: 1,
+      nodeRpcUrl: "http://node",
+      managerPrincipal,
+    },
+    observed: null,
+    lastSuccessful: null,
+    deploymentIdentity: { status: "unbound", stored: null, reason: "Node is unavailable" },
+    checks: [
+      { id: "node-network", status: "unavailable", message: "Node is unavailable" },
+      { id: "pox5", status: "unavailable", message: "PoX-5 is unavailable" },
+      { id: "principal-network", status: "pass", message: "Principal matches" },
+      { id: "manager-trait", status: "unavailable", message: "Manager is unavailable" },
+      { id: "deployment-identity", status: "unavailable", message: "Identity is unavailable" },
+    ],
+    ...overrides,
+  };
+}
+
+function overview(overrides: Partial<Parameters<typeof projectOverview>[0]> = {}) {
+  return projectOverview({
+    snapshot: snapshot(),
+    health: health(),
+    connection: null,
+    now: new Date(generatedAt),
+    ...overrides,
+  });
+}
+
+function changedSnapshot(change: (value: DashboardSnapshot) => void): DashboardSnapshot {
+  const value = structuredClone(snapshot());
+  change(value);
+  return value;
 }
 
 function attention(
@@ -549,6 +631,41 @@ describe("Overview projection", () => {
     });
   });
 
+  it("keeps a participating signer's node outage urgent and suppresses the derived connection symptom", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health({
+        findings: [
+          {
+            id: "node-rpc-unavailable",
+            severity: "critical",
+            title: "Node unavailable",
+            detail: "The local node failed its persistence threshold.",
+            source: "node",
+          },
+        ],
+      }),
+      connection: connection(),
+      now: new Date(generatedAt),
+    });
+
+    expect(result.attention).toHaveLength(1);
+    expect(result.attention[0]).toMatchObject({
+      attentionId: "health:node-rpc-unavailable",
+      tier: "urgent",
+    });
+  });
+
+  it("marks retained connection evidence delayed when the current check is stale", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health(),
+      connection: connection({ status: "blocked", stale: true }),
+      now: new Date(generatedAt),
+    });
+    expect(result.attention[0]?.evidence[0]).toMatchObject({ status: "delayed" });
+  });
+
   it("does not call an old reachable reference actively advancing", () => {
     const result = projectOverview({
       snapshot: snapshot(),
@@ -566,16 +683,12 @@ describe("Overview projection", () => {
     expect(result.network.status).toBe("insufficient-evidence");
   });
 
-  it.each([
-    "prepared",
-    "preflighted",
-    "awaiting_approval",
-  ] as const)("maps %s engine work to action required rather than in progress", (state) => {
+  it("uses canonical Activity status instead of reinterpreting engine state", () => {
     const result = projectOverview({
       snapshot: snapshot(),
       health: health(),
       connection: null,
-      engineJobs: [engineJob(state, "awaiting")],
+      activity: activity([activityGroup("awaiting-approval", "action-required", "pending")]),
       now: new Date(generatedAt),
     });
 
@@ -583,6 +696,210 @@ describe("Overview projection", () => {
     expect(result.attention[0]).toMatchObject({
       tier: "action-required",
       relatedActivityId: "engine-job:00000000-0000-4000-8000-000000000001",
+    });
+  });
+
+  it("replaces stale registration repair with a bounded evidence refresh", () => {
+    const result = projectOverview({
+      snapshot: snapshot({
+        registration: {
+          registered: false,
+          signerKeyHex: null,
+          signerKeyGrantValid: false,
+          reason: "missing",
+        },
+        freshness: {
+          status: "stale",
+          snapshotGeneratedAt: generatedAt,
+          servedAt: "2026-08-14T12:05:00.000Z",
+          reason: "refresh-failed",
+        },
+      }),
+      health: health(),
+      connection: null,
+      now: new Date("2026-08-14T12:05:00.000Z"),
+    });
+
+    expect(
+      result.attention.find(({ attentionId }) => attentionId === "signer:registration-missing"),
+    ).toMatchObject({
+      tier: "urgent",
+      primaryAction: { kind: "recheck", target: "node" },
+      evidence: [{ status: "delayed" }],
+    });
+  });
+
+  it("uses unavailable roster evidence instead of offering an under-evidenced threshold action", () => {
+    const next = forecastCycle(142, false, "-100000000");
+    next.local.rosterAvailable = false;
+    const result = projectOverview({
+      snapshot: snapshot({
+        forecast: {
+          status: "attention",
+          ingestion: null,
+          cycles: [forecastCycle(141, true, "100000000"), next],
+        },
+      }),
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.attention.map(({ attentionId }) => attentionId)).toEqual([
+      "pool:roster-unavailable:142",
+    ]);
+    expect(result.attention[0]?.primaryAction).toMatchObject({ kind: "recheck", target: "api" });
+  });
+
+  it("names a fixed-cycle exclusion without offering to repair the closed cycle", () => {
+    const base = snapshot();
+    const result = projectOverview({
+      snapshot: snapshot({
+        preflight: {
+          ...base.preflight,
+          cycle: {
+            ...base.preflight.cycle,
+            isPreparePhase: true,
+            blocksUntilPreparePhase: 0,
+          },
+        },
+        forecast: {
+          status: "attention",
+          ingestion: { activeDiscoveredStakers: 2, completedAt: generatedAt },
+          cycles: [
+            forecastCycle(141, true, "100000000"),
+            forecastCycle(142, false, "-100000000"),
+            forecastCycle(143, true, "100000000"),
+          ],
+        },
+      }),
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.attention).toHaveLength(1);
+    expect(result.attention[0]).toMatchObject({
+      attentionId: "pool:fixed-cycle-exclusion:142",
+      tier: "needs-attention",
+      primaryAction: { kind: "open-domain", page: "pool", section: "forecast" },
+    });
+  });
+
+  it("uses the next changeable cycle's prepare deadline after the current window closes", () => {
+    const base = snapshot();
+    const result = projectOverview({
+      snapshot: snapshot({
+        preflight: {
+          ...base.preflight,
+          cycle: {
+            ...base.preflight.cycle,
+            isPreparePhase: true,
+            blocksUntilPreparePhase: 0,
+          },
+        },
+        forecast: {
+          status: "attention",
+          ingestion: { activeDiscoveredStakers: 2, completedAt: generatedAt },
+          cycles: [
+            forecastCycle(141, true, "100000000"),
+            forecastCycle(142, false, "-100000000"),
+            forecastCycle(143, false, "-100000000"),
+          ],
+        },
+      }),
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(
+      result.attention.find(({ attentionId }) => attentionId === "pool:threshold:143"),
+    ).toMatchObject({
+      deadline: { kind: "burn-block", burnBlockHeight: 965_400 },
+    });
+  });
+
+  it("surfaces a due reward calculation without advertising an unimplemented transaction action", () => {
+    const base = snapshot();
+    if (base.rewards === null) throw new Error("Test fixture must include rewards");
+    const result = projectOverview({
+      snapshot: snapshot({
+        rewards: {
+          ...base.rewards,
+          calculation: {
+            state: "pending",
+            targetRewardCycle: 141,
+            targetCheckpoint: "first-half",
+            expectedLastRewardComputeBurnHeight: 962_299,
+            observedLastRewardComputeBurnHeight: "962000",
+          },
+        },
+      }),
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.attention[0]).toMatchObject({
+      attentionId: "rewards:calculation-due:141:first-half",
+      tier: "needs-attention",
+      deadline: { kind: "burn-block", burnBlockHeight: 962_299 },
+      primaryAction: { kind: "open-domain", page: "rewards", section: "calculation" },
+    });
+  });
+
+  it("offers reviewed staker settlements and lets existing Activity absorb the reminder", () => {
+    const base = snapshot();
+    if (base.rewards === null) throw new Error("Test fixture must include rewards");
+    const claimSnapshot = snapshot({
+      manager: {
+        ...base.manager,
+        capabilities: {
+          ...base.manager.capabilities,
+          actions: [
+            ...base.manager.capabilities.actions,
+            {
+              id: "reference-reward-claims",
+              interfaceAvailable: true,
+              executionAvailable: true,
+              missingFunctions: [],
+              adapter: { id: "reference-reward-claims", revision: 1, reviewedSourceSha256: "aa" },
+              reason: "reviewed",
+            },
+          ],
+        },
+      },
+      rewards: {
+        ...base.rewards,
+        totals: { ...base.rewards.totals, actionableClaims: 1 },
+      },
+    });
+    const due = projectOverview({
+      snapshot: claimSnapshot,
+      health: health(),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+    expect(due.attention[0]).toMatchObject({
+      attentionId: "rewards:claims-due:141",
+      tier: "action-required",
+      primaryAction: { kind: "open-domain", page: "rewards", section: "claims" },
+    });
+
+    const active = activityGroup("claim-staker-rewards", "action-required", "pending");
+    const resumed = projectOverview({
+      snapshot: claimSnapshot,
+      health: health(),
+      connection: null,
+      activity: activity([active]),
+      now: new Date(generatedAt),
+    });
+    expect(resumed.attention).toHaveLength(1);
+    expect(resumed.attention[0]).toMatchObject({
+      attentionId: active.activityId,
+      relatedActivityId: active.activityId,
+      primaryAction: { kind: "resume-activity", activityId: active.activityId },
     });
   });
 
@@ -651,6 +968,7 @@ describe("Overview projection", () => {
       attention("future", "action-required", {
         deadline: { kind: "burn-block", burnBlockHeight: 200, estimatedAt: null },
       }),
+      attention("no-deadline", "action-required"),
       attention("overdue-late", "action-required", {
         deadline: { kind: "burn-block", burnBlockHeight: 90, estimatedAt: null },
         urgencyAt: "2026-08-14T13:00:00.000Z",
@@ -668,7 +986,7 @@ describe("Overview projection", () => {
         rewardCycleId: 141,
         phase: "reward",
       }).map(({ attentionId }) => attentionId),
-    ).toEqual(["urgent", "overdue-early", "overdue-late", "future", "needs"]);
+    ).toEqual(["urgent", "overdue-early", "overdue-late", "future", "no-deadline", "needs"]);
   });
 
   it("prefers an existing Activity group for the same operation scope", () => {
@@ -699,5 +1017,272 @@ describe("Overview projection", () => {
         phase: "reward",
       }).map(({ attentionId }) => attentionId),
     ).toEqual(["activity"]);
+  });
+
+  const inclusionPolicyCases: Array<{
+    name: string;
+    run(): ReturnType<typeof projectOverview>;
+    attentionIds: string[];
+    inProgressIds?: string[];
+  }> = [
+    {
+      name: "deployment identity mismatch",
+      run: () =>
+        overview({
+          connection: connection({
+            status: "blocked",
+            outcomeCode: "deployment-identity-mismatch",
+            deploymentIdentity: { status: "mismatch", stored: null, reason: "Identity mismatch" },
+          }),
+        }),
+      attentionIds: ["connection:deployment-identity"],
+    },
+    {
+      name: "persisted local-node outage",
+      run: () =>
+        overview({
+          health: health({
+            findings: [
+              {
+                id: "node-rpc-unavailable",
+                severity: "critical",
+                title: "Node unavailable",
+                detail: "Persisted failure",
+                source: "node",
+              },
+            ],
+          }),
+          connection: connection(),
+        }),
+      attentionIds: ["health:node-rpc-unavailable"],
+    },
+    {
+      name: "persisted signer outage",
+      run: () =>
+        overview({
+          health: health({
+            findings: [
+              {
+                id: "signer-node-heartbeat-failed",
+                severity: "critical",
+                title: "Signer heartbeat failed",
+                detail: "Persisted failure",
+                source: "signer",
+              },
+            ],
+          }),
+        }),
+      attentionIds: ["health:signer-node-heartbeat-failed"],
+    },
+    {
+      name: "signer monitoring not configured",
+      run: () => {
+        const value = health();
+        value.signer.infoSource = source("not-configured");
+        return overview({ health: value });
+      },
+      attentionIds: ["signer:monitoring-not-configured"],
+    },
+    {
+      name: "day-two registration repair",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.registration = {
+              registered: false,
+              signerKeyHex: null,
+              signerKeyGrantValid: false,
+              reason: "missing",
+            };
+          }),
+        }),
+      attentionIds: ["signer:registration-missing"],
+    },
+    {
+      name: "actionable-cycle threshold deficit",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.forecast = {
+              status: "attention",
+              ingestion: { activeDiscoveredStakers: 2, completedAt: generatedAt },
+              cycles: [
+                forecastCycle(141, true, "100000000"),
+                forecastCycle(142, false, "-100000000"),
+              ],
+            };
+          }),
+        }),
+      attentionIds: ["pool:threshold:142"],
+    },
+    {
+      name: "fixed-cycle exclusion",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.preflight.cycle.isPreparePhase = true;
+            value.preflight.cycle.blocksUntilPreparePhase = 0;
+            value.forecast = {
+              status: "attention",
+              ingestion: { activeDiscoveredStakers: 2, completedAt: generatedAt },
+              cycles: [
+                forecastCycle(141, true, "100000000"),
+                forecastCycle(142, false, "-100000000"),
+                forecastCycle(143, true, "100000000"),
+              ],
+            };
+          }),
+        }),
+      attentionIds: ["pool:fixed-cycle-exclusion:142"],
+    },
+    {
+      name: "Activity action required",
+      run: () =>
+        overview({
+          activity: activity([activityGroup("claim-rewards", "action-required", "pending")]),
+        }),
+      attentionIds: ["engine-job:00000000-0000-4000-8000-000000000001"],
+    },
+    {
+      name: "Activity in progress",
+      run: () =>
+        overview({
+          activity: activity([activityGroup("claim-rewards", "in-progress", "pending")]),
+        }),
+      attentionIds: [],
+      inProgressIds: ["engine-job:00000000-0000-4000-8000-000000000001"],
+    },
+    {
+      name: "Activity authority unavailable",
+      run: () =>
+        overview({
+          activitySource: {
+            status: "unavailable",
+            observedAt: generatedAt,
+            reason: "Repository unavailable",
+          },
+        }),
+      attentionIds: ["sidekick:activity-unavailable"],
+    },
+    {
+      name: "reward calculation due",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            if (value.rewards === null) throw new Error("Test fixture must include rewards");
+            value.rewards.calculation = {
+              state: "pending",
+              targetRewardCycle: 141,
+              targetCheckpoint: "first-half",
+              expectedLastRewardComputeBurnHeight: 962_299,
+              observedLastRewardComputeBurnHeight: "962000",
+            };
+          }),
+        }),
+      attentionIds: ["rewards:calculation-due:141:first-half"],
+    },
+    {
+      name: "normal pending withdrawal",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.activity.pendingWithdrawalTotal = 1;
+          }),
+        }),
+      attentionIds: [],
+    },
+    {
+      name: "roster delay without a blocked decision",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            const next = forecastCycle(142, true, "100000000");
+            next.local.rosterAvailable = false;
+            value.forecast = { status: "attention", ingestion: null, cycles: [next] };
+          }),
+        }),
+      attentionIds: [],
+    },
+    {
+      name: "reference API behind local node",
+      run: () => overview(),
+      attentionIds: [],
+    },
+    {
+      name: "custom manager provenance only",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.manager.source = {
+              ...value.manager.source,
+              profileId: null,
+              tier: "unrecognized",
+              origin: null,
+              recognized: false,
+            };
+            value.manager.provenance = {
+              status: "failed",
+              upstreamProfileId: null,
+              reason: "unrecognized",
+            };
+          }),
+        }),
+      attentionIds: [],
+    },
+    {
+      name: "profile issue that blocks a due repair",
+      run: () =>
+        overview({
+          snapshot: changedSnapshot((value) => {
+            value.manager.installedProfiles = {
+              directory: "/profiles",
+              loaded: 0,
+              issues: [{ fileName: "broken.json", code: "invalid", message: "Invalid" }],
+            };
+            value.manager.capabilities.actions = value.manager.capabilities.actions.map(
+              (capability) => ({ ...capability, executionAvailable: false }),
+            );
+            value.registration = {
+              registered: false,
+              signerKeyHex: null,
+              signerKeyGrantValid: false,
+              reason: "missing",
+            };
+          }),
+        }),
+      attentionIds: ["signer:registration-missing"],
+    },
+    {
+      name: "observer gap inside fallback budget",
+      run: () =>
+        overview({
+          observerGap: {
+            status: "degraded",
+            nodeStacksHeight: 8_750_000,
+            observerStacksHeight: 8_749_990,
+            observerSilenceSeconds: 120,
+          },
+        }),
+      attentionIds: [],
+    },
+    {
+      name: "signer baseline collection",
+      run: () => {
+        const value = health();
+        value.signer.lastHour.collectingBaseline = true;
+        return overview({ health: value });
+      },
+      attentionIds: [],
+    },
+  ];
+
+  it.each(inclusionPolicyCases)("applies the inclusion policy for $name", ({
+    run,
+    attentionIds,
+    inProgressIds = [],
+  }) => {
+    const result = run();
+    expect(result.attention.map(({ attentionId }) => attentionId)).toEqual(attentionIds);
+    expect(result.inProgress.map(({ activityId }) => activityId)).toEqual(inProgressIds);
   });
 });

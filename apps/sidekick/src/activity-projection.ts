@@ -30,6 +30,7 @@ import type {
 import type { TransactionJobState } from "./transaction-engine/state-machine.js";
 
 const maximumAuthorityRecords = 10_000;
+export const noncanonicalReobserveRecoveryMs = 5 * 60_000;
 const activityPageLimitSchema = z.number().int().min(1).max(100);
 const activityIdSchema = z.string().min(1).max(500);
 
@@ -142,6 +143,36 @@ export function engineJobActivityState(state: TransactionJobState): {
     default:
       return assertNever(state);
   }
+}
+
+export function engineJobActivityPresentation(
+  state: TransactionJobState,
+  updatedAt: string,
+  now: Date,
+): {
+  displayStatus: ActivityDisplayStatus;
+  outcome: ActivityOutcome;
+  deadline: OperatorDeadline | null;
+} {
+  const recoveryDeadline =
+    state === "noncanonical_reobserve"
+      ? new Date(Date.parse(updatedAt) + noncanonicalReobserveRecoveryMs).toISOString()
+      : null;
+  if (
+    state === "noncanonical_reobserve" &&
+    recoveryDeadline !== null &&
+    now.getTime() >= Date.parse(recoveryDeadline)
+  ) {
+    return {
+      displayStatus: "needs-attention",
+      outcome: "pending",
+      deadline: { kind: "time", at: recoveryDeadline },
+    };
+  }
+  return {
+    ...engineJobActivityState(state),
+    deadline: recoveryDeadline === null ? null : { kind: "time", at: recoveryDeadline },
+  };
 }
 
 function isActive(status: ActivityDisplayStatus): boolean {
@@ -364,6 +395,21 @@ function coverage(
   reason: string | null = null,
 ): ActivityCoverage {
   return { source, status, observedAt, anchor: null, reason };
+}
+
+function historyCoverage(
+  source: ActivityCoverage["source"],
+  observedAt: string | null,
+  truncated: boolean,
+): ActivityCoverage {
+  return coverage(
+    source,
+    truncated ? "delayed" : "current",
+    observedAt,
+    truncated
+      ? `Activity history is bounded to the newest ${maximumAuthorityRecords} ${source} records; active work remains complete.`
+      : null,
+  );
 }
 
 const walletActionPresentation = {
@@ -611,9 +657,10 @@ function engineRecord(
   sourceCoverage: ActivityCoverage,
   readOnly: boolean,
   supersedesActivityId: string | null,
+  now: Date,
 ): ActivityRecord {
   const activityId = `engine-job:${job.jobId}`;
-  const mapped = engineJobActivityState(job.state);
+  const mapped = engineJobActivityPresentation(job.state, job.updatedAt, now);
   const aborted = attempts.some(
     ({ inclusion }) => inclusion !== null && inclusion.executionStatus !== "success",
   );
@@ -651,12 +698,15 @@ function engineRecord(
       domain: "rewards",
       code: job.adapterId,
       title: "Manager reward operation",
-      summary: engineSummaryText(job),
+      summary:
+        job.state === "noncanonical_reobserve" && mapped.displayStatus === "needs-attention"
+          ? "The transaction became noncanonical and did not recover before the five-minute re-observation deadline."
+          : engineSummaryText(job),
       ...state,
       occurredAt: job.createdAt,
       updatedAt: job.updatedAt,
-      deadline: null,
-      urgencyAt: null,
+      deadline: mapped.deadline,
+      urgencyAt: mapped.deadline?.kind === "time" ? mapped.deadline.at : null,
       actorPrincipal: null,
       txids,
       anchor: job.chainAnchor as EngineChainAnchor,
@@ -858,27 +908,32 @@ export class ActivityProjectionService {
       sourceId(): string;
       observerStatus?(): ObserverRuntimeStatus;
       now?(): Date;
+      context?(): Omit<ActivityProjectionContext, "now"> | null;
     },
   ) {}
 
   page(query: ActivityQuery, readOnly = false): ActivityResponse {
-    const loaded = this.load(readOnly);
+    const now = this.options.now?.() ?? new Date();
+    const loaded = this.load(readOnly, now);
+    const chainContext = this.options.context?.() ?? {
+      burnBlockHeight: null,
+      rewardCycleId: null,
+      phase: null,
+    };
     return projectActivityPage({
       records: loaded.records,
       coverage: loaded.coverage,
       query,
       context: {
-        now: this.options.now?.() ?? new Date(),
-        burnBlockHeight: null,
-        rewardCycleId: null,
-        phase: null,
+        now,
+        ...chainContext,
       },
     });
   }
 
   detail(activityId: string, readOnly = false): ActivityDetail | null {
     const requestedActivityId = activityIdSchema.parse(activityId);
-    const loaded = this.load(readOnly);
+    const loaded = this.load(readOnly, this.options.now?.() ?? new Date());
     const record = loaded.records.find(({ aliases }) => aliases.includes(requestedActivityId));
     if (!record) return null;
     return activityDetailSchema.parse({
@@ -891,42 +946,107 @@ export class ActivityProjectionService {
     });
   }
 
-  private load(readOnly: boolean): { records: ActivityRecord[]; coverage: ActivityCoverage[] } {
-    const walletIntents = this.options.store.walletIntents.listForActivity(
+  private load(
+    readOnly: boolean,
+    now: Date,
+  ): { records: ActivityRecord[]; coverage: ActivityCoverage[] } {
+    const recentWalletIntents = this.options.store.walletIntents.listForActivity(
       maximumAuthorityRecords + 1,
     );
-    requireBounded(walletIntents, "Wallet intent history");
+    const walletHistoryTruncated = recentWalletIntents.length > maximumAuthorityRecords;
+    const activeWalletIntents = this.options.store.walletIntents.listActiveForActivity(
+      maximumAuthorityRecords + 1,
+    );
+    requireBounded(activeWalletIntents, "Active wallet intent authority");
+    const walletIntents = [
+      ...new Map(
+        [...recentWalletIntents.slice(0, maximumAuthorityRecords), ...activeWalletIntents].map(
+          (intent) => [intent.id, intent],
+        ),
+      ).values(),
+    ];
 
-    const jobs: StoredTransactionJob[] = [];
+    const activeJobStates = [
+      "prepared",
+      "preflighted",
+      "awaiting_approval",
+      "nonce_reserved",
+      "broadcast",
+      "confirmed",
+      "blocked",
+      "ambiguous",
+      "noncanonical_reobserve",
+    ] as const satisfies readonly TransactionJobState[];
+    const activeJobs: StoredTransactionJob[] = [];
     let cursor: string | undefined;
-    while (jobs.length <= maximumAuthorityRecords) {
+    while (activeJobs.length <= maximumAuthorityRecords) {
       const page = this.options.store.transactionEngine.listLogicalJobs({
         limit: 200,
+        states: activeJobStates,
         ...(cursor === undefined ? {} : { cursor }),
       });
-      jobs.push(...page.items);
+      activeJobs.push(...page.items);
       if (page.nextCursor === null) break;
       cursor = page.nextCursor;
     }
-    requireBounded(jobs, "Transaction engine history");
+    requireBounded(activeJobs, "Active transaction engine authority");
 
-    const chainEvents = this.options.store.listManagerActivityChainEvents(
+    const terminalJobs: StoredTransactionJob[] = [];
+    cursor = undefined;
+    let engineHistoryTruncated = false;
+    while (terminalJobs.length <= maximumAuthorityRecords) {
+      const page = this.options.store.transactionEngine.listLogicalJobs({
+        limit: 200,
+        states: ["reconciled", "superseded"],
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      engineHistoryTruncated ||= page.total > maximumAuthorityRecords;
+      terminalJobs.push(...page.items);
+      if (page.nextCursor === null || terminalJobs.length > maximumAuthorityRecords) break;
+      cursor = page.nextCursor;
+    }
+    const jobs = [
+      ...new Map(
+        [...activeJobs, ...terminalJobs.slice(0, maximumAuthorityRecords)].map((job) => [
+          job.jobId,
+          job,
+        ]),
+      ).values(),
+    ];
+
+    const recentChainEvents = this.options.store.listManagerActivityChainEvents(
       this.options.chainId,
       this.options.managerPrincipal,
       maximumAuthorityRecords + 1,
     );
-    requireBounded(chainEvents, "Indexed manager history");
-    const settingsAudit = this.options.store.listSettingsAudit(maximumAuthorityRecords + 1);
-    requireBounded(settingsAudit, "Settings audit history");
+    const chainHistoryTruncated = recentChainEvents.length > maximumAuthorityRecords;
+    const chainEvents = recentChainEvents.slice(0, maximumAuthorityRecords);
+    const recentSettingsAudit = this.options.store.listSettingsAudit(maximumAuthorityRecords + 1);
+    const settingsHistoryTruncated = recentSettingsAudit.length > maximumAuthorityRecords;
+    const settingsAudit = recentSettingsAudit.slice(0, maximumAuthorityRecords);
 
-    const walletCoverage = coverage("wallet-intents", "current", latestObservedAt(walletIntents));
-    const engineCoverage = coverage("transaction-engine", "current", latestObservedAt(jobs));
-    const indexedCoverage = this.indexedCoverage(chainEvents);
-    const settingsCoverage = coverage(
-      "settings-audit",
-      "current",
-      settingsAudit[0]?.changedAt ?? null,
+    const walletObservedAt = latestObservedAt(walletIntents);
+    const walletCoverage = historyCoverage(
+      "wallet-intents",
+      walletObservedAt,
+      walletHistoryTruncated,
     );
+    const walletRecordCoverage = coverage("wallet-intents", "current", walletObservedAt);
+    const engineObservedAt = latestObservedAt(jobs);
+    const engineCoverage = historyCoverage(
+      "transaction-engine",
+      engineObservedAt,
+      engineHistoryTruncated,
+    );
+    const engineRecordCoverage = coverage("transaction-engine", "current", engineObservedAt);
+    const indexedCoverage = this.indexedCoverage(chainEvents, chainHistoryTruncated);
+    const settingsObservedAt = settingsAudit[0]?.changedAt ?? null;
+    const settingsCoverage = historyCoverage(
+      "settings-audit",
+      settingsObservedAt,
+      settingsHistoryTruncated,
+    );
+    const settingsRecordCoverage = coverage("settings-audit", "current", settingsObservedAt);
     const observerCoverage = this.observerCoverage();
 
     const walletByScope = new Map<string, StoredWalletIntent[]>();
@@ -946,10 +1066,14 @@ export class ActivityProjectionService {
       return walletIntentSummary(
         intent,
         this.options.store.walletIntents.listObservations(intent.id),
-        walletCoverage,
+        walletRecordCoverage,
         readOnly,
-        previous?.state === "superseded" ? `wallet-intent:${previous.id}` : null,
-        intent.state === "superseded" && next ? `wallet-intent:${next.id}` : null,
+        previous && ["expired", "superseded"].includes(previous.state)
+          ? `wallet-intent:${previous.id}`
+          : null,
+        ["expired", "superseded"].includes(intent.state) && next
+          ? `wallet-intent:${next.id}`
+          : null,
       );
     });
 
@@ -964,9 +1088,10 @@ export class ActivityProjectionService {
         job,
         this.options.store.transactionEngine.listAttempts(job.jobId),
         this.options.store.transactionEngine.listReconciliationObservations(job.jobId),
-        engineCoverage,
+        engineRecordCoverage,
         readOnly,
         supersededEngineJobs.get(job.jobId) ?? null,
+        now,
       ),
     );
 
@@ -1015,7 +1140,9 @@ export class ActivityProjectionService {
       }
     }
 
-    const settingsRecords = settingsAudit.map((audit) => settingsRecord(audit, settingsCoverage));
+    const settingsRecords = settingsAudit.map((audit) =>
+      settingsRecord(audit, settingsRecordCoverage),
+    );
 
     return {
       records: [...walletRecords, ...engineRecords, ...chainRecords, ...settingsRecords],
@@ -1029,7 +1156,10 @@ export class ActivityProjectionService {
     };
   }
 
-  private indexedCoverage(events: readonly StoredActivityChainEvent[]): ActivityCoverage {
+  private indexedCoverage(
+    events: readonly StoredActivityChainEvent[],
+    historyTruncated = false,
+  ): ActivityCoverage {
     const generic = this.options.store.getCursor(
       this.options.sourceId(),
       managerEventStream(this.options.managerPrincipal, "generic-v1"),
@@ -1047,6 +1177,14 @@ export class ActivityProjectionService {
         "delayed",
         latestObservedAt(events),
         "No manager-history synchronization cursor is available yet.",
+      );
+    }
+    if (historyTruncated) {
+      return coverage(
+        "indexed-manager-history",
+        "delayed",
+        cursor.updatedAt,
+        `Indexed manager Activity history is bounded to the newest ${maximumAuthorityRecords} records.`,
       );
     }
     return coverage(

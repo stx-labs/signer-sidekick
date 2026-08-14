@@ -113,6 +113,31 @@ describe("WalletIntentRepository", () => {
     expect(store.walletIntents.listForActivity().map(({ id }) => id)).toEqual([newer.id, older.id]);
   });
 
+  it("lists every nonterminal intent for Activity independently of the history window", async () => {
+    const store = await memoryStore();
+    const terminal = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000001",
+        createdAt: "2026-07-18T11:00:00.000Z",
+        expiresAt: "2026-07-18T11:10:00.000Z",
+      }),
+    ).intent;
+    store.walletIntents.findActiveScope({
+      action: terminal.action,
+      scope: terminal.scope,
+      now: "2026-07-18T11:10:00.000Z",
+    });
+    const active = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000002",
+        scope: "fresh:SP000000000000000000002Q6VF78.other-manager",
+      }),
+    ).intent;
+
+    expect(store.walletIntents.get(terminal.id)?.state).toBe("expired");
+    expect(store.walletIntents.listActiveForActivity().map(({ id }) => id)).toEqual([active.id]);
+  });
+
   it("migrates, survives restart, and returns observations oldest-to-newest", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sidekick-wallet-intents-"));
     directories.push(directory);

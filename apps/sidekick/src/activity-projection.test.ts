@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ActivityProjectionError,
   ActivityProjectionService,
+  engineJobActivityPresentation,
   engineJobActivityState,
+  noncanonicalReobserveRecoveryMs,
   projectActivityPage,
   sortActiveActivity,
   walletIntentActivityState,
@@ -126,6 +128,31 @@ describe("Activity projection", () => {
     ]);
   });
 
+  it("escalates noncanonical re-observation after its bounded recovery deadline", () => {
+    const updatedAt = "2026-08-14T11:50:00.000Z";
+    expect(
+      engineJobActivityPresentation(
+        "noncanonical_reobserve",
+        updatedAt,
+        new Date(Date.parse(updatedAt) + noncanonicalReobserveRecoveryMs - 1),
+      ),
+    ).toEqual({
+      displayStatus: "in-progress",
+      outcome: "pending",
+      deadline: {
+        kind: "time",
+        at: new Date(Date.parse(updatedAt) + noncanonicalReobserveRecoveryMs).toISOString(),
+      },
+    });
+    expect(
+      engineJobActivityPresentation(
+        "noncanonical_reobserve",
+        updatedAt,
+        new Date(Date.parse(updatedAt) + noncanonicalReobserveRecoveryMs),
+      ),
+    ).toMatchObject({ displayStatus: "needs-attention", outcome: "pending" });
+  });
+
   it("sorts active work by status, overdue deadline, urgency, update, and id", () => {
     const context = {
       now,
@@ -139,6 +166,7 @@ describe("Activity projection", () => {
         deadline: { kind: "burn-block", burnBlockHeight: 300, estimatedAt: null },
         urgencyAt: "2026-08-14T12:30:00.000Z",
       }),
+      summary("activity:no-deadline", "action-required", "pending"),
       summary("activity:overdue-b", "action-required", "pending", {
         deadline: { kind: "burn-block", burnBlockHeight: 199, estimatedAt: null },
         urgencyAt: "2026-08-14T12:20:00.000Z",
@@ -154,6 +182,7 @@ describe("Activity projection", () => {
       "activity:overdue-a",
       "activity:overdue-b",
       "activity:future",
+      "activity:no-deadline",
       "activity:in-progress",
     ]);
   });
@@ -301,6 +330,114 @@ describe("Activity projection", () => {
     expect(detail?.timeline.some(({ code }) => code === "verified-chain-event")).toBe(true);
     expect(detail?.summary.coverage.map(({ source }) => source)).toEqual(
       expect.arrayContaining(["wallet-intents", "indexed-manager-history"]),
+    );
+  });
+
+  it("links an expired transaction review to the replacement for the same operation scope", async () => {
+    const store = await memoryStore();
+    const manifest = { schemaVersion: 2, action: "claim-rewards" };
+    const first = store.walletIntents.create({
+      action: "claim-rewards",
+      scope: "claim-rewards:141",
+      factsSha256: "aa".repeat(32),
+      manifestSha256: canonicalJsonSha256(manifest),
+      manifest,
+      requiredSender: actorPrincipal,
+      network: "mainnet",
+      chainId: 1,
+      createdAt: "2026-08-14T10:00:00.000Z",
+      expiresAt: "2026-08-14T10:10:00.000Z",
+    }).intent;
+    const replacement = store.walletIntents.create({
+      action: "claim-rewards",
+      scope: "claim-rewards:141",
+      factsSha256: "bb".repeat(32),
+      manifestSha256: canonicalJsonSha256(manifest),
+      manifest,
+      requiredSender: actorPrincipal,
+      network: "mainnet",
+      chainId: 1,
+      createdAt: "2026-08-14T11:00:00.000Z",
+      expiresAt: "2026-08-14T11:10:00.000Z",
+    }).intent;
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+
+    expect(service.detail(`wallet-intent:${first.id}`)?.summary).toMatchObject({
+      displayStatus: "superseded",
+      supersededByActivityId: `wallet-intent:${replacement.id}`,
+    });
+    expect(service.detail(`wallet-intent:${replacement.id}`)?.summary).toMatchObject({
+      supersedesActivityId: `wallet-intent:${first.id}`,
+    });
+  });
+
+  it("reads the cached chain context used for structured-deadline ordering", async () => {
+    const store = await memoryStore();
+    let contextReads = 0;
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+      context: () => {
+        contextReads += 1;
+        return { burnBlockHeight: 962_250, rewardCycleId: 141, phase: "reward" };
+      },
+    });
+
+    expect(service.page(query())).toMatchObject({
+      schemaVersion: 1,
+      active: [],
+      items: [],
+    });
+    expect(contextReads).toBe(1);
+  });
+
+  it("degrades bounded terminal coverage instead of failing the Activity page", () => {
+    const settingsAudit = Array.from({ length: 10_001 }, (_, index) => ({
+      revision: index + 1,
+      changedFields: ["dataSources.nodeRpcUrl"],
+      changedAt: new Date(now.getTime() - index * 1_000).toISOString(),
+    }));
+    const store = {
+      walletIntents: {
+        listForActivity: () => [],
+        listActiveForActivity: () => [],
+        listObservations: () => [],
+      },
+      transactionEngine: {
+        listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
+      },
+      listManagerActivityChainEvents: () => [],
+      listSettingsAudit: () => settingsAudit,
+      getCursor: () => null,
+    } as unknown as SidekickStore;
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+
+    const page = service.page(query());
+    expect(page.items).toHaveLength(50);
+    expect(page.items[0]?.coverage).toContainEqual(
+      expect.objectContaining({ source: "settings-audit", status: "current" }),
+    );
+    expect(page.coverage).toContainEqual(
+      expect.objectContaining({
+        source: "settings-audit",
+        status: "delayed",
+        reason: expect.stringContaining("newest 10000"),
+      }),
     );
   });
 });

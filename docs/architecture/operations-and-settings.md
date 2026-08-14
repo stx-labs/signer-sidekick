@@ -4,6 +4,11 @@ Signer Sidekick connects to one configured, deployed signer manager. It does not
 signer, deploy a manager contract, or guide first-time registration. Use
 [Zero to Signing](https://stx.fan/zero_to/signing/) for that wallet-signed day-zero flow and
 [stacksup](https://github.com/stx-labs/stacksup) for infrastructure lifecycle management.
+If the dApp is unavailable, the product links the pinned
+[upstream reference manager](https://github.com/stacks-network/stacks-core/blob/efc34a07a225c4b950ab9404a1652aa5e14affaf/contrib/core-contract-tests/contracts/signer-manager.clar)
+and the official [contract deployment guide](https://docs.stacks.co/clarinet/contract-deployment) as
+the manual fallback. Sidekick support begins after those day-zero calls produce a deployed,
+trait-compatible manager; it does not own or support the external setup flow.
 
 ## Operating boundary
 

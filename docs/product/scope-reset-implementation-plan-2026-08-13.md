@@ -324,10 +324,15 @@ the reviewed slice for operator signing.
 
 ## Recorded product decisions
 
-- **External first-time setup (2026-08-13):** Sidekick treats
-  `https://stx.fan/zero_to/signing/` as the supported day-zero handoff. The URL is centralized in the
-  dashboard and documentation rather than treated as a compatibility contract; it can be updated if
-  the maintained destination changes.
+- **External first-time setup boundary (2026-08-14):** Sidekick treats
+  `https://stx.fan/zero_to/signing/` as the preferred replaceable day-zero handoff, not as a
+  Sidekick-owned dependency or release artifact. Sidekick support begins once a trait-compatible
+  manager is deployed and the operator supplies its principal. The dApp's maintainers own its
+  availability and wallet-flow support; Sidekick keeps an upstream/manual setup fallback and may
+  change the centralized destination without a compatibility promise. Setup deletion is gated by a
+  tested trait-compatible handoff plus that fallback, not by organizational ownership of the dApp.
+  The implemented fallback links the pinned upstream reference-manager source and official Stacks
+  contract-deployment guidance; it does not recreate a Sidekick setup workflow.
 - **Manager census cadence (2026-08-13):** refresh the checked-in anchored census before a
   capability-adapter change, after a PoX/Stacks Core protocol upgrade, when monitoring discovers a
   new source/interface, and at least monthly while the deployed population is changing. Census

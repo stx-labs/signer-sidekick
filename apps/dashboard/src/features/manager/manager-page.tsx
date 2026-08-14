@@ -771,6 +771,14 @@ export function Manager({
               >
                 Open Zero to Signing
               </a>
+              <a
+                className="btn btn-tertiary sm"
+                href={DOCUMENT_LINKS.referenceManager}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open upstream manager source
+              </a>
               <button
                 type="button"
                 className="btn btn-tertiary sm"

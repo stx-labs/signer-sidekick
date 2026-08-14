@@ -161,6 +161,13 @@ In summary:
   A later mismatch enters read-only diagnostic safe mode instead of mixing histories or silently
   rebinding.
 
+Zero to Signing is a preferred external handoff rather than a Sidekick-owned service or release
+dependency. Its maintainers own day-zero wallet-flow availability and support. Sidekick's support
+boundary begins after a trait-compatible manager exists; Sidekick keeps a maintained upstream or
+manual setup fallback, centralizes the external URL so it can change, and gates removal of its old
+setup surface on a tested trait-compatible handoff plus that fallback—not on ownership of the
+external dApp.
+
 ### Signer and network health boundary
 
 Sidekick does not run the signer, but it must understand the parts of signer operation that change

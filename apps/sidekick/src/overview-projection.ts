@@ -1,7 +1,9 @@
 import type {
+  ActivityCoverage,
+  ActivityGroupSummary,
+  ActivityResponse,
   ConnectionAssessment,
   DashboardSnapshot,
-  EngineJobSummary,
   HealthSnapshot,
   OperatorDeadline,
   OverviewAttentionItem,
@@ -21,7 +23,7 @@ export interface OverviewProjectionInput {
   snapshot: DashboardSnapshot;
   health: HealthSnapshot | null;
   connection: ConnectionAssessment | null;
-  engineJobs?: readonly EngineJobSummary[];
+  activity?: ActivityResponse | null;
   activitySource?: {
     status: "current" | "unavailable";
     observedAt: string;
@@ -29,17 +31,6 @@ export interface OverviewProjectionInput {
   };
   observerGap?: ObserverGapStatus | null;
   now?: Date;
-}
-
-type EngineActivityState = "action-required" | "in-progress" | "needs-attention" | "terminal";
-
-function engineActivityState(job: EngineJobSummary): EngineActivityState {
-  if (job.state === "reconciled" || job.state === "superseded") return "terminal";
-  if (job.state === "ambiguous" || job.state === "blocked") return "needs-attention";
-  if (["prepared", "preflighted", "awaiting_approval"].includes(job.state)) {
-    return "action-required";
-  }
-  return "in-progress";
 }
 
 export interface OverviewAttentionCandidate {
@@ -182,6 +173,63 @@ function evidence(options: {
   };
 }
 
+function activityEvidence(value: ActivityCoverage): OverviewEvidence {
+  return evidence({
+    status: value.status,
+    observedAt: value.observedAt,
+    anchor: value.anchor,
+    source: value.source === "indexed-manager-history" ? "indexed-api" : "sidekick-store",
+    reason: value.reason,
+  });
+}
+
+function activityAttentionItem(activity: ActivityGroupSummary): OverviewAttentionItem {
+  const ambiguous = activity.outcome === "ambiguous";
+  return attentionItem({
+    attentionId: activity.activityId,
+    tier:
+      activity.displayStatus === "action-required"
+        ? "action-required"
+        : ambiguous
+          ? "urgent"
+          : "needs-attention",
+    domain: activity.domain,
+    affectedDomains: [activity.domain],
+    code: activity.code,
+    title: activity.title,
+    summary: activity.summary,
+    impact: ambiguous
+      ? "Do not submit a replacement until the transaction and nonce evidence is resolved."
+      : activity.displayStatus === "action-required"
+        ? "The operation will not advance until the required operator input is provided."
+        : "The operation needs review before Sidekick can consider it resolved.",
+    openedAt: activity.occurredAt,
+    updatedAt: activity.updatedAt,
+    deadline: activity.deadline,
+    urgencyAt: activity.urgencyAt,
+    evidence: activity.coverage.map(activityEvidence),
+    relatedActivityId: activity.activityId,
+    relatedFindingId: null,
+    primaryAction:
+      activity.primaryAction ?? openActivityAction("active", "Review active operation"),
+    detailsAction: null,
+  });
+}
+
+function activityOperationScope(
+  activity: ActivityGroupSummary,
+  snapshot: DashboardSnapshot,
+): string {
+  if (activity.code === "register-self") return "register-self";
+  if (activity.code === "claim-rewards" || activity.code === "reference-manager-claim-rewards") {
+    return `claim-rewards:${snapshot.rewards?.rewardCycle ?? "unknown"}`;
+  }
+  if (activity.code === "claim-staker-rewards") {
+    return `claim-staker-rewards:${snapshot.rewards?.rewardCycle ?? "unknown"}`;
+  }
+  return activity.activityId;
+}
+
 function snapshotEvidence(snapshot: DashboardSnapshot): OverviewEvidence {
   const delayed = snapshot.freshness?.status === "stale";
   return evidence({
@@ -286,6 +334,26 @@ function nextPrepare(snapshot: DashboardSnapshot, averageBurnSeconds: number | n
     blocksRemaining,
     estimatedAt: estimateAt(snapshot.generatedAt, blocksRemaining, averageBurnSeconds),
     evidence: [snapshotEvidence(snapshot)],
+  };
+}
+
+function prepareDeadlineForCycle(
+  snapshot: DashboardSnapshot,
+  cycleId: number,
+  averageBurnSeconds: number | null,
+): OperatorDeadline | null {
+  const nextCycleId = snapshot.preflight.cycle.nextId;
+  const nextPrepareHeight = snapshot.preflight.cycle.preparePhaseStartBurnHeight;
+  if (nextCycleId === null || nextPrepareHeight === null || cycleId < nextCycleId) return null;
+  const cycleOffset = cycleId - nextCycleId;
+  const rewardCycleLength = snapshot.chainAnchor?.rewardCycleLength ?? null;
+  if (cycleOffset > 0 && rewardCycleLength === null) return null;
+  const burnBlockHeight = nextPrepareHeight + cycleOffset * (rewardCycleLength ?? 0);
+  const blocksRemaining = Math.max(0, burnBlockHeight - snapshot.preflight.node.burnBlockHeight);
+  return {
+    kind: "burn-block",
+    burnBlockHeight,
+    estimatedAt: estimateAt(snapshot.generatedAt, blocksRemaining, averageBurnSeconds),
   };
 }
 
@@ -602,16 +670,18 @@ function attentionItem(
 }
 
 function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAttentionCandidate[] {
-  const { snapshot, health, connection, engineJobs = [], activitySource, observerGap } = input;
+  const { snapshot, health, connection, activity, activitySource, observerGap } = input;
   const candidates: OverviewAttentionCandidate[] = [];
   const updatedAt = snapshot.generatedAt;
   const localEvidence = snapshotEvidence(snapshot);
+  const snapshotCurrent = snapshot.freshness?.status !== "stale";
 
   if (connection?.status === "blocked" || connection?.status === "unavailable") {
     const identityMismatch = connection.outcomeCode === "deployment-identity-mismatch";
     candidates.push({
       conditionKey: identityMismatch ? "connection:safe-mode" : "connection:unavailable",
-      suppresses: identityMismatch ? ["*"] : ["node:node-rpc-unavailable", "snapshot:delayed"],
+      suppressedBy: identityMismatch ? [] : ["node:node-rpc-unavailable"],
+      suppresses: identityMismatch ? ["*"] : ["snapshot:delayed"],
       item: attentionItem({
         attentionId: identityMismatch ? "connection:deployment-identity" : "connection:unavailable",
         tier: identityMismatch ? "urgent" : "needs-attention",
@@ -631,7 +701,11 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         updatedAt: connection.checkedAt,
         evidence: [
           evidence({
-            status: connection.status === "unavailable" ? "unavailable" : "current",
+            status: connection.stale
+              ? "delayed"
+              : connection.status === "unavailable"
+                ? "unavailable"
+                : "current",
             observedAt: connection.checkedAt,
             source: "local-node",
             reason: connection.outcomeCode,
@@ -656,12 +730,15 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     const registrationCapability = snapshot.manager.capabilities.actions.find(
       ({ id }) => id === "register-self",
     );
-    const canRepair = registrationCapability?.executionAvailable === true && expectedParticipation;
+    const repairAvailable =
+      registrationCapability?.executionAvailable === true && expectedParticipation;
+    const canRepair = repairAvailable && snapshotCurrent;
+    const profileIssueBlocksRepair =
+      snapshot.manager.installedProfiles.issues.length > 0 &&
+      registrationCapability?.executionAvailable !== true;
     candidates.push({
       conditionKey: missingRegistration ? "signer:registration-missing" : "signer:grant-invalid",
-      suppresses: missingRegistration
-        ? ["signer:grant-invalid", "signer:eligibility"]
-        : ["signer:eligibility"],
+      suppresses: missingRegistration ? ["signer:grant-invalid"] : [],
       operationScope: "register-self",
       item: attentionItem({
         attentionId: missingRegistration ? "signer:registration-missing" : "signer:grant-invalid",
@@ -672,7 +749,9 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         title: missingRegistration
           ? "Signer registration is missing"
           : "Signer authorization is invalid",
-        summary: snapshot.registration.reason,
+        summary: profileIssueBlocksRepair
+          ? `${snapshot.registration.reason} An installed manager profile issue removed the reviewed repair capability.`
+          : snapshot.registration.reason,
         impact: currentInSignerSet
           ? "The signer is expected to participate in the current cycle but is not correctly authorized."
           : "The signer cannot participate under this manager until authorization is repaired.",
@@ -687,7 +766,9 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
               context: { kind: "none" },
               label: "Repair signer authorization",
             }
-          : { kind: "open-settings", section: "capabilities", label: "Review signer capability" },
+          : repairAvailable
+            ? { kind: "recheck", target: "node", label: "Refresh signer authorization" }
+            : { kind: "open-settings", section: "capabilities", label: "Review signer capability" },
         detailsAction: healthAction("signer", "Review signer evidence"),
       }),
     });
@@ -747,7 +828,6 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     if (health.signer.infoSource.status === "not-configured") {
       candidates.push({
         conditionKey: "signer:monitoring-not-configured",
-        suppresses: ["signer:runtime-mismatch", "signer:participation"],
         item: attentionItem({
           attentionId: "signer:monitoring-not-configured",
           tier: "needs-attention",
@@ -783,6 +863,48 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   const actionableCycle = snapshot.forecast?.cycles.find(
     ({ cycleId }) => cycleId === actionableCycleId,
   );
+  const actionableCycleDeadline =
+    actionableCycle === undefined
+      ? null
+      : prepareDeadlineForCycle(
+          snapshot,
+          actionableCycle.cycleId,
+          health?.burnBlockTiming?.averageSeconds ?? null,
+        );
+  const rosterUnavailableBlocksThresholdAction =
+    actionableCycle?.threshold.meetsThreshold === false &&
+    actionableCycle.local.rosterAvailable === false;
+  if (actionableCycle && rosterUnavailableBlocksThresholdAction) {
+    candidates.push({
+      conditionKey: "pool:roster-unavailable",
+      item: attentionItem({
+        attentionId: `pool:roster-unavailable:${actionableCycle.cycleId}`,
+        tier: "needs-attention",
+        domain: "pool",
+        affectedDomains: ["pool", "signer"],
+        code: "actionable-roster-unavailable",
+        title: `Pool positions for cycle ${actionableCycle.cycleId} are unavailable`,
+        summary:
+          "The contract is below threshold, but Sidekick does not have the verified participant roster needed to explain the corrective position change.",
+        impact:
+          "Sidekick cannot safely turn the threshold deficit into a participant-specific action until indexed roster evidence recovers.",
+        updatedAt,
+        deadline: actionableCycleDeadline,
+        evidence: [
+          evidence({
+            status: "unavailable",
+            observedAt: snapshot.forecast?.ingestion?.completedAt ?? snapshot.generatedAt,
+            source: "indexed-api",
+            reason: "No node-verified indexed roster is available at the projection anchor.",
+          }),
+        ],
+        relatedActivityId: null,
+        relatedFindingId: null,
+        primaryAction: { kind: "recheck", target: "api", label: "Recheck pool roster" },
+        detailsAction: poolAction("roster", "Review roster coverage"),
+      }),
+    });
+  }
   if (actionableCycle && !actionableCycle.threshold.meetsThreshold) {
     candidates.push({
       conditionKey: "pool:next-cycle-threshold",
@@ -798,15 +920,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         impact:
           "The manager will not enter that signer set unless its position changes before the window closes.",
         updatedAt,
-        deadline:
-          snapshot.preflight.cycle.preparePhaseStartBurnHeight === null
-            ? null
-            : {
-                kind: "burn-block",
-                burnBlockHeight: snapshot.preflight.cycle.preparePhaseStartBurnHeight,
-                estimatedAt: nextPrepare(snapshot, health?.burnBlockTiming?.averageSeconds ?? null)
-                  .estimatedAt,
-              },
+        deadline: actionableCycleDeadline,
         evidence: [
           evidence({
             status: snapshot.freshness?.status === "stale" ? "delayed" : "current",
@@ -820,6 +934,115 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         relatedFindingId: null,
         primaryAction: poolAction("forecast", "Review next cycle"),
         detailsAction: null,
+      }),
+    });
+  }
+
+  const fixedCycle = nextForecastCycle(snapshot);
+  if (
+    enrollmentClosed &&
+    currentInSignerSet &&
+    fixedCycle !== undefined &&
+    fixedCycle.contract.inSignerSet === false
+  ) {
+    candidates.push({
+      conditionKey: "pool:fixed-cycle-exclusion",
+      item: attentionItem({
+        attentionId: `pool:fixed-cycle-exclusion:${fixedCycle.cycleId}`,
+        tier: "needs-attention",
+        domain: "pool",
+        affectedDomains: ["pool", "signer"],
+        code: "fixed-cycle-exclusion",
+        title: `Reward cycle ${fixedCycle.cycleId} is already fixed below threshold`,
+        summary: `The enrollment window for cycle ${fixedCycle.cycleId} is closed. The next changeable cycle is ${actionableCycleId ?? "not yet available"}.`,
+        impact:
+          "The signer is expected in the current set but will not participate in that fixed cycle.",
+        updatedAt,
+        evidence: [localEvidence],
+        relatedActivityId: null,
+        relatedFindingId: null,
+        primaryAction: poolAction("forecast", "Review the next actionable cycle"),
+        detailsAction: null,
+      }),
+    });
+  }
+
+  const calculation = snapshot.rewards?.calculation;
+  if (
+    calculation?.state === "pending" &&
+    calculation.expectedLastRewardComputeBurnHeight !== null &&
+    calculation.expectedLastRewardComputeBurnHeight <= snapshot.preflight.node.burnBlockHeight
+  ) {
+    candidates.push({
+      conditionKey: "rewards:calculation-due",
+      operationScope: `calculate-rewards:${calculation.targetRewardCycle ?? "unknown"}:${calculation.targetCheckpoint ?? "unknown"}`,
+      item: attentionItem({
+        attentionId: `rewards:calculation-due:${calculation.targetRewardCycle ?? "unknown"}:${calculation.targetCheckpoint ?? "unknown"}`,
+        tier: "needs-attention",
+        domain: "rewards",
+        affectedDomains: ["rewards"],
+        code: "reward-calculation-due",
+        title: "PoX-5 reward calculation is due",
+        summary:
+          "The protocol checkpoint has passed, but the permissionless reward calculation has not been observed.",
+        impact: "Manager and staker rewards cannot become claimable until calculation completes.",
+        updatedAt,
+        deadline: {
+          kind: "burn-block",
+          burnBlockHeight: calculation.expectedLastRewardComputeBurnHeight,
+          estimatedAt: null,
+        },
+        evidence: [localEvidence],
+        relatedActivityId: null,
+        relatedFindingId: null,
+        primaryAction: snapshotCurrent
+          ? rewardsAction("calculation", "Review reward calculation")
+          : { kind: "recheck", target: "node", label: "Refresh reward calculation state" },
+        detailsAction: null,
+      }),
+    });
+  }
+
+  const actionableClaims = snapshot.rewards?.totals.actionableClaims ?? 0;
+  if (actionableClaims > 0 && calculation?.state === "completed") {
+    const claimCapability = snapshot.manager.capabilities.actions.find(
+      ({ id }) => id === "reference-reward-claims",
+    );
+    const canClaim = claimCapability?.executionAvailable === true && snapshotCurrent;
+    const profileIssueBlocksClaim =
+      snapshot.manager.installedProfiles.issues.length > 0 &&
+      claimCapability?.executionAvailable !== true;
+    const rewardCycle = snapshot.rewards?.rewardCycle ?? "unknown";
+    candidates.push({
+      conditionKey: "rewards:claims-due",
+      operationScope: `claim-staker-rewards:${rewardCycle}`,
+      item: attentionItem({
+        attentionId: `rewards:claims-due:${rewardCycle}`,
+        tier: canClaim ? "action-required" : "needs-attention",
+        domain: "rewards",
+        affectedDomains: ["rewards"],
+        code: "reward-claims-due",
+        title: `${actionableClaims} staker reward settlement${actionableClaims === 1 ? " is" : "s are"} due`,
+        summary: profileIssueBlocksClaim
+          ? "An installed manager profile issue removed the reviewed claim capability."
+          : canClaim
+            ? "Current reward and capability evidence supports discovering and reviewing the exact per-staker settlement calls."
+            : "Staker settlements are due, but the required current evidence or reviewed manager capability is unavailable.",
+        impact: "The accrued rewards remain unclaimed until the operator reviews this work.",
+        updatedAt,
+        evidence: [localEvidence],
+        relatedActivityId: null,
+        relatedFindingId: null,
+        primaryAction: canClaim
+          ? rewardsAction("claims", "Review staker settlements")
+          : snapshotCurrent
+            ? {
+                kind: "open-settings",
+                section: "capabilities",
+                label: "Review claim capability",
+              }
+            : { kind: "recheck", target: "node", label: "Refresh reward claim evidence" },
+        detailsAction: rewardsAction("claims", "Review reward claims"),
       }),
     });
   }
@@ -911,56 +1134,13 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     });
   }
 
-  for (const job of engineJobs) {
-    const activityId = `engine-job:${job.jobId}`;
-    const base = {
-      domain: "rewards" as const,
-      evidence: [
-        evidence({ status: "current", observedAt: job.updatedAt, source: "sidekick-store" }),
-      ],
-      primaryAction: {
-        kind: "resume-activity" as const,
-        activityId,
-        label: "Resume operation",
-      },
-    };
-    const displayState = engineActivityState(job);
-    if (displayState === "needs-attention" || displayState === "action-required") {
+  for (const active of activity?.active ?? []) {
+    if (active.displayStatus === "needs-attention" || active.displayStatus === "action-required") {
       candidates.push({
-        conditionKey: `activity:${job.jobId}`,
-        operationScope: `engine-job:${job.jobId}`,
+        conditionKey: `activity:${active.activityId}`,
+        operationScope: activityOperationScope(active, snapshot),
         authority: "activity",
-        item: attentionItem({
-          attentionId: activityId,
-          tier:
-            job.state === "ambiguous"
-              ? "urgent"
-              : displayState === "action-required"
-                ? "action-required"
-                : "needs-attention",
-          domain: base.domain,
-          affectedDomains: ["rewards"],
-          code: `engine-${job.state}`,
-          title:
-            job.state === "ambiguous"
-              ? "Reward operation is ambiguous"
-              : displayState === "action-required"
-                ? "Reward operation needs input"
-                : "Reward operation needs attention",
-          summary:
-            job.blockReason ??
-            `The ${job.functionName} operation is ${job.state.replaceAll("_", " ")}.`,
-          impact:
-            job.state === "ambiguous"
-              ? "Do not submit a replacement until the transaction and nonce evidence is resolved."
-              : "The operation will not advance until it is reviewed.",
-          updatedAt: job.updatedAt,
-          evidence: base.evidence,
-          relatedActivityId: activityId,
-          relatedFindingId: null,
-          primaryAction: base.primaryAction,
-          detailsAction: null,
-        }),
+        item: activityAttentionItem(active),
       });
     }
   }
@@ -969,23 +1149,24 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
 }
 
 function inProgressItems(input: OverviewProjectionInput): OverviewPage["inProgress"] {
-  return (input.engineJobs ?? [])
-    .filter((job) => engineActivityState(job) === "in-progress")
+  return (input.activity?.active ?? [])
+    .filter(({ displayStatus }) => displayStatus === "in-progress")
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, 3)
-    .map((job) => {
-      const activityId = `engine-job:${job.jobId}`;
+    .map((activity) => {
       return {
         schemaVersion: 1 as const,
-        activityId,
-        domain: "rewards" as const,
-        title: `${job.functionName} operation`,
-        stage: job.state.replaceAll("_", " "),
-        updatedAt: job.updatedAt,
-        evidence: [
-          evidence({ status: "current", observedAt: job.updatedAt, source: "sidekick-store" }),
-        ],
-        primaryAction: { kind: "resume-activity" as const, activityId, label: "View operation" },
+        activityId: activity.activityId,
+        domain: activity.domain,
+        title: activity.title,
+        stage: activity.code.replaceAll(/[-_]/g, " "),
+        updatedAt: activity.updatedAt,
+        evidence: activity.coverage.map(activityEvidence),
+        primaryAction: {
+          kind: "resume-activity" as const,
+          activityId: activity.activityId,
+          label: "View operation",
+        },
       };
     });
 }

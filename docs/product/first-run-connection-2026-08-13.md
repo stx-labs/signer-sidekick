@@ -137,7 +137,9 @@ Sidekick simply revalidates its configured connection as part of normal operatio
 > in Zero to Signing. If this is the wrong principal, update `SIDEKICK_MANAGER_PRINCIPAL` and
 > restart Sidekick.
 
-Actions: **Open Zero to Signing**, **Copy configured principal**, and **Recheck**.
+Actions: **Open Zero to Signing**, **Open upstream manager source** as the manual fallback,
+**Copy configured principal**, and **Recheck**. The fallback pairs the pinned upstream source with
+the official Stacks contract-deployment guide; it must not recreate a Sidekick setup workflow.
 
 ### Local node cannot be reached
 

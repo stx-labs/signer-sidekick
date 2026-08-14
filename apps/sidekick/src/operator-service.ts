@@ -491,6 +491,27 @@ export class OperatorService {
     return (await this.snapshotWithFreshness(force)).value;
   }
 
+  /** Last successful local chain context for deterministic Activity deadline ordering. */
+  activityProjectionContext(): {
+    burnBlockHeight: number;
+    rewardCycleId: number;
+    phase: "reward" | "prepare" | null;
+  } | null {
+    const snapshot = this.cached?.value;
+    if (!snapshot) return null;
+    return {
+      burnBlockHeight: snapshot.preflight.node.burnBlockHeight,
+      rewardCycleId: snapshot.preflight.cycle.currentId,
+      phase:
+        snapshot.chainAnchor?.phase ??
+        (snapshot.preflight.cycle.isPreparePhase === true
+          ? "prepare"
+          : snapshot.preflight.cycle.isPreparePhase === false
+            ? "reward"
+            : null),
+    };
+  }
+
   /** Refresh the retained operator snapshot without requiring a browser request. */
   async refreshSnapshot() {
     return await this.refresh();
