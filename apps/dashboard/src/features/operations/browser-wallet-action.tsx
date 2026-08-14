@@ -1,6 +1,7 @@
 import { ArrowClockwise, Check, ShieldCheck, Wallet, Warning } from "@phosphor-icons/react";
 import {
   type BrowserWalletIntent,
+  type BrowserWalletIntentAction,
   type BrowserWalletIntentRequest,
   browserWalletIntentResponseSchema,
   type RateLimitInfo,
@@ -96,23 +97,28 @@ function withoutRecoveryRecord(
 }
 
 export function BrowserWalletActionPanel({
+  action: existingAction,
   createRequest,
   chainId,
   intentApiBase = "/api/v1/wallet-intents",
   managerPrincipal,
   network,
   onVerified,
+  existingIntentId,
   token,
 }: {
-  createRequest: BrowserWalletIntentRequest;
+  action?: BrowserWalletIntentAction;
+  createRequest?: BrowserWalletIntentRequest;
   chainId: number;
+  existingIntentId?: string;
   intentApiBase?: "/api/v1/wallet-intents";
   managerPrincipal: string;
   network: string;
   onVerified?: (() => void | Promise<void>) | undefined;
   token: string;
 }) {
-  const action = createRequest.action;
+  const action = createRequest?.action ?? existingAction;
+  if (!action) throw new Error("Browser wallet action requires an operation code");
   const supportNetwork = browserWalletIntentNetwork(network);
   const support = useMemo(
     () => browserWalletSupport(action, supportNetwork ?? network, chainId),
@@ -128,6 +134,7 @@ export function BrowserWalletActionPanel({
     [action, chainId, managerPrincipal, network, supportNetwork],
   );
   const [intent, setIntent] = useState<BrowserWalletIntent | null>(null);
+  const [loadingExisting, setLoadingExisting] = useState(existingIntentId !== undefined);
   const [busy, setBusy] = useState<"prepare" | "sign" | "record" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -165,6 +172,33 @@ export function BrowserWalletActionPanel({
       ).intent,
     [intentApiBase, token],
   );
+
+  useEffect(() => {
+    if (!existingIntentId) return;
+    let active = true;
+    setLoadingExisting(true);
+    setError(null);
+    void getIntent(existingIntentId)
+      .then((current) => {
+        if (!active) return;
+        if (current.action !== action) {
+          setError("The stored transaction review does not match this operation.");
+          return;
+        }
+        setIntent(current);
+      })
+      .catch((cause) => {
+        if (active) {
+          setError(operatorErrorDetail(cause, "Could not load the stored transaction review"));
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingExisting(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [action, existingIntentId, getIntent]);
 
   useEffect(() => {
     const savedRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
@@ -255,6 +289,7 @@ export function BrowserWalletActionPanel({
   }, [intent?.id, intent?.status, onVerified]);
 
   const prepare = async () => {
+    if (!createRequest) return;
     const currentRecoveryRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
     if (walletResults.length > 0 || currentRecoveryRecords.length > 0) {
       setWalletResults(currentRecoveryRecords.length > 0 ? currentRecoveryRecords : walletResults);
@@ -442,13 +477,15 @@ export function BrowserWalletActionPanel({
   };
   const canSign = intent?.status === "prepared" && walletResults.length === 0;
   const canPrepare =
-    walletResults.length === 0 && canPrepareBrowserWalletIntent(intent, pendingNeedsRecording);
+    createRequest !== undefined &&
+    walletResults.length === 0 &&
+    canPrepareBrowserWalletIntent(intent, pendingNeedsRecording);
 
   return (
     <section
       className="deploy-instructions browser-wallet-panel"
       aria-label="Browser wallet"
-      aria-busy={busy !== null}
+      aria-busy={busy !== null || loadingExisting}
     >
       <div className="browser-wallet-heading">
         <div>
@@ -655,6 +692,12 @@ export function BrowserWalletActionPanel({
                 </div>
               </details>
             </div>
+          ) : null}
+
+          {loadingExisting && !intent ? (
+            <p className="help" role="status">
+              Loading stored transaction review…
+            </p>
           ) : null}
 
           {intent?.txid ? (

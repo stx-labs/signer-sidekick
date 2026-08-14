@@ -340,6 +340,7 @@ export class WalletIntentService {
       runtimeSettings: RuntimeSettingsController;
       managerVerification?: ManagerVerificationContext;
       readState: () => WalletIntentRuntimeState;
+      canRepairSignerRegistration: () => Promise<boolean>;
       transactionEngineRequestedMode?: "observe" | "assist";
       observeManagerClaimWalletJob?: (
         jobId: string,
@@ -871,6 +872,13 @@ export class WalletIntentService {
     }
     this.assertManagerActionTarget(snapshot, managerPrincipal, network, action);
     if (action === "register-self") {
+      const establishedParticipation = await this.options.canRepairSignerRegistration();
+      if (!establishedParticipation) {
+        throw new WalletIntentError(
+          "wallet_execution_unavailable",
+          "Signer registration is available only as a repair or key rotation for established current or next-cycle participation; use Zero to Signing for first-time setup",
+        );
+      }
       const verified = state.signerGrant.verified;
       if (!verified) {
         throw new WalletIntentError(

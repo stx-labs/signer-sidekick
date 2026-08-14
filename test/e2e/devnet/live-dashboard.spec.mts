@@ -47,10 +47,9 @@ test("operator can inspect the running Devnet signer across every Sidekick scree
   await expect(page.locator(".app")).toHaveAttribute("data-network", "devnet");
   for (const [id, heading] of [
     ["health", "Signer Health"],
-    ["manager", "Manager"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],
-    ["operations", "Operations"],
+    ["activity", "Activity"],
     ["settings", "Settings"],
   ]) {
     await openPage(page, id, heading);
@@ -66,11 +65,13 @@ test("Sidekick recognizes the externally deployed manager and signer registratio
 }) => {
   test.skip(phase !== "inspect", `live phase is ${phase}`);
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(
     page.getByRole("button", { name: `Copy manager principal: ${state.managerPrincipal}` }),
   ).toBeVisible();
   await expect(page.getByText("Connect a running signer manager.")).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Review signer rotation" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Review signer registration or rotation" }),
+  ).toBeVisible();
   await expect(page.locator("body")).not.toContainText(state.authToken);
 });

@@ -43,6 +43,7 @@ const mainnetWalletActor = getAddressFromPublicKey(
 );
 const attestationKeys = generateKeyPairSync("ed25519");
 const stores: SidekickStore[] = [];
+const canRepairSignerRegistration = async () => true;
 
 const { readOperatorAnchorSnapshotMock } = vi.hoisted(() => ({
   readOperatorAnchorSnapshotMock: vi.fn(),
@@ -517,6 +518,7 @@ describe("manager-claim browser-wallet binding", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: privateWalletState,
+      canRepairSignerRegistration,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => observation(result)),
     });
@@ -576,6 +578,7 @@ describe("manager-claim browser-wallet binding", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: mainnetWalletState,
+      canRepairSignerRegistration,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob,
     });
@@ -767,6 +770,7 @@ describe("manager-claim browser-wallet binding", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: () => state,
+      canRepairSignerRegistration,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => {
         throw runtimeError;
@@ -867,6 +871,7 @@ describe("manager-claim browser-wallet binding", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: mainnetWalletState,
+      canRepairSignerRegistration,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => engineObservation),
       readerFactory: () => ({
@@ -963,6 +968,7 @@ describe("manager-claim browser-wallet binding", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: mainnetWalletState,
+      canRepairSignerRegistration,
       transactionEngineRequestedMode: "observe",
       observeManagerClaimWalletJob: vi.fn(async () => observation(result)),
       readerFactory,

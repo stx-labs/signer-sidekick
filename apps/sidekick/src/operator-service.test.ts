@@ -204,13 +204,23 @@ describe("operator service", () => {
           severity: "info",
           title: "Custom Manager Attached",
           detail: expect.stringContaining("PoX-5 baseline state remains available"),
-          action: { kind: "navigate", label: "Review capabilities", target: "settings" },
+          action: {
+            kind: "navigate",
+            label: "Review capabilities",
+            target: "settings",
+            settingsSection: "capabilities",
+          },
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
           title: "Manager Assist Eligibility Lost",
-          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+          action: {
+            kind: "navigate",
+            label: "Review manager profiles",
+            target: "settings",
+            settingsSection: "capabilities",
+          },
         }),
       ]),
     );
@@ -229,7 +239,12 @@ describe("operator service", () => {
         id: "manager:trust-transition-degraded:2026-07-16T12:00:00.000Z",
         severity: "warning",
         title: "Manager Recognition Degraded",
-        action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+        action: {
+          kind: "navigate",
+          label: "Review manager profiles",
+          target: "settings",
+          settingsSection: "capabilities",
+        },
       }),
     );
   });
@@ -249,17 +264,32 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "preflight:stacks-api",
           detail: "Stacks API is unavailable.",
-          action: { kind: "navigate", label: "Open Settings", target: "settings" },
+          action: {
+            kind: "navigate",
+            label: "Review sources",
+            target: "settings",
+            settingsSection: "sources",
+          },
         }),
         expect.objectContaining({
           id: "manager:unsupported",
           detail: "Manager network does not match.",
-          action: { kind: "navigate", label: "Open Settings", target: "settings" },
+          action: {
+            kind: "navigate",
+            label: "Review attachment",
+            target: "settings",
+            settingsSection: "attachment",
+          },
         }),
         expect.objectContaining({
           id: "manager:profile-load-issues",
           detail: "1 manager profile could not be loaded.",
-          action: { kind: "navigate", label: "Review profile issues", target: "settings" },
+          action: {
+            kind: "navigate",
+            label: "Review profile issues",
+            target: "settings",
+            settingsSection: "capabilities",
+          },
         }),
       ]),
     );
@@ -282,7 +312,7 @@ describe("operator service", () => {
         action: {
           kind: "navigate",
           label: "Repair signer authorization",
-          target: "manager",
+          target: "settings",
           managerAction: "register-self",
         },
       }),

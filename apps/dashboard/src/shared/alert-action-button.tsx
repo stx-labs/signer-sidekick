@@ -1,6 +1,6 @@
 import { ArrowClockwise } from "@phosphor-icons/react";
 import type { DashboardAlert } from "@stx-labs/signer-sidekick-api-contracts";
-import { dashboardHash } from "../dashboard-route.js";
+import { actionHash, activityHash, dashboardHash, settingsHash } from "../dashboard-route.js";
 
 export function AlertActionButton({
   alert,
@@ -25,10 +25,16 @@ export function AlertActionButton({
       type="button"
       className="btn btn-tertiary sm"
       onClick={() => {
+        if ("managerAction" in action) {
+          location.hash = actionHash(action.managerAction);
+          return;
+        }
         location.hash =
-          action.target === "manager"
-            ? dashboardHash("manager", "managerAction" in action ? action.managerAction : undefined)
-            : dashboardHash(action.target);
+          action.target === "settings"
+            ? settingsHash(action.settingsSection ?? null)
+            : action.target === "activity"
+              ? activityHash()
+              : dashboardHash(action.target);
       }}
     >
       {action.label}

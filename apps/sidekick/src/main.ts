@@ -235,6 +235,18 @@ export async function executeCliCommand({
         observeManagerClaimWalletJob: async (jobId) =>
           await engine.observeManagerClaimWalletJob(jobId),
         readState: () => signerGrant.walletState(),
+        canRepairSignerRegistration: async () => {
+          const current = await service.snapshot(true);
+          const currentCycle = current.preflight.cycle.currentId;
+          return Boolean(
+            current.registration?.registered ||
+              current.forecast?.cycles.some(
+                (cycle) =>
+                  (cycle.cycleId === currentCycle || cycle.cycleId === currentCycle + 1) &&
+                  cycle.contract.inSignerSet,
+              ),
+          );
+        },
       });
       const health = new HealthMonitoringService({
         getConfig: () => runtimeSettings.effectiveConfig(),

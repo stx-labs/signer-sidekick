@@ -111,9 +111,9 @@ Docker `healthy` checks liveness only. `/health/ready` reports whether the confi
 signer-manager connection is established, but does not trigger restarts. `connection check` uses
 the same configured network, local node, manager, and database identity as `serve`, without waiting
 for indexed data, registration, eligibility, or telemetry. `doctor connectivity` remains the deeper
-node/API lag diagnostic. The authenticated Operations readiness panel
-(`/api/v1/operations/readiness`) also reports manager and engine blockers. Resolve failed
-connectivity checks before signing an operation.
+node/API lag diagnostic. The authenticated Settings capability panel uses
+`/api/v1/operations/readiness` to report manager and engine blockers. Resolve failed connectivity
+checks before signing an operation.
 
 ### Connect the private event listener
 

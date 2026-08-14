@@ -20,7 +20,7 @@ import { signerGrantSessionResponseSchema } from "@stx-labs/signer-sidekick-api-
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
-import { dashboardHash, type ManagerActionId } from "../../dashboard-route.js";
+import { actionHash, dashboardHash, type ManagerActionId } from "../../dashboard-route.js";
 import {
   Badge,
   Field,
@@ -46,7 +46,10 @@ const canonicalUintPattern = /^(?:0|[1-9][0-9]*)$/;
 const canonicalPositiveUintPattern = /^[1-9][0-9]*$/;
 type SignerGrantState = SignerGrantSession;
 
-const actionCopy: Record<ManagerActionId, { title: string; detail: string; manual: string }> = {
+export const managerActionCopy: Record<
+  ManagerActionId,
+  { title: string; detail: string; manual: string }
+> = {
   "register-self": {
     title: "Register or rotate signer",
     detail: "Register the signer key and grant with a manager-admin wallet.",
@@ -90,10 +93,10 @@ function validFeeBips(value: string): boolean {
 }
 
 function openManagerAction(action: ManagerActionId): void {
-  location.hash = dashboardHash("manager", action);
+  location.hash = actionHash(action);
 }
 
-function capabilityIdForAction(action: ManagerActionId): ManagerActionCapabilityId {
+export function managerCapabilityIdForAction(action: ManagerActionId): ManagerActionCapabilityId {
   if (action === "add-admin" || action === "remove-admin") return "update-admin";
   return action;
 }
@@ -377,7 +380,7 @@ function SignerGrantCeremony({
               />
               <div className="manager-manual-path">
                 <strong>Use another signing tool</strong>
-                <p>{actionCopy["register-self"].manual}</p>
+                <p>{managerActionCopy["register-self"].manual}</p>
               </div>
             </>
           ) : (
@@ -392,14 +395,18 @@ function SignerGrantCeremony({
   );
 }
 
-function ManagerActionWorkspace({
+export function ManagerActionWorkspace({
   action,
+  closeHref = dashboardHash("settings"),
   data,
+  showHeading = true,
   token,
   onOperatorStateChanged,
 }: {
   action: ManagerActionId;
+  closeHref?: string;
   data: Snapshot;
+  showHeading?: boolean;
   token: string;
   onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
 }) {
@@ -408,7 +415,7 @@ function ManagerActionWorkspace({
   const [feeBips, setFeeBips] = useState("");
   const [amountSats, setAmountSats] = useState("");
   const [recipient, setRecipient] = useState("");
-  const copy = actionCopy[action];
+  const copy = managerActionCopy[action];
   const createRequest = useMemo<BrowserWalletIntentCreateRequest | null>(() => {
     const actor = actorPrincipal.trim();
     if (!standardManagerActionPrincipal(actor, data.network)) return null;
@@ -442,22 +449,18 @@ function ManagerActionWorkspace({
 
   return (
     <section className="card-standout manager-action-workspace" id="manager-action-workspace">
-      <div className="card-head">
-        <div>
-          <p className="eyebrow">MANAGER ACTION</p>
-          <h2>{copy.title}</h2>
-          <p className="muted manager-action-detail">{copy.detail}</p>
+      {showHeading ? (
+        <div className="card-head">
+          <div>
+            <p className="eyebrow">MANAGER ACTION</p>
+            <h2>{copy.title}</h2>
+            <p className="muted manager-action-detail">{copy.detail}</p>
+          </div>
+          <a className="btn btn-tertiary" href={closeHref}>
+            Close
+          </a>
         </div>
-        <button
-          type="button"
-          className="btn btn-tertiary"
-          onClick={() => {
-            location.hash = dashboardHash("manager");
-          }}
-        >
-          Close
-        </button>
-      </div>
+      ) : null}
 
       {action === "register-self" ? (
         <SignerGrantCeremony
@@ -702,7 +705,11 @@ export function Manager({
     data.registration?.registered && data.registration.signerKeyGrantValid,
   );
   const availabilityFor = (managerAction: ManagerActionId) =>
-    managerActionAvailability(data, capabilityIdForAction(managerAction), operatorStateStale);
+    managerActionAvailability(
+      data,
+      managerCapabilityIdForAction(managerAction),
+      operatorStateStale,
+    );
   const registerAvailability = availabilityFor("register-self");
   const adminAvailability = availabilityFor("add-admin");
   const updateFeesAvailability = availabilityFor("update-fees");

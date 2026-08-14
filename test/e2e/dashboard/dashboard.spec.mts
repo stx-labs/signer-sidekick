@@ -457,11 +457,17 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeDisabled();
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   current = true;
-  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await page.getByRole("button", { name: "Refresh attachment", exact: true }).click();
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
 });
 
 test("links readiness blockers to their repair pages", async ({ page }) => {
@@ -492,14 +498,14 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
+  await openPage(page, "settings", "Settings");
   const readinessCard = page.locator(".engine-readiness-card");
-  await readinessCard.getByRole("button", { name: "Open Settings" }).click();
-  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await readinessCard.getByRole("link", { name: "Review sources" }).click();
+  await expect(page).toHaveURL(/#settings\?section=sources$/);
 
-  await openPage(page, "operations", "Operations");
-  await readinessCard.getByRole("button", { name: "Open Manager" }).click();
-  await expect(page.getByRole("heading", { name: "Manager", exact: true })).toBeVisible();
+  await openPage(page, "settings", "Settings");
+  await readinessCard.getByRole("link", { name: "Review attachment" }).click();
+  await expect(page).toHaveURL(/#settings\?section=attachment$/);
 });
 
 test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
@@ -537,20 +543,19 @@ test("renders every operator screen without leaking the credential", async ({ pa
   const navigationTargets = await page
     .locator(".sidebar nav a.item")
     .evaluateAll((items) => items.map((item) => item.getAttribute("href")));
-  expect(navigationTargets.slice(0, 6)).toEqual([
+  expect(navigationTargets).toEqual([
     "#overview",
-    "#manager",
     "#pool",
     "#rewards",
-    "#operations",
+    "#activity",
     "#health",
+    "#settings",
   ]);
   const screens = [
     ["health", "Signer Health"],
-    ["manager", "Manager"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],
-    ["operations", "Operations"],
+    ["activity", "Activity"],
     ["settings", "Settings"],
   ];
   for (const [id, heading] of screens) await openPage(page, id, heading);
@@ -561,7 +566,40 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe surface", async ({
+test("shows active work and durable Activity evidence without horizontal overflow", async ({
+  page,
+}) => {
+  const activityIntentId = "6ed58dac-c42c-4cb5-ad02-ed50671f3d27";
+  await page.route(`**/api/v1/wallet-intents/${activityIntentId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        updateFeesWalletIntent(snapshot.managerPrincipal.split(".")[0] ?? "", "submitted"),
+      ),
+    });
+  });
+  await login(page);
+  await openPage(page, "activity", "Activity");
+
+  await expect(page.getByText("Active work", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Update manager fee" })).toBeVisible();
+  await expect(page.getByText("Staker reward claimed", { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "Update manager fee" }).click();
+  await expect(page.getByRole("heading", { name: "Operation summary" })).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+  await expect(page.getByText("Transaction submitted.")).toBeVisible();
+  await expect(page.getByText("Evidence timeline", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Return to Activity" })).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("treats HTTP 501 engine and readiness endpoints as unavailable Settings capabilities", async ({
   page,
 }) => {
   await page.unroute("**/api/v1/**");
@@ -579,18 +617,17 @@ test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe s
     });
   });
   await login(page);
-  await openPage(page, "operations", "Operations");
-  const engine = page.getByRole("region", { name: "Transaction engine" });
-  await expect(engine.getByText("Unavailable", { exact: true })).toBeVisible();
+  await openPage(page, "settings", "Settings");
+  const engine = page.locator("#transaction-capabilities");
   await expect(
     engine.getByText(
-      "Transaction execution is unavailable. Monitoring, chain data, and alerts remain available.",
+      "The transaction engine is unavailable. Monitoring and wallet-signed operations remain separate from this policy surface.",
     ),
   ).toBeVisible();
   consoleErrors.set(page, []);
 });
 
-test("uses a compact empty state when the transaction engine has no jobs", async ({ page }) => {
+test("summarizes empty transaction work in Settings and links to Activity", async ({ page }) => {
   const fixture = engineFixture();
   const emptyStatus = {
     ...fixture.status,
@@ -605,9 +642,7 @@ test("uses a compact empty state when the transaction engine has no jobs", async
         ? fixture.readiness
         : request.pathname === "/api/v1/engine"
           ? emptyStatus
-          : request.pathname === "/api/v1/engine/jobs"
-            ? { schemaVersion: 1, items: [], nextCursor: null, total: 0 }
-            : responseFor(route.request().url());
+          : responseFor(route.request().url());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -616,12 +651,15 @@ test("uses a compact empty state when the transaction engine has no jobs", async
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
-  await expect(page.getByRole("heading", { name: "No transaction jobs" })).toBeVisible();
-  await expect(
-    page.getByText("Sidekick will list a job here when a supported operation needs review."),
-  ).toBeVisible();
-  await expect(page.locator(".engine-workspace")).toHaveCount(0);
+  await openPage(page, "settings", "Settings");
+  const counts = page.locator("#transaction-capabilities .engine-job-counts");
+  await expect(counts).toContainText("0active jobs");
+  await expect(counts).toContainText("0awaiting approval");
+  await expect(counts).toContainText("0ambiguous");
+  await expect(counts.getByRole("link", { name: "Review Activity" })).toHaveAttribute(
+    "href",
+    "#activity?type=actions",
+  );
 });
 
 test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
@@ -652,12 +690,12 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
       const requestBody = route.request().postDataJSON();
       expect(requestBody).toEqual({
         decision: "invalidate",
-        reason: "Operator invalidated approval from the dashboard",
+        reason: "Operator invalidated approval from the action workspace",
       });
       const invalidatedApproval = {
         ...fixture.approval,
         invalidatedAt: "2026-07-17T12:05:00.000Z",
-        invalidationReason: "Operator invalidated approval from the dashboard",
+        invalidationReason: "Operator invalidated approval from the action workspace",
         version: 1,
       };
       currentJob = { ...currentJob, approval: invalidatedApproval, stateVersion: 5 };
@@ -714,9 +752,9 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
-  await expect(page.getByText("assist", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /claim-rewards/ }).click();
+  await page.evaluate((jobId) => {
+    location.hash = `#action/claim-rewards?context=engine-job&jobId=${jobId}`;
+  }, fixture.jobId);
   await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
   await expect(page.getByText("Last reward compute height", { exact: true })).toBeVisible();
   await expect(page.getByText("Maximum asset outflow", { exact: true })).toBeVisible();
@@ -734,6 +772,8 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect.poll(() => invalidationRequests).toBe(1);
   await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
 
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("assist", { exact: true })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Force Observe" }).click();
   await expect.poll(() => forceObserveRequests).toBe(1);
@@ -744,6 +784,40 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect.poll(() => disableRequests).toBe(1);
   await expect(page.getByText("disabled", { exact: true })).toBeVisible();
 
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("opens one exact engine job in the shared action workspace", async ({ page }) => {
+  const fixture = engineFixture();
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/engine"
+        ? fixture.status
+        : request.pathname === `/api/v1/engine/jobs/${fixture.jobId}`
+          ? fixture.job
+          : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await page.evaluate((jobId) => {
+    location.hash = `#action/claim-rewards?context=engine-job&jobId=${jobId}`;
+  }, fixture.jobId);
+
+  await expect(page.getByRole("heading", { name: "Claim manager rewards" })).toBeVisible();
+  await expect(page.getByText("WHY THIS ACTION", { exact: true })).toBeVisible();
+  await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
+  await expect(page.getByText(fixture.jobId, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toBeVisible();
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
@@ -784,6 +858,8 @@ test("downloads the server-collected support bundle", async ({ page }) => {
   });
 
   await login(page);
+  await openPage(page, "settings", "Settings");
+  await page.getByRole("button", { name: "Support & maintenance" }).click();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download support bundle" }).click();
   const download = await downloadPromise;
@@ -860,13 +936,10 @@ test("required actions provide their resolving control and exclude informational
   await requiredActions.getByRole("button", { name: "Review Bitcoin withdrawals" }).click();
   await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
 
-  await openPage(page, "operations", "Operations");
-  const informationalRow = page.locator(".alert-row", { hasText: "Custom Manager" });
-  await expect(informationalRow).toBeVisible();
-  await expect(informationalRow.getByRole("button")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("Custom Manager");
 });
 
-test("routes a proven signer-registration failure to Manager from every alert surface", async ({
+test("routes a proven signer-registration failure directly to its action workspace", async ({
   page,
 }) => {
   const signerFailure = {
@@ -897,7 +970,7 @@ test("routes a proven signer-registration failure to Manager from every alert su
         action: {
           kind: "navigate",
           label: "Repair signer authorization",
-          target: "manager",
+          target: "settings",
           managerAction: "register-self",
         },
       },
@@ -921,15 +994,8 @@ test("routes a proven signer-registration failure to Manager from every alert su
     "Manager does not have a verified PoX-5 signer registration.",
   );
   await requiredActions.getByRole("button", { name: "Repair signer authorization" }).click();
-  await expect(page).toHaveURL(/#manager\?action=register-self$/);
+  await expect(page).toHaveURL(/#action\/register-self$/);
   await expect(page.getByRole("heading", { name: "Register or rotate signer" })).toBeVisible();
-
-  await openPage(page, "operations", "Operations");
-  const operationsAlert = page.locator(".alert-row", {
-    hasText: "Operator Readiness Is Blocked",
-  });
-  await operationsAlert.getByRole("button", { name: "Repair signer authorization" }).click();
-  await expect(page).toHaveURL(/#manager\?action=register-self$/);
 });
 
 test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
@@ -1006,9 +1072,9 @@ test("refreshes signer health without declaring an empty JSON body", async ({ pa
   await expect(page.getByText(/Latest refresh failed/)).not.toBeVisible();
 });
 
-test("explains the manager trust tier on Manager and Settings", async ({ page }) => {
+test("explains manager attachment and trust evidence in Settings", async ({ page }) => {
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Built-in source", { exact: true })).toBeVisible();
   await expect(page.getByText("Built into Sidekick")).toBeVisible();
   const managerRow = page.locator(".statline", { hasText: "Manager principal" });
@@ -1017,13 +1083,12 @@ test("explains the manager trust tier on Manager and Settings", async ({ page })
   expect(copyBox).not.toBeNull();
   expect(valueBox).not.toBeNull();
   expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
-  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
-test("starts an admin-history sync from Manager", async ({ page }) => {
+test("starts an admin-history sync from Settings", async ({ page }) => {
   let syncRequests = 0;
   let syncStarted = false;
   await page.route("**/api/v1/sync", async (route) => {
@@ -1042,7 +1107,7 @@ test("starts an admin-history sync from Manager", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await page.getByRole("button", { name: "Sync admin history" }).click();
 
   await expect(page.getByText("Syncing chain data")).toBeVisible();
@@ -1054,7 +1119,7 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await login(page);
   await openPage(page, "rewards", "Rewards");
   await page.getByRole("button", { name: "Update manager fee" }).click();
-  await expect(page).toHaveURL(/#manager\?action=update-fees$/);
+  await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await page.getByLabel("Signing manager admin").fill(adminPrincipal);
   await page.getByLabel("New fee (basis points)").fill("250");
@@ -1062,16 +1127,16 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
 
   await openPage(page, "rewards", "Rewards");
   await page.getByRole("button", { name: "Withdraw earned fees" }).click();
-  await expect(page).toHaveURL(/#manager\?action=withdraw-fees$/);
+  await expect(page).toHaveURL(/#action\/withdraw-fees$/);
   await expect(page.getByRole("heading", { name: "Withdraw earned fees" })).toBeVisible();
 
   await openPage(page, "rewards", "Rewards");
   await page.getByRole("button", { name: "Sweep fee refunds" }).click();
-  await expect(page).toHaveURL(/#manager\?action=sweep-fee-refunds$/);
+  await expect(page).toHaveURL(/#action\/sweep-fee-refunds$/);
   await expect(page.getByRole("heading", { name: "Sweep fee-refund dust" })).toBeVisible();
 
   await page.evaluate(() => {
-    location.hash = "#manager?action=remove-admin";
+    location.hash = "#action/remove-admin";
   });
   await expect(page.getByRole("heading", { name: "Remove manager admin" })).toBeVisible();
   await page.getByLabel("Signing manager admin").fill(adminPrincipal);
@@ -1211,9 +1276,8 @@ test("explains a temporary chain-source mismatch while preparing a wallet reques
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await page.getByLabel("Signing manager admin").fill(snapshot.managerPrincipal.split(".")[0]);
   await page.getByLabel("New fee (basis points)").fill("250");
@@ -1309,8 +1373,8 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await page.getByRole("button", { name: "Review signer rotation" }).click();
+  await openPage(page, "settings", "Settings");
+  await page.getByRole("link", { name: "Review signer registration or rotation" }).click();
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
   await page.getByLabel("Authorization ID").fill("141");
   await page.getByLabel("Signer configuration path").fill("/srv/signer/Signer.toml");
@@ -1381,10 +1445,10 @@ test("hands first-time signer setup to the maintained external flow", async ({ p
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Connect a running signer manager.")).toBeVisible();
-  await expect(page.getByText(/does not deploy or perform first-time signer setup/)).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open Zero to Signing" })).toHaveAttribute(
+  await expect(page.getByText(/starts after first-time setup/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Open Zero to Signing/ })).toHaveAttribute(
     "href",
     "https://stx.fan/zero_to/signing/",
   );
@@ -1434,32 +1498,41 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Custom source", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
 
   tier = "custom-observe";
   await page.reload();
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Recorded custom source", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
 
   tier = "reference-render";
   await page.reload();
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
   await expect(
     page.locator(".statline", { hasText: "Assist" }).getByText("Unavailable", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
@@ -1469,12 +1542,12 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
   await expect(page.getByText("Unverified manager source.")).toHaveCount(0);
 
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   automationEligible = true;
   compatibilityStatus = "inconsistent";
   await page.reload();
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
@@ -1576,7 +1649,7 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
   try {
     await login(page);
     await page.evaluate(() => {
-      location.hash = "#manager?action=update-fees";
+      location.hash = "#action/update-fees";
     });
     await page.getByLabel("Signing manager admin").fill(actorPrincipal);
     await page.getByLabel("New fee (basis points)").fill("250");

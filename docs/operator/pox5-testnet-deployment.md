@@ -56,8 +56,8 @@ cannot represent that exact network.
 
 ## Exercise recurring operations
 
-Open the dashboard and review Overview, Manager, Pool, Rewards, Operations, Signer Health, and
-Settings. Then exercise only the operations relevant to the evaluator:
+Open the dashboard and review Overview, Pool, Rewards, Activity, Signer Health, and Settings. Then
+exercise only the operations relevant to the evaluator:
 
 1. Reconcile the roster and manager events twice; the second run must be idempotent.
 2. Prepare a fee/admin transaction, sign it externally, and verify its canonical poststate.

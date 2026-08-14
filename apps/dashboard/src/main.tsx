@@ -1,13 +1,12 @@
 import {
   ArrowClockwise,
   CaretDown,
+  ClockCounterClockwise,
   Coins,
   Gauge,
   GearSix,
   Heartbeat,
-  ListChecks,
   Moon,
-  SealCheck,
   ShieldCheck,
   Sun,
   UsersThree,
@@ -31,8 +30,8 @@ import { ApiRequestError, AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
 import { ConnectionPage } from "./connection-page.js";
 import { connectionNeedsRecoveryPage } from "./connection-presentation.js";
 import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
-import { Manager } from "./features/manager/manager-page.js";
-import { Operations } from "./features/operations/operations-page.js";
+import { ActionPage } from "./features/actions/action-page.js";
+import { Activity } from "./features/activity/activity-page.js";
 import { Overview } from "./features/overview/overview-page.js";
 import { Pool } from "./features/pool/pool-page.js";
 import { Rewards } from "./features/rewards/rewards-page.js";
@@ -50,10 +49,9 @@ type Snapshot = DashboardSnapshot;
 const nav: Array<{ group?: string; id?: DashboardPage; label?: string; icon?: typeof Gauge }> = [
   { group: "Operate" },
   { id: "overview", label: "Overview", icon: Gauge },
-  { id: "manager", label: "Manager", icon: SealCheck },
   { id: "pool", label: "Pool", icon: UsersThree },
   { id: "rewards", label: "Rewards", icon: Coins },
-  { id: "operations", label: "Operations", icon: ListChecks },
+  { id: "activity", label: "Activity", icon: ClockCounterClockwise },
   { id: "health", label: "Signer Health", icon: Heartbeat },
   { group: "Configure" },
   { id: "settings", label: "Settings", icon: GearSix },
@@ -122,7 +120,7 @@ function MobilePageMenu({ page, alertCount }: { page: DashboardPage; alertCount:
             >
               {item.icon ? <item.icon /> : null}
               <span>{item.label}</span>
-              {item.id === "operations" && alertCount ? (
+              {item.id === "overview" && alertCount ? (
                 <span className="mobile-page-menu-count">{alertCount}</span>
               ) : null}
             </a>
@@ -452,9 +450,7 @@ function App() {
   }, [data]);
   useEffect(() => {
     const handler = () => {
-      const next = parseDashboardHash(location.hash);
-      if (next.legacy) history.replaceState(null, "", dashboardHash("manager"));
-      setRoute({ ...next, legacy: false });
+      setRoute(parseDashboardHash(location.hash));
     };
     handler();
     addEventListener("hashchange", handler);
@@ -660,13 +656,46 @@ function App() {
         />
       );
     }
+    if (route.operation && data) {
+      return (
+        <ActionPage
+          context={route.operationContext}
+          data={data}
+          key={`${route.operation}:${JSON.stringify(route.operationContext)}`}
+          operation={route.operation}
+          operatorStateStale={stale}
+          onOperatorStateChanged={refreshOperatorState}
+          onRefreshStatus={refreshStatus}
+          refreshingStatus={refreshingStatus}
+          token={token}
+        />
+      );
+    }
     if (page === "settings") {
       return (
         <SettingsPage
           data={data}
+          initialSection={route.settingsSection}
+          onRefreshStatus={refreshStatus}
           token={token}
           setTheme={setTheme}
           onSaved={refreshOperatorState}
+          refreshingStatus={refreshingStatus}
+          sync={sync}
+          syncing={syncing}
+        />
+      );
+    }
+    if (page === "activity") {
+      return (
+        <Activity
+          activityId={route.activityId}
+          data={data}
+          key={`${route.activityId ?? "feed"}:${route.activitySearch}`}
+          operatorStateStale={stale}
+          onOperatorStateChanged={refreshOperatorState}
+          search={route.activitySearch}
+          token={token}
         />
       );
     }
@@ -674,26 +703,10 @@ function App() {
     switch (page) {
       case "overview":
         return <Overview data={data} token={token} sync={sync} syncing={syncing} />;
-      case "manager":
-        return (
-          <Manager
-            action={route.action}
-            data={data}
-            operatorStateStale={stale}
-            token={token}
-            onOperatorStateChanged={refreshOperatorState}
-            onRefreshStatus={refreshStatus}
-            refreshingStatus={refreshingStatus}
-            sync={sync}
-            syncing={syncing}
-          />
-        );
       case "pool":
         return <Pool data={data} token={token} />;
       case "rewards":
         return <Rewards data={data} operatorStateStale={stale} token={token} />;
-      case "operations":
-        return <Operations data={data} token={token} sync={sync} syncing={syncing} />;
       default:
         return null;
     }
@@ -745,7 +758,7 @@ function App() {
               >
                 {item.icon ? <item.icon /> : null}
                 {item.label}
-                {item.id === "operations" && data?.alerts.length ? (
+                {item.id === "overview" && data?.alerts.length ? (
                   <span className="count alert">{data.alerts.length}</span>
                 ) : null}
               </a>

@@ -53,12 +53,19 @@ export interface OperatorAlert {
     | {
         kind: "navigate";
         label: string;
-        target: "settings" | "pool" | "rewards" | "operations" | "manager";
+        target: "settings" | "pool" | "rewards" | "activity" | "health";
+        settingsSection?:
+          | "attachment"
+          | "sources"
+          | "capabilities"
+          | "observer"
+          | "auth"
+          | "support";
       }
     | {
         kind: "navigate";
         label: string;
-        target: "manager";
+        target: "settings";
         managerAction: "register-self";
       };
 }
@@ -321,7 +328,12 @@ export function buildAlerts(snapshot: {
       severity: check.status === "fail" ? "critical" : "warning",
       title: check.status === "fail" ? "Connection Check Failed" : "Connection Needs Attention",
       detail: asSentence(check.message),
-      action: { kind: "navigate", label: "Open Settings", target: "settings" },
+      action: {
+        kind: "navigate",
+        label: "Review sources",
+        target: "settings",
+        settingsSection: "sources",
+      },
     });
   }
   if (!snapshot.manager.attachAllowed) {
@@ -333,7 +345,12 @@ export function buildAlerts(snapshot: {
       severity: "critical",
       title: "Manager Trait Check Failed",
       detail: asSentence(incompatibility),
-      action: { kind: "navigate", label: "Open Settings", target: "settings" },
+      action: {
+        kind: "navigate",
+        label: "Review attachment",
+        target: "settings",
+        settingsSection: "attachment",
+      },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
     alerts.push({
@@ -342,7 +359,12 @@ export function buildAlerts(snapshot: {
       title: "Custom Manager Attached",
       detail:
         "PoX-5 baseline state remains available. Each manager action is enabled only when its deployed byte-exact source matches a reviewed capability fingerprint.",
-      action: { kind: "navigate", label: "Review capabilities", target: "settings" },
+      action: {
+        kind: "navigate",
+        label: "Review capabilities",
+        target: "settings",
+        settingsSection: "capabilities",
+      },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
@@ -360,7 +382,12 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: "Installed Manager Profile Needs Attention",
       detail: `${profileIssueCount} manager profile${profileIssueCount === 1 ? "" : "s"} could not be loaded.`,
-      action: { kind: "navigate", label: "Review profile issues", target: "settings" },
+      action: {
+        kind: "navigate",
+        label: "Review profile issues",
+        target: "settings",
+        settingsSection: "capabilities",
+      },
     });
   }
   if (snapshot.trustTransition) {
@@ -385,6 +412,7 @@ export function buildAlerts(snapshot: {
               kind: "navigate" as const,
               label: "Review manager profiles",
               target: "settings" as const,
+              settingsSection: "capabilities" as const,
             },
           }),
     });
@@ -403,10 +431,15 @@ export function buildAlerts(snapshot: {
         ? {
             kind: "navigate",
             label: "Repair signer authorization",
-            target: "manager",
+            target: "settings",
             managerAction: "register-self",
           }
-        : { kind: "navigate", label: "Review manager", target: "manager" },
+        : {
+            kind: "navigate",
+            label: "Review attachment",
+            target: "settings",
+            settingsSection: "attachment",
+          },
     });
   }
   // A delegation only affects the next signer set while its enrollment window is open. Once the

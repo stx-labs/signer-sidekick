@@ -10,7 +10,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { dashboardHash } from "../../dashboard-route.js";
+import { actionHash } from "../../dashboard-route.js";
 import {
   Badge,
   PageHead,
@@ -23,8 +23,6 @@ import { number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
-import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
-import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;
@@ -365,11 +363,7 @@ export function Rewards({
         </p>
       ) : null}
       <StakerSettlementPanel
-        chainId={data.preflight.node.networkId}
         calculationPending={rewards?.calculation.state === "pending"}
-        managerPrincipal={data.managerPrincipal}
-        network={data.network}
-        onSettled={() => setStakersRetry((value) => value + 1)}
         token={token}
       />
       {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
@@ -488,7 +482,7 @@ export function Rewards({
               disabled={!updateFeesAvailability.available}
               title={updateFeesAvailability.available ? undefined : updateFeesAvailability.reason}
               onClick={() => {
-                location.hash = dashboardHash("manager", "update-fees");
+                location.hash = actionHash("update-fees");
               }}
             >
               <Percent /> Update manager fee
@@ -523,7 +517,7 @@ export function Rewards({
                 withdrawFeesAvailability.available ? undefined : withdrawFeesAvailability.reason
               }
               onClick={() => {
-                location.hash = dashboardHash("manager", "withdraw-fees");
+                location.hash = actionHash("withdraw-fees");
               }}
             >
               <Coins /> Withdraw earned fees
@@ -538,7 +532,7 @@ export function Rewards({
                   : sweepFeeRefundsAvailability.reason
               }
               onClick={() => {
-                location.hash = dashboardHash("manager", "sweep-fee-refunds");
+                location.hash = actionHash("sweep-fee-refunds");
               }}
             >
               Sweep fee refunds
@@ -1066,7 +1060,6 @@ export function Rewards({
  * because it reads per staker per bucket and must not ride the operator snapshot.
  */
 type StakerClaimsResponse = ReturnType<typeof stakerClaimsResponseSchema.parse>;
-type StakerClaimCandidate = StakerClaimsResponse["candidates"][number];
 
 /** Every reason mirrors a guard the wallet-intent preparation applies before building a call. */
 function blockedLabel(reason: string | null): string {
@@ -1077,25 +1070,12 @@ function blockedLabel(reason: string | null): string {
 }
 
 function StakerSettlementPanel({
-  chainId,
   calculationPending,
-  managerPrincipal,
-  network,
-  onSettled,
   token,
 }: {
-  chainId: number;
   calculationPending: boolean;
-  managerPrincipal: string;
-  network: string;
-  onSettled: () => void;
   token: string;
 }) {
-  const [selected, setSelected] = useState<StakerClaimCandidate | null>(null);
-  const [actorPrincipal, setActorPrincipal] = useState("");
-  // The signing account. `claim-staker-rewards` is permissionless and pays the staker named in its
-  // arguments, so this only identifies who submits and pays the fee.
-  const actorValid = standardManagerActionPrincipal(actorPrincipal.trim(), network);
   const [pages, setPages] = useState<StakerClaimsResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1209,7 +1189,14 @@ function StakerSettlementPanel({
                             <button
                               type="button"
                               className="btn btn-secondary sm"
-                              onClick={() => setSelected(candidate)}
+                              onClick={() => {
+                                location.hash = actionHash("claim-staker-rewards", {
+                                  kind: "staker-reward",
+                                  stakerPrincipal: candidate.stakerPrincipal,
+                                  rewardCycle: String(latest?.rewardCycle ?? 0),
+                                  bondIndex: candidate.bondIndex,
+                                });
+                              }}
                             >
                               Settle
                             </button>
@@ -1229,60 +1216,6 @@ function StakerSettlementPanel({
                 </div>
               )}
             </>
-          ) : null}
-          {selected ? (
-            <div className="card-standout">
-              <h3>
-                Settle {short(selected.stakerPrincipal, 8, 5)} ·{" "}
-                {selected.bondIndex === null ? "STX-only" : `bond ${selected.bondIndex}`}
-              </h3>
-              <p className="tertiary">
-                One transaction settles this tuple. The call pays the staker named in its arguments,
-                not the signer, and the postcondition pins the manager's exact sBTC outflow.
-              </p>
-              <label htmlFor="staker-claim-actor">Signing account</label>
-              <input
-                id="staker-claim-actor"
-                value={actorPrincipal}
-                onChange={(event) => setActorPrincipal(event.target.value)}
-                placeholder="SP..."
-                className="mono"
-              />
-              {actorPrincipal.trim() !== "" && !actorValid ? (
-                <span className="tertiary">
-                  Enter a valid Stacks account principal for this network.
-                </span>
-              ) : null}
-              {actorValid ? (
-                <BrowserWalletActionPanel
-                  key={`${selected.stakerPrincipal}:${selected.bondIndex ?? "stx"}`}
-                  chainId={chainId}
-                  createRequest={{
-                    action: "claim-staker-rewards",
-                    actorPrincipal: actorPrincipal.trim(),
-                    stakerPrincipal: selected.stakerPrincipal,
-                    rewardCycle: String(latest?.rewardCycle ?? 0),
-                    bondIndex: selected.bondIndex,
-                  }}
-                  intentApiBase="/api/v1/wallet-intents"
-                  managerPrincipal={managerPrincipal}
-                  network={network}
-                  onVerified={() => {
-                    setSelected(null);
-                    setPages([]);
-                    onSettled();
-                  }}
-                  token={token}
-                />
-              ) : null}
-              <button
-                type="button"
-                className="btn btn-tertiary sm"
-                onClick={() => setSelected(null)}
-              >
-                Cancel
-              </button>
-            </div>
           ) : null}
           <RequestState
             label="settlement plan"

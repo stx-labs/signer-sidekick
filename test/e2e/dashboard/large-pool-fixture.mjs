@@ -547,6 +547,100 @@ function page(items, offset, limit) {
   return items.slice(offset, offset + limit);
 }
 
+const activityCoverage = [
+  {
+    source: "wallet-intents",
+    status: "current",
+    observedAt: "2026-08-14T17:05:00.000Z",
+    anchor: null,
+    reason: null,
+  },
+];
+
+const activeActivity = {
+  schemaVersion: 1,
+  activityId: "wallet-intent:6ed58dac-c42c-4cb5-ad02-ed50671f3d27",
+  kind: "operation",
+  domain: "manager",
+  code: "update-fees",
+  title: "Update manager fee",
+  summary: "A reviewed manager fee transaction is ready for the operator.",
+  stage: "review-ready",
+  operationScope: "update-fees",
+  displayStatus: "action-required",
+  outcome: "pending",
+  occurredAt: "2026-08-14T17:00:00.000Z",
+  updatedAt: "2026-08-14T17:05:00.000Z",
+  deadline: null,
+  urgencyAt: null,
+  actorPrincipal: roster[0].stakerPrincipal,
+  txids: [],
+  anchor: null,
+  supersedesActivityId: null,
+  supersededByActivityId: null,
+  primaryAction: {
+    kind: "resume-activity",
+    activityId: "wallet-intent:6ed58dac-c42c-4cb5-ad02-ed50671f3d27",
+    label: "Resume transaction review",
+  },
+  coverage: activityCoverage,
+};
+
+const historicalActivity = {
+  ...activeActivity,
+  activityId: `chain-tx:1:0x${"ab".repeat(32)}`,
+  kind: "chain-event",
+  domain: "rewards",
+  code: "claim-staker-rewards",
+  title: "Staker reward claimed",
+  summary: "The verified manager event records a completed staker reward claim.",
+  stage: "observed",
+  operationScope: null,
+  displayStatus: "observed",
+  outcome: "observed",
+  occurredAt: "2026-08-13T16:00:00.000Z",
+  updatedAt: "2026-08-13T16:01:00.000Z",
+  txids: [`0x${"ab".repeat(32)}`],
+  primaryAction: null,
+  coverage: [
+    {
+      source: "indexed-manager-history",
+      status: "current",
+      observedAt: "2026-08-13T16:01:00.000Z",
+      anchor: null,
+      reason: null,
+    },
+  ],
+};
+
+function activityDetail(activityId) {
+  const summary =
+    activityId === historicalActivity.activityId ? historicalActivity : activeActivity;
+  return {
+    schemaVersion: 1,
+    requestedActivityId: activityId,
+    canonicalActivityId: summary.activityId,
+    aliases: [summary.activityId],
+    summary,
+    timeline: [
+      {
+        schemaVersion: 1,
+        eventId: `${summary.activityId}:recorded`,
+        code: summary.displayStatus === "observed" ? "event-verified" : "plan-created",
+        title: summary.displayStatus === "observed" ? "Manager event verified" : "Plan created",
+        detail: summary.summary,
+        occurredAt: summary.updatedAt,
+        source: summary.coverage[0].source,
+        txid: summary.txids[0] ?? null,
+        stacksBlockHeight: null,
+        indexBlockHash: null,
+        canonical: summary.displayStatus === "observed" ? true : null,
+        finalized: null,
+      },
+    ],
+  };
+}
+
 export function reconciliationResponse(status = "idle") {
   const completed = status === "succeeded";
   const running = status === "running";
@@ -619,6 +713,19 @@ export function responseFor(url) {
   )
     return connection;
   if (request.pathname === "/api/v1/status") return snapshot;
+  if (request.pathname === "/api/v1/activity") {
+    return {
+      schemaVersion: 1,
+      generatedAt: "2026-08-14T17:05:00.000Z",
+      active: [activeActivity],
+      items: [historicalActivity],
+      nextCursor: null,
+      coverage: activityCoverage,
+    };
+  }
+  if (request.pathname.startsWith("/api/v1/activity/")) {
+    return activityDetail(decodeURIComponent(request.pathname.slice("/api/v1/activity/".length)));
+  }
   if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
   if (request.pathname === "/api/v1/engine") return engineStatus;
   if (request.pathname === "/api/v1/engine/jobs") return engineJobs;

@@ -1,4 +1,12 @@
-import { ArrowSquareOut, Check, Key, Plugs, ShieldCheck, Warning } from "@phosphor-icons/react";
+import {
+  ArrowSquareOut,
+  Check,
+  DownloadSimple,
+  Key,
+  Plugs,
+  ShieldCheck,
+  Warning,
+} from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
   healthSourceTestResponseSchema,
@@ -6,10 +14,13 @@ import {
   runtimeSettingsSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson } from "../../api-client.js";
+import { apiDownload, apiJson } from "../../api-client.js";
+import type { SettingsSection } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { operatorActionError } from "../../shared/operator-error.js";
+import { EngineSettings } from "./engine-settings.js";
+import { ManagerSettings } from "./manager-settings.js";
 
 const healthSourceLabels = {
   "node-metrics": "node metrics",
@@ -19,14 +30,24 @@ const healthSourceLabels = {
 
 export function SettingsPage({
   data,
+  initialSection,
+  onRefreshStatus,
   token,
   setTheme,
   onSaved,
+  refreshingStatus,
+  sync,
+  syncing,
 }: {
   data: DashboardSnapshot | null;
+  initialSection: SettingsSection | null;
+  onRefreshStatus?: (() => void | Promise<void>) | undefined;
   token: string;
   setTheme: (theme: "light" | "dark") => void;
   onSaved?: () => void | Promise<void>;
+  refreshingStatus: boolean;
+  sync: () => void;
+  syncing: boolean;
 }) {
   const [settings, setSettings] = useState<RuntimeSettings | null>(() =>
     data?.freshness?.status === "stale" ? null : (data?.runtimeSettings ?? null),
@@ -38,12 +59,16 @@ export function SettingsPage({
   const [saved, setSaved] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [supportDownloadBusy, setSupportDownloadBusy] = useState(false);
+  const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
   const [sourceTest, setSourceTest] = useState<{
     kind: "node-metrics" | "signer-monitoring" | "hiro-reference";
     state: "testing" | "connected" | "failed";
     detail: string;
   } | null>(null);
-  const [activeSection, setActiveSection] = useState("display");
+  const [activeSection, setActiveSection] = useState<SettingsSection>(
+    initialSection ?? "attachment",
+  );
   const settingsLoadController = useRef<AbortController | null>(null);
   const sourceTestController = useRef<AbortController | null>(null);
 
@@ -79,6 +104,13 @@ export function SettingsPage({
     },
     [],
   );
+  useEffect(() => {
+    if (!initialSection || !settings) return;
+    setActiveSection(initialSection);
+    requestAnimationFrame(() =>
+      document.getElementById(initialSection)?.scrollIntoView({ block: "start" }),
+    );
+  }, [initialSection, settings]);
 
   const save = async () => {
     if (!settings) return;
@@ -201,6 +233,23 @@ export function SettingsPage({
       if (sourceTestController.current === controller) sourceTestController.current = null;
     }
   };
+  const downloadSupportBundle = async () => {
+    setSupportDownloadBusy(true);
+    setSupportDownloadError(null);
+    try {
+      await apiDownload(token, "/api/v1/support-bundle", {
+        expectedContentTypes: ["application/json"],
+        fallbackFilename: "signer-sidekick-support.json",
+        timeoutMs: 90_000,
+      });
+    } catch (cause) {
+      setSupportDownloadError(
+        operatorActionError(cause, "Could not download the support bundle", "Retrying is safe"),
+      );
+    } finally {
+      setSupportDownloadBusy(false);
+    }
+  };
 
   return (
     <div className="settings-page">
@@ -240,10 +289,12 @@ export function SettingsPage({
         <nav className="set-nav">
           {(
             [
-              ["display", "Display"],
+              ["attachment", "Attachment"],
               ["sources", "Data sources"],
-              ["security", "Access & security"],
-              ["maintenance", "About & maintenance"],
+              ["capabilities", "Capabilities"],
+              ["observer", "Observer"],
+              ["auth", "Access & security"],
+              ["support", "Support & maintenance"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -260,9 +311,27 @@ export function SettingsPage({
           ))}
         </nav>
         <fieldset className="settings-scroll settings-fields" disabled={busy}>
-          <section className="card-standout set-section form-grid" id="display">
+          {data ? (
+            <ManagerSettings
+              data={data}
+              onRefreshStatus={onRefreshStatus}
+              refreshingStatus={refreshingStatus}
+              sync={sync}
+              syncing={syncing}
+            />
+          ) : (
+            <section className="card-standout set-section" id="attachment">
+              <div className="card-head">
+                <h2>Manager attachment</h2>
+                <StatusBadge status="Unavailable" />
+              </div>
+              <p className="muted">Current attachment evidence is temporarily unavailable.</p>
+            </section>
+          )}
+
+          <section className="card-standout set-section form-grid" id="display-preferences">
             <div className="card-head">
-              <h2>Display preferences</h2>
+              <h2>Operator preferences</h2>
             </div>
             <Field label="Default theme">
               <select
@@ -532,7 +601,36 @@ export function SettingsPage({
             </Field>
           </section>
 
-          <section className="card set-section" id="security">
+          <EngineSettings token={token} />
+
+          <section className="card set-section" id="observer">
+            <div className="card-head">
+              <h2>Event observer</h2>
+              <StatusBadge
+                status={
+                  data?.alerts.some(({ id }) => id.startsWith("observer:"))
+                    ? "Attention"
+                    : "Monitored"
+                }
+              />
+            </div>
+            <p className="muted">
+              Sidekick verifies callback claims against the local node before using them and falls
+              back to bounded polling when delivery is delayed. Delivery gaps appear on Overview;
+              detailed queue, verification, and reconciliation evidence is included in the support
+              bundle.
+            </p>
+            <div className="statline">
+              <span className="k">Verified manager events</span>
+              <span className="v mono">{data?.activity.eventCount ?? "Unavailable"}</span>
+            </div>
+            <div className="statline">
+              <span className="k">Latest verified Stacks block</span>
+              <span className="v mono">{data?.activity.latestBlockHeight ?? "Unavailable"}</span>
+            </div>
+          </section>
+
+          <section className="card set-section" id="auth">
             <div className="card-head">
               <h2>Access &amp; security</h2>
             </div>
@@ -612,10 +710,25 @@ export function SettingsPage({
             ) : null}
           </section>
 
-          <section className="card set-section" id="maintenance">
+          <section className="card set-section" id="support">
             <div className="card-head">
-              <h2>About &amp; maintenance</h2>
+              <h2>Support &amp; maintenance</h2>
+              <button
+                className="btn btn-secondary sm"
+                disabled={supportDownloadBusy}
+                onClick={() => void downloadSupportBundle()}
+                type="button"
+              >
+                <DownloadSimple />
+                {supportDownloadBusy ? "Collecting support bundle" : "Download support bundle"}
+              </button>
             </div>
+            <ErrorCallout error={supportDownloadError} />
+            <p className="muted">
+              Send this redacted snapshot to Stacks Labs support. It combines Sidekick, manager,
+              node, signer, observer, reconciliation, and operation evidence without private keys or
+              operator credentials.
+            </p>
             <div className="statline">
               <span className="k">Backup</span>
               <span className="v">Online SQLite backup with integrity verification</span>

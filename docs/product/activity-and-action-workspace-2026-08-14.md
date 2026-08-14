@@ -648,9 +648,18 @@ surfaces in the same change series. No compatibility redirects are required once
 - Expired wallet intents link to their replacements, absorbed chain-transaction aliases resolve to
   the canonical operation, and noncanonical engine work escalates after a stable five-minute
   recovery deadline. Cached chain context supplies structured deadline ordering without a live read.
-- The Activity UI, shared contextual action route, six-page navigation cutover, and removal of the
-  old Manager/Operations routes are not implemented yet. The legacy routes remain intentionally
-  until retained actions are reachable in the replacement surfaces in the same change series.
+- The Activity active/history/detail UI and its bookmarkable filter/detail routes are implemented,
+  including independent source coverage, retained evidence on refresh failure, and 15-second
+  visible-browser refreshes. The shared contextual action route now hosts manager actions, exact
+  staker settlements, and exact transaction-engine claim jobs; active wallet intents resume from
+  Activity without creating duplicates. First-time registration is denied in both the workspace and
+  the server authority path, while established signer repair and rotation remain available.
+- The six-page navigation cutover is implemented. Manager attachment, capability, signer-grant,
+  admin, observer, and transaction-policy controls now live in Settings; engine and wallet history
+  lives in Activity; all retained operations use contextual action routes. Manager, Operations,
+  setup, enrollment, and registration hashes now resolve through the normal unknown-route rule to
+  Overview without compatibility parsing. Permissionless reward calculation remains read-only
+  until its reviewed execution adapter exists.
 - Consequently, the released-binary Devnet action leg is still an unmet Slice 8 gate. The existing
   real-node observer/convergence leg is not a substitute for a controlled browser-wallet action
   reaching a reconciled `complete` Activity group.
@@ -703,5 +712,6 @@ surfaces in the same change series. No compatibility redirects are required once
 - The released-binary Devnet connect/observe/action leg exercises the shared action workspace and
   reaches a reconciled `complete` Activity group.
 
-The next implementation step is the route-specific Activity UI and shared action workspace, using
-the completed Overview attention model and the same typed `ContextualAction` and Activity IDs.
+The next implementation step is the reviewed permissionless reward-calculation adapter and its
+golden execution vectors, followed by the released-binary Devnet action leg that proves one shared
+workspace operation reaches a reconciled `complete` Activity group.

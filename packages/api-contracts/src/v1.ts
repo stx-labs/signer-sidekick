@@ -596,12 +596,19 @@ export interface DashboardAlert {
     | {
         kind: "navigate";
         label: string;
-        target: "settings" | "pool" | "rewards" | "operations" | "manager";
+        target: "settings" | "pool" | "rewards" | "activity" | "health";
+        settingsSection?:
+          | "attachment"
+          | "sources"
+          | "capabilities"
+          | "observer"
+          | "auth"
+          | "support";
       }
     | {
         kind: "navigate";
         label: string;
-        target: "manager";
+        target: "settings";
         managerAction: "register-self";
       };
 }

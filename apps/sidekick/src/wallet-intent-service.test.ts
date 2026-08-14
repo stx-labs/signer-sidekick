@@ -53,6 +53,7 @@ vi.mock("./network-compatibility-store.js", async (importOriginal) => ({
 }));
 
 const stores: SidekickStore[] = [];
+const canRepairSignerRegistration = async () => true;
 const senderKey = "1".padStart(64, "0");
 const requiredSender = getAddressFromPrivateKey(senderKey, "mainnet");
 const otherAdmin = getAddressFromPrivateKey("2".padStart(64, "0"), "mainnet");
@@ -337,6 +338,7 @@ async function proveRecurringManagerAction(input: {
       }),
     } as unknown as RuntimeSettingsController,
     readState: deploymentFreshState,
+    canRepairSignerRegistration,
     readerFactory: () => ({
       lookupIndexedTransaction: async () =>
         input.transactionIndexUnavailable
@@ -465,6 +467,7 @@ async function submittedFeeActionHarness() {
       store,
       runtimeSettings,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
       readerFactory,
     });
   const wallet = createWallet();
@@ -638,6 +641,7 @@ describe("manager wallet action preparation", () => {
       store,
       runtimeSettings,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     const intent = await wallet.prepare(
@@ -713,6 +717,7 @@ describe("manager wallet action preparation", () => {
       store,
       runtimeSettings,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -746,6 +751,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1160,6 +1166,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     const intent = await wallet.prepare({
@@ -1219,6 +1226,7 @@ describe("manager wallet action preparation", () => {
       store,
       runtimeSettings,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1270,6 +1278,7 @@ describe("manager wallet action preparation", () => {
       store,
       runtimeSettings,
       readState: () => state,
+      canRepairSignerRegistration,
     });
 
     const intent = await wallet.prepare({
@@ -1351,6 +1360,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: () => state,
+      canRepairSignerRegistration,
     });
 
     const intent = await wallet.prepare({
@@ -1450,6 +1460,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
       readerFactory,
     });
 
@@ -1485,6 +1496,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1523,6 +1535,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1533,6 +1546,32 @@ describe("manager wallet action preparation", () => {
       }),
     ).resolves.toMatchObject({
       transaction: { method: "stx_callContract", params: { functionName: "update-fees" } },
+    });
+  });
+
+  it("refuses first-time signer registration when no current or next-cycle participation exists", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {},
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+      canRepairSignerRegistration: async () => false,
+    });
+
+    await expect(
+      wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
+    ).rejects.toMatchObject({
+      code: "wallet_execution_unavailable",
+      message:
+        "Signer registration is available only as a repair or key rotation for established current or next-cycle participation; use Zero to Signing for first-time setup",
     });
   });
 
@@ -1565,6 +1604,7 @@ describe("manager wallet action preparation", () => {
       store,
       runtimeSettings,
       readState: () => state,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1606,6 +1646,7 @@ describe("manager wallet action preparation", () => {
         if (reads === 2) current = rotated;
         return current;
       },
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1663,6 +1704,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: () => state,
+      canRepairSignerRegistration,
     });
 
     await expect(
@@ -1702,6 +1744,7 @@ describe("manager wallet action preparation", () => {
         }),
       } as unknown as RuntimeSettingsController,
       readState: () => registrationFreshState(laterSignerKey),
+      canRepairSignerRegistration,
       readerFactory: () => ({
         lookupIndexedTransaction: async () => ({
           status: "observed" as const,
@@ -1777,6 +1820,7 @@ describe("manager wallet action preparation", () => {
           }),
         } as unknown as RuntimeSettingsController,
         readState: deploymentFreshState,
+        canRepairSignerRegistration,
       });
     }
 
