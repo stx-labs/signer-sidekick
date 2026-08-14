@@ -400,7 +400,7 @@ async function up() {
   }
 }
 
-async function freshSetup(state) {
+async function connectExistingManager(state) {
   const actor = createOperatorActor();
   // Day-zero deployment belongs to the external setup harness. Sidekick starts observing once the
   // manager exists and then owns the recurring operator lifecycle.
@@ -411,6 +411,13 @@ async function freshSetup(state) {
   const deployment = await actor.deployManager(source);
   const grant = generateSignerGrant("1");
   const registration = await actor.registerManager(grant);
+  const connection = await sidekickFetch(state, "/api/v1/connection/recheck", {
+    method: "POST",
+    body: "{}",
+  });
+  if (connection.status !== "connected") {
+    throw new Error(`Sidekick connection remained ${connection.status}`);
+  }
   const observed = await waitFor(
     async () => {
       const status = await sidekickFetch(state, "/api/v1/status?refresh=1");
@@ -425,6 +432,11 @@ async function freshSetup(state) {
     deployTxid: deployment.txid ?? null,
     registerTxid: registration.txid,
     signerKey: grant.signerKey,
+    connection: {
+      status: connection.status,
+      managerPrincipal: connection.configured.managerPrincipal,
+      bindingSource: connection.deploymentIdentity.stored?.bindingSource ?? null,
+    },
     readiness: observed.readiness?.status ?? observed.setup?.status ?? "unavailable",
   };
 }
@@ -462,7 +474,7 @@ async function interruptSynchronization(state, pathContains) {
 }
 
 async function activePool(state) {
-  const fresh = await freshSetup(state);
+  const connection = await connectExistingManager(state);
   const actor = createOperatorActor();
   await ensureRewardPhase(actor);
   const positions = [];
@@ -513,7 +525,7 @@ async function activePool(state) {
   );
   const cycleSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
   return {
-    fresh,
+    connection,
     transactionIds: positions.map((position) => position.txid),
     interruptions: { roster: rosterInterruption, events: eventInterruption },
     firstSync: firstSync.result,
@@ -543,22 +555,29 @@ async function eventResumeScenario(state) {
   };
 }
 
-async function attachWithCleanDatabase(state) {
+async function connectWithCleanDatabase(state) {
   const originalContainer = state.containerName;
-  const attachContainer = `${originalContainer}-attach`;
-  const attachVolume = `${state.volumeName}-attach`;
+  const connectionContainer = `${originalContainer}-connection`;
+  const connectionVolume = `${state.volumeName}-connection`;
   await stopSidekick(originalContainer);
   try {
-    await startSidekick(state, { container: attachContainer, volume: attachVolume });
-    const attached = await sidekickFetch(state, "/api/v1/status?refresh=1");
-    if (!attached.manager?.attachAllowed) throw new Error("Clean manager observation was blocked");
+    await startSidekick(state, { container: connectionContainer, volume: connectionVolume });
+    const connection = await sidekickFetch(state, "/api/v1/connection");
+    if (connection.status !== "connected") {
+      throw new Error(`Clean database connection was ${connection.status}`);
+    }
+    const observed = await sidekickFetch(state, "/api/v1/status?refresh=1");
     return {
-      managerTier: attached.manager.source.tier,
-      readiness: attached.readiness?.status ?? attached.setup?.status ?? "unavailable",
+      connectionStatus: connection.status,
+      bindingSource: connection.deploymentIdentity.stored?.bindingSource ?? null,
+      managerTier: observed.manager.source.tier,
+      readiness: observed.readiness?.status ?? observed.setup?.status ?? "unavailable",
     };
   } finally {
-    await stopSidekick(attachContainer);
-    run("docker", ["volume", "rm", "--force", attachVolume], { allowedExitCodes: [0, 1] });
+    await stopSidekick(connectionContainer);
+    run("docker", ["volume", "rm", "--force", connectionVolume], {
+      allowedExitCodes: [0, 1],
+    });
     await startSidekick(state, { container: originalContainer, volume: state.volumeName });
   }
 }
@@ -994,15 +1013,15 @@ async function status() {
 
 async function scenario(name) {
   const state = await readState();
-  if (name === "fresh") return await freshSetup(state);
+  if (name === "connect") return await connectExistingManager(state);
   if (name === "active-pool") return await activePool(state);
-  if (name === "attach") return await attachWithCleanDatabase(state);
+  if (name === "clean-connection") return await connectWithCleanDatabase(state);
   if (name === "restart") return await restartSidekick(state);
   if (name === "event-resume") return await eventResumeScenario(state);
   if (name === "trusted-manager-profile") return await installedManagerProfileScenario(state);
   if (name === "failure-injection") return await failureInjection(state);
   throw new Error(
-    `Unknown scenario ${name}; use fresh, active-pool, attach, restart, trusted-manager-profile, or failure-injection`,
+    `Unknown scenario ${name}; use connect, active-pool, clean-connection, restart, trusted-manager-profile, failure-injection, or event-resume`,
   );
 }
 
@@ -1103,7 +1122,11 @@ async function test() {
     };
     await recordScenario(result, "activePool", async () => await activePool(state));
     await recordScenario(result, "restart", async () => await restartSidekick(state));
-    await recordScenario(result, "attach", async () => await attachWithCleanDatabase(state));
+    await recordScenario(
+      result,
+      "cleanConnection",
+      async () => await connectWithCleanDatabase(state),
+    );
     await recordScenario(result, "liveDashboard", async () => {
       run("pnpm", ["test:e2e:dashboard:live"], {
         env: { SIDEKICK_LIVE_PHASE: "inspect" },
@@ -1197,7 +1220,7 @@ if (command === "doctor") {
 Usage:
   pnpm e2e:devnet:doctor
   pnpm e2e:devnet:up [--no-build]
-  pnpm e2e:devnet:scenario fresh|active-pool|attach|restart|trusted-manager-profile|failure-injection|event-resume
+  pnpm e2e:devnet:scenario connect|active-pool|clean-connection|restart|trusted-manager-profile|failure-injection|event-resume
   pnpm e2e:devnet:mine [count]
   pnpm e2e:devnet:status
   pnpm e2e:devnet:reset

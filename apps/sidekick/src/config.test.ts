@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, redactConfig } from "./config.js";
+import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 
 describe("Sidekick configuration", () => {
+  it("requires a syntactically valid configured manager contract principal", () => {
+    expect(() => loadManagerPrincipal({})).toThrow("SIDEKICK_MANAGER_PRINCIPAL is required");
+    expect(() => loadManagerPrincipal({ SIDEKICK_MANAGER_PRINCIPAL: "not-a-contract" })).toThrow(
+      "must be a valid contract principal",
+    );
+    expect(
+      loadManagerPrincipal({
+        SIDEKICK_MANAGER_PRINCIPAL: " SP000000000000000000002Q6VF78.signer-manager ",
+      }),
+    ).toBe("SP000000000000000000002Q6VF78.signer-manager");
+  });
+
   it("uses the mainnet Hiro API default and redacts its key", () => {
     const config = loadConfig({
       STACKS_NODE_RPC_URL: "http://127.0.0.1:20443/",

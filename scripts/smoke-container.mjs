@@ -159,12 +159,12 @@ try {
   invariant(preflight.result.status !== "fail", "Connected preflight failed");
   invariant(preflight.result.pox.pox5Available === true, "PoX-5 is unavailable");
 
-  const attach = runCli(["attach", managerPrincipal]);
-  invariant(attach.manager.attachAllowed === true, "Manager attachment was rejected");
-  invariant(attach.registration?.registered === true, "Manager is not registered");
-  invariant(attach.registration?.signerKeyGrantValid === true, "Manager signer grant is invalid");
-
-  invariant(attach.readiness.status !== "blocked", "Operator readiness is blocked");
+  const connection = runCli(["connection", "check"]);
+  invariant(connection.connection.status === "connected", "Manager connection was rejected");
+  invariant(
+    connection.connection.configured.managerPrincipal === managerPrincipal,
+    "Connected manager principal does not match configuration",
+  );
 
   const synchronizations = [];
   for (let run = 0; run < 2; run += 1) {
@@ -206,7 +206,6 @@ try {
     image,
     "export",
     "support-bundle",
-    managerPrincipal,
   ]);
   const supportBundle = parseJson(supportBundleOutput, "export support-bundle");
   invariant(supportBundle.schemaVersion === 2, "Support bundle schema mismatch");
@@ -263,6 +262,7 @@ const ready = await fetch(base + "/health/ready");
 const status = await fetch(base + "/api/v1/status", {
   headers: { authorization: "Bearer " + token },
 });
+const statusBody = await status.json();
 const sync = await fetch(base + "/api/v1/sync", {
   method: "POST",
   headers: { authorization: "Bearer " + token, "content-type": "application/json" },
@@ -276,6 +276,8 @@ console.log(JSON.stringify({
   deniedStatus: denied.status,
   readyStatus: ready.status,
   statusStatus: status.status,
+  registration: statusBody.registration,
+  operatorReadiness: statusBody.readiness?.status ?? statusBody.setup?.status ?? null,
   syncStatus: sync.status,
   syncResult: syncBody.result?.stakers?.status,
   zeroSyncFailures: /sidekick_sync_failures_total 0(?:\n|$)/.test(metrics),
@@ -289,6 +291,9 @@ console.log(JSON.stringify({
   invariant(http.deniedStatus === 401, "Operator API did not reject an unauthenticated request");
   invariant(http.readyStatus === 200, "Readiness probe failed");
   invariant(http.statusStatus === 200, "Authenticated status probe failed");
+  invariant(http.registration?.registered === true, "Manager is not registered");
+  invariant(http.registration?.signerKeyGrantValid === true, "Manager signer grant is invalid");
+  invariant(http.operatorReadiness !== "blocked", "Operator readiness is blocked");
   invariant(http.syncStatus === 200 && http.syncResult === "completed", "HTTP sync failed");
   invariant(http.zeroSyncFailures === true, "HTTP metrics reported a sync failure");
 
@@ -307,7 +312,7 @@ console.log(JSON.stringify({
         expectedNetworkId: configuration.config.expectedNetworkId ?? null,
         managerPrincipal,
         preflight: preflight.result.status,
-        readiness: attach.readiness.status,
+        readiness: http.operatorReadiness,
         synchronizations,
         forecast: pool.forecast.status,
         rewards: rewards.rewards.status,

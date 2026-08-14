@@ -1,6 +1,6 @@
 # Operations and runtime settings
 
-Signer Sidekick attaches to one configured, deployed signer manager. It does not install a node or
+Signer Sidekick connects to one configured, deployed signer manager. It does not install a node or
 signer, deploy a manager contract, or guide first-time registration. Use
 [Zero to Signing](https://stx.fan/zero_to/signing/) for that wallet-signed day-zero flow and
 [stacksup](https://github.com/stx-labs/stacksup) for infrastructure lifecycle management.

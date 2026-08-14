@@ -6,6 +6,71 @@ import {
 } from "./support-bundle.js";
 
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
+const connectionAssessment = {
+  schemaVersion: 1,
+  status: "connected",
+  outcomeCode: null,
+  checkedAt: "2026-08-13T12:00:00.000Z",
+  stale: false,
+  configured: {
+    network: "mainnet",
+    networkId: 1,
+    nodeRpcUrl: "http://127.0.0.1:20443",
+    managerPrincipal,
+  },
+  observed: {
+    networkId: 1,
+    parentNetworkId: 0,
+    stacksTipHeight: 8_750_000,
+    burnBlockHeight: 962_250,
+    pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    manager: {
+      deployed: true,
+      traitCompatible: true,
+      missingRequirements: [],
+      publishHeight: 8_700_000,
+      clarityVersion: "Clarity4",
+      epoch: "Epoch40",
+    },
+  },
+  lastSuccessful: {
+    schemaVersion: 1,
+    network: "mainnet",
+    networkId: 1,
+    parentNetworkId: 0,
+    managerPrincipal,
+    bindingSource: "new",
+    boundAt: "2026-08-13T12:00:00.000Z",
+    lastVerifiedAt: "2026-08-13T12:00:00.000Z",
+    lastStacksTipHeight: 8_750_000,
+    lastBurnBlockHeight: 962_250,
+    lastPox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+  },
+  deploymentIdentity: {
+    status: "bound",
+    stored: {
+      schemaVersion: 1,
+      network: "mainnet",
+      networkId: 1,
+      parentNetworkId: 0,
+      managerPrincipal,
+      bindingSource: "new",
+      boundAt: "2026-08-13T12:00:00.000Z",
+      lastVerifiedAt: "2026-08-13T12:00:00.000Z",
+      lastStacksTipHeight: 8_750_000,
+      lastBurnBlockHeight: 962_250,
+      lastPox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    },
+    reason: null,
+  },
+  checks: [
+    { id: "deployment-identity", status: "pass", message: "Identity matches." },
+    { id: "node-network", status: "pass", message: "Network matches." },
+    { id: "pox5", status: "pass", message: "PoX-5 is active." },
+    { id: "principal-network", status: "pass", message: "Principal matches." },
+    { id: "manager-trait", status: "pass", message: "Trait matches." },
+  ],
+};
 
 const dashboardSnapshot = {
   schemaVersion: 1,
@@ -47,6 +112,27 @@ describe("operator support bundle", () => {
   it("collects a versioned diagnostic artifact and marks unavailable sources", async () => {
     const bundle = await createOperatorSupportBundle({
       application,
+      connection: async () => connectionAssessment,
+      runtimeSettings: () => ({
+        schemaVersion: 1,
+        revision: 0,
+        updatedAt: null,
+        pool: { displayName: "", websiteUrl: "", supportContact: "", leatherUrl: "" },
+        display: { defaultTheme: "system" },
+        dataSources: {
+          nodeRpcUrl: "http://127.0.0.1:20443",
+          apiUrl: "https://api.mainnet.hiro.so",
+          apiKeyHeader: "x-api-key",
+          apiKeyConfigured: false,
+          apiKeySource: "none",
+          nodeMetricsUrl: "",
+          signerMonitoringUrl: "",
+          hiroReferenceApiUrl: "",
+        },
+        forecast: { horizonCycles: 6 },
+        embed: { publicApiUrl: "" },
+        audit: [],
+      }),
       operator: async () => dashboardSnapshot,
       database: () => ({
         schemaVersion: 21,
@@ -68,6 +154,11 @@ describe("operator support bundle", () => {
         runtime: { uptimeSeconds: 120 },
       },
       sections: {
+        connection: { status: "ok", data: { status: "connected" } },
+        runtimeSettings: {
+          status: "ok",
+          data: { dataSources: { nodeRpcUrl: "http://127.0.0.1:20443" } },
+        },
         operator: { status: "ok", data: { network: "mainnet", managerPrincipal } },
         nodeAndSignerHealth: { status: "unavailable", data: null },
         database: { status: "ok", data: { schemaVersion: 21 } },

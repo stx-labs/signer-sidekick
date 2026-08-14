@@ -1,5 +1,57 @@
 const managerPrincipal = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager";
 
+const deploymentIdentity = {
+  schemaVersion: 1,
+  network: "testnet",
+  networkId: 0x80000005,
+  parentNetworkId: 0x80000000,
+  managerPrincipal,
+  bindingSource: "new",
+  boundAt: "2026-08-13T12:00:00.000Z",
+  lastVerifiedAt: "2026-08-13T12:00:00.000Z",
+  lastStacksTipHeight: 14_200,
+  lastBurnBlockHeight: 9_240,
+  lastPox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+};
+
+export const connection = {
+  schemaVersion: 1,
+  status: "connected",
+  outcomeCode: null,
+  checkedAt: "2026-08-13T12:00:00.000Z",
+  stale: false,
+  configured: {
+    network: "testnet",
+    networkId: 0x80000005,
+    nodeRpcUrl: "http://stacks-node:20443",
+    managerPrincipal,
+  },
+  observed: {
+    networkId: 0x80000005,
+    parentNetworkId: 0x80000000,
+    stacksTipHeight: 14_200,
+    burnBlockHeight: 9_240,
+    pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+    manager: {
+      deployed: true,
+      traitCompatible: true,
+      missingRequirements: [],
+      publishHeight: 9_100,
+      clarityVersion: "Clarity4",
+      epoch: "Epoch40",
+    },
+  },
+  lastSuccessful: deploymentIdentity,
+  deploymentIdentity: { status: "bound", stored: deploymentIdentity, reason: null },
+  checks: [
+    { id: "deployment-identity", status: "pass", message: "Database identity matches." },
+    { id: "node-network", status: "pass", message: "Node network matches." },
+    { id: "pox5", status: "pass", message: "PoX-5 is active." },
+    { id: "principal-network", status: "pass", message: "Principal network matches." },
+    { id: "manager-trait", status: "pass", message: "Manager trait matches." },
+  ],
+};
+
 function principal(index) {
   return `ST${String(index).padStart(38, "0")}`;
 }
@@ -106,6 +158,7 @@ export const runtimeSettings = {
 };
 
 export const snapshot = {
+  schemaVersion: 1,
   get generatedAt() {
     return new Date().toISOString();
   },
@@ -560,6 +613,11 @@ export function responseFor(url) {
   const offset = Number(request.searchParams.get("offset") ?? 0);
   const limit = Number(request.searchParams.get("limit") ?? 50);
   if (request.pathname === "/api/v1/auth/session") return { authenticated: false };
+  if (
+    request.pathname === "/api/v1/connection" ||
+    request.pathname === "/api/v1/connection/recheck"
+  )
+    return connection;
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/operations/readiness") return operationReadiness;
   if (request.pathname === "/api/v1/engine") return engineStatus;

@@ -2127,6 +2127,229 @@
   font-weight: var(--fw-medium);
 }
 
+.connection-shell {
+  display: grid;
+  min-height: 100vh;
+  padding: var(--space-6);
+  place-items: center;
+  background: var(--surface-tertiary);
+}
+
+.connection-card {
+  width: min(100%, 760px);
+  padding: clamp(var(--space-6), 5vw, var(--space-10));
+}
+
+.connection-brand-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: var(--space-5);
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--black);
+}
+
+.connection-brand-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.connection-card .eyebrow {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.connection-card h1 {
+  margin: var(--space-2) 0;
+  font-family: var(--font-display);
+  font-size: clamp(25px, 4vw, 34px);
+  font-weight: var(--fw-regular);
+  letter-spacing: -0.02em;
+}
+
+.connection-card > p:not(.eyebrow) {
+  max-width: 680px;
+  margin: 0 0 var(--space-6);
+  color: var(--text-secondary);
+}
+
+.connection-checking {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 88px;
+  padding: var(--space-5);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+}
+
+.connection-checking svg {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+
+.connection-checks {
+  overflow: hidden;
+  margin: var(--space-5) 0;
+  padding: 0;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  list-style: none;
+}
+
+.connection-check {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.connection-check:last-child {
+  border-bottom: 0;
+}
+
+.connection-check > svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.connection-check-pass > svg {
+  color: var(--status-success);
+}
+
+.connection-check-fail > svg,
+.connection-check-unavailable > svg {
+  color: var(--status-error);
+}
+
+.connection-check-not-checked {
+  color: var(--text-tertiary);
+}
+
+.connection-check strong,
+.connection-check span {
+  display: block;
+}
+
+.connection-check strong {
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-medium);
+  text-transform: capitalize;
+}
+
+.connection-check span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.connection-identity {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: var(--space-5) 0;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+}
+
+.connection-identity div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid var(--border-secondary);
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.connection-identity div:nth-child(2n) {
+  border-right: 0;
+}
+
+.connection-identity div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.connection-identity dt {
+  margin-bottom: 3px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.connection-identity dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+}
+
+.connection-actions .btn {
+  gap: var(--space-2);
+}
+
+.connection-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.connection-restart-note,
+.connection-support-error {
+  display: block;
+  margin-top: var(--space-4);
+  color: var(--text-tertiary);
+}
+
+.connection-support-error {
+  color: var(--status-error);
+}
+
+@media (max-width: 600px) {
+  .connection-shell {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .connection-card {
+    min-height: 100vh;
+    padding: var(--space-6) var(--space-4);
+    border-radius: 0;
+  }
+
+  .connection-identity {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-identity div,
+  .connection-identity div:nth-child(2n),
+  .connection-identity div:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-secondary);
+  }
+
+  .connection-identity div:last-child {
+    border-bottom: 0;
+  }
+
+  .connection-actions,
+  .connection-actions .btn {
+    width: 100%;
+  }
+}
+
 .sidebar .brand .glyph span {
   font-family: var(--font-display);
   font-size: 16px;

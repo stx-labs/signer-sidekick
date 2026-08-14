@@ -1,3 +1,4 @@
+import type { ConnectionAssessment } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
@@ -109,6 +110,111 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("serves connection recovery independently and gates operational routes", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const blocked = {
+      status: "blocked",
+      outcomeCode: "manager-not-deployed",
+      checkedAt: "2026-08-13T12:00:00.000Z",
+      stale: false,
+    } as unknown as ConnectionAssessment;
+    const connected = {
+      ...blocked,
+      status: "connected",
+      outcomeCode: null,
+    } as unknown as ConnectionAssessment;
+    const check = vi.fn(async (force = false) => (force ? connected : blocked));
+    const onConnectionAssessed = vi.fn();
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+      settings: vi.fn(() => ({ schemaVersion: 1 })),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => blocked, check },
+      isOperational: () => false,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const connection = await server.inject({ method: "GET", url: "/api/v1/connection", headers });
+    expect(connection.statusCode).toBe(200);
+    expect(connection.json()).toMatchObject({
+      status: "blocked",
+      outcomeCode: "manager-not-deployed",
+    });
+    expect(check).toHaveBeenCalledWith();
+
+    const status = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(status.statusCode).toBe(503);
+    expect(status.json()).toMatchObject({ error: "connection_required", retryable: true });
+    expect(service.snapshot).not.toHaveBeenCalled();
+
+    const settings = await server.inject({ method: "GET", url: "/api/v1/settings", headers });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toEqual({ schemaVersion: 1 });
+
+    const ready = await server.inject({ method: "GET", url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({
+      status: "not-ready",
+      code: "manager-not-deployed",
+    });
+
+    const recheck = await server.inject({
+      method: "POST",
+      url: "/api/v1/connection/recheck",
+      headers,
+    });
+    expect(recheck.statusCode).toBe(200);
+    expect(recheck.json()).toMatchObject({ status: "connected", outcomeCode: null });
+    expect(check).toHaveBeenLastCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenLastCalledWith(connected);
+  });
+
+  it("preserves read-only operator evidence after a proved connection becomes unavailable", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: true,
+      lastSuccessful: {
+        managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      },
+    } as ConnectionAssessment;
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const status = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(status.statusCode).toBe(200);
+    expect(service.snapshot).toHaveBeenCalledWith(false);
+
+    const synchronization = await server.inject({
+      method: "POST",
+      url: "/api/v1/sync",
+      headers,
+    });
+    expect(synchronization.statusCode).toBe(503);
+    expect(synchronization.json()).toMatchObject({ error: "connection_required" });
+    expect(service.synchronize).not.toHaveBeenCalled();
   });
 
   it("downloads a server-collected support bundle without requiring every source", async () => {
@@ -963,6 +1069,40 @@ describe("local API", () => {
       const metrics = await server.inject({ method: "GET", url: "/metrics" });
       expect(metrics.body).toContain("sidekick_roster_reconciliation_skips_total 1");
     });
+    expect(service.synchronize).not.toHaveBeenCalled();
+  });
+
+  it("skips automatic reconciliation while a proved connection is temporarily unavailable", async () => {
+    const unavailable = {
+      status: "unavailable",
+      lastSuccessful: {
+        managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      },
+    } as ConnectionAssessment;
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-08-13T12:00:00.000Z",
+        setup: { status: "ready" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => true,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(async () => {
+      const metrics = await server.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.body).toContain("sidekick_roster_reconciliation_skips_total 1");
+    });
+    expect(service.snapshot).not.toHaveBeenCalled();
     expect(service.synchronize).not.toHaveBeenCalled();
   });
 

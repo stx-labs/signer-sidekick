@@ -1,6 +1,6 @@
 # First-run connection contract
 
-- Status: Approved product direction; implementation pending
+- Status: Implemented in the Slice 3 connection change
 - Date: 2026-08-13
 - Parent: [Signer Sidekick scope reset](scope-reset-plan-2026-08-13.md)
 

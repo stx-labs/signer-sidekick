@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
+  connection,
   health,
   operationReadiness,
   reconciliationResponse,
@@ -36,6 +37,71 @@ async function login(page: Page) {
   await page.getByRole("button", { name: "Open console" }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 }
+
+test("shows focused recovery when the configured signer manager is not deployed", async ({
+  page,
+}) => {
+  const missing = {
+    ...connection,
+    status: "blocked",
+    outcomeCode: "manager-not-deployed",
+    stale: false,
+    observed: {
+      ...connection.observed,
+      manager: {
+        deployed: false,
+        traitCompatible: false,
+        missingRequirements: ["A contract must exist at the configured principal"],
+        publishHeight: null,
+        clarityVersion: null,
+        epoch: null,
+      },
+    },
+    lastSuccessful: null,
+    deploymentIdentity: { status: "unbound", stored: null, reason: null },
+  };
+  await page.route("**/api/v1/connection*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(missing),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Operator credential").fill(credential);
+  await page.getByRole("button", { name: "Open console" }).click();
+
+  await expect(page.getByRole("heading", { name: "Signer manager not found" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Zero to Signing" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Recheck" })).toBeVisible();
+});
+
+test("keeps retained operator evidence visible during a temporary local-node outage", async ({
+  page,
+}) => {
+  const unavailable = {
+    ...connection,
+    status: "unavailable",
+    outcomeCode: "node-unreachable",
+    stale: true,
+    checkedAt: "2026-08-13T12:05:00.000Z",
+    observed: null,
+  };
+  await page.route("**/api/v1/connection*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(unavailable),
+    });
+  });
+
+  await login(page);
+
+  await expect(page.getByText("Local node unavailable · Actions paused")).toBeVisible();
+  await expect(page.getByText("Showing retained operator data")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+});
 
 test("opens the dashboard from an authenticated proxy session", async ({ page }) => {
   await page.route("**/api/v1/auth/session", async (route) => {

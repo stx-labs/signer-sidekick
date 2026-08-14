@@ -8,8 +8,9 @@ using the current upstream documentation:
 - [stacks-core releases](https://github.com/stacks-network/stacks-core/releases)
 - [Hiro chainstate archive](https://docs.hiro.so/en/resources/archive)
 
-Sidekick expects reachable node RPC and Stacks API endpoints. It does not need node/signer private
-keys or process access.
+Sidekick requires a reachable node RPC endpoint for its baseline connection. The indexed Stacks API
+and signer-monitoring endpoints extend data coverage but do not determine whether Sidekick can
+connect. Sidekick does not need node/signer private keys or process access.
 
 Before deploying Sidekick, use [Zero to Signing](https://stx.fan/zero_to/signing/) to complete the
 wallet-signed signer-manager flow and configure `SIDEKICK_MANAGER_PRINCIPAL` to that deployed
@@ -62,7 +63,7 @@ Use the published image rather than building locally:
 
 ```sh
 docker compose -f compose.yaml -f compose.release.yaml pull
-docker compose -f compose.yaml -f compose.release.yaml run --rm --no-deps sidekick doctor connectivity
+docker compose -f compose.yaml -f compose.release.yaml run --rm --no-deps sidekick connection check
 docker compose -f compose.yaml -f compose.release.yaml up -d
 curl --fail http://127.0.0.1:3998/health/live
 curl --fail http://127.0.0.1:3998/health/ready
@@ -90,7 +91,7 @@ base port publishing and adapts the container health probe to the configured lis
 ./scripts/require-docker-compose-v2.sh
 docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml config
 docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml pull
-docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml run --rm --no-deps sidekick doctor connectivity
+docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml run --rm --no-deps sidekick connection check
 docker compose -f compose.yaml -f compose.release.yaml -f compose.host-network.yaml up -d
 curl --fail http://127.0.0.1:3998/health/live
 ```
@@ -99,17 +100,18 @@ For a source build, verify the node from the same container network before start
 
 ```sh
 docker compose build --pull
-docker compose run --rm --no-deps sidekick doctor connectivity
+docker compose run --rm --no-deps sidekick connection check
 docker compose up -d
 curl --fail "http://$(docker compose port sidekick 3998)/health/live"
 curl --fail "http://$(docker compose port sidekick 3998)/health/ready"
-docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
+docker compose exec -T sidekick node /app/dist/main.js connection check
 ```
 
-Docker `healthy` checks liveness only. `/health/ready` reports a current or last-good control-plane
-observation, but does not change during ordinary engine observation or trigger restarts. Check that
-its `freshness` is `current` before an operator action. `doctor connectivity` checks node, API,
-network, lag, and PoX-5. The authenticated Operations readiness panel
+Docker `healthy` checks liveness only. `/health/ready` reports whether the configured local-node and
+signer-manager connection is established, but does not trigger restarts. `connection check` uses
+the same configured network, local node, manager, and database identity as `serve`, without waiting
+for indexed data, registration, eligibility, or telemetry. `doctor connectivity` remains the deeper
+node/API lag diagnostic. The authenticated Operations readiness panel
 (`/api/v1/operations/readiness`) also reports manager and engine blockers. Resolve failed
 connectivity checks before signing an operation.
 
@@ -244,6 +246,8 @@ being created. It includes:
 
 - Sidekick build/runtime information, database state, refresh/reconciliation state, and the current
   operator snapshot;
+- connection outcome, durable deployment identity, and redacted runtime source configuration even
+  when the operator snapshot is unavailable;
 - local Stacks node, signer, Hiro reference, and configured monitoring health;
 - manager registration, PoX-5 setup, pool roster/forecast/reward state, activity, alerts, and trust
   history; and

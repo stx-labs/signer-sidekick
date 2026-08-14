@@ -71,6 +71,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE deployment_identity;
     DROP TABLE signer_staker_api_scan_items;
     DROP TABLE signer_staker_api_scans;
     DROP TABLE browser_wallet_intent_observations;
@@ -130,6 +131,98 @@ afterEach(async () => {
 });
 
 describe("Sidekick SQLite store", () => {
+  it("binds one immutable deployment identity and advances only its proof anchor", async () => {
+    const store = await memoryStore();
+    expect(store.getDeploymentIdentity()).toBeNull();
+
+    const bound = store.bindDeploymentIdentity({
+      network: "mainnet",
+      networkId: 1,
+      parentNetworkId: 0,
+      managerPrincipal: manager,
+      bindingSource: "new",
+      verifiedAt: observedAt,
+      stacksTipHeight: 8_600_000,
+      burnBlockHeight: 960_240,
+      pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    });
+    expect(bound).toMatchObject({
+      schemaVersion: 1,
+      network: "mainnet",
+      networkId: 1,
+      parentNetworkId: 0,
+      managerPrincipal: manager,
+      bindingSource: "new",
+      boundAt: observedAt,
+      lastVerifiedAt: observedAt,
+    });
+
+    expect(
+      store.recordDeploymentIdentityVerification({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: manager,
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toMatchObject({
+      boundAt: observedAt,
+      lastVerifiedAt: later,
+      lastStacksTipHeight: 8_600_010,
+      lastBurnBlockHeight: 960_241,
+    });
+    expect(() =>
+      store.recordDeploymentIdentityVerification({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: "SP2369QN53586176SYRF4XFGF4E84V0J0EWKRG0ZH.other-manager",
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toThrow("does not match");
+    expect(() =>
+      store.bindDeploymentIdentity({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: manager,
+        bindingSource: "new",
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toThrow("already bound");
+  });
+
+  it("summarizes all legacy network and manager evidence before binding", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    store.recordManagerTrustState({
+      managerPrincipal: manager,
+      recognitionTier: "unrecognized",
+      profileId: null,
+      profileOrigin: null,
+      sourceSha256: null,
+      canonicalSourceSha256: null,
+      automationEligible: false,
+      eligibilityReason: "Observe only",
+      observedAt,
+    });
+
+    expect(store.inspectLegacyDeploymentEvidence()).toEqual({
+      networks: ["mainnet"],
+      networkIds: [],
+      managerPrincipals: [manager],
+    });
+  });
+
   it("deduplicates durable manager automation-eligibility transitions", async () => {
     const store = await memoryStore();
     const base = {
@@ -239,7 +332,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 21,
+      schemaVersion: 22,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -914,13 +1007,13 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 21,
+      schemaVersion: 22,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migration 21 once", async () => {
+  it("upgrades a persisted migration 13 database through migration 22 once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
@@ -940,7 +1033,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(22);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1056,7 +1149,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(21);
+    expect(upgraded.store.schemaVersion()).toBe(22);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1067,6 +1160,11 @@ describe("Sidekick SQLite store", () => {
     expect(upgraded.store.walletIntents.listObservations(intentId)).toEqual([
       expect.objectContaining({ id: observationId, outcome: "submitted", evidence }),
     ]);
+    expect(upgraded.store.inspectLegacyDeploymentEvidence()).toMatchObject({
+      networks: ["mainnet"],
+      networkIds: [1],
+      managerPrincipals: [manager],
+    });
   });
 
   it("upgrades migration 14 nonce history without losing attempts or foreign keys", async () => {
@@ -1122,6 +1220,7 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 15;
       PRAGMA user_version = 14;
     `);
@@ -1130,7 +1229,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(22);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1274,14 +1373,14 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stake_positions DROP COLUMN observed_index_block_hash;
       ALTER TABLE cycle_memberships DROP COLUMN observed_index_block_hash;
       ALTER TABLE staker_position_observations DROP COLUMN observed_index_block_hash;
-      DELETE FROM schema_migrations WHERE version = 13;
+      DELETE FROM schema_migrations WHERE version >= 13;
       PRAGMA user_version = 12;
     `);
     version12.close();
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(22);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1408,6 +1507,7 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 19;
       PRAGMA user_version = 18;
     `);
@@ -1415,7 +1515,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(22);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1457,6 +1557,7 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 19;
       PRAGMA user_version = 18;
     `);

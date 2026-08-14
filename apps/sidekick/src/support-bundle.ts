@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  connectionAssessmentSchema,
   dashboardSnapshotSchema,
   engineJobPageSchema,
   engineStatusSchema,
   healthSnapshotSchema,
   reconciliationOperationSchema,
+  runtimeSettingsSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { STACKS_CORE_4_0_0, STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import { z } from "zod";
@@ -29,6 +31,12 @@ const supportSectionBaseSchema = z
 
 const operatorSectionSchema = supportSectionBaseSchema
   .extend({ data: dashboardSnapshotSchema.nullable() })
+  .strict();
+const connectionSectionSchema = supportSectionBaseSchema
+  .extend({ data: connectionAssessmentSchema.nullable() })
+  .strict();
+const runtimeSettingsSectionSchema = supportSectionBaseSchema
+  .extend({ data: runtimeSettingsSchema.nullable() })
   .strict();
 const healthSectionSchema = supportSectionBaseSchema
   .extend({ data: healthSnapshotSchema.nullable() })
@@ -158,6 +166,8 @@ export const operatorSupportBundleSchema = z
     application: operatorSupportApplicationSchema,
     sections: z
       .object({
+        connection: connectionSectionSchema,
+        runtimeSettings: runtimeSettingsSectionSchema,
         operator: operatorSectionSchema,
         nodeAndSignerHealth: healthSectionSchema,
         transactionEngine: engineSectionSchema,
@@ -347,7 +357,9 @@ export function operatorSupportApplication(
 
 export async function createOperatorSupportBundle(options: {
   application: OperatorSupportApplication;
-  operator(): Promise<unknown>;
+  connection?: () => Promise<unknown> | unknown;
+  runtimeSettings?: () => Promise<unknown> | unknown;
+  operator?: () => Promise<unknown>;
   health?: () => Promise<unknown>;
   engine?: () => Promise<unknown> | unknown;
   recentOperations?: () => Promise<unknown>;
@@ -361,6 +373,8 @@ export async function createOperatorSupportBundle(options: {
   const now = options.now ?? (() => new Date());
   const timeoutMs = options.timeoutMs ?? 30_000;
   const [
+    connection,
+    runtimeSettings,
     operator,
     nodeAndSignerHealth,
     transactionEngine,
@@ -369,6 +383,8 @@ export async function createOperatorSupportBundle(options: {
     database,
     automation,
   ] = await Promise.all([
+    collectSupportSection(options.connection, connectionAssessmentSchema, now, timeoutMs),
+    collectSupportSection(options.runtimeSettings, runtimeSettingsSchema, now, timeoutMs),
     collectSupportSection(options.operator, dashboardSnapshotSchema, now, timeoutMs),
     collectSupportSection(options.health, healthSnapshotSchema, now, timeoutMs),
     collectSupportSection(options.engine, engineStatusSchema, now, timeoutMs),
@@ -383,6 +399,8 @@ export async function createOperatorSupportBundle(options: {
     collectSupportSection(options.automation, automationStatusSchema, now, timeoutMs),
   ]);
   const sections = {
+    connection,
+    runtimeSettings,
     operator,
     nodeAndSignerHealth,
     transactionEngine,

@@ -65,19 +65,20 @@ describe("CLI dispatch", () => {
         sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
         sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-        sidekick attach <manager>  Verify a configured manager and operator readiness
+        sidekick connection check  Verify the configured local node and signer-manager connection
         sidekick manager verify <manager>  Verify deployed source and interface compatibility
         sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
         sidekick events sync <manager>  Backfill and update canonical manager events
         sidekick pool status <manager>  Reconcile current and future pool totals
         sidekick rewards status <manager> [cycle]  Read STX reward and payout state
-        sidekick export support-bundle <manager>  Collect the comprehensive support artifact
+        sidekick export support-bundle  Collect the comprehensive support artifact
         sidekick manager trust <manager> --output <profile.json> [--observe-only]
         sidekick signer-grant prepare <manager> <auth-id> [signer-config]
         sidekick signer-grant verify <manager> <auth-id> <signer-output.json>
 
       Environment:
         STACKS_NODE_RPC_URL  Required node RPC base URL for connected commands
+        SIDEKICK_MANAGER_PRINCIPAL  Required deployed signer-manager contract principal
         SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
         STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
         STACKS_API_KEY       Optional API key; never included in output

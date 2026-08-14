@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 
 export const sidekickNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
@@ -66,6 +67,30 @@ export interface SidekickConfig {
   nodeMetricsUrl?: string;
   signerMonitoringUrl?: string;
   hiroReferenceApiUrl?: string;
+}
+
+const defaultNetworkIds: Record<SidekickNetwork, number> = {
+  mainnet: 1,
+  testnet: 0x80000005,
+  devnet: 0x80000000,
+  regtest: 0x80000000,
+};
+
+export function configuredNetworkId(
+  config: Pick<SidekickConfig, "network" | "expectedNetworkId">,
+): number {
+  return config.expectedNetworkId ?? defaultNetworkIds[config.network];
+}
+
+export function loadManagerPrincipal(env: NodeJS.ProcessEnv): string {
+  const managerPrincipal = env.SIDEKICK_MANAGER_PRINCIPAL?.trim();
+  if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required");
+  try {
+    parseContractPrincipal(managerPrincipal);
+  } catch {
+    throw new Error("SIDEKICK_MANAGER_PRINCIPAL must be a valid contract principal");
+  }
+  return managerPrincipal;
 }
 
 export function isHttpUrl(value: string): boolean {

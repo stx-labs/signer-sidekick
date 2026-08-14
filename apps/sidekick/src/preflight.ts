@@ -9,7 +9,7 @@ import type {
   StacksApiClient,
   StacksNodeClient,
 } from "./chain-clients.js";
-import type { SidekickConfig } from "./config.js";
+import { configuredNetworkId, type SidekickConfig } from "./config.js";
 import {
   type LoadedNetworkCompatibilityProfile,
   loadNetworkCompatibilityProfiles,
@@ -123,8 +123,16 @@ export function indexedApiCompatible(preflight: PreflightResult): boolean {
   });
 }
 
-function pox5VersionFrom(info: PoxInfo) {
+export function pox5VersionFrom(info: PoxInfo) {
   return info.contract_versions.find((version) => version.contract_id.endsWith(".pox-5"));
+}
+
+export function activePox5ContractId(info: PoxInfo): string | null {
+  const version = pox5VersionFrom(info);
+  if (info.contract_id.endsWith(".pox-5")) return info.contract_id;
+  return version && version.activation_burnchain_block_height <= info.current_burnchain_block_height
+    ? version.contract_id
+    : null;
 }
 
 function bitcoinBlockCount(count: number): string {
@@ -191,13 +199,6 @@ export async function runOperatorPreflight(
     compatibilityStore,
   });
 }
-
-const networkIds: Record<SidekickConfig["network"], number> = {
-  mainnet: 1,
-  testnet: 0x80000005,
-  devnet: 0x80000000,
-  regtest: 0x80000000,
-};
 
 function overallStatus(checks: readonly PreflightCheck[]): PreflightCheckStatus {
   if (checks.some((check) => check.status === "fail")) return "fail";
@@ -299,7 +300,7 @@ export function evaluatePreflight(
   const apiStatus = sources.apiStatus ?? null;
   const apiAvailable = apiNodeInfo !== null && apiStatus !== null;
   const checks: PreflightCheck[] = [];
-  const expectedNetworkId = config.expectedNetworkId ?? networkIds[config.network];
+  const expectedNetworkId = configuredNetworkId(config);
 
   checks.push({
     id: "node-network",

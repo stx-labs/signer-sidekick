@@ -1499,4 +1499,48 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 22,
+    name: "durable_deployment_identity",
+    sql: `
+      -- A Sidekick database belongs to exactly one network and signer-manager. The immutable
+      -- binding prevents a configuration change from silently merging unrelated operator history.
+      CREATE TABLE deployment_identity (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
+        network_id INTEGER NOT NULL CHECK (network_id BETWEEN 0 AND 4294967295),
+        parent_network_id INTEGER CHECK (
+          parent_network_id IS NULL OR parent_network_id BETWEEN 0 AND 4294967295
+        ),
+        manager_principal TEXT NOT NULL CHECK (length(manager_principal) BETWEEN 3 AND 500),
+        binding_source TEXT NOT NULL CHECK (binding_source IN ('new', 'legacy-evidence')),
+        bound_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        last_stacks_tip_height INTEGER NOT NULL CHECK (last_stacks_tip_height >= 0),
+        last_burn_block_height INTEGER NOT NULL CHECK (last_burn_block_height >= 0),
+        last_pox5_contract_id TEXT NOT NULL CHECK (length(last_pox5_contract_id) BETWEEN 3 AND 500)
+      ) STRICT;
+
+      CREATE TRIGGER deployment_identity_immutable_binding
+      BEFORE UPDATE ON deployment_identity
+      WHEN NEW.singleton_id IS NOT OLD.singleton_id
+        OR NEW.schema_version IS NOT OLD.schema_version
+        OR NEW.network IS NOT OLD.network
+        OR NEW.network_id IS NOT OLD.network_id
+        OR NEW.parent_network_id IS NOT OLD.parent_network_id
+        OR NEW.manager_principal IS NOT OLD.manager_principal
+        OR NEW.binding_source IS NOT OLD.binding_source
+        OR NEW.bound_at IS NOT OLD.bound_at
+      BEGIN
+        SELECT RAISE(ABORT, 'deployment identity binding is immutable');
+      END;
+
+      CREATE TRIGGER deployment_identity_immutable_delete
+      BEFORE DELETE ON deployment_identity
+      BEGIN
+        SELECT RAISE(ABORT, 'deployment identity is durable');
+      END;
+    `,
+  },
 ];

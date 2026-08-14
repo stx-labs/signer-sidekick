@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import {
   type ApiError,
   browserWalletIntentSubmissionRequestSchema,
+  type ConnectionAssessment,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
@@ -296,6 +297,12 @@ export interface TransactionEngineApiService {
 
 export interface ServerOptions {
   service?: OperatorSnapshotService;
+  connection?: {
+    current(): ConnectionAssessment | null;
+    check(force?: boolean): Promise<ConnectionAssessment>;
+  };
+  isOperational?(): boolean;
+  onConnectionAssessed?(assessment: ConnectionAssessment): Promise<void> | void;
   authToken?: string;
   authTrustedHeader?: string;
   authBasicUsername?: string;
@@ -348,6 +355,8 @@ interface SupportDiagnosticEvent {
 }
 
 const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
+  connection_required:
+    "Sidekick has not established its configured local-node and signer-manager connection. Review the connection result and recheck.",
   operator_service_unavailable:
     "The operator service is unavailable. Restart Sidekick and review the startup logs.",
   unauthorized:
@@ -878,7 +887,7 @@ function engineActor(): string {
 
 export function createServer(options: ServerOptions = {}) {
   if (
-    options.service &&
+    (options.service || options.connection) &&
     (!options.authToken ||
       options.authToken.length < 24 ||
       options.authToken === "replace-with-at-least-24-random-characters")
@@ -1131,6 +1140,9 @@ export function createServer(options: ServerOptions = {}) {
   async function runAutomaticRosterReconciliation(
     service: OperatorSnapshotService,
   ): Promise<"synchronized" | "skipped"> {
+    if (options.isOperational?.() === false) return "skipped";
+    if (options.connection && options.connection.current()?.status !== "connected")
+      return "skipped";
     if (reconciliationTask) return "skipped";
     const snapshot = await service.snapshot();
     const setup = snapshotStatus(snapshot.setup, ["ready", "attention", "blocked"]);
@@ -1178,10 +1190,32 @@ export function createServer(options: ServerOptions = {}) {
   server.addHook("onRequest", async (request, reply) => {
     requestCount += 1;
     if (!request.url.startsWith("/api/")) return;
-    if (!options.service) throw new OperatorApiError(503, "operator_service_unavailable");
     if (!operatorAuthMethod(request.headers, options)) {
       reply.header("www-authenticate", authenticationChallenges(options));
       throw new OperatorApiError(401, "unauthorized");
+    }
+    const pathname = new URL(request.url, "http://sidekick.local").pathname;
+    const safeWhileDisconnected =
+      pathname === "/api/v1/auth/session" ||
+      pathname === "/api/v1/connection" ||
+      pathname === "/api/v1/connection/recheck" ||
+      pathname === "/api/v1/support-bundle" ||
+      (pathname === "/api/v1/settings" && request.method === "GET");
+    const connection = options.connection?.current();
+    const retainedReadOnlyAccess =
+      connection?.status === "unavailable" &&
+      connection.lastSuccessful !== null &&
+      (request.method === "GET" || request.method === "HEAD");
+    const connectionBlocksRequest =
+      connection !== undefined && connection?.status !== "connected" && !retainedReadOnlyAccess;
+    if (
+      !safeWhileDisconnected &&
+      (connectionBlocksRequest || (options.isOperational?.() === false && !retainedReadOnlyAccess))
+    ) {
+      throw new OperatorApiError(503, "connection_required", true);
+    }
+    if (!options.service && !safeWhileDisconnected) {
+      throw new OperatorApiError(503, "operator_service_unavailable");
     }
   });
 
@@ -1198,7 +1232,31 @@ export function createServer(options: ServerOptions = {}) {
     authenticated: true,
     method: operatorAuthMethod(request.headers, options),
   }));
+  server.get("/api/v1/connection", async (request) => {
+    const connection = requireFeature(options.connection, "operator_service_unavailable");
+    const result = await interactive(request, async () => await connection.check());
+    await options.onConnectionAssessed?.(result);
+    return result;
+  });
+  server.post("/api/v1/connection/recheck", async (request) => {
+    const connection = requireFeature(options.connection, "operator_service_unavailable");
+    const result = await interactive(request, async () => await connection.check(true));
+    await options.onConnectionAssessed?.(result);
+    return result;
+  });
   server.get("/health/ready", async (request, reply) => {
+    if (options.connection) {
+      const connection = await interactive(request, async () => await options.connection?.check());
+      if (!connection) return reply.code(503).send({ status: "not-ready" });
+      if (connection.status !== "connected") {
+        return reply.code(503).send({
+          status: "not-ready",
+          code: connection.outcomeCode,
+          checkedAt: connection.checkedAt,
+          stale: connection.stale,
+        });
+      }
+    }
     if (!options.service) return reply.code(503).send({ status: "not-ready" });
     const service = options.service;
     try {
@@ -1319,25 +1377,38 @@ export function createServer(options: ServerOptions = {}) {
 
   server.get("/api/v1/status", async (request) => {
     const refresh = (request.query as { refresh?: unknown }).refresh === "1";
+    const service = requireFeature(options.service, "operator_service_unavailable");
     return await interactive(request, async () =>
-      options.service?.summary
-        ? options.service.summary(refresh)
-        : options.service?.snapshot(refresh),
+      service.summary ? service.summary(refresh) : service.snapshot(refresh),
     );
   });
   server.get("/api/v1/support-bundle", async (_request, reply) => {
-    const service = requireFeature(options.service, "operator_service_unavailable");
+    const service = options.service;
+    const operational = options.isOperational?.() !== false;
+    const connectionCurrent =
+      options.connection === undefined || options.connection.current()?.status === "connected";
     const application = options.supportApplication?.() ?? operatorSupportApplication();
     const bundle = await createOperatorSupportBundle({
       application,
-      operator: async () =>
-        service.supportSnapshot
-          ? service.supportSnapshot(true)
-          : service.summary
-            ? service.summary(true)
-            : service.snapshot(true),
-      ...(options.health ? { health: async () => options.health?.refresh() } : {}),
-      ...(options.engine
+      ...(options.connection ? { connection: async () => await options.connection?.check() } : {}),
+      ...(service?.settings ? { runtimeSettings: () => service.settings?.() } : {}),
+      ...(service && operational
+        ? {
+            operator: async () =>
+              service.supportSnapshot
+                ? service.supportSnapshot(connectionCurrent)
+                : service.summary
+                  ? service.summary(connectionCurrent)
+                  : service.snapshot(connectionCurrent),
+          }
+        : {}),
+      ...(options.health && operational
+        ? {
+            health: async () =>
+              connectionCurrent ? options.health?.refresh() : options.health?.current(),
+          }
+        : {}),
+      ...(options.engine && operational
         ? {
             engine: async () => options.engine?.status(),
             recentOperations: async () => options.engine?.listJobs({ cursor: null, limit: 50 }),

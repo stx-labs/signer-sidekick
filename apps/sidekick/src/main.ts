@@ -11,7 +11,8 @@ import {
   writeCliJson,
   writeCliText,
 } from "./cli-runtime.js";
-import { loadConfig, redactConfig } from "./config.js";
+import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
+import { ConnectionAssessmentService } from "./connection-assessment.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
@@ -35,6 +36,7 @@ import {
 } from "./operator-snapshot-refresh.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
+import { withInteractiveRequestDeadline } from "./request-context.js";
 import { readStxRewardStatus } from "./reward-status.js";
 import { RuntimeSettingsController } from "./runtime-settings.js";
 import { createServer } from "./server.js";
@@ -112,8 +114,7 @@ export async function executeCliCommand({
 }: CliInvocation): Promise<void> {
   if (command === "serve") {
     const config = loadConfig(env);
-    const managerPrincipal = env.SIDEKICK_MANAGER_PRINCIPAL;
-    if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required for serve");
+    const managerPrincipal = loadManagerPrincipal(env);
     const authToken = env.SIDEKICK_AUTH_TOKEN;
     if (!authToken) throw new Error("SIDEKICK_AUTH_TOKEN is required for serve");
     const authTrustedHeader = env.SIDEKICK_AUTH_TRUSTED_HEADER;
@@ -141,21 +142,38 @@ export async function executeCliCommand({
     try {
       const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
       const { config: effectiveConfig, node, api } = runtimeSettings.clients();
+      const connection = new ConnectionAssessmentService({
+        config: effectiveConfig,
+        managerPrincipal,
+        node,
+        store,
+      });
+      const initialConnection = await withInteractiveRequestDeadline(15_000, async () =>
+        connection.check(),
+      );
       const managerVerification = await verificationContext(config, env);
       const networkCompatibility = await loadNetworkCompatibilityProfiles({
         ...(config.compatibilityProfilesDirectory
           ? { directory: config.compatibilityProfilesDirectory }
           : {}),
       });
+      let engineConstructing = true;
+      const connectedRuntimeContext = () => {
+        if (!engineConstructing && connection.current()?.status !== "connected") {
+          throw new Error("The configured connection is not current; operator activity is paused");
+        }
+        return runtimeSettings.clients();
+      };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
       const engine = await createSidekickTransactionEngineRuntime({
         env,
         store,
         managerPrincipal,
         managerVerification,
-        runtimeContext: () => runtimeSettings.clients(),
+        runtimeContext: connectedRuntimeContext,
         onError: (error) => reportTransactionEngineError(error),
       });
+      engineConstructing = false;
       transactionEngine = engine;
       const service = new OperatorService({
         config: effectiveConfig,
@@ -189,9 +207,16 @@ export async function executeCliCommand({
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let snapshotRefresh: { stop(): void } | null = null;
+      let operationalStarted = false;
       const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker();
+      let startOperationalRuntime: () => void = () => undefined;
       const server = createServer({
         service,
+        connection,
+        isOperational: () => operationalStarted,
+        onConnectionAssessed: (result) => {
+          if (result.status === "connected") startOperationalRuntime();
+        },
         getRateLimitSettings: () => {
           const current = runtimeSettings.effectiveConfig();
           return {
@@ -216,6 +241,45 @@ export async function executeCliCommand({
           { error: error instanceof Error ? error.message : String(error) },
           "Transaction engine failed closed; operator reads remain available",
         );
+      startOperationalRuntime = () => {
+        if (operationalStarted) return;
+        operationalStarted = true;
+        health.start();
+        engine.start();
+        snapshotRefresh = startSnapshotRefreshLoop(
+          {
+            refreshSnapshot: async () => {
+              if (connection.current()?.status !== "connected") {
+                throw new Error("The configured connection is not current");
+              }
+              return await service.refreshSnapshot();
+            },
+          },
+          server.log,
+          {
+            metrics: snapshotRefreshMetrics,
+          },
+        );
+        server.log.info("Connection established; operator background services are enabled");
+        void engine
+          .recoverActive()
+          .then((results) =>
+            server.log.info(
+              { recoveredJobs: results.length },
+              "Transaction engine startup recovery completed",
+            ),
+          )
+          .catch((error: unknown) => reportTransactionEngineError(error));
+        void service
+          .observeManagerTrustState()
+          .then(() => server.log.info("Initial manager observation completed"))
+          .catch((error: unknown) =>
+            server.log.warn(
+              { error: error instanceof Error ? error.message : String(error) },
+              "Initial manager observation failed; the next synchronization or snapshot will retry",
+            ),
+          );
+      };
       for (const issue of managerVerification.installedProfiles.issues) {
         server.log.warn(
           { code: issue.code, fileName: issue.fileName },
@@ -239,30 +303,14 @@ export async function executeCliCommand({
       });
       await server.listen({ host, port });
       serverOwnsStore = true;
-      health.start();
-      engine.start();
-      snapshotRefresh = startSnapshotRefreshLoop(service, server.log, {
-        metrics: snapshotRefreshMetrics,
-      });
-      server.log.info("HTTP control plane is listening; initial manager observation is running");
-      void engine
-        .recoverActive()
-        .then((results) =>
-          server.log.info(
-            { recoveredJobs: results.length },
-            "Transaction engine startup recovery completed",
-          ),
-        )
-        .catch((error: unknown) => reportTransactionEngineError(error));
-      void service
-        .observeManagerTrustState()
-        .then(() => server.log.info("Initial manager observation completed"))
-        .catch((error: unknown) =>
-          server.log.warn(
-            { error: error instanceof Error ? error.message : String(error) },
-            "Initial manager observation failed; the next synchronization or snapshot will retry",
-          ),
-        );
+      server.log.info(
+        {
+          connectionStatus: initialConnection.status,
+          connectionOutcomeCode: initialConnection.outcomeCode,
+        },
+        "HTTP control plane is listening",
+      );
+      if (initialConnection.status === "connected") startOperationalRuntime();
     } finally {
       if (!serverOwnsStore) {
         try {
@@ -331,23 +379,25 @@ export async function executeCliCommand({
     const result = await runOperatorPreflight(config, node, api);
     writeCliJson(output, { config: redactConfig(config), result });
     if (result.status === "fail") output.setExitCode(2);
-  } else if (command === "attach") {
-    const [managerPrincipal] = arguments_;
-    if (!managerPrincipal) throw new Error("Usage: sidekick attach <manager-contract-principal>");
-    const { config, preflight, manager, registration, readiness } = await operatorContext(
-      managerPrincipal,
-      env,
+  } else if (command === "connection" && arguments_[0] === "check") {
+    const config = loadConfig(env);
+    const managerPrincipal = loadManagerPrincipal(env);
+    const { node } = clientsFromConfig(config);
+    await withStore(
+      () => openSidekickStore(config.databasePath),
+      async ({ store }) => {
+        const connection = await withInteractiveRequestDeadline(15_000, async () =>
+          new ConnectionAssessmentService({
+            config,
+            managerPrincipal,
+            node,
+            store,
+          }).check(true),
+        );
+        writeCliJson(output, { config: redactConfig(config), connection });
+        if (connection.status !== "connected") output.setExitCode(2);
+      },
     );
-    writeCliJson(output, {
-      config: redactConfig(config),
-      preflight,
-      manager,
-      registration,
-      readiness,
-    });
-    if (preflight.status === "fail" || !manager.attachAllowed || readiness.status === "blocked") {
-      output.setExitCode(2);
-    }
   } else if (command === "manager" && arguments_[0] === "verify") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick manager verify <manager-principal>");
@@ -630,16 +680,34 @@ export async function executeCliCommand({
       },
     );
   } else if (command === "export" && arguments_[0] === "support-bundle") {
-    const [, managerPrincipal] = arguments_;
-    if (!managerPrincipal) {
-      throw new Error("Usage: sidekick export support-bundle <manager-principal>");
-    }
     const config = loadConfig(env);
+    const managerPrincipal = loadManagerPrincipal(env);
     await withStore(
       () => openSidekickStore(config.databasePath),
       async ({ store }) => {
         const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
         const { config: effectiveConfig, node, api } = runtimeSettings.clients();
+        const connection = new ConnectionAssessmentService({
+          config: effectiveConfig,
+          managerPrincipal,
+          node,
+          store,
+        });
+        const connectionResult = await withInteractiveRequestDeadline(15_000, async () =>
+          connection.check(true),
+        );
+        if (connectionResult.status !== "connected") {
+          writeCliJson(
+            output,
+            await createOperatorSupportBundle({
+              application: operatorSupportApplication(env),
+              connection: () => connectionResult,
+              runtimeSettings: () => runtimeSettings.publicSettings(),
+              database: () => store.databaseStatus(),
+            }),
+          );
+          return;
+        }
         const managerVerification = await verificationContext(config, env);
         const engine = await createSidekickTransactionEngineRuntime({
           env,
@@ -664,6 +732,8 @@ export async function executeCliCommand({
           });
           const bundle = await createOperatorSupportBundle({
             application: operatorSupportApplication(env),
+            connection: () => connectionResult,
+            runtimeSettings: () => runtimeSettings.publicSettings(),
             operator: async () => service.supportSnapshot(true),
             health: async () => health.refresh(),
             engine: async () => engine.api.status(),
@@ -678,7 +748,7 @@ export async function executeCliCommand({
     );
   } else if (command === "manager" && arguments_[0] === "render") {
     throw new Error(
-      "Signer-manager deployment moved to https://stx.fan/zero_to/signing/. Configure SIDEKICK_MANAGER_PRINCIPAL after setup, then run sidekick attach",
+      "Signer-manager deployment moved to https://stx.fan/zero_to/signing/. Configure SIDEKICK_MANAGER_PRINCIPAL after setup, then run sidekick connection check",
     );
   } else if (command === "signer-grant" && arguments_[0] === "prepare") {
     const [, managerPrincipal, authId, signerConfigPath] = arguments_;
@@ -749,19 +819,20 @@ Usage:
   sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
   sidekick database backup <output.sqlite>  Create and integrity-check an online backup
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-  sidekick attach <manager>  Verify a configured manager and operator readiness
+  sidekick connection check  Verify the configured local node and signer-manager connection
   sidekick manager verify <manager>  Verify deployed source and interface compatibility
   sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
   sidekick events sync <manager>  Backfill and update canonical manager events
   sidekick pool status <manager>  Reconcile current and future pool totals
   sidekick rewards status <manager> [cycle]  Read STX reward and payout state
-  sidekick export support-bundle <manager>  Collect the comprehensive support artifact
+  sidekick export support-bundle  Collect the comprehensive support artifact
   sidekick manager trust <manager> --output <profile.json> [--observe-only]
   sidekick signer-grant prepare <manager> <auth-id> [signer-config]
   sidekick signer-grant verify <manager> <auth-id> <signer-output.json>
 
 Environment:
   STACKS_NODE_RPC_URL  Required node RPC base URL for connected commands
+  SIDEKICK_MANAGER_PRINCIPAL  Required deployed signer-manager contract principal
   SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
   STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output

@@ -14,6 +14,8 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import {
+  type ConnectionAssessment,
+  connectionAssessmentSchema,
   type DashboardSnapshot,
   type RateLimitInfo,
   type ReconciliationOperation,
@@ -26,6 +28,8 @@ import "../../../design/tokens/tokens.css";
 import "./base.css";
 import "./styles.css";
 import { ApiRequestError, AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
+import { ConnectionPage } from "./connection-page.js";
+import { connectionNeedsRecoveryPage } from "./connection-presentation.js";
 import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
 import { Manager } from "./features/manager/manager-page.js";
 import { Operations } from "./features/operations/operations-page.js";
@@ -141,6 +145,7 @@ function StacksGlyph() {
 const STATUS_POLL_MS = 15_000;
 const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
+const CONNECTION_RECHECK_MS = 60_000;
 
 function rateLimitFromError(cause: unknown): RateLimitInfo | null {
   return cause instanceof ApiRequestError ? (cause.body?.rateLimit ?? null) : null;
@@ -240,7 +245,12 @@ function App() {
   const settingsThemeApplied = useRef(false);
   const activeStatusRequests = useRef(0);
   const statusRequestGeneration = useRef(0);
+  const connectionRequestGeneration = useRef(0);
+  const connectionRef = useRef<ConnectionAssessment | null>(null);
   const syncController = useRef<AbortController | null>(null);
+  const [connection, setConnection] = useState<ConnectionAssessment | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [checkingConnection, setCheckingConnection] = useState(false);
   const [data, setData] = useState<Snapshot | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusRateLimit, setStatusRateLimit] = useState<RateLimitInfo | null>(null);
@@ -281,15 +291,75 @@ function App() {
       });
     return () => controller.abort();
   }, [token]);
+  const loadConnection = useCallback(
+    async (force = false) => {
+      if (!authenticated) return false;
+      const generation = ++connectionRequestGeneration.current;
+      setCheckingConnection(true);
+      try {
+        const result = await apiJson(
+          token,
+          force ? "/api/v1/connection/recheck" : "/api/v1/connection",
+          connectionAssessmentSchema,
+          force ? { method: "POST" } : {},
+        );
+        if (generation !== connectionRequestGeneration.current) return false;
+        const hadProvedConnection = Boolean(
+          connectionRef.current?.status === "connected" || connectionRef.current?.lastSuccessful,
+        );
+        connectionRef.current = result;
+        setConnection(result);
+        setConnectionError(null);
+        if (force && !hadProvedConnection && result.status === "connected") {
+          location.hash = dashboardHash("overview");
+        }
+        return result.status === "connected";
+      } catch (cause) {
+        if (generation !== connectionRequestGeneration.current) return false;
+        setConnectionError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+        return false;
+      } finally {
+        if (generation === connectionRequestGeneration.current) setCheckingConnection(false);
+      }
+    },
+    [authenticated, token],
+  );
+  useEffect(() => {
+    if (!authenticated) return;
+    void loadConnection();
+  }, [authenticated, loadConnection]);
+  useEffect(() => {
+    if (!authenticated) return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") void loadConnection(true);
+    };
+    const interval = window.setInterval(refreshIfVisible, CONNECTION_RECHECK_MS);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [authenticated, loadConnection]);
+  const connectionStatus = connection?.status ?? null;
+  const connectionUnavailableAfterSuccess = Boolean(
+    connection?.status === "unavailable" && connection.lastSuccessful,
+  );
+  const connectionAllowsDashboard =
+    connection?.status === "connected" || connectionUnavailableAfterSuccess;
   const load = useCallback(
     async (background = false, force = false) => {
-      if (!authenticated || (background && activeStatusRequests.current > 0)) return false;
+      if (
+        !authenticated ||
+        !connectionAllowsDashboard ||
+        (background && activeStatusRequests.current > 0)
+      )
+        return false;
       const requestGeneration = ++statusRequestGeneration.current;
       activeStatusRequests.current += 1;
       try {
         const snapshot = await apiJson(
           token,
-          force ? "/api/v1/status?refresh=1" : "/api/v1/status",
+          force && connectionStatus === "connected" ? "/api/v1/status?refresh=1" : "/api/v1/status",
           statusResponseSchema,
         );
         if (requestGeneration !== statusRequestGeneration.current) return false;
@@ -319,7 +389,7 @@ function App() {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
       }
     },
-    [authenticated, token],
+    [authenticated, connectionAllowsDashboard, connectionStatus, token],
   );
   useEffect(() => {
     void load();
@@ -329,6 +399,11 @@ function App() {
       statusRequestGeneration.current += 1;
       syncController.current?.abort();
       setLoginError("The operator credential was rejected. Check it and try again.");
+      connectionRequestGeneration.current += 1;
+      connectionRef.current = null;
+      setConnection(null);
+      setConnectionError(null);
+      setCheckingConnection(false);
       setData(null);
       setStatusError(null);
       setStatusRateLimit(null);
@@ -390,6 +465,11 @@ function App() {
     syncController.current?.abort();
     sessionStorage.setItem("sidekick-token", value);
     setLoginError(null);
+    connectionRequestGeneration.current += 1;
+    connectionRef.current = null;
+    setConnection(null);
+    setConnectionError(null);
+    setCheckingConnection(false);
     setData(null);
     setStatusError(null);
     setStatusRateLimit(null);
@@ -441,6 +521,12 @@ function App() {
   );
   const sync = async () => {
     if (syncing) return;
+    if (connectionRef.current?.status !== "connected") {
+      setSyncError(
+        "Chain data sync is paused until Sidekick can recheck the configured local node.",
+      );
+      return;
+    }
     syncController.current?.abort();
     const controller = new AbortController();
     syncController.current = controller;
@@ -474,7 +560,7 @@ function App() {
     }
   };
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || connectionStatus !== "connected") return;
     const controller = new AbortController();
     syncController.current?.abort();
     syncController.current = controller;
@@ -511,7 +597,7 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [authenticated, monitorSync, token]);
+  }, [authenticated, connectionStatus, monitorSync, token]);
   const refreshOperatorState = useCallback(async () => {
     const refreshed = await load();
     if (!refreshed) throw new Error("The latest operator state is not available yet.");
@@ -530,7 +616,8 @@ function App() {
   const ageMs = Number.isFinite(lastStatusAt) ? Math.max(0, now - lastStatusAt) : null;
   const stale = Boolean(
     data &&
-      (data.freshness?.status === "stale" ||
+      (connectionUnavailableAfterSuccess ||
+        data.freshness?.status === "stale" ||
         statusError ||
         ageMs === null ||
         ageMs > STATUS_STALE_AFTER_MS),
@@ -620,6 +707,19 @@ function App() {
       />
     );
   }
+  if (connectionNeedsRecoveryPage(connection)) {
+    return (
+      <ConnectionPage
+        assessment={connection}
+        checking={checkingConnection}
+        error={connectionError}
+        token={token}
+        onRecheck={async () => {
+          await loadConnection(true);
+        }}
+      />
+    );
+  }
   return (
     <div className="app" data-network={data?.network ?? "mainnet"}>
       <aside className="sidebar">
@@ -676,46 +776,58 @@ function App() {
           </div>
         </div>
         <div
-          className={`freshness ${stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
+          className={`freshness ${connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
         >
           <span className="dot" />
           <span>
-            {!data
-              ? "Connecting"
-              : stale
-                ? rateLimited
-                  ? `${rateLimitHeading(rateLimit)} — retrying automatically`
-                  : data.freshness?.reason === "refreshing"
-                    ? "Refreshing data"
-                    : "Data may be stale"
-                : data.preflight.status === "fail"
-                  ? "Chain sources need attention"
-                  : indexedDataDelayed
-                    ? "Local node live · Indexed data delayed"
-                    : "Live"}
+            {connectionUnavailableAfterSuccess
+              ? "Local node unavailable · Actions paused"
+              : !data
+                ? "Connecting"
+                : stale
+                  ? rateLimited
+                    ? `${rateLimitHeading(rateLimit)} — retrying automatically`
+                    : data.freshness?.reason === "refreshing"
+                      ? "Refreshing data"
+                      : "Data may be stale"
+                  : data.preflight.status === "fail"
+                    ? "Chain sources need attention"
+                    : indexedDataDelayed
+                      ? "Local node live · Indexed data delayed"
+                      : "Live"}
           </span>
           <span className="sep">·</span>
           <span className="mono">
-            {data
-              ? data.preflight.api.available === false
-                ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
-                : !indexedApiChecksPass
-                  ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
-                  : data.preflight.api.position === "behind"
-                    ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                    : data.preflight.api.position === "ahead"
-                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                      : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
-              : "loading status"}
+            {connectionUnavailableAfterSuccess && connection?.lastSuccessful
+              ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
+              : data
+                ? data.preflight.api.available === false
+                  ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
+                  : !indexedApiChecksPass
+                    ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
+                    : data.preflight.api.position === "behind"
+                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                      : data.preflight.api.position === "ahead"
+                        ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                        : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+                : "loading status"}
           </span>
-          {(stale || indexedDataDelayed) && !rateLimited ? (
+          {(connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited ? (
             <button
               type="button"
               className="btn btn-tertiary sm"
-              disabled={refreshingStatus}
-              onClick={() => void refreshStatus()}
+              disabled={connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus}
+              onClick={() =>
+                void (connectionUnavailableAfterSuccess ? loadConnection(true) : refreshStatus())
+              }
             >
-              {refreshingStatus ? "Refreshing…" : "Refresh"}
+              {connectionUnavailableAfterSuccess
+                ? checkingConnection
+                  ? "Checking…"
+                  : "Recheck node"
+                : refreshingStatus
+                  ? "Refreshing…"
+                  : "Refresh"}
             </button>
           ) : null}
           {rateLimited && isHiroRateLimit(rateLimit) ? (
@@ -737,6 +849,18 @@ function App() {
           </span>
         </div>
         <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
+          {connectionUnavailableAfterSuccess ? (
+            <div className="callout callout-caution app-status-banner" role="status">
+              <WarningCircle className="ic" />
+              <div className="body">
+                <strong>Showing retained operator data</strong>
+                <span>
+                  Sidekick cannot currently reach the configured local node. Read-only evidence
+                  remains available, but operations requiring current chain evidence are paused.
+                </span>
+              </div>
+            </div>
+          ) : null}
           {syncOperation?.status === "running" ? (
             <div
               className="callout callout-info app-status-banner"

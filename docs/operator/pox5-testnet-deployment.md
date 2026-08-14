@@ -38,10 +38,9 @@ Leave `SIDEKICK_NETWORK_ID` unset; the built-in profile supplies `0x80000005`. R
 connectivity check, start Sidekick, and verify the configured manager:
 
 ```sh
-docker compose run --rm --no-deps sidekick doctor connectivity
+docker compose run --rm --no-deps sidekick connection check
 docker compose up -d
-docker compose exec -T sidekick node /app/dist/main.js \
-  attach ST_REPLACE_WITH_ADMIN.signer-manager
+docker compose exec -T sidekick node /app/dist/main.js connection check
 ```
 
 The result should show a compatible manager, the expected registration, and current operator

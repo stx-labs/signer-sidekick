@@ -1,5 +1,118 @@
 import { z } from "zod";
 
+export const connectionOutcomeCodeSchema = z.enum([
+  "node-unreachable",
+  "node-network-mismatch",
+  "pox5-unavailable",
+  "principal-network-mismatch",
+  "manager-not-deployed",
+  "manager-trait-mismatch",
+  "deployment-identity-mismatch",
+]);
+export type ConnectionOutcomeCode = z.infer<typeof connectionOutcomeCodeSchema>;
+
+const connectionNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
+const connectionPrincipalSchema = z.string().min(3).max(500);
+const networkIdSchema = z.number().int().nonnegative().max(0xffff_ffff);
+
+export const deploymentIdentityBindingSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    network: connectionNetworkSchema,
+    networkId: networkIdSchema,
+    parentNetworkId: networkIdSchema.nullable(),
+    managerPrincipal: connectionPrincipalSchema,
+    bindingSource: z.enum(["new", "legacy-evidence"]),
+    boundAt: z.iso.datetime(),
+    lastVerifiedAt: z.iso.datetime(),
+    lastStacksTipHeight: z.number().int().nonnegative(),
+    lastBurnBlockHeight: z.number().int().nonnegative(),
+    lastPox5ContractId: connectionPrincipalSchema,
+  })
+  .strict();
+export type DeploymentIdentityBinding = z.infer<typeof deploymentIdentityBindingSchema>;
+
+export const connectionAssessmentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["connected", "blocked", "unavailable"]),
+    outcomeCode: connectionOutcomeCodeSchema.nullable(),
+    checkedAt: z.iso.datetime(),
+    stale: z.boolean(),
+    configured: z
+      .object({
+        network: connectionNetworkSchema,
+        networkId: networkIdSchema,
+        nodeRpcUrl: z.string().min(1),
+        managerPrincipal: connectionPrincipalSchema,
+      })
+      .strict(),
+    observed: z
+      .object({
+        networkId: networkIdSchema,
+        parentNetworkId: networkIdSchema.nullable(),
+        stacksTipHeight: z.number().int().nonnegative(),
+        burnBlockHeight: z.number().int().nonnegative(),
+        pox5ContractId: connectionPrincipalSchema.nullable(),
+        manager: z
+          .object({
+            deployed: z.boolean(),
+            traitCompatible: z.boolean(),
+            missingRequirements: z.array(z.string().min(1)).max(32),
+            publishHeight: z.number().int().nonnegative().nullable(),
+            clarityVersion: z.string().nullable(),
+            epoch: z.string().nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
+    lastSuccessful: deploymentIdentityBindingSchema.nullable(),
+    deploymentIdentity: z
+      .object({
+        status: z.enum(["unbound", "bound", "mismatch"]),
+        stored: deploymentIdentityBindingSchema.nullable(),
+        reason: z.string().nullable(),
+      })
+      .strict(),
+    checks: z
+      .array(
+        z
+          .object({
+            id: z.enum([
+              "deployment-identity",
+              "node-network",
+              "pox5",
+              "principal-network",
+              "manager-trait",
+            ]),
+            status: z.enum(["pass", "fail", "unavailable", "not-checked"]),
+            message: z.string().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .length(5),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.status === "connected") !== (value.outcomeCode === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomeCode"],
+        message: "Only a connected assessment may omit its outcome code",
+      });
+    }
+    if (value.status === "connected" && value.stale) {
+      context.addIssue({
+        code: "custom",
+        path: ["stale"],
+        message: "A connected assessment must contain current evidence",
+      });
+    }
+  });
+export type ConnectionAssessment = z.infer<typeof connectionAssessmentSchema>;
+
 export const rateLimitInfoSchema = z
   .object({
     source: z.enum(["hiro-api", "stacks-api", "node"]),
