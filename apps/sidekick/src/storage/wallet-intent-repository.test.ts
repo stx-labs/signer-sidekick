@@ -93,6 +93,26 @@ describe("WalletIntentRepository", () => {
     });
   });
 
+  it("lists durable intents for Activity in stable newest-first order", async () => {
+    const store = await memoryStore();
+    const older = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000001",
+        createdAt: "2026-07-18T11:00:00.000Z",
+        expiresAt: "2026-07-18T11:10:00.000Z",
+      }),
+    ).intent;
+    const newer = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000002",
+        scope: "fresh:SP000000000000000000002Q6VF78.other-manager",
+      }),
+    ).intent;
+
+    expect(store.walletIntents.listForActivity(1).map(({ id }) => id)).toEqual([newer.id]);
+    expect(store.walletIntents.listForActivity().map(({ id }) => id)).toEqual([newer.id, older.id]);
+  });
+
   it("migrates, survives restart, and returns observations oldest-to-newest", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sidekick-wallet-intents-"));
     directories.push(directory);

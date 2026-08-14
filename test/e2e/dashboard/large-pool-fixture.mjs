@@ -684,7 +684,7 @@ export function responseFor(url) {
   if (request.pathname === "/api/v1/rewards/history") {
     return { total: cycleHistory.length, offset, limit, items: page(cycleHistory, offset, limit) };
   }
-  if (request.pathname === "/api/v1/activity") {
+  if (request.pathname === "/api/v1/rewards/activity") {
     const claimOffset = Number(request.searchParams.get("claimOffset") ?? 0);
     const claimLimit = Number(request.searchParams.get("claimLimit") ?? 50);
     const withdrawalOffset = Number(request.searchParams.get("withdrawalOffset") ?? 0);

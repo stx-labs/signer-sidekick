@@ -555,6 +555,18 @@ describe("Sidekick SQLite store", () => {
       eventCount: 2,
       latestBlockHeight: 8_600_001,
     });
+    const activityEvents = store.listManagerActivityChainEvents(1, manager);
+    expect(activityEvents).toHaveLength(2);
+    expect(activityEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ txId, decodedSchemaVersion: 1, canonical: true }),
+      ]),
+    );
+    for (const event of activityEvents) {
+      expect(event).not.toHaveProperty("rawPayload");
+      expect(event).not.toHaveProperty("blockHash");
+      expect(event).not.toHaveProperty("sourceId");
+    }
   });
 
   it("orders canonical administrator changes by transaction and event index", async () => {

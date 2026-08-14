@@ -1,9 +1,9 @@
 import { Coins, Percent } from "@phosphor-icons/react";
 import {
-  activityResponseSchema,
   type DashboardSnapshot,
   type RewardCycleSummary,
   rewardHistoryResponseSchema,
+  rewardsActivityResponseSchema,
   rewardsPageResponseSchema,
   stakerClaimsResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -239,7 +239,7 @@ export function Rewards({
     if (claimCycle) query.set("rewardCycle", claimCycle);
     setActivityLoading(true);
     setActivityError(null);
-    void apiJson(token, `/api/v1/activity?${query}`, activityResponseSchema, {
+    void apiJson(token, `/api/v1/rewards/activity?${query}`, rewardsActivityResponseSchema, {
       signal: controller.signal,
     })
       .then((result) => {

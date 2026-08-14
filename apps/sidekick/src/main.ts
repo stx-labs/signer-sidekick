@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { ActivityProjectionService } from "./activity-projection.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import {
@@ -265,8 +266,34 @@ export async function executeCliCommand({
       const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker();
       let operationalStartPromise: Promise<void> | null = null;
       let startOperationalRuntime: () => Promise<void> = async () => undefined;
+      const currentObserverStatus = () =>
+        observerRuntimeStatus(
+          observerConfig,
+          store.observerInboxStatus(),
+          observerListening,
+          observerReconciliation?.status() ?? null,
+          observerGapMonitor?.status() ?? null,
+        );
+      const chainId =
+        effectiveConfig.expectedNetworkId ??
+        (effectiveConfig.network === "mainnet"
+          ? 1
+          : effectiveConfig.network === "testnet"
+            ? 0x80000005
+            : 0x80000000);
+      const activityProjection = new ActivityProjectionService({
+        store,
+        chainId,
+        managerPrincipal,
+        sourceId: () => {
+          const current = runtimeSettings.effectiveConfig();
+          return createChainSourceId(current.network, current.apiUrl);
+        },
+        observerStatus: currentObserverStatus,
+      });
       const server = createServer({
         service,
+        activityProjection,
         connection,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
@@ -285,14 +312,7 @@ export async function executeCliCommand({
         engine: engine.api,
         supportApplication: () => operatorSupportApplication(env),
         databaseStatus: () => store.databaseStatus(),
-        observerStatus: () =>
-          observerRuntimeStatus(
-            observerConfig,
-            store.observerInboxStatus(),
-            observerListening,
-            observerReconciliation?.status() ?? null,
-            observerGapMonitor?.status() ?? null,
-          ),
+        observerStatus: currentObserverStatus,
         snapshotRefreshMetrics,
         authToken,
         ...(authTrustedHeader ? { authTrustedHeader } : {}),

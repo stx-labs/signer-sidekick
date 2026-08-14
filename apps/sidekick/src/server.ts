@@ -43,6 +43,7 @@ import {
 import { STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { ActivityProjectionError, type ActivityQuery } from "./activity-projection.js";
 import {
   ChainAnchorError,
   type RateLimitApiSource,
@@ -170,6 +171,11 @@ interface OperatorSnapshotService {
   stakerClaims?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
+}
+
+interface ActivityProjectionApiService {
+  page(query: ActivityQuery, readOnly?: boolean): unknown;
+  detail(activityId: string, readOnly?: boolean): unknown | null;
 }
 
 function observerAlerts(status: ObserverRuntimeStatus | undefined): DashboardAlert[] {
@@ -380,6 +386,7 @@ async function listOverviewEngineJobs(
 
 export interface ServerOptions {
   service?: OperatorSnapshotService;
+  activityProjection?: ActivityProjectionApiService;
   connection?: {
     current(): ConnectionAssessment | null;
     check(force?: boolean): Promise<ConnectionAssessment>;
@@ -453,6 +460,14 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "Activity page limits must be positive whole numbers. Correct the request and retry.",
   invalid_withdrawal_state: "Choose a pending, settled, or reclaimed withdrawal state.",
   invalid_query: "The activity query is invalid. Correct its filters and retry.",
+  invalid_activity_query: "The Activity filters are invalid. Correct them and retry.",
+  invalid_activity_cursor: "The Activity page changed or its cursor is invalid. Refresh Activity.",
+  invalid_activity_id: "The Activity identifier is invalid. Refresh Activity and retry.",
+  activity_not_found: "This Activity item no longer exists. Refresh Activity.",
+  activity_projection_unavailable:
+    "Activity is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
+  activity_authority_limit_exceeded:
+    "Activity cannot safely project the complete operator record. Contact support before retrying.",
   signer_grant_sources_incompatible:
     "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
   signer_grant_unavailable:
@@ -949,6 +964,32 @@ function parsePagination(
   }
 }
 
+function parseActivityQuery(requestUrl: string): ActivityQuery {
+  try {
+    const search = new URL(requestUrl, "http://sidekick.local").searchParams;
+    const status = z
+      .enum(["all", "action-required", "needs-attention", "in-progress", "resolved"])
+      .parse(search.get("status") ?? "all");
+    const type = z
+      .enum(["all", "actions", "chain-events", "configuration"])
+      .parse(search.get("type") ?? "all");
+    const domain = z
+      .enum(["all", "manager", "pool", "rewards", "node", "signer", "network", "sidekick"])
+      .parse(search.get("domain") ?? "all");
+    const time = z.enum(["24h", "7d", "30d", "all"]).parse(search.get("time") ?? "30d");
+    const searchText = search.get("search");
+    const cursor = search.get("cursor");
+    if (searchText !== null && (searchText.length < 1 || searchText.length > 500))
+      throw new Error();
+    if (cursor !== null && (cursor.length < 1 || cursor.length > 2_000)) throw new Error();
+    const limit = integerQuery(search, "limit", 50, 100);
+    if (limit < 1) throw new Error();
+    return { status, type, domain, time, search: searchText, cursor, limit };
+  } catch {
+    throw new OperatorApiError(400, "invalid_activity_query");
+  }
+}
+
 function parseSort<Key extends string>(
   requestUrl: string,
   keys: readonly Key[],
@@ -971,7 +1012,7 @@ function engineActor(): string {
 
 export function createServer(options: ServerOptions = {}) {
   if (
-    (options.service || options.connection) &&
+    (options.service || options.connection || options.activityProjection) &&
     (!options.authToken ||
       options.authToken.length < 24 ||
       options.authToken === "replace-with-at-least-24-random-characters")
@@ -1285,6 +1326,8 @@ export function createServer(options: ServerOptions = {}) {
       pathname === "/api/v1/connection" ||
       pathname === "/api/v1/connection/recheck" ||
       pathname === "/api/v1/support-bundle" ||
+      ((pathname === "/api/v1/activity" || pathname.startsWith("/api/v1/activity/")) &&
+        (request.method === "GET" || request.method === "HEAD")) ||
       (pathname === "/api/v1/settings" &&
         (request.method === "GET" ||
           (request.method === "PUT" && connection?.status === "unavailable")));
@@ -1907,7 +1950,7 @@ export function createServer(options: ServerOptions = {}) {
       : snapshot;
     return { generatedAt: withObserver?.generatedAt, alerts: withObserver?.alerts ?? [] };
   });
-  server.get("/api/v1/activity", async (request) => {
+  server.get("/api/v1/rewards/activity", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const activity = requireFeature(service.activity, "paginated_activity_unavailable");
     let activityOptions: ActivityOptions;
@@ -1949,6 +1992,33 @@ export function createServer(options: ServerOptions = {}) {
       throw new OperatorApiError(400, "invalid_query");
     }
     return await interactive(request, async () => activity.call(service, activityOptions));
+  });
+  server.get("/api/v1/activity", async (request) => {
+    const activity = requireFeature(options.activityProjection, "activity_projection_unavailable");
+    const readOnly =
+      options.connection !== undefined && options.connection.current()?.status !== "connected";
+    try {
+      return activity.page(parseActivityQuery(request.url), readOnly);
+    } catch (error) {
+      if (error instanceof ActivityProjectionError) {
+        throw new OperatorApiError(
+          error.code === "invalid_activity_cursor" ? 400 : 503,
+          error.code,
+          error.code !== "invalid_activity_cursor",
+        );
+      }
+      throw error;
+    }
+  });
+  server.get("/api/v1/activity/:activityId", async (request) => {
+    const activity = requireFeature(options.activityProjection, "activity_projection_unavailable");
+    const params = z.object({ activityId: z.string().min(1).max(500) }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_activity_id");
+    const readOnly =
+      options.connection !== undefined && options.connection.current()?.status !== "connected";
+    const detail = activity.detail(params.data.activityId, readOnly);
+    if (detail === null) throw new OperatorApiError(404, "activity_not_found");
+    return detail;
   });
   server.get("/api/v1/settings", async (_request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");

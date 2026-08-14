@@ -1,8 +1,10 @@
 import {
+  activityResponseSchema,
   type ConnectionAssessment,
   overviewPageSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
@@ -1895,7 +1897,7 @@ describe("local API", () => {
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/activity?claimOffset=150&claimLimit=50&claimSort=amount&claimDirection=desc&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalSort=max-fee&withdrawalDirection=asc&withdrawalState=pending",
+      url: "/api/v1/rewards/activity?claimOffset=150&claimLimit=50&claimSort=amount&claimDirection=desc&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalSort=max-fee&withdrawalDirection=asc&withdrawalState=pending",
       headers,
     });
     expect(service.activity).toHaveBeenCalledWith({
@@ -1933,7 +1935,7 @@ describe("local API", () => {
       (
         await server.inject({
           method: "GET",
-          url: "/api/v1/activity?withdrawalState=unknown",
+          url: "/api/v1/rewards/activity?withdrawalState=unknown",
           headers,
         })
       ).statusCode,
@@ -1942,11 +1944,131 @@ describe("local API", () => {
       (
         await server.inject({
           method: "GET",
-          url: "/api/v1/activity?rewardCycle=abc",
+          url: "/api/v1/rewards/activity?rewardCycle=abc",
           headers,
         })
       ).statusCode,
     ).toBe(400);
+  });
+
+  it("serves the typed Activity projection in read-only connection mode", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const generatedAt = "2026-08-14T12:00:00.000Z";
+    const projected = activityResponseSchema.parse({
+      schemaVersion: 1,
+      generatedAt,
+      active: [],
+      items: [],
+      nextCursor: null,
+      coverage: [
+        {
+          source: "wallet-intents",
+          status: "current",
+          observedAt: generatedAt,
+          anchor: null,
+          reason: null,
+        },
+      ],
+    });
+    const activityProjection = {
+      page: vi.fn(() => projected),
+      detail: vi.fn(() => ({ canonical: true })),
+    };
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: generatedAt,
+      stale: true,
+      lastSuccessful: null,
+    } as ConnectionAssessment;
+    const server = createServer({
+      activityProjection,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const page = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity?status=needs-attention&type=actions&domain=rewards&time=7d&search=claim&limit=20",
+      headers,
+    });
+    expect(page.statusCode).toBe(200);
+    expect(activityResponseSchema.parse(page.json())).toEqual(projected);
+    expect(activityProjection.page).toHaveBeenCalledWith(
+      {
+        status: "needs-attention",
+        type: "actions",
+        domain: "rewards",
+        time: "7d",
+        search: "claim",
+        cursor: null,
+        limit: 20,
+      },
+      true,
+    );
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/api/v1/activity/${encodeURIComponent("chain-tx:1:0xabc")}`,
+      headers,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(activityProjection.detail).toHaveBeenCalledWith("chain-tx:1:0xabc", true);
+  });
+
+  it("maps invalid Activity input and bounded-authority failures without leaking internals", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const detail = vi.fn(() => null);
+    const page = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ActivityProjectionError("invalid_activity_cursor", "secret cursor body");
+      })
+      .mockImplementationOnce(() => {
+        throw new ActivityProjectionError(
+          "activity_authority_limit_exceeded",
+          "secret database cardinality",
+        );
+      });
+    const server = createServer({
+      activityProjection: { page, detail },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const badQuery = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity?status=unknown",
+      headers,
+    });
+    expect(badQuery.statusCode).toBe(400);
+    expect(badQuery.json()).toMatchObject({ error: "invalid_activity_query", retryable: false });
+
+    const badCursor = await server.inject({ method: "GET", url: "/api/v1/activity", headers });
+    expect(badCursor.statusCode).toBe(400);
+    expect(badCursor.json()).toMatchObject({ error: "invalid_activity_cursor", retryable: false });
+
+    const bounded = await server.inject({ method: "GET", url: "/api/v1/activity", headers });
+    expect(bounded.statusCode).toBe(503);
+    expect(bounded.json()).toMatchObject({
+      error: "activity_authority_limit_exceeded",
+      retryable: true,
+    });
+
+    const missing = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity/wallet-intent%3Amissing",
+      headers,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "activity_not_found", retryable: false });
+    expect(`${badCursor.body}${bounded.body}`).not.toContain("secret");
   });
 
   it("validates and forwards the authenticated transaction-engine API", async () => {

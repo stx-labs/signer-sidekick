@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  activityDetailSchema,
+  activityDisplayStatusSchema,
+  activityGroupSummarySchema,
+  activityOutcomeSchema,
+  activityResponseSchema,
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   contextualActionSchema,
@@ -8,6 +13,7 @@ import {
   overviewPageSchema,
   reconciliationOperationSchema,
   reconciliationSummarySchema,
+  rewardsActivityResponseSchema,
   runtimeSettingsSchema,
   signerGrantSessionResponseSchema,
   syncResponseSchema,
@@ -249,6 +255,104 @@ describe("Overview V1 contracts", () => {
     expect(overviewPageSchema.safeParse({ ...overviewFixture(), schemaVersion: 2 }).success).toBe(
       false,
     );
+  });
+});
+
+describe("Activity V1 contracts", () => {
+  const observedAt = "2026-08-14T12:00:00.000Z";
+  const coverage = {
+    source: "wallet-intents" as const,
+    status: "current" as const,
+    observedAt,
+    anchor: null,
+    reason: null,
+  };
+  const item = {
+    schemaVersion: 1 as const,
+    activityId: "wallet-intent:00000000-0000-4000-8000-000000000001",
+    kind: "operation" as const,
+    domain: "rewards" as const,
+    code: "claim-rewards",
+    title: "Claim manager rewards",
+    summary: "Transaction review is ready for the operator.",
+    displayStatus: "action-required" as const,
+    outcome: "pending" as const,
+    occurredAt: observedAt,
+    updatedAt: observedAt,
+    deadline: { kind: "time" as const, at: "2026-08-14T12:10:00.000Z" },
+    urgencyAt: "2026-08-14T12:10:00.000Z",
+    actorPrincipal: "SP000000000000000000002Q6VF78",
+    txids: [],
+    anchor: null,
+    supersedesActivityId: null,
+    supersededByActivityId: null,
+    primaryAction: {
+      kind: "resume-activity" as const,
+      activityId: "wallet-intent:00000000-0000-4000-8000-000000000001",
+      label: "Resume operation",
+    },
+    coverage: [coverage],
+  };
+
+  it("accepts the versioned page and rejects the retired claims/withdrawals Activity shape", () => {
+    expect(
+      activityResponseSchema.safeParse({
+        schemaVersion: 1,
+        generatedAt: observedAt,
+        active: [item],
+        items: [],
+        nextCursor: null,
+        coverage: [coverage],
+      }).success,
+    ).toBe(true);
+    const retired = { claims: [], withdrawals: [], claimTotal: 0, withdrawalTotal: 0 };
+    expect(activityResponseSchema.safeParse(retired).success).toBe(false);
+    expect(rewardsActivityResponseSchema.safeParse(retired).success).toBe(true);
+  });
+
+  it("enforces the closed display-status and outcome compatibility table", () => {
+    const accepted = new Set([
+      "action-required:pending",
+      "in-progress:pending",
+      "needs-attention:pending",
+      "needs-attention:failed",
+      "needs-attention:aborted",
+      "needs-attention:ambiguous",
+      "complete:succeeded",
+      "superseded:superseded",
+      "observed:observed",
+    ]);
+    for (const displayStatus of activityDisplayStatusSchema.options) {
+      for (const outcome of activityOutcomeSchema.options) {
+        expect(
+          activityGroupSummarySchema.safeParse({ ...item, displayStatus, outcome }).success,
+          `${displayStatus}:${outcome}`,
+        ).toBe(accepted.has(`${displayStatus}:${outcome}`));
+      }
+    }
+  });
+
+  it("rejects mismatched resume targets and incomplete absorbed aliases", () => {
+    expect(
+      activityGroupSummarySchema.safeParse({
+        ...item,
+        primaryAction: {
+          kind: "resume-activity",
+          activityId: "engine-job:00000000-0000-4000-8000-000000000002",
+          label: "Resume operation",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      activityDetailSchema.safeParse({
+        schemaVersion: 1,
+        requestedActivityId: "chain-tx:1:0xdead",
+        canonicalActivityId: item.activityId,
+        aliases: [item.activityId],
+        summary: item,
+        timeline: [],
+      }).success,
+    ).toBe(false);
   });
 });
 

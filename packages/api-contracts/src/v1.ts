@@ -1091,7 +1091,7 @@ export const rewardsPageResponseSchema = z.custom<{
 });
 export type RewardsPageResponse = z.infer<typeof rewardsPageResponseSchema>;
 
-export const activityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
+export const rewardsActivityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
   (value) =>
     isRecord(value) &&
     Array.isArray(value.claims) &&
@@ -1100,7 +1100,7 @@ export const activityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
     typeof value.withdrawalTotal === "number",
   { error: "Invalid activity response" },
 );
-export type ActivityResponse = z.infer<typeof activityResponseSchema>;
+export type RewardsActivityResponse = z.infer<typeof rewardsActivityResponseSchema>;
 
 export const rewardHistoryResponseSchema = z.custom<{
   items: RewardCycleSummary[];
@@ -1472,6 +1472,217 @@ export const operatorDeadlineSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("time"), at: z.iso.datetime() }).strict(),
 ]);
 export type OperatorDeadline = z.infer<typeof operatorDeadlineSchema>;
+
+export const activityDisplayStatusSchema = z.enum([
+  "action-required",
+  "in-progress",
+  "needs-attention",
+  "complete",
+  "superseded",
+  "observed",
+]);
+export type ActivityDisplayStatus = z.infer<typeof activityDisplayStatusSchema>;
+
+export const activityOutcomeSchema = z.enum([
+  "pending",
+  "succeeded",
+  "failed",
+  "aborted",
+  "ambiguous",
+  "superseded",
+  "observed",
+]);
+export type ActivityOutcome = z.infer<typeof activityOutcomeSchema>;
+
+export const activityKindSchema = z.enum([
+  "operation",
+  "chain-event",
+  "configuration-change",
+  "finding-change",
+]);
+export type ActivityKind = z.infer<typeof activityKindSchema>;
+
+export const activityDomainSchema = z.enum([
+  "manager",
+  "pool",
+  "rewards",
+  "node",
+  "signer",
+  "network",
+  "sidekick",
+]);
+export type ActivityDomain = z.infer<typeof activityDomainSchema>;
+
+export const activityCoverageSourceSchema = z.enum([
+  "wallet-intents",
+  "transaction-engine",
+  "indexed-manager-history",
+  "observer",
+  "settings-audit",
+]);
+export type ActivityCoverageSource = z.infer<typeof activityCoverageSourceSchema>;
+
+export const activityCoverageSchema = z
+  .object({
+    source: activityCoverageSourceSchema,
+    status: z.enum(["current", "delayed", "unavailable", "not-configured"]),
+    observedAt: z.iso.datetime().nullable(),
+    anchor: engineChainAnchorSchema.nullable(),
+    reason: z.string().min(1).max(1_000).nullable(),
+  })
+  .strict();
+export type ActivityCoverage = z.infer<typeof activityCoverageSchema>;
+
+const activityStatusOutcomePairs = new Set([
+  "action-required:pending",
+  "in-progress:pending",
+  "needs-attention:pending",
+  "needs-attention:failed",
+  "needs-attention:aborted",
+  "needs-attention:ambiguous",
+  "complete:succeeded",
+  "superseded:superseded",
+  "observed:observed",
+]);
+
+export const activityGroupSummarySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    activityId: z.string().min(1).max(500),
+    kind: activityKindSchema,
+    domain: activityDomainSchema,
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(1_000),
+    displayStatus: activityDisplayStatusSchema,
+    outcome: activityOutcomeSchema,
+    occurredAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    deadline: operatorDeadlineSchema.nullable(),
+    urgencyAt: z.iso.datetime().nullable(),
+    actorPrincipal: z.string().min(1).max(500).nullable(),
+    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(100),
+    anchor: engineChainAnchorSchema.nullable(),
+    supersedesActivityId: z.string().min(1).max(500).nullable(),
+    supersededByActivityId: z.string().min(1).max(500).nullable(),
+    primaryAction: contextualActionSchema.nullable(),
+    coverage: z.array(activityCoverageSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!activityStatusOutcomePairs.has(`${value.displayStatus}:${value.outcome}`)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity display status and outcome are incompatible",
+        path: ["outcome"],
+      });
+    }
+    if (
+      value.primaryAction?.kind === "resume-activity" &&
+      value.primaryAction.activityId !== value.activityId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Resume action must target the containing Activity group",
+        path: ["primaryAction", "activityId"],
+      });
+    }
+  });
+export type ActivityGroupSummary = z.infer<typeof activityGroupSummarySchema>;
+
+export const activityTimelineEntrySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: z.string().min(1).max(500),
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    detail: z.string().min(1).max(2_000),
+    occurredAt: z.iso.datetime(),
+    source: activityCoverageSourceSchema,
+    txid: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    stacksBlockHeight: z.number().int().nonnegative().nullable(),
+    indexBlockHash: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    canonical: z.boolean().nullable(),
+    finalized: z.boolean().nullable(),
+  })
+  .strict()
+  .refine((value) => (value.stacksBlockHeight === null) === (value.indexBlockHash === null), {
+    message: "Timeline block height and index-block hash must both be present or both be null",
+    path: ["indexBlockHash"],
+  });
+export type ActivityTimelineEntry = z.infer<typeof activityTimelineEntrySchema>;
+
+export const activityPageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    active: z.array(activityGroupSummarySchema),
+    items: z.array(activityGroupSummarySchema),
+    nextCursor: z.string().min(1).max(2_000).nullable(),
+    coverage: z.array(activityCoverageSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = new Set<string>();
+    for (const [section, items] of [
+      ["active", value.active],
+      ["items", value.items],
+    ] as const) {
+      for (const [index, item] of items.entries()) {
+        if (ids.has(item.activityId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Activity groups must not be duplicated between active work and history",
+            path: [section, index, "activityId"],
+          });
+        }
+        ids.add(item.activityId);
+      }
+    }
+  });
+export const activityResponseSchema = activityPageSchema;
+export type ActivityResponse = z.infer<typeof activityPageSchema>;
+
+export const activityDetailSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    requestedActivityId: z.string().min(1).max(500),
+    canonicalActivityId: z.string().min(1).max(500),
+    aliases: z.array(z.string().min(1).max(500)),
+    summary: activityGroupSummarySchema,
+    timeline: z.array(activityTimelineEntrySchema),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.summary.activityId !== value.canonicalActivityId) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail summary must use the canonical Activity id",
+        path: ["summary", "activityId"],
+      });
+    }
+    if (!value.aliases.includes(value.requestedActivityId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail aliases must contain the requested id",
+        path: ["aliases"],
+      });
+    }
+    if (!value.aliases.includes(value.canonicalActivityId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail aliases must contain the canonical id",
+        path: ["aliases"],
+      });
+    }
+  });
+export type ActivityDetail = z.infer<typeof activityDetailSchema>;
 
 const overviewProtocolMomentSchema = z
   .object({

@@ -699,6 +699,20 @@ export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
   updatedAt: string;
 }
 
+export interface StoredActivityChainEvent {
+  chainId: number;
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  indexBlockHash: string;
+  canonical: boolean;
+  topic: string | null;
+  decodedSchemaVersion: number | null;
+  decodedPayload: unknown;
+  firstSeenAt: string;
+  updatedAt: string;
+}
+
 export type SignerStakerPositionInput = z.infer<typeof signerStakerPositionInputSchema>;
 export type SignerStakerPageItem = z.infer<typeof signerStakerPageItemSchema>;
 export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
@@ -1956,7 +1970,7 @@ export class SidekickStore {
     changedFields: string[];
     changedAt: string;
   }> {
-    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
     const rows = this.db
       .prepare(
         `SELECT revision, changed_fields_json, changed_at
@@ -2412,6 +2426,58 @@ export class SidekickStore {
       .get(chainId, txId, eventIndex);
     if (!row) return null;
     return toStoredChainEvent(row);
+  }
+
+  listManagerActivityChainEvents(
+    chainId: number,
+    managerPrincipal: string,
+    limit = 10_001,
+  ): StoredActivityChainEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id = ?
+         ORDER BY updated_at DESC, tx_id ASC, event_index ASC LIMIT ?`,
+      )
+      .all(parsedChainId, manager, parsedLimit) as Array<{
+      chain_id: number;
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      index_block_hash: string;
+      canonical: 0 | 1;
+      topic: string | null;
+      decoded_schema_version: number | null;
+      decoded_payload_json: string | null;
+      first_seen_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      chainId: z.number().int().nonnegative().parse(row.chain_id),
+      txId: hashSchema.parse(row.tx_id),
+      eventIndex: z.number().int().nonnegative().parse(row.event_index),
+      blockHeight: z.number().int().nonnegative().parse(row.block_height),
+      indexBlockHash: hashSchema.parse(row.index_block_hash),
+      canonical: row.canonical === 1,
+      topic: z.string().min(1).max(500).nullable().parse(row.topic),
+      decodedSchemaVersion: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .parse(row.decoded_schema_version),
+      decodedPayload:
+        row.decoded_payload_json === null
+          ? null
+          : (JSON.parse(row.decoded_payload_json) as unknown),
+      firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    }));
   }
 
   listManagerClaims(

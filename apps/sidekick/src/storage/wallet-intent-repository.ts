@@ -519,6 +519,17 @@ export class WalletIntentRepository {
     return row === null ? null : mapIntent(row);
   }
 
+  listForActivity(limit = 10_001): StoredWalletIntent[] {
+    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    return this.db
+      .prepare(
+        `SELECT * FROM browser_wallet_intents
+         ORDER BY updated_at DESC, intent_id ASC LIMIT ?`,
+      )
+      .all(parsedLimit)
+      .map(mapIntent);
+  }
+
   listSubmittedEquivalent(input: {
     action: WalletIntentAction;
     scope: string;
