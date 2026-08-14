@@ -29,6 +29,7 @@ import {
 } from "./manager-verification.js";
 import { loadNetworkCompatibilityProfiles } from "./network-compatibility-store.js";
 import { ObserverInboxProcessor } from "./observer-inbox.js";
+import { ObserverReconciliationScheduler } from "./observer-reconciliation.js";
 import {
   createObserverServer,
   loadObserverServerConfig,
@@ -57,6 +58,7 @@ import {
   openSidekickStore,
 } from "./storage/store.js";
 import { createOperatorSupportBundle, operatorSupportApplication } from "./support-bundle.js";
+import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
 import { WalletIntentService } from "./wallet-intent-service.js";
 
@@ -186,6 +188,20 @@ export async function executeCliCommand({
       });
       engineConstructing = false;
       transactionEngine = engine;
+      let localTransactionReaderUrl = effectiveConfig.nodeRpcUrl;
+      let localTransactionReader = new LiveTransactionReader({
+        baseUrl: localTransactionReaderUrl,
+      });
+      const nodeTransactions = {
+        lookupIndexedTransaction: async (txId: string) => {
+          const currentUrl = runtimeSettings.effectiveConfig().nodeRpcUrl;
+          if (currentUrl !== localTransactionReaderUrl) {
+            localTransactionReaderUrl = currentUrl;
+            localTransactionReader = new LiveTransactionReader({ baseUrl: currentUrl });
+          }
+          return await localTransactionReader.lookupIndexedTransaction(txId);
+        },
+      };
       const service = new OperatorService({
         config: effectiveConfig,
         managerPrincipal,
@@ -194,6 +210,7 @@ export async function executeCliCommand({
         api,
         runtimeSettings,
         managerVerification,
+        nodeTransactions,
         transactionEngineObservation: {
           observe: async (input) => await engine.observe(input),
           onError: (error) => reportTransactionEngineError(error),
@@ -218,10 +235,13 @@ export async function executeCliCommand({
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
+      let observerReconciliation: ObserverReconciliationScheduler | null = null;
       const observerProcessor = new ObserverInboxProcessor({
         store,
         getNode: () => runtimeSettings.clients().node,
         onError: (error) => reportObserverInboxError(error),
+        onProcessed: (delivery, outcome) =>
+          observerReconciliation?.notifyProcessed(delivery, outcome),
       });
       const observerServer = observerConfig.enabled
         ? createObserverServer({
@@ -258,7 +278,12 @@ export async function executeCliCommand({
         supportApplication: () => operatorSupportApplication(env),
         databaseStatus: () => store.databaseStatus(),
         observerStatus: () =>
-          observerRuntimeStatus(observerConfig, store.observerInboxStatus(), observerListening),
+          observerRuntimeStatus(
+            observerConfig,
+            store.observerInboxStatus(),
+            observerListening,
+            observerReconciliation?.status() ?? null,
+          ),
         snapshotRefreshMetrics,
         authToken,
         ...(authTrustedHeader ? { authTrustedHeader } : {}),
@@ -275,6 +300,11 @@ export async function executeCliCommand({
           { error: error instanceof Error ? error.message : String(error) },
           "Observer inbox verification failed; the durable delivery will be retried",
         );
+      observerReconciliation = new ObserverReconciliationScheduler({
+        service,
+        logger: server.log,
+        managerPrincipal,
+      });
       startOperationalRuntime = async () => {
         if (operationalStarted) return;
         operationalStartPromise ??= (async () => {
@@ -286,6 +316,7 @@ export async function executeCliCommand({
               "Private Stacks event listener is ready",
             );
           }
+          observerReconciliation?.start();
           const recoveredObserverDeliveries = observerProcessor.start();
           if (recoveredObserverDeliveries > 0) {
             server.log.info(
@@ -354,6 +385,7 @@ export async function executeCliCommand({
           await observerServer?.close();
           observerListening = false;
           await observerProcessor.stop();
+          await observerReconciliation?.stop();
           await engine.close();
         } finally {
           closeStore();
@@ -615,6 +647,7 @@ export async function executeCliCommand({
           chainId: preflight.node.networkId,
           managerPrincipal,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+          nodeTransactions: new LiveTransactionReader({ baseUrl: config.nodeRpcUrl }),
           observedAt,
           pageLimit: config.eventPageLimit,
         });
@@ -672,6 +705,7 @@ export async function executeCliCommand({
           chainId: preflight.node.networkId,
           managerPrincipal,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+          nodeTransactions: new LiveTransactionReader({ baseUrl: config.nodeRpcUrl }),
           observedAt,
           pageLimit: config.eventPageLimit,
         });

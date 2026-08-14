@@ -74,6 +74,26 @@ const databaseSectionSchema = supportSectionBaseSchema
   .extend({ data: databaseStatusSchema.nullable() })
   .strict();
 
+const observerReconciliationDomainSchema = z
+  .object({
+    pending: z.boolean(),
+    running: z.boolean(),
+    requests: z.number().int().nonnegative(),
+    coalescedRequests: z.number().int().nonnegative(),
+    successes: z.number().int().nonnegative(),
+    failuresTotal: z.number().int().nonnegative(),
+    consecutiveFailures: z.number().int().nonnegative(),
+    requestedStacksHeight: z.number().int().nonnegative().nullable(),
+    requestedBurnHeight: z.number().int().nonnegative().nullable(),
+    lastRequestedAt: z.iso.datetime().nullable(),
+    lastStartedAt: z.iso.datetime().nullable(),
+    lastSuccessAt: z.iso.datetime().nullable(),
+    lastFailureAt: z.iso.datetime().nullable(),
+    lastError: z.string().max(500).nullable(),
+    nextRetryAt: z.iso.datetime().nullable(),
+  })
+  .strict();
+
 const observerRuntimeStatusSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -131,6 +151,19 @@ const observerRuntimeStatusSchema = z
           .nullable(),
       })
       .strict(),
+    reconciliation: z
+      .object({
+        schemaVersion: z.literal(1),
+        started: z.boolean(),
+        domains: z
+          .object({
+            current: observerReconciliationDomainSchema,
+            "manager-activity": observerReconciliationDomainSchema,
+          })
+          .strict(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict()
   .superRefine((value, context) => {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import type { ObserverReconciliationStatus } from "./observer-reconciliation.js";
 import type {
   AcceptedObserverDelivery,
   ObserverInboxStatus,
@@ -53,6 +54,7 @@ export interface ObserverRuntimeStatus {
     maxBodyBytes: number;
   };
   inbox: ObserverInboxStatus;
+  reconciliation: ObserverReconciliationStatus | null;
 }
 
 function parseNodeReachableObserverEndpoint(value: string): string {
@@ -226,6 +228,7 @@ export function observerRuntimeStatus(
   config: ObserverServerConfig,
   inbox: ObserverInboxStatus,
   listening = false,
+  reconciliation: ObserverReconciliationStatus | null = null,
 ): ObserverRuntimeStatus {
   if (listening && !config.enabled) {
     throw new Error("A disabled observer listener cannot be reported as listening");
@@ -238,6 +241,7 @@ export function observerRuntimeStatus(
       ? { host: config.host, port: config.port, maxBodyBytes: config.maxBodyBytes }
       : null,
     inbox,
+    reconciliation,
   };
 }
 

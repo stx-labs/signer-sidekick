@@ -196,6 +196,24 @@ The census is research/test input. It must not become a product-wide attach allo
 - Add idempotency, coalescing, gap/reorg recovery, API backfill, anti-entropy, metrics, and support
   evidence.
 
+Implementation checkpoint (2026-08-13):
+
+- The private listener, bounded durable inbox, stable canonical-header proof, retry recovery, and
+  quarantine/expiry states are implemented. Embedded callback events remain untrusted.
+- A verified block now requests an independent, coalesced current-state refresh. A verified manager
+  `print` hint requests manager-history reconciliation without triggering a full roster scan;
+  routine `/new_block` callbacks with an empty filtered event list do not hit the indexed API.
+- Manager activity waits until the indexed source reaches the verified callback height. API event
+  content is committed only when the local node transaction index independently confirms that the
+  transaction is canonical at the API's exact Stacks height and index-block hash. Callback event
+  bytes are never written directly to permanent activity history.
+- Both reconciliation domains run once at startup, so the durable cursor/projection machinery
+  closes a crash between inbox completion and in-memory scheduling. Domain retry/coalescing state is
+  included in metrics and the support artifact. Current-state anti-entropy runs every 30 seconds;
+  callbacks are the faster path and the browser remains a read-only 15-second consumer.
+- Remaining Slice 5 work includes targeted PoX-5/roster invalidation, observer-gap detection,
+  reorg tests spanning callback through projection, and measured two-second projection latency.
+
 Gate:
 
 - callback loss, duplication, reordering, restart, and reorg converge;

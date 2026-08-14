@@ -102,11 +102,87 @@ function transaction(txId: string, height: number): TransactionSummary {
   };
 }
 
+function nodeTransaction(txId: string, height: number) {
+  return {
+    status: "observed" as const,
+    httpStatus: 200,
+    value: {
+      txid: txId as `0x${string}`,
+      transactionHex: "00",
+      nonce: 0n,
+      feeUstx: 0n,
+      indexBlockHash: `0x${"44".repeat(32)}` as `0x${string}`,
+      blockHeight: BigInt(height),
+      isCanonical: true,
+      resultRepr: "(ok true)",
+    },
+  };
+}
+
 afterEach(() => {
   for (const sidekickStore of openStores.splice(0)) sidekickStore.close();
 });
 
 describe("manager event synchronization", () => {
+  it("commits API event content only after a canonical local transaction witness", async () => {
+    const sidekickStore = await store();
+    const nodeTransactions = {
+      lookupIndexedTransaction: vi.fn().mockResolvedValue(nodeTransaction(txOne, 8_600_000)),
+    };
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).resolves.toMatchObject({ newEvents: 1, nodeVerifiedTransactions: 1 });
+    expect(nodeTransactions.lookupIndexedTransaction).toHaveBeenCalledWith(txOne);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
+  });
+
+  it("rejects a page atomically when the local transaction witness disagrees", async () => {
+    const sidekickStore = await store();
+    const mismatched = nodeTransaction(txOne, 8_600_000);
+    mismatched.value.indexBlockHash = `0x${"55".repeat(32)}`;
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockResolvedValue(mismatched),
+        },
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).rejects.toThrow("Local node and indexed API disagree");
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
+    expect(
+      sidekickStore.getCursor(sourceId, `manager-logs:v3:reference-manager-v1:${manager}`),
+    ).toBeNull();
+  });
+
   it("backfills canonical logs, enriches block identity, and stops future scans at overlap", async () => {
     const sidekickStore = await store();
     const firstApi = {

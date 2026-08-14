@@ -1,6 +1,6 @@
 import { RateLimitedError } from "./chain-clients.js";
 
-export const DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS = 30_000;
 export const DEFAULT_SNAPSHOT_REFRESH_FAILURE_DELAY_MS = 30_000;
 export const DEFAULT_SNAPSHOT_REFRESH_MAX_BACKOFF_MS = 5 * 60_000;
 

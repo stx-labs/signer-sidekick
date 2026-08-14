@@ -920,6 +920,46 @@ describe("local API", () => {
           lastClaimedBurnBlock: null,
           lastQuarantine: null,
         },
+        reconciliation: {
+          schemaVersion: 1,
+          started: true,
+          domains: {
+            current: {
+              pending: false,
+              running: false,
+              requests: 4,
+              coalescedRequests: 2,
+              successes: 2,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: 50,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+            },
+            "manager-activity": {
+              pending: true,
+              running: false,
+              requests: 3,
+              coalescedRequests: 1,
+              successes: 1,
+              failuresTotal: 1,
+              consecutiveFailures: 1,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:00.000Z",
+              lastFailureAt: "2026-07-14T12:00:10.000Z",
+              lastError: "API unavailable",
+              nextRetryAt: "2026-07-14T12:00:25.000Z",
+            },
+          },
+        },
       }),
     });
     servers.push(server);
@@ -944,6 +984,12 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_observer_processing 0");
     expect(metrics.body).toContain("sidekick_observer_last_received_timestamp_seconds 1784030409");
     expect(metrics.body).toContain("sidekick_observer_last_processed_timestamp_seconds 1784030410");
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_requests_total{domain="current"} 4',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_pending{domain="manager-activity"} 1',
+    );
   });
 
   it("keeps readiness available from a recent stale observation", async () => {

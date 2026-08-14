@@ -1394,6 +1394,33 @@ export function createServer(options: ServerOptions = {}) {
         "# TYPE sidekick_observer_last_processed_timestamp_seconds gauge",
         `sidekick_observer_last_processed_timestamp_seconds ${observer.inbox.lastProcessedAt ? Date.parse(observer.inbox.lastProcessedAt) / 1_000 : 0}`,
       );
+      if (observer.reconciliation) {
+        metrics.push(
+          "# HELP sidekick_observer_reconciliation_pending Whether observer-triggered domain work is retained for execution.",
+          "# TYPE sidekick_observer_reconciliation_pending gauge",
+          "# HELP sidekick_observer_reconciliation_running Whether observer-triggered domain work is executing.",
+          "# TYPE sidekick_observer_reconciliation_running gauge",
+          "# HELP sidekick_observer_reconciliation_requests_total Observer reconciliation requests, including coalesced prompts.",
+          "# TYPE sidekick_observer_reconciliation_requests_total counter",
+          "# HELP sidekick_observer_reconciliation_successes_total Successful observer-triggered reconciliations.",
+          "# TYPE sidekick_observer_reconciliation_successes_total counter",
+          "# HELP sidekick_observer_reconciliation_failures_total Failed observer-triggered reconciliation attempts.",
+          "# TYPE sidekick_observer_reconciliation_failures_total counter",
+          "# HELP sidekick_observer_reconciliation_consecutive_failures Consecutive observer-triggered reconciliation failures.",
+          "# TYPE sidekick_observer_reconciliation_consecutive_failures gauge",
+        );
+        for (const domain of ["current", "manager-activity"] as const) {
+          const status = observer.reconciliation.domains[domain];
+          metrics.push(
+            `sidekick_observer_reconciliation_pending{domain="${domain}"} ${status.pending ? 1 : 0}`,
+            `sidekick_observer_reconciliation_running{domain="${domain}"} ${status.running ? 1 : 0}`,
+            `sidekick_observer_reconciliation_requests_total{domain="${domain}"} ${status.requests}`,
+            `sidekick_observer_reconciliation_successes_total{domain="${domain}"} ${status.successes}`,
+            `sidekick_observer_reconciliation_failures_total{domain="${domain}"} ${status.failuresTotal}`,
+            `sidekick_observer_reconciliation_consecutive_failures{domain="${domain}"} ${status.consecutiveFailures}`,
+          );
+        }
+      }
     }
     if (refresh.sourcePositions) {
       metrics.push(

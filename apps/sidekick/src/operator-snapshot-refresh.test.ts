@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { RateLimitedError } from "./chain-clients.js";
 import {
+  DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
   SnapshotRefreshMetricsTracker,
   startSnapshotRefreshLoop,
 } from "./operator-snapshot-refresh.js";
 
 describe("startSnapshotRefreshLoop", () => {
+  it("uses the 30-second current-state anti-entropy cadence", () => {
+    expect(DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS).toBe(30_000);
+  });
+
   it("records refresh health, snapshot age, and source positions without another chain read", () => {
     let now = Date.parse("2026-08-12T14:00:10.000Z");
     const metrics = new SnapshotRefreshMetricsTracker(() => now, 60_000);

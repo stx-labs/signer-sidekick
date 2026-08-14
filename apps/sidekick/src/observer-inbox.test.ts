@@ -157,6 +157,7 @@ describe("observer inbox verification", () => {
 describe("observer inbox processor", () => {
   it("recovers an interrupted claim and processes it exactly once after restart", async () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
+    const onProcessed = vi.fn();
     try {
       store.acceptObserverDelivery({
         endpointKind: "new-block",
@@ -181,6 +182,7 @@ describe("observer inbox processor", () => {
         now: () => new Date(processedAt),
         retryIntervalMs: 60_000,
         maxBatchSize: 1,
+        onProcessed,
       });
       expect(processor.start()).toBe(1);
       await processor.processAvailable();
@@ -191,6 +193,11 @@ describe("observer inbox processor", () => {
         processingAttempts: 2,
         lastProcessedAt: processedAt,
       });
+      expect(onProcessed).toHaveBeenCalledOnce();
+      expect(onProcessed).toHaveBeenCalledWith(
+        expect.objectContaining({ claimedBlockHeight: 100 }),
+        expect.objectContaining({ action: "finish", state: "node-verified" }),
+      );
       await processor.stop();
     } finally {
       store.close();

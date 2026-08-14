@@ -171,6 +171,7 @@ describe("operator support bundle", () => {
             receivedAt: "2026-08-13T11:59:00.000Z",
           },
         },
+        reconciliation: null,
       }),
       bundleId: "10000000-0000-4000-8000-000000000001",
       now: () => collectedAt,

@@ -11,7 +11,7 @@ import {
 import { redactConfig, type SidekickConfig } from "./config.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { managerActionCapability } from "./manager-capabilities.js";
-import { syncManagerEvents } from "./manager-event-sync.js";
+import { type ManagerEventNodeTransactions, syncManagerEvents } from "./manager-event-sync.js";
 import {
   type ManagerEventVocabulary,
   managerEventVocabularyFor,
@@ -74,6 +74,7 @@ export interface OperatorServiceOptions {
   runtimeSettings?: RuntimeSettingsController;
   managerVerification?: ManagerVerificationContext;
   transactionEngineObservation?: TransactionEngineObservationHook;
+  nodeTransactions?: ManagerEventNodeTransactions;
 }
 
 export interface OperatorSynchronizationProgress {
@@ -86,6 +87,11 @@ export interface OperatorSynchronizationProgress {
 export interface OperatorSynchronizationOptions {
   signal?: AbortSignal;
   onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
+}
+
+export interface ManagerActivitySynchronizationOptions extends OperatorSynchronizationOptions {
+  /** Do not consume an event trigger until the indexed source has reached its verified block. */
+  minimumStacksHeight?: number | null;
 }
 
 export type SortDirection = "asc" | "desc";
@@ -471,6 +477,9 @@ export class OperatorService {
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
   > | null = null;
+  private managerActivitySynchronization: Promise<
+    Awaited<ReturnType<OperatorService["runManagerActivitySynchronization"]>>
+  > | null = null;
   private pendingTrustTransition: ManagerTrustTransition | null = null;
   private refreshBlockedUntil = 0;
   private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
@@ -508,7 +517,7 @@ export class OperatorService {
       .then((value) => {
         const loadedAt = this.currentTime();
         this.cached = {
-          // The dashboard polls every 30 seconds. Keep a successful observation fresh through the
+          // The dashboard polls every 15 seconds. Keep a successful observation fresh through the
           // next poll so normal status traffic does not create an upstream refresh per page view.
           expiresAt: loadedAt + (this.options.cacheTtlMs ?? 45_000),
           value,
@@ -599,10 +608,34 @@ export class OperatorService {
 
   async synchronize(options: OperatorSynchronizationOptions = {}) {
     if (this.synchronization) return this.synchronization;
-    this.synchronization = this.runSynchronization(options).finally(() => {
+    this.synchronization = (async () => {
+      if (this.managerActivitySynchronization) {
+        await this.managerActivitySynchronization;
+      }
+      return await this.runSynchronization(options);
+    })().finally(() => {
       this.synchronization = null;
     });
     return this.synchronization;
+  }
+
+  /**
+   * Reconcile manager activity without paying for a complete signer-staker roster scan. The
+   * callback scheduler uses this independently from current-state refreshes so an indexed API
+   * delay cannot hold up node-first operator health.
+   */
+  async synchronizeManagerActivity(options: ManagerActivitySynchronizationOptions = {}) {
+    if (this.synchronization) {
+      const synchronized = await this.synchronization;
+      return { observedAt: synchronized.observedAt, events: synchronized.events };
+    }
+    if (this.managerActivitySynchronization) return this.managerActivitySynchronization;
+    this.managerActivitySynchronization = this.runManagerActivitySynchronization(options).finally(
+      () => {
+        this.managerActivitySynchronization = null;
+      },
+    );
+    return this.managerActivitySynchronization;
   }
 
   async observeManagerTrustState() {
@@ -945,6 +978,7 @@ export class OperatorService {
       chainId: synchronized.chainId,
       managerPrincipal,
       eventVocabulary: synchronized.eventVocabulary,
+      ...(this.options.nodeTransactions ? { nodeTransactions: this.options.nodeTransactions } : {}),
       observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -964,6 +998,83 @@ export class OperatorService {
     }
     this.cached = null;
     return { observedAt: synchronized.observedAt, stakers: synchronized.stakers, events };
+  }
+
+  private async runManagerActivitySynchronization(options: ManagerActivitySynchronizationOptions) {
+    options.signal?.throwIfAborted();
+    if (!this.options.nodeTransactions) {
+      throw new Error("Manager activity reconciliation requires the local node transaction index");
+    }
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
+    const observedAt = new Date().toISOString();
+    const { preflight, manager } = await readOperatorAnchorSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
+    const trustTransition = this.recordManagerTrustState(manager, observedAt);
+    if (trustTransition) this.pendingTrustTransition = trustTransition;
+    if (preflight.status === "fail" || !indexedApiCompatible(preflight) || !manager.attachAllowed) {
+      throw new OperatorWorkflowError(
+        422,
+        "manager_activity_sources_incompatible",
+        "Manager activity sync is blocked by node, API, or manager compatibility checks",
+      );
+    }
+    if (
+      options.minimumStacksHeight !== null &&
+      options.minimumStacksHeight !== undefined &&
+      preflight.api.stacksTipHeight < options.minimumStacksHeight
+    ) {
+      throw new Error(
+        `Manager activity is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
+      );
+    }
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    const events = await syncManagerEvents({
+      store,
+      api,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+      observedAt,
+      pageLimit: config.eventPageLimit,
+      nodeTransactions: this.options.nodeTransactions,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.onProgress
+        ? {
+            onProgress: async (progress: {
+              completed: number;
+              total: number | null;
+              eventsProcessed: number;
+            }) => {
+              options.signal?.throwIfAborted();
+              await options.onProgress?.({
+                phase: "events",
+                completed: progress.completed,
+                total: progress.total,
+                message: `Synced ${progress.eventsProcessed} manager events`,
+              });
+            },
+          }
+        : {}),
+    });
+    if (events.reorgedEvents > 0 && this.options.managerVerification) {
+      invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
+    }
+    this.cached = null;
+    return { observedAt, events };
   }
 
   private async load() {

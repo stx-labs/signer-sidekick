@@ -12,6 +12,10 @@ import type {
   SidekickStore,
   StoredChainEvent,
 } from "./storage/store.js";
+import type {
+  IndexedTransactionObservation,
+  LiveLookup,
+} from "./transaction-engine/live-transaction-reader.js";
 
 export interface ManagerEventApi {
   getSmartContractLogs(
@@ -20,6 +24,10 @@ export interface ManagerEventApi {
     limit?: number,
   ): Promise<SmartContractLogPage>;
   getTransaction(txId: string): Promise<TransactionSummary>;
+}
+
+export interface ManagerEventNodeTransactions {
+  lookupIndexedTransaction(txId: string): Promise<LiveLookup<IndexedTransactionObservation>>;
 }
 
 export interface ManagerEventStore {
@@ -44,6 +52,11 @@ export interface SyncManagerEventsOptions {
   chainId: number;
   managerPrincipal: string;
   eventVocabulary: ManagerEventVocabulary;
+  /**
+   * Independent local-node inclusion witness for every API-sourced transaction on a new page.
+   * Callback bodies are never accepted as this witness.
+   */
+  nodeTransactions?: ManagerEventNodeTransactions;
   observedAt: string;
   pageLimit?: number;
   signal?: AbortSignal;
@@ -63,6 +76,7 @@ export interface SyncManagerEventsResult {
   replayedEvents: number;
   decodeFailures: number;
   reorgedEvents: number;
+  nodeVerifiedTransactions: number;
   stoppedAtKnownOverlap: boolean;
 }
 
@@ -98,6 +112,44 @@ async function enrichTransactions(
   return new Map(entries);
 }
 
+async function verifyTransactionsWithNode(
+  node: ManagerEventNodeTransactions,
+  transactions: ReadonlyMap<string, TransactionSummary>,
+  signal?: AbortSignal,
+): Promise<number> {
+  const entries = [...transactions.entries()];
+  let verified = 0;
+  for (let index = 0; index < entries.length; index += 8) {
+    signal?.throwIfAborted();
+    const batch = entries.slice(index, index + 8);
+    await Promise.all(
+      batch.map(async ([txId, transaction]) => {
+        const observation = await node.lookupIndexedTransaction(txId);
+        if (observation.status !== "observed") {
+          const reason =
+            observation.status === "not-found"
+              ? "not-found"
+              : `${observation.status}:${observation.reason}`;
+          throw new Error(`Local node could not verify manager transaction ${txId}: ${reason}`);
+        }
+        const local = observation.value;
+        if (!local.isCanonical) {
+          throw new Error(`Local node reports manager transaction ${txId} as non-canonical`);
+        }
+        if (local.indexBlockHash.toLowerCase() !== transaction.block.index_hash.toLowerCase()) {
+          throw new Error(`Local node and indexed API disagree on manager transaction ${txId}`);
+        }
+        if (local.blockHeight === null || local.blockHeight !== BigInt(transaction.block.height)) {
+          throw new Error(`Local node and indexed API disagree on manager transaction ${txId}`);
+        }
+        verified += 1;
+      }),
+    );
+    signal?.throwIfAborted();
+  }
+  return verified;
+}
+
 export async function syncManagerEvents(
   options: SyncManagerEventsOptions,
 ): Promise<SyncManagerEventsResult> {
@@ -123,6 +175,7 @@ export async function syncManagerEvents(
   let replayedEvents = 0;
   let decodeFailures = 0;
   let reorgedEvents = 0;
+  let nodeVerifiedTransactions = 0;
   let stoppedAtKnownOverlap = false;
   const scannedEventIds = new Set<string>();
   let scannedBoundaryBlockHeight: number | null = null;
@@ -185,6 +238,14 @@ export async function syncManagerEvents(
       break;
     }
     const transactionById = await enrichTransactions(options.api, page, options.signal);
+    options.signal?.throwIfAborted();
+    if (options.nodeTransactions) {
+      nodeVerifiedTransactions += await verifyTransactionsWithNode(
+        options.nodeTransactions,
+        transactionById,
+        options.signal,
+      );
+    }
     options.signal?.throwIfAborted();
     const storedEvents: ChainEventInput[] = page.results.map((event, index) => {
       const transaction = transactionById.get(event.tx_id);
@@ -285,6 +346,7 @@ export async function syncManagerEvents(
     replayedEvents,
     decodeFailures,
     reorgedEvents,
+    nodeVerifiedTransactions,
     stoppedAtKnownOverlap,
   };
 }

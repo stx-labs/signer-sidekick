@@ -190,6 +190,10 @@ export class ObserverInboxProcessor {
   readonly #getNode: () => ObserverVerificationNode;
   readonly #now: () => Date;
   readonly #onError: (error: unknown) => void;
+  readonly #onProcessed: (
+    delivery: StoredObserverDelivery,
+    outcome: Extract<ObserverVerificationOutcome, { action: "finish" }>,
+  ) => void;
   readonly #retryIntervalMs: number;
   readonly #maxBatchSize: number;
   #started = false;
@@ -203,6 +207,10 @@ export class ObserverInboxProcessor {
     getNode: () => ObserverVerificationNode;
     now?: () => Date;
     onError?: (error: unknown) => void;
+    onProcessed?: (
+      delivery: StoredObserverDelivery,
+      outcome: Extract<ObserverVerificationOutcome, { action: "finish" }>,
+    ) => void;
     retryIntervalMs?: number;
     maxBatchSize?: number;
   }) {
@@ -210,6 +218,7 @@ export class ObserverInboxProcessor {
     this.#getNode = options.getNode;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError ?? (() => undefined);
+    this.#onProcessed = options.onProcessed ?? (() => undefined);
     this.#retryIntervalMs = options.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
     this.#maxBatchSize = options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
     if (!Number.isSafeInteger(this.#retryIntervalMs) || this.#retryIntervalMs < 1) {
@@ -292,6 +301,13 @@ export class ObserverInboxProcessor {
             reason: outcome.reason,
             completedAt,
           });
+          try {
+            this.#onProcessed(delivery, outcome);
+          } catch (error) {
+            // The delivery is already durably complete. Startup anti-entropy and the periodic
+            // reconciler close this follow-up scheduling gap without replaying the callback.
+            this.#onError(error);
+          }
           processed += 1;
         } catch (error) {
           const retriedAt = this.#now().toISOString();
