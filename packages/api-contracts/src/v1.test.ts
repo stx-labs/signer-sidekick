@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
+  contextualActionSchema,
   dashboardSnapshotSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
+  overviewPageSchema,
   reconciliationOperationSchema,
   reconciliationSummarySchema,
   runtimeSettingsSchema,
@@ -12,6 +14,243 @@ import {
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("Overview V1 contracts", () => {
+  const observedAt = "2026-08-14T12:00:00.000Z";
+  const anchor = {
+    stacksBlockHeight: 8_750_000,
+    indexBlockHash: `0x${"11".repeat(32)}`,
+    burnBlockHeight: 962_300,
+    rewardCycle: 141,
+    rewardCycleLength: 2_100,
+    prepareCycleLength: 100,
+    cyclePosition: 1_000,
+    phase: "reward" as const,
+    checkpoint: "first-half" as const,
+  };
+  const evidence = {
+    status: "current" as const,
+    observedAt,
+    anchor,
+    source: "local-node" as const,
+    reason: null,
+  };
+  const openHealth = (section: "findings" | "node" | "signer" | "network" | "sources") => ({
+    kind: "open-domain" as const,
+    page: "health" as const,
+    section,
+    label: "Review health evidence",
+  });
+
+  function overviewFixture() {
+    return {
+      schemaVersion: 1 as const,
+      generatedAt: observedAt,
+      monitoring: {
+        network: "mainnet",
+        managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      },
+      cycle: {
+        status: "current" as const,
+        rewardCycleId: 141,
+        phase: "reward" as const,
+        burnBlockHeight: 962_300,
+        stacksTipHeight: 8_750_000,
+        nextRewardCalculation: {
+          status: "scheduled" as const,
+          burnBlockHeight: 962_349,
+          blocksRemaining: 49,
+          estimatedAt: "2026-08-14T20:10:00.000Z",
+          evidence: [evidence],
+        },
+        nextPreparePhase: {
+          status: "scheduled" as const,
+          burnBlockHeight: 963_300,
+          blocksRemaining: 1_000,
+          estimatedAt: "2026-08-21T10:00:00.000Z",
+          evidence: [evidence],
+        },
+        evidence: [evidence],
+      },
+      network: {
+        status: "advancing" as const,
+        reference: "Hiro reference API",
+        stacksTipHeight: 8_750_000,
+        burnBlockHeight: 962_300,
+        lastObservedAt: observedAt,
+        detail: "The independently observed network tip is advancing.",
+        evidence: [{ ...evidence, source: "network-reference" as const }],
+        detailsAction: openHealth("network"),
+      },
+      node: {
+        status: "aligned" as const,
+        stacksTipHeight: 8_750_000,
+        burnBlockHeight: 962_300,
+        peerHeightDifference: 0,
+        lastAdvancedAt: observedAt,
+        detail: "The local node is aligned with its observed peers.",
+        evidence: [evidence],
+        detailsAction: openHealth("node"),
+      },
+      signer: {
+        status: "healthy" as const,
+        rewardCycleId: 141,
+        nodeHeightDifference: 0,
+        proposalsLastHour: 12,
+        acceptedLastHour: 12,
+        rejectedLastHour: 0,
+        responseP95Seconds: 0.8,
+        detail: "Signer monitoring is healthy and aligned with the node.",
+        evidence: [{ ...evidence, source: "signer" as const }],
+        detailsAction: openHealth("signer"),
+      },
+      attention: [
+        {
+          schemaVersion: 1 as const,
+          attentionId: "pool:next-cycle-threshold",
+          tier: "action-required" as const,
+          domain: "pool" as const,
+          affectedDomains: ["pool" as const],
+          code: "next-cycle-below-threshold",
+          title: "Next cycle is below threshold",
+          summary: "Cycle 142 does not currently meet the signer threshold.",
+          impact: "The manager will not enter the next signer set unless the position changes.",
+          openedAt: observedAt,
+          updatedAt: observedAt,
+          deadline: { kind: "burn-block" as const, burnBlockHeight: 963_300, estimatedAt: null },
+          urgencyAt: "2026-08-21T10:00:00.000Z",
+          evidence: [evidence],
+          relatedActivityId: null,
+          relatedFindingId: null,
+          primaryAction: {
+            kind: "open-domain" as const,
+            page: "pool" as const,
+            section: "forecast" as const,
+            label: "Review next cycle",
+          },
+          detailsAction: null,
+        },
+      ],
+      inProgress: [],
+      pool: {
+        status: "needs-attention" as const,
+        current: { rewardCycleId: 141, amountUstx: "4000000000000", inSignerSet: true },
+        next: { rewardCycleId: 142, amountUstx: "3600000000000", inSignerSet: false },
+        nextThresholdMarginUstx: "-400000000000",
+        participants: { stxOnly: 4, bitcoinBond: 1 },
+        nextChange: {
+          kind: "amount-change" as const,
+          rewardCycleId: 142,
+          participantCount: 1,
+          amountDeltaUstx: "-400000000000",
+        },
+        evidence: [evidence],
+        detailsAction: {
+          kind: "open-domain" as const,
+          page: "pool" as const,
+          section: "forecast" as const,
+          label: "Open pool forecast",
+        },
+      },
+      rewards: {
+        status: "ready" as const,
+        rewardCycleId: 141,
+        globalAccruedSats: "200000",
+        estimatedPoolRewardSats: "150000",
+        operatorFeeSats: "7500",
+        confidence: "exact" as const,
+        calculationState: "completed" as const,
+        actionableClaims: 2,
+        evidence: [evidence],
+        detailsAction: {
+          kind: "open-domain" as const,
+          page: "rewards" as const,
+          section: "outlook" as const,
+          label: "Open rewards",
+        },
+      },
+    };
+  }
+
+  it("accepts the closed operational snapshot and typed actions", () => {
+    const parsed = overviewPageSchema.safeParse(overviewFixture());
+    if (!parsed.success) throw parsed.error;
+    expect(parsed.data.schemaVersion).toBe(1);
+  });
+
+  it("rejects setup-only operations and arbitrary or mismatched navigation targets", () => {
+    expect(
+      contextualActionSchema.safeParse({
+        kind: "launch-operation",
+        operation: "deploy-manager",
+        context: { kind: "none" },
+        label: "Deploy manager",
+      }).success,
+    ).toBe(false);
+    expect(
+      contextualActionSchema.safeParse({
+        kind: "launch-operation",
+        operation: "calculate-rewards",
+        context: { kind: "none" },
+        label: "Calculate rewards",
+      }).success,
+    ).toBe(true);
+    expect(
+      contextualActionSchema.safeParse({
+        kind: "open-domain",
+        page: "pool",
+        section: "claims",
+        label: "Open claims",
+      }).success,
+    ).toBe(false);
+    expect(
+      contextualActionSchema.safeParse({
+        kind: "open-domain",
+        page: "health",
+        section: "node",
+        href: "https://example.com/injected",
+        label: "Open node health",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("preserves the local node as a distinct attention domain", () => {
+    const localNode = overviewFixture();
+    const item = localNode.attention[0];
+    if (!item) throw new Error("Overview fixture must contain one attention item");
+    Object.assign(item, { domain: "node", affectedDomains: ["node", "signer"] });
+    expect(overviewPageSchema.safeParse(localNode).success).toBe(true);
+  });
+
+  it("rejects old alerts, missing primary actions, duplicate IDs, and unknown versions", () => {
+    const oldAlert = overviewFixture();
+    oldAlert.attention = [
+      {
+        id: "old-alert",
+        severity: "critical",
+        title: "Old alert",
+        detail: "Stringly action",
+        action: { kind: "navigate", target: "manager", label: "Open" },
+      } as never,
+    ];
+    expect(overviewPageSchema.safeParse(oldAlert).success).toBe(false);
+
+    const missingAction = overviewFixture();
+    delete (missingAction.attention[0] as Partial<(typeof missingAction.attention)[number]>)
+      .primaryAction;
+    expect(overviewPageSchema.safeParse(missingAction).success).toBe(false);
+
+    const duplicate = overviewFixture();
+    const duplicateItem = duplicate.attention[0];
+    if (!duplicateItem) throw new Error("Overview fixture must contain one attention item");
+    duplicate.attention.push({ ...duplicateItem });
+    expect(overviewPageSchema.safeParse(duplicate).success).toBe(false);
+
+    expect(overviewPageSchema.safeParse({ ...overviewFixture(), schemaVersion: 2 }).success).toBe(
+      false,
+    );
+  });
+});
 
 describe("dashboard snapshot contract", () => {
   const base = {

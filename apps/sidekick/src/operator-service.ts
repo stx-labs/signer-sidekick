@@ -1194,6 +1194,7 @@ export class OperatorService {
         ? { runtimeSettings: this.options.runtimeSettings.publicSettings() }
         : {}),
       managerPrincipal,
+      chainAnchor,
       ...partial,
       readiness,
       trustAudit,

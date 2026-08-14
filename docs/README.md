@@ -10,6 +10,8 @@ Choose the shortest path for your task.
 | Product and architecture reviewer | [Scope reset plan](product/scope-reset-plan-2026-08-13.md) | Proposed operator-only boundary, event reconciliation, and rewards roadmap |
 | Scope-reset implementer | [Implementation plan](product/scope-reset-implementation-plan-2026-08-13.md) | Milestone boundary, ordered slices, invariants, and validation gates |
 | First-run implementer | [First-run connection contract](product/first-run-connection-2026-08-13.md) | Connection gate, exact operator language, recovery states, and database identity binding |
+| Activity/action implementer | [Activity and action workspace contract](product/activity-and-action-workspace-2026-08-14.md) | Frozen navigation, unified activity projection, contextual actions, routes, and acceptance contract |
+| Overview implementer | [Overview attention model](product/overview-attention-model-2026-08-14.md) | Operator attention policy, root-cause suppression, domain summaries, freshness, and migration contract |
 | Operation adapter reviewer | [Recurring operation contracts](product/recurring-operation-contracts-2026-08-13.md) | Retained actions, authority, safety inputs, and completion evidence |
 | Contract compatibility reviewer | [Deployed signer-manager baseline](reviews/deployed-signer-manager-baseline-2026-08-13.md) | Mainnet contract families, universal PoX-5 baseline, and capability-adapter policy |
 | Signer-health reviewer | [Signer Health](product/signer-health.md) | Monitoring sources, behavior, and scope |

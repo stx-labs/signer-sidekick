@@ -41,6 +41,7 @@ describe("HealthMonitoringService", () => {
     let proposals = 12;
     let conflicts = 1;
     let heartbeatHealthy = true;
+    let hiroTip = 200_001;
     const server = createServer((request, response) => {
       if (request.url === "/v2/info") {
         response.setHeader("content-type", "application/json");
@@ -71,7 +72,7 @@ describe("HealthMonitoringService", () => {
         response.end(
           JSON.stringify({
             status: "ready",
-            chain_tip: { block_height: 200_001, burn_block_height: 910_000 },
+            chain_tip: { block_height: hiroTip, burn_block_height: 910_000 },
           }),
         );
         return;
@@ -155,6 +156,8 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
       peerHeightDifference: 0,
     });
     expect(initial.hiro).toMatchObject({ localStacksDifference: -1, localBurnDifference: 0 });
+    expect(initial.hiro.lastTipAdvanceAt).toBeNull();
+    expect(initial.hiro.advancementStatus).toBe("collecting");
     expect(initial.signer).toMatchObject({
       version: "4.0.1.0.0",
       observedNodeHeight: 200_000,
@@ -166,8 +169,11 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
     rejected = 3;
     proposals = 17;
     conflicts = 2;
+    hiroTip += 1;
     now += 30 * 60 * 1_000;
     const progressed = await health.refresh();
+    expect(progressed.hiro.lastTipAdvanceAt).toBe("2026-07-17T12:30:00.000Z");
+    expect(progressed.hiro.advancementStatus).toBe("advancing");
     expect(progressed.signer.lastHour).toMatchObject({
       proposals: 5,
       accepted: 4,
@@ -202,6 +208,64 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
     expect(changedSource.findings).toEqual([]);
     expect(changedSource.overallStatus).toBe("partial");
     expect(changedSource.signer.lastHour.collectingBaseline).toBe(true);
+  });
+
+  it("requires a persistent local-node sync failure before producing a behind finding", async () => {
+    let fullySynced = false;
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/v2/info") {
+        response.end(
+          JSON.stringify({
+            network_id: 1,
+            burn_block_height: 910_000,
+            stacks_tip_height: 200_000,
+            is_fully_synced: fullySynced,
+          }),
+        );
+        return;
+      }
+      if (request.url === "/v3/health") {
+        response.end(
+          JSON.stringify({
+            difference_from_max_peer: fullySynced ? 0 : 1,
+            max_stacks_height_of_neighbors: 200_001,
+            node_stacks_tip_height: 200_000,
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end("missing");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const health = new HealthMonitoringService({
+      getConfig: () => ({
+        network: "mainnet",
+        nodeRpcUrl: `http://127.0.0.1:${address.port}`,
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        stakerPageLimit: 200,
+        eventPageLimit: 100,
+        databasePath: ":memory:",
+      }),
+    });
+
+    expect((await health.refresh()).findings).toEqual([]);
+    expect((await health.refresh()).findings).toEqual([]);
+    expect((await health.refresh()).findings).toContainEqual(
+      expect.objectContaining({ id: "node-behind-network", source: "node" }),
+    );
+
+    fullySynced = true;
+    expect((await health.refresh()).findings).not.toContainEqual(
+      expect.objectContaining({ id: "node-behind-network" }),
+    );
   });
 
   it("degrades optional sources without blocking node health", async () => {

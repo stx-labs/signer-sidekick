@@ -145,7 +145,24 @@ export function lastTipAdvanceAt(observations: readonly HealthObservation[]): st
     }
     previous = observation;
   }
-  return lastAdvance ?? observations.find(({ nodeInfo }) => nodeInfo)?.observedAt ?? null;
+  return lastAdvance;
+}
+
+export function lastHiroTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
+  let previous: HealthObservation | null = null;
+  let lastAdvance: string | null = null;
+  for (const observation of observations) {
+    if (
+      previous?.hiro &&
+      observation.hiro &&
+      (observation.hiro.chain_tip.block_height !== previous.hiro.chain_tip.block_height ||
+        observation.hiro.chain_tip.burn_block_height !== previous.hiro.chain_tip.burn_block_height)
+    ) {
+      lastAdvance = observation.observedAt;
+    }
+    previous = observation;
+  }
+  return lastAdvance;
 }
 
 export function trimHealthObservations(

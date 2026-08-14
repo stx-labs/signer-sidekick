@@ -14,7 +14,7 @@ and safely prepares the recurring operations of running a signer or pool.
 It should not deploy a signer-manager, install or manage node/signer infrastructure, or host a
 staker-facing application:
 
-- [stx.fan Zero to Signing](https://stx.fan/zero_to/signing/) owns the general, one-time,
+- [stx.fan Zero to Signing](https://stx.fan/zero_to/signing/) provides the general, one-time,
   wallet-signed path from no manager to a registered and staked signer.
 - [StacksUp](https://github.com/stx-labs/stacksup) owns service installation, configuration,
   lifecycle, chainstate, logs, and commands that must execute inside a node or signer container.
@@ -85,7 +85,9 @@ several monitoring products:
   node, signer, Sidekick, chain-source, and transaction state?
 
 The Overview should answer “what needs attention now?” Other pages should explain and operate one
-domain, rather than repeat broad status summaries.
+domain, rather than repeat broad status summaries. The normative inclusion, priority,
+root-cause-suppression, freshness, and page-composition rules are defined in the
+[Overview attention model](overview-attention-model-2026-08-14.md).
 
 ## Product boundaries
 
@@ -447,20 +449,31 @@ policy.
 
 Reduce the navigation to operator work:
 
+The navigation is frozen at exactly six pages: Overview, Pool, Rewards, Activity, Signer Health,
+and Settings. Manager and Operations are removed once their retained actions and history are
+reachable through the replacement surfaces. Their old dashboard URLs are deleted rather than
+redirected. Contextual operations use a shared non-navigation action workspace. The normative
+routes, grouping, statuses, and execution flow are defined in the
+[Activity and action workspace contract](activity-and-action-workspace-2026-08-14.md).
+Overview is a server-owned decision projection over those domain contracts, not a browser-composed
+alert feed; its normative behavior is defined in the
+[Overview attention model](overview-attention-model-2026-08-14.md).
+
 | Page | Primary question | Contents |
 | --- | --- | --- |
 | Overview | What needs attention now? | Current cycle, required actions, eligibility, next reward calculation, concise network/node/signer diagnosis |
 | Pool | Who is participating and what changes next? | STX-only and bond positions, current/future totals, joins, exits, unlocks, roster freshness |
 | Rewards | What has accrued and what can or must happen? | Outlook, calculation state, claims, fees, withdrawals, realized history |
-| Activity | What happened and did it finalize? | Manager/PoX events, transaction plans, canonical outcomes, audit trail |
+| Activity | What happened, what is still happening, and did it finalize? | Active work, verified manager/PoX events, grouped transaction plans/outcomes, corrections, and audit trail |
 | Signer Health | Is signing healthy, and is a problem local or network-wide? | Network references, node/signer observations, participation history, calibrated findings, source coverage and uncertainty |
 | Settings | What is this Sidekick attached to? | Endpoints, manager capabilities/provenance, auth, observer status, support snapshot |
 
-Manager actions should be contextual actions from Overview, Rewards, or a compact manager section in
-Settings rather than a permanently large page. Keep advanced administration discoverable without
-making it the product's center. Operations and manager activity should converge into Activity; the
-current Operations page mixes transaction engine status, alerts, and chain-data counts that belong
-on Overview, Activity, or Settings.
+Manager actions are contextual actions from Overview, Rewards, Pool, or the compact manager section
+in Settings. A notice links directly to its shared action workspace or exact Activity detail; the
+operator never has to visit an intermediate page to act. Keep advanced administration discoverable
+without making it the product's center. Operations and manager activity converge into Activity;
+the current Operations page mixes transaction engine status, alerts, and chain-data counts that
+belong on Overview, Activity, or Settings.
 
 Remove Initial Setup and Public Pool Page from navigation. Do not replace them with marketing pages;
 use one clear external link only when the operator has not attached a manager.
@@ -577,22 +590,9 @@ money-moving operation because identical names can implement different authoriza
 recipient, and return-value semantics.
 
 Setup removal therefore does not depend on choosing one canonical manager contract. It depends on
-Zero to Signing having an organizational owner and on an end-to-end handoff test proving that any
-trait-compliant deployed manager attaches to Sidekick's baseline. Zero to Signing should display a
-manager's capabilities to the user, but Sidekick remains responsible for discovering them again
-from chain state.
-
-### stx.fan ownership
-
-The setup dependency is not yet ready to be silently treated as permanent infrastructure:
-
-- `no314/stx-fan` is a personal-looking repository rather than a Stacks Labs-owned release channel.
-- Zero to Signing presents the static-app approach as a way to prototype Stacks apps, while its
-  final screen currently calls the signer dApps “interim tooling.”
-
-Name an organizational owner, support policy, deployment domain, security review path, and
-release/provenance process for Zero to Signing. This ownership decision, not manager-version
-alignment, is the remaining setup-removal dependency.
+an end-to-end handoff test proving that any trait-compliant deployed manager attaches to Sidekick's
+baseline. Zero to Signing should display a manager's capabilities to the user, but Sidekick remains
+responsible for discovering them again from chain state.
 
 ### StacksUp seam
 
@@ -622,7 +622,7 @@ Do not treat open issues as canonical, but make their ownership explicit:
 | [#31 rewards visibility](https://github.com/stx-labs/signer-sidekick/issues/31) | Keep and expand into the reward-outlook work described here |
 | [#20 bond Observe](https://github.com/stx-labs/signer-sidekick/issues/20) | Complete the remaining Devnet sBTC-bond scenario, then close |
 | [#19 signer health calibration](https://github.com/stx-labs/signer-sidekick/issues/19) | Keep; use it to decide which protocol observations become actionable findings |
-| [#18 public pool page](https://github.com/stx-labs/signer-sidekick/issues/18) | Move to the maintained stx.fan/dApp owner, link the destination, then close in Sidekick |
+| [#18 public pool page](https://github.com/stx-labs/signer-sidekick/issues/18) | Move to the maintained stx.fan/dApp experience, link the destination, then close in Sidekick |
 | [#8 node and signer setup](https://github.com/stx-labs/signer-sidekick/issues/8) | Close as superseded by StacksUp and upstream deployment guidance |
 | [#17 Assist questions](https://github.com/stx-labs/signer-sidekick/issues/17) | Keep as protocol/research dependencies for unattended execution |
 | [#6 Assist release](https://github.com/stx-labs/signer-sidekick/issues/6) | Keep as the release gate; make it depend on resolved #17 questions and the post-reset action engine |
@@ -643,9 +643,9 @@ diagnosis. That is acceptable only when each addition consolidates authority and
 duplicated behavior.
 
 The **scope-reset milestone** consists of the node-first foundation, manager-neutral attachment,
-recurring-operation extraction, setup/public-surface deletion, documentation replacement, and the
-stx.fan ownership decision. Completing every manager adapter, event subsystem, reward projection,
-or enhanced health finding is **V2 roadmap work** and must not creep into the deletion milestone.
+recurring-operation extraction, setup/public-surface deletion, and documentation replacement.
+Completing every manager adapter, event subsystem, reward projection, or enhanced health finding is
+**V2 roadmap work** and must not creep into the deletion milestone.
 
 ### 1. Establish the compatibility baseline and external seams
 
@@ -659,11 +659,10 @@ or enhanced health finding is **V2 roadmap work** and must not creep into the de
   reviewed adapters for reusable manager behaviors in priority order by active deployment usage.
 - Record the StacksUp/Sidekick command, health, event-observer, and support-bundle seams in both
   repositories.
-- Name an owner and release discipline for the canonical setup dApp.
 
-Only setup ownership and a successful trait-compliant handoff should block setup deletion. Event,
-health, reward, and universal-baseline work can proceed in parallel; no custom manager receives
-money-moving behavior merely because it was discovered by the census.
+Only a successful trait-compliant handoff should block setup deletion. Event, health, reward, and
+universal-baseline work can proceed in parallel; no custom manager receives money-moving behavior
+merely because it was discovered by the census.
 
 ### 2. Land and harden the node-first foundation
 
@@ -711,6 +710,10 @@ money-moving behavior merely because it was discovered by the census.
 
 ### 6. Consolidate the operator experience
 
+- Implement the frozen navigation, server-owned activity projection, and common action workspace
+  from the [Activity and action workspace contract](activity-and-action-workspace-2026-08-14.md).
+- Replace the hand-built alert feed and duplicated dashboard summaries using the
+  [Overview attention model](overview-attention-model-2026-08-14.md).
 - Move required actions to Overview and domain pages.
 - Merge transaction/activity history and remove the mixed Operations status page.
 - Simplify or absorb Manager into contextual actions and Settings.
@@ -815,8 +818,5 @@ operator-relevant signer diagnosis are no longer open. The remaining decisions a
    before a projection advances from low to developing or calibrated confidence.
 9. **Permissionless calculation policy:** decide who is expected to call `calculate-rewards` and
    after what grace period the due action becomes an alert or an Assist candidate.
-10. **Setup ownership:** name the organization that owns, deploys, secures, and supports the
-    canonical stx.fan Zero to Signing experience.
-
 None of these questions changes the core boundary: Sidekick owns durable signer/pool operations,
 not setup or infrastructure lifecycle.

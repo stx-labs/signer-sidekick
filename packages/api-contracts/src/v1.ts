@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type EngineChainAnchor, engineChainAnchorSchema } from "./engine.js";
 
 export const connectionOutcomeCodeSchema = z.enum([
   "node-unreachable",
@@ -210,6 +211,8 @@ export const healthSnapshotSchema = z.looseObject({
     burnBlockHeight: z.number().nullable(),
     localStacksDifference: z.number().nullable(),
     localBurnDifference: z.number().nullable(),
+    lastTipAdvanceAt: z.iso.datetime().nullable().optional(),
+    advancementStatus: z.enum(["advancing", "collecting", "insufficient-evidence"]).optional(),
   }),
   signer: z.looseObject({
     infoSource: sourceStateSchema,
@@ -662,6 +665,7 @@ export interface RewardCycleSummary {
 export interface DashboardSnapshot extends OperatorSnapshot {
   schemaVersion: 1;
   generatedAt: string;
+  chainAnchor?: EngineChainAnchor;
   freshness?: {
     status: "current" | "stale";
     snapshotGeneratedAt: string;
@@ -925,6 +929,8 @@ function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
     typeof value.generatedAt === "string" &&
     typeof value.network === "string" &&
     typeof value.managerPrincipal === "string" &&
+    (value.chainAnchor === undefined ||
+      engineChainAnchorSchema.safeParse(value.chainAnchor).success) &&
     hasRecord(value, "preflight") &&
     hasRecord(value, "manager") &&
     isManagerCapabilities(value.manager.capabilities) &&
@@ -1277,6 +1283,480 @@ export const browserWalletIntentActionSchema = z.enum([
   "claim-rewards",
   "claim-staker-rewards",
 ]);
+export const recurringWalletIntentActionSchema = z.enum([
+  "register-self",
+  "add-admin",
+  "remove-admin",
+  "update-fees",
+  "withdraw-fees",
+  "sweep-fee-refunds",
+  "claim-rewards",
+  "claim-staker-rewards",
+]);
+export const operatorOperationCodeSchema = z.union([
+  recurringWalletIntentActionSchema,
+  z.literal("calculate-rewards"),
+]);
+export type OperatorOperationCode = z.infer<typeof operatorOperationCodeSchema>;
+
+const contextualActionLabelSchema = z.string().min(1).max(120);
+const contextualActionContextSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }).strict(),
+  z
+    .object({
+      kind: z.literal("engine-job"),
+      jobId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("staker-reward"),
+      stakerPrincipal: z.string().min(1).max(500),
+      rewardCycle: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+      bondIndex: z
+        .string()
+        .regex(/^(?:0|[1-9][0-9]*)$/)
+        .nullable(),
+    })
+    .strict(),
+]);
+
+const openDomainActionSchema = z.union([
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("overview"),
+      section: z.enum(["attention", "cycle", "pool", "rewards", "health"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("pool"),
+      section: z.enum(["positions", "forecast", "roster"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("rewards"),
+      section: z
+        .enum(["outlook", "calculation", "claims", "fees", "withdrawals", "history"])
+        .nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("activity"),
+      section: z.enum(["active", "history"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("health"),
+      section: z.enum(["findings", "node", "signer", "network", "sources"]).nullable(),
+    })
+    .strict(),
+]);
+
+const networkHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("network"),
+  })
+  .strict();
+const nodeHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("node"),
+  })
+  .strict();
+const signerHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("signer"),
+  })
+  .strict();
+const poolDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("pool"),
+    section: z.enum(["positions", "forecast", "roster"]).nullable(),
+  })
+  .strict();
+const rewardsDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("rewards"),
+    section: z
+      .enum(["outlook", "calculation", "claims", "fees", "withdrawals", "history"])
+      .nullable(),
+  })
+  .strict();
+
+export const contextualActionSchema = z.union([
+  z
+    .object({
+      kind: z.literal("launch-operation"),
+      operation: operatorOperationCodeSchema,
+      context: contextualActionContextSchema,
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("resume-activity"),
+      activityId: z.string().min(1).max(500),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-settings"),
+      section: z.enum(["attachment", "sources", "capabilities", "observer", "auth", "support"]),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("recheck"),
+      target: z.enum(["connection", "node", "api", "signer", "activity"]),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  openDomainActionSchema,
+]);
+export type ContextualAction = z.infer<typeof contextualActionSchema>;
+
+export const overviewEvidenceSchema = z
+  .object({
+    status: z.enum(["current", "delayed", "unavailable", "not-configured"]),
+    observedAt: z.iso.datetime().nullable(),
+    anchor: engineChainAnchorSchema.nullable(),
+    source: z.enum(["local-node", "signer", "indexed-api", "network-reference", "sidekick-store"]),
+    reason: z.string().min(1).max(1_000).nullable(),
+  })
+  .strict();
+export type OverviewEvidence = z.infer<typeof overviewEvidenceSchema>;
+
+export const operatorDeadlineSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("burn-block"),
+      burnBlockHeight: z.number().int().nonnegative(),
+      estimatedAt: z.iso.datetime().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reward-cycle"),
+      rewardCycleId: z.number().int().nonnegative(),
+      phase: z.enum(["before-prepare", "cycle-start"]),
+    })
+    .strict(),
+  z.object({ kind: z.literal("time"), at: z.iso.datetime() }).strict(),
+]);
+export type OperatorDeadline = z.infer<typeof operatorDeadlineSchema>;
+
+const overviewProtocolMomentSchema = z
+  .object({
+    status: z.enum(["scheduled", "due", "unavailable"]),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    blocksRemaining: z.number().int().nonnegative().nullable(),
+    estimatedAt: z.iso.datetime().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.status === "unavailable" &&
+      (value.burnBlockHeight !== null ||
+        value.blocksRemaining !== null ||
+        value.estimatedAt !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An unavailable protocol moment cannot carry schedule values",
+      });
+    }
+    if (
+      value.status !== "unavailable" &&
+      (value.burnBlockHeight === null || value.blocksRemaining === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A scheduled or due protocol moment requires a block and remaining distance",
+      });
+    }
+    if (value.status === "due" && value.blocksRemaining !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocksRemaining"],
+        message: "A due protocol moment must have zero blocks remaining",
+      });
+    }
+    if (value.status === "scheduled" && (value.blocksRemaining ?? 0) < 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocksRemaining"],
+        message: "A scheduled protocol moment must be in the future",
+      });
+    }
+  });
+
+export const overviewCycleSnapshotSchema = z
+  .object({
+    status: z.enum(["current", "unavailable"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    phase: z.enum(["reward", "prepare"]).nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    nextRewardCalculation: overviewProtocolMomentSchema,
+    nextPreparePhase: overviewProtocolMomentSchema,
+    evidence: z.array(overviewEvidenceSchema).min(1),
+  })
+  .strict();
+export type OverviewCycleSnapshot = z.infer<typeof overviewCycleSnapshotSchema>;
+
+export const overviewNetworkHealthSummarySchema = z
+  .object({
+    status: z.enum(["advancing", "needs-attention", "unavailable", "insufficient-evidence"]),
+    reference: z.string().min(1).max(120).nullable(),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    lastObservedAt: z.iso.datetime().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: networkHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewNetworkHealthSummary = z.infer<typeof overviewNetworkHealthSummarySchema>;
+
+export const overviewNodeHealthSummarySchema = z
+  .object({
+    status: z.enum(["aligned", "behind", "unavailable", "insufficient-evidence"]),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    peerHeightDifference: z.number().int().nullable(),
+    lastAdvancedAt: z.iso.datetime().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: nodeHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewNodeHealthSummary = z.infer<typeof overviewNodeHealthSummarySchema>;
+
+export const overviewSignerHealthSummarySchema = z
+  .object({
+    status: z.enum(["healthy", "needs-attention", "unavailable", "not-configured", "collecting"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    nodeHeightDifference: z.number().int().nullable(),
+    proposalsLastHour: z.number().int().nonnegative().nullable(),
+    acceptedLastHour: z.number().int().nonnegative().nullable(),
+    rejectedLastHour: z.number().int().nonnegative().nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: signerHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewSignerHealthSummary = z.infer<typeof overviewSignerHealthSummarySchema>;
+
+export const overviewAttentionTierSchema = z.enum(["urgent", "action-required", "needs-attention"]);
+export type OverviewAttentionTier = z.infer<typeof overviewAttentionTierSchema>;
+export const overviewDomainSchema = z.enum([
+  "connection",
+  "manager",
+  "pool",
+  "rewards",
+  "node",
+  "signer",
+  "network",
+  "sidekick",
+]);
+export type OverviewDomain = z.infer<typeof overviewDomainSchema>;
+
+export const overviewAttentionItemSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    attentionId: z.string().min(1).max(500),
+    tier: overviewAttentionTierSchema,
+    domain: overviewDomainSchema,
+    affectedDomains: z.array(overviewDomainSchema).min(1),
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(1_000),
+    impact: z.string().min(1).max(1_000),
+    openedAt: z.iso.datetime().nullable(),
+    updatedAt: z.iso.datetime(),
+    deadline: operatorDeadlineSchema.nullable(),
+    urgencyAt: z.iso.datetime().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    relatedActivityId: z.string().min(1).max(500).nullable(),
+    relatedFindingId: z.string().min(1).max(500).nullable(),
+    primaryAction: contextualActionSchema,
+    detailsAction: contextualActionSchema.nullable(),
+  })
+  .strict();
+export type OverviewAttentionItem = z.infer<typeof overviewAttentionItemSchema>;
+
+export const overviewInProgressItemSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    activityId: z.string().min(1).max(500),
+    domain: z.enum(["manager", "pool", "rewards", "node", "signer", "network", "sidekick"]),
+    title: z.string().min(1).max(200),
+    stage: z.string().min(1).max(200),
+    updatedAt: z.iso.datetime(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    primaryAction: z
+      .object({
+        kind: z.literal("resume-activity"),
+        activityId: z.string().min(1).max(500),
+        label: contextualActionLabelSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.primaryAction.activityId !== value.activityId) {
+      context.addIssue({
+        code: "custom",
+        path: ["primaryAction", "activityId"],
+        message: "In-progress action must resume the projected activity",
+      });
+    }
+  });
+export type OverviewInProgressItem = z.infer<typeof overviewInProgressItemSchema>;
+
+const overviewPoolCycleSchema = z
+  .object({
+    rewardCycleId: z.number().int().nonnegative(),
+    amountUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    inSignerSet: z.boolean(),
+  })
+  .strict();
+
+export const overviewPoolSummarySchema = z
+  .object({
+    status: z.enum(["ready", "needs-attention", "unavailable", "insufficient-evidence"]),
+    current: overviewPoolCycleSchema.nullable(),
+    next: overviewPoolCycleSchema.nullable(),
+    nextThresholdMarginUstx: z
+      .string()
+      .regex(/^-?(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    participants: z
+      .object({
+        stxOnly: z.number().int().nonnegative(),
+        bitcoinBond: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    nextChange: z
+      .object({
+        kind: z.enum(["join", "exit", "amount-change", "unlock"]),
+        rewardCycleId: z.number().int().nonnegative(),
+        participantCount: z.number().int().nonnegative(),
+        amountDeltaUstx: z
+          .string()
+          .regex(/^-?(?:0|[1-9][0-9]*)$/)
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: poolDetailsActionSchema,
+  })
+  .strict();
+export type OverviewPoolSummary = z.infer<typeof overviewPoolSummarySchema>;
+
+export const overviewRewardsSummarySchema = z
+  .object({
+    status: z.enum(["ready", "needs-attention", "unavailable", "insufficient-evidence"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    globalAccruedSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    estimatedPoolRewardSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    operatorFeeSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    confidence: z.enum(["exact", "estimated", "unavailable"]),
+    calculationState: z.enum(["pending", "completed", "ahead", "unknown"]).nullable(),
+    actionableClaims: z.number().int().nonnegative().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: rewardsDetailsActionSchema,
+  })
+  .strict();
+export type OverviewRewardsSummary = z.infer<typeof overviewRewardsSummarySchema>;
+
+export const overviewPageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    monitoring: z
+      .object({
+        network: z.string().min(1).max(100),
+        managerPrincipal: z.string().min(1).max(500),
+      })
+      .strict(),
+    cycle: overviewCycleSnapshotSchema,
+    network: overviewNetworkHealthSummarySchema,
+    node: overviewNodeHealthSummarySchema,
+    signer: overviewSignerHealthSummarySchema,
+    attention: z.array(overviewAttentionItemSchema),
+    inProgress: z.array(overviewInProgressItemSchema),
+    pool: overviewPoolSummarySchema,
+    rewards: overviewRewardsSummarySchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const attentionIds = new Set<string>();
+    for (const [index, item] of value.attention.entries()) {
+      if (attentionIds.has(item.attentionId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["attention", index, "attentionId"],
+          message: "Attention IDs must be unique",
+        });
+      }
+      attentionIds.add(item.attentionId);
+    }
+    const activityIds = new Set<string>();
+    for (const [index, item] of value.inProgress.entries()) {
+      if (activityIds.has(item.activityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["inProgress", index, "activityId"],
+          message: "In-progress activity IDs must be unique",
+        });
+      }
+      activityIds.add(item.activityId);
+    }
+  });
+export type OverviewPage = z.infer<typeof overviewPageSchema>;
+
 export const browserWalletIntentNetworkSchema = z.enum([
   "mainnet",
   "pox5-testnet",

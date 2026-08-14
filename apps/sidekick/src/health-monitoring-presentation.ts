@@ -3,6 +3,7 @@ import {
   counterIncrease,
   healthSourceState,
   histogramP95,
+  lastHiroTipAdvanceAt,
   lastTipAdvanceAt,
 } from "./health-monitoring-state.js";
 import type {
@@ -13,7 +14,10 @@ import type {
   HealthSourceState,
 } from "./health-monitoring-types.js";
 
+const networkAdvancementEvidenceWindowMs = 90_000;
+
 function evaluateHealthFindings(
+  observations: readonly HealthObservation[],
   nodeRpc: HealthSourceState,
   signerInfo: HealthSourceState,
   signerHeartbeat: HealthSourceState,
@@ -48,7 +52,15 @@ function evaluateHealthFindings(
       source: "signer",
     });
   }
-  if (nodeInfo?.is_fully_synced === false || (nodeHealth?.difference_from_max_peer ?? 0) > 0) {
+  const recentNodeSync = observations.slice(-3);
+  const nodeBehindPersisted =
+    recentNodeSync.length === 3 &&
+    recentNodeSync.every(
+      (observation) =>
+        observation.nodeInfo?.is_fully_synced === false ||
+        (observation.nodeHealth?.difference_from_max_peer ?? 0) > 0,
+    );
+  if (nodeBehindPersisted) {
     findings.push({
       id: "node-behind-network",
       severity: "critical",
@@ -109,6 +121,7 @@ export function buildHealthSnapshot({
   const nodeInfo = latest?.nodeInfo ?? null;
   const nodeHealth = latest?.nodeHealth ?? null;
   const findings = evaluateHealthFindings(
+    observations,
     nodeRpc,
     signerInfoState,
     signerHeartbeatState,
@@ -116,6 +129,15 @@ export function buildHealthSnapshot({
     nodeHealth,
   );
   const hiro = latest?.hiro ?? null;
+  const hiroLastTipAdvanceAt = lastHiroTipAdvanceAt(observations);
+  const hiroAdvancementStatus =
+    hiroLastTipAdvanceAt === null
+      ? "collecting"
+      : Date.parse(latest?.observedAt ?? new Date().toISOString()) -
+            Date.parse(hiroLastTipAdvanceAt) <=
+          networkAdvancementEvidenceWindowMs
+        ? "advancing"
+        : "insufficient-evidence";
   const signerInfo = latest?.signerInfo ?? null;
   const proposals = counterIncrease(
     lastHour,
@@ -208,6 +230,8 @@ export function buildHealthSnapshot({
         nodeInfo && hiro ? nodeInfo.stacks_tip_height - hiro.chain_tip.block_height : null,
       localBurnDifference:
         nodeInfo && hiro ? nodeInfo.burn_block_height - hiro.chain_tip.burn_block_height : null,
+      lastTipAdvanceAt: hiroLastTipAdvanceAt,
+      advancementStatus: hiroAdvancementStatus,
     },
     signer: {
       infoSource: signerInfoState,

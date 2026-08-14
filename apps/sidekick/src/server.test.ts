@@ -1,4 +1,7 @@
-import type { ConnectionAssessment } from "@stx-labs/signer-sidekick-api-contracts";
+import {
+  type ConnectionAssessment,
+  overviewPageSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
@@ -110,6 +113,144 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("serves the strict Overview projection from cached state without running reconciliation", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const snapshot = vi.fn(async () => ({
+      schemaVersion: 1,
+      generatedAt: "2026-08-14T12:00:00.000Z",
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      setup: null,
+      preflight: {
+        status: "pass",
+        node: {
+          serverVersion: "4.0.1",
+          version: "4.0.1",
+          commit: null,
+          networkId: 1,
+          burnBlockHeight: 962_300,
+          stacksTipHeight: 8_750_000,
+        },
+        api: {
+          serverVersion: "api",
+          burnBlockHeight: 962_298,
+          stacksTipHeight: 8_749_998,
+          burnBlockLag: 2,
+        },
+        pox: {
+          activationState: "active",
+          blocksUntilActivation: 0,
+          rewardCycleId: 141,
+          pox5Available: true,
+          pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+        },
+        cycle: {
+          currentId: 141,
+          nextId: 142,
+          preparePhaseStartBurnHeight: 963_300,
+          blocksUntilPreparePhase: 1_000,
+          rewardPhaseStartBurnHeight: 963_400,
+          blocksUntilRewardPhase: 1_100,
+          isPreparePhase: false,
+        },
+        compatibility: {
+          status: "matched",
+          profileId: "mainnet",
+          profileRevision: 1,
+          profileLabel: "Mainnet",
+          origin: "built-in",
+          nodeBuildPreviouslyTested: true,
+          reason: "matched",
+        },
+        checks: [],
+      },
+      manager: {
+        capabilities: {
+          signerManagerTrait: { compatible: true, reason: "matched" },
+          observedFunctions: { public: [], readOnly: [] },
+          sourceReview: { exactReviewed: true, reason: "reviewed" },
+          eventVocabulary: {
+            id: "reference-manager-v1",
+            normalizationAvailable: true,
+            adapter: null,
+            reason: "reviewed",
+          },
+          actions: [],
+        },
+      },
+      registration: null,
+      forecast: null,
+      rewards: null,
+      activity: { withdrawals: [] },
+      roster: [],
+      alerts: [],
+    }));
+    const synchronize = vi.fn(async () => ({}));
+    const engine = {
+      listJobs: vi
+        .fn()
+        .mockResolvedValue({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
+    } as unknown as TransactionEngineApiService;
+    const server = createServer({
+      service: { snapshot, supportSnapshot: snapshot, synchronize },
+      engine,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/overview" })).statusCode).toBe(401);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/overview",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(() => overviewPageSchema.parse(response.json())).not.toThrow();
+    expect(response.json()).toMatchObject({
+      schemaVersion: 1,
+      monitoring: { network: "mainnet" },
+      cycle: { rewardCycleId: 141 },
+      pool: { status: "unavailable" },
+      rewards: { status: "unavailable" },
+    });
+    expect(snapshot).toHaveBeenCalledWith(false);
+    expect(synchronize).not.toHaveBeenCalled();
+    expect(engine.listJobs).toHaveBeenCalledWith({
+      cursor: null,
+      limit: 100,
+      states: [
+        "prepared",
+        "preflighted",
+        "awaiting_approval",
+        "nonce_reserved",
+        "broadcast",
+        "confirmed",
+        "blocked",
+        "ambiguous",
+        "noncanonical_reobserve",
+      ],
+    });
+
+    vi.mocked(engine.listJobs).mockRejectedValueOnce(new Error("database unavailable"));
+    const unavailableResponse = await server.inject({
+      method: "GET",
+      url: "/api/v1/overview",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(unavailableResponse.statusCode).toBe(200);
+    expect(unavailableResponse.json()).toMatchObject({
+      attention: [
+        {
+          attentionId: "sidekick:activity-unavailable",
+          tier: "needs-attention",
+          primaryAction: { kind: "recheck", target: "activity" },
+        },
+      ],
+    });
   });
 
   it("serves connection recovery independently and gates operational routes", async () => {

@@ -7,6 +7,7 @@ import {
   browserWalletIntentSubmissionRequestSchema,
   type ConnectionAssessment,
   type DashboardAlert,
+  dashboardSnapshotSchema,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
@@ -17,16 +18,20 @@ import {
   type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
   type EngineJobPage,
+  type EngineJobState,
+  type EngineJobSummary,
   type EngineStatus,
   engineApprovalRequestSchema,
   engineDisableAdapterRequestSchema,
   engineForceObserveRequestSchema,
   engineInvalidateApprovalRequestSchema,
+  healthSnapshotSchema,
   healthSourceTestRequestSchema,
   managerSignerGrantPrepareRequestSchema,
   type OperationReadiness,
   type OperationReadinessCheck,
   operationReadinessSchema,
+  overviewPageSchema,
   type ReconciliationOperation,
   type ReconciliationSummary,
   reconciliationSummarySchema,
@@ -56,6 +61,7 @@ import type {
   SortDirection,
 } from "./operator-service.js";
 import type { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
+import { projectOverview } from "./overview-projection.js";
 import {
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
@@ -314,7 +320,11 @@ type ActivityOptions = Parameters<NonNullable<OperatorSnapshotService["activity"
 
 export interface TransactionEngineApiService {
   status(): Promise<EngineStatus> | EngineStatus;
-  listJobs(options: { cursor: string | null; limit: number }): Promise<EngineJobPage>;
+  listJobs(options: {
+    cursor: string | null;
+    limit: number;
+    states?: readonly EngineJobState[];
+  }): Promise<EngineJobPage>;
   getJob(jobId: string): Promise<EngineJobDetail | null>;
   approve(
     jobId: string,
@@ -335,6 +345,37 @@ export interface TransactionEngineApiService {
     request: EngineDisableAdapterRequest,
     actor: string,
   ): Promise<EngineDisableAdapterResponse>;
+}
+
+const overviewEngineJobStates = [
+  "prepared",
+  "preflighted",
+  "awaiting_approval",
+  "nonce_reserved",
+  "broadcast",
+  "confirmed",
+  "blocked",
+  "ambiguous",
+  "noncanonical_reobserve",
+] as const satisfies readonly EngineJobState[];
+
+async function listOverviewEngineJobs(
+  engine: TransactionEngineApiService,
+): Promise<EngineJobSummary[]> {
+  const jobs: EngineJobSummary[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+    const page = await engine.listJobs({ cursor, limit: 100, states: overviewEngineJobStates });
+    jobs.push(...page.items);
+    if (page.nextCursor === null) return jobs;
+    if (seenCursors.has(page.nextCursor)) {
+      throw new Error("Transaction engine pagination repeated a cursor");
+    }
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+  throw new Error("Active operation projection exceeds the bounded 1000-job Overview read");
 }
 
 export interface ServerOptions {
@@ -1536,6 +1577,48 @@ export function createServer(options: ServerOptions = {}) {
       service.summary ? service.summary(refresh) : service.snapshot(refresh),
     );
     return withObserverAlerts(snapshot, options.observerStatus?.());
+  });
+  server.get("/api/v1/overview", async (request, reply) => {
+    const refresh = (request.query as { refresh?: unknown }).refresh === "1";
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const result = await interactive(request, async () => {
+      const activityObservedAt = new Date().toISOString();
+      const [snapshotResult, healthResult, jobsResult] = await Promise.allSettled([
+        service.supportSnapshot ? service.supportSnapshot(refresh) : service.snapshot(refresh),
+        options.health
+          ? refresh
+            ? options.health.refresh()
+            : options.health.current()
+          : Promise.resolve(null),
+        options.engine ? listOverviewEngineJobs(options.engine) : Promise.resolve([]),
+      ]);
+      if (snapshotResult.status === "rejected") throw snapshotResult.reason;
+      const snapshot = dashboardSnapshotSchema.parse(snapshotResult.value);
+      const parsedHealth =
+        healthResult.status === "fulfilled" && healthResult.value !== null
+          ? healthSnapshotSchema.safeParse(healthResult.value)
+          : null;
+      const health = parsedHealth?.success ? parsedHealth.data : null;
+      const engineJobs = jobsResult.status === "fulfilled" ? jobsResult.value : [];
+      return overviewPageSchema.parse(
+        projectOverview({
+          snapshot,
+          health,
+          connection: options.connection?.current() ?? null,
+          engineJobs,
+          activitySource: {
+            status: jobsResult.status === "fulfilled" ? "current" : "unavailable",
+            observedAt: activityObservedAt,
+            reason:
+              jobsResult.status === "fulfilled"
+                ? null
+                : "Sidekick could not read active operation state.",
+          },
+          observerGap: options.observerStatus?.().gap ?? null,
+        }),
+      );
+    });
+    return reply.header("cache-control", "no-store").send(result);
   });
   server.get("/api/v1/support-bundle", async (_request, reply) => {
     const service = options.service;

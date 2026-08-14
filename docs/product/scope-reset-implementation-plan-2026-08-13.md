@@ -104,12 +104,19 @@ Purpose: separate valuable day-2 operations from onboarding before deleting onbo
 
 The retained action contract, authority, and evidence matrix is maintained in
 [Recurring operation contracts](recurring-operation-contracts-2026-08-13.md).
+The retained operation workspace contract is maintained in
+[Activity and action workspace](activity-and-action-workspace-2026-08-14.md). Its full Activity
+projection, navigation replacement, and the dependent Overview composition land in the later
+operator-experience slice after their domain authorities exist.
 
 - Move generic wallet-intent lifecycle, canonical transaction observation, signer registration/key
   rotation, manager administration, and reward actions out of onboarding modules.
 - Split action construction by capability adapter.
 - Rename setup readiness to manager/operation readiness.
 - Remove navigation and state dependencies on Fresh/Attach activation plans.
+- Extract the shared contextual action workspace and route retained recurring actions through it.
+  Keep the existing Manager/Operations destinations until the later Activity/Overview slice makes
+  every retained action and history record reachable from its replacement surface.
 
 Gate:
 
@@ -171,8 +178,11 @@ Gate:
 - identity-mismatch safe mode leaves liveness, read-only Settings, and support export available,
   reports non-readiness, and starts no reconciliation, event ingestion, projection writes, plans,
   or Assist work;
-- the Zero to Signing ownership/support decision is recorded;
-- the connect/observe/action Devnet acceptance path replaces the setup acceptance path.
+- the connect/observe/action Devnet acceptance path replaces the setup acceptance path and drives
+  the shared action workspace end to end: prepare and review a real Sidekick intent, submit its
+  exact transaction through a controlled Devnet browser-wallet provider that returns only the
+  transaction ID, then require Sidekick's independent verification and reconciliation to a
+  `complete` Activity group without any production bypass or test-only trust path.
 
 ## V2 roadmap
 
@@ -265,7 +275,21 @@ Gate:
 - Define a time-correlated StacksUp or operator-observability companion artifact without adding host
   control or unrestricted logs to Sidekick.
 
-### Slice 8: Assist re-evaluation
+### Slice 8: operator information architecture
+
+- Implement the server-owned Activity projection over durable authority records, including closed
+  status/outcome mappings, structured protocol deadlines, correlation aliases, and source coverage.
+- Calibrate and expose typed node, signer, and network findings before Overview consumes them; raw
+  tips never become independent Overview health verdicts.
+- Implement the frozen six-page navigation, shared action workspace, and route-specific page
+  loading. Preserve Manager/Operations until their actions/history are reachable in the same change
+  series, then remove the old routes without compatibility aliases.
+- Implement Overview as a pure read projection over Activity and typed domain outputs, preserving
+  independent freshness/failure states and the approved visual composition.
+- Run the Activity/action and Overview contract, browser, accessibility, responsive, Devnet action,
+  and support-snapshot acceptance suites.
+
+### Slice 9: Assist re-evaluation
 
 - Re-run independent security review on the reduced action surface.
 - Require reviewed capability fingerprints, attestation, nonce/finality/retry policy, revocation,
@@ -296,7 +320,7 @@ the reviewed slice for operator signing.
 - Support-artifact seam: before claiming single-artifact incident handoff.
 - Reward confidence and permissionless-calculation policy: before presenting forecasts/actions as
   operational recommendations.
-- Assist ownership and incident response: before Slice 8 can ship.
+- Assist ownership and incident response: before Slice 9 can ship.
 
 ## Recorded product decisions
 
@@ -312,3 +336,17 @@ the reviewed slice for operator signing.
   semantics because the same source is deployed under multiple Clarity versions. Capability
   evidence binds exact source SHA-256, Clarity version/epoch, and canonical callable-interface
   SHA-256; comment/format-insensitive token hashes remain research evidence only.
+- **Frozen operator navigation (2026-08-14):** the product navigation is Overview, Pool, Rewards,
+  Activity, Signer Health, and Settings. Manager and Operations are removed after their retained
+  actions/history move; old dashboard URLs do not receive compatibility redirects. Action
+  workspaces are contextual routes rather than navigation items.
+- **Activity and contextual actions (2026-08-14):** Activity is a server-owned deterministic read
+  projection over the existing durable authority records. Wallet-intent and engine states map to a
+  small operator vocabulary, related evidence is grouped once, and notices carry typed direct
+  actions. The normative contract is
+  [Activity and action workspace](activity-and-action-workspace-2026-08-14.md).
+- **Overview attention model (2026-08-14):** Overview is a read-only decision projection over typed
+  domain findings, Activity groups, and independent evidence states. It shows only current urgent,
+  action-required, or needs-attention work; scheduled facts stay in domain summaries, one root
+  cause suppresses derivative symptoms, and every item carries a direct `ContextualAction`. The
+  normative contract is [Overview attention model](overview-attention-model-2026-08-14.md).
