@@ -11,7 +11,14 @@ const targets = {
     listenPort: Number(process.env.SIDEKICK_PROXY_API_PORT ?? 13999),
     upstream: process.env.SIDEKICK_PROXY_API_UPSTREAM ?? "http://127.0.0.1:3999",
   },
+  observer: {
+    listenPort: Number(process.env.SIDEKICK_PROXY_OBSERVER_PORT ?? 23700),
+    upstream: process.env.SIDEKICK_PROXY_OBSERVER_UPSTREAM ?? "http://127.0.0.1:3700",
+    forwardPaths: new Set(["/new_block", "/new_burn_block", "/attachments/new"]),
+  },
 };
+
+const methodsWithoutBodies = new Set(["GET", "HEAD"]);
 
 const state = {
   node: {
@@ -24,6 +31,17 @@ const state = {
   },
   api: {
     mode: "pass",
+    latencyMs: 0,
+    statusCode: 503,
+    fixture: null,
+    pathContains: null,
+    remainingPasses: 0,
+  },
+  observer: {
+    // stacks-node starts before Sidekick has a deployed manager to bind. Acknowledge that bootstrap
+    // traffic without retaining it; the harness switches this proxy to pass-through only after
+    // Sidekick's private listener is ready.
+    mode: "ack",
     latencyMs: 0,
     statusCode: 503,
     fixture: null,
@@ -74,6 +92,19 @@ function startProxy(name, configuration) {
         sendJson(response, current.statusCode, { error: `injected_${name}_failure` });
         return;
       }
+      if (current.mode === "ack") {
+        if (!methodsWithoutBodies.has(request.method ?? "GET")) await readBody(request);
+        sendJson(response, 200, { accepted: true, forwarded: false });
+        return;
+      }
+      if (
+        configuration.forwardPaths &&
+        !configuration.forwardPaths.has(request.url?.split("?", 1)[0] ?? "")
+      ) {
+        if (!methodsWithoutBodies.has(request.method ?? "GET")) await readBody(request);
+        sendJson(response, 200, { accepted: true, forwarded: false });
+        return;
+      }
       if (
         current.mode === "fail-after" &&
         current.pathContains &&
@@ -94,7 +125,7 @@ function startProxy(name, configuration) {
         return;
       }
       try {
-        const body = ["GET", "HEAD"].includes(request.method ?? "GET")
+        const body = methodsWithoutBodies.has(request.method ?? "GET")
           ? undefined
           : await readBody(request);
         const upstream = await fetch(new URL(request.url ?? "/", configuration.upstream), {
@@ -138,8 +169,8 @@ const control = http
     }
     try {
       const body = JSON.parse((await readBody(request)).toString("utf8"));
-      if (!["node", "api"].includes(body.target)) throw new Error("invalid target");
-      if (!["pass", "drop", "status", "fixture", "fail-after"].includes(body.mode)) {
+      if (!Object.hasOwn(state, body.target)) throw new Error("invalid target");
+      if (!["ack", "pass", "drop", "status", "fixture", "fail-after"].includes(body.mode)) {
         throw new Error("invalid mode");
       }
       const latencyMs = Number(body.latencyMs ?? 0);

@@ -31,9 +31,10 @@ with a configured manager principal after those day-zero steps.
   from a network-wide condition. General host and daemon lifecycle management remain out of scope.
 - No bond creation, Bitcoin L1 lock handling, SPV proofs, early exits, or rollovers.
 
-Any interface-compatible manager can use the detected baseline administration and registration
-actions. Optional capabilities are enabled only when Sidekick can prove their reviewed interface;
-Assist has additional release gates.
+Any interface-compatible manager can use Sidekick's baseline state, health, and operational
+visibility. Transaction actions appear only when their required functions are present, and
+execution is enabled only when the deployed byte-exact source and Clarity/epoch semantics match a
+reviewed capability profile. Assist has additional release gates.
 
 ## Development
 

@@ -794,6 +794,52 @@ describe("manager wallet action preparation", () => {
     });
   });
 
+  it("holds transaction replacement for the full propagation grace period", async () => {
+    const harness = await submittedFeeActionHarness();
+    harness.setIndexed({ status: "not-found", httpStatus: 404 });
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({ status: "reobserve", verification: { outcome: "not-found" } });
+
+    await expect(
+      harness.wallet.replace(harness.prepared.id, "2026-07-19T12:16:59.999Z"),
+    ).rejects.toThrow("Wait at least 15 minutes");
+    expect(harness.wallet.get(harness.prepared.id)).toMatchObject({
+      status: "reobserve",
+      txid: harness.observed.status === "observed" ? harness.observed.value.txid : null,
+    });
+  });
+
+  it("holds a failed transaction that disappears until propagation grace expires", async () => {
+    const harness = await submittedFeeActionHarness();
+    if (harness.observed.status !== "observed") throw new Error("Observed fixture is incomplete");
+    harness.setIndexed({
+      ...harness.observed,
+      value: { ...harness.observed.value, resultRepr: "(err u1)" },
+    });
+    await expect(
+      harness.wallet.refresh(harness.prepared.id, "2026-07-19T12:03:00.000Z"),
+    ).resolves.toMatchObject({ status: "failed", verification: { outcome: "abort" } });
+    harness.setIndexed({ status: "not-found", httpStatus: 404 });
+
+    await expect(
+      harness.wallet.prepare(
+        { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+        "2026-07-19T12:10:00.000Z",
+      ),
+    ).resolves.toMatchObject({
+      id: harness.prepared.id,
+      status: "superseded",
+      verification: { outcome: "not-found" },
+    });
+    await expect(
+      harness.wallet.prepare(
+        { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+        "2026-07-19T12:17:00.000Z",
+      ),
+    ).resolves.toMatchObject({ status: "prepared", txid: null });
+  });
+
   it("recovers a submitted recurring action from the durable store after restart", async () => {
     const harness = await submittedFeeActionHarness();
     harness.setCurrentFee(250n);
@@ -1524,6 +1570,107 @@ describe("manager wallet action preparation", () => {
     await expect(
       wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
     ).rejects.toThrow("already been used");
+  });
+
+  it("re-verifies a rotated signer grant and refuses facts that changed during preparation", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const expectedMessageHashHex = "ca".repeat(32);
+    const first = validRegistrationFreshState(`${"44".repeat(32)}01`, expectedMessageHashHex);
+    const rotated = validRegistrationFreshState(`${"45".repeat(32)}01`, expectedMessageHashHex);
+    const rotatedKey = rotated.signerGrant.verified?.signerKeyHex;
+    if (!rotatedKey) throw new Error("Rotated signer fixture is incomplete");
+    readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+    let current = first;
+    let reads = 0;
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {
+            callReadOnly: vi.fn(async (_principal: string, functionName: string) => {
+              if (functionName === "is-admin") return trueCV();
+              if (functionName === "get-signer-grant-message-hash") {
+                return bufferCV(Buffer.from(expectedMessageHashHex, "hex"));
+              }
+              throw new Error(`Unexpected read-only call ${functionName}`);
+            }),
+            getMapEntry: vi.fn(async () => noneCV()),
+          },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: () => {
+        reads += 1;
+        if (reads === 2) current = rotated;
+        return current;
+      },
+    });
+
+    await expect(
+      wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
+    ).rejects.toMatchObject({ code: "wallet_intent_conflict" });
+    expect(
+      store.walletIntents.findActiveScope({
+        action: "register-self",
+        scope: managerPrincipal,
+        now: "2026-07-19T12:01:00.000Z",
+      }),
+    ).toBeNull();
+
+    await expect(
+      wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
+    ).resolves.toMatchObject({
+      status: "prepared",
+      transaction: {
+        params: {
+          functionName: "register-self",
+          functionArgs: expect.arrayContaining([cvToHex(bufferCV(Buffer.from(rotatedKey, "hex")))]),
+        },
+      },
+    });
+  });
+
+  it("allows re-registration when the existing signer key grant is no longer valid", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const expectedMessageHashHex = "db".repeat(32);
+    const state = validRegistrationFreshState(`${"46".repeat(32)}01`, expectedMessageHashHex);
+    const signerKeyHex = state.signerGrant.verified?.signerKeyHex;
+    if (!signerKeyHex) throw new Error("Signer fixture is incomplete");
+    const snapshot = trustedManagerSnapshot({ signerKeyHex });
+    readOperatorAnchorSnapshotMock.mockResolvedValue({
+      ...snapshot,
+      registration: { registered: true, signerKeyGrantValid: false, signerKeyHex },
+    });
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {
+            callReadOnly: vi.fn(async (_principal: string, functionName: string) => {
+              if (functionName === "is-admin") return trueCV();
+              if (functionName === "get-signer-grant-message-hash") {
+                return bufferCV(Buffer.from(expectedMessageHashHex, "hex"));
+              }
+              throw new Error(`Unexpected read-only call ${functionName}`);
+            }),
+            getMapEntry: vi.fn(async () => noneCV()),
+          },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: () => state,
+    });
+
+    await expect(
+      wallet.prepare({ action: "register-self", actorPrincipal: requiredSender }),
+    ).resolves.toMatchObject({
+      status: "prepared",
+      transaction: { params: { functionName: "register-self" } },
+    });
   });
 
   it("reconciles a submitted V1 registration against the signer key sealed in its transaction", async () => {

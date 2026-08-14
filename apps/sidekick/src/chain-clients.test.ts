@@ -1017,6 +1017,43 @@ describe("Stacks node client", () => {
     expect(() => client.getHeaders(2_101, { tip: indexBlockHash })).toThrow();
   });
 
+  it("reads the same bounded Nakamoto block by ID and canonical height", async () => {
+    const block = Uint8Array.of(1, 2, 3, 4);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response(block, { status: 200 }));
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getNakamotoBlockById(indexBlockHash)).resolves.toEqual(block);
+    await expect(
+      client.getNakamotoBlockAtHeight(8_750_000, { tip: indexBlockHash }),
+    ).resolves.toEqual(block);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      `http://127.0.0.1:20443/v3/blocks/${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v3/blocks/height/8750000?tip=${indexBlockHash.slice(2)}`,
+    ]);
+  });
+
+  it("rejects empty and oversized Nakamoto block responses", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(new Uint8Array(), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 200,
+          headers: { "content-length": String(2 * 1_024 * 1_024 + 1) },
+        }),
+      );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "invalid Nakamoto block size",
+    );
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "oversized Nakamoto block",
+    );
+  });
+
   it.each([
     {
       rewardCycleLength: 2_100,

@@ -139,14 +139,30 @@ and attached-manager print subscriptions, plus `nodeToml` keys to merge into the
 callback receipt in Sidekick's `/metrics` output or support snapshot.
 
 Callbacks are prompts, not chain authority. New block and burn-block deliveries initially remain
-`observer-claimed`; malformed claims are quarantined, and implicit attachment callbacks are
-durably expired because Sidekick does not use them. A restart-safe worker pins Stacks header reads
-to one stable canonical node tip and promotes only matching height, block-hash, and index-hash
-claims to `node-verified`. It does not trust callback-embedded events or write them to operator
-history or current projections. Burn-block callbacks remain trigger-only and expire after the node
-reaches their height because the local Stacks RPC cannot prove the claimed burn hash. Timer-driven
-reconciliation and API backfill remain the authoritative recovery paths while event-level
-transaction verification is added.
+`observer-claimed`; malformed, conflicting, or implausibly future claims are quarantined, and
+implicit attachment callbacks are durably expired because Sidekick does not use them. A
+restart-safe worker fences the node's info and tenure tips, then requires the block fetched by the
+callback's index ID to be byte-identical to the canonical Nakamoto block at that height under the
+stable tip. The callback block-hash field and embedded events remain untrusted and are never copied
+directly into operator history or current projections. Terminal raw JSON has time, count, and byte
+retention bounds while delivery evidence remains. Burn-block callbacks remain trigger-only and
+expire after the node reaches their height because the local Stacks RPC cannot prove the claimed
+burn hash. A PoX-5 print triggers a full roster scan only when its decoded routing hint names the
+configured manager; network-wide activity for other managers is ignored. Manager activity is read
+independently from the indexed API and becomes permanent only when the local transaction index
+confirms the event's exact canonical height and index-block hash; five-minute manager-history and
+30-minute full-roster backfills remain the recovery paths.
+
+After deployment, measure the two-second p95 target over a bounded live window instead of relying
+on a single callback or lifetime counters. The default check observes at least 100 `current` domain
+reconciliations over ten minutes and exits nonzero when fewer than 95% finish within two seconds:
+
+```sh
+pnpm observer:latency:check --url http://127.0.0.1:3998/metrics
+```
+
+Use `--observe-seconds 0` only to inspect cumulative process-lifetime counters. A Sidekick restart
+during a bounded measurement invalidates the counter deltas and requires rerunning the check.
 
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.

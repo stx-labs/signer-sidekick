@@ -139,22 +139,28 @@ describe("observer delivery ingress", () => {
     expect(sameChainBlock.json()).toMatchObject({
       deliveryId: first.json().deliveryId,
       duplicate: true,
+      state: "quarantined",
     });
     expect(store.observerInboxStatus()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 3,
       duplicates: 2,
+      queueDepth: 0,
+      quarantined: 1,
+      lastQuarantine: { reason: "conflicting-callback-bodies-for-chain-position" },
     });
     const conflictingClaim = await server.inject({
       method: "POST",
       url: "/new_block",
       payload: { ...payload, block_hash: `0x${"99".repeat(32)}` },
     });
-    expect(conflictingClaim.json()).toMatchObject({ duplicate: false });
+    expect(conflictingClaim.json()).toMatchObject({ duplicate: false, state: "quarantined" });
     expect(store.observerInboxStatus()).toMatchObject({
       uniqueDeliveries: 2,
       deliveryAttempts: 4,
       duplicates: 2,
+      queueDepth: 0,
+      quarantined: 2,
     });
     await server.close();
   });
@@ -272,6 +278,48 @@ describe("observer delivery ingress", () => {
     });
     expect(response.statusCode).toBe(500);
     expect(acceptObserverDelivery).toHaveBeenCalledOnce();
+    await server.close();
+  });
+
+  it("bounds retained raw callback JSON while preserving terminal delivery evidence", async () => {
+    const { store, server } = await fixture();
+    const oldPayload = '{"old":true}';
+    const currentPayload = '{"current":true}';
+    store.acceptObserverDelivery({
+      endpointKind: "attachments",
+      contentSha256: "aa".repeat(32),
+      rawPayloadJson: oldPayload,
+      payloadBytes: Buffer.byteLength(oldPayload),
+      state: "expired",
+      stateReason: "implicit-attachment-callback-not-used",
+      claimedBlockHeight: null,
+      claimedBlockHash: null,
+      claimedIndexBlockHash: null,
+      claimedBurnBlockHeight: null,
+      claimedBurnBlockHash: null,
+      receivedAt: "2026-08-11T12:00:00.000Z",
+    });
+    store.acceptObserverDelivery({
+      endpointKind: "attachments",
+      contentSha256: "bb".repeat(32),
+      rawPayloadJson: currentPayload,
+      payloadBytes: Buffer.byteLength(currentPayload),
+      state: "expired",
+      stateReason: "implicit-attachment-callback-not-used",
+      claimedBlockHeight: null,
+      claimedBlockHash: null,
+      claimedIndexBlockHash: null,
+      claimedBurnBlockHeight: null,
+      claimedBurnBlockHash: null,
+      receivedAt: "2026-08-13T12:00:00.000Z",
+    });
+
+    expect(store.observerInboxStatus()).toMatchObject({
+      uniqueDeliveries: 2,
+      expired: 2,
+      prunedPayloads: 1,
+      retainedPayloadBytes: Buffer.byteLength(currentPayload),
+    });
     await server.close();
   });
 

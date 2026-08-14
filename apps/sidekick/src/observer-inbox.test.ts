@@ -1,42 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import type { NodeHeader, NodeInfo, StacksNodeClient } from "./chain-clients.js";
-import {
-  ObserverInboxProcessor,
-  stacksBlockHeaderHash,
-  stacksIndexBlockHash,
-  verifyObserverDelivery,
-} from "./observer-inbox.js";
+import type { NodeInfo, NodeTenureInfo, StacksNodeClient } from "./chain-clients.js";
+import { ObserverInboxProcessor, verifyObserverDelivery } from "./observer-inbox.js";
 import { openSidekickStore, type StoredObserverDelivery } from "./storage/store.js";
 
 const firstObservedAt = "2026-08-13T12:00:00.000Z";
 const processedAt = "2026-08-13T12:00:01.000Z";
-const consensusOne = "11".repeat(20);
-const consensusTwo = "22".repeat(20);
-
-function header(serialized: string, consensusHash: string, parentBlockId: string): NodeHeader {
-  return {
-    header: serialized,
-    consensus_hash: consensusHash,
-    parent_block_id: parentBlockId as `0x${string}`,
-  };
-}
-
-const ancestorHeader = header("020304", consensusTwo, `0x${"33".repeat(32)}`);
-const ancestorBlockHash = stacksBlockHeaderHash(ancestorHeader.header);
-const ancestorIndexBlockHash = stacksIndexBlockHash({
-  blockHash: ancestorBlockHash,
-  consensusHash: ancestorHeader.consensus_hash,
-});
-const tipHeader = header("010203", consensusOne, ancestorIndexBlockHash);
-const tipIndexBlockHash = stacksIndexBlockHash({
-  blockHash: stacksBlockHeaderHash(tipHeader.header),
-  consensusHash: tipHeader.consensus_hash,
-});
+const ancestorBlockHash = `0x${"22".repeat(32)}`;
+const ancestorIndexBlockHash = `0x${"33".repeat(32)}`;
+const tipIndexBlockHash = `0x${"44".repeat(32)}`;
+const canonicalBlock = Uint8Array.of(1, 2, 3, 4);
 const stableNodeInfo: NodeInfo = {
   network_id: 1,
   burn_block_height: 962_300,
   stacks_tip_height: 101,
   stacks_tip: tipIndexBlockHash,
+};
+const stableTenureInfo: NodeTenureInfo = {
+  tip_block_id: tipIndexBlockHash,
+  tip_height: 101,
+  reward_cycle: 141,
 };
 
 function delivery(overrides: Partial<StoredObserverDelivery> = {}): StoredObserverDelivery {
@@ -60,41 +42,60 @@ function delivery(overrides: Partial<StoredObserverDelivery> = {}): StoredObserv
 function node(
   overrides: {
     getInfo?: StacksNodeClient["getInfo"];
-    getHeaders?: StacksNodeClient["getHeaders"];
+    getTenureInfo?: StacksNodeClient["getTenureInfo"];
+    getNakamotoBlockById?: StacksNodeClient["getNakamotoBlockById"];
+    getNakamotoBlockAtHeight?: StacksNodeClient["getNakamotoBlockAtHeight"];
   } = {},
-): Pick<StacksNodeClient, "getInfo" | "getHeaders"> {
+): Pick<
+  StacksNodeClient,
+  "getInfo" | "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
+> {
   return {
     getInfo: overrides.getInfo ?? vi.fn(async () => stableNodeInfo),
-    getHeaders: overrides.getHeaders ?? vi.fn(async () => [tipHeader, ancestorHeader]),
+    getTenureInfo: overrides.getTenureInfo ?? vi.fn(async () => stableTenureInfo),
+    getNakamotoBlockById: overrides.getNakamotoBlockById ?? vi.fn(async () => canonicalBlock),
+    getNakamotoBlockAtHeight:
+      overrides.getNakamotoBlockAtHeight ?? vi.fn(async () => canonicalBlock),
   };
 }
 
 describe("observer inbox verification", () => {
-  it("promotes a callback only after proving its header on a stable canonical node ancestry", async () => {
+  it("promotes a callback only after its node block equals the canonical block at that height", async () => {
     const getInfo = vi.fn(async () => stableNodeInfo);
-    const getHeaders = vi.fn(async () => [tipHeader, ancestorHeader]);
+    const getTenureInfo = vi.fn(async () => stableTenureInfo);
+    const getNakamotoBlockById = vi.fn(async () => canonicalBlock);
+    const getNakamotoBlockAtHeight = vi.fn(async () => canonicalBlock);
 
     await expect(
-      verifyObserverDelivery(delivery(), node({ getInfo, getHeaders })),
+      verifyObserverDelivery(
+        delivery(),
+        node({ getInfo, getTenureInfo, getNakamotoBlockById, getNakamotoBlockAtHeight }),
+      ),
     ).resolves.toEqual({
       action: "finish",
       state: "node-verified",
-      reason: "canonical-stacks-header-verified;embedded-events-remain-untrusted",
+      reason:
+        "canonical-stacks-index-block-verified;callback-block-hash-and-events-remain-untrusted",
     });
     expect(getInfo).toHaveBeenCalledTimes(2);
-    expect(getHeaders).toHaveBeenCalledWith(2, { tip: tipIndexBlockHash });
+    expect(getTenureInfo).toHaveBeenCalledTimes(2);
+    expect(getNakamotoBlockById).toHaveBeenCalledWith(ancestorIndexBlockHash, {});
+    expect(getNakamotoBlockAtHeight).toHaveBeenCalledWith(100, {
+      tip: tipIndexBlockHash,
+    });
   });
 
-  it("quarantines forged block and index claims without trusting callback events", async () => {
+  it("quarantines an index claim whose node block is not canonical at the claimed height", async () => {
     await expect(
       verifyObserverDelivery(
-        delivery({
-          claimedBlockHash: `0x${"aa".repeat(32)}`,
-          claimedIndexBlockHash: `0x${"bb".repeat(32)}`,
-        }),
-        node(),
+        delivery({ claimedIndexBlockHash: `0x${"bb".repeat(32)}` }),
+        node({ getNakamotoBlockById: vi.fn(async () => Uint8Array.of(9, 9, 9)) }),
       ),
-    ).resolves.toMatchObject({ action: "finish", state: "quarantined" });
+    ).resolves.toMatchObject({
+      action: "finish",
+      state: "quarantined",
+      reason: "callback-index-block-does-not-match-canonical-node-block-at-height",
+    });
   });
 
   it("retries when the canonical tip changes while the proof is being read", async () => {
@@ -103,16 +104,29 @@ describe("observer inbox verification", () => {
       stacks_tip_height: 102,
       stacks_tip: `0x${"44".repeat(32)}` as `0x${string}`,
     };
-    const getInfo = vi.fn<StacksNodeClient["getInfo"]>();
-    getInfo.mockResolvedValueOnce(stableNodeInfo).mockResolvedValueOnce(changedInfo);
+    const changedTenure = {
+      ...stableTenureInfo,
+      tip_height: 102,
+      tip_block_id: `0x${"55".repeat(32)}` as `0x${string}`,
+    };
+    const getInfo = vi
+      .fn<StacksNodeClient["getInfo"]>()
+      .mockResolvedValueOnce(stableNodeInfo)
+      .mockResolvedValueOnce(changedInfo);
+    const getTenureInfo = vi
+      .fn<StacksNodeClient["getTenureInfo"]>()
+      .mockResolvedValueOnce(stableTenureInfo)
+      .mockResolvedValueOnce(changedTenure);
 
-    await expect(verifyObserverDelivery(delivery(), node({ getInfo }))).resolves.toMatchObject({
+    await expect(
+      verifyObserverDelivery(delivery(), node({ getInfo, getTenureInfo })),
+    ).resolves.toMatchObject({
       action: "retry",
       reason: "canonical-node-tip-changed-during-proof",
     });
   });
 
-  it("retries future claims and expires claims outside the node header proof window", async () => {
+  it("bounds future claims and expires claims outside the node proof window", async () => {
     await expect(
       verifyObserverDelivery(delivery({ claimedBlockHeight: 102 }), node()),
     ).resolves.toMatchObject({
@@ -120,9 +134,18 @@ describe("observer inbox verification", () => {
       reason: "node-has-not-reached-claimed-stacks-height",
     });
     await expect(
+      verifyObserverDelivery(delivery({ claimedBlockHeight: 1_000_000 }), node()),
+    ).resolves.toMatchObject({
+      action: "finish",
+      state: "quarantined",
+      reason: "claimed-stacks-height-unreasonably-ahead-of-node",
+    });
+    await expect(
       verifyObserverDelivery(delivery({ claimedBlockHeight: 0 }), {
         getInfo: vi.fn(async () => ({ ...stableNodeInfo, stacks_tip_height: 2_100 })),
-        getHeaders: vi.fn(),
+        getTenureInfo: vi.fn(async () => ({ ...stableTenureInfo, tip_height: 2_100 })),
+        getNakamotoBlockById: vi.fn(),
+        getNakamotoBlockAtHeight: vi.fn(),
       }),
     ).resolves.toMatchObject({
       action: "finish",
@@ -155,6 +178,54 @@ describe("observer inbox verification", () => {
 });
 
 describe("observer inbox processor", () => {
+  it("leaves durable callbacks unclaimed while the deployment connection is blocked", async () => {
+    const { store } = await openSidekickStore(":memory:", firstObservedAt);
+    let connected = false;
+    try {
+      store.acceptObserverDelivery({
+        endpointKind: "new-block",
+        contentSha256: "99".repeat(32),
+        rawPayloadJson: "{}",
+        payloadBytes: 2,
+        state: "observer-claimed",
+        stateReason: null,
+        claimedBlockHeight: 100,
+        claimedBlockHash: ancestorBlockHash,
+        claimedIndexBlockHash: ancestorIndexBlockHash,
+        claimedBurnBlockHeight: null,
+        claimedBurnBlockHash: null,
+        receivedAt: firstObservedAt,
+      });
+      const processor = new ObserverInboxProcessor({
+        store,
+        getNode: () => node(),
+        canProcess: () => connected,
+        now: () => new Date(processedAt),
+        retryIntervalMs: 60_000,
+      });
+      processor.start();
+      await processor.processAvailable();
+      expect(store.observerInboxStatus()).toMatchObject({
+        queueDepth: 1,
+        processing: 0,
+        processingAttempts: 0,
+      });
+
+      connected = true;
+      processor.notify();
+      await processor.processAvailable();
+      expect(store.observerInboxStatus()).toMatchObject({
+        queueDepth: 0,
+        processing: 0,
+        nodeVerified: 1,
+        processingAttempts: 1,
+      });
+      await processor.stop();
+    } finally {
+      store.close();
+    }
+  });
+
   it("recovers an interrupted claim and processes it exactly once after restart", async () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
     const onProcessed = vi.fn();
@@ -192,6 +263,12 @@ describe("observer inbox processor", () => {
         nodeVerified: 1,
         processingAttempts: 2,
         lastProcessedAt: processedAt,
+        lastVerifiedStacksBlock: {
+          height: 100,
+          indexBlockHash: ancestorIndexBlockHash,
+          receivedAt: firstObservedAt,
+          verifiedAt: processedAt,
+        },
       });
       expect(onProcessed).toHaveBeenCalledOnce();
       expect(onProcessed).toHaveBeenCalledWith(
@@ -243,6 +320,74 @@ describe("observer inbox processor", () => {
         processingAttempts: 1,
       });
       expect(onError).toHaveBeenCalledOnce();
+      await processor.stop();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("recovers a processing claim immediately when its targeted retry update throws", async () => {
+    const { store } = await openSidekickStore(":memory:", firstObservedAt);
+    const onError = vi.fn();
+    let nodeAvailable = false;
+    try {
+      store.acceptObserverDelivery({
+        endpointKind: "new-block",
+        contentSha256: "be".repeat(32),
+        rawPayloadJson: "{}",
+        payloadBytes: 2,
+        state: "observer-claimed",
+        stateReason: null,
+        claimedBlockHeight: 100,
+        claimedBlockHash: ancestorBlockHash,
+        claimedIndexBlockHash: ancestorIndexBlockHash,
+        claimedBurnBlockHeight: null,
+        claimedBurnBlockHash: null,
+        receivedAt: firstObservedAt,
+      });
+      const retryObserverDelivery = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error("transient retry update failure");
+        })
+        .mockImplementation((input) => store.retryObserverDelivery(input));
+      const processor = new ObserverInboxProcessor({
+        store: {
+          claimNextObserverDelivery: (claimedAt) => store.claimNextObserverDelivery(claimedAt),
+          finishObserverDelivery: (input) => store.finishObserverDelivery(input),
+          recoverObserverDeliveries: (recoveredAt) => store.recoverObserverDeliveries(recoveredAt),
+          retryObserverDelivery,
+        },
+        getNode: () =>
+          nodeAvailable
+            ? node()
+            : node({
+                getInfo: vi.fn(async () => {
+                  throw new Error("node unavailable");
+                }),
+              }),
+        now: () => new Date(processedAt),
+        onError,
+        retryIntervalMs: 60_000,
+      });
+      processor.start();
+      await processor.processAvailable();
+      expect(store.observerInboxStatus()).toMatchObject({ queueDepth: 1, processing: 0 });
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Observer verification failed and its targeted retry update was recovered",
+        }),
+      );
+
+      nodeAvailable = true;
+      processor.notify();
+      await processor.processAvailable();
+      expect(store.observerInboxStatus()).toMatchObject({
+        queueDepth: 0,
+        processing: 0,
+        nodeVerified: 1,
+      });
+      expect(retryObserverDelivery).toHaveBeenCalledOnce();
       await processor.stop();
     } finally {
       store.close();

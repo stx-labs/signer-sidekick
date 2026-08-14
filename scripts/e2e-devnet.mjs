@@ -195,7 +195,7 @@ function sidekickRuntimeArgs(
     "host.docker.internal:host-gateway",
     "--mount",
     `source=${volume},target=/data`,
-    ...(publish ? ["--publish", "127.0.0.1:3998:3998"] : []),
+    ...(publish ? ["--publish", "127.0.0.1:3998:3998", "--publish", "127.0.0.1:3700:3700"] : []),
     "--env",
     "SIDEKICK_NETWORK=devnet",
     "--env",
@@ -212,6 +212,8 @@ function sidekickRuntimeArgs(
     "SIDEKICK_STAKER_PAGE_LIMIT=1",
     "--env",
     "SIDEKICK_EVENT_PAGE_LIMIT=1",
+    "--env",
+    "SIDEKICK_EVENT_HTTP_HOST=0.0.0.0",
     ...(trustedProfilesDirectory
       ? [
           "--mount",
@@ -418,6 +420,8 @@ async function connectExistingManager(state) {
   if (connection.status !== "connected") {
     throw new Error(`Sidekick connection remained ${connection.status}`);
   }
+  await waitForHttp("http://127.0.0.1:3700/health/live", "Sidekick private event listener");
+  await proxyControl("observer", "pass");
   const observed = await waitFor(
     async () => {
       const status = await sidekickFetch(state, "/api/v1/status?refresh=1");
@@ -478,7 +482,10 @@ async function activePool(state) {
   const actor = createOperatorActor();
   await ensureRewardPhase(actor);
   const positions = [];
-  positions.push(await actor.updateFees(100));
+  const observerBefore = await readObserverMetrics();
+  const firstPosition = await actor.updateFees(100);
+  positions.push(firstPosition);
+  const observer = await verifyRealObserverCallback(state, firstPosition, observerBefore);
   positions.push(await actor.updateFees(250));
   positions.push(await actor.stake(DEVNET_ACCOUNTS.staker1));
   positions.push(await actor.stake(DEVNET_ACCOUNTS.staker2));
@@ -526,6 +533,7 @@ async function activePool(state) {
   const cycleSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
   return {
     connection,
+    observer,
     transactionIds: positions.map((position) => position.txid),
     interruptions: { roster: rosterInterruption, events: eventInterruption },
     firstSync: firstSync.result,
@@ -533,6 +541,98 @@ async function activePool(state) {
     replay: replay.result,
     cycle: { before: before.reward_cycle_id, after: after.reward_cycle_id },
     cycleSync: cycleSync.result,
+  };
+}
+
+function prometheusMetric(metrics, name, labels = null) {
+  const prefix = labels === null ? name : `${name}{${labels}}`;
+  const line = metrics.split("\n").find((candidate) => candidate.startsWith(`${prefix} `));
+  if (!line) throw new Error(`Sidekick metrics did not include ${prefix}`);
+  const value = Number(line.slice(prefix.length + 1));
+  if (!Number.isFinite(value)) throw new Error(`Sidekick metric ${prefix} was not numeric`);
+  return value;
+}
+
+async function readObserverMetrics() {
+  const response = await fetch("http://127.0.0.1:3998/metrics");
+  if (!response.ok) throw new Error(`Sidekick metrics returned HTTP ${response.status}`);
+  const metrics = await response.text();
+  const domain = (name, label) => prometheusMetric(metrics, name, `domain="${label}"`);
+  return {
+    deliveries: prometheusMetric(metrics, "sidekick_observer_deliveries_total"),
+    verified: prometheusMetric(metrics, "sidekick_observer_node_verified"),
+    quarantined: prometheusMetric(metrics, "sidekick_observer_quarantined"),
+    queueDepth: prometheusMetric(metrics, "sidekick_observer_queue_depth"),
+    currentSuccesses: domain("sidekick_observer_reconciliation_successes_total", "current"),
+    currentLatencySamples: domain(
+      "sidekick_observer_reconciliation_latency_seconds_count",
+      "current",
+    ),
+    currentWithinTwoSeconds: domain(
+      "sidekick_observer_reconciliation_within_two_seconds_total",
+      "current",
+    ),
+    managerSuccesses: domain(
+      "sidekick_observer_reconciliation_successes_total",
+      "manager-activity",
+    ),
+    managerLatencySamples: domain(
+      "sidekick_observer_reconciliation_latency_seconds_count",
+      "manager-activity",
+    ),
+  };
+}
+
+async function verifyRealObserverCallback(state, transaction, before) {
+  const blockHeight = transaction.confirmed.block_height;
+  const indexBlockHash = transaction.confirmed.index_block_hash;
+  if (!Number.isSafeInteger(blockHeight) || !/^0x[0-9a-f]{64}$/i.test(indexBlockHash ?? "")) {
+    throw new Error("Confirmed Devnet transaction did not expose its canonical block anchor");
+  }
+  const metrics = await waitFor(
+    async () => {
+      const current = await readObserverMetrics();
+      return current.deliveries > before.deliveries &&
+        current.verified > before.verified &&
+        current.currentSuccesses > before.currentSuccesses &&
+        current.currentLatencySamples > before.currentLatencySamples &&
+        current.managerSuccesses > before.managerSuccesses &&
+        current.managerLatencySamples > before.managerLatencySamples &&
+        current.queueDepth === 0
+        ? current
+        : null;
+    },
+    "a real stacks-node callback to verify and reconcile",
+    120_000,
+    500,
+  );
+  const bundle = await sidekickFetch(state, "/api/v1/support-bundle");
+  const observer = bundle.sections?.observer?.data;
+  const verified = observer?.inbox?.lastVerifiedStacksBlock;
+  if (
+    !observer?.listening ||
+    verified?.height < blockHeight ||
+    (verified.height === blockHeight &&
+      verified.indexBlockHash?.toLowerCase() !== indexBlockHash.toLowerCase())
+  ) {
+    throw new Error(
+      `Sidekick did not retain the real callback's canonical anchor: ${JSON.stringify({ blockHeight, indexBlockHash, observer })}`,
+    );
+  }
+  if (metrics.quarantined > before.quarantined) {
+    throw new Error("The real stacks-node callback was quarantined instead of verified");
+  }
+  return {
+    txid: transaction.txid,
+    blockHeight,
+    indexBlockHash,
+    deliveryDelta: metrics.deliveries - before.deliveries,
+    verifiedDelta: metrics.verified - before.verified,
+    currentLatencySamples: metrics.currentLatencySamples - before.currentLatencySamples,
+    currentWithinTwoSeconds: metrics.currentWithinTwoSeconds - before.currentWithinTwoSeconds,
+    lastCurrentLatencySeconds: observer.reconciliation.domains.current.callbackLatency.lastSeconds,
+    lastManagerActivityLatencySeconds:
+      observer.reconciliation.domains["manager-activity"].callbackLatency.lastSeconds,
   };
 }
 

@@ -208,8 +208,9 @@ Sidekick controls the Bitcoin lock, SPV proof, rollover, or exit lifecycle.
 ### Why events are the right direction
 
 The current implementation already has durable chain events, cursors, normalized manager activity,
-five-minute background snapshots, and 30-minute roster reconciliation. It is not dependent on an
-open browser, but it is timer-driven and the manager event stream is pulled from the Stacks API.
+30-second current-state refreshes, five-minute manager-history backfills, and 30-minute roster
+reconciliation. It is not dependent on an open browser, but its anti-entropy paths remain
+timer-driven and the manager event stream is pulled from the Stacks API.
 This creates avoidable delay and makes “current” behavior depend too much on indexer availability.
 
 Stacks Core's

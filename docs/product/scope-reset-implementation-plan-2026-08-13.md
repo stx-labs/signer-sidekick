@@ -198,8 +198,10 @@ The census is research/test input. It must not become a product-wide attach allo
 
 Implementation checkpoint (2026-08-13):
 
-- The private listener, bounded durable inbox, stable canonical-header proof, retry recovery, and
-  quarantine/expiry states are implemented. Embedded callback events remain untrusted.
+- The private listener, bounded durable inbox, stable Nakamoto index-block proof, retry recovery,
+  and quarantine/expiry states are implemented. The proof compares the raw block fetched by the
+  claimed index ID with the canonical block at that height under a fenced info/tenure tip; embedded
+  callback events and the callback block-hash field remain untrusted.
 - A verified block now requests an independent, coalesced current-state refresh. A verified manager
   `print` hint requests manager-history reconciliation without triggering a full roster scan;
   routine `/new_block` callbacks with an empty filtered event list do not hit the indexed API.
@@ -209,10 +211,33 @@ Implementation checkpoint (2026-08-13):
   bytes are never written directly to permanent activity history.
 - Both reconciliation domains run once at startup, so the durable cursor/projection machinery
   closes a crash between inbox completion and in-memory scheduling. Domain retry/coalescing state is
-  included in metrics and the support artifact. Current-state anti-entropy runs every 30 seconds;
-  callbacks are the faster path and the browser remains a read-only 15-second consumer.
-- Remaining Slice 5 work includes targeted PoX-5/roster invalidation, observer-gap detection,
-  reorg tests spanning callback through projection, and measured two-second projection latency.
+  included in metrics and the support artifact. Current-state anti-entropy runs every 30 seconds,
+  manager activity backfills every five minutes, callbacks are the faster path, and the browser
+  remains a read-only 15-second consumer.
+- Verified active PoX-5 `print` events whose decoded hint names the configured manager trigger a
+  separate coalesced roster reconciliation pinned to at least the callback's Stacks height;
+  network-wide PoX-5 activity for other managers and empty block callbacks do not perform a full
+  roster scan. The decoded event remains only a routing hint; anchored node/API reads remain the
+  witnesses for every persisted roster change.
+- A node-only 15-second gap monitor detects when the local node advances without a corresponding
+  callback, exposes the source heights and silence interval, requests the existing current-state
+  anti-entropy path, and adds an operator-visible warning while polling fallback is active. Node
+  read failures remain `unknown` instead of falsely blaming the observer.
+- Different callback bodies claiming one chain position quarantine that position instead of
+  allowing first-writer-wins promotion. Claims implausibly far ahead of the local node are
+  quarantined, and terminal raw payloads are pruned after 24 hours or when the retained set exceeds
+  25,000 payloads or 64 MiB; delivery identity and outcome evidence remain durable.
+- Callback-to-success projection latency is recorded per reconciliation domain as cumulative
+  Prometheus histograms and included in the support artifact. The callback-through-projection test
+  now proves that replacing the canonical block at the same height removes the old manager event and
+  converges on the replacement event.
+- The released-binary Devnet harness now routes a real Stacks Core observer callback through the
+  durable inbox and proves its canonical node anchor plus current-state and manager-activity
+  reconciliation before accepting the active-pool scenario. A bounded production check measures
+  the current-state callback latency histogram over ten minutes and fails unless at least 95% of a
+  minimum 100 samples complete within two seconds.
+- Remaining Slice 5 validation is operational: run that bounded latency check under normal live
+  load and confirm callback-loss/reordering recovery with a live observer before closing the gate.
 
 Gate:
 

@@ -91,6 +91,24 @@ const observerReconciliationDomainSchema = z
     lastFailureAt: z.iso.datetime().nullable(),
     lastError: z.string().max(500).nullable(),
     nextRetryAt: z.iso.datetime().nullable(),
+    callbackLatency: z
+      .object({
+        samples: z.number().int().nonnegative(),
+        sumSeconds: z.number().nonnegative(),
+        maxSeconds: z.number().nonnegative(),
+        lastSeconds: z.number().nonnegative().nullable(),
+        withinTwoSeconds: z.number().int().nonnegative(),
+        buckets: z
+          .object({
+            le1: z.number().int().nonnegative(),
+            le2: z.number().int().nonnegative(),
+            le5: z.number().int().nonnegative(),
+            le10: z.number().int().nonnegative(),
+            le30: z.number().int().nonnegative(),
+          })
+          .strict(),
+      })
+      .strict(),
   })
   .strict();
 
@@ -123,6 +141,8 @@ const observerRuntimeStatusSchema = z
         nodeVerified: z.number().int().nonnegative(),
         quarantined: z.number().int().nonnegative(),
         expired: z.number().int().nonnegative(),
+        retainedPayloadBytes: z.number().int().nonnegative(),
+        prunedPayloads: z.number().int().nonnegative(),
         lastReceivedAt: z.iso.datetime().nullable(),
         lastProcessedAt: z.iso.datetime().nullable(),
         oldestPendingAt: z.iso.datetime().nullable(),
@@ -131,6 +151,15 @@ const observerRuntimeStatusSchema = z
             height: z.number().int().nonnegative(),
             blockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
             indexBlockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+          })
+          .strict()
+          .nullable(),
+        lastVerifiedStacksBlock: z
+          .object({
+            height: z.number().int().nonnegative(),
+            indexBlockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+            receivedAt: z.iso.datetime(),
+            verifiedAt: z.iso.datetime(),
           })
           .strict()
           .nullable(),
@@ -159,8 +188,38 @@ const observerRuntimeStatusSchema = z
           .object({
             current: observerReconciliationDomainSchema,
             "manager-activity": observerReconciliationDomainSchema,
+            roster: observerReconciliationDomainSchema,
           })
           .strict(),
+      })
+      .strict()
+      .nullable(),
+    gap: z
+      .object({
+        schemaVersion: z.literal(1),
+        started: z.boolean(),
+        status: z.enum(["not-started", "unknown", "healthy", "degraded"]),
+        reason: z.enum([
+          "not-started",
+          "awaiting-first-node-sample",
+          "node-check-failed",
+          "awaiting-next-node-advance",
+          "observer-catch-up-window",
+          "observer-current",
+          "observer-behind-node",
+        ]),
+        intervalSeconds: z.number().positive(),
+        checksTotal: z.number().int().nonnegative(),
+        failuresTotal: z.number().int().nonnegative(),
+        consecutiveFailures: z.number().int().nonnegative(),
+        startedAt: z.iso.datetime().nullable(),
+        checkedAt: z.iso.datetime().nullable(),
+        baselineStacksHeight: z.number().int().nonnegative().nullable(),
+        nodeStacksHeight: z.number().int().nonnegative().nullable(),
+        observerStacksHeight: z.number().int().nonnegative().nullable(),
+        stacksGap: z.number().int().nonnegative().nullable(),
+        observerSilenceSeconds: z.number().nonnegative().nullable(),
+        lastError: z.string().max(500).nullable(),
       })
       .strict()
       .nullable(),

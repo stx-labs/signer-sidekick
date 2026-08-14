@@ -1609,4 +1609,15 @@ export const migrations: readonly Migration[] = [
           AND claimed_burn_block_hash IS NOT NULL;
     `,
   },
+  {
+    version: 24,
+    name: "observer_payload_retention",
+    sql: `
+      -- Preserve delivery identity and verification evidence after bounded raw callback JSON is
+      -- discarded. A pruned row is terminal, so the inbox worker never needs its body again.
+      ALTER TABLE observer_deliveries
+        ADD COLUMN payload_pruned INTEGER NOT NULL DEFAULT 0
+        CHECK (payload_pruned IN (0, 1));
+    `,
+  },
 ];

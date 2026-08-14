@@ -127,6 +127,10 @@ export interface ConnectionAssessmentOptions {
   config: Pick<SidekickConfig, "network" | "nodeRpcUrl" | "expectedNetworkId">;
   managerPrincipal: string;
   node: StacksNodeClient;
+  runtime?(): {
+    config: Pick<SidekickConfig, "network" | "nodeRpcUrl" | "expectedNetworkId">;
+    node: StacksNodeClient;
+  };
   store: Pick<
     SidekickStore,
     | "getDeploymentIdentity"
@@ -148,43 +152,53 @@ export interface ConnectionManagerInspection {
 }
 
 export class ConnectionAssessmentService {
-  private readonly configured: ConnectionAssessment["configured"];
-  private readonly inspectManager: (
-    tip: `0x${string}` | undefined,
-  ) => Promise<ConnectionManagerInspection>;
   private lastAssessment: ConnectionAssessment | null = null;
   private inFlight: Promise<ConnectionAssessment> | null = null;
 
   constructor(private readonly options: ConnectionAssessmentOptions) {
     parseContractPrincipal(options.managerPrincipal);
-    this.configured = {
-      network: options.config.network,
-      networkId: configuredNetworkId(options.config),
-      nodeRpcUrl: options.config.nodeRpcUrl,
-      managerPrincipal: options.managerPrincipal,
+  }
+
+  private runtime(): {
+    config: Pick<SidekickConfig, "network" | "nodeRpcUrl" | "expectedNetworkId">;
+    node: StacksNodeClient;
+  } {
+    return this.options.runtime?.() ?? { config: this.options.config, node: this.options.node };
+  }
+
+  private configured(
+    config: Pick<SidekickConfig, "network" | "nodeRpcUrl" | "expectedNetworkId">,
+  ): ConnectionAssessment["configured"] {
+    return {
+      network: config.network,
+      networkId: configuredNetworkId(config),
+      nodeRpcUrl: config.nodeRpcUrl,
+      managerPrincipal: this.options.managerPrincipal,
     };
-    this.inspectManager =
-      options.inspectManager ??
-      (async (tip) => {
-        const contractInterface = await options.node.getContractInterface(
-          options.managerPrincipal,
-          tip ? { tip } : undefined,
-        );
-        const trait = inspectManagerCapabilities({
-          contractInterface,
-          sourceSha256: "",
-          exactSourceReviewed: false,
-          sourceReviewReason:
-            "Connection assessment checks only the universal signer-manager trait",
-        }).signerManagerTrait;
-        return {
-          publishHeight: null,
-          traitCompatible: trait.compatible,
-          traitReason: trait.reason,
-          clarityVersion: contractInterface.clarity_version ?? null,
-          epoch: contractInterface.epoch ?? null,
-        };
-      });
+  }
+
+  private async inspectManager(
+    node: StacksNodeClient,
+    tip: `0x${string}` | undefined,
+  ): Promise<ConnectionManagerInspection> {
+    if (this.options.inspectManager) return await this.options.inspectManager(tip);
+    const contractInterface = await node.getContractInterface(
+      this.options.managerPrincipal,
+      tip ? { tip } : undefined,
+    );
+    const trait = inspectManagerCapabilities({
+      contractInterface,
+      sourceSha256: "",
+      exactSourceReviewed: false,
+      sourceReviewReason: "Connection assessment checks only the universal signer-manager trait",
+    }).signerManagerTrait;
+    return {
+      publishHeight: null,
+      traitCompatible: trait.compatible,
+      traitReason: trait.reason,
+      clarityVersion: contractInterface.clarity_version ?? null,
+      epoch: contractInterface.epoch ?? null,
+    };
   }
 
   current(): ConnectionAssessment | null {
@@ -215,6 +229,8 @@ export class ConnectionAssessmentService {
   }
 
   private deadlineAssessment(): ConnectionAssessment {
+    const { config } = this.runtime();
+    const configured = this.configured(config);
     const checkedAt = this.options.now?.() ?? new Date().toISOString();
     const checks = emptyChecks();
     const identity = this.options.store.getDeploymentIdentity();
@@ -237,7 +253,7 @@ export class ConnectionAssessmentService {
       outcomeCode: "node-unreachable",
       checkedAt,
       stale: Boolean(identity),
-      configured: this.configured,
+      configured,
       observed: null,
       identityStatus: identity ? "bound" : "unbound",
       identity,
@@ -247,15 +263,17 @@ export class ConnectionAssessmentService {
   }
 
   private async assess(): Promise<ConnectionAssessment> {
+    const { config, node } = this.runtime();
+    const configured = this.configured(config);
     const checkedAt = this.options.now?.() ?? new Date().toISOString();
     const checks = emptyChecks();
     let identity = this.options.store.getDeploymentIdentity();
     const legacyEvidence = identity ? null : this.options.store.inspectLegacyDeploymentEvidence();
     const identityMismatch = identity
-      ? boundIdentityMismatch(identity, this.configured)
+      ? boundIdentityMismatch(identity, configured)
       : legacyEvidenceMismatch(
           legacyEvidence ?? { networks: [], networkIds: [], managerPrincipals: [] },
-          this.configured,
+          configured,
         );
     if (identityMismatch) {
       setCheck(checks, "deployment-identity", "fail", identityMismatch);
@@ -264,7 +282,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "deployment-identity-mismatch",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: null,
         identityStatus: "mismatch",
         identity,
@@ -287,7 +305,7 @@ export class ConnectionAssessmentService {
 
     let nodeInfo: Awaited<ReturnType<StacksNodeClient["getInfo"]>>;
     try {
-      nodeInfo = await this.options.node.getInfo();
+      nodeInfo = await node.getInfo();
     } catch {
       setCheck(
         checks,
@@ -300,7 +318,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "node-unreachable",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: null,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -316,19 +334,19 @@ export class ConnectionAssessmentService {
       pox5ContractId: null,
       manager: null,
     };
-    if (nodeInfo.network_id !== this.configured.networkId) {
+    if (nodeInfo.network_id !== configured.networkId) {
       setCheck(
         checks,
         "node-network",
         "fail",
-        `Local node network ID ${nodeInfo.network_id} does not match configured network ID ${this.configured.networkId}.`,
+        `Local node network ID ${nodeInfo.network_id} does not match configured network ID ${configured.networkId}.`,
       );
       return assessment({
         status: "blocked",
         outcomeCode: "node-network-mismatch",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: observedBase,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -345,7 +363,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "deployment-identity-mismatch",
         checkedAt,
         stale: true,
-        configured: this.configured,
+        configured,
         observed: observedBase,
         identityStatus: "mismatch",
         identity,
@@ -356,7 +374,7 @@ export class ConnectionAssessmentService {
 
     let poxInfo: Awaited<ReturnType<StacksNodeClient["getPoxInfo"]>>;
     try {
-      poxInfo = await this.options.node.getPoxInfo(
+      poxInfo = await node.getPoxInfo(
         nodeInfo.stacks_tip ? { tip: nodeInfo.stacks_tip } : undefined,
       );
     } catch {
@@ -366,7 +384,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "node-unreachable",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: observedBase,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -383,7 +401,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "pox5-unavailable",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: observedWithPox,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -394,7 +412,7 @@ export class ConnectionAssessmentService {
     setCheck(checks, "pox5", "pass", `PoX-5 is active at ${pox5ContractId}.`);
 
     const principalNetwork = parseContractPrincipal(this.options.managerPrincipal).network;
-    const expectedPrincipalNetwork = configuredPrincipalNetwork(this.options.config.network);
+    const expectedPrincipalNetwork = configuredPrincipalNetwork(config.network);
     if (principalNetwork !== expectedPrincipalNetwork) {
       setCheck(
         checks,
@@ -407,7 +425,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "principal-network-mismatch",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: observedWithPox,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -424,7 +442,7 @@ export class ConnectionAssessmentService {
 
     let manager: ConnectionManagerInspection;
     try {
-      manager = await this.inspectManager(nodeInfo.stacks_tip);
+      manager = await this.inspectManager(node, nodeInfo.stacks_tip);
     } catch (error) {
       if (error instanceof UpstreamHttpError && error.status === 404) {
         const observed = {
@@ -449,7 +467,7 @@ export class ConnectionAssessmentService {
           outcomeCode: "manager-not-deployed",
           checkedAt,
           stale: Boolean(identity),
-          configured: this.configured,
+          configured,
           observed,
           identityStatus: identity ? "bound" : "unbound",
           identity,
@@ -468,7 +486,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "node-unreachable",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed: observedWithPox,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -495,7 +513,7 @@ export class ConnectionAssessmentService {
         outcomeCode: "manager-trait-mismatch",
         checkedAt,
         stale: Boolean(identity),
-        configured: this.configured,
+        configured,
         observed,
         identityStatus: identity ? "bound" : "unbound",
         identity,
@@ -507,7 +525,7 @@ export class ConnectionAssessmentService {
 
     identity = identity
       ? this.options.store.recordDeploymentIdentityVerification({
-          network: this.options.config.network,
+          network: config.network,
           networkId: nodeInfo.network_id,
           parentNetworkId: nodeInfo.parent_network_id ?? null,
           managerPrincipal: this.options.managerPrincipal,
@@ -517,7 +535,7 @@ export class ConnectionAssessmentService {
           pox5ContractId,
         })
       : this.options.store.bindDeploymentIdentity({
-          network: this.options.config.network,
+          network: config.network,
           networkId: nodeInfo.network_id,
           parentNetworkId: nodeInfo.parent_network_id ?? null,
           managerPrincipal: this.options.managerPrincipal,
@@ -536,7 +554,7 @@ export class ConnectionAssessmentService {
       outcomeCode: null,
       checkedAt,
       stale: false,
-      configured: this.configured,
+      configured,
       observed,
       identityStatus: "bound",
       identity,

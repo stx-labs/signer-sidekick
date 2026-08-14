@@ -589,6 +589,27 @@ async function fetchJson<T>(
   schema: z.ZodType<T>,
   request: RequestInit = {},
 ): Promise<T> {
+  const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
+  cancellationSignal?.throwIfAborted();
+  try {
+    return schema.parse(await response.json());
+  } catch (error) {
+    cancellationSignal?.throwIfAborted();
+    throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
+      cause: error,
+    });
+  }
+}
+
+async function fetchResponse(
+  fetchImpl: Fetch,
+  url: string,
+  request: RequestInit = {},
+): Promise<{
+  response: Response;
+  cancellationSignal: AbortSignal | undefined;
+  endpoint: string;
+}> {
   const endpoint = sanitizedEndpoint(url);
   const maxAttempts = 4;
   const interactiveSignal = currentInteractiveRequestSignal();
@@ -649,17 +670,31 @@ async function fetchJson<T>(
       throw new UpstreamHttpError(`${endpoint} returned HTTP ${response.status}`, response.status);
     }
 
-    cancellationSignal?.throwIfAborted();
-    try {
-      return schema.parse(await response.json());
-    } catch (error) {
-      cancellationSignal?.throwIfAborted();
-      throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
-        cause: error,
-      });
-    }
+    return { response, cancellationSignal, endpoint };
   }
   throw new UpstreamUnavailableError(`${endpoint} was unavailable`);
+}
+
+const MAX_NAKAMOTO_BLOCK_BYTES = 2 * 1_024 * 1_024;
+
+async function fetchBoundedBytes(
+  fetchImpl: Fetch,
+  url: string,
+  request: RequestInit = {},
+): Promise<Uint8Array> {
+  const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
+  cancellationSignal?.throwIfAborted();
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > MAX_NAKAMOTO_BLOCK_BYTES) {
+    await cancelResponse(response);
+    throw new UpstreamSchemaError(`${endpoint} returned an oversized Nakamoto block`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  cancellationSignal?.throwIfAborted();
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_NAKAMOTO_BLOCK_BYTES) {
+    throw new UpstreamSchemaError(`${endpoint} returned an invalid Nakamoto block size`);
+  }
+  return bytes;
 }
 
 export class StacksNodeClient {
@@ -678,8 +713,10 @@ export class StacksNodeClient {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/health`, nodeHealthSchema);
   }
 
-  getTenureInfo(): Promise<NodeTenureInfo> {
-    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/tenures/info`, nodeTenureInfoSchema);
+  getTenureInfo(options: { signal?: AbortSignal } = {}): Promise<NodeTenureInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/tenures/info`, nodeTenureInfoSchema, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
   getHeaders(count: number, options?: ChainReadOptions): Promise<NodeHeader[]> {
@@ -689,6 +726,27 @@ export class StacksNodeClient {
       appendQuery(`${this.baseUrl}/v2/headers/${parsedCount}`, { tip: readTip(options) }),
       nodeHeadersSchema,
       options?.signal ? { signal: options.signal } : {},
+    );
+  }
+
+  getNakamotoBlockById(
+    blockId: ChainAnchor["indexBlockHash"],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Uint8Array> {
+    const parsedBlockId = canonicalHex.parse(blockId).slice(2);
+    return fetchBoundedBytes(this.fetchImpl, `${this.baseUrl}/v3/blocks/${parsedBlockId}`, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  getNakamotoBlockAtHeight(height: number, options: ChainReadOptions): Promise<Uint8Array> {
+    const parsedHeight = z.number().int().nonnegative().safe().parse(height);
+    return fetchBoundedBytes(
+      this.fetchImpl,
+      appendQuery(`${this.baseUrl}/v3/blocks/height/${parsedHeight}`, {
+        tip: readTip(options),
+      }),
+      options.signal ? { signal: options.signal } : {},
     );
   }
 

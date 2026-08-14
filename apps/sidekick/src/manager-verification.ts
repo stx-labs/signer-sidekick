@@ -215,6 +215,14 @@ function artifactExecutionSemanticsMatch(
   artifact: ReviewedManagerArtifact,
   contractInterface: ContractInterface,
 ): boolean {
+  if (
+    !artifact.clarityVersion ||
+    !artifact.epoch ||
+    !contractInterface.clarity_version ||
+    !contractInterface.epoch
+  ) {
+    return false;
+  }
   return (
     contractInterface.clarity_version === artifact.clarityVersion &&
     contractInterface.epoch === artifact.epoch

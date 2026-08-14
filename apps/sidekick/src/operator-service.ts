@@ -86,13 +86,12 @@ export interface OperatorSynchronizationProgress {
 
 export interface OperatorSynchronizationOptions {
   signal?: AbortSignal;
+  /** Do not consume an event trigger until the indexed source has reached its verified block. */
+  minimumStacksHeight?: number | null;
   onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
 }
 
-export interface ManagerActivitySynchronizationOptions extends OperatorSynchronizationOptions {
-  /** Do not consume an event trigger until the indexed source has reached its verified block. */
-  minimumStacksHeight?: number | null;
-}
+export type ManagerActivitySynchronizationOptions = OperatorSynchronizationOptions;
 
 export type SortDirection = "asc" | "desc";
 export type PoolRosterSort =
@@ -907,6 +906,15 @@ export class OperatorService {
           422,
           "synchronization_sources_incompatible",
           "Sync is blocked by node, API, PoX-5, or manager compatibility checks. Review preflight and manager verification, then retry",
+        );
+      }
+      if (
+        options.minimumStacksHeight !== null &&
+        options.minimumStacksHeight !== undefined &&
+        preflight.api.stacksTipHeight < options.minimumStacksHeight
+      ) {
+        throw new Error(
+          `Roster reconciliation is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
         );
       }
       const indexedAnchor = await captureChainAnchor(node, api);

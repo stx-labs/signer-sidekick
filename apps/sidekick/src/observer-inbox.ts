@@ -1,8 +1,13 @@
-import { createHash } from "node:crypto";
-import type { NodeHeader, NodeInfo, StacksNodeClient } from "./chain-clients.js";
+import {
+  type NodeInfo,
+  type NodeTenureInfo,
+  type StacksNodeClient,
+  UpstreamHttpError,
+} from "./chain-clients.js";
 import type { SidekickStore, StoredObserverDelivery } from "./storage/store.js";
 
 const MAX_HEADER_PROOF_DEPTH = 2_100;
+const MAX_FUTURE_BLOCK_DISTANCE = 12;
 const DEFAULT_RETRY_INTERVAL_MS = 15_000;
 const DEFAULT_MAX_BATCH_SIZE = 100;
 
@@ -14,7 +19,10 @@ type ObserverInboxStore = Pick<
   | "retryObserverDelivery"
 >;
 
-type ObserverVerificationNode = Pick<StacksNodeClient, "getInfo" | "getHeaders">;
+type ObserverVerificationNode = Pick<
+  StacksNodeClient,
+  "getInfo" | "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
+>;
 
 export type ObserverVerificationOutcome =
   | {
@@ -24,48 +32,23 @@ export type ObserverVerificationOutcome =
     }
   | { action: "retry"; reason: string };
 
-function sha512_256(bytes: Uint8Array): Buffer {
-  return createHash("sha512-256").update(bytes).digest();
-}
-
-export function stacksBlockHeaderHash(serializedHeaderHex: string): `0x${string}` {
-  const headerBytes = Buffer.from(serializedHeaderHex.replace(/^0x/i, ""), "hex");
-  return `0x${sha512_256(headerBytes).toString("hex")}`;
-}
-
-export function stacksIndexBlockHash(input: {
-  blockHash: string;
-  consensusHash: string;
-}): `0x${string}` {
-  const blockHash = Buffer.from(input.blockHash.replace(/^0x/i, ""), "hex");
-  const consensusHash = Buffer.from(input.consensusHash.replace(/^0x/i, ""), "hex");
-  return `0x${sha512_256(Buffer.concat([blockHash, consensusHash])).toString("hex")}`;
-}
-
-function sameCanonicalTip(left: NodeInfo, right: NodeInfo): boolean {
+function sameCanonicalTip(
+  leftInfo: NodeInfo,
+  leftTenure: NodeTenureInfo,
+  rightInfo: NodeInfo,
+  rightTenure: NodeTenureInfo,
+): boolean {
   return (
-    left.stacks_tip !== undefined &&
-    left.stacks_tip === right.stacks_tip &&
-    left.stacks_tip_height === right.stacks_tip_height
+    leftInfo.stacks_tip !== undefined &&
+    leftInfo.stacks_tip === rightInfo.stacks_tip &&
+    leftInfo.stacks_tip_height === rightInfo.stacks_tip_height &&
+    leftTenure.tip_height === rightTenure.tip_height &&
+    leftTenure.tip_block_id === rightTenure.tip_block_id
   );
 }
 
-function canonicalHeaderIds(
-  headers: readonly NodeHeader[],
-  tip: `0x${string}`,
-): readonly `0x${string}`[] | null {
-  const ids: `0x${string}`[] = [];
-  for (const [index, header] of headers.entries()) {
-    const blockHash = stacksBlockHeaderHash(header.header);
-    const id = stacksIndexBlockHash({
-      blockHash,
-      consensusHash: header.consensus_hash,
-    });
-    const expected = index === 0 ? tip : headers[index - 1]?.parent_block_id;
-    if (id !== expected) return null;
-    ids.push(id);
-  }
-  return ids;
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && Buffer.compare(left, right) === 0;
 }
 
 async function verifyStacksBlockDelivery(
@@ -85,13 +68,27 @@ async function verifyStacksBlockDelivery(
     };
   }
 
-  const before = await node.getInfo({ ...(signal ? { signal } : {}) });
-  if (!before.stacks_tip) return { action: "retry", reason: "node-tip-id-unavailable" };
-  if (delivery.claimedBlockHeight > before.stacks_tip_height) {
+  const requestOptions = signal ? { signal } : {};
+  const [beforeInfo, beforeTenure] = await Promise.all([
+    node.getInfo(requestOptions),
+    node.getTenureInfo(requestOptions),
+  ]);
+  if (!beforeInfo.stacks_tip) return { action: "retry", reason: "node-tip-id-unavailable" };
+  if (beforeInfo.stacks_tip_height !== beforeTenure.tip_height) {
+    return { action: "retry", reason: "node-tip-sources-disagree" };
+  }
+  if (delivery.claimedBlockHeight > beforeTenure.tip_height + MAX_FUTURE_BLOCK_DISTANCE) {
+    return {
+      action: "finish",
+      state: "quarantined",
+      reason: "claimed-stacks-height-unreasonably-ahead-of-node",
+    };
+  }
+  if (delivery.claimedBlockHeight > beforeTenure.tip_height) {
     return { action: "retry", reason: "node-has-not-reached-claimed-stacks-height" };
   }
 
-  const distance = before.stacks_tip_height - delivery.claimedBlockHeight;
+  const distance = beforeTenure.tip_height - delivery.claimedBlockHeight;
   if (distance >= MAX_HEADER_PROOF_DEPTH) {
     return {
       action: "finish",
@@ -100,42 +97,44 @@ async function verifyStacksBlockDelivery(
     };
   }
 
-  const headers = await node.getHeaders(distance + 1, {
-    tip: before.stacks_tip,
+  let claimedBlock: Uint8Array;
+  try {
+    claimedBlock = await node.getNakamotoBlockById(
+      delivery.claimedIndexBlockHash as `0x${string}`,
+      requestOptions,
+    );
+  } catch (error) {
+    if (error instanceof UpstreamHttpError && error.status === 404) {
+      return {
+        action: "finish",
+        state: "quarantined",
+        reason: "callback-index-block-is-not-known-to-local-node",
+      };
+    }
+    throw error;
+  }
+  const canonicalBlock = await node.getNakamotoBlockAtHeight(delivery.claimedBlockHeight, {
+    tip: beforeTenure.tip_block_id,
     ...(signal ? { signal } : {}),
   });
-  const after = await node.getInfo({ ...(signal ? { signal } : {}) });
-  if (!sameCanonicalTip(before, after)) {
+  const [afterInfo, afterTenure] = await Promise.all([
+    node.getInfo(requestOptions),
+    node.getTenureInfo(requestOptions),
+  ]);
+  if (!sameCanonicalTip(beforeInfo, beforeTenure, afterInfo, afterTenure)) {
     return { action: "retry", reason: "canonical-node-tip-changed-during-proof" };
   }
-  if (headers.length !== distance + 1) {
-    return { action: "retry", reason: "node-header-proof-incomplete" };
-  }
-
-  const canonicalIds = canonicalHeaderIds(headers, before.stacks_tip);
-  if (!canonicalIds) {
-    return { action: "retry", reason: "node-header-ancestry-inconsistent" };
-  }
-  const claimedHeader = headers[distance];
-  const claimedCanonicalId = canonicalIds[distance];
-  if (!claimedHeader || !claimedCanonicalId) {
-    return { action: "retry", reason: "node-header-proof-incomplete" };
-  }
-  const canonicalBlockHash = stacksBlockHeaderHash(claimedHeader.header);
-  if (
-    canonicalBlockHash !== delivery.claimedBlockHash ||
-    claimedCanonicalId !== delivery.claimedIndexBlockHash
-  ) {
+  if (!sameBytes(claimedBlock, canonicalBlock)) {
     return {
       action: "finish",
       state: "quarantined",
-      reason: "callback-stacks-block-claim-does-not-match-canonical-node-header",
+      reason: "callback-index-block-does-not-match-canonical-node-block-at-height",
     };
   }
   return {
     action: "finish",
     state: "node-verified",
-    reason: "canonical-stacks-header-verified;embedded-events-remain-untrusted",
+    reason: "canonical-stacks-index-block-verified;callback-block-hash-and-events-remain-untrusted",
   };
 }
 
@@ -188,6 +187,7 @@ function safeErrorReason(error: unknown): string {
 export class ObserverInboxProcessor {
   readonly #store: ObserverInboxStore;
   readonly #getNode: () => ObserverVerificationNode;
+  readonly #canProcess: () => boolean;
   readonly #now: () => Date;
   readonly #onError: (error: unknown) => void;
   readonly #onProcessed: (
@@ -205,6 +205,7 @@ export class ObserverInboxProcessor {
   constructor(options: {
     store: ObserverInboxStore;
     getNode: () => ObserverVerificationNode;
+    canProcess?: () => boolean;
     now?: () => Date;
     onError?: (error: unknown) => void;
     onProcessed?: (
@@ -216,6 +217,7 @@ export class ObserverInboxProcessor {
   }) {
     this.#store = options.store;
     this.#getNode = options.getNode;
+    this.#canProcess = options.canProcess ?? (() => true);
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError ?? (() => undefined);
     this.#onProcessed = options.onProcessed ?? (() => undefined);
@@ -274,6 +276,7 @@ export class ObserverInboxProcessor {
     let processed = 0;
     while (this.#started && this.#drainRequested) {
       this.#drainRequested = false;
+      if (!this.#canProcess()) return processed;
       let batchAttempts = 0;
       for (let batchIndex = 0; batchIndex < this.#maxBatchSize && this.#started; batchIndex += 1) {
         const now = this.#now().toISOString();
@@ -287,12 +290,17 @@ export class ObserverInboxProcessor {
             const nextAttemptAt = new Date(
               Date.parse(completedAt) + this.#retryIntervalMs,
             ).toISOString();
-            this.#store.retryObserverDelivery({
+            const retryFailure = this.#returnToQueue({
               deliveryId: delivery.deliveryId,
               reason: outcome.reason,
               retriedAt: completedAt,
               nextAttemptAt,
             });
+            if (retryFailure) {
+              this.#drainRequested = false;
+              if (!signal.aborted) this.#onError(retryFailure);
+              return processed;
+            }
             continue;
           }
           this.#store.finishObserverDelivery({
@@ -311,14 +319,23 @@ export class ObserverInboxProcessor {
           processed += 1;
         } catch (error) {
           const retriedAt = this.#now().toISOString();
-          this.#store.retryObserverDelivery({
+          const retryFailure = this.#returnToQueue({
             deliveryId: delivery.deliveryId,
             reason: safeErrorReason(error),
             retriedAt,
             nextAttemptAt: new Date(Date.parse(retriedAt) + this.#retryIntervalMs).toISOString(),
           });
           this.#drainRequested = false;
-          if (!signal.aborted) this.#onError(error);
+          if (!signal.aborted) {
+            this.#onError(
+              retryFailure
+                ? new AggregateError(
+                    [error, retryFailure],
+                    "Observer verification failed and its targeted retry update was recovered",
+                  )
+                : error,
+            );
+          }
           return processed;
         }
       }
@@ -327,5 +344,24 @@ export class ObserverInboxProcessor {
       }
     }
     return processed;
+  }
+
+  #returnToQueue(input: Parameters<ObserverInboxStore["retryObserverDelivery"]>[0]): Error | null {
+    try {
+      this.#store.retryObserverDelivery(input);
+      return null;
+    } catch (retryError) {
+      try {
+        // A targeted retry update can fail after a transient store fault. Recover every processing
+        // claim immediately so this process does not require a restart to make the row eligible.
+        this.#store.recoverObserverDeliveries(input.retriedAt);
+      } catch (recoveryError) {
+        return new AggregateError(
+          [retryError, recoveryError],
+          "Observer delivery could not be returned to the durable queue",
+        );
+      }
+      return retryError instanceof Error ? retryError : new Error(String(retryError));
+    }
   }
 }

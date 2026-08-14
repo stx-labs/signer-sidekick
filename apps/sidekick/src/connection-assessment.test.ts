@@ -77,6 +77,14 @@ function service(options: {
   now?: () => string;
   inspectManager?: () => Promise<ConnectionManagerInspection>;
   assessmentDeadlineMs?: number;
+  runtime?: () => {
+    config: {
+      network: "mainnet" | "testnet" | "devnet" | "regtest";
+      nodeRpcUrl: string;
+      expectedNetworkId?: number;
+    };
+    node: StacksNodeClient;
+  };
 }): ConnectionAssessmentService {
   return new ConnectionAssessmentService({
     config: {
@@ -93,6 +101,7 @@ function service(options: {
     ...(options.assessmentDeadlineMs === undefined
       ? {}
       : { assessmentDeadlineMs: options.assessmentDeadlineMs }),
+    ...(options.runtime ? { runtime: options.runtime } : {}),
     inspectManager: options.inspectManager ?? (async () => managerReport()),
   });
 }
@@ -210,6 +219,35 @@ describe("first-run connection assessment", () => {
         lastBurnBlockHeight: nodeInfo.burn_block_height,
       },
     });
+  });
+
+  it("resolves the configured node again for each forced assessment", async () => {
+    const store = await memoryStore();
+    const originalInfo = vi.fn(async () => nodeInfo);
+    const replacementInfo = vi.fn(async () => ({ ...nodeInfo, stacks_tip_height: 8_750_100 }));
+    let current = {
+      config: { network: "mainnet" as const, nodeRpcUrl: "http://old-node:20443" },
+      node: node({ getInfo: originalInfo }),
+    };
+    const connection = service({ store, runtime: () => current });
+
+    expect(await connection.check()).toMatchObject({
+      status: "connected",
+      configured: { nodeRpcUrl: "http://old-node:20443" },
+      observed: { stacksTipHeight: nodeInfo.stacks_tip_height },
+    });
+    current = {
+      config: { network: "mainnet", nodeRpcUrl: "http://new-node:20443" },
+      node: node({ getInfo: replacementInfo }),
+    };
+
+    expect(await connection.check(true)).toMatchObject({
+      status: "connected",
+      configured: { nodeRpcUrl: "http://new-node:20443" },
+      observed: { stacksTipHeight: 8_750_100 },
+    });
+    expect(originalInfo).toHaveBeenCalledOnce();
+    expect(replacementInfo).toHaveBeenCalledOnce();
   });
 
   it("bounds an unresponsive local-node assessment with the stable unavailable outcome", async () => {

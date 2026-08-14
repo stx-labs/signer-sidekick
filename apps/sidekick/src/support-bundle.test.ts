@@ -97,6 +97,32 @@ const dashboardSnapshot = {
   alerts: [],
 };
 
+const observerDomainStatus = {
+  pending: false,
+  running: false,
+  requests: 2,
+  coalescedRequests: 1,
+  successes: 1,
+  failuresTotal: 0,
+  consecutiveFailures: 0,
+  requestedStacksHeight: 8_750_000,
+  requestedBurnHeight: null,
+  lastRequestedAt: "2026-08-13T12:00:29.000Z",
+  lastStartedAt: "2026-08-13T12:00:30.000Z",
+  lastSuccessAt: "2026-08-13T12:00:31.000Z",
+  lastFailureAt: null,
+  lastError: null,
+  nextRetryAt: null,
+  callbackLatency: {
+    samples: 1,
+    sumSeconds: 2,
+    maxSeconds: 2,
+    lastSeconds: 2,
+    withinTwoSeconds: 1,
+    buckets: { le1: 0, le2: 1, le5: 1, le10: 1, le30: 1 },
+  },
+};
+
 describe("operator support bundle", () => {
   const collectedAt = new Date("2026-08-13T12:01:00.000Z");
   const application = operatorSupportApplication(
@@ -156,6 +182,8 @@ describe("operator support bundle", () => {
           nodeVerified: 9,
           quarantined: 1,
           expired: 1,
+          retainedPayloadBytes: 4096,
+          prunedPayloads: 3,
           lastReceivedAt: "2026-08-13T12:00:30.000Z",
           lastProcessedAt: "2026-08-13T12:00:31.000Z",
           oldestPendingAt: "2026-08-13T12:00:30.000Z",
@@ -164,6 +192,12 @@ describe("operator support bundle", () => {
             blockHash: `0x${"11".repeat(32)}`,
             indexBlockHash: `0x${"22".repeat(32)}`,
           },
+          lastVerifiedStacksBlock: {
+            height: 8_750_000,
+            indexBlockHash: `0x${"22".repeat(32)}`,
+            receivedAt: "2026-08-13T12:00:29.000Z",
+            verifiedAt: "2026-08-13T12:00:31.000Z",
+          },
           lastClaimedBurnBlock: { height: 962_250, blockHash: `0x${"33".repeat(32)}` },
           lastQuarantine: {
             endpointKind: "new-block",
@@ -171,7 +205,33 @@ describe("operator support bundle", () => {
             receivedAt: "2026-08-13T11:59:00.000Z",
           },
         },
-        reconciliation: null,
+        reconciliation: {
+          schemaVersion: 1,
+          started: true,
+          domains: {
+            current: observerDomainStatus,
+            "manager-activity": observerDomainStatus,
+            roster: observerDomainStatus,
+          },
+        },
+        gap: {
+          schemaVersion: 1,
+          started: true,
+          status: "healthy",
+          reason: "observer-current",
+          intervalSeconds: 15,
+          checksTotal: 4,
+          failuresTotal: 0,
+          consecutiveFailures: 0,
+          startedAt: "2026-08-13T11:59:00.000Z",
+          checkedAt: "2026-08-13T12:00:31.000Z",
+          baselineStacksHeight: 8_749_999,
+          nodeStacksHeight: 8_750_000,
+          observerStacksHeight: 8_750_000,
+          stacksGap: 0,
+          observerSilenceSeconds: 2,
+          lastError: null,
+        },
       }),
       bundleId: "10000000-0000-4000-8000-000000000001",
       now: () => collectedAt,
@@ -197,7 +257,15 @@ describe("operator support bundle", () => {
         database: { status: "ok", data: { schemaVersion: 21 } },
         observer: {
           status: "ok",
-          data: { enabled: true, listening: true, inbox: { queueDepth: 1, duplicates: 2 } },
+          data: {
+            enabled: true,
+            listening: true,
+            inbox: { queueDepth: 1, duplicates: 2 },
+            reconciliation: {
+              domains: { "manager-activity": { callbackLatency: { withinTwoSeconds: 1 } } },
+            },
+            gap: { status: "healthy", stacksGap: 0 },
+          },
         },
       },
       safety: {

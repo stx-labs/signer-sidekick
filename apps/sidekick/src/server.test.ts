@@ -217,6 +217,108 @@ describe("local API", () => {
     expect(service.synchronize).not.toHaveBeenCalled();
   });
 
+  it("allows an unavailable node URL to be repaired without weakening blocked identity mode", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: false,
+      lastSuccessful: null,
+    } as ConnectionAssessment;
+    const connected = {
+      ...unavailable,
+      status: "connected",
+      outcomeCode: null,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const updateSettings = vi.fn(() => ({ nodeRpcUrl: "http://new-node:20443" }));
+    const onConnectionAssessed = vi.fn();
+    const server = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        settings: () => ({}),
+        updateSettings,
+      },
+      connection: { current: () => unavailable, check },
+      isOperational: () => false,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers,
+      payload: { nodeRpcUrl: "http://new-node:20443" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(updateSettings).toHaveBeenCalledWith({ nodeRpcUrl: "http://new-node:20443" });
+    expect(check).toHaveBeenCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenCalledWith(connected);
+
+    const blocked = { ...unavailable, status: "blocked" } as ConnectionAssessment;
+    const blockedServer = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        updateSettings,
+      },
+      connection: { current: () => blocked, check },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(blockedServer);
+    const denied = await blockedServer.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers,
+      payload: { nodeRpcUrl: "http://attacker:20443" },
+    });
+    expect(denied.statusCode).toBe(503);
+  });
+
+  it("rechecks deployment identity when a connected settings update changes the node URL", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const connected = {
+      status: "connected",
+      outcomeCode: null,
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: false,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const onConnectionAssessed = vi.fn();
+    const server = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        settings: () => ({ dataSources: { nodeRpcUrl: "http://old-node:20443" } }),
+        updateSettings: () => ({ dataSources: { nodeRpcUrl: "http://new-node:20443" } }),
+      },
+      connection: { current: () => connected, check },
+      isOperational: () => true,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { dataSources: { nodeRpcUrl: "http://new-node:20443" } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(check).toHaveBeenCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenCalledWith(connected);
+  });
+
   it("downloads a server-collected support bundle without requiring every source", async () => {
     const token = "test-operator-token-with-32-chars";
     const supportSnapshot = vi.fn(async () => ({
@@ -913,10 +1015,13 @@ describe("local API", () => {
           nodeVerified: 1,
           quarantined: 0,
           expired: 0,
+          retainedPayloadBytes: 1024,
+          prunedPayloads: 0,
           lastReceivedAt: "2026-07-14T12:00:09.000Z",
           lastProcessedAt: "2026-07-14T12:00:10.000Z",
           oldestPendingAt: "2026-07-14T12:00:08.000Z",
           lastClaimedStacksBlock: null,
+          lastVerifiedStacksBlock: null,
           lastClaimedBurnBlock: null,
           lastQuarantine: null,
         },
@@ -940,6 +1045,14 @@ describe("local API", () => {
               lastFailureAt: null,
               lastError: null,
               nextRetryAt: null,
+              callbackLatency: {
+                samples: 2,
+                sumSeconds: 2.5,
+                maxSeconds: 1.5,
+                lastSeconds: 1,
+                withinTwoSeconds: 2,
+                buckets: { le1: 1, le2: 2, le5: 2, le10: 2, le30: 2 },
+              },
             },
             "manager-activity": {
               pending: true,
@@ -957,8 +1070,59 @@ describe("local API", () => {
               lastFailureAt: "2026-07-14T12:00:10.000Z",
               lastError: "API unavailable",
               nextRetryAt: "2026-07-14T12:00:25.000Z",
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 3,
+                maxSeconds: 3,
+                lastSeconds: 3,
+                withinTwoSeconds: 0,
+                buckets: { le1: 0, le2: 0, le5: 1, le10: 1, le30: 1 },
+              },
+            },
+            roster: {
+              pending: false,
+              running: false,
+              requests: 1,
+              coalescedRequests: 0,
+              successes: 1,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 1.5,
+                maxSeconds: 1.5,
+                lastSeconds: 1.5,
+                withinTwoSeconds: 1,
+                buckets: { le1: 0, le2: 1, le5: 1, le10: 1, le30: 1 },
+              },
             },
           },
+        },
+        gap: {
+          schemaVersion: 1,
+          started: true,
+          status: "degraded",
+          reason: "observer-behind-node",
+          intervalSeconds: 15,
+          checksTotal: 10,
+          failuresTotal: 1,
+          consecutiveFailures: 0,
+          startedAt: "2026-07-14T11:59:00.000Z",
+          checkedAt: "2026-07-14T12:00:10.000Z",
+          baselineStacksHeight: 98,
+          nodeStacksHeight: 100,
+          observerStacksHeight: 99,
+          stacksGap: 1,
+          observerSilenceSeconds: 16,
+          lastError: null,
         },
       }),
     });
@@ -982,6 +1146,10 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_observer_processing_attempts_total 2");
     expect(metrics.body).toContain("sidekick_observer_queue_depth 2");
     expect(metrics.body).toContain("sidekick_observer_processing 0");
+    expect(metrics.body).toContain("sidekick_observer_node_verified 1");
+    expect(metrics.body).toContain("sidekick_observer_expired 0");
+    expect(metrics.body).toContain("sidekick_observer_retained_payload_bytes 1024");
+    expect(metrics.body).toContain("sidekick_observer_pruned_payloads 0");
     expect(metrics.body).toContain("sidekick_observer_last_received_timestamp_seconds 1784030409");
     expect(metrics.body).toContain("sidekick_observer_last_processed_timestamp_seconds 1784030410");
     expect(metrics.body).toContain(
@@ -990,6 +1158,25 @@ describe("local API", () => {
     expect(metrics.body).toContain(
       'sidekick_observer_reconciliation_pending{domain="manager-activity"} 1',
     );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_latency_seconds_bucket{domain="current",le="2"} 2',
+    );
+    expect(metrics.body).toContain("sidekick_observer_gap_degraded 1");
+    expect(metrics.body).toContain("sidekick_observer_stacks_gap_blocks 1");
+    expect(metrics.body).toContain("sidekick_observer_silence_seconds 16");
+    const status = await server.inject({
+      method: "GET",
+      url: "/api/v1/status",
+      headers: { authorization: "Bearer test-operator-token-with-32-chars" },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().alerts).toContainEqual({
+      id: "observer:callbacks-behind",
+      severity: "warning",
+      title: "Event Observer Is Behind",
+      detail:
+        "The local node is at Stacks 100, but the latest node-verified callback is 99 (16 seconds old). Sidekick is using polling fallback while callback delivery recovers.",
+    });
   });
 
   it("keeps readiness available from a recent stale observation", async () => {

@@ -1,4 +1,6 @@
+import { POX5_TESTNET_COMPATIBILITY } from "./known-network-compatibility.js";
 import type { ReviewedManagerArtifact } from "./manager-adapter.js";
+import { managerArtifactFromNetworkProfile } from "./network-manager-artifact.js";
 import type { ManagerProfile } from "./profile.js";
 
 const mainnetProfile = {
@@ -84,8 +86,15 @@ export const REGTEST_REFERENCE_MANAGER = {
   epoch: "Epoch40",
 } as const satisfies ReviewedManagerArtifact;
 
+export const POX5_TESTNET_REFERENCE_MANAGER = {
+  ...managerArtifactFromNetworkProfile(POX5_TESTNET_COMPATIBILITY),
+  clarityVersion: "Clarity6",
+  epoch: "Epoch40",
+} as const satisfies ReviewedManagerArtifact;
+
 export const KNOWN_MANAGER_ARTIFACTS: readonly ReviewedManagerArtifact[] = [
   MAINNET_REFERENCE_MANAGER,
+  POX5_TESTNET_REFERENCE_MANAGER,
   DEVNET_REFERENCE_MANAGER,
   REGTEST_REFERENCE_MANAGER,
 ];

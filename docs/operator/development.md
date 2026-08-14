@@ -93,7 +93,10 @@ pnpm e2e:devnet:test
 `up` reports its bootstrap phase. It waits for the local chain to activate PoX-5 before it starts
 Sidekick; use `status` to follow that phase rather than starting a second run. Only one harness can
 use the fixed local ports at a time. Use `pnpm e2e:devnet:reset` after an interrupted run. The
-version locks under `test/e2e/devnet` define the released artifacts.
+`active-pool` scenario also routes a real stacks-node callback through Sidekick, requires its
+canonical block anchor to become node-verified, and waits for the affected current-state and
+manager-activity projections to reconcile. The version locks under `test/e2e/devnet` define the
+released artifacts.
 
 ## Local dashboard
 

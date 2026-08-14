@@ -103,6 +103,10 @@ const observerDeliveryInputSchema = z
     }
   });
 
+const OBSERVER_RAW_PAYLOAD_RETENTION_MS = 24 * 60 * 60 * 1_000;
+const MAX_RETAINED_OBSERVER_RAW_PAYLOADS = 25_000;
+const MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES = 64 * 1_024 * 1_024;
+
 const storedObserverDeliveryRowSchema = z.object({
   delivery_id: z.string().uuid(),
   endpoint_kind: z.enum(["new-block", "new-burn-block", "attachments"]),
@@ -116,6 +120,12 @@ const storedObserverDeliveryRowSchema = z.object({
   first_received_at: z.iso.datetime(),
   last_received_at: z.iso.datetime(),
   last_processing_at: z.iso.datetime(),
+});
+
+const acceptedObserverDeliveryRowSchema = z.object({
+  delivery_id: z.string().uuid(),
+  state: z.enum(["observer-claimed", "processing", "node-verified", "quarantined", "expired"]),
+  delivery_attempts: z.number().int().min(1),
 });
 
 const cursorRowSchema = z.object({
@@ -648,6 +658,8 @@ export interface ObserverInboxStatus {
   nodeVerified: number;
   quarantined: number;
   expired: number;
+  retainedPayloadBytes: number;
+  prunedPayloads: number;
   lastReceivedAt: string | null;
   lastProcessedAt: string | null;
   oldestPendingAt: string | null;
@@ -655,6 +667,12 @@ export interface ObserverInboxStatus {
     height: number;
     blockHash: string;
     indexBlockHash: string;
+  };
+  lastVerifiedStacksBlock: null | {
+    height: number;
+    indexBlockHash: string;
+    receivedAt: string;
+    verifiedAt: string;
   };
   lastClaimedBurnBlock: null | {
     height: number;
@@ -1223,57 +1241,167 @@ export class SidekickStore {
   acceptObserverDelivery(input: ObserverDeliveryInput): AcceptedObserverDelivery {
     const value = observerDeliveryInputSchema.parse(input);
     const proposedDeliveryId = randomUUID();
-    const row = this.db
-      .prepare(
-        `INSERT INTO observer_deliveries (
-          delivery_id, endpoint_kind, content_sha256, raw_payload_json, payload_bytes,
-          state, state_reason, claimed_block_height, claimed_block_hash,
-          claimed_index_block_hash, claimed_burn_block_height, claimed_burn_block_hash,
-          delivery_attempts, first_received_at, last_received_at, next_attempt_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
-        ON CONFLICT DO UPDATE SET
-          delivery_attempts = observer_deliveries.delivery_attempts + 1,
-          last_received_at = excluded.last_received_at,
-          updated_at = excluded.updated_at
-        RETURNING delivery_id, state, delivery_attempts`,
-      )
-      .get(
-        proposedDeliveryId,
-        value.endpointKind,
-        value.contentSha256,
-        value.rawPayloadJson,
-        value.payloadBytes,
-        value.state,
-        value.stateReason,
-        value.claimedBlockHeight,
-        value.claimedBlockHash,
-        value.claimedIndexBlockHash,
-        value.claimedBurnBlockHeight,
-        value.claimedBurnBlockHash,
-        value.receivedAt,
-        value.receivedAt,
-        value.receivedAt,
-        value.receivedAt,
-      );
-    const accepted = z
-      .object({
-        delivery_id: z.string().uuid(),
-        state: z.enum([
-          "observer-claimed",
-          "processing",
-          "node-verified",
-          "quarantined",
-          "expired",
-        ]),
-        delivery_attempts: z.number().int().min(1),
-      })
-      .parse(row);
+    let accepted: z.infer<typeof acceptedObserverDeliveryRowSchema>;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const conflictingChainClaim =
+        value.endpointKind === "new-block" &&
+        value.claimedBlockHeight !== null &&
+        value.claimedIndexBlockHash !== null
+          ? this.db
+              .prepare(
+                `SELECT 1
+                 FROM observer_deliveries
+                 WHERE endpoint_kind = 'new-block'
+                   AND claimed_block_height = ?
+                   AND claimed_index_block_hash = ?
+                   AND content_sha256 <> ?
+                 LIMIT 1`,
+              )
+              .get(value.claimedBlockHeight, value.claimedIndexBlockHash, value.contentSha256) !==
+            undefined
+          : value.endpointKind === "new-burn-block" &&
+              value.claimedBurnBlockHeight !== null &&
+              value.claimedBurnBlockHash !== null
+            ? this.db
+                .prepare(
+                  `SELECT 1
+                   FROM observer_deliveries
+                   WHERE endpoint_kind = 'new-burn-block'
+                     AND claimed_burn_block_height = ?
+                     AND claimed_burn_block_hash = ?
+                     AND content_sha256 <> ?
+                   LIMIT 1`,
+                )
+                .get(
+                  value.claimedBurnBlockHeight,
+                  value.claimedBurnBlockHash,
+                  value.contentSha256,
+                ) !== undefined
+            : false;
+      const acceptedState = conflictingChainClaim ? "quarantined" : value.state;
+      const acceptedReason = conflictingChainClaim
+        ? "conflicting-callback-bodies-for-chain-position"
+        : value.stateReason;
+      const completedAt = acceptedState === "observer-claimed" ? null : value.receivedAt;
+      if (conflictingChainClaim) {
+        const where =
+          value.endpointKind === "new-block"
+            ? `endpoint_kind = 'new-block'
+               AND claimed_block_height = ? AND claimed_index_block_hash = ?`
+            : `endpoint_kind = 'new-burn-block'
+               AND claimed_burn_block_height = ? AND claimed_burn_block_hash = ?`;
+        const identity =
+          value.endpointKind === "new-block"
+            ? [value.claimedBlockHeight, value.claimedIndexBlockHash]
+            : [value.claimedBurnBlockHeight, value.claimedBurnBlockHash];
+        this.db
+          .prepare(
+            `UPDATE observer_deliveries
+             SET state = 'quarantined',
+                 state_reason = 'conflicting-callback-bodies-for-chain-position',
+                 completed_at = COALESCE(completed_at, ?), updated_at = ?
+             WHERE ${where}`,
+          )
+          .run(value.receivedAt, value.receivedAt, ...identity);
+      }
+      const row = this.db
+        .prepare(
+          `INSERT INTO observer_deliveries (
+            delivery_id, endpoint_kind, content_sha256, raw_payload_json, payload_bytes,
+            state, state_reason, claimed_block_height, claimed_block_hash,
+            claimed_index_block_hash, claimed_burn_block_height, claimed_burn_block_hash,
+            delivery_attempts, first_received_at, last_received_at, next_attempt_at, completed_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+          ON CONFLICT DO UPDATE SET
+            delivery_attempts = observer_deliveries.delivery_attempts + 1,
+            state = CASE
+              WHEN excluded.state = 'quarantined' THEN 'quarantined'
+              ELSE observer_deliveries.state
+            END,
+            state_reason = CASE
+              WHEN excluded.state = 'quarantined' THEN excluded.state_reason
+              ELSE observer_deliveries.state_reason
+            END,
+            completed_at = CASE
+              WHEN excluded.state = 'quarantined'
+                THEN COALESCE(observer_deliveries.completed_at, excluded.completed_at)
+              ELSE observer_deliveries.completed_at
+            END,
+            last_received_at = excluded.last_received_at,
+            updated_at = excluded.updated_at
+          RETURNING delivery_id, state, delivery_attempts`,
+        )
+        .get(
+          proposedDeliveryId,
+          value.endpointKind,
+          value.contentSha256,
+          value.rawPayloadJson,
+          value.payloadBytes,
+          acceptedState,
+          acceptedReason,
+          value.claimedBlockHeight,
+          value.claimedBlockHash,
+          value.claimedIndexBlockHash,
+          value.claimedBurnBlockHeight,
+          value.claimedBurnBlockHash,
+          value.receivedAt,
+          value.receivedAt,
+          value.receivedAt,
+          completedAt,
+          value.receivedAt,
+        );
+      accepted = acceptedObserverDeliveryRowSchema.parse(row);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.pruneObserverPayloads(value.receivedAt);
     return {
       deliveryId: accepted.delivery_id,
       duplicate: accepted.delivery_id !== proposedDeliveryId,
       state: accepted.state,
       deliveryAttempts: accepted.delivery_attempts,
     };
+  }
+
+  pruneObserverPayloads(observedAt: string): number {
+    const parsedObservedAt = z.iso.datetime().parse(observedAt);
+    const cutoff = new Date(
+      Date.parse(parsedObservedAt) - OBSERVER_RAW_PAYLOAD_RETENTION_MS,
+    ).toISOString();
+    const result = this.db
+      .prepare(
+        `WITH retained AS (
+           SELECT delivery_id,
+             ROW_NUMBER() OVER (
+               ORDER BY COALESCE(completed_at, updated_at) DESC, delivery_id DESC
+             ) AS retained_rank,
+             SUM(payload_bytes) OVER (
+               ORDER BY COALESCE(completed_at, updated_at) DESC, delivery_id DESC
+             ) AS retained_bytes,
+             COALESCE(completed_at, updated_at) AS terminal_at
+           FROM observer_deliveries
+           WHERE state IN ('node-verified', 'quarantined', 'expired')
+             AND payload_pruned = 0
+         )
+         UPDATE observer_deliveries
+         SET raw_payload_json = '{}', payload_bytes = 0, payload_pruned = 1, updated_at = ?
+         WHERE delivery_id IN (
+           SELECT delivery_id
+           FROM retained
+           WHERE terminal_at < ? OR retained_rank > ? OR retained_bytes > ?
+         )`,
+      )
+      .run(
+        parsedObservedAt,
+        cutoff,
+        MAX_RETAINED_OBSERVER_RAW_PAYLOADS,
+        MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES,
+      );
+    return Number(result.changes);
   }
 
   recoverObserverDeliveries(recoveredAt: string): number {
@@ -1355,6 +1483,7 @@ export class SidekickStore {
     if (Number(result.changes) !== 1) {
       throw new Error(`Observer delivery ${deliveryId} is not being processed`);
     }
+    this.pruneObserverPayloads(completedAt);
   }
 
   retryObserverDelivery(input: {
@@ -1394,6 +1523,8 @@ export class SidekickStore {
         node_verified: z.number().int().nonnegative(),
         quarantined: z.number().int().nonnegative(),
         expired: z.number().int().nonnegative(),
+        retained_payload_bytes: z.number().int().nonnegative(),
+        pruned_payloads: z.number().int().nonnegative(),
         last_received_at: z.string().nullable(),
         last_processed_at: z.string().nullable(),
         oldest_pending_at: z.string().nullable(),
@@ -1411,6 +1542,9 @@ export class SidekickStore {
               COALESCE(SUM(state = 'node-verified'), 0) AS node_verified,
               COALESCE(SUM(state = 'quarantined'), 0) AS quarantined,
               COALESCE(SUM(state = 'expired'), 0) AS expired,
+              COALESCE(SUM(CASE WHEN payload_pruned = 0 THEN payload_bytes ELSE 0 END), 0)
+                AS retained_payload_bytes,
+              COALESCE(SUM(payload_pruned), 0) AS pruned_payloads,
               MAX(last_received_at) AS last_received_at,
               MAX(last_processing_at) AS last_processed_at,
               MIN(CASE WHEN state = 'observer-claimed' THEN first_received_at END)
@@ -1457,6 +1591,29 @@ export class SidekickStore {
           )
           .get() ?? null,
       );
+    const verifiedStacks = z
+      .object({
+        claimed_block_height: z.number().int().nonnegative(),
+        claimed_index_block_hash: hashSchema,
+        first_received_at: z.iso.datetime(),
+        completed_at: z.iso.datetime(),
+      })
+      .nullable()
+      .parse(
+        this.db
+          .prepare(
+            `SELECT claimed_block_height, claimed_index_block_hash,
+                    first_received_at, completed_at
+             FROM observer_deliveries
+             WHERE state = 'node-verified'
+               AND claimed_block_height IS NOT NULL
+               AND claimed_index_block_hash IS NOT NULL
+               AND completed_at IS NOT NULL
+             ORDER BY claimed_block_height DESC, completed_at DESC
+             LIMIT 1`,
+          )
+          .get() ?? null,
+      );
     const quarantine = z
       .object({
         endpoint_kind: z.enum(["new-block", "new-burn-block", "attachments"]),
@@ -1486,6 +1643,8 @@ export class SidekickStore {
       nodeVerified: totals.node_verified,
       quarantined: totals.quarantined,
       expired: totals.expired,
+      retainedPayloadBytes: totals.retained_payload_bytes,
+      prunedPayloads: totals.pruned_payloads,
       lastReceivedAt: totals.last_received_at,
       lastProcessedAt: totals.last_processed_at,
       oldestPendingAt: totals.oldest_pending_at,
@@ -1494,6 +1653,14 @@ export class SidekickStore {
             height: stacks.claimed_block_height,
             blockHash: stacks.claimed_block_hash,
             indexBlockHash: stacks.claimed_index_block_hash,
+          }
+        : null,
+      lastVerifiedStacksBlock: verifiedStacks
+        ? {
+            height: verifiedStacks.claimed_block_height,
+            indexBlockHash: verifiedStacks.claimed_index_block_hash,
+            receivedAt: verifiedStacks.first_received_at,
+            verifiedAt: verifiedStacks.completed_at,
           }
         : null,
       lastClaimedBurnBlock: burn

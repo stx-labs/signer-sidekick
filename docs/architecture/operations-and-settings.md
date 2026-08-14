@@ -47,14 +47,19 @@ reference API is reported separately and does not block node-backed operations.
 A separate private callback listener is the low-latency input from the configured Stacks node. It
 commits bounded event-dispatcher payloads to a durable inbox before acknowledging them, records
 duplicate attempts, and keeps callback contents out of permanent history and current projections.
-The restart-safe inbox worker pins the node's header ancestry to one stable canonical tip and marks
-a Stacks block claim `node-verified` only when its height, block hash, and index block hash match.
-The callback's embedded events remain untrusted pending transaction/event-level verification.
+The restart-safe inbox worker fences `/v2/info` with `/v3/tenures/info`, fetches the claimed
+Nakamoto block by index-block ID, and compares its raw bytes with the canonical block at the same
+height under that exact stable tip. Only a byte-identical index-block claim becomes
+`node-verified`; the callback's block-hash field and embedded events remain untrusted. Conflicting
+bodies for one chain position fail closed into quarantine. Terminal raw callback JSON is retained
+for at most 24 hours and also capped at 25,000 payloads or 64 MiB; durable identity, result, timing,
+and attempt evidence remains after pruning.
 Burn-block callbacks are trigger-only because the local Stacks RPC does not expose an equivalent
 burn-header proof; they expire after the node reaches their claimed height. Malformed or forged
 claims are quarantined with a bounded reason. Callback delivery never grants a manager capability,
 and API backfill plus periodic anti-entropy remain the recovery paths for loss, reordering, restart,
-and reorg.
+and reorg. Independently indexed manager events become permanent only after the local transaction
+index confirms their exact canonical Stacks height and index-block hash.
 
 A transaction absent from both indexed and pending node state may be explicitly superseded after a
 15-minute grace period. Replacement always creates a new sealed intent. Existing deployment-era

@@ -1,13 +1,19 @@
+import { ClarityType } from "@stacks/transactions";
+import { decodeClarityHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { z } from "zod";
 import { RateLimitedError } from "./chain-clients.js";
 import type { ObserverVerificationOutcome } from "./observer-inbox.js";
 import type { StoredObserverDelivery } from "./storage/store.js";
 
-export type ObserverReconciliationDomain = "current" | "manager-activity";
+export type ObserverReconciliationDomain = "current" | "manager-activity" | "roster";
 
 export interface ObserverReconciliationService {
   refreshSnapshot(): Promise<unknown>;
   synchronizeManagerActivity(options?: {
+    signal?: AbortSignal;
+    minimumStacksHeight?: number | null;
+  }): Promise<unknown>;
+  synchronize(options?: {
     signal?: AbortSignal;
     minimumStacksHeight?: number | null;
   }): Promise<unknown>;
@@ -34,6 +40,14 @@ export interface ObserverReconciliationDomainStatus {
   lastFailureAt: string | null;
   lastError: string | null;
   nextRetryAt: string | null;
+  callbackLatency: {
+    samples: number;
+    sumSeconds: number;
+    maxSeconds: number;
+    lastSeconds: number | null;
+    withinTwoSeconds: number;
+    buckets: { le1: number; le2: number; le5: number; le10: number; le30: number };
+  };
 }
 
 export interface ObserverReconciliationStatus {
@@ -46,10 +60,12 @@ interface MutableDomainState extends ObserverReconciliationDomainStatus {
   timer: ReturnType<typeof setTimeout> | null;
   active: Promise<void> | null;
   abortController: AbortController | null;
+  pendingCallbackReceivedAtMs: number | null;
 }
 
 const DEFAULT_FAILURE_DELAY_MS = 15_000;
 const DEFAULT_MAX_BACKOFF_MS = 5 * 60_000;
+const DEFAULT_MANAGER_ACTIVITY_BACKFILL_INTERVAL_MS = 5 * 60_000;
 
 const blockTriggerSchema = z
   .object({
@@ -64,6 +80,7 @@ const managerPrintEventSchema = z
       .object({
         contract_identifier: z.string(),
         topic: z.literal("print"),
+        raw_value: z.string().optional(),
       })
       .passthrough(),
   })
@@ -86,9 +103,18 @@ function domainState(): MutableDomainState {
     lastFailureAt: null,
     lastError: null,
     nextRetryAt: null,
+    callbackLatency: {
+      samples: 0,
+      sumSeconds: 0,
+      maxSeconds: 0,
+      lastSeconds: null,
+      withinTwoSeconds: 0,
+      buckets: { le1: 0, le2: 0, le5: 0, le10: 0, le30: 0 },
+    },
     timer: null,
     active: null,
     abortController: null,
+    pendingCallbackReceivedAtMs: null,
   };
 }
 
@@ -103,16 +129,52 @@ function safeError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
-function containsManagerPrint(delivery: StoredObserverDelivery, managerPrincipal: string): boolean {
+function containsContractPrint(
+  delivery: StoredObserverDelivery,
+  contractPrincipal: string,
+): boolean {
   try {
     const parsed = blockTriggerSchema.safeParse(JSON.parse(delivery.rawPayloadJson));
     return (
       parsed.success &&
       parsed.data.events.some((candidate) => {
         const event = managerPrintEventSchema.safeParse(candidate);
-        return event.success && event.data.contract_event.contract_identifier === managerPrincipal;
+        return event.success && event.data.contract_event.contract_identifier === contractPrincipal;
       })
     );
+  } catch {
+    return false;
+  }
+}
+
+function containsRelevantPox5Print(
+  delivery: StoredObserverDelivery,
+  contractPrincipal: string,
+  managerPrincipal: string,
+): boolean {
+  try {
+    const parsed = blockTriggerSchema.safeParse(JSON.parse(delivery.rawPayloadJson));
+    if (!parsed.success) return false;
+    return parsed.data.events.some((candidate) => {
+      const event = managerPrintEventSchema.safeParse(candidate);
+      if (
+        !event.success ||
+        event.data.contract_event.contract_identifier !== contractPrincipal ||
+        !event.data.contract_event.raw_value
+      ) {
+        return false;
+      }
+      const value = decodeClarityHex(event.data.contract_event.raw_value);
+      if (value.type !== ClarityType.Tuple) return false;
+      return ["signer", "old-signer", "signer-manager"].some((field) => {
+        const principal = value.value[field];
+        return (
+          (principal?.type === ClarityType.PrincipalStandard ||
+            principal?.type === ClarityType.PrincipalContract) &&
+          principal.value === managerPrincipal
+        );
+      });
+    });
   } catch {
     return false;
   }
@@ -135,7 +197,25 @@ function copyState(state: MutableDomainState): ObserverReconciliationDomainStatu
     lastFailureAt: state.lastFailureAt,
     lastError: state.lastError,
     nextRetryAt: state.nextRetryAt,
+    callbackLatency: {
+      ...state.callbackLatency,
+      buckets: { ...state.callbackLatency.buckets },
+    },
   };
+}
+
+function recordCallbackLatency(state: MutableDomainState, latencySeconds: number): void {
+  const latency = Math.max(0, latencySeconds);
+  state.callbackLatency.samples += 1;
+  state.callbackLatency.sumSeconds += latency;
+  state.callbackLatency.maxSeconds = Math.max(state.callbackLatency.maxSeconds, latency);
+  state.callbackLatency.lastSeconds = latency;
+  if (latency <= 2) state.callbackLatency.withinTwoSeconds += 1;
+  if (latency <= 1) state.callbackLatency.buckets.le1 += 1;
+  if (latency <= 2) state.callbackLatency.buckets.le2 += 1;
+  if (latency <= 5) state.callbackLatency.buckets.le5 += 1;
+  if (latency <= 10) state.callbackLatency.buckets.le10 += 1;
+  if (latency <= 30) state.callbackLatency.buckets.le30 += 1;
 }
 
 /**
@@ -147,24 +227,32 @@ export class ObserverReconciliationScheduler {
   readonly #service: ObserverReconciliationService;
   readonly #logger: ObserverReconciliationLogger;
   readonly #managerPrincipal: string;
+  readonly #getPox5ContractId: () => string | null;
+  readonly #canRun: () => boolean;
   readonly #now: () => Date;
   readonly #failureDelayMs: number;
   readonly #maxBackoffMs: number;
+  readonly #managerActivityBackfillIntervalMs: number;
   readonly #setTimeout: typeof globalThis.setTimeout;
   readonly #clearTimeout: typeof globalThis.clearTimeout;
   readonly #states: Record<ObserverReconciliationDomain, MutableDomainState> = {
     current: domainState(),
     "manager-activity": domainState(),
+    roster: domainState(),
   };
   #started = false;
+  #managerActivityBackfillTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: {
     service: ObserverReconciliationService;
     logger: ObserverReconciliationLogger;
     managerPrincipal: string;
+    getPox5ContractId: () => string | null;
+    canRun?: () => boolean;
     now?: () => Date;
     failureDelayMs?: number;
     maxBackoffMs?: number;
+    managerActivityBackfillIntervalMs?: number;
     setTimeout?: typeof globalThis.setTimeout;
     clearTimeout?: typeof globalThis.clearTimeout;
   }) {
@@ -172,14 +260,19 @@ export class ObserverReconciliationScheduler {
     this.#logger = options.logger;
     this.#managerPrincipal = options.managerPrincipal;
     if (!this.#managerPrincipal.trim()) throw new Error("managerPrincipal must not be empty");
+    this.#getPox5ContractId = options.getPox5ContractId;
+    this.#canRun = options.canRun ?? (() => true);
     this.#now = options.now ?? (() => new Date());
     this.#failureDelayMs = options.failureDelayMs ?? DEFAULT_FAILURE_DELAY_MS;
     this.#maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+    this.#managerActivityBackfillIntervalMs =
+      options.managerActivityBackfillIntervalMs ?? DEFAULT_MANAGER_ACTIVITY_BACKFILL_INTERVAL_MS;
     this.#setTimeout = options.setTimeout ?? globalThis.setTimeout;
     this.#clearTimeout = options.clearTimeout ?? globalThis.clearTimeout;
     for (const [name, value] of [
       ["failureDelayMs", this.#failureDelayMs],
       ["maxBackoffMs", this.#maxBackoffMs],
+      ["managerActivityBackfillIntervalMs", this.#managerActivityBackfillIntervalMs],
     ] as const) {
       if (!Number.isSafeInteger(value) || value < 1) {
         throw new Error(`${name} must be a positive integer`);
@@ -194,11 +287,16 @@ export class ObserverReconciliationScheduler {
     // delivery complete but before its in-memory follow-up could be scheduled.
     this.request("current");
     this.request("manager-activity");
+    this.#scheduleManagerActivityBackfill();
   }
 
   request(
     domain: ObserverReconciliationDomain,
-    anchor: { stacksHeight?: number | null; burnHeight?: number | null } = {},
+    anchor: {
+      stacksHeight?: number | null;
+      burnHeight?: number | null;
+      callbackReceivedAt?: string | null;
+    } = {},
   ): void {
     const state = this.#states[domain];
     if (state.pending || state.running) state.coalescedRequests += 1;
@@ -206,6 +304,14 @@ export class ObserverReconciliationScheduler {
     state.pending = true;
     state.requestedStacksHeight = maxHeight(state.requestedStacksHeight, anchor.stacksHeight);
     state.requestedBurnHeight = maxHeight(state.requestedBurnHeight, anchor.burnHeight);
+    if (anchor.callbackReceivedAt) {
+      const receivedAtMs = Date.parse(anchor.callbackReceivedAt);
+      if (!Number.isFinite(receivedAtMs)) throw new Error("Callback receipt time must be ISO-8601");
+      state.pendingCallbackReceivedAtMs =
+        state.pendingCallbackReceivedAtMs === null
+          ? receivedAtMs
+          : Math.min(state.pendingCallbackReceivedAtMs, receivedAtMs);
+    }
     state.lastRequestedAt = this.#now().toISOString();
     if (this.#started && !state.running && !state.timer) this.#schedule(domain, 0);
   }
@@ -215,13 +321,23 @@ export class ObserverReconciliationScheduler {
     outcome: Extract<ObserverVerificationOutcome, { action: "finish" }>,
   ): void {
     if (delivery.endpointKind === "new-block" && outcome.state === "node-verified") {
-      const anchor = { stacksHeight: delivery.claimedBlockHeight };
+      const anchor = {
+        stacksHeight: delivery.claimedBlockHeight,
+        callbackReceivedAt: delivery.firstReceivedAt,
+      };
       this.request("current", anchor);
       // Stacks Core posts /new_block for every anchored block once an observer is registered,
       // even when this observer's filtered event list is empty. Treat the untrusted body only as
       // a cheap trigger hint; API content plus the local transaction index remain the witnesses.
-      if (containsManagerPrint(delivery, this.#managerPrincipal)) {
+      if (containsContractPrint(delivery, this.#managerPrincipal)) {
         this.request("manager-activity", anchor);
+      }
+      const pox5ContractId = this.#getPox5ContractId();
+      if (
+        pox5ContractId &&
+        containsRelevantPox5Print(delivery, pox5ContractId, this.#managerPrincipal)
+      ) {
+        this.request("roster", anchor);
       }
       return;
     }
@@ -230,7 +346,10 @@ export class ObserverReconciliationScheduler {
       outcome.state === "expired" &&
       outcome.reason.startsWith("trigger-consumed;")
     ) {
-      this.request("current", { burnHeight: delivery.claimedBurnBlockHeight });
+      this.request("current", {
+        burnHeight: delivery.claimedBurnBlockHeight,
+        callbackReceivedAt: delivery.firstReceivedAt,
+      });
     }
   }
 
@@ -241,22 +360,39 @@ export class ObserverReconciliationScheduler {
       domains: {
         current: copyState(this.#states.current),
         "manager-activity": copyState(this.#states["manager-activity"]),
+        roster: copyState(this.#states.roster),
       },
     };
   }
 
   async stop(): Promise<void> {
     this.#started = false;
+    if (this.#managerActivityBackfillTimer) {
+      this.#clearTimeout(this.#managerActivityBackfillTimer);
+      this.#managerActivityBackfillTimer = null;
+    }
     const active: Promise<void>[] = [];
     for (const state of Object.values(this.#states)) {
       if (state.timer) this.#clearTimeout(state.timer);
       state.timer = null;
       state.pending = false;
+      state.pendingCallbackReceivedAtMs = null;
       state.nextRetryAt = null;
       state.abortController?.abort(new Error("Observer reconciliation stopped"));
       if (state.active) active.push(state.active);
     }
     await Promise.allSettled(active);
+  }
+
+  #scheduleManagerActivityBackfill(): void {
+    if (!this.#started || this.#managerActivityBackfillTimer) return;
+    this.#managerActivityBackfillTimer = this.#setTimeout(() => {
+      this.#managerActivityBackfillTimer = null;
+      if (!this.#started) return;
+      this.request("manager-activity");
+      this.#scheduleManagerActivityBackfill();
+    }, this.#managerActivityBackfillIntervalMs);
+    this.#managerActivityBackfillTimer.unref?.();
   }
 
   #schedule(domain: ObserverReconciliationDomain, delayMs: number): void {
@@ -275,10 +411,16 @@ export class ObserverReconciliationScheduler {
   async #run(domain: ObserverReconciliationDomain): Promise<void> {
     const state = this.#states[domain];
     if (!this.#started || state.running || !state.pending) return;
+    if (!this.#canRun()) {
+      this.#schedule(domain, this.#failureDelayMs);
+      return;
+    }
     state.pending = false;
     state.running = true;
     state.lastStartedAt = this.#now().toISOString();
     const requestedStacksHeight = state.requestedStacksHeight;
+    const callbackReceivedAtMs = state.pendingCallbackReceivedAtMs;
+    state.pendingCallbackReceivedAtMs = null;
     const controller = new AbortController();
     state.abortController = controller;
     let retryDelayMs = 0;
@@ -286,8 +428,13 @@ export class ObserverReconciliationScheduler {
       try {
         if (domain === "current") {
           await this.#service.refreshSnapshot();
-        } else {
+        } else if (domain === "manager-activity") {
           await this.#service.synchronizeManagerActivity({
+            signal: controller.signal,
+            minimumStacksHeight: requestedStacksHeight,
+          });
+        } else {
+          await this.#service.synchronize({
             signal: controller.signal,
             minimumStacksHeight: requestedStacksHeight,
           });
@@ -296,6 +443,9 @@ export class ObserverReconciliationScheduler {
         state.consecutiveFailures = 0;
         state.lastSuccessAt = this.#now().toISOString();
         state.lastError = null;
+        if (callbackReceivedAtMs !== null) {
+          recordCallbackLatency(state, (this.#now().getTime() - callbackReceivedAtMs) / 1_000);
+        }
       } catch (error) {
         if (!this.#started && controller.signal.aborted) return;
         state.failuresTotal += 1;
@@ -303,6 +453,12 @@ export class ObserverReconciliationScheduler {
         state.pending = true;
         state.lastFailureAt = this.#now().toISOString();
         state.lastError = safeError(error);
+        if (callbackReceivedAtMs !== null) {
+          state.pendingCallbackReceivedAtMs =
+            state.pendingCallbackReceivedAtMs === null
+              ? callbackReceivedAtMs
+              : Math.min(state.pendingCallbackReceivedAtMs, callbackReceivedAtMs);
+        }
         retryDelayMs =
           error instanceof RateLimitedError && error.retryAfterMs !== null
             ? Math.min(this.#maxBackoffMs, Math.max(1_000, error.retryAfterMs))

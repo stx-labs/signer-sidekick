@@ -28,6 +28,7 @@ import {
   type ManagerVerificationContext,
 } from "./manager-verification.js";
 import { loadNetworkCompatibilityProfiles } from "./network-compatibility-store.js";
+import { ObserverGapMonitor } from "./observer-gap-monitor.js";
 import { ObserverInboxProcessor } from "./observer-inbox.js";
 import { ObserverReconciliationScheduler } from "./observer-reconciliation.js";
 import {
@@ -142,6 +143,7 @@ export async function executeCliCommand({
       throw new Error("The operator API and private event listener must use different addresses");
     }
     const { store } = await openSidekickStore(config.databasePath);
+    store.pruneObserverPayloads(new Date().toISOString());
     let serverOwnsStore = false;
     let storeClosed = false;
     let transactionEngine: Awaited<
@@ -160,6 +162,10 @@ export async function executeCliCommand({
         managerPrincipal,
         node,
         store,
+        runtime: () => {
+          const current = runtimeSettings.clients();
+          return { config: current.config, node: current.node };
+        },
       });
       const initialConnection = await withInteractiveRequestDeadline(15_000, async () =>
         connection.check(),
@@ -236,9 +242,11 @@ export async function executeCliCommand({
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
       let observerReconciliation: ObserverReconciliationScheduler | null = null;
+      let observerGapMonitor: ObserverGapMonitor | null = null;
       const observerProcessor = new ObserverInboxProcessor({
         store,
         getNode: () => runtimeSettings.clients().node,
+        canProcess: () => connection.current()?.status === "connected",
         onError: (error) => reportObserverInboxError(error),
         onProcessed: (delivery, outcome) =>
           observerReconciliation?.notifyProcessed(delivery, outcome),
@@ -283,6 +291,7 @@ export async function executeCliCommand({
             store.observerInboxStatus(),
             observerListening,
             observerReconciliation?.status() ?? null,
+            observerGapMonitor?.status() ?? null,
           ),
         snapshotRefreshMetrics,
         authToken,
@@ -304,6 +313,17 @@ export async function executeCliCommand({
         service,
         logger: server.log,
         managerPrincipal,
+        getPox5ContractId: () => connection.current()?.observed?.pox5ContractId ?? null,
+        canRun: () => connection.current()?.status === "connected",
+      });
+      observerGapMonitor = new ObserverGapMonitor({
+        getNode: () => runtimeSettings.clients().node,
+        getInbox: () => store.observerInboxStatus(),
+        onGap: (status) =>
+          observerReconciliation?.request("current", {
+            stacksHeight: status.nodeStacksHeight,
+          }),
+        logger: server.log,
       });
       startOperationalRuntime = async () => {
         if (operationalStarted) return;
@@ -317,6 +337,7 @@ export async function executeCliCommand({
             );
           }
           observerReconciliation?.start();
+          if (observerConfig.enabled) observerGapMonitor?.start();
           const recoveredObserverDeliveries = observerProcessor.start();
           if (recoveredObserverDeliveries > 0) {
             server.log.info(
@@ -385,6 +406,7 @@ export async function executeCliCommand({
           await observerServer?.close();
           observerListening = false;
           await observerProcessor.stop();
+          await observerGapMonitor?.stop();
           await observerReconciliation?.stop();
           await engine.close();
         } finally {

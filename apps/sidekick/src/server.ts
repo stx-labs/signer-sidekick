@@ -6,6 +6,7 @@ import {
   type ApiError,
   browserWalletIntentSubmissionRequestSchema,
   type ConnectionAssessment,
+  type DashboardAlert,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
@@ -163,6 +164,46 @@ interface OperatorSnapshotService {
   stakerClaims?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   settings?(): unknown;
   updateSettings?(input: unknown): unknown;
+}
+
+function observerAlerts(status: ObserverRuntimeStatus | undefined): DashboardAlert[] {
+  if (!status?.enabled || status.gap?.status !== "degraded") return [];
+  const nodeHeight = status.gap.nodeStacksHeight;
+  const observerHeight = status.gap.observerStacksHeight;
+  const silence = status.gap.observerSilenceSeconds;
+  return [
+    {
+      id: "observer:callbacks-behind",
+      severity: "warning",
+      title: "Event Observer Is Behind",
+      detail: `The local node is at Stacks ${nodeHeight ?? "an unknown height"}, but the latest node-verified callback is ${observerHeight ?? "not available"}${silence === null ? "" : ` (${Math.round(silence)} seconds old)`}. Sidekick is using polling fallback while callback delivery recovers.`,
+    },
+  ];
+}
+
+function withObserverAlerts(
+  snapshot: OperatorSnapshotShape,
+  status: ObserverRuntimeStatus | undefined,
+): OperatorSnapshotShape {
+  const additions = observerAlerts(status);
+  if (additions.length === 0) return snapshot;
+  const existing = Array.isArray(snapshot.alerts) ? snapshot.alerts : [];
+  const ids = new Set(
+    existing.flatMap((alert) =>
+      alert && typeof alert === "object" && typeof (alert as { id?: unknown }).id === "string"
+        ? [(alert as { id: string }).id]
+        : [],
+    ),
+  );
+  return { ...snapshot, alerts: [...existing, ...additions.filter(({ id }) => !ids.has(id))] };
+}
+
+function settingsNodeRpcUrl(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const dataSources = (value as { dataSources?: unknown }).dataSources;
+  if (!dataSources || typeof dataSources !== "object") return null;
+  const nodeRpcUrl = (dataSources as { nodeRpcUrl?: unknown }).nodeRpcUrl;
+  return typeof nodeRpcUrl === "string" ? nodeRpcUrl : null;
 }
 
 function snapshotStatus<const Status extends string>(
@@ -1197,13 +1238,15 @@ export function createServer(options: ServerOptions = {}) {
       throw new OperatorApiError(401, "unauthorized");
     }
     const pathname = new URL(request.url, "http://sidekick.local").pathname;
+    const connection = options.connection?.current();
     const safeWhileDisconnected =
       pathname === "/api/v1/auth/session" ||
       pathname === "/api/v1/connection" ||
       pathname === "/api/v1/connection/recheck" ||
       pathname === "/api/v1/support-bundle" ||
-      (pathname === "/api/v1/settings" && request.method === "GET");
-    const connection = options.connection?.current();
+      (pathname === "/api/v1/settings" &&
+        (request.method === "GET" ||
+          (request.method === "PUT" && connection?.status === "unavailable")));
     const retainedReadOnlyAccess =
       connection?.status === "unavailable" &&
       connection.lastSuccessful !== null &&
@@ -1381,12 +1424,24 @@ export function createServer(options: ServerOptions = {}) {
         "# HELP sidekick_observer_processing Observer callbacks currently claimed by the verification worker.",
         "# TYPE sidekick_observer_processing gauge",
         `sidekick_observer_processing ${observer.inbox.processing}`,
-        "# HELP sidekick_observer_quarantined_total Event callbacks quarantined before projection.",
-        "# TYPE sidekick_observer_quarantined_total gauge",
-        `sidekick_observer_quarantined_total ${observer.inbox.quarantined}`,
-        "# HELP sidekick_observer_node_verified_total Event callbacks promoted after node verification.",
-        "# TYPE sidekick_observer_node_verified_total gauge",
-        `sidekick_observer_node_verified_total ${observer.inbox.nodeVerified}`,
+        "# HELP sidekick_observer_quarantined Event callbacks currently quarantined before projection.",
+        "# TYPE sidekick_observer_quarantined gauge",
+        `sidekick_observer_quarantined ${observer.inbox.quarantined}`,
+        "# HELP sidekick_observer_node_verified Event callbacks currently retained after node verification.",
+        "# TYPE sidekick_observer_node_verified gauge",
+        `sidekick_observer_node_verified ${observer.inbox.nodeVerified}`,
+        "# HELP sidekick_observer_expired Event callbacks currently retained as expired triggers.",
+        "# TYPE sidekick_observer_expired gauge",
+        `sidekick_observer_expired ${observer.inbox.expired}`,
+        "# HELP sidekick_observer_retained_payload_bytes Raw callback JSON bytes retained for support evidence.",
+        "# TYPE sidekick_observer_retained_payload_bytes gauge",
+        `sidekick_observer_retained_payload_bytes ${observer.inbox.retainedPayloadBytes}`,
+        "# HELP sidekick_observer_pruned_payloads Terminal callback rows whose raw JSON was pruned.",
+        "# TYPE sidekick_observer_pruned_payloads gauge",
+        `sidekick_observer_pruned_payloads ${observer.inbox.prunedPayloads}`,
+        "# HELP sidekick_observer_oldest_pending_age_seconds Age of the oldest callback awaiting verification.",
+        "# TYPE sidekick_observer_oldest_pending_age_seconds gauge",
+        `sidekick_observer_oldest_pending_age_seconds ${observer.inbox.oldestPendingAt ? Math.max(0, (Date.now() - Date.parse(observer.inbox.oldestPendingAt)) / 1_000) : 0}`,
         "# HELP sidekick_observer_last_received_timestamp_seconds Last durable callback receipt time.",
         "# TYPE sidekick_observer_last_received_timestamp_seconds gauge",
         `sidekick_observer_last_received_timestamp_seconds ${observer.inbox.lastReceivedAt ? Date.parse(observer.inbox.lastReceivedAt) / 1_000 : 0}`,
@@ -1408,8 +1463,12 @@ export function createServer(options: ServerOptions = {}) {
           "# TYPE sidekick_observer_reconciliation_failures_total counter",
           "# HELP sidekick_observer_reconciliation_consecutive_failures Consecutive observer-triggered reconciliation failures.",
           "# TYPE sidekick_observer_reconciliation_consecutive_failures gauge",
+          "# HELP sidekick_observer_reconciliation_latency_seconds Callback receipt to successful domain projection latency.",
+          "# TYPE sidekick_observer_reconciliation_latency_seconds histogram",
+          "# HELP sidekick_observer_reconciliation_within_two_seconds_total Successful callback projections completed within two seconds.",
+          "# TYPE sidekick_observer_reconciliation_within_two_seconds_total counter",
         );
-        for (const domain of ["current", "manager-activity"] as const) {
+        for (const domain of ["current", "manager-activity", "roster"] as const) {
           const status = observer.reconciliation.domains[domain];
           metrics.push(
             `sidekick_observer_reconciliation_pending{domain="${domain}"} ${status.pending ? 1 : 0}`,
@@ -1418,8 +1477,36 @@ export function createServer(options: ServerOptions = {}) {
             `sidekick_observer_reconciliation_successes_total{domain="${domain}"} ${status.successes}`,
             `sidekick_observer_reconciliation_failures_total{domain="${domain}"} ${status.failuresTotal}`,
             `sidekick_observer_reconciliation_consecutive_failures{domain="${domain}"} ${status.consecutiveFailures}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="1"} ${status.callbackLatency.buckets.le1}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="2"} ${status.callbackLatency.buckets.le2}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="5"} ${status.callbackLatency.buckets.le5}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="10"} ${status.callbackLatency.buckets.le10}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="30"} ${status.callbackLatency.buckets.le30}`,
+            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="+Inf"} ${status.callbackLatency.samples}`,
+            `sidekick_observer_reconciliation_latency_seconds_sum{domain="${domain}"} ${status.callbackLatency.sumSeconds}`,
+            `sidekick_observer_reconciliation_latency_seconds_count{domain="${domain}"} ${status.callbackLatency.samples}`,
+            `sidekick_observer_reconciliation_within_two_seconds_total{domain="${domain}"} ${status.callbackLatency.withinTwoSeconds}`,
           );
         }
+      }
+      if (observer.gap) {
+        metrics.push(
+          "# HELP sidekick_observer_gap_degraded Whether the local node advanced without a timely observer callback.",
+          "# TYPE sidekick_observer_gap_degraded gauge",
+          `sidekick_observer_gap_degraded ${observer.gap.status === "degraded" ? 1 : 0}`,
+          "# HELP sidekick_observer_gap_checks_total Local node-only observer gap checks.",
+          "# TYPE sidekick_observer_gap_checks_total counter",
+          `sidekick_observer_gap_checks_total ${observer.gap.checksTotal}`,
+          "# HELP sidekick_observer_gap_failures_total Failed observer gap checks caused by node read errors.",
+          "# TYPE sidekick_observer_gap_failures_total counter",
+          `sidekick_observer_gap_failures_total ${observer.gap.failuresTotal}`,
+          "# HELP sidekick_observer_stacks_gap_blocks Difference between the local node and latest node-verified observer Stacks heights.",
+          "# TYPE sidekick_observer_stacks_gap_blocks gauge",
+          `sidekick_observer_stacks_gap_blocks ${observer.gap.stacksGap ?? 0}`,
+          "# HELP sidekick_observer_silence_seconds Seconds since the latest node-verified observer callback or monitor startup.",
+          "# TYPE sidekick_observer_silence_seconds gauge",
+          `sidekick_observer_silence_seconds ${observer.gap.observerSilenceSeconds ?? 0}`,
+        );
       }
     }
     if (refresh.sourcePositions) {
@@ -1445,9 +1532,10 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/status", async (request) => {
     const refresh = (request.query as { refresh?: unknown }).refresh === "1";
     const service = requireFeature(options.service, "operator_service_unavailable");
-    return await interactive(request, async () =>
+    const snapshot = await interactive(request, async () =>
       service.summary ? service.summary(refresh) : service.snapshot(refresh),
     );
+    return withObserverAlerts(snapshot, options.observerStatus?.());
   });
   server.get("/api/v1/support-bundle", async (_request, reply) => {
     const service = options.service;
@@ -1731,7 +1819,10 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/api/v1/alerts", async (request) => {
     const snapshot = await interactive(request, async () => options.service?.snapshot());
-    return { generatedAt: snapshot?.generatedAt, alerts: snapshot?.alerts ?? [] };
+    const withObserver = snapshot
+      ? withObserverAlerts(snapshot, options.observerStatus?.())
+      : snapshot;
+    return { generatedAt: withObserver?.generatedAt, alerts: withObserver?.alerts ?? [] };
   });
   server.get("/api/v1/activity", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
@@ -1783,7 +1874,24 @@ export function createServer(options: ServerOptions = {}) {
   server.put("/api/v1/settings", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const updateSettings = requireFeature(service.updateSettings, "runtime_settings_unavailable");
-    return await interactive(request, async () => updateSettings.call(service, request.body));
+    const wasUnavailable = options.connection?.current()?.status === "unavailable";
+    const previousNodeRpcUrl = settingsNodeRpcUrl(service.settings?.());
+    const result = await interactive(request, async () =>
+      updateSettings.call(service, request.body),
+    );
+    const nextNodeRpcUrl = settingsNodeRpcUrl(result);
+    const nodeRpcUrlChanged =
+      previousNodeRpcUrl !== null &&
+      nextNodeRpcUrl !== null &&
+      previousNodeRpcUrl !== nextNodeRpcUrl;
+    if ((wasUnavailable || nodeRpcUrlChanged) && options.connection) {
+      const assessment = await interactive(
+        request,
+        async () => await options.connection?.check(true),
+      );
+      if (assessment) await options.onConnectionAssessed?.(assessment);
+    }
+    return result;
   });
   server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
     const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");
