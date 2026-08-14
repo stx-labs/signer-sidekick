@@ -66,6 +66,7 @@ describe("CLI dispatch", () => {
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
         sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
         sidekick connection check  Verify the configured local node and signer-manager connection
+        sidekick observer config <host:port>  Render exact private Stacks event-dispatcher settings
         sidekick manager verify <manager>  Verify deployed source and interface compatibility
         sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
         sidekick events sync <manager>  Backfill and update canonical manager events
@@ -83,6 +84,10 @@ describe("CLI dispatch", () => {
         STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
         STACKS_API_KEY       Optional API key; never included in output
         SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
+        SIDEKICK_EVENT_HTTP_ENABLED  Optional private event listener toggle; defaults to true
+        SIDEKICK_EVENT_HTTP_HOST  Optional private event listener address; defaults to loopback
+        SIDEKICK_EVENT_HTTP_PORT  Optional private event listener port; defaults to 3700
+        SIDEKICK_EVENT_MAX_BODY_BYTES  Optional callback body limit; defaults to 4194304
         SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
         SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
         SIDEKICK_AUTH_TRUSTED_HEADER  Optional proxy-injected API-key header
@@ -138,6 +143,19 @@ describe("CLI dispatch", () => {
 
     expect(capture.stdout()).toBe("");
     expect(capture.stderr()).toBe("Usage: sidekick database backup <output.sqlite>\n");
+    expect(capture.exitCodes()).toEqual([1]);
+    expect(result).toEqual({ exitCode: 1 });
+  });
+
+  it("requires the node-reachable endpoint before generating observer configuration", async () => {
+    const capture = captureOutput();
+    const result = await dispatchCli(["observer", "config"], executeCliCommand, {
+      env: {},
+      output: capture.output,
+    });
+
+    expect(capture.stdout()).toBe("");
+    expect(capture.stderr()).toBe("Usage: sidekick observer config <node-reachable-host:port>\n");
     expect(capture.exitCodes()).toEqual([1]);
     expect(result).toEqual({ exitCode: 1 });
   });

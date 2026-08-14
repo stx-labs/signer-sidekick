@@ -115,6 +115,39 @@ node/API lag diagnostic. The authenticated Operations readiness panel
 (`/api/v1/operations/readiness`) also reports manager and engine blockers. Resolve failed
 connectivity checks before signing an operation.
 
+### Connect the private event listener
+
+Sidekick listens separately for Stacks Core event-dispatcher callbacks on port `3700`. The base
+Compose file publishes that port on host loopback; the host-network overlay also binds it directly
+to loopback. Do not route this listener through the operator reverse proxy or publish it to the
+internet. The listener accepts only `/new_block`, `/new_burn_block`, and the node's implicit
+`/attachments/new` callback, limits JSON bodies to 4 MiB by default, and commits each callback to
+the SQLite inbox before returning HTTP 200.
+
+After `connection check` succeeds, render subscriptions from the node-observed PoX-5 contract and
+the configured manager instead of copying network-specific principals from documentation:
+
+```sh
+docker compose run --rm --no-deps sidekick observer config 127.0.0.1:3700
+```
+
+Use the endpoint that the Stacks node itself can reach: `127.0.0.1:3700` for a same-host node,
+`sidekick:3700` when both services share a Docker network, or a firewalled private host address for
+a remote node. The command returns an `observerToml` block with exact `burn_blocks`, PoX-5 print,
+and attached-manager print subscriptions, plus `nodeToml` keys to merge into the node's existing
+`[node]` table. Restart the node only through its normal infrastructure workflow, then verify
+callback receipt in Sidekick's `/metrics` output or support snapshot.
+
+Callbacks are prompts, not chain authority. New block and burn-block deliveries initially remain
+`observer-claimed`; malformed claims are quarantined, and implicit attachment callbacks are
+durably expired because Sidekick does not use them. A restart-safe worker pins Stacks header reads
+to one stable canonical node tip and promotes only matching height, block-hash, and index-hash
+claims to `node-verified`. It does not trust callback-embedded events or write them to operator
+history or current projections. Burn-block callbacks remain trigger-only and expire after the node
+reaches their height because the local Stacks RPC cannot prove the claimed burn hash. Timer-driven
+reconciliation and API backfill remain the authoritative recovery paths while event-level
+transaction verification is added.
+
 Open `http://127.0.0.1:3998` and enter the configured token. The service starts in Observe mode and
 cannot broadcast.
 

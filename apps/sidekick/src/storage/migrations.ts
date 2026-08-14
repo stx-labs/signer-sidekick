@@ -1543,4 +1543,70 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 23,
+    name: "observer_delivery_inbox",
+    sql: `
+      -- Event-dispatcher callbacks are untrusted prompts until Sidekick independently verifies
+      -- their chain claims. Persist the exact bounded JSON body before acknowledging delivery so
+      -- node retries cannot be lost across process failure.
+      CREATE TABLE observer_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        endpoint_kind TEXT NOT NULL CHECK (
+          endpoint_kind IN ('new-block', 'new-burn-block', 'attachments')
+        ),
+        content_sha256 TEXT NOT NULL CHECK (
+          length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        raw_payload_json TEXT NOT NULL CHECK (json_valid(raw_payload_json)),
+        payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+        state TEXT NOT NULL CHECK (
+          state IN ('observer-claimed', 'processing', 'node-verified', 'quarantined', 'expired')
+        ),
+        state_reason TEXT,
+        claimed_block_height INTEGER CHECK (
+          claimed_block_height IS NULL OR claimed_block_height >= 0
+        ),
+        claimed_block_hash TEXT,
+        claimed_index_block_hash TEXT,
+        claimed_burn_block_height INTEGER CHECK (
+          claimed_burn_block_height IS NULL OR claimed_burn_block_height >= 0
+        ),
+        claimed_burn_block_hash TEXT,
+        delivery_attempts INTEGER NOT NULL DEFAULT 1 CHECK (delivery_attempts >= 1),
+        processing_attempts INTEGER NOT NULL DEFAULT 0 CHECK (processing_attempts >= 0),
+        first_received_at TEXT NOT NULL,
+        last_received_at TEXT NOT NULL,
+        last_processing_at TEXT,
+        next_attempt_at TEXT NOT NULL,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE (endpoint_kind, content_sha256)
+      ) STRICT;
+
+      CREATE INDEX observer_deliveries_pending
+        ON observer_deliveries (state, next_attempt_at, first_received_at, delivery_id);
+      CREATE INDEX observer_deliveries_claimed_stacks_block
+        ON observer_deliveries (claimed_index_block_hash, claimed_block_height)
+        WHERE claimed_index_block_hash IS NOT NULL;
+      CREATE UNIQUE INDEX observer_deliveries_unique_stacks_block
+        ON observer_deliveries (
+          endpoint_kind, claimed_block_height, claimed_block_hash, claimed_index_block_hash
+        )
+        WHERE endpoint_kind = 'new-block'
+          AND claimed_block_height IS NOT NULL
+          AND claimed_block_hash IS NOT NULL
+          AND claimed_index_block_hash IS NOT NULL;
+      CREATE INDEX observer_deliveries_claimed_burn_block
+        ON observer_deliveries (claimed_burn_block_hash, claimed_burn_block_height)
+        WHERE claimed_burn_block_hash IS NOT NULL;
+      CREATE UNIQUE INDEX observer_deliveries_unique_burn_block
+        ON observer_deliveries (
+          endpoint_kind, claimed_burn_block_height, claimed_burn_block_hash
+        )
+        WHERE endpoint_kind = 'new-burn-block'
+          AND claimed_burn_block_height IS NOT NULL
+          AND claimed_burn_block_hash IS NOT NULL;
+    `,
+  },
 ];

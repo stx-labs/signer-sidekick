@@ -74,6 +74,85 @@ const databaseSectionSchema = supportSectionBaseSchema
   .extend({ data: databaseStatusSchema.nullable() })
   .strict();
 
+const observerRuntimeStatusSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    enabled: z.boolean(),
+    listening: z.boolean(),
+    listener: z
+      .object({
+        host: z.string().min(1),
+        port: z.number().int().min(1).max(65_535),
+        maxBodyBytes: z
+          .number()
+          .int()
+          .min(1_024)
+          .max(16 * 1_024 * 1_024),
+      })
+      .strict()
+      .nullable(),
+    inbox: z
+      .object({
+        schemaVersion: z.literal(1),
+        uniqueDeliveries: z.number().int().nonnegative(),
+        deliveryAttempts: z.number().int().nonnegative(),
+        processingAttempts: z.number().int().nonnegative(),
+        duplicates: z.number().int().nonnegative(),
+        queueDepth: z.number().int().nonnegative(),
+        processing: z.number().int().nonnegative(),
+        nodeVerified: z.number().int().nonnegative(),
+        quarantined: z.number().int().nonnegative(),
+        expired: z.number().int().nonnegative(),
+        lastReceivedAt: z.iso.datetime().nullable(),
+        lastProcessedAt: z.iso.datetime().nullable(),
+        oldestPendingAt: z.iso.datetime().nullable(),
+        lastClaimedStacksBlock: z
+          .object({
+            height: z.number().int().nonnegative(),
+            blockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+            indexBlockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+          })
+          .strict()
+          .nullable(),
+        lastClaimedBurnBlock: z
+          .object({
+            height: z.number().int().nonnegative(),
+            blockHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+          })
+          .strict()
+          .nullable(),
+        lastQuarantine: z
+          .object({
+            endpointKind: z.enum(["new-block", "new-burn-block", "attachments"]),
+            reason: z.string().min(1).max(500),
+            receivedAt: z.iso.datetime(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.enabled !== (value.listener !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Enabled observer status must include listener configuration",
+        path: ["listener"],
+      });
+    }
+    if (value.listening && !value.enabled) {
+      context.addIssue({
+        code: "custom",
+        message: "A disabled observer listener cannot be listening",
+        path: ["listening"],
+      });
+    }
+  });
+const observerSectionSchema = supportSectionBaseSchema
+  .extend({ data: observerRuntimeStatusSchema.nullable() })
+  .strict();
+
 const snapshotRefreshMetricsSchema = z
   .object({
     attemptsTotal: z.number().int().nonnegative(),
@@ -174,6 +253,7 @@ export const operatorSupportBundleSchema = z
         recentOperations: recentOperationsSectionSchema,
         recentSidekickErrors: recentSidekickErrorsSectionSchema,
         database: databaseSectionSchema,
+        observer: observerSectionSchema,
         automation: automationSectionSchema,
       })
       .strict(),
@@ -365,6 +445,7 @@ export async function createOperatorSupportBundle(options: {
   recentOperations?: () => Promise<unknown>;
   recentSidekickErrors?: () => Promise<unknown> | unknown;
   database?: () => Promise<unknown> | unknown;
+  observer?: () => Promise<unknown> | unknown;
   automation?: () => Promise<unknown> | unknown;
   now?: () => Date;
   timeoutMs?: number;
@@ -381,6 +462,7 @@ export async function createOperatorSupportBundle(options: {
     recentOperations,
     recentSidekickErrors,
     database,
+    observer,
     automation,
   ] = await Promise.all([
     collectSupportSection(options.connection, connectionAssessmentSchema, now, timeoutMs),
@@ -396,6 +478,7 @@ export async function createOperatorSupportBundle(options: {
       timeoutMs,
     ),
     collectSupportSection(options.database, databaseStatusSchema, now, timeoutMs),
+    collectSupportSection(options.observer, observerRuntimeStatusSchema, now, timeoutMs),
     collectSupportSection(options.automation, automationStatusSchema, now, timeoutMs),
   ]);
   const sections = {
@@ -407,6 +490,7 @@ export async function createOperatorSupportBundle(options: {
     recentOperations,
     recentSidekickErrors,
     database,
+    observer,
     automation,
   };
   const statuses = Object.values(sections).map(({ status }) => status);

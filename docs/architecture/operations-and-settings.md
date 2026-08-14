@@ -44,6 +44,18 @@ staking roster data are reconciled into SQLite independently of an open browser,
 cursors, canonical anchors, idempotent replay, reorg handling, and bounded retry backoff. A delayed
 reference API is reported separately and does not block node-backed operations.
 
+A separate private callback listener is the low-latency input from the configured Stacks node. It
+commits bounded event-dispatcher payloads to a durable inbox before acknowledging them, records
+duplicate attempts, and keeps callback contents out of permanent history and current projections.
+The restart-safe inbox worker pins the node's header ancestry to one stable canonical tip and marks
+a Stacks block claim `node-verified` only when its height, block hash, and index block hash match.
+The callback's embedded events remain untrusted pending transaction/event-level verification.
+Burn-block callbacks are trigger-only because the local Stacks RPC does not expose an equivalent
+burn-header proof; they expire after the node reaches their claimed height. Malformed or forged
+claims are quarantined with a bounded reason. Callback delivery never grants a manager capability,
+and API backfill plus periodic anti-entropy remain the recovery paths for loss, reordering, restart,
+and reorg.
+
 A transaction absent from both indexed and pending node state may be explicitly superseded after a
 15-minute grace period. Replacement always creates a new sealed intent. Existing deployment-era
 database rows and API response shapes remain readable during upgrades, but no first-time setup

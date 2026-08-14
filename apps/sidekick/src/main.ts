@@ -28,6 +28,13 @@ import {
   type ManagerVerificationContext,
 } from "./manager-verification.js";
 import { loadNetworkCompatibilityProfiles } from "./network-compatibility-store.js";
+import { ObserverInboxProcessor } from "./observer-inbox.js";
+import {
+  createObserverServer,
+  loadObserverServerConfig,
+  observerRuntimeStatus,
+  renderStacksEventObserverConfig,
+} from "./observer-server.js";
 import { readOperatorAnchorSnapshot } from "./operator-anchor-snapshot.js";
 import { OperatorService } from "./operator-service.js";
 import {
@@ -128,6 +135,10 @@ export async function executeCliCommand({
       throw new Error("SIDEKICK_HTTP_PORT must be an integer from 1 through 65535");
     }
     const host = env.SIDEKICK_HTTP_HOST ?? "127.0.0.1";
+    const observerConfig = loadObserverServerConfig(env);
+    if (observerConfig.enabled && observerConfig.host === host && observerConfig.port === port) {
+      throw new Error("The operator API and private event listener must use different addresses");
+    }
     const { store } = await openSidekickStore(config.databasePath);
     let serverOwnsStore = false;
     let storeClosed = false;
@@ -206,16 +217,32 @@ export async function executeCliCommand({
         getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
+      let reportObserverInboxError: (error: unknown) => void = () => undefined;
+      const observerProcessor = new ObserverInboxProcessor({
+        store,
+        getNode: () => runtimeSettings.clients().node,
+        onError: (error) => reportObserverInboxError(error),
+      });
+      const observerServer = observerConfig.enabled
+        ? createObserverServer({
+            store,
+            maxBodyBytes: observerConfig.maxBodyBytes,
+            logger: false,
+            onAccepted: () => observerProcessor.notify(),
+          })
+        : null;
+      let observerListening = false;
       let snapshotRefresh: { stop(): void } | null = null;
       let operationalStarted = false;
       const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker();
-      let startOperationalRuntime: () => void = () => undefined;
+      let operationalStartPromise: Promise<void> | null = null;
+      let startOperationalRuntime: () => Promise<void> = async () => undefined;
       const server = createServer({
         service,
         connection,
         isOperational: () => operationalStarted,
-        onConnectionAssessed: (result) => {
-          if (result.status === "connected") startOperationalRuntime();
+        onConnectionAssessed: async (result) => {
+          if (result.status === "connected") await startOperationalRuntime();
         },
         getRateLimitSettings: () => {
           const current = runtimeSettings.effectiveConfig();
@@ -230,6 +257,8 @@ export async function executeCliCommand({
         engine: engine.api,
         supportApplication: () => operatorSupportApplication(env),
         databaseStatus: () => store.databaseStatus(),
+        observerStatus: () =>
+          observerRuntimeStatus(observerConfig, store.observerInboxStatus(), observerListening),
         snapshotRefreshMetrics,
         authToken,
         ...(authTrustedHeader ? { authTrustedHeader } : {}),
@@ -241,44 +270,70 @@ export async function executeCliCommand({
           { error: error instanceof Error ? error.message : String(error) },
           "Transaction engine failed closed; operator reads remain available",
         );
-      startOperationalRuntime = () => {
-        if (operationalStarted) return;
-        operationalStarted = true;
-        health.start();
-        engine.start();
-        snapshotRefresh = startSnapshotRefreshLoop(
-          {
-            refreshSnapshot: async () => {
-              if (connection.current()?.status !== "connected") {
-                throw new Error("The configured connection is not current");
-              }
-              return await service.refreshSnapshot();
-            },
-          },
-          server.log,
-          {
-            metrics: snapshotRefreshMetrics,
-          },
+      reportObserverInboxError = (error) =>
+        server.log.warn(
+          { error: error instanceof Error ? error.message : String(error) },
+          "Observer inbox verification failed; the durable delivery will be retried",
         );
-        server.log.info("Connection established; operator background services are enabled");
-        void engine
-          .recoverActive()
-          .then((results) =>
+      startOperationalRuntime = async () => {
+        if (operationalStarted) return;
+        operationalStartPromise ??= (async () => {
+          if (observerServer && !observerListening) {
+            await observerServer.listen({ host: observerConfig.host, port: observerConfig.port });
+            observerListening = true;
             server.log.info(
-              { recoveredJobs: results.length },
-              "Transaction engine startup recovery completed",
-            ),
-          )
-          .catch((error: unknown) => reportTransactionEngineError(error));
-        void service
-          .observeManagerTrustState()
-          .then(() => server.log.info("Initial manager observation completed"))
-          .catch((error: unknown) =>
-            server.log.warn(
-              { error: error instanceof Error ? error.message : String(error) },
-              "Initial manager observation failed; the next synchronization or snapshot will retry",
-            ),
+              { host: observerConfig.host, port: observerConfig.port },
+              "Private Stacks event listener is ready",
+            );
+          }
+          const recoveredObserverDeliveries = observerProcessor.start();
+          if (recoveredObserverDeliveries > 0) {
+            server.log.info(
+              { recoveredObserverDeliveries },
+              "Recovered interrupted observer inbox deliveries",
+            );
+          }
+          operationalStarted = true;
+          health.start();
+          engine.start();
+          snapshotRefresh = startSnapshotRefreshLoop(
+            {
+              refreshSnapshot: async () => {
+                if (connection.current()?.status !== "connected") {
+                  throw new Error("The configured connection is not current");
+                }
+                return await service.refreshSnapshot();
+              },
+            },
+            server.log,
+            {
+              metrics: snapshotRefreshMetrics,
+            },
           );
+          server.log.info("Connection established; operator background services are enabled");
+          void engine
+            .recoverActive()
+            .then((results) =>
+              server.log.info(
+                { recoveredJobs: results.length },
+                "Transaction engine startup recovery completed",
+              ),
+            )
+            .catch((error: unknown) => reportTransactionEngineError(error));
+          void service
+            .observeManagerTrustState()
+            .then(() => server.log.info("Initial manager observation completed"))
+            .catch((error: unknown) =>
+              server.log.warn(
+                { error: error instanceof Error ? error.message : String(error) },
+                "Initial manager observation failed; the next synchronization or snapshot will retry",
+              ),
+            );
+        })().catch((error: unknown) => {
+          operationalStartPromise = null;
+          throw error;
+        });
+        await operationalStartPromise;
       };
       for (const issue of managerVerification.installedProfiles.issues) {
         server.log.warn(
@@ -296,6 +351,9 @@ export async function executeCliCommand({
         snapshotRefresh?.stop();
         health.stop();
         try {
+          await observerServer?.close();
+          observerListening = false;
+          await observerProcessor.stop();
           await engine.close();
         } finally {
           closeStore();
@@ -310,7 +368,14 @@ export async function executeCliCommand({
         },
         "HTTP control plane is listening",
       );
-      if (initialConnection.status === "connected") startOperationalRuntime();
+      if (initialConnection.status === "connected") {
+        try {
+          await startOperationalRuntime();
+        } catch (error) {
+          await server.close();
+          throw error;
+        }
+      }
     } finally {
       if (!serverOwnsStore) {
         try {
@@ -396,6 +461,50 @@ export async function executeCliCommand({
         );
         writeCliJson(output, { config: redactConfig(config), connection });
         if (connection.status !== "connected") output.setExitCode(2);
+      },
+    );
+  } else if (command === "observer" && arguments_[0] === "config") {
+    const [, nodeReachableEndpoint] = arguments_;
+    if (!nodeReachableEndpoint) {
+      throw new Error("Usage: sidekick observer config <node-reachable-host:port>");
+    }
+    const config = loadConfig(env);
+    const managerPrincipal = loadManagerPrincipal(env);
+    const { node } = clientsFromConfig(config);
+    await withStore(
+      () => openSidekickStore(config.databasePath),
+      async ({ store }) => {
+        const connection = await withInteractiveRequestDeadline(15_000, async () =>
+          new ConnectionAssessmentService({
+            config,
+            managerPrincipal,
+            node,
+            store,
+          }).check(true),
+        );
+        if (connection.status !== "connected" || !connection.observed?.pox5ContractId) {
+          throw new Error(
+            "Observer configuration requires a connected local node and verified signer-manager",
+          );
+        }
+        writeCliJson(output, {
+          schemaVersion: 1,
+          observedAt: connection.checkedAt,
+          node: {
+            networkId: connection.observed.networkId,
+            stacksTipHeight: connection.observed.stacksTipHeight,
+            burnBlockHeight: connection.observed.burnBlockHeight,
+          },
+          subscriptions: {
+            pox5ContractId: connection.observed.pox5ContractId,
+            managerPrincipal,
+          },
+          config: renderStacksEventObserverConfig({
+            nodeReachableEndpoint,
+            pox5ContractId: connection.observed.pox5ContractId,
+            managerPrincipal,
+          }),
+        });
       },
     );
   } else if (command === "manager" && arguments_[0] === "verify") {
@@ -682,6 +791,7 @@ export async function executeCliCommand({
   } else if (command === "export" && arguments_[0] === "support-bundle") {
     const config = loadConfig(env);
     const managerPrincipal = loadManagerPrincipal(env);
+    const observerConfig = loadObserverServerConfig(env);
     await withStore(
       () => openSidekickStore(config.databasePath),
       async ({ store }) => {
@@ -704,6 +814,7 @@ export async function executeCliCommand({
               connection: () => connectionResult,
               runtimeSettings: () => runtimeSettings.publicSettings(),
               database: () => store.databaseStatus(),
+              observer: () => observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
             }),
           );
           return;
@@ -739,6 +850,7 @@ export async function executeCliCommand({
             engine: async () => engine.api.status(),
             recentOperations: async () => engine.api.listJobs({ cursor: null, limit: 50 }),
             database: () => store.databaseStatus(),
+            observer: () => observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
           });
           writeCliJson(output, bundle);
         } finally {
@@ -820,6 +932,7 @@ Usage:
   sidekick database backup <output.sqlite>  Create and integrity-check an online backup
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
   sidekick connection check  Verify the configured local node and signer-manager connection
+  sidekick observer config <host:port>  Render exact private Stacks event-dispatcher settings
   sidekick manager verify <manager>  Verify deployed source and interface compatibility
   sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
   sidekick events sync <manager>  Backfill and update canonical manager events
@@ -837,6 +950,10 @@ Environment:
   STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
+  SIDEKICK_EVENT_HTTP_ENABLED  Optional private event listener toggle; defaults to true
+  SIDEKICK_EVENT_HTTP_HOST  Optional private event listener address; defaults to loopback
+  SIDEKICK_EVENT_HTTP_PORT  Optional private event listener port; defaults to 3700
+  SIDEKICK_EVENT_MAX_BODY_BYTES  Optional callback body limit; defaults to 4194304
   SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
   SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
   SIDEKICK_AUTH_TRUSTED_HEADER  Optional proxy-injected API-key header

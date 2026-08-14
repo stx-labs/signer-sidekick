@@ -897,6 +897,30 @@ describe("local API", () => {
       authToken: "test-operator-token-with-32-chars",
       logger: false,
       snapshotRefreshMetrics,
+      observerStatus: () => ({
+        schemaVersion: 1,
+        enabled: true,
+        listening: true,
+        listener: { host: "127.0.0.1", port: 3700, maxBodyBytes: 4_194_304 },
+        inbox: {
+          schemaVersion: 1,
+          uniqueDeliveries: 3,
+          deliveryAttempts: 4,
+          processingAttempts: 2,
+          duplicates: 1,
+          queueDepth: 2,
+          processing: 0,
+          nodeVerified: 1,
+          quarantined: 0,
+          expired: 0,
+          lastReceivedAt: "2026-07-14T12:00:09.000Z",
+          lastProcessedAt: "2026-07-14T12:00:10.000Z",
+          oldestPendingAt: "2026-07-14T12:00:08.000Z",
+          lastClaimedStacksBlock: null,
+          lastClaimedBurnBlock: null,
+          lastQuarantine: null,
+        },
+      }),
     });
     servers.push(server);
 
@@ -912,6 +936,14 @@ describe("local API", () => {
     expect(metrics.body).toContain(
       'sidekick_operator_snapshot_source_burn_height{source="pox"} 49',
     );
+    expect(metrics.body).toContain("sidekick_observer_deliveries_total 4");
+    expect(metrics.body).toContain("sidekick_observer_listening 1");
+    expect(metrics.body).toContain("sidekick_observer_duplicates_total 1");
+    expect(metrics.body).toContain("sidekick_observer_processing_attempts_total 2");
+    expect(metrics.body).toContain("sidekick_observer_queue_depth 2");
+    expect(metrics.body).toContain("sidekick_observer_processing 0");
+    expect(metrics.body).toContain("sidekick_observer_last_received_timestamp_seconds 1784030409");
+    expect(metrics.body).toContain("sidekick_observer_last_processed_timestamp_seconds 1784030410");
   });
 
   it("keeps readiness available from a recent stale observation", async () => {

@@ -43,6 +43,8 @@ ENV NODE_ENV=production \
   SIDEKICK_SOURCE_FINGERPRINT_PATH=/app/SOURCE_FINGERPRINT \
   SIDEKICK_HTTP_HOST=0.0.0.0 \
   SIDEKICK_HTTP_PORT=3998 \
+  SIDEKICK_EVENT_HTTP_HOST=0.0.0.0 \
+  SIDEKICK_EVENT_HTTP_PORT=3700 \
   SIDEKICK_DATABASE_PATH=/data/sidekick.sqlite \
   SIDEKICK_STATIC_DIRECTORY=/app/dashboard \
   SIDEKICK_CONTRACTS_DIR=/app/contracts
@@ -62,7 +64,7 @@ COPY --from=build /workspace/design/fonts/OFL-1.1.txt /usr/share/doc/signer-side
 USER sidekick
 WORKDIR /app
 VOLUME ["/data"]
-EXPOSE 3998
+EXPOSE 3700 3998
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["node", "-e", "const host=process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; fetch('http://' + host + ':3998/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]

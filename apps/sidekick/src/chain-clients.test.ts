@@ -988,6 +988,35 @@ describe("Stacks node client", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("reads a bounded header ancestry pinned to an exact node tip", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            consensus_hash: "AA".repeat(20),
+            header: "01020304",
+            parent_block_id: "BB".repeat(32),
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getHeaders(1, { tip: indexBlockHash })).resolves.toEqual([
+      {
+        consensus_hash: "aa".repeat(20),
+        header: "01020304",
+        parent_block_id: `0x${"bb".repeat(32)}`,
+      },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `http://127.0.0.1:20443/v2/headers/1?tip=${indexBlockHash.slice(2)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(() => client.getHeaders(2_101, { tip: indexBlockHash })).toThrow();
+  });
+
   it.each([
     {
       rewardCycleLength: 2_100,

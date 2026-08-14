@@ -44,6 +44,26 @@ const nodeTenureInfoSchema = z.object({
   reward_cycle: z.number().int().nonnegative(),
 });
 
+const nodeHeaderSchema = z
+  .object({
+    consensus_hash: z
+      .string()
+      .regex(/^(?:0x)?[0-9a-f]{40}$/i)
+      .transform((value) => value.replace(/^0x/i, "").toLowerCase()),
+    header: z
+      .string()
+      .regex(/^(?:[0-9a-f]{2})+$/i)
+      .transform((value) => value.toLowerCase()),
+    parent_block_id: z
+      .string()
+      .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+      .transform(
+        (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
+      ),
+  })
+  .strict();
+const nodeHeadersSchema = z.array(nodeHeaderSchema).max(2_100);
+
 const contractPrincipalSchema = z.string().refine((value) => {
   try {
     parseContractPrincipal(value);
@@ -317,6 +337,7 @@ export type NodeInfo = z.infer<typeof nodeInfoSchema>;
 export type NodeHealth = z.infer<typeof nodeHealthSchema>;
 export type NodeTenureInfo = z.infer<typeof nodeTenureInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
+export type NodeHeader = z.infer<typeof nodeHeaderSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
 export type BurnBlockPage = z.infer<typeof burnBlockPageSchema>;
 export type ContractSource = z.infer<typeof contractSourceSchema>;
@@ -416,6 +437,7 @@ function canonicalMempoolSnapshot(transactions: readonly MempoolTransaction[]): 
 
 export interface ChainReadOptions {
   tip: ChainAnchor["indexBlockHash"];
+  signal?: AbortSignal;
 }
 
 type Fetch = typeof fetch;
@@ -646,8 +668,10 @@ export class StacksNodeClient {
     private readonly fetchImpl: Fetch = fetch,
   ) {}
 
-  getInfo(): Promise<NodeInfo> {
-    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema);
+  getInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
   getHealth(): Promise<NodeHealth> {
@@ -656,6 +680,16 @@ export class StacksNodeClient {
 
   getTenureInfo(): Promise<NodeTenureInfo> {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/tenures/info`, nodeTenureInfoSchema);
+  }
+
+  getHeaders(count: number, options?: ChainReadOptions): Promise<NodeHeader[]> {
+    const parsedCount = z.number().int().min(1).max(2_100).parse(count);
+    return fetchJson(
+      this.fetchImpl,
+      appendQuery(`${this.baseUrl}/v2/headers/${parsedCount}`, { tip: readTip(options) }),
+      nodeHeadersSchema,
+      options?.signal ? { signal: options.signal } : {},
+    );
   }
 
   getPoxInfo(options?: ChainReadOptions): Promise<PoxInfo> {

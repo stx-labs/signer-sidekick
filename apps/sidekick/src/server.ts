@@ -47,6 +47,7 @@ import {
   UpstreamUnavailableError,
 } from "./chain-clients.js";
 import { HealthSourceError } from "./health-http.js";
+import type { ObserverRuntimeStatus } from "./observer-server.js";
 import type {
   OperatorSynchronizationProgress,
   PoolRosterSort,
@@ -322,6 +323,7 @@ export interface ServerOptions {
   engine?: TransactionEngineApiService;
   supportApplication?(): OperatorSupportApplication;
   databaseStatus?(): unknown;
+  observerStatus?(): ObserverRuntimeStatus;
   snapshotRefreshMetrics?: SnapshotRefreshMetricsTracker;
   rosterReconciliationIntervalMs?: number;
   rosterReconciliationInitialDelayMs?: number;
@@ -1290,6 +1292,7 @@ export function createServer(options: ServerOptions = {}) {
       sourcePositions: null,
     };
     const rosterRefresh = rosterReconciliationMetrics.snapshot();
+    const observer = options.observerStatus?.();
     const metrics = [
       "# HELP sidekick_http_requests_total HTTP requests handled by this process.",
       "# TYPE sidekick_http_requests_total counter",
@@ -1355,6 +1358,43 @@ export function createServer(options: ServerOptions = {}) {
       "# TYPE sidekick_operator_snapshot_fresh gauge",
       `sidekick_operator_snapshot_fresh ${refresh.snapshotFresh}`,
     ];
+    if (observer) {
+      metrics.push(
+        "# HELP sidekick_observer_enabled Whether the private Stacks event listener is configured.",
+        "# TYPE sidekick_observer_enabled gauge",
+        `sidekick_observer_enabled ${observer.enabled ? 1 : 0}`,
+        "# HELP sidekick_observer_listening Whether the private Stacks event listener is accepting callbacks.",
+        "# TYPE sidekick_observer_listening gauge",
+        `sidekick_observer_listening ${observer.listening ? 1 : 0}`,
+        "# HELP sidekick_observer_deliveries_total Event callback delivery attempts durably recorded.",
+        "# TYPE sidekick_observer_deliveries_total counter",
+        `sidekick_observer_deliveries_total ${observer.inbox.deliveryAttempts}`,
+        "# HELP sidekick_observer_duplicates_total Duplicate event callback delivery attempts.",
+        "# TYPE sidekick_observer_duplicates_total counter",
+        `sidekick_observer_duplicates_total ${observer.inbox.duplicates}`,
+        "# HELP sidekick_observer_processing_attempts_total Durable callback verification attempts.",
+        "# TYPE sidekick_observer_processing_attempts_total counter",
+        `sidekick_observer_processing_attempts_total ${observer.inbox.processingAttempts}`,
+        "# HELP sidekick_observer_queue_depth Observer-claimed callbacks awaiting verification.",
+        "# TYPE sidekick_observer_queue_depth gauge",
+        `sidekick_observer_queue_depth ${observer.inbox.queueDepth}`,
+        "# HELP sidekick_observer_processing Observer callbacks currently claimed by the verification worker.",
+        "# TYPE sidekick_observer_processing gauge",
+        `sidekick_observer_processing ${observer.inbox.processing}`,
+        "# HELP sidekick_observer_quarantined_total Event callbacks quarantined before projection.",
+        "# TYPE sidekick_observer_quarantined_total gauge",
+        `sidekick_observer_quarantined_total ${observer.inbox.quarantined}`,
+        "# HELP sidekick_observer_node_verified_total Event callbacks promoted after node verification.",
+        "# TYPE sidekick_observer_node_verified_total gauge",
+        `sidekick_observer_node_verified_total ${observer.inbox.nodeVerified}`,
+        "# HELP sidekick_observer_last_received_timestamp_seconds Last durable callback receipt time.",
+        "# TYPE sidekick_observer_last_received_timestamp_seconds gauge",
+        `sidekick_observer_last_received_timestamp_seconds ${observer.inbox.lastReceivedAt ? Date.parse(observer.inbox.lastReceivedAt) / 1_000 : 0}`,
+        "# HELP sidekick_observer_last_processed_timestamp_seconds Last callback verification attempt time.",
+        "# TYPE sidekick_observer_last_processed_timestamp_seconds gauge",
+        `sidekick_observer_last_processed_timestamp_seconds ${observer.inbox.lastProcessedAt ? Date.parse(observer.inbox.lastProcessedAt) / 1_000 : 0}`,
+      );
+    }
     if (refresh.sourcePositions) {
       metrics.push(
         "# HELP sidekick_operator_snapshot_source_stacks_height Stacks height observed in the last successful refresh.",
@@ -1415,6 +1455,7 @@ export function createServer(options: ServerOptions = {}) {
           }
         : {}),
       ...(options.databaseStatus ? { database: options.databaseStatus } : {}),
+      ...(options.observerStatus ? { observer: options.observerStatus } : {}),
       recentSidekickErrors: () => recentSidekickErrors,
       automation: () => ({
         processRequests: {
