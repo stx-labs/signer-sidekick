@@ -908,6 +908,23 @@ function chainEventRecord(
   };
 }
 
+function mergeChainRecord(
+  operation: ActivityRecord,
+  chainRecord: ActivityRecord,
+  indexedCoverage: ActivityCoverage,
+): void {
+  operation.aliases = [...new Set([...operation.aliases, ...chainRecord.aliases])].sort();
+  operation.timeline = [...operation.timeline, ...chainRecord.timeline].sort(timelineOrder);
+  operation.summary.coverage = [
+    ...new Map(
+      [...operation.summary.coverage, indexedCoverage].map((value) => [value.source, value]),
+    ).values(),
+  ];
+  if (Date.parse(chainRecord.summary.updatedAt) > Date.parse(operation.summary.updatedAt)) {
+    operation.summary.updatedAt = chainRecord.summary.updatedAt;
+  }
+}
+
 function settingsRecord(
   audit: { revision: number; changedFields: string[]; changedAt: string },
   sourceCoverage: ActivityCoverage,
@@ -1014,8 +1031,11 @@ export class ActivityProjectionService {
 
   detail(activityId: string, readOnly = false): ActivityDetail | null {
     const requestedActivityId = activityIdSchema.parse(activityId);
-    const loaded = this.load(readOnly, this.options.now?.() ?? new Date(), true);
-    const record = loaded.records.find(({ aliases }) => aliases.includes(requestedActivityId));
+    const record = this.loadDetail(
+      requestedActivityId,
+      readOnly,
+      this.options.now?.() ?? new Date(),
+    );
     if (!record) return null;
     return activityDetailSchema.parse({
       schemaVersion: 1,
@@ -1025,6 +1045,119 @@ export class ActivityProjectionService {
       summary: record.summary,
       timeline: record.timeline,
     });
+  }
+
+  private loadDetail(
+    requestedActivityId: string,
+    readOnly: boolean,
+    now: Date,
+  ): ActivityRecord | null {
+    const walletMatch = /^wallet-intent:(.+)$/.exec(requestedActivityId);
+    if (walletMatch?.[1]) {
+      const parsedId = z.string().uuid().safeParse(walletMatch[1]);
+      if (!parsedId.success) return null;
+      const intent = this.options.store.walletIntents.get(parsedId.data);
+      return intent ? this.walletDetailRecord(intent, readOnly) : null;
+    }
+
+    const engineMatch = /^engine-job:(.+)$/.exec(requestedActivityId);
+    if (engineMatch?.[1]) {
+      const parsedId = z.string().uuid().safeParse(engineMatch[1]);
+      if (!parsedId.success) return null;
+      const job = this.options.store.transactionEngine.getLogicalJob(parsedId.data);
+      return job ? this.engineDetailRecord(job, readOnly, now) : null;
+    }
+
+    const chainMatch = /^chain-tx:(\d+):(0x[0-9a-f]{64})$/.exec(requestedActivityId);
+    if (chainMatch?.[1] && chainMatch[2]) {
+      const chainId = Number(chainMatch[1]);
+      if (!Number.isSafeInteger(chainId) || chainId !== this.options.chainId) return null;
+      const txid = chainMatch[2];
+      // Match the full projection's deterministic authority precedence: wallet intent, engine job,
+      // then a standalone verified chain record.
+      const intent = this.options.store.walletIntents.getByTxid(txid);
+      if (intent) return this.walletDetailRecord(intent, readOnly);
+      const job = this.options.store.transactionEngine.getLogicalJobByTxid(txid);
+      if (job) return this.engineDetailRecord(job, readOnly, now);
+      const events = this.detailChainEvents(txid);
+      return events.length === 0
+        ? null
+        : chainEventRecord(this.options.chainId, txid, events, this.indexedCoverage(events));
+    }
+
+    const settingsMatch = /^settings:(\d+)$/.exec(requestedActivityId);
+    if (settingsMatch?.[1]) {
+      const revision = Number(settingsMatch[1]);
+      if (!Number.isSafeInteger(revision) || revision < 1) return null;
+      const audit = this.options.store.getSettingsAudit(revision);
+      return audit
+        ? settingsRecord(audit, coverage("settings-audit", "current", audit.changedAt))
+        : null;
+    }
+    return null;
+  }
+
+  private walletDetailRecord(intent: StoredWalletIntent, readOnly: boolean): ActivityRecord {
+    const { previous, next } = this.options.store.walletIntents.getActivityScopeNeighbors(intent);
+    const record = walletIntentSummary(
+      intent,
+      this.options.store.walletIntents.listObservations(intent.id),
+      coverage("wallet-intents", "current", intent.updatedAt),
+      readOnly,
+      previous && ["expired", "superseded"].includes(previous.state)
+        ? `wallet-intent:${previous.id}`
+        : null,
+      ["expired", "superseded"].includes(intent.state) && next ? `wallet-intent:${next.id}` : null,
+      true,
+    );
+    this.mergeDetailChainEvents(record);
+    return record;
+  }
+
+  private engineDetailRecord(
+    job: StoredTransactionJob,
+    readOnly: boolean,
+    now: Date,
+  ): ActivityRecord {
+    const previous = this.options.store.transactionEngine.getLogicalJobSupersededBy(job.jobId);
+    const attempts = this.options.store.transactionEngine.listAttempts(job.jobId);
+    const record = engineRecord(
+      job,
+      attempts,
+      this.options.store.transactionEngine.listReconciliationObservations(job.jobId),
+      coverage("transaction-engine", "current", job.updatedAt),
+      readOnly,
+      previous ? `engine-job:${previous.jobId}` : null,
+      now,
+      true,
+    );
+    record.aliases = [
+      record.summary.activityId,
+      ...record.summary.txids.map((txid) => chainActivityId(this.options.chainId, txid)),
+    ].sort();
+    this.mergeDetailChainEvents(record);
+    return record;
+  }
+
+  private detailChainEvents(txid: string): StoredActivityChainEvent[] {
+    return this.options.store.listManagerActivityChainEventsForTxid(
+      this.options.chainId,
+      this.options.managerPrincipal,
+      txid,
+    );
+  }
+
+  private mergeDetailChainEvents(record: ActivityRecord): void {
+    for (const txid of record.summary.txids) {
+      const events = this.detailChainEvents(txid);
+      if (events.length === 0) continue;
+      const indexedCoverage = this.indexedCoverage(events);
+      mergeChainRecord(
+        record,
+        chainEventRecord(this.options.chainId, txid, events, indexedCoverage),
+        indexedCoverage,
+      );
+    }
   }
 
   private load(
@@ -1231,16 +1364,7 @@ export class ActivityProjectionService {
         chainRecords.push(chainRecord);
         continue;
       }
-      operation.aliases = [...new Set([...operation.aliases, ...chainRecord.aliases])].sort();
-      operation.timeline = [...operation.timeline, ...chainRecord.timeline].sort(timelineOrder);
-      operation.summary.coverage = [
-        ...new Map(
-          [...operation.summary.coverage, indexedCoverage].map((value) => [value.source, value]),
-        ).values(),
-      ];
-      if (Date.parse(chainRecord.summary.updatedAt) > Date.parse(operation.summary.updatedAt)) {
-        operation.summary.updatedAt = chainRecord.summary.updatedAt;
-      }
+      mergeChainRecord(operation, chainRecord, indexedCoverage);
     }
 
     const settingsRecords = settingsAudit.map((audit) =>

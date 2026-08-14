@@ -14,6 +14,7 @@ import type { ChainAnchor } from "./chain-anchor.js";
 import {
   type Pox5CalculateRewardsError,
   readPox5CalculateRewardsObservation,
+  readPox5CurrentPoolEstimate,
 } from "./pox5-calculate-rewards.js";
 
 const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";
@@ -58,6 +59,17 @@ function node(options: { lastCompute?: bigint; activeWithoutBond?: boolean } = {
         }
         if (functionName === "get-new-rewards") return uintCV(2_000);
         if (functionName === "bond-period-to-reward-cycle") return uintCV(1);
+        if (functionName === "get-reserve-balance") return uintCV(50);
+        const bucketArg = args.at(-1);
+        const stxBucket = bucketArg === cvToHex(noneCV());
+        const bondZero = bucketArg === cvToHex(someCV(uintCV(0)));
+        if (functionName === "get-total-shares-staked-for-cycle") {
+          return uintCV(stxBucket ? 50_000_000_000n : bondZero ? 40_000n : 100_000n);
+        }
+        if (functionName === "get-rewards-per-token-for-cycle") return uintCV(0);
+        if (functionName === "get-signer-shares-staked-for-cycle") {
+          return uintCV(stxBucket ? 25_000_000_000n : bondZero ? 10_000n : 50_000n);
+        }
         const decodedIndex =
           args[0] === cvToHex(uintCV(0)) ? 0n : args[0] === cvToHex(uintCV(1)) ? 1n : 2n;
         if (functionName === "get-protocol-bond") {
@@ -122,5 +134,45 @@ describe("PoX-5 calculate-rewards observation", () => {
         chainAnchor,
       }),
     ).rejects.toMatchObject<Pox5CalculateRewardsError>({ code: "incomplete-bond-state" });
+  });
+
+  it("reads every pool simulation input from one anchor and returns the contract-rounded current estimate", async () => {
+    const estimate = await readPox5CurrentPoolEstimate({
+      node: node(),
+      pox5ContractId,
+      managerPrincipal: sender,
+      chainAnchor,
+      targetRewardCycle: 5,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 7_999,
+      grossAccruedRewardsSats: 2_000n,
+    });
+
+    expect(estimate).toMatchObject({
+      kind: "if-calculated-now",
+      targetRewardCycle: 5,
+      calculationBurnHeight: 7_999,
+      grossSats: "850",
+      stxSats: "790",
+      bondSats: "60",
+      inputs: {
+        globalStxSharesUstx: "50000000000",
+        managerStxSharesUstx: "25000000000",
+        activeBonds: [
+          {
+            bondIndex: "2",
+            targetRateBips: "500",
+            globalSharesSats: "100000",
+            managerSharesSats: "50000",
+          },
+          {
+            bondIndex: "0",
+            targetRateBips: "500",
+            globalSharesSats: "40000",
+            managerSharesSats: "10000",
+          },
+        ],
+      },
+    });
   });
 });

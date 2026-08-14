@@ -750,6 +750,29 @@ export class TransactionEngineRepository implements CompatibilityAttestationRepo
     return row === null ? null : mapJob(row);
   }
 
+  getLogicalJobByTxid(txid: string): StoredTransactionJob | null {
+    const row = this.db
+      .prepare(
+        `SELECT transaction_jobs.* FROM transaction_jobs
+         INNER JOIN transaction_attempts
+           ON transaction_attempts.job_id = transaction_jobs.job_id
+         WHERE transaction_attempts.precomputed_txid = ?
+         LIMIT 1`,
+      )
+      .get(txidSchema.parse(txid));
+    return row === undefined ? null : mapJob(jobRowSchema.parse(row));
+  }
+
+  getLogicalJobSupersededBy(jobId: string): StoredTransactionJob | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM transaction_jobs WHERE superseded_by_job_id = ?
+         ORDER BY updated_at DESC, job_id ASC LIMIT 1`,
+      )
+      .get(uuidSchema.parse(jobId));
+    return row === undefined ? null : mapJob(jobRowSchema.parse(row));
+  }
+
   getActiveLogicalJob(idempotencyKey: string): StoredTransactionJob | null {
     const row = this.db
       .prepare(

@@ -347,6 +347,11 @@ describe("Activity projection", () => {
     expect(page.items).toHaveLength(0);
     expect(page.active[0]?.activityId).toBe(`wallet-intent:${created.id}`);
 
+    const listWalletHistory = vi.spyOn(store.walletIntents, "listForActivity");
+    const listActiveWallets = vi.spyOn(store.walletIntents, "listActiveForActivity");
+    const listEngineHistory = vi.spyOn(store.transactionEngine, "listLogicalJobs");
+    const listChainHistory = vi.spyOn(store, "listManagerActivityChainEvents");
+    const listSettingsHistory = vi.spyOn(store, "listSettingsAudit");
     const alias = `chain-tx:1:${txid}`;
     const detail = service.detail(alias);
     expect(detail).toMatchObject({
@@ -359,6 +364,11 @@ describe("Activity projection", () => {
     expect(detail?.summary.coverage.map(({ source }) => source)).toEqual(
       expect.arrayContaining(["wallet-intents", "indexed-manager-history"]),
     );
+    expect(listWalletHistory).not.toHaveBeenCalled();
+    expect(listActiveWallets).not.toHaveBeenCalled();
+    expect(listEngineHistory).not.toHaveBeenCalled();
+    expect(listChainHistory).not.toHaveBeenCalled();
+    expect(listSettingsHistory).not.toHaveBeenCalled();
   });
 
   it("links an expired transaction review to the replacement for the same operation scope", async () => {

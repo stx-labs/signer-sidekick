@@ -25,12 +25,16 @@ export const pox5CalculationBondSchema = z
 
 export type Pox5CalculationBond = z.infer<typeof pox5CalculationBondSchema>;
 
-const pox5RewardSimulationBondSchema = pox5CalculationBondSchema
-  .extend({
+const pox5RewardSimulationBondSchema = z
+  .object({
+    bondIndex: uint128Schema,
+    targetRateBips: uint128Schema,
+    stxValueRatio: uint128Schema,
     totalSharesSats: uint128Schema,
     currentRewardsPerSat: uint128Schema,
     managerSharesSats: uint128Schema.optional(),
   })
+  .strict()
   .superRefine((bond, context) => {
     if (bond.managerSharesSats !== undefined && bond.managerSharesSats > bond.totalSharesSats) {
       context.addIssue({
@@ -141,6 +145,17 @@ const pox5CalculationBondsSchema = z
     }
   });
 
+function comparePox5CalculationBondOrder(
+  left: Pick<Pox5CalculationBond, "bondIndex" | "stxValueRatio">,
+  right: Pick<Pox5CalculationBond, "bondIndex" | "stxValueRatio">,
+): number {
+  if (left.stxValueRatio !== right.stxValueRatio) {
+    return left.stxValueRatio > right.stxValueRatio ? -1 : 1;
+  }
+  if (left.bondIndex === right.bondIndex) return 0;
+  return left.bondIndex < right.bondIndex ? -1 : 1;
+}
+
 /**
  * Canonical PoX-5 reward-calculation order.
  *
@@ -153,13 +168,7 @@ export function orderPox5CalculationBonds(
   input: readonly Pox5CalculationBond[],
 ): Pox5CalculationBond[] {
   const bonds = pox5CalculationBondsSchema.parse(input);
-  return [...bonds].sort((left, right) => {
-    if (left.stxValueRatio !== right.stxValueRatio) {
-      return left.stxValueRatio > right.stxValueRatio ? -1 : 1;
-    }
-    if (left.bondIndex === right.bondIndex) return 0;
-    return left.bondIndex < right.bondIndex ? -1 : 1;
-  });
+  return [...bonds].sort(comparePox5CalculationBondOrder);
 }
 
 /**
@@ -174,14 +183,7 @@ export function simulatePox5CalculateRewards(
   rawInput: Pox5RewardSimulationInput,
 ): Pox5RewardSimulation {
   const input = pox5RewardSimulationInputSchema.parse(rawInput);
-  const orderedBonds = orderPox5CalculationBonds(
-    input.bonds.map(({ bondIndex, targetRateBips, stxValueRatio, minUstxRatioBips }) => ({
-      bondIndex,
-      targetRateBips,
-      stxValueRatio,
-      minUstxRatioBips,
-    })),
-  );
+  const orderedBonds = [...input.bonds].sort(comparePox5CalculationBondOrder);
   const bondStateByIndex = new Map(
     input.bonds.map((bond) => [bond.bondIndex.toString(), bond] as const),
   );

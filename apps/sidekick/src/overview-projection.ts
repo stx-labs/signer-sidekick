@@ -327,12 +327,14 @@ function nextCalculation(snapshot: DashboardSnapshot, averageBurnSeconds: number
       evidence: [localEvidence],
     };
   }
+  const observedNext =
+    snapshot.rewardOutlook?.calculation.next ?? snapshot.rewards?.calculation.next ?? null;
   const cycleStart = anchor.burnBlockHeight - anchor.cyclePosition;
   const checkpointOffset =
     anchor.checkpoint === "first-half"
       ? anchor.rewardCycleLength / 2 - 1
       : anchor.rewardCycleLength - 1;
-  if (!Number.isInteger(checkpointOffset) || cycleStart < 0) {
+  if (!observedNext && (!Number.isInteger(checkpointOffset) || cycleStart < 0)) {
     return {
       status: "unavailable" as const,
       burnBlockHeight: null,
@@ -347,8 +349,11 @@ function nextCalculation(snapshot: DashboardSnapshot, averageBurnSeconds: number
       ],
     };
   }
-  const burnBlockHeight = cycleStart + checkpointOffset;
-  // The stable anchor defines the protocol checkpoint. Count down from the same current local
+  // `calculate-rewards` becomes callable on the burn block after the distribution checkpoint.
+  // Prefer the already-derived PoX-5 outlook so Overview and Rewards cannot disagree about that
+  // boundary. The anchor fallback preserves timing visibility when the reward read is unavailable.
+  const burnBlockHeight = observedNext?.eligibleBurnHeight ?? cycleStart + checkpointOffset + 1;
+  // The stable anchor/outlook defines the protocol moment. Count down from the same current local
   // node tip shown beside it so ordinary reference-indexer lag cannot skew the displayed timing.
   const blocksRemaining = Math.max(0, burnBlockHeight - snapshot.preflight.node.burnBlockHeight);
   return {
@@ -543,10 +548,11 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
     globalAccruedSats:
       outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
-    estimatedPoolRewardSats: null,
+    estimatedPoolRewardSats: outlook?.poolEstimate?.grossSats ?? null,
     operatorFeeSats: null,
-    // This confidence describes the omitted pool/fee estimate, not the exact global accrual.
-    confidence: "unavailable",
+    // The current-share result is contract-exact for its anchor but remains an estimate of the
+    // future checkpoint because accrual, shares, or the active bond set can still change.
+    confidence: outlook?.poolEstimate ? "estimated" : "unavailable",
     calculationState: outlook?.calculation.state ?? rewards?.calculation.state ?? null,
     actionableClaims: rewards?.totals.actionableClaims ?? null,
     evidence: [rewardEvidence],

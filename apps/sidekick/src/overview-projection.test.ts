@@ -507,8 +507,8 @@ describe("Overview projection", () => {
     expect(result.rewards.evidence[0]).toMatchObject({ source: "local-node", status: "current" });
     expect(result.cycle.nextRewardCalculation).toMatchObject({
       status: "scheduled",
-      burnBlockHeight: 962_349,
-      blocksRemaining: 49,
+      burnBlockHeight: 962_350,
+      blocksRemaining: 50,
     });
   });
 
@@ -519,7 +519,23 @@ describe("Overview projection", () => {
     expect(
       projectOverview({ snapshot: value, health: health(), connection: null }).cycle
         .nextRewardCalculation,
-    ).toMatchObject({ burnBlockHeight: 962_349, blocksRemaining: 48 });
+    ).toMatchObject({ burnBlockHeight: 962_350, blocksRemaining: 49 });
+  });
+
+  it("marks reward calculation due only once the eligible burn block arrives", () => {
+    const checkpoint = snapshot();
+    checkpoint.preflight.node.burnBlockHeight = 962_349;
+    expect(
+      projectOverview({ snapshot: checkpoint, health: health(), connection: null }).cycle
+        .nextRewardCalculation,
+    ).toMatchObject({ status: "scheduled", burnBlockHeight: 962_350, blocksRemaining: 1 });
+
+    const eligible = snapshot();
+    eligible.preflight.node.burnBlockHeight = 962_350;
+    expect(
+      projectOverview({ snapshot: eligible, health: health(), connection: null }).cycle
+        .nextRewardCalculation,
+    ).toMatchObject({ status: "due", burnBlockHeight: 962_350, blocksRemaining: 0 });
   });
 
   it("keeps exact PoX-5 outlook available when manager settlement actions are unsupported", () => {
@@ -534,6 +550,27 @@ describe("Overview projection", () => {
           observedAt: generatedAt,
           chainAnchor,
           accrued: { globalSats: "2500", source: "pox5-get-new-rewards" },
+          poolEstimate: {
+            kind: "if-calculated-now",
+            targetRewardCycle: 141,
+            targetCheckpoint: "first-half",
+            calculationBurnHeight: 962_349,
+            grossSats: "500",
+            stxSats: "450",
+            bondSats: "50",
+            inputs: {
+              globalStxSharesUstx: "100000000000",
+              managerStxSharesUstx: "20000000000",
+              activeBonds: [],
+            },
+            assumptions: [
+              "current-global-accrual",
+              "current-cycle-shares",
+              "current-active-bond-set",
+              "contract-integer-rounding",
+            ],
+          },
+          poolEstimateUnavailableReason: null,
           calculation: value.rewards.calculation,
         },
       },
@@ -545,7 +582,8 @@ describe("Overview projection", () => {
     expect(result.rewards).toMatchObject({
       status: "ready",
       globalAccruedSats: "2500",
-      confidence: "unavailable",
+      estimatedPoolRewardSats: "500",
+      confidence: "estimated",
       calculationState: "completed",
       actionableClaims: null,
     });

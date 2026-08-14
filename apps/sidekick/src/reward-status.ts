@@ -10,12 +10,18 @@ import {
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
+import { Pox5RewardSimulationError } from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
 import {
   type ChainAnchor,
   chainAnchorsEqual,
   deriveRewardCalculationTarget,
 } from "./chain-anchor.js";
 import type { ChainReadOptions } from "./chain-clients.js";
+import {
+  Pox5CalculateRewardsError,
+  type Pox5CurrentPoolEstimate,
+  readPox5CurrentPoolEstimate,
+} from "./pox5-calculate-rewards.js";
 import type {
   RewardCycleSnapshotInput,
   RewardOutlookObservationInput,
@@ -222,6 +228,14 @@ export interface RewardOutlookStatus {
     globalSats: string;
     source: "pox5-get-new-rewards";
   };
+  poolEstimate: Pox5CurrentPoolEstimate | null;
+  poolEstimateUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "incomplete-active-bond-state"
+    | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
   calculation: RewardCalculationStatus;
 }
 
@@ -728,11 +742,40 @@ export async function readRewardOutlook(
   );
   const globalSats = decodeUInt(globalAccruedRewardsValue, "get-new-rewards").toString();
   const calculation = rewardCalculationStatus(lastRewardComputeBurnHeight, options.chainAnchor);
+  let poolEstimate: Pox5CurrentPoolEstimate | null = null;
+  let poolEstimateUnavailableReason: RewardOutlookStatus["poolEstimateUnavailableReason"] = null;
+  if (!options.chainAnchor) {
+    poolEstimateUnavailableReason = "chain-anchor-unavailable";
+  } else if (!calculation.next) {
+    poolEstimateUnavailableReason = "calculation-target-unavailable";
+  } else {
+    try {
+      poolEstimate = await readPox5CurrentPoolEstimate({
+        node: options.node,
+        pox5ContractId: options.pox5ContractId,
+        managerPrincipal: options.managerPrincipal,
+        chainAnchor: options.chainAnchor,
+        targetRewardCycle: calculation.next.targetRewardCycle,
+        targetCheckpoint: calculation.next.targetCheckpoint,
+        calculationBurnHeight: calculation.next.calculationBurnHeight,
+        grossAccruedRewardsSats: BigInt(globalSats),
+      });
+    } catch (error) {
+      poolEstimateUnavailableReason =
+        error instanceof Pox5CalculateRewardsError && error.code === "incomplete-bond-state"
+          ? "incomplete-active-bond-state"
+          : error instanceof Pox5RewardSimulationError
+            ? "contract-simulation-failed"
+            : "anchored-inputs-unavailable";
+    }
+  }
   const outlook: RewardOutlookStatus = {
     pox5ContractId: options.pox5ContractId,
     observedAt: options.observedAt,
     chainAnchor: options.chainAnchor ?? null,
     accrued: { globalSats, source: "pox5-get-new-rewards" },
+    poolEstimate,
+    poolEstimateUnavailableReason,
     calculation,
   };
   if (options.chainAnchor) {
@@ -745,6 +788,8 @@ export async function readRewardOutlook(
       calculationState: calculation.state,
       lastRewardComputeBurnHeight: calculation.observedLastRewardComputeBurnHeight,
       nextCalculation: calculation.next,
+      poolEstimate,
+      poolEstimateUnavailableReason,
     });
   }
   return outlook;

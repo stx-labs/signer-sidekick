@@ -85,7 +85,7 @@ describe("WalletIntentRepository", () => {
       }),
     ).intent;
 
-    expect(store.schemaVersion()).toBe(26);
+    expect(store.schemaVersion()).toBe(27);
     expect(store.walletIntents.get(intent.id)).toMatchObject({
       action: "add-admin",
       scope: manager,
@@ -111,6 +111,39 @@ describe("WalletIntentRepository", () => {
 
     expect(store.walletIntents.listForActivity(1).map(({ id }) => id)).toEqual([newer.id]);
     expect(store.walletIntents.listForActivity().map(({ id }) => id)).toEqual([newer.id, older.id]);
+  });
+
+  it("loads one Activity intent by txid and only its operation scope", async () => {
+    const store = await memoryStore();
+    const first = store.walletIntents.create(
+      intentInput({ id: "10000000-0000-4000-8000-000000000001" }),
+    ).intent;
+    const second = store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000002",
+        factsSha256: "bb".repeat(32),
+        createdAt: "2026-07-18T12:01:00.000Z",
+        expiresAt: "2026-07-18T12:11:00.000Z",
+      }),
+    ).intent;
+    store.walletIntents.create(
+      intentInput({
+        id: "10000000-0000-4000-8000-000000000003",
+        scope: "other-scope",
+      }),
+    );
+    store.walletIntents.submit({ id: first.id, txid: txidOne, submittedAt: afterSubmission });
+
+    expect(store.walletIntents.getByTxid(txidOne)?.id).toBe(first.id);
+    expect(store.walletIntents.getActivityScopeNeighbors(first)).toMatchObject({
+      previous: null,
+      next: { id: second.id },
+    });
+    expect(store.walletIntents.getActivityScopeNeighbors(second)).toMatchObject({
+      previous: { id: first.id },
+      next: null,
+    });
+    expect(store.walletIntents.getByTxid(txidTwo)).toBeNull();
   });
 
   it("lists every nonterminal intent for Activity independently of the history window", async () => {
@@ -144,7 +177,7 @@ describe("WalletIntentRepository", () => {
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, createdAt);
     stores.push(initial.store);
-    expect(initial.store.schemaVersion()).toBe(26);
+    expect(initial.store.schemaVersion()).toBe(27);
 
     const created = initial.store.walletIntents.create(
       intentInput({ id: "10000000-0000-4000-8000-000000000001" }),

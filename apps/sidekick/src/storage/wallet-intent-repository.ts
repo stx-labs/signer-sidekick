@@ -521,6 +521,43 @@ export class WalletIntentRepository {
     return row === null ? null : mapIntent(row);
   }
 
+  getByTxid(txid: string): StoredWalletIntent | null {
+    const row = this.db
+      .prepare("SELECT * FROM browser_wallet_intents WHERE txid = ?")
+      .get(txidSchema.parse(txid));
+    return row === undefined ? null : mapIntent(row);
+  }
+
+  getActivityScopeNeighbors(intent: StoredWalletIntent): {
+    previous: StoredWalletIntent | null;
+    next: StoredWalletIntent | null;
+  } {
+    const action = z.enum(walletIntentActions).parse(intent.action);
+    const scope = identifierSchema.parse(intent.scope);
+    const createdAt = instantSchema.parse(intent.createdAt);
+    const id = uuidSchema.parse(intent.id);
+    const previous = this.db
+      .prepare(
+        `SELECT * FROM browser_wallet_intents
+         WHERE action = ? AND scope = ?
+           AND (created_at < ? OR (created_at = ? AND intent_id < ?))
+         ORDER BY created_at DESC, intent_id DESC LIMIT 1`,
+      )
+      .get(action, scope, createdAt, createdAt, id);
+    const next = this.db
+      .prepare(
+        `SELECT * FROM browser_wallet_intents
+         WHERE action = ? AND scope = ?
+           AND (created_at > ? OR (created_at = ? AND intent_id > ?))
+         ORDER BY created_at ASC, intent_id ASC LIMIT 1`,
+      )
+      .get(action, scope, createdAt, createdAt, id);
+    return {
+      previous: previous === undefined ? null : mapIntent(previous),
+      next: next === undefined ? null : mapIntent(next),
+    };
+  }
+
   listForActivity(limit = 10_001): StoredWalletIntent[] {
     const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
     return this.db

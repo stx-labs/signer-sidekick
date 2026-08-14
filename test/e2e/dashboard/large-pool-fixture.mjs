@@ -351,8 +351,46 @@ export const snapshot = {
   rewardOutlook: {
     pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
     observedAt: "2026-08-14T12:00:00.000Z",
-    chainAnchor: null,
+    chainAnchor: {
+      stacksBlockHeight: 8_750_000,
+      indexBlockHash: `0x${"44".repeat(32)}`,
+      burnBlockHeight: 9_240,
+      rewardCycle: 139,
+      rewardCycleLength: 2_100,
+      prepareCycleLength: 100,
+      cyclePosition: 1_050,
+      phase: "reward",
+      checkpoint: "second-half",
+    },
     accrued: { globalSats: "2500000", source: "pox5-get-new-rewards" },
+    poolEstimate: {
+      kind: "if-calculated-now",
+      targetRewardCycle: 139,
+      targetCheckpoint: "second-half",
+      calculationBurnHeight: 10_289,
+      grossSats: "500000",
+      stxSats: "425000",
+      bondSats: "75000",
+      inputs: {
+        globalStxSharesUstx: "84000000000000",
+        managerStxSharesUstx: "16800000000000",
+        activeBonds: [
+          {
+            bondIndex: "2",
+            targetRateBips: "500",
+            globalSharesSats: "75000000",
+            managerSharesSats: "15000000",
+          },
+        ],
+      },
+      assumptions: [
+        "current-global-accrual",
+        "current-cycle-shares",
+        "current-active-bond-set",
+        "contract-integer-rounding",
+      ],
+    },
+    poolEstimateUnavailableReason: null,
     calculation: {
       state: "completed",
       targetRewardCycle: 139,

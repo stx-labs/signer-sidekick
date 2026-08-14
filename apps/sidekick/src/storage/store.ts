@@ -602,6 +602,59 @@ const rewardCycleSnapshotInputSchema = z
     }
   });
 
+const rewardPoolEstimateSchema = z
+  .object({
+    kind: z.literal("if-calculated-now"),
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    grossSats: unsignedIntegerTextSchema,
+    stxSats: unsignedIntegerTextSchema,
+    bondSats: unsignedIntegerTextSchema,
+    inputs: z
+      .object({
+        globalStxSharesUstx: unsignedIntegerTextSchema,
+        managerStxSharesUstx: unsignedIntegerTextSchema,
+        activeBonds: z.array(
+          z
+            .object({
+              bondIndex: unsignedIntegerTextSchema,
+              targetRateBips: unsignedIntegerTextSchema,
+              globalSharesSats: unsignedIntegerTextSchema,
+              managerSharesSats: unsignedIntegerTextSchema,
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    assumptions: z.array(
+      z.enum([
+        "current-global-accrual",
+        "current-cycle-shares",
+        "current-active-bond-set",
+        "contract-integer-rounding",
+      ]),
+    ),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (BigInt(value.stxSats) + BigInt(value.bondSats) !== BigInt(value.grossSats)) {
+      context.addIssue({
+        code: "custom",
+        path: ["grossSats"],
+        message: "grossSats must equal the STX and bond pool estimates",
+      });
+    }
+  });
+
+const rewardPoolEstimateUnavailableReasonSchema = z.enum([
+  "chain-anchor-unavailable",
+  "calculation-target-unavailable",
+  "incomplete-active-bond-state",
+  "anchored-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
 const rewardOutlookObservationInputSchema = z
   .object({
     managerPrincipal: principalSchema,
@@ -611,6 +664,8 @@ const rewardOutlookObservationInputSchema = z
     globalAccruedRewardsSats: unsignedIntegerTextSchema,
     calculationState: z.enum(["pending", "completed", "ahead", "unknown"]),
     lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+    poolEstimate: rewardPoolEstimateSchema.nullable(),
+    poolEstimateUnavailableReason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
     nextCalculation: z
       .object({
         state: z.enum(["due", "scheduled"]),
@@ -625,8 +680,27 @@ const rewardOutlookObservationInputSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.poolEstimate === null) === (value.poolEstimateUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "pool estimate and unavailable reason must be mutually exclusive",
+      });
+    }
     const next = value.nextCalculation;
     if (!next) return;
+    if (
+      value.poolEstimate &&
+      (value.poolEstimate.targetRewardCycle !== next.targetRewardCycle ||
+        value.poolEstimate.targetCheckpoint !== next.targetCheckpoint ||
+        value.poolEstimate.calculationBurnHeight !== next.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "pool estimate target must match the next calculation",
+      });
+    }
     if (next.eligibleBurnHeight !== next.calculationBurnHeight + 1) {
       context.addIssue({
         code: "custom",
@@ -668,6 +742,8 @@ const rewardOutlookObservationRowSchema = z.object({
   next_eligible_burn_height: z.number().int().nonnegative().nullable(),
   next_blocks_remaining: z.number().int().nonnegative().nullable(),
   next_state: z.enum(["due", "scheduled"]).nullable(),
+  pool_estimate_json: z.string().nullable(),
+  pool_estimate_unavailable_reason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
   observed_at: z.iso.datetime(),
 });
 
@@ -923,6 +999,8 @@ export interface StoredRewardOutlookObservation {
   globalAccruedRewardsSats: string;
   calculationState: "pending" | "completed" | "ahead" | "unknown";
   lastRewardComputeBurnHeight: string;
+  poolEstimate: z.infer<typeof rewardPoolEstimateSchema> | null;
+  poolEstimateUnavailableReason: z.infer<typeof rewardPoolEstimateUnavailableReasonSchema> | null;
   nextCalculation: null | {
     state: "due" | "scheduled";
     targetRewardCycle: number;
@@ -1044,6 +1122,11 @@ function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObse
     globalAccruedRewardsSats: value.global_accrued_rewards_sats,
     calculationState: value.calculation_state,
     lastRewardComputeBurnHeight: value.last_reward_compute_burn_height,
+    poolEstimate:
+      value.pool_estimate_json === null
+        ? null
+        : rewardPoolEstimateSchema.parse(JSON.parse(value.pool_estimate_json)),
+    poolEstimateUnavailableReason: value.pool_estimate_unavailable_reason,
     nextCalculation: hasNext
       ? {
           state: value.next_state as "due" | "scheduled",
@@ -2109,6 +2192,30 @@ export class SidekickStore {
     }));
   }
 
+  getSettingsAudit(revision: number): {
+    revision: number;
+    changedFields: string[];
+    changedAt: string;
+  } | null {
+    const parsedRevision = z.number().int().positive().parse(revision);
+    const row = this.db
+      .prepare(
+        `SELECT revision, changed_fields_json, changed_at
+         FROM settings_audit WHERE revision = ?
+         ORDER BY changed_at DESC, audit_id DESC LIMIT 1`,
+      )
+      .get(parsedRevision) as
+      | { revision: number; changed_fields_json: string; changed_at: string }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          revision: z.number().int().positive().parse(row.revision),
+          changedFields: z.array(z.string()).parse(JSON.parse(row.changed_fields_json)),
+          changedAt: z.iso.datetime().parse(row.changed_at),
+        };
+  }
+
   recordManagerTrustState(input: {
     managerPrincipal: string;
     recognitionTier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";
@@ -2566,6 +2673,58 @@ export class SidekickStore {
          ORDER BY updated_at DESC, tx_id ASC, event_index ASC LIMIT ?`,
       )
       .all(parsedChainId, manager, parsedLimit) as Array<{
+      chain_id: number;
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      index_block_hash: string;
+      canonical: 0 | 1;
+      topic: string | null;
+      decoded_schema_version: number | null;
+      decoded_payload_json: string | null;
+      first_seen_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      chainId: z.number().int().nonnegative().parse(row.chain_id),
+      txId: hashSchema.parse(row.tx_id),
+      eventIndex: z.number().int().nonnegative().parse(row.event_index),
+      blockHeight: z.number().int().nonnegative().parse(row.block_height),
+      indexBlockHash: hashSchema.parse(row.index_block_hash),
+      canonical: row.canonical === 1,
+      topic: z.string().min(1).max(500).nullable().parse(row.topic),
+      decodedSchemaVersion: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .parse(row.decoded_schema_version),
+      decodedPayload:
+        row.decoded_payload_json === null
+          ? null
+          : (JSON.parse(row.decoded_payload_json) as unknown),
+      firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    }));
+  }
+
+  listManagerActivityChainEventsForTxid(
+    chainId: number,
+    managerPrincipal: string,
+    txId: string,
+  ): StoredActivityChainEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const parsedTxId = hashSchema.parse(txId);
+    const rows = this.db
+      .prepare(
+        `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id = ? AND tx_id = ?
+         ORDER BY event_index ASC`,
+      )
+      .all(parsedChainId, manager, parsedTxId) as Array<{
       chain_id: number;
       tx_id: string;
       event_index: number;
@@ -3957,8 +4116,9 @@ export class SidekickStore {
           observed_stacks_tip_height, observed_index_block_hash, chain_anchor_json,
           global_accrued_rewards_sats, calculation_state, last_reward_compute_burn_height,
           next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
-          next_eligible_burn_height, next_blocks_remaining, next_state, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          next_eligible_burn_height, next_blocks_remaining, next_state,
+          pool_estimate_json, pool_estimate_unavailable_reason, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (
           manager_principal, pox5_contract_id, observed_burn_block_height,
           last_reward_compute_burn_height
@@ -3976,6 +4136,8 @@ export class SidekickStore {
           next_eligible_burn_height = excluded.next_eligible_burn_height,
           next_blocks_remaining = excluded.next_blocks_remaining,
           next_state = excluded.next_state,
+          pool_estimate_json = excluded.pool_estimate_json,
+          pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
           observed_at = excluded.observed_at
         WHERE excluded.observed_at >= reward_outlook_observations.observed_at`,
       )
@@ -3995,6 +4157,8 @@ export class SidekickStore {
         next?.eligibleBurnHeight ?? null,
         next?.blocksRemaining ?? null,
         next?.state ?? null,
+        value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
+        value.poolEstimateUnavailableReason,
         value.observedAt,
       );
   }

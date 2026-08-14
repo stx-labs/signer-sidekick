@@ -690,6 +690,38 @@ export interface RewardOutlookStatus {
     globalSats: string;
     source: "pox5-get-new-rewards";
   };
+  poolEstimate: null | {
+    kind: "if-calculated-now";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    grossSats: string;
+    stxSats: string;
+    bondSats: string;
+    inputs: {
+      globalStxSharesUstx: string;
+      managerStxSharesUstx: string;
+      activeBonds: Array<{
+        bondIndex: string;
+        targetRateBips: string;
+        globalSharesSats: string;
+        managerSharesSats: string;
+      }>;
+    };
+    assumptions: Array<
+      | "current-global-accrual"
+      | "current-cycle-shares"
+      | "current-active-bond-set"
+      | "contract-integer-rounding"
+    >;
+  };
+  poolEstimateUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "incomplete-active-bond-state"
+    | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
   calculation: {
     state: "pending" | "completed" | "ahead" | "unknown";
     targetRewardCycle: number | null;

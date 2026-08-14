@@ -1860,4 +1860,22 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 27,
+    name: "reward_outlook_pool_estimates",
+    sql: `
+      -- Preserve the contract-exact current-share simulation and its anchored inputs with each
+      -- accrual sample so later checkpoint forecasts can be calibrated against realized results.
+      ALTER TABLE reward_outlook_observations ADD COLUMN pool_estimate_json TEXT
+        CHECK (pool_estimate_json IS NULL OR json_valid(pool_estimate_json));
+      ALTER TABLE reward_outlook_observations ADD COLUMN pool_estimate_unavailable_reason TEXT
+        CHECK (
+          pool_estimate_unavailable_reason IS NULL OR pool_estimate_unavailable_reason IN (
+            'chain-anchor-unavailable', 'calculation-target-unavailable',
+            'incomplete-active-bond-state', 'anchored-inputs-unavailable',
+            'contract-simulation-failed'
+          )
+        );
+    `,
+  },
 ];

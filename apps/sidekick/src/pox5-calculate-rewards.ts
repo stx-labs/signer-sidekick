@@ -2,6 +2,8 @@ import {
   decodeBoolean,
   decodePox5ProtocolBond,
   decodeUInt,
+  encodeOptionalUIntHex,
+  encodePrincipalHex,
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
@@ -11,6 +13,8 @@ import {
   POX5_CALCULATE_REWARDS_ADAPTER_ID,
   POX5_CALCULATE_REWARDS_ADAPTER_REVISION,
   type Pox5CalculationBond,
+  Pox5RewardSimulationError,
+  simulatePox5CalculateRewards,
 } from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import type { ChainReadOptions } from "./chain-clients.js";
@@ -35,6 +39,32 @@ export interface Pox5CalculateRewardsObservation {
   functionArgs: [string];
 }
 
+export interface Pox5CurrentPoolEstimate {
+  kind: "if-calculated-now";
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  grossSats: string;
+  stxSats: string;
+  bondSats: string;
+  inputs: {
+    globalStxSharesUstx: string;
+    managerStxSharesUstx: string;
+    activeBonds: Array<{
+      bondIndex: string;
+      targetRateBips: string;
+      globalSharesSats: string;
+      managerSharesSats: string;
+    }>;
+  };
+  assumptions: Array<
+    | "current-global-accrual"
+    | "current-cycle-shares"
+    | "current-active-bond-set"
+    | "contract-integer-rounding"
+  >;
+}
+
 export class Pox5CalculateRewardsError extends Error {
   constructor(
     readonly code: "invalid-target" | "already-computed" | "incomplete-bond-state",
@@ -47,6 +77,209 @@ export class Pox5CalculateRewardsError extends Error {
 
 function readOptions(chainAnchor: ChainAnchor): ChainReadOptions {
   return { tip: chainAnchor.indexBlockHash };
+}
+
+async function readActiveCalculationBonds(input: {
+  node: Pick<RewardStatusNode, "callReadOnly">;
+  pox5ContractId: string;
+  sender: string;
+  rewardCycle: number;
+  calculationBurnHeight: number;
+  firstBondPeriodCycle: bigint;
+  options: ChainReadOptions;
+}): Promise<Pox5CalculationBond[]> {
+  const candidatePeriods = bondPeriodsForRewardCycle(
+    BigInt(input.rewardCycle),
+    input.firstBondPeriodCycle,
+  );
+  const candidates = await Promise.all(
+    candidatePeriods.map(async (bondIndex): Promise<Pox5CalculationBond | null> => {
+      const [bondValue, activeValue] = await Promise.all([
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "get-protocol-bond",
+          input.sender,
+          [encodeUIntHex(bondIndex)],
+          input.options,
+        ),
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "is-bond-active-at-height",
+          input.sender,
+          [encodeUIntHex(bondIndex), encodeUIntHex(BigInt(input.calculationBurnHeight))],
+          input.options,
+        ),
+      ]);
+      const bond = decodePox5ProtocolBond(bondValue, `get-protocol-bond(${bondIndex})`);
+      const active = decodeBoolean(activeValue, `is-bond-active-at-height(${bondIndex})`);
+      if (!bond) {
+        if (active) {
+          throw new Pox5CalculateRewardsError(
+            "incomplete-bond-state",
+            `PoX-5 reported bond period ${bondIndex} active without returning its definition`,
+          );
+        }
+        return null;
+      }
+      if (!active) return null;
+      return {
+        bondIndex,
+        targetRateBips: bond.targetRate,
+        stxValueRatio: bond.stxValueRatio,
+        minUstxRatioBips: bond.minUstxRatio,
+      };
+    }),
+  );
+  return orderPox5CalculationBonds(
+    candidates.filter((bond): bond is Pox5CalculationBond => bond !== null),
+  );
+}
+
+export async function readPox5CurrentPoolEstimate(input: {
+  node: Pick<RewardStatusNode, "callReadOnly">;
+  pox5ContractId: string;
+  managerPrincipal: string;
+  chainAnchor: ChainAnchor;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  grossAccruedRewardsSats: bigint;
+}): Promise<Pox5CurrentPoolEstimate> {
+  const options = readOptions(input.chainAnchor);
+  const rewardCycle = BigInt(input.targetRewardCycle);
+  const stxBucket = encodeOptionalUIntHex(null);
+  const cycleArg = encodeUIntHex(rewardCycle);
+  const [firstBondCycleValue, reserveValue, totalStxValue, currentStxRptValue, managerStxValue] =
+    await Promise.all([
+      input.node.callReadOnly(
+        input.pox5ContractId,
+        "bond-period-to-reward-cycle",
+        input.managerPrincipal,
+        [encodeUIntHex(0n)],
+        options,
+      ),
+      input.node.callReadOnly(
+        input.pox5ContractId,
+        "get-reserve-balance",
+        input.managerPrincipal,
+        [],
+        options,
+      ),
+      input.node.callReadOnly(
+        input.pox5ContractId,
+        "get-total-shares-staked-for-cycle",
+        input.managerPrincipal,
+        [cycleArg, stxBucket],
+        options,
+      ),
+      input.node.callReadOnly(
+        input.pox5ContractId,
+        "get-rewards-per-token-for-cycle",
+        input.managerPrincipal,
+        [cycleArg, stxBucket],
+        options,
+      ),
+      input.node.callReadOnly(
+        input.pox5ContractId,
+        "get-signer-shares-staked-for-cycle",
+        input.managerPrincipal,
+        [encodePrincipalHex(input.managerPrincipal), cycleArg, stxBucket],
+        options,
+      ),
+    ]);
+  const activeBonds = await readActiveCalculationBonds({
+    node: input.node,
+    pox5ContractId: input.pox5ContractId,
+    sender: input.managerPrincipal,
+    rewardCycle: input.targetRewardCycle,
+    calculationBurnHeight: input.calculationBurnHeight,
+    firstBondPeriodCycle: decodeUInt(firstBondCycleValue, "bond-period-to-reward-cycle"),
+    options,
+  });
+  const simulationBonds = await Promise.all(
+    activeBonds.map(async (bond) => {
+      const bondArg = encodeOptionalUIntHex(bond.bondIndex);
+      const [totalSharesValue, currentRptValue, managerSharesValue] = await Promise.all([
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "get-total-shares-staked-for-cycle",
+          input.managerPrincipal,
+          [cycleArg, bondArg],
+          options,
+        ),
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "get-rewards-per-token-for-cycle",
+          input.managerPrincipal,
+          [cycleArg, bondArg],
+          options,
+        ),
+        input.node.callReadOnly(
+          input.pox5ContractId,
+          "get-signer-shares-staked-for-cycle",
+          input.managerPrincipal,
+          [encodePrincipalHex(input.managerPrincipal), cycleArg, bondArg],
+          options,
+        ),
+      ]);
+      return {
+        bondIndex: bond.bondIndex,
+        targetRateBips: bond.targetRateBips,
+        stxValueRatio: bond.stxValueRatio,
+        totalSharesSats: decodeUInt(
+          totalSharesValue,
+          `get-total-shares-staked-for-cycle(${bond.bondIndex})`,
+        ),
+        currentRewardsPerSat: decodeUInt(
+          currentRptValue,
+          `get-rewards-per-token-for-cycle(${bond.bondIndex})`,
+        ),
+        managerSharesSats: decodeUInt(
+          managerSharesValue,
+          `get-signer-shares-staked-for-cycle(${bond.bondIndex})`,
+        ),
+      };
+    }),
+  );
+  const simulation = simulatePox5CalculateRewards({
+    grossAccruedRewardsSats: input.grossAccruedRewardsSats,
+    currentReserveBalanceSats: decodeUInt(reserveValue, "get-reserve-balance"),
+    cycleStakedUstx: decodeUInt(totalStxValue, "get-total-shares-staked-for-cycle(stx)"),
+    currentRewardsPerUstx: decodeUInt(currentStxRptValue, "get-rewards-per-token-for-cycle(stx)"),
+    managerStxSharesUstx: decodeUInt(managerStxValue, "get-signer-shares-staked-for-cycle(stx)"),
+    bonds: simulationBonds,
+  });
+  if (!simulation.manager) {
+    throw new Pox5RewardSimulationError("manager shares are incomplete at the selected anchor");
+  }
+  return {
+    kind: "if-calculated-now",
+    targetRewardCycle: input.targetRewardCycle,
+    targetCheckpoint: input.targetCheckpoint,
+    calculationBurnHeight: input.calculationBurnHeight,
+    grossSats: simulation.manager.grossRewardSats.toString(),
+    stxSats: simulation.manager.stxRewardSats.toString(),
+    bondSats: simulation.manager.bondRewardSats.toString(),
+    inputs: {
+      globalStxSharesUstx: simulation.cycleStakedUstx.toString(),
+      managerStxSharesUstx: decodeUInt(
+        managerStxValue,
+        "get-signer-shares-staked-for-cycle(stx)",
+      ).toString(),
+      activeBonds: simulationBonds.map((bond) => ({
+        bondIndex: bond.bondIndex.toString(),
+        targetRateBips: bond.targetRateBips.toString(),
+        globalSharesSats: bond.totalSharesSats.toString(),
+        managerSharesSats: bond.managerSharesSats.toString(),
+      })),
+    },
+    assumptions: [
+      "current-global-accrual",
+      "current-cycle-shares",
+      "current-active-bond-set",
+      "contract-integer-rounding",
+    ],
+  };
 }
 
 /**
@@ -99,54 +332,15 @@ export async function readPox5CalculateRewardsObservation(input: {
     );
   }
 
-  const candidatePeriods = bondPeriodsForRewardCycle(
-    BigInt(target.rewardCycle),
-    decodeUInt(firstBondCycleValue, "bond-period-to-reward-cycle"),
-  );
-  const candidates = await Promise.all(
-    candidatePeriods.map(async (bondIndex): Promise<Pox5CalculationBond | null> => {
-      const [bondValue, activeValue] = await Promise.all([
-        input.node.callReadOnly(
-          input.pox5ContractId,
-          "get-protocol-bond",
-          input.sender,
-          [encodeUIntHex(bondIndex)],
-          options,
-        ),
-        input.node.callReadOnly(
-          input.pox5ContractId,
-          "is-bond-active-at-height",
-          input.sender,
-          [
-            encodeUIntHex(bondIndex),
-            encodeUIntHex(BigInt(target.expectedLastRewardComputeBurnHeight)),
-          ],
-          options,
-        ),
-      ]);
-      const bond = decodePox5ProtocolBond(bondValue, `get-protocol-bond(${bondIndex})`);
-      const active = decodeBoolean(activeValue, `is-bond-active-at-height(${bondIndex})`);
-      if (!bond) {
-        if (active) {
-          throw new Pox5CalculateRewardsError(
-            "incomplete-bond-state",
-            `PoX-5 reported bond period ${bondIndex} active without returning its definition`,
-          );
-        }
-        return null;
-      }
-      if (!active) return null;
-      return {
-        bondIndex,
-        targetRateBips: bond.targetRate,
-        stxValueRatio: bond.stxValueRatio,
-        minUstxRatioBips: bond.minUstxRatio,
-      };
-    }),
-  );
-  const activeBonds = orderPox5CalculationBonds(
-    candidates.filter((bond): bond is Pox5CalculationBond => bond !== null),
-  );
+  const activeBonds = await readActiveCalculationBonds({
+    node: input.node,
+    pox5ContractId: input.pox5ContractId,
+    sender: input.sender,
+    rewardCycle: target.rewardCycle,
+    calculationBurnHeight: target.expectedLastRewardComputeBurnHeight,
+    firstBondPeriodCycle: decodeUInt(firstBondCycleValue, "bond-period-to-reward-cycle"),
+    options,
+  });
   return {
     adapter: {
       id: POX5_CALCULATE_REWARDS_ADAPTER_ID,

@@ -1122,9 +1122,14 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const calculationCard = page
     .getByRole("heading", { name: "Next global calculation" })
     .locator("../..");
+  const poolEstimateCard = page
+    .getByRole("heading", { name: "Pool if calculated now" })
+    .locator("../..");
   await expect(accrualCard).toBeVisible();
   await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
   await expect(calculationCard.getByText("#10,290", { exact: true })).toBeVisible();
+  await expect(poolEstimateCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
+  await expect(poolEstimateCard.getByText("Estimate", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();

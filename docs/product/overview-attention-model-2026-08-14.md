@@ -482,10 +482,12 @@ Implementation checkpoint (2026-08-14):
 - The implemented producer matrix covers every initial inclusion-policy row, including fixed-cycle
   exclusion, roster-blocked threshold work, due reward calculation and claims, profile issues only
   when they remove a due capability, stale-action rechecks, and Activity-over-domain deduplication.
-- The Rewards summary intentionally leaves `estimatedPoolRewardSats` and `operatorFeeSats` empty
-  with unavailable confidence until Slice 6 lands the integer simulator, calibration, ranges, and
-  omission rules. Exact accrued rewards, calculation state, and actionable-claim counts remain
-  available now; Overview does not manufacture provisional estimates.
+- The Rewards summary fills `estimatedPoolRewardSats` only from the persisted, contract-exact
+  `if-calculated-now` pool estimate read at one stable node anchor. It labels that value estimated
+  because current shares and accrual may change before the checkpoint; it is not a forecast.
+  `operatorFeeSats` remains empty until the fee projection and calibration work lands. Exact accrued
+  rewards, calculation state, and actionable-claim counts remain independently available, and an
+  incomplete estimate never hides them.
 - The stable shared chain anchor determines the next reward-calculation checkpoint, while its
   countdown uses the current local-node burn height displayed in the same cycle summary. This keeps
   protocol timing stable without introducing a normal one-block reference-indexer display skew.

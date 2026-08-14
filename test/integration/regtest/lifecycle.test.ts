@@ -882,7 +882,6 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
           bondIndex: 0n,
           targetRateBips: 500n,
           stxValueRatio,
-          minUstxRatioBips: minUstxRatio,
           totalSharesSats: bondSats,
           currentRewardsPerSat: 0n,
           managerSharesSats: bondSats,

@@ -676,6 +676,44 @@ describe("transaction engine repository", () => {
 
     expect(attempts.get(job.jobId)).toEqual([attempt]);
     expect(attempts.has(withoutAttempt.jobId)).toBe(false);
+    expect(store.transactionEngine.getLogicalJobByTxid(attempt.precomputedTxid)?.jobId).toBe(
+      job.jobId,
+    );
+    expect(store.transactionEngine.getLogicalJobByTxid(`0x${"ff".repeat(32)}`)).toBeNull();
+  });
+
+  it("loads the direct job that a replacement superseded", async () => {
+    const { store, digest } = await memoryStore();
+    const operationScopeKey = "claim:activity-supersession";
+    const first = store.transactionEngine.createLogicalJob(
+      jobInput(digest, { operationScopeKey }),
+    ).job;
+    const replacementIntent = {
+      operation: "claim-staker-rewards",
+      rewardCycle: 91,
+      amountSats: "2000",
+    };
+    const replacement = store.transactionEngine.createOrSupersedeLogicalJob(
+      jobInput(digest, {
+        idempotencyKey: "claim:91:second-half:height-960241",
+        operationScopeKey,
+        intent: replacementIntent,
+        intentSha256: transactionEngineDocumentSha256(replacementIntent),
+        chainAnchor: {
+          ...anchor,
+          stacksBlockHeight: anchor.stacksBlockHeight + 1,
+          burnBlockHeight: anchor.burnBlockHeight + 1,
+          indexBlockHash: `0x${"44".repeat(32)}`,
+        },
+        createdAt: time.one,
+      }),
+      { changedAt: time.one, reason: "newer anchored facts" },
+    );
+
+    expect(replacement.supersededJobId).toBe(first.jobId);
+    expect(store.transactionEngine.getLogicalJobSupersededBy(replacement.job.jobId)?.jobId).toBe(
+      first.jobId,
+    );
   });
 
   it("keeps reconciliation evidence append-only and restores all durable state after restart", async () => {

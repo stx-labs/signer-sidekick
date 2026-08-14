@@ -105,9 +105,11 @@ function nodeReads(
     bondBuckets?: Record<string, { shares?: bigint; earned?: bigint; rewardsPerToken?: bigint }>;
     stxEarned?: bigint;
     stxShares?: bigint;
+    totalStxShares?: bigint;
     lastRewardComputeHeight?: bigint;
     globalAccruedRewards?: bigint;
     managerUnclaimedSats?: bigint;
+    failEstimateRead?: boolean;
   } = {},
 ) {
   return vi.fn(
@@ -123,6 +125,9 @@ function nodeReads(
           return uintCV(overrides.lastRewardComputeHeight ?? 960_000n);
         case "get-new-rewards":
           return uintCV(overrides.globalAccruedRewards ?? 25_000n);
+        case "get-reserve-balance":
+          if (overrides.failEstimateRead) throw new Error("anchored reserve read failed");
+          return uintCV(0n);
         case "burn-height-to-reward-cycle":
           return uintCV(141n);
         case "bond-period-to-reward-cycle":
@@ -147,6 +152,12 @@ function nodeReads(
           return uintCV(
             isStxBucket
               ? (overrides.stxShares ?? 0n)
+              : (overrides.bondBuckets?.[bondKey]?.shares ?? 0n),
+          );
+        case "get-total-shares-staked-for-cycle":
+          return uintCV(
+            isStxBucket
+              ? (overrides.totalStxShares ?? overrides.stxShares ?? 0n)
               : (overrides.bondBuckets?.[bondKey]?.shares ?? 0n),
           );
         case "get-earned-staker-rewards": {
@@ -247,6 +258,75 @@ describe("STX-only reward status", () => {
         blocksRemaining: 900,
       },
     });
+  });
+
+  it("exposes the contract-rounded pool reward if current anchored inputs were calculated now", async () => {
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 100_000_000_000n,
+          stxShares: 50_000_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      accrued: { globalSats: "25000" },
+      poolEstimateUnavailableReason: null,
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 961_049,
+        grossSats: "10625",
+        stxSats: "10625",
+        bondSats: "0",
+        inputs: {
+          globalStxSharesUstx: "100000000000",
+          managerStxSharesUstx: "50000000000",
+          activeBonds: [],
+        },
+      },
+    });
+  });
+
+  it("keeps exact global accrual available when the anchored estimate cannot be read", async () => {
+    const projectionStore = store();
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          failEstimateRead: true,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      accrued: { globalSats: "25000" },
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        globalAccruedRewardsSats: "25000",
+        poolEstimate: null,
+        poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+      }),
+    );
   });
 
   it("shows per-staker earnings, payout policy, and manager liabilities", async () => {

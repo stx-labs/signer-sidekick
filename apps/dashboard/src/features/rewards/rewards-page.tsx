@@ -42,6 +42,25 @@ type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "st
 type ClaimSort = "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
 type WithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
 
+function poolEstimateUnavailableDetail(
+  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["poolEstimateUnavailableReason"],
+): string {
+  switch (reason) {
+    case "chain-anchor-unavailable":
+      return "A stable local-node anchor is required.";
+    case "calculation-target-unavailable":
+      return "PoX-5 does not expose a valid next calculation target at this anchor.";
+    case "incomplete-active-bond-state":
+      return "The complete active bond set could not be proven at this anchor.";
+    case "anchored-inputs-unavailable":
+      return "One or more anchored share inputs could not be read from the local node.";
+    case "contract-simulation-failed":
+      return "The observed inputs could not produce a valid PoX-5 integer calculation.";
+    case null:
+      return "The current pool estimate is unavailable.";
+  }
+}
+
 function compareSortValues(
   left: bigint | number | string | boolean | null,
   right: bigint | number | string | boolean | null,
@@ -99,6 +118,7 @@ export function Rewards({
   const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
   const globalAccruedSats =
     rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
+  const poolEstimate = rewardOutlook?.poolEstimate ?? null;
   const lastRewardComputeBurnHeight =
     rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
     rewards?.global.lastRewardComputeBurnHeight ??
@@ -317,7 +337,7 @@ export function Rewards({
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
-      <div className="grid cols-2 reward-outlook">
+      <div className="grid cols-3 reward-outlook">
         <section className="card">
           <div className="card-head">
             <h2>Accruing globally</h2>
@@ -365,6 +385,33 @@ export function Rewards({
               : calculation.next.state === "scheduled"
                 ? `${number(String(calculation.next.blocksRemaining))} Bitcoin blocks remaining.`
                 : "The permissionless calculation can be prepared now."}
+          </p>
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <h2>Pool if calculated now</h2>
+            <Badge state={poolEstimate ? "info" : "neutral"}>
+              {poolEstimate ? "Estimate" : "Unavailable"}
+            </Badge>
+          </div>
+          <StatLine label="Current-share result">
+            <span className="btc-value src src-chain">
+              {poolEstimate ? `${sbtc(poolEstimate.grossSats)} sBTC` : "Unavailable"}
+            </span>
+          </StatLine>
+          {poolEstimate ? (
+            <StatLine label="STX / Bitcoin bonds">
+              <span className="mono">
+                {sbtc(poolEstimate.stxSats)} / {sbtc(poolEstimate.bondSats)} sBTC
+              </span>
+            </StatLine>
+          ) : null}
+          <p className="tertiary balance-note">
+            {poolEstimate
+              ? "Contract-exact for the current accrual, shares, and active bonds. This is not a checkpoint forecast."
+              : poolEstimateUnavailableDetail(
+                  rewardOutlook?.poolEstimateUnavailableReason ?? "anchored-inputs-unavailable",
+                )}
           </p>
         </section>
       </div>

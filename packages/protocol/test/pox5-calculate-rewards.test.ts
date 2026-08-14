@@ -14,6 +14,12 @@ const bond = (
   minUstxRatioBips = 10_000n,
 ) => ({ bondIndex, targetRateBips, stxValueRatio, minUstxRatioBips });
 
+const simulationBond = (bondIndex: bigint, stxValueRatio: bigint, targetRateBips = 500n) => ({
+  bondIndex,
+  targetRateBips,
+  stxValueRatio,
+});
+
 describe("PoX-5 calculate-rewards adapter", () => {
   it("pins the STX-only empty-list wire argument", () => {
     expect(encodePox5CalculateRewardsArguments([])).toEqual([cvToHex(Cl.list([]))]);
@@ -78,13 +84,13 @@ describe("PoX-5 calculate-rewards adapter", () => {
       managerStxSharesUstx: 25_000_000_000n,
       bonds: [
         {
-          ...bond(1n, 900n, 500n),
+          ...simulationBond(1n, 900n, 500n),
           totalSharesSats: 100_000n,
           currentRewardsPerSat: 3n,
           managerSharesSats: 50_000n,
         },
         {
-          ...bond(0n, 1_000n, 250n),
+          ...simulationBond(0n, 1_000n, 250n),
           totalSharesSats: 40_000n,
           currentRewardsPerSat: 5n,
           managerSharesSats: 10_000n,
@@ -132,7 +138,7 @@ describe("PoX-5 calculate-rewards adapter", () => {
       currentRewardsPerUstx: 9n,
       bonds: [
         {
-          ...bond(0n, 1n, 1n),
+          ...simulationBond(0n, 1n, 1n),
           totalSharesSats: 0n,
           currentRewardsPerSat: 0n,
         },
@@ -166,7 +172,7 @@ describe("PoX-5 calculate-rewards adapter", () => {
         currentRewardsPerUstx: 0n,
         bonds: [
           {
-            ...bond(0n, 1n, (1n << 128n) - 1n),
+            ...simulationBond(0n, 1n, (1n << 128n) - 1n),
             totalSharesSats: (1n << 128n) - 1n,
             currentRewardsPerSat: 0n,
           },
