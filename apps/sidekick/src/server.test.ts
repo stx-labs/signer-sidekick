@@ -1251,6 +1251,31 @@ describe("local API", () => {
                 buckets: { le1: 0, le2: 0, le5: 1, le10: 1, le30: 1 },
               },
             },
+            rewards: {
+              pending: false,
+              running: false,
+              requests: 2,
+              coalescedRequests: 0,
+              successes: 2,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 1.25,
+                maxSeconds: 1.25,
+                lastSeconds: 1.25,
+                withinTwoSeconds: 1,
+                buckets: { le1: 0, le2: 1, le5: 1, le10: 1, le30: 1 },
+              },
+            },
             roster: {
               pending: false,
               running: false,
@@ -1329,6 +1354,9 @@ describe("local API", () => {
     );
     expect(metrics.body).toContain(
       'sidekick_observer_reconciliation_pending{domain="manager-activity"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_successes_total{domain="rewards"} 2',
     );
     expect(metrics.body).toContain(
       'sidekick_observer_reconciliation_latency_seconds_bucket{domain="current",le="2"} 2',

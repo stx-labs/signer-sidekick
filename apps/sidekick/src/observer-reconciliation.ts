@@ -5,11 +5,15 @@ import { RateLimitedError } from "./chain-clients.js";
 import type { ObserverVerificationOutcome } from "./observer-inbox.js";
 import type { StoredObserverDelivery } from "./storage/store.js";
 
-export type ObserverReconciliationDomain = "current" | "manager-activity" | "roster";
+export type ObserverReconciliationDomain = "current" | "manager-activity" | "rewards" | "roster";
 
 export interface ObserverReconciliationService {
   refreshSnapshot(): Promise<unknown>;
   synchronizeManagerActivity(options?: {
+    signal?: AbortSignal;
+    minimumStacksHeight?: number | null;
+  }): Promise<unknown>;
+  synchronizeRewardRealizations(options?: {
     signal?: AbortSignal;
     minimumStacksHeight?: number | null;
   }): Promise<unknown>;
@@ -180,6 +184,35 @@ function containsRelevantPox5Print(
   }
 }
 
+function containsPox5RewardCalculationPrint(
+  delivery: StoredObserverDelivery,
+  contractPrincipal: string,
+): boolean {
+  try {
+    const parsed = blockTriggerSchema.safeParse(JSON.parse(delivery.rawPayloadJson));
+    if (!parsed.success) return false;
+    return parsed.data.events.some((candidate) => {
+      const event = managerPrintEventSchema.safeParse(candidate);
+      if (
+        !event.success ||
+        event.data.contract_event.contract_identifier !== contractPrincipal ||
+        !event.data.contract_event.raw_value
+      ) {
+        return false;
+      }
+      const value = decodeClarityHex(event.data.contract_event.raw_value);
+      if (value.type !== ClarityType.Tuple) return false;
+      const topic = value.value.topic;
+      return (
+        (topic?.type === ClarityType.StringASCII || topic?.type === ClarityType.StringUTF8) &&
+        topic.value === "calculate-rewards"
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
 function copyState(state: MutableDomainState): ObserverReconciliationDomainStatus {
   return {
     pending: state.pending,
@@ -238,6 +271,7 @@ export class ObserverReconciliationScheduler {
   readonly #states: Record<ObserverReconciliationDomain, MutableDomainState> = {
     current: domainState(),
     "manager-activity": domainState(),
+    rewards: domainState(),
     roster: domainState(),
   };
   #started = false;
@@ -287,6 +321,7 @@ export class ObserverReconciliationScheduler {
     // delivery complete but before its in-memory follow-up could be scheduled.
     this.request("current");
     this.request("manager-activity");
+    this.request("rewards");
     this.#scheduleManagerActivityBackfill();
   }
 
@@ -339,6 +374,9 @@ export class ObserverReconciliationScheduler {
       ) {
         this.request("roster", anchor);
       }
+      if (pox5ContractId && containsPox5RewardCalculationPrint(delivery, pox5ContractId)) {
+        this.request("rewards", anchor);
+      }
       return;
     }
     if (
@@ -360,6 +398,7 @@ export class ObserverReconciliationScheduler {
       domains: {
         current: copyState(this.#states.current),
         "manager-activity": copyState(this.#states["manager-activity"]),
+        rewards: copyState(this.#states.rewards),
         roster: copyState(this.#states.roster),
       },
     };
@@ -390,6 +429,7 @@ export class ObserverReconciliationScheduler {
       this.#managerActivityBackfillTimer = null;
       if (!this.#started) return;
       this.request("manager-activity");
+      this.request("rewards");
       this.#scheduleManagerActivityBackfill();
     }, this.#managerActivityBackfillIntervalMs);
     this.#managerActivityBackfillTimer.unref?.();
@@ -430,6 +470,11 @@ export class ObserverReconciliationScheduler {
           await this.#service.refreshSnapshot();
         } else if (domain === "manager-activity") {
           await this.#service.synchronizeManagerActivity({
+            signal: controller.signal,
+            minimumStacksHeight: requestedStacksHeight,
+          });
+        } else if (domain === "rewards") {
+          await this.#service.synchronizeRewardRealizations({
             signal: controller.signal,
             minimumStacksHeight: requestedStacksHeight,
           });

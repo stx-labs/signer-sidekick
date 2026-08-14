@@ -409,6 +409,66 @@ describe("STX-only reward status", () => {
     );
   });
 
+  it("projects reviewed operator fees with exact per-staker integer rounding", async () => {
+    const projectionStore = store();
+    vi.mocked(projectionStore.listRewardForecastSamples).mockReturnValue([
+      outlookHistorySample(960_010, "1000"),
+      outlookHistorySample(960_020, "2200"),
+    ]);
+    vi.mocked(projectionStore.listCycleMembershipsForCycle).mockReturnValue([
+      { ...membership(stakerOne), amountUstx: 20_000_000_000n },
+      { ...membership(stakerTwo), amountUstx: 30_000_000_000n },
+    ]);
+    projectionStore.listSignerStakers = vi.fn().mockReturnValue([
+      { stakerPrincipal: stakerOne, bond: null },
+      { stakerPrincipal: stakerTwo, bond: null },
+    ] as never);
+    const callReadOnly = nodeReads({
+      lastRewardComputeHeight: 959_999n,
+      globalAccruedRewards: 25_000n,
+      firstBondPeriodCycle: 200n,
+      totalStxShares: 100_000_000_000n,
+      stxShares: 50_000_000_000n,
+    });
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly,
+        getDataVar: vi.fn().mockResolvedValue(uintCV(500)),
+        getMapEntry: vi.fn().mockResolvedValue(noneCV()),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:30:00.000Z",
+      chainAnchor,
+      sourceId,
+      feeCapability: {
+        executionAvailable: true,
+        adapter: { id: "reference-manager-claim-rewards", revision: 1 },
+        reason: "reviewed test adapter",
+      },
+    });
+
+    expect(outlook).toMatchObject({
+      operatorFeeForecastUnavailableReason: null,
+      operatorFeeForecast: {
+        kind: "reference-manager-exact",
+        inputs: {
+          stakers: 2,
+          buckets: [{ bondIndex: null, feeBips: "500", source: "configured-fee-assumption" }],
+        },
+        assumptions: ["per-staker-per-bucket-integer-rounding", "configured-fee-until-claim"],
+      },
+    });
+    const fees = outlook.operatorFeeForecast?.sats;
+    expect(fees).not.toBeNull();
+    expect(BigInt(fees?.low ?? 0)).toBeLessThanOrEqual(BigInt(fees?.point ?? 0));
+    expect(BigInt(fees?.point ?? 0)).toBeLessThanOrEqual(BigInt(fees?.high ?? 0));
+    expect(BigInt(fees?.point ?? 0)).not.toBe(
+      (BigInt(outlook.forecast?.poolSats.point ?? 0) * 500n) / 10_000n,
+    );
+  });
+
   it("shows per-staker earnings, payout policy, and manager liabilities", async () => {
     const projectionStore = store();
     const callReadOnly = nodeReads({
@@ -682,6 +742,12 @@ describe("STX-only reward status", () => {
 
   it("reports a pending global calculation instead of implying stale local data", async () => {
     const projectionStore = store();
+    projectionStore.getRewardCalculationEligibilityObservation = vi.fn().mockReturnValue({
+      observedAt: "2026-07-14T11:50:00.000Z",
+      stacksBlockHeight: 8_599_976,
+      burnBlockHeight: 960_000,
+      indexBlockHash: `0x${"cd".repeat(32)}`,
+    });
     const pending = await readStxRewardStatus(
       options(
         projectionStore,
@@ -706,6 +772,11 @@ describe("STX-only reward status", () => {
         calculationBurnHeight: 959_999,
         eligibleBurnHeight: 960_000,
         blocksRemaining: 0,
+        grace: {
+          state: "action-required",
+          elapsedMinutes: 12,
+          canonicalStacksBlocks: 24,
+        },
       },
     });
     expect(projectionStore.putRewardOutlookObservation).toHaveBeenLastCalledWith(
@@ -731,6 +802,15 @@ describe("STX-only reward status", () => {
       calculationBurnHeight: 961_049,
       eligibleBurnHeight: 961_050,
       blocksRemaining: 810,
+      grace: {
+        state: "scheduled",
+        firstEligibleObservedAt: null,
+        firstEligibleStacksBlockHeight: null,
+        elapsedMinutes: 0,
+        canonicalStacksBlocks: 0,
+        requiredMinutes: 10,
+        requiredCanonicalStacksBlocks: 24,
+      },
     });
   });
 

@@ -17,9 +17,17 @@ function poxPrintValue(manager = managerPrincipal): string {
   );
 }
 
+function poxRewardPrintValue(): string {
+  return cvToHex(
+    tupleCV({
+      topic: stringAsciiCV("calculate-rewards"),
+    }),
+  );
+}
+
 function stacksDelivery(
   height: number,
-  eventKind: "manager" | "pox" | "pox-other" | "none" = "manager",
+  eventKind: "manager" | "pox" | "pox-other" | "pox-reward" | "none" = "manager",
 ): StoredObserverDelivery {
   return {
     deliveryId: "11111111-1111-4111-8111-111111111111",
@@ -37,11 +45,13 @@ function stacksDelivery(
                   contract_identifier: eventKind === "manager" ? managerPrincipal : pox5ContractId,
                   topic: "print",
                   raw_value:
-                    eventKind === "pox"
-                      ? poxPrintValue()
-                      : eventKind === "pox-other"
-                        ? poxPrintValue(otherManagerPrincipal)
-                        : "0x01",
+                    eventKind === "pox-reward"
+                      ? poxRewardPrintValue()
+                      : eventKind === "pox"
+                        ? poxPrintValue()
+                        : eventKind === "pox-other"
+                          ? poxPrintValue(otherManagerPrincipal)
+                          : "0x01",
                 },
               },
             ]
@@ -72,12 +82,13 @@ function burnDelivery(height: number): StoredObserverDelivery {
 }
 
 describe("ObserverReconciliationScheduler", () => {
-  it("runs restart catch-up for current state and manager activity", async () => {
+  it("runs restart catch-up for current state, manager activity, and rewards", async () => {
     vi.useFakeTimers();
     try {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -92,11 +103,13 @@ describe("ObserverReconciliationScheduler", () => {
 
       expect(service.refreshSnapshot).toHaveBeenCalledOnce();
       expect(service.synchronizeManagerActivity).toHaveBeenCalledOnce();
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledOnce();
       expect(scheduler.status()).toMatchObject({
         started: true,
         domains: {
           current: { pending: false, running: false, successes: 1 },
           "manager-activity": { pending: false, running: false, successes: 1 },
+          rewards: { pending: false, running: false, successes: 1 },
         },
       });
       await scheduler.stop();
@@ -111,6 +124,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -123,11 +137,14 @@ describe("ObserverReconciliationScheduler", () => {
       scheduler.start();
       await vi.advanceTimersByTimeAsync(0);
       expect(service.synchronizeManagerActivity).toHaveBeenCalledOnce();
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledOnce();
 
       await vi.advanceTimersByTimeAsync(300_000);
       await vi.advanceTimersByTimeAsync(1);
       expect(scheduler.status().domains["manager-activity"].requests).toBe(2);
       expect(service.synchronizeManagerActivity).toHaveBeenCalledTimes(2);
+      expect(scheduler.status().domains.rewards.requests).toBe(2);
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledTimes(2);
       await scheduler.stop();
     } finally {
       vi.useRealTimers();
@@ -147,6 +164,7 @@ describe("ObserverReconciliationScheduler", () => {
           .fn()
           .mockReturnValueOnce(firstActivity)
           .mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -197,6 +215,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -224,12 +243,55 @@ describe("ObserverReconciliationScheduler", () => {
     }
   });
 
+  it("requests anchored reward reconciliation for a verified calculate-rewards print", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = {
+        refreshSnapshot: vi.fn().mockResolvedValue(undefined),
+        synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
+        synchronize: vi.fn().mockResolvedValue(undefined),
+      };
+      const scheduler = new ObserverReconciliationScheduler({
+        service,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        managerPrincipal,
+        getPox5ContractId: () => pox5ContractId,
+      });
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      service.synchronizeRewardRealizations.mockClear();
+
+      scheduler.notifyProcessed(stacksDelivery(8_700_009, "pox-reward"), {
+        action: "finish",
+        state: "node-verified",
+        reason: "canonical-stacks-index-block-verified",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledOnce();
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledWith(
+        expect.objectContaining({ minimumStacksHeight: 8_700_009 }),
+      );
+      expect(service.synchronize).not.toHaveBeenCalled();
+      expect(scheduler.status().domains.rewards).toMatchObject({
+        requests: 2,
+        successes: 2,
+        requestedStacksHeight: 8_700_009,
+      });
+      await scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("requests an anchored full roster reconciliation for a PoX-5 print", async () => {
     vi.useFakeTimers();
     try {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -270,6 +332,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -303,6 +366,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -345,6 +409,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -359,6 +424,7 @@ describe("ObserverReconciliationScheduler", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(service.refreshSnapshot).not.toHaveBeenCalled();
       expect(service.synchronizeManagerActivity).not.toHaveBeenCalled();
+      expect(service.synchronizeRewardRealizations).not.toHaveBeenCalled();
       expect(scheduler.status().domains.current).toMatchObject({
         pending: true,
         failuresTotal: 0,
@@ -368,6 +434,7 @@ describe("ObserverReconciliationScheduler", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(service.refreshSnapshot).toHaveBeenCalledOnce();
       expect(service.synchronizeManagerActivity).toHaveBeenCalledOnce();
+      expect(service.synchronizeRewardRealizations).toHaveBeenCalledOnce();
       await scheduler.stop();
     } finally {
       vi.useRealTimers();
@@ -393,6 +460,7 @@ describe("ObserverReconciliationScheduler", () => {
               );
             }),
         ),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -423,6 +491,7 @@ describe("ObserverReconciliationScheduler", () => {
       const service = {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({
@@ -472,6 +541,7 @@ describe("ObserverReconciliationScheduler", () => {
           .mockRejectedValueOnce(new Error("node unavailable"))
           .mockResolvedValue(undefined),
         synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       };
       const scheduler = new ObserverReconciliationScheduler({

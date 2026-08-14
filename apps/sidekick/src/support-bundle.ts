@@ -188,6 +188,7 @@ const observerRuntimeStatusSchema = z
           .object({
             current: observerReconciliationDomainSchema,
             "manager-activity": observerReconciliationDomainSchema,
+            rewards: observerReconciliationDomainSchema.optional(),
             roster: observerReconciliationDomainSchema,
           })
           .strict(),

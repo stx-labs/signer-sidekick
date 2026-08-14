@@ -529,6 +529,12 @@ These do not block implementing the Overview contract:
   `collecting` or `insufficient-evidence`, never an unhealthy-network finding. Alerting and
   network-wide attribution still require the #19 policy.
 - Reward calculation grace periods and Assist escalation remain the reward/Assist policy work.
+
+The reward policy is now fixed: the Rewards page shows a newly eligible calculation as normal
+`awaiting calculation` state. Overview adds an action only after ten minutes and 24 newer canonical
+Stacks blocks, provided the node is advancing and the reviewed wallet action has current witnesses.
+A stalled chain or stale witness produces evidence-specific `needs-attention` instead. Unattended
+Assist remains separately gated and cannot become eligible before 30 minutes and 120 blocks.
 - External notification channels, paging thresholds, acknowledgements, and deduplication wait for
   durable finding episodes; they may consume this projection but do not change its semantics.
 - Whether support export becomes a secondary direct action on urgent findings is decided with the

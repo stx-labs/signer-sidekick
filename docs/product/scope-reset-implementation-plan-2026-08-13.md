@@ -294,6 +294,50 @@ Implementation checkpoint (2026-08-14):
   operator fees remain open. Those layers can consume the durable forecast series instead of
   transient dashboard reads or duplicated arithmetic.
 
+Reward feedback-loop policy (decided 2026-08-14):
+
+- Sampling confidence and demonstrated accuracy are separate. `low` requires three observations
+  across six Bitcoin blocks; `developing` requires six across 24. `calibrated` additionally
+  requires a current forecast no more than 144 Bitcoin blocks from its checkpoint and six prior
+  node-verified realizations produced by the same model revision across at least three reward
+  cycles. Evaluation uses the latest forecast from 144 through 156 blocks before each checkpoint,
+  preventing a zero-horizon pre-calculation observation from making the model look exact.
+- Calibration requires at least five of six realized pool allocations inside their projected
+  ranges, median absolute point error no greater than 15%, median normalized range width no greater
+  than 50%, and at least four non-zero outcomes. A model revision starts a new window. Missing or
+  failed calibration leaves the forecast `developing`; it is not an operator-health finding.
+- A newly eligible permissionless calculation is ordinary `awaiting calculation` state. It becomes
+  `action-required` only after ten minutes and 24 newer canonical Stacks blocks while the local
+  chain is advancing and action-specific witnesses remain current. Missing witnesses or a stalled
+  chain produce `needs-attention` without offering a transaction. A future Assist candidate must
+  wait at least 30 minutes and 120 canonical Stacks blocks and remains outside this milestone.
+- Operator-fee projections are capability-gated and apply the reviewed manager's per-staker,
+  per-bucket integer rounding. An existing cycle fee snapshot is authoritative; otherwise the
+  configured fee is an explicit assumption because the reference manager pins it on first claim.
+  Managers without reviewed fee semantics retain the PoX-5 pool forecast and receive a precise fee
+  omission reason; Sidekick never substitutes `pool total * fee percentage`.
+
+Implementation checkpoint (2026-08-14): the reward feedback loop is implemented end to end. A
+five-minute anti-entropy domain scans PoX-5 prints from the indexed API, treats callback bodies only
+as scheduling hints, verifies each transaction against the local node index, decodes the complete
+calculation event, and stores realizations plus resumable cursors atomically. The six-realization
+calibration window is revalidated against the local node on every run so an orphaned event cannot
+remain authoritative merely because it disappeared from the API feed. Exact pool attribution and
+forecast scoring replay the event from the parent anchor and independently require global and
+manager STX shares plus the active bond parameters, global shares, and manager shares to be
+identical at the parent and post-transaction block anchors. A block that does not prove stable
+calculation inputs remains a canonical global observation but is explicitly
+`same-block-state-ambiguous` instead of borrowing a possibly changed share snapshot.
+
+The Rewards projection now reports collecting/passing/failing calibration evidence, upgrades a
+forecast to `calibrated` only under the fixed policy, exposes reviewed exact operator-fee ranges and
+their fee-source assumptions, and keeps a due calculation neutral through its grace window. After
+both grace thresholds, Overview offers the action only with current evidence; stale evidence
+produces `needs-attention` and the Rewards page withholds the transaction link. The support snapshot
+and Rewards API include the canonical and invalidated realization trail. Regtest decodes the real
+PoX-5 calculation print and matches it field-for-field against the integer simulator for both
+STX-only and mixed STX/sBTC-bond distributions.
+
 ### Slice 7: signer/network diagnosis and support handoff
 
 - Persist cheap five-second node/signer evidence and useful rollups.
@@ -354,8 +398,8 @@ the reviewed slice for operator signing.
   executable adapter.
 - Network reference/confidence rules and signer-health retention: before alerting in Slice 7.
 - Support-artifact seam: before claiming single-artifact incident handoff.
-- Reward confidence and permissionless-calculation policy: before presenting forecasts/actions as
-  operational recommendations.
+- Reward confidence and permissionless-calculation policy: decided and implemented in the Slice 6
+  checkpoint above; revise it only with a model revision and fresh calibration window.
 - Assist ownership and incident response: before Slice 9 can ship.
 
 ## Recorded product decisions

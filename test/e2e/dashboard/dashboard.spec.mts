@@ -1190,6 +1190,15 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
       eligibleBurnHeight:
         pendingSnapshot.rewardOutlook.calculation.expectedLastRewardComputeBurnHeight + 1,
       blocksRemaining: 0,
+      grace: {
+        state: "action-required",
+        firstEligibleObservedAt: "2026-08-13T11:50:00.000Z",
+        firstEligibleStacksBlockHeight: 8_749_976,
+        elapsedMinutes: 10,
+        canonicalStacksBlocks: 24,
+        requiredMinutes: 10,
+        requiredCanonicalStacksBlocks: 24,
+      },
     },
   };
   let settlementReads = 0;

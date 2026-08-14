@@ -980,6 +980,15 @@ describe("Overview projection", () => {
               calculationBurnHeight: 962_299,
               eligibleBurnHeight: 962_300,
               blocksRemaining: 0,
+              grace: {
+                state: "action-required",
+                firstEligibleObservedAt: "2026-08-13T11:50:00.000Z",
+                firstEligibleStacksBlockHeight: 8_599_976,
+                elapsedMinutes: 10,
+                canonicalStacksBlocks: 24,
+                requiredMinutes: 10,
+                requiredCanonicalStacksBlocks: 24,
+              },
             },
           },
         },
@@ -991,7 +1000,7 @@ describe("Overview projection", () => {
 
     expect(result.attention[0]).toMatchObject({
       attentionId: "rewards:calculation-due:141:first-half",
-      tier: "needs-attention",
+      tier: "action-required",
       deadline: { kind: "burn-block", burnBlockHeight: 962_299 },
       primaryAction: { kind: "open-domain", page: "rewards", section: "calculation" },
     });
@@ -1389,6 +1398,23 @@ describe("Overview projection", () => {
               targetCheckpoint: "first-half",
               expectedLastRewardComputeBurnHeight: 962_299,
               observedLastRewardComputeBurnHeight: "962000",
+              next: {
+                state: "due",
+                targetRewardCycle: 141,
+                targetCheckpoint: "first-half",
+                calculationBurnHeight: 962_299,
+                eligibleBurnHeight: 962_300,
+                blocksRemaining: 0,
+                grace: {
+                  state: "action-required",
+                  firstEligibleObservedAt: "2026-08-13T11:50:00.000Z",
+                  firstEligibleStacksBlockHeight: 8_599_976,
+                  elapsedMinutes: 10,
+                  canonicalStacksBlocks: 24,
+                  requiredMinutes: 10,
+                  requiredCanonicalStacksBlocks: 24,
+                },
+              },
             };
           }),
         }),

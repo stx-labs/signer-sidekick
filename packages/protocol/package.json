@@ -25,6 +25,10 @@
       "types": "./dist/pox5-calculate-rewards.d.ts",
       "default": "./dist/pox5-calculate-rewards.js"
     },
+    "./pox5-events": {
+      "types": "./dist/pox5-events.d.ts",
+      "default": "./dist/pox5-events.js"
+    },
     "./manager-claim-rewards": {
       "types": "./dist/manager-claim-rewards.d.ts",
       "default": "./dist/manager-claim-rewards.js"

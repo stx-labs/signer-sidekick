@@ -176,6 +176,7 @@ describe("observer reconciliation integration", () => {
       service: {
         refreshSnapshot: vi.fn().mockResolvedValue(undefined),
         synchronizeManagerActivity: async (options) => await activity(options?.signal),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
         synchronize: vi.fn().mockResolvedValue(undefined),
       },
       logger: { info: vi.fn(), warn: vi.fn() },

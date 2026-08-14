@@ -72,6 +72,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE reward_calculation_realizations;
     DROP TABLE reward_outlook_observations;
     DROP TABLE observer_deliveries;
     DROP TABLE deployment_identity;
@@ -335,7 +336,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 28,
+      schemaVersion: 29,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1120,6 +1121,7 @@ describe("Sidekick SQLite store", () => {
           "contract-integer-rounding",
         ],
       },
+      forecastModelRevision: 1,
       forecastUnavailableReason: null,
     });
 
@@ -1131,11 +1133,106 @@ describe("Sidekick SQLite store", () => {
         inputs: { activeBonds: [{ bondIndex: "2" }] },
       },
       forecastUnavailableReason: null,
+      forecastModelRevision: 1,
       forecast: {
         globalSats: { low: "100", point: "110", high: "120" },
         poolSats: { low: "90", point: "99", high: "108" },
       },
     });
+  });
+
+  it("persists canonical reward realizations with their fixed-horizon evaluation", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    store.putRewardCalculationRealization({
+      chainId: 1,
+      txId,
+      eventIndex: 4,
+      sourceId,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      canonical: true,
+      blockHeight: 8_600_001,
+      indexBlockHash,
+      burnBlockHeight: 960_241,
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 960_240,
+      event: {
+        kind: "calculate-rewards",
+        topic: "calculate-rewards",
+        bondPeriods: [],
+        calculationBurnHeight: "960240",
+        grossAccruedRewardsSats: "100",
+        totalBondRewardsSats: "0",
+        reserveDepositSats: "5",
+        reserveBalanceSats: "10",
+        rewardCycle: "141",
+        totalStxStakerRewardsSats: "95",
+        cycleStakedUstx: "1000",
+        accruedRewardsPerUstx: "95000000000000000",
+        cumulativeRewardsPerUstx: "95000000000000000",
+      },
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        grossSats: "90",
+        stxSats: "90",
+        bondSats: "0",
+        inputs: {
+          globalStxSharesUstx: "1000",
+          managerStxSharesUstx: "950",
+          activeBonds: [],
+        },
+        assumptions: [
+          "current-global-accrual",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "contract-integer-rounding",
+        ],
+      },
+      poolEstimateUnavailableReason: null,
+      modelRevision: 1,
+      evaluation: {
+        modelRevision: 1,
+        forecastObservedBurnHeight: 960_096,
+        calculationBurnHeight: 960_240,
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        globalSats: { low: "90", point: "100", high: "110" },
+        poolSats: { low: "80", point: "100", high: "110" },
+        actualPoolSats: "90",
+        leadBlocks: 144,
+        pointErrorSats: "10",
+        pointErrorBips: "1112",
+        rangeContainsActual: true,
+        rangeWidthBips: "3000",
+      },
+      observedAt,
+    });
+
+    expect(store.listRewardCalculationRealizations(manager, pox5)).toMatchObject([
+      {
+        canonical: true,
+        targetRewardCycle: 141,
+        poolEstimate: { grossSats: "90" },
+        evaluation: { leadBlocks: 144, rangeContainsActual: true },
+      },
+    ]);
+    expect(
+      store.markRewardRealizationNoncanonical({
+        chainId: 1,
+        txId,
+        eventIndex: 4,
+        updatedAt: later,
+      }),
+    ).toBe(true);
+    expect(store.listRewardCalculationRealizations(manager, pox5)).toEqual([]);
+    expect(
+      store.listRewardCalculationRealizations(manager, pox5, { canonicalOnly: false }),
+    ).toMatchObject([{ canonical: false, updatedAt: later }]);
   });
 
   it("resumes partial scans without deactivating unseen members until completion", async () => {
@@ -1231,7 +1328,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 28,
+      schemaVersion: 29,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1257,7 +1354,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1373,7 +1470,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(28);
+    expect(upgraded.store.schemaVersion()).toBe(29);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1435,6 +1532,7 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       DROP TABLE signer_staker_api_scan_items;
       DROP TABLE signer_staker_api_scans;
@@ -1455,7 +1553,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1606,7 +1704,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1728,6 +1826,7 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;
@@ -1743,7 +1842,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(28);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1780,6 +1879,7 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;

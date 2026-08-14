@@ -29,6 +29,7 @@ import {
 import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
+import { syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
   readRewardOutlook,
@@ -100,6 +101,7 @@ export interface OperatorSynchronizationOptions {
 }
 
 export type ManagerActivitySynchronizationOptions = OperatorSynchronizationOptions;
+export type RewardRealizationSynchronizationOptions = OperatorSynchronizationOptions;
 
 export type SortDirection = "asc" | "desc";
 export type PoolRosterSort =
@@ -513,6 +515,9 @@ export class OperatorService {
   private managerActivitySynchronization: Promise<
     Awaited<ReturnType<OperatorService["runManagerActivitySynchronization"]>>
   > | null = null;
+  private rewardRealizationSynchronization: Promise<
+    Awaited<ReturnType<OperatorService["runRewardRealizationSynchronization"]>>
+  > | null = null;
   private pendingTrustTransition: ManagerTrustTransition | null = null;
   private refreshBlockedUntil = 0;
   private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
@@ -692,6 +697,16 @@ export class OperatorService {
     return this.managerActivitySynchronization;
   }
 
+  async synchronizeRewardRealizations(options: RewardRealizationSynchronizationOptions = {}) {
+    if (this.rewardRealizationSynchronization) return this.rewardRealizationSynchronization;
+    this.rewardRealizationSynchronization = this.runRewardRealizationSynchronization(
+      options,
+    ).finally(() => {
+      this.rewardRealizationSynchronization = null;
+    });
+    return this.rewardRealizationSynchronization;
+  }
+
   async observeManagerTrustState() {
     const { managerPrincipal } = this.options;
     const { config, node } = this.runtimeContext();
@@ -726,8 +741,19 @@ export class OperatorService {
   async supportSnapshot(force = true) {
     const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness(force);
     const servedAt = new Date().toISOString();
+    const rewardRealizations = snapshot.rewardOutlook
+      ? this.options.store.listRewardCalculationRealizations(
+          this.options.managerPrincipal,
+          snapshot.rewardOutlook.pox5ContractId,
+          { limit: 50, canonicalOnly: false },
+        )
+      : [];
     return {
       ...snapshot,
+      rewardFeedback: {
+        calibration: snapshot.rewardOutlook?.calibration ?? null,
+        realizations: rewardRealizations,
+      },
       freshness: {
         status: stale ? ("stale" as const) : ("current" as const),
         snapshotGeneratedAt: snapshot.generatedAt,
@@ -805,6 +831,44 @@ export class OperatorService {
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }
         : null,
       rewardOutlook: snapshot.rewardOutlook ?? null,
+      rewardRealizations: snapshot.rewardOutlook
+        ? this.options.store
+            .listRewardCalculationRealizations(
+              this.options.managerPrincipal,
+              snapshot.rewardOutlook.pox5ContractId,
+              { limit: 12, canonicalOnly: true },
+            )
+            .map((realization) => ({
+              txId: realization.txId,
+              eventIndex: realization.eventIndex,
+              blockHeight: realization.blockHeight,
+              indexBlockHash: realization.indexBlockHash,
+              burnBlockHeight: realization.burnBlockHeight,
+              targetRewardCycle: realization.targetRewardCycle,
+              targetCheckpoint: realization.targetCheckpoint,
+              calculationBurnHeight: realization.calculationBurnHeight,
+              observedAt: realization.observedAt,
+              global: {
+                grossAccruedRewardsSats: realization.event.grossAccruedRewardsSats,
+                totalBondRewardsSats: realization.event.totalBondRewardsSats,
+                totalStxStakerRewardsSats: realization.event.totalStxStakerRewardsSats,
+                reserveDepositSats: realization.event.reserveDepositSats,
+              },
+              poolSats: realization.poolEstimate?.grossSats ?? null,
+              poolEstimateUnavailableReason: realization.poolEstimateUnavailableReason,
+              evaluation: realization.evaluation
+                ? {
+                    modelRevision: realization.evaluation.modelRevision,
+                    forecastObservedBurnHeight: realization.evaluation.forecastObservedBurnHeight,
+                    leadBlocks: realization.evaluation.leadBlocks,
+                    pointErrorSats: realization.evaluation.pointErrorSats,
+                    pointErrorBips: realization.evaluation.pointErrorBips,
+                    rangeContainsActual: realization.evaluation.rangeContainsActual,
+                    rangeWidthBips: realization.evaluation.rangeWidthBips,
+                  }
+                : null,
+            }))
+        : [],
       total: stakers.length,
       offset,
       limit,
@@ -1141,6 +1205,73 @@ export class OperatorService {
     return { observedAt, events };
   }
 
+  private async runRewardRealizationSynchronization(
+    options: RewardRealizationSynchronizationOptions,
+  ) {
+    options.signal?.throwIfAborted();
+    if (!this.options.nodeTransactions) {
+      throw new Error(
+        "Reward realization reconciliation requires the local node transaction index",
+      );
+    }
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
+    const observedAt = new Date().toISOString();
+    const { preflight, manager } = await readOperatorAnchorSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
+    const trustTransition = this.recordManagerTrustState(manager, observedAt);
+    if (trustTransition) this.pendingTrustTransition = trustTransition;
+    if (
+      preflight.status === "fail" ||
+      !indexedApiCompatible(preflight) ||
+      !manager.attachAllowed ||
+      !preflight.pox.pox5ContractId
+    ) {
+      throw new OperatorWorkflowError(
+        422,
+        "reward_realization_sources_incompatible",
+        "Reward realization sync is blocked by node, API, or manager compatibility checks",
+      );
+    }
+    if (
+      options.minimumStacksHeight !== null &&
+      options.minimumStacksHeight !== undefined &&
+      preflight.api.stacksTipHeight < options.minimumStacksHeight
+    ) {
+      throw new Error(
+        `Reward realization sync is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
+      );
+    }
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    const result = await syncRewardRealizations({
+      store,
+      api,
+      node,
+      nodeTransactions: this.options.nodeTransactions,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      observedAt,
+      pageLimit: config.eventPageLimit,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    this.cached = null;
+    return { observedAt, result };
+  }
+
   private async load() {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
@@ -1207,6 +1338,8 @@ export class OperatorService {
             pox5ContractId,
             observedAt: generatedAt,
             chainAnchor: projectionAnchor,
+            sourceId,
+            feeCapability: rewardCapability,
           })
         : null;
     const rewards =

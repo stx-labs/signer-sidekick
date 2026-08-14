@@ -13,7 +13,9 @@ import {
   overviewPageSchema,
   reconciliationOperationSchema,
   reconciliationSummarySchema,
+  rewardCalculationRealizationSchema,
   rewardsActivityResponseSchema,
+  rewardsPageResponseSchema,
   runtimeSettingsSchema,
   signerGrantSessionResponseSchema,
   syncResponseSchema,
@@ -423,6 +425,56 @@ describe("dashboard snapshot contract", () => {
         },
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("reward feedback contracts", () => {
+  const realization = {
+    txId: `0x${"11".repeat(32)}`,
+    eventIndex: 2,
+    blockHeight: 8_750_001,
+    indexBlockHash: `0x${"22".repeat(32)}`,
+    burnBlockHeight: 962_301,
+    targetRewardCycle: 141,
+    targetCheckpoint: "first-half" as const,
+    calculationBurnHeight: 962_300,
+    observedAt: "2026-08-14T12:00:00.000Z",
+    global: {
+      grossAccruedRewardsSats: "1000",
+      totalBondRewardsSats: "100",
+      totalStxStakerRewardsSats: "850",
+      reserveDepositSats: "50",
+    },
+    poolSats: "475",
+    poolEstimateUnavailableReason: null,
+    evaluation: {
+      modelRevision: 1,
+      forecastObservedBurnHeight: 962_156,
+      leadBlocks: 144,
+      pointErrorSats: "25",
+      pointErrorBips: "527",
+      rangeContainsActual: true,
+      rangeWidthBips: "2148",
+    },
+  };
+
+  it("accepts a complete realized-calculation evaluation", () => {
+    expect(rewardCalculationRealizationSchema.safeParse(realization).success).toBe(true);
+    expect(
+      rewardsPageResponseSchema.safeParse({
+        rewards: null,
+        rewardRealizations: [realization],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects malformed realization evidence instead of trusting the page envelope", () => {
+    expect(
+      rewardsPageResponseSchema.safeParse({
+        rewards: null,
+        rewardRealizations: [{ ...realization, indexBlockHash: "not-a-hash" }],
+      }).success,
+    ).toBe(false);
   });
 });
 

@@ -1904,4 +1904,69 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 29,
+    name: "reward_calculation_realizations",
+    sql: `
+      -- Model revisions make calibration windows reproducible. Existing forecasts predate the
+      -- first explicit revision and intentionally remain ineligible for calibration.
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_model_revision INTEGER
+        CHECK (forecast_model_revision IS NULL OR forecast_model_revision > 0);
+
+      -- One canonical PoX-5 calculate-rewards print closes a forecast. The event is discovered
+      -- through the indexer, its transaction inclusion is independently proven by the local node,
+      -- and manager allocation is replayed from node reads at the transaction's parent anchor.
+      CREATE TABLE reward_calculation_realizations (
+        chain_id INTEGER NOT NULL CHECK (chain_id >= 0),
+        tx_id TEXT NOT NULL CHECK (
+          length(tx_id) = 66
+          AND substr(tx_id, 1, 2) = '0x'
+          AND substr(tx_id, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        event_index INTEGER NOT NULL CHECK (event_index >= 0),
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        canonical INTEGER NOT NULL CHECK (canonical IN (0, 1)),
+        block_height INTEGER NOT NULL CHECK (block_height >= 0),
+        index_block_hash TEXT NOT NULL CHECK (
+          length(index_block_hash) = 66
+          AND substr(index_block_hash, 1, 2) = '0x'
+          AND substr(index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        burn_block_height INTEGER NOT NULL CHECK (burn_block_height >= 0),
+        target_reward_cycle INTEGER NOT NULL CHECK (target_reward_cycle >= 0),
+        target_checkpoint TEXT NOT NULL CHECK (
+          target_checkpoint IN ('first-half', 'second-half')
+        ),
+        calculation_burn_height INTEGER NOT NULL CHECK (calculation_burn_height >= 0),
+        event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+        pool_estimate_json TEXT CHECK (pool_estimate_json IS NULL OR json_valid(pool_estimate_json)),
+        pool_estimate_unavailable_reason TEXT CHECK (
+          pool_estimate_unavailable_reason IS NULL OR pool_estimate_unavailable_reason IN (
+            'historical-anchor-unavailable', 'same-block-state-ambiguous',
+            'anchored-inputs-unavailable', 'contract-simulation-failed'
+          )
+        ),
+        model_revision INTEGER NOT NULL CHECK (model_revision > 0),
+        evaluation_json TEXT CHECK (evaluation_json IS NULL OR json_valid(evaluation_json)),
+        observed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (chain_id, tx_id, event_index),
+        CHECK (
+          (pool_estimate_json IS NULL) <> (pool_estimate_unavailable_reason IS NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX reward_calculation_realizations_manager_history
+        ON reward_calculation_realizations (
+          manager_principal, pox5_contract_id, canonical,
+          calculation_burn_height DESC, block_height DESC
+        );
+      CREATE INDEX reward_calculation_realizations_contract_height
+        ON reward_calculation_realizations (
+          pox5_contract_id, canonical, block_height DESC, event_index DESC
+        );
+    `,
+  },
 ];

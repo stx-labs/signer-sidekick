@@ -2,10 +2,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import type { Pox5CalculateRewardsEvent } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
 import type { SidekickNetwork } from "../config.js";
+import type { Pox5CurrentPoolEstimate } from "../pox5-calculate-rewards.js";
+import {
+  REWARD_FORECAST_MODEL_REVISION,
+  type RewardForecastEvaluation,
+  rewardForecastEvaluationSchema,
+} from "../reward-calibration.js";
 import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
 import { type Migration, migrations } from "./migrations.js";
@@ -691,7 +698,7 @@ const rewardForecastSchema = z
         remainingBlocks: z.number().int().nonnegative(),
       })
       .strict(),
-    confidence: z.enum(["low", "developing"]),
+    confidence: z.enum(["low", "developing", "calibrated"]),
     assumptions: z.tuple([
       z.literal("zero-accrual-after-last-calculation"),
       z.literal("linear-global-accrual-run-rate"),
@@ -737,6 +744,7 @@ const rewardOutlookObservationInputSchema = z
     poolEstimate: rewardPoolEstimateSchema.nullable(),
     poolEstimateUnavailableReason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
     forecast: rewardForecastSchema.nullable(),
+    forecastModelRevision: z.number().int().positive().nullable().default(null),
     forecastUnavailableReason: rewardForecastUnavailableReasonSchema.nullable(),
     nextCalculation: z
       .object({
@@ -764,6 +772,13 @@ const rewardOutlookObservationInputSchema = z
         code: "custom",
         path: ["forecast"],
         message: "forecast and unavailable reason must be mutually exclusive",
+      });
+    }
+    if ((value.forecast === null) !== (value.forecastModelRevision === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecastModelRevision"],
+        message: "forecast model revision must be present exactly when a forecast is present",
       });
     }
     const next = value.nextCalculation;
@@ -875,8 +890,126 @@ const rewardOutlookObservationRowSchema = z.object({
   pool_estimate_json: z.string().nullable(),
   pool_estimate_unavailable_reason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
   forecast_json: z.string().nullable(),
+  forecast_model_revision: z.number().int().positive().nullable(),
   forecast_unavailable_reason: rewardForecastUnavailableReasonSchema.nullable(),
   observed_at: z.iso.datetime(),
+});
+
+const pox5CalculateRewardsEventSchema = z
+  .object({
+    kind: z.literal("calculate-rewards"),
+    topic: z.literal("calculate-rewards"),
+    bondPeriods: z.array(unsignedIntegerTextSchema).max(6),
+    calculationBurnHeight: unsignedIntegerTextSchema,
+    grossAccruedRewardsSats: unsignedIntegerTextSchema,
+    totalBondRewardsSats: unsignedIntegerTextSchema,
+    reserveDepositSats: unsignedIntegerTextSchema,
+    reserveBalanceSats: unsignedIntegerTextSchema,
+    rewardCycle: unsignedIntegerTextSchema,
+    totalStxStakerRewardsSats: unsignedIntegerTextSchema,
+    cycleStakedUstx: unsignedIntegerTextSchema,
+    accruedRewardsPerUstx: unsignedIntegerTextSchema,
+    cumulativeRewardsPerUstx: unsignedIntegerTextSchema,
+  })
+  .strict();
+
+const rewardCalculationPoolUnavailableReasonSchema = z.enum([
+  "historical-anchor-unavailable",
+  "same-block-state-ambiguous",
+  "anchored-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
+const rewardCalculationRealizationInputSchema = z
+  .object({
+    chainId: z.number().int().nonnegative().safe(),
+    txId: hashSchema,
+    eventIndex: z.number().int().nonnegative(),
+    sourceId: z.string().min(1),
+    managerPrincipal: principalSchema,
+    pox5ContractId: principalSchema,
+    canonical: z.boolean(),
+    blockHeight: z.number().int().nonnegative().safe(),
+    indexBlockHash: hashSchema,
+    burnBlockHeight: z.number().int().nonnegative().safe(),
+    targetRewardCycle: z.number().int().nonnegative().safe(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative().safe(),
+    event: pox5CalculateRewardsEventSchema,
+    poolEstimate: rewardPoolEstimateSchema.nullable(),
+    poolEstimateUnavailableReason: rewardCalculationPoolUnavailableReasonSchema.nullable(),
+    modelRevision: z.number().int().positive(),
+    evaluation: rewardForecastEvaluationSchema.nullable(),
+    observedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.poolEstimate === null) === (value.poolEstimateUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "realized pool estimate and unavailable reason must be mutually exclusive",
+      });
+    }
+    if (
+      value.event.calculationBurnHeight !== String(value.calculationBurnHeight) ||
+      value.event.rewardCycle !== String(value.targetRewardCycle)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event"],
+        message: "event reward target must match realization columns",
+      });
+    }
+    if (
+      value.poolEstimate &&
+      (value.poolEstimate.targetRewardCycle !== value.targetRewardCycle ||
+        value.poolEstimate.targetCheckpoint !== value.targetCheckpoint ||
+        value.poolEstimate.calculationBurnHeight !== value.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "realized pool estimate target must match the calculation event",
+      });
+    }
+    if (
+      value.evaluation &&
+      (value.evaluation.modelRevision !== value.modelRevision ||
+        value.evaluation.targetRewardCycle !== value.targetRewardCycle ||
+        value.evaluation.targetCheckpoint !== value.targetCheckpoint ||
+        value.evaluation.calculationBurnHeight !== value.calculationBurnHeight ||
+        value.evaluation.actualPoolSats !== value.poolEstimate?.grossSats)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["evaluation"],
+        message: "forecast evaluation must match the realized calculation",
+      });
+    }
+  });
+
+const rewardCalculationRealizationRowSchema = z.object({
+  chain_id: z.number().int().nonnegative(),
+  tx_id: hashSchema,
+  event_index: z.number().int().nonnegative(),
+  source_id: z.string().min(1),
+  manager_principal: principalSchema,
+  pox5_contract_id: principalSchema,
+  canonical: z.union([z.literal(0), z.literal(1)]),
+  block_height: z.number().int().nonnegative(),
+  index_block_hash: hashSchema,
+  burn_block_height: z.number().int().nonnegative(),
+  target_reward_cycle: z.number().int().nonnegative(),
+  target_checkpoint: z.enum(["first-half", "second-half"]),
+  calculation_burn_height: z.number().int().nonnegative(),
+  event_json: z.string(),
+  pool_estimate_json: z.string().nullable(),
+  pool_estimate_unavailable_reason: rewardCalculationPoolUnavailableReasonSchema.nullable(),
+  model_revision: z.number().int().positive(),
+  evaluation_json: z.string().nullable(),
+  observed_at: z.iso.datetime(),
+  updated_at: z.iso.datetime(),
 });
 
 const rewardForecastObservationRowSchema = z.object({
@@ -1019,6 +1152,9 @@ export type SignerStakerApiCandidate = z.infer<typeof signerStakerApiCandidateSc
 export type PoolCycleSnapshotInput = z.infer<typeof poolCycleSnapshotInputSchema>;
 export type RewardCycleSnapshotInput = z.infer<typeof rewardCycleSnapshotInputSchema>;
 export type RewardOutlookObservationInput = z.infer<typeof rewardOutlookObservationInputSchema>;
+export type RewardCalculationRealizationInput = z.infer<
+  typeof rewardCalculationRealizationInputSchema
+>;
 
 export interface SignerStakerRun {
   runId: string;
@@ -1155,6 +1291,7 @@ export interface StoredRewardOutlookObservation {
   poolEstimate: z.infer<typeof rewardPoolEstimateSchema> | null;
   poolEstimateUnavailableReason: z.infer<typeof rewardPoolEstimateUnavailableReasonSchema> | null;
   forecast: z.infer<typeof rewardForecastSchema> | null;
+  forecastModelRevision: number | null;
   forecastUnavailableReason: z.infer<typeof rewardForecastUnavailableReasonSchema> | null;
   nextCalculation: null | {
     state: "due" | "scheduled";
@@ -1165,6 +1302,38 @@ export interface StoredRewardOutlookObservation {
     blocksRemaining: number;
   };
   observedAt: string;
+}
+
+export interface StoredRewardCalculationRealization {
+  chainId: number;
+  txId: string;
+  eventIndex: number;
+  sourceId: string;
+  managerPrincipal: string;
+  pox5ContractId: string;
+  canonical: boolean;
+  blockHeight: number;
+  indexBlockHash: string;
+  burnBlockHeight: number;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  event: Pox5CalculateRewardsEvent;
+  poolEstimate: Pox5CurrentPoolEstimate | null;
+  poolEstimateUnavailableReason: z.infer<
+    typeof rewardCalculationPoolUnavailableReasonSchema
+  > | null;
+  modelRevision: number;
+  evaluation: RewardForecastEvaluation | null;
+  observedAt: string;
+  updatedAt: string;
+}
+
+export interface RewardCalculationEligibilityObservation {
+  observedAt: string;
+  stacksBlockHeight: number;
+  burnBlockHeight: number;
+  indexBlockHash: string;
 }
 
 export interface StoredRuntimeSettings {
@@ -1286,6 +1455,7 @@ function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObse
       value.forecast_json === null
         ? null
         : rewardForecastSchema.parse(JSON.parse(value.forecast_json)),
+    forecastModelRevision: value.forecast_model_revision,
     forecastUnavailableReason: value.forecast_unavailable_reason,
     nextCalculation: hasNext
       ? {
@@ -1298,6 +1468,38 @@ function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObse
         }
       : null,
     observedAt: value.observed_at,
+  };
+}
+
+function toStoredRewardCalculationRealization(row: unknown): StoredRewardCalculationRealization {
+  const value = rewardCalculationRealizationRowSchema.parse(row);
+  return {
+    chainId: value.chain_id,
+    txId: value.tx_id,
+    eventIndex: value.event_index,
+    sourceId: value.source_id,
+    managerPrincipal: value.manager_principal,
+    pox5ContractId: value.pox5_contract_id,
+    canonical: value.canonical === 1,
+    blockHeight: value.block_height,
+    indexBlockHash: value.index_block_hash,
+    burnBlockHeight: value.burn_block_height,
+    targetRewardCycle: value.target_reward_cycle,
+    targetCheckpoint: value.target_checkpoint,
+    calculationBurnHeight: value.calculation_burn_height,
+    event: pox5CalculateRewardsEventSchema.parse(JSON.parse(value.event_json)),
+    poolEstimate:
+      value.pool_estimate_json === null
+        ? null
+        : rewardPoolEstimateSchema.parse(JSON.parse(value.pool_estimate_json)),
+    poolEstimateUnavailableReason: value.pool_estimate_unavailable_reason,
+    modelRevision: value.model_revision,
+    evaluation:
+      value.evaluation_json === null
+        ? null
+        : rewardForecastEvaluationSchema.parse(JSON.parse(value.evaluation_json)),
+    observedAt: value.observed_at,
+    updatedAt: value.updated_at,
   };
 }
 
@@ -4278,8 +4480,8 @@ export class SidekickStore {
           next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
           next_eligible_burn_height, next_blocks_remaining, next_state,
           pool_estimate_json, pool_estimate_unavailable_reason,
-          forecast_json, forecast_unavailable_reason, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          forecast_json, forecast_model_revision, forecast_unavailable_reason, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (
           manager_principal, pox5_contract_id, observed_burn_block_height,
           last_reward_compute_burn_height
@@ -4300,6 +4502,7 @@ export class SidekickStore {
           pool_estimate_json = excluded.pool_estimate_json,
           pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
           forecast_json = excluded.forecast_json,
+          forecast_model_revision = excluded.forecast_model_revision,
           forecast_unavailable_reason = excluded.forecast_unavailable_reason,
           observed_at = excluded.observed_at
         WHERE excluded.observed_at >= reward_outlook_observations.observed_at`,
@@ -4323,9 +4526,254 @@ export class SidekickStore {
         value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
         value.poolEstimateUnavailableReason,
         value.forecast === null ? null : JSON.stringify(value.forecast),
+        value.forecastModelRevision,
         value.forecastUnavailableReason,
         value.observedAt,
       );
+  }
+
+  putRewardCalculationRealization(input: RewardCalculationRealizationInput): void {
+    const value = rewardCalculationRealizationInputSchema.parse(input);
+    this.db
+      .prepare(
+        `INSERT INTO reward_calculation_realizations (
+          chain_id, tx_id, event_index, source_id, manager_principal, pox5_contract_id,
+          canonical, block_height, index_block_hash, burn_block_height,
+          target_reward_cycle, target_checkpoint, calculation_burn_height, event_json,
+          pool_estimate_json, pool_estimate_unavailable_reason, model_revision,
+          evaluation_json, observed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (chain_id, tx_id, event_index)
+        DO UPDATE SET
+          source_id = excluded.source_id,
+          manager_principal = excluded.manager_principal,
+          pox5_contract_id = excluded.pox5_contract_id,
+          canonical = excluded.canonical,
+          block_height = excluded.block_height,
+          index_block_hash = excluded.index_block_hash,
+          burn_block_height = excluded.burn_block_height,
+          target_reward_cycle = excluded.target_reward_cycle,
+          target_checkpoint = excluded.target_checkpoint,
+          calculation_burn_height = excluded.calculation_burn_height,
+          event_json = excluded.event_json,
+          pool_estimate_json = excluded.pool_estimate_json,
+          pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
+          model_revision = excluded.model_revision,
+          evaluation_json = excluded.evaluation_json,
+          updated_at = excluded.updated_at
+        WHERE excluded.updated_at >= reward_calculation_realizations.updated_at`,
+      )
+      .run(
+        value.chainId,
+        value.txId,
+        value.eventIndex,
+        value.sourceId,
+        value.managerPrincipal,
+        value.pox5ContractId,
+        value.canonical ? 1 : 0,
+        value.blockHeight,
+        value.indexBlockHash,
+        value.burnBlockHeight,
+        value.targetRewardCycle,
+        value.targetCheckpoint,
+        value.calculationBurnHeight,
+        JSON.stringify(value.event),
+        value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
+        value.poolEstimateUnavailableReason,
+        value.modelRevision,
+        value.evaluation === null ? null : JSON.stringify(value.evaluation),
+        value.observedAt,
+        value.observedAt,
+      );
+  }
+
+  putRewardCalculationRealizationPage(
+    realizations: readonly RewardCalculationRealizationInput[],
+    cursor: ChainCursorInput,
+  ): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const realization of realizations) this.putRewardCalculationRealization(realization);
+      this.putCursor(cursor);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getRewardCalculationRealization(
+    chainId: number,
+    txId: string,
+    eventIndex: number,
+  ): StoredRewardCalculationRealization | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM reward_calculation_realizations
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
+      )
+      .get(
+        z.number().int().nonnegative().safe().parse(chainId),
+        hashSchema.parse(txId),
+        z.number().int().nonnegative().parse(eventIndex),
+      );
+    return row ? toStoredRewardCalculationRealization(row) : null;
+  }
+
+  listRewardCalculationRealizations(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    options: { limit?: number; canonicalOnly?: boolean } = {},
+  ): StoredRewardCalculationRealization[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .parse(options.limit ?? 50);
+    const canonicalOnly = options.canonicalOnly ?? true;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM reward_calculation_realizations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND (? = 0 OR canonical = 1)
+         ORDER BY calculation_burn_height DESC, block_height DESC, event_index DESC
+         LIMIT ?`,
+      )
+      .all(manager, contract, canonicalOnly ? 1 : 0, limit);
+    return rows.map(toStoredRewardCalculationRealization);
+  }
+
+  getRewardEvaluationForecast(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    target: {
+      rewardCycle: number;
+      checkpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      modelRevision?: number;
+    },
+  ): StoredRewardOutlookObservation | null {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const rewardCycle = z.number().int().nonnegative().safe().parse(target.rewardCycle);
+    const checkpoint = z.enum(["first-half", "second-half"]).parse(target.checkpoint);
+    const calculationBurnHeight = z
+      .number()
+      .int()
+      .nonnegative()
+      .safe()
+      .parse(target.calculationBurnHeight);
+    const modelRevision = z
+      .number()
+      .int()
+      .positive()
+      .parse(target.modelRevision ?? REWARD_FORECAST_MODEL_REVISION);
+    const row = this.db
+      .prepare(
+        `SELECT * FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND next_target_reward_cycle = ? AND next_target_checkpoint = ?
+           AND next_calculation_burn_height = ? AND forecast_json IS NOT NULL
+           AND forecast_model_revision = ?
+           AND observed_burn_block_height BETWEEN ? AND ?
+         ORDER BY observed_burn_block_height DESC, observed_at DESC
+         LIMIT 1`,
+      )
+      .get(
+        manager,
+        contract,
+        rewardCycle,
+        checkpoint,
+        calculationBurnHeight,
+        modelRevision,
+        Math.max(0, calculationBurnHeight - 156),
+        Math.max(0, calculationBurnHeight - 144),
+      );
+    return row ? toStoredRewardOutlookObservation(row) : null;
+  }
+
+  rewardRealizationScanFloor(managerPrincipal: string, pox5ContractId: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT MIN(next_calculation_burn_height) AS floor
+         FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND forecast_json IS NOT NULL`,
+      )
+      .get(principalSchema.parse(managerPrincipal), principalSchema.parse(pox5ContractId)) as {
+      floor: number | null;
+    };
+    return z.number().int().nonnegative().safe().nullable().parse(row.floor);
+  }
+
+  getRewardCalculationEligibilityObservation(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    target: {
+      rewardCycle: number;
+      checkpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+    },
+  ): RewardCalculationEligibilityObservation | null {
+    const row = z
+      .object({
+        observed_at: z.iso.datetime(),
+        observed_stacks_tip_height: z.number().int().nonnegative().safe(),
+        observed_burn_block_height: z.number().int().nonnegative().safe(),
+        observed_index_block_hash: hashSchema,
+      })
+      .nullable()
+      .parse(
+        this.db
+          .prepare(
+            `SELECT observed_at, observed_stacks_tip_height, observed_burn_block_height,
+                    observed_index_block_hash
+             FROM reward_outlook_observations
+             WHERE manager_principal = ? AND pox5_contract_id = ?
+               AND next_state = 'due' AND next_target_reward_cycle = ?
+               AND next_target_checkpoint = ? AND next_calculation_burn_height = ?
+             ORDER BY observed_stacks_tip_height ASC, observed_at ASC
+             LIMIT 1`,
+          )
+          .get(
+            principalSchema.parse(managerPrincipal),
+            principalSchema.parse(pox5ContractId),
+            z.number().int().nonnegative().safe().parse(target.rewardCycle),
+            z.enum(["first-half", "second-half"]).parse(target.checkpoint),
+            z.number().int().nonnegative().safe().parse(target.calculationBurnHeight),
+          ) ?? null,
+      );
+    return row
+      ? {
+          observedAt: row.observed_at,
+          stacksBlockHeight: row.observed_stacks_tip_height,
+          burnBlockHeight: row.observed_burn_block_height,
+          indexBlockHash: row.observed_index_block_hash,
+        }
+      : null;
+  }
+
+  markRewardRealizationNoncanonical(input: {
+    chainId: number;
+    txId: string;
+    eventIndex: number;
+    updatedAt: string;
+  }): boolean {
+    const chainId = z.number().int().nonnegative().safe().parse(input.chainId);
+    const txId = hashSchema.parse(input.txId);
+    const eventIndex = z.number().int().nonnegative().parse(input.eventIndex);
+    const updatedAt = z.iso.datetime().parse(input.updatedAt);
+    const result = this.db
+      .prepare(
+        `UPDATE reward_calculation_realizations
+         SET canonical = 0, updated_at = ?
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ? AND canonical = 1`,
+      )
+      .run(updatedAt, chainId, txId, eventIndex);
+    return Number(result.changes) === 1;
   }
 
   listRewardOutlookObservations(

@@ -682,6 +682,86 @@ export interface RewardCycleSummary {
   actionableClaims: number;
 }
 
+export interface RewardCalculationRealization {
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  indexBlockHash: string;
+  burnBlockHeight: number;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  observedAt: string;
+  global: {
+    grossAccruedRewardsSats: string;
+    totalBondRewardsSats: string;
+    totalStxStakerRewardsSats: string;
+    reserveDepositSats: string;
+  };
+  poolSats: string | null;
+  poolEstimateUnavailableReason:
+    | "historical-anchor-unavailable"
+    | "same-block-state-ambiguous"
+    | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
+  evaluation: null | {
+    modelRevision: number;
+    forecastObservedBurnHeight: number;
+    leadBlocks: number;
+    pointErrorSats: string;
+    pointErrorBips: string | null;
+    rangeContainsActual: boolean;
+    rangeWidthBips: string | null;
+  };
+}
+
+const unsignedIntegerTextSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/);
+const stacksHashSchema = z.string().regex(/^0x[0-9a-f]{64}$/i);
+
+export const rewardCalculationRealizationSchema = z
+  .object({
+    txId: stacksHashSchema,
+    eventIndex: z.number().int().nonnegative().safe(),
+    blockHeight: z.number().int().nonnegative().safe(),
+    indexBlockHash: stacksHashSchema,
+    burnBlockHeight: z.number().int().nonnegative().safe(),
+    targetRewardCycle: z.number().int().nonnegative().safe(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative().safe(),
+    observedAt: z.iso.datetime(),
+    global: z
+      .object({
+        grossAccruedRewardsSats: unsignedIntegerTextSchema,
+        totalBondRewardsSats: unsignedIntegerTextSchema,
+        totalStxStakerRewardsSats: unsignedIntegerTextSchema,
+        reserveDepositSats: unsignedIntegerTextSchema,
+      })
+      .strict(),
+    poolSats: unsignedIntegerTextSchema.nullable(),
+    poolEstimateUnavailableReason: z
+      .enum([
+        "historical-anchor-unavailable",
+        "same-block-state-ambiguous",
+        "anchored-inputs-unavailable",
+        "contract-simulation-failed",
+      ])
+      .nullable(),
+    evaluation: z
+      .object({
+        modelRevision: z.number().int().positive(),
+        forecastObservedBurnHeight: z.number().int().nonnegative().safe(),
+        leadBlocks: z.number().int().safe(),
+        pointErrorSats: unsignedIntegerTextSchema,
+        pointErrorBips: unsignedIntegerTextSchema.nullable(),
+        rangeContainsActual: z.boolean(),
+        rangeWidthBips: unsignedIntegerTextSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict() satisfies z.ZodType<RewardCalculationRealization>;
+
 export interface RewardOutlookStatus {
   pox5ContractId: string;
   observedAt: string;
@@ -737,7 +817,7 @@ export interface RewardOutlookStatus {
       elapsedBlocks: number;
       remainingBlocks: number;
     };
-    confidence: "low" | "developing";
+    confidence: "low" | "developing" | "calibrated";
     assumptions: Array<
       | "zero-accrual-after-last-calculation"
       | "linear-global-accrual-run-rate"
@@ -756,6 +836,46 @@ export interface RewardOutlookStatus {
     | "forecast-inputs-unavailable"
     | "contract-simulation-failed"
     | null;
+  operatorFeeForecast: null | {
+    kind: "reference-manager-exact";
+    sats: { low: string; point: string; high: string };
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeForecastUnavailableReason:
+    | "reviewed-fee-capability-unavailable"
+    | "forecast-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
+  calibration: {
+    modelRevision: number;
+    status: "collecting" | "passing" | "failing";
+    eligibleRealizations: number;
+    rewardCycles: number;
+    nonzeroOutcomes: number;
+    rangeHits: number;
+    medianPointErrorBips: string | null;
+    medianRangeWidthBips: string | null;
+    requirements: {
+      realizations: number;
+      rewardCycles: number;
+      nonzeroOutcomes: number;
+      rangeHits: number;
+      maxMedianPointErrorBips: string;
+      maxMedianRangeWidthBips: string;
+      evaluationLeadBlocks: number;
+      evaluationToleranceBlocks: number;
+    };
+  };
   calculation: {
     state: "pending" | "completed" | "ahead" | "unknown";
     targetRewardCycle: number | null;
@@ -769,6 +889,15 @@ export interface RewardOutlookStatus {
       calculationBurnHeight: number;
       eligibleBurnHeight: number;
       blocksRemaining: number;
+      grace: null | {
+        state: "scheduled" | "awaiting-calculation" | "action-required";
+        firstEligibleObservedAt: string | null;
+        firstEligibleStacksBlockHeight: number | null;
+        elapsedMinutes: number;
+        canonicalStacksBlocks: number;
+        requiredMinutes: 10;
+        requiredCanonicalStacksBlocks: 24;
+      };
     };
   };
 }
@@ -873,6 +1002,15 @@ export interface DashboardSnapshot extends OperatorSnapshot {
         calculationBurnHeight: number;
         eligibleBurnHeight: number;
         blocksRemaining: number;
+        grace: null | {
+          state: "scheduled" | "awaiting-calculation" | "action-required";
+          firstEligibleObservedAt: string | null;
+          firstEligibleStacksBlockHeight: number | null;
+          elapsedMinutes: number;
+          canonicalStacksBlocks: number;
+          requiredMinutes: 10;
+          requiredCanonicalStacksBlocks: 24;
+        };
       };
     };
     /** The STX bucket first, then every bond period holding shares for this cycle. */
@@ -1209,10 +1347,23 @@ export type PoolPageResponse = z.infer<typeof poolPageResponseSchema>;
 export const rewardsPageResponseSchema = z.custom<{
   rewards: DashboardSnapshot["rewards"];
   rewardOutlook?: DashboardSnapshot["rewardOutlook"];
+  rewardRealizations?: RewardCalculationRealization[];
   freshness?: DashboardSnapshot["freshness"];
-}>((value) => isRecord(value) && (value.rewards === null || isRecord(value.rewards)), {
-  error: "Invalid rewards response",
-});
+}>(
+  (value) => {
+    if (!isRecord(value) || (value.rewards !== null && !isRecord(value.rewards))) return false;
+    return (
+      value.rewardRealizations === undefined ||
+      (Array.isArray(value.rewardRealizations) &&
+        value.rewardRealizations.every(
+          (entry) => rewardCalculationRealizationSchema.safeParse(entry).success,
+        ))
+    );
+  },
+  {
+    error: "Invalid rewards response",
+  },
+);
 export type RewardsPageResponse = z.infer<typeof rewardsPageResponseSchema>;
 
 export const rewardsActivityResponseSchema = z.custom<DashboardSnapshot["activity"]>(

@@ -1,6 +1,7 @@
 import { Coins, Percent } from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
+  type RewardCalculationRealization,
   type RewardCycleSummary,
   rewardHistoryResponseSchema,
   rewardsActivityResponseSchema,
@@ -139,10 +140,17 @@ export function Rewards({
   const rewards = data.rewards;
   const rewardOutlook = data.rewardOutlook ?? null;
   const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
+  const calculationGrace = calculation?.next?.grace ?? null;
+  const calculationActionAvailable =
+    calculationGrace?.state === "action-required" && !operatorStateStale;
+  const calculationNeedsAttention =
+    calculationGrace?.state === "action-required" && operatorStateStale;
   const globalAccruedSats =
     rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
   const poolEstimate = rewardOutlook?.poolEstimate ?? null;
   const rewardForecast = rewardOutlook?.forecast ?? null;
+  const operatorFeeForecast = rewardOutlook?.operatorFeeForecast ?? null;
+  const rewardCalibration = rewardOutlook?.calibration ?? null;
   const lastRewardComputeBurnHeight =
     rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
     rewards?.global.lastRewardComputeBurnHeight ??
@@ -201,6 +209,7 @@ export function Rewards({
   const cycleHistoryPageSize = 10;
   const [rewardStakers, setRewardStakers] = useState(rewards?.stakers ?? []);
   const [rewardStakerTotal, setRewardStakerTotal] = useState(rewards?.totals.stakers ?? 0);
+  const [rewardRealizations, setRewardRealizations] = useState<RewardCalculationRealization[]>([]);
   const [stakersLoading, setStakersLoading] = useState(true);
   const [stakersError, setStakersError] = useState<string | null>(null);
   const [stakersRetry, setStakersRetry] = useState(0);
@@ -254,6 +263,7 @@ export function Rewards({
         const total = result.rewards?.totals.stakers ?? 0;
         const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
         setRewardsFreshness(result.freshness ?? null);
+        setRewardRealizations(result.rewardRealizations ?? []);
         setRewardStakerTotal(total);
         if (stakerPage > lastPage) {
           correctingPage = true;
@@ -442,11 +452,44 @@ export function Rewards({
                   {sbtc(rewardForecast.poolSats.low)}–{sbtc(rewardForecast.poolSats.high)} sBTC
                 </span>
               </StatLine>
+              <StatLine label="Projected operator fee">
+                <span className="mono">
+                  {operatorFeeForecast
+                    ? `${sbtc(operatorFeeForecast.sats.low)}–${sbtc(operatorFeeForecast.sats.high)} sBTC`
+                    : "Unavailable"}
+                </span>
+              </StatLine>
               <p className="tertiary balance-note">
-                {rewardForecast.confidence === "developing" ? "Developing" : "Low"} confidence from{" "}
-                {rewardForecast.sample.observations} observations across{" "}
+                {rewardForecast.confidence === "calibrated"
+                  ? "Calibrated"
+                  : rewardForecast.confidence === "developing"
+                    ? "Developing"
+                    : "Low"}{" "}
+                confidence from {rewardForecast.sample.observations} observations across{" "}
                 {rewardForecast.sample.sampleBlocks} Bitcoin blocks. The range replays observed
                 global accrual rates through exact PoX-5 arithmetic using current shares.
+              </p>
+              {operatorFeeForecast ? (
+                <p className="tertiary balance-note">
+                  Operator fees apply the reviewed manager’s per-staker, per-bucket integer rounding
+                  across {operatorFeeForecast.inputs.stakers} stakers.
+                  {operatorFeeForecast.assumptions.includes("configured-fee-until-claim")
+                    ? " At least one cycle fee snapshot does not exist yet, so that bucket explicitly assumes the currently configured fee until the first manager claim pins it."
+                    : " Every bucket uses its authoritative cycle fee snapshot."}
+                </p>
+              ) : (
+                <p className="tertiary balance-note">
+                  Operator fee forecast omitted:{" "}
+                  {rewardOutlook?.operatorFeeForecastUnavailableReason ??
+                    "reviewed fee semantics are unavailable"}
+                  .
+                </p>
+              )}
+              <p className="tertiary balance-note">
+                Model revision {rewardCalibration?.modelRevision ?? 1} is{" "}
+                {rewardCalibration?.status ?? "collecting"} with{" "}
+                {rewardCalibration?.eligibleRealizations ?? 0} of{" "}
+                {rewardCalibration?.requirements.realizations ?? 6} eligible realized calculations.
               </p>
             </>
           ) : (
@@ -508,17 +551,42 @@ export function Rewards({
         </div>
       </div>
       {calculation?.state === "pending" ? (
-        <div className="callout callout-caution balance-note" role="status">
+        <div
+          className={`callout ${calculationGrace?.state === "action-required" ? "callout-caution" : "callout-neutral"} balance-note`}
+          role="status"
+        >
           <div className="body">
-            <strong>Global reward calculation is due.</strong> PoX-5 credits nothing for cycle{" "}
-            {calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
-            <code>calculate-rewards</code> at Bitcoin block #
+            <strong>
+              {calculationActionAvailable
+                ? "Global reward calculation needs an operator."
+                : calculationNeedsAttention
+                  ? "Reward calculation needs current chain evidence."
+                  : "Awaiting permissionless reward calculation."}
+            </strong>{" "}
+            PoX-5 credits nothing for cycle {calculation.targetRewardCycle ?? "—"} until someone
+            calls <code>calculate-rewards</code> after Bitcoin block #
             {number(String(calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
-            <div className="actions">
-              <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
-                Review calculation
-              </a>
-            </div>
+            {calculationGrace ? (
+              <span className="tertiary">
+                {" "}
+                Observed for {calculationGrace.elapsedMinutes} minutes and{" "}
+                {calculationGrace.canonicalStacksBlocks} canonical Stacks blocks.
+              </span>
+            ) : null}
+            {calculationNeedsAttention ? (
+              <span className="tertiary">
+                {" "}
+                Sidekick will not offer a transaction until the local snapshot and action witnesses
+                are current.
+              </span>
+            ) : null}
+            {calculationActionAvailable ? (
+              <div className="actions">
+                <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
+                  Review calculation
+                </a>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -696,6 +764,70 @@ export function Rewards({
             </button>
           </div>
         </div>
+      </div>
+      <div className="section-title">Realized calculations &amp; model accuracy</div>
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Cycle</th>
+              <th>Checkpoint</th>
+              <th className="right">Pool allocation</th>
+              <th className="right">Point error</th>
+              <th>Range result</th>
+              <th>Transaction</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rewardRealizations.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="tertiary">
+                  No node-verified reward calculations have closed a recorded forecast yet.
+                </td>
+              </tr>
+            ) : (
+              rewardRealizations.map((realization) => (
+                <tr key={`${realization.txId}:${realization.eventIndex}`}>
+                  <td className="mono">{realization.targetRewardCycle}</td>
+                  <td>
+                    {realization.targetCheckpoint === "first-half" ? "First half" : "Second half"}
+                  </td>
+                  <td className="right mono">
+                    {realization.poolSats === null
+                      ? "Unavailable"
+                      : `${sbtc(realization.poolSats)} sBTC`}
+                  </td>
+                  <td className="right mono">
+                    {realization.evaluation?.pointErrorBips === null || !realization.evaluation
+                      ? "—"
+                      : `${(Number(realization.evaluation.pointErrorBips) / 100).toFixed(1)}%`}
+                  </td>
+                  <td>
+                    {realization.evaluation ? (
+                      <Badge
+                        state={realization.evaluation.rangeContainsActual ? "success" : "caution"}
+                      >
+                        {realization.evaluation.rangeContainsActual
+                          ? "Inside range"
+                          : "Outside range"}
+                      </Badge>
+                    ) : (
+                      <Badge state="neutral">Not evaluated</Badge>
+                    )}
+                  </td>
+                  <td>
+                    <CopyableIdentifier
+                      value={realization.txId}
+                      display={short(realization.txId, 8, 5)}
+                      label="reward calculation transaction"
+                      className="mono"
+                    />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
       <div className="section-title">Reward cycle ledger</div>
       <RequestState

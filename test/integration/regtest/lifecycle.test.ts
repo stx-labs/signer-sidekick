@@ -10,6 +10,7 @@ import {
 } from "@stacks/transactions";
 import { beforeEach, describe, expect, it } from "vitest";
 import { simulatePox5CalculateRewards } from "../../../packages/protocol/src/pox5-calculate-rewards.js";
+import { decodePox5CalculateRewardsEvent } from "../../../packages/protocol/src/pox5-events.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const deployer = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
@@ -58,6 +59,50 @@ function uintValue(result: ClarityValue): bigint {
     throw new Error(`Expected a uint Clarity value, received ${result.type}`);
   }
   return BigInt(result.value);
+}
+
+function expectCalculateRewardsPrint(
+  events: Array<{
+    event: string;
+    data: { contract_identifier?: string; value?: ClarityValue };
+  }>,
+  expected: {
+    bondPeriods: bigint[];
+    calculationBurnHeight: bigint;
+    grossAccruedRewardsSats: bigint;
+    totalBondRewardsSats: bigint;
+    reserveDepositSats: bigint;
+    reserveBalanceSats: bigint;
+    rewardCycle: bigint;
+    totalStxStakerRewardsSats: bigint;
+    cycleStakedUstx: bigint;
+    accruedRewardsPerUstx: bigint;
+    cumulativeRewardsPerUstx: bigint;
+  },
+): void {
+  const realization = events
+    .filter(
+      ({ event, data }) =>
+        event === "print_event" && data.contract_identifier === pox5Id && data.value !== undefined,
+    )
+    .map(({ data }) => decodePox5CalculateRewardsEvent(data.value as ClarityValue))
+    .find((candidate) => candidate !== null);
+  if (!realization) throw new Error("PoX-5 calculate-rewards print was not emitted");
+  expect(realization).toEqual({
+    kind: "calculate-rewards",
+    topic: "calculate-rewards",
+    bondPeriods: expected.bondPeriods.map(String),
+    calculationBurnHeight: expected.calculationBurnHeight.toString(),
+    grossAccruedRewardsSats: expected.grossAccruedRewardsSats.toString(),
+    totalBondRewardsSats: expected.totalBondRewardsSats.toString(),
+    reserveDepositSats: expected.reserveDepositSats.toString(),
+    reserveBalanceSats: expected.reserveBalanceSats.toString(),
+    rewardCycle: expected.rewardCycle.toString(),
+    totalStxStakerRewardsSats: expected.totalStxStakerRewardsSats.toString(),
+    cycleStakedUstx: expected.cycleStakedUstx.toString(),
+    accruedRewardsPerUstx: expected.accruedRewardsPerUstx.toString(),
+    cumulativeRewardsPerUstx: expected.cumulativeRewardsPerUstx.toString(),
+  });
 }
 
 function bufferValue(result: ClarityValue): string {
@@ -192,6 +237,12 @@ function distributeRewards(rewards: bigint) {
       "cumulative-rewards-per-ustx": Cl.uint(simulation.cumulativeRewardsPerUstx),
     }),
   );
+  expectCalculateRewardsPrint(calculation.events, {
+    bondPeriods: [],
+    calculationBurnHeight: cycleStart + halfCycleLength - 1n,
+    rewardCycle: 1n,
+    ...simulation,
+  });
   expect(simulation).toMatchObject({
     reserveDepositSats: 300n,
     totalStxStakerRewardsSats: 1_700n,
@@ -903,6 +954,12 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         "cumulative-rewards-per-ustx": Cl.uint(simulation.cumulativeRewardsPerUstx),
       }),
     );
+    expectCalculateRewardsPrint(calculation.events, {
+      bondPeriods: [0n],
+      calculationBurnHeight: cycleStart + halfCycleLength - 1n,
+      rewardCycle: 1n,
+      ...simulation,
+    });
     expect(simulation).toMatchObject({
       totalBondRewardsSats: 100n,
       reserveDepositSats: 285n,

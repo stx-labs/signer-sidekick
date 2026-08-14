@@ -1522,8 +1522,9 @@ export function createServer(options: ServerOptions = {}) {
           "# HELP sidekick_observer_reconciliation_within_two_seconds_total Successful callback projections completed within two seconds.",
           "# TYPE sidekick_observer_reconciliation_within_two_seconds_total counter",
         );
-        for (const domain of ["current", "manager-activity", "roster"] as const) {
+        for (const domain of ["current", "manager-activity", "rewards", "roster"] as const) {
           const status = observer.reconciliation.domains[domain];
+          if (!status) continue;
           metrics.push(
             `sidekick_observer_reconciliation_pending{domain="${domain}"} ${status.pending ? 1 : 0}`,
             `sidekick_observer_reconciliation_running{domain="${domain}"} ${status.running ? 1 : 0}`,

@@ -10,7 +10,12 @@ import {
   encodeUIntHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
-import { Pox5RewardSimulationError } from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
+import {
+  POX5_REWARD_PRECISION,
+  type Pox5RewardSimulation,
+  Pox5RewardSimulationError,
+  simulatePox5CalculateRewards,
+} from "@stx-labs/signer-sidekick-protocol/pox5-calculate-rewards";
 import {
   type ChainAnchor,
   chainAnchorsEqual,
@@ -20,15 +25,24 @@ import type { ChainReadOptions } from "./chain-clients.js";
 import {
   Pox5CalculateRewardsError,
   type Pox5CurrentPoolEstimate,
+  type Pox5PoolSimulationSnapshot,
   readPox5PoolSimulationSnapshot,
   simulatePox5PoolEstimateAtGross,
 } from "./pox5-calculate-rewards.js";
+import {
+  assessRewardCalibration,
+  calibratedForecastConfidence,
+  REWARD_FORECAST_MODEL_REVISION,
+  type RewardCalibrationAssessment,
+  type RewardForecastEvaluation,
+} from "./reward-calibration.js";
 import { projectGlobalRewardRunRate, type RewardForecastObservation } from "./reward-forecast.js";
 import type {
   RewardCycleSnapshotInput,
   RewardOutlookObservationInput,
   SignerStakerRun,
   StoredCycleMembership,
+  StoredSignerStaker,
 } from "./storage/store.js";
 
 export interface RewardStatusNode {
@@ -62,8 +76,38 @@ export interface RewardStatusStore {
     rewardCycle: number,
     sourceId?: string | null,
   ): StoredCycleMembership[];
+  listSignerStakers?(
+    managerPrincipal: string,
+    activeOnly?: boolean,
+    sourceId?: string | null,
+  ): StoredSignerStaker[];
   putRewardCycleSnapshot?(input: RewardCycleSnapshotInput): void;
   putRewardOutlookObservation?(input: RewardOutlookObservationInput): void;
+  listRewardCalculationRealizations?(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    options?: { limit?: number; canonicalOnly?: boolean },
+  ): Array<{
+    modelRevision: number;
+    targetRewardCycle: number;
+    calculationBurnHeight: number;
+    poolEstimate: { grossSats: string } | null;
+    evaluation: RewardForecastEvaluation | null;
+  }>;
+  getRewardCalculationEligibilityObservation?(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    target: {
+      rewardCycle: number;
+      checkpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+    },
+  ): {
+    observedAt: string;
+    stacksBlockHeight: number;
+    burnBlockHeight: number;
+    indexBlockHash: string;
+  } | null;
   listRewardForecastSamples?(
     managerPrincipal: string,
     pox5ContractId: string,
@@ -93,12 +137,28 @@ export interface RewardStatusOptions {
 }
 
 export interface RewardOutlookOptions {
-  store: Pick<RewardStatusStore, "putRewardOutlookObservation" | "listRewardForecastSamples">;
-  node: Pick<RewardStatusNode, "callReadOnly">;
+  store: Pick<
+    RewardStatusStore,
+    | "putRewardOutlookObservation"
+    | "listRewardForecastSamples"
+    | "listRewardCalculationRealizations"
+    | "getRewardCalculationEligibilityObservation"
+    | "getLatestCompletedSignerStakerRun"
+    | "listCycleMembershipsForCycle"
+    | "listSignerStakers"
+  >;
+  node: Pick<RewardStatusNode, "callReadOnly"> &
+    Partial<Pick<RewardStatusNode, "getDataVar" | "getMapEntry">>;
   managerPrincipal: string;
   pox5ContractId: string;
   observedAt: string;
   chainAnchor?: ChainAnchor;
+  sourceId?: string;
+  feeCapability?: {
+    executionAvailable: boolean;
+    adapter: { id: string; revision: number } | null;
+    reason: string;
+  };
 }
 
 /** One settleable `(staker, reward-cycle, bond-index)` tuple: exactly one transaction's worth. */
@@ -231,6 +291,15 @@ export interface RewardCalculationStatus {
     calculationBurnHeight: number;
     eligibleBurnHeight: number;
     blocksRemaining: number;
+    grace: null | {
+      state: "scheduled" | "awaiting-calculation" | "action-required";
+      firstEligibleObservedAt: string | null;
+      firstEligibleStacksBlockHeight: number | null;
+      elapsedMinutes: number;
+      canonicalStacksBlocks: number;
+      requiredMinutes: 10;
+      requiredCanonicalStacksBlocks: 24;
+    };
   };
 }
 
@@ -265,7 +334,7 @@ export interface RewardOutlookStatus {
       elapsedBlocks: number;
       remainingBlocks: number;
     };
-    confidence: "low" | "developing";
+    confidence: "low" | "developing" | "calibrated";
     assumptions: [
       "zero-accrual-after-last-calculation",
       "linear-global-accrual-run-rate",
@@ -284,6 +353,27 @@ export interface RewardOutlookStatus {
     | "forecast-inputs-unavailable"
     | "contract-simulation-failed"
     | null;
+  operatorFeeForecast: null | {
+    kind: "reference-manager-exact";
+    sats: { low: string; point: string; high: string };
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeForecastUnavailableReason:
+    | "reviewed-fee-capability-unavailable"
+    | "forecast-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
+  calibration: RewardCalibrationAssessment;
   calculation: RewardCalculationStatus;
 }
 
@@ -726,6 +816,7 @@ function rewardCalculationStatus(
       calculationBurnHeight: target.expectedLastRewardComputeBurnHeight,
       eligibleBurnHeight,
       blocksRemaining,
+      grace: null,
     };
   } else if (state === "completed") {
     const cycleStart = chainAnchor.burnBlockHeight - chainAnchor.cyclePosition;
@@ -742,6 +833,7 @@ function rewardCalculationStatus(
       calculationBurnHeight,
       eligibleBurnHeight,
       blocksRemaining,
+      grace: null,
     };
   }
   return {
@@ -755,6 +847,233 @@ function rewardCalculationStatus(
     expectedLastRewardComputeBurnHeight: target.expectedLastRewardComputeBurnHeight,
     next,
   };
+}
+
+function applyRewardCalculationGrace(
+  calculation: RewardCalculationStatus,
+  options: RewardOutlookOptions,
+): void {
+  const next = calculation.next;
+  if (!next || !options.chainAnchor) return;
+  if (next.state === "scheduled") {
+    next.grace = {
+      state: "scheduled",
+      firstEligibleObservedAt: null,
+      firstEligibleStacksBlockHeight: null,
+      elapsedMinutes: 0,
+      canonicalStacksBlocks: 0,
+      requiredMinutes: 10,
+      requiredCanonicalStacksBlocks: 24,
+    };
+    return;
+  }
+  const first = options.store.getRewardCalculationEligibilityObservation?.(
+    options.managerPrincipal,
+    options.pox5ContractId,
+    {
+      rewardCycle: next.targetRewardCycle,
+      checkpoint: next.targetCheckpoint,
+      calculationBurnHeight: next.calculationBurnHeight,
+    },
+  ) ?? {
+    observedAt: options.observedAt,
+    stacksBlockHeight: options.chainAnchor.stacksBlockHeight,
+  };
+  const elapsedMinutes = Math.max(
+    0,
+    Math.floor((Date.parse(options.observedAt) - Date.parse(first.observedAt)) / 60_000),
+  );
+  const canonicalStacksBlocks = Math.max(
+    0,
+    options.chainAnchor.stacksBlockHeight - first.stacksBlockHeight,
+  );
+  next.grace = {
+    state:
+      elapsedMinutes >= 10 && canonicalStacksBlocks >= 24
+        ? "action-required"
+        : "awaiting-calculation",
+    firstEligibleObservedAt: first.observedAt,
+    firstEligibleStacksBlockHeight: first.stacksBlockHeight,
+    elapsedMinutes,
+    canonicalStacksBlocks,
+    requiredMinutes: 10,
+    requiredCanonicalStacksBlocks: 24,
+  };
+}
+
+type OperatorFeeForecast = NonNullable<RewardOutlookStatus["operatorFeeForecast"]>;
+type OperatorFeeUnavailable = Exclude<
+  RewardOutlookStatus["operatorFeeForecastUnavailableReason"],
+  null
+>;
+
+function exactBucketFees(input: {
+  simulation: Pox5RewardSimulation;
+  stxShares: readonly bigint[];
+  bondShares: ReadonlyMap<string, readonly bigint[]>;
+  feeBips: ReadonlyMap<string, bigint>;
+}): bigint {
+  const feeFor = (gross: bigint, feeBips: bigint) => (gross * feeBips) / 10_000n;
+  let total = input.stxShares.reduce((fees, shares) => {
+    const gross = (shares * input.simulation.accruedRewardsPerUstx) / POX5_REWARD_PRECISION;
+    return fees + feeFor(gross, input.feeBips.get("stx") ?? 0n);
+  }, 0n);
+  for (const bond of input.simulation.bonds) {
+    const key = bond.bondIndex.toString();
+    for (const shares of input.bondShares.get(key) ?? []) {
+      const gross = (shares * bond.accruedRewardsPerSat) / POX5_REWARD_PRECISION;
+      total += feeFor(gross, input.feeBips.get(key) ?? 0n);
+    }
+  }
+  return total;
+}
+
+async function projectExactOperatorFees(input: {
+  options: RewardOutlookOptions;
+  snapshot: Pox5PoolSimulationSnapshot;
+  forecast: NonNullable<RewardOutlookStatus["forecast"]>;
+}): Promise<
+  | { status: "ready"; forecast: OperatorFeeForecast }
+  | { status: "unavailable"; reason: OperatorFeeUnavailable }
+> {
+  const { options, snapshot } = input;
+  const capability = options.feeCapability;
+  if (
+    !capability?.executionAvailable ||
+    capability.adapter?.id !== "reference-manager-claim-rewards" ||
+    capability.adapter.revision !== 1
+  ) {
+    return { status: "unavailable", reason: "reviewed-fee-capability-unavailable" };
+  }
+  if (!options.node.getDataVar || !options.node.getMapEntry) {
+    return { status: "unavailable", reason: "anchored-fee-inputs-unavailable" };
+  }
+  const getDataVar = options.node.getDataVar.bind(options.node);
+  const getMapEntry = options.node.getMapEntry.bind(options.node);
+  if (!options.chainAnchor || !options.sourceId || !options.store.listSignerStakers) {
+    return { status: "unavailable", reason: "authoritative-roster-unavailable" };
+  }
+  const run = options.store.getLatestCompletedSignerStakerRun(
+    options.sourceId,
+    options.managerPrincipal,
+  );
+  if (
+    !run?.authoritative ||
+    !run.chainAnchor ||
+    !chainAnchorsEqual(run.chainAnchor, options.chainAnchor)
+  ) {
+    return { status: "unavailable", reason: "authoritative-roster-unavailable" };
+  }
+  const targetCycle = input.forecast.targetRewardCycle;
+  const memberships = options.store
+    .listCycleMembershipsForCycle(options.managerPrincipal, targetCycle, options.sourceId)
+    .filter(
+      ({ signerPrincipal, active }) => signerPrincipal === options.managerPrincipal && active,
+    );
+  const stxShares = memberships.map(({ amountUstx }) => amountUstx);
+  const stakers = options.store.listSignerStakers(options.managerPrincipal, true, options.sourceId);
+  const bondShares = new Map<string, bigint[]>();
+  for (const staker of stakers) {
+    if (!staker.bond) continue;
+    const key = staker.bond.bondIndex.toString();
+    const bucket = bondShares.get(key) ?? [];
+    bucket.push(staker.bond.amountSats);
+    bondShares.set(key, bucket);
+  }
+  const managerStxShares = snapshot.simulationInput.managerStxSharesUstx;
+  if (
+    managerStxShares === undefined ||
+    sum(stxShares) !== managerStxShares ||
+    snapshot.simulationInput.bonds.some(
+      (bond) =>
+        bond.managerSharesSats === undefined ||
+        sum(bondShares.get(bond.bondIndex.toString()) ?? []) !== bond.managerSharesSats,
+    )
+  ) {
+    return { status: "unavailable", reason: "per-staker-shares-incomplete" };
+  }
+  try {
+    const readOptions = { tip: options.chainAnchor.indexBlockHash };
+    const configuredFee = decodeUInt(
+      await getDataVar(options.managerPrincipal, "fees-bips", readOptions),
+      "fees-bips",
+    );
+    const bucketIndices: Array<bigint | null> = [
+      null,
+      ...snapshot.simulationInput.bonds.map(({ bondIndex }) => bondIndex),
+    ];
+    const snapshots = await Promise.all(
+      bucketIndices.map((bondIndex) =>
+        getMapEntry(
+          options.managerPrincipal,
+          "fee-bips-for-cycle",
+          cvToHex(
+            tupleCV({
+              "reward-cycle": uintCV(BigInt(targetCycle)),
+              "bond-index": bondIndex === null ? noneCV() : someCV(uintCV(bondIndex)),
+            }),
+          ),
+          readOptions,
+        ),
+      ),
+    );
+    const feeBips = new Map<string, bigint>();
+    const buckets: OperatorFeeForecast["inputs"]["buckets"] = [];
+    let configuredAssumption = false;
+    bucketIndices.forEach((bondIndex, index) => {
+      const observed = decodeOptionalUInt(
+        snapshots[index] as ClarityValue,
+        `fee-bips-for-cycle(${bondIndex ?? "stx"})`,
+      );
+      const fee = observed ?? configuredFee;
+      const key = bondIndex === null ? "stx" : bondIndex.toString();
+      feeBips.set(key, fee);
+      configuredAssumption ||= observed === null;
+      buckets.push({
+        bondIndex: bondIndex === null ? null : key,
+        feeBips: fee.toString(),
+        source: observed === null ? "configured-fee-assumption" : "cycle-snapshot",
+      });
+    });
+    const simulate = (gross: string) =>
+      simulatePox5CalculateRewards({
+        ...snapshot.simulationInput,
+        grossAccruedRewardsSats: BigInt(gross),
+      });
+    return {
+      status: "ready",
+      forecast: {
+        kind: "reference-manager-exact",
+        sats: {
+          low: exactBucketFees({
+            simulation: simulate(input.forecast.globalSats.low),
+            stxShares,
+            bondShares,
+            feeBips,
+          }).toString(),
+          point: exactBucketFees({
+            simulation: simulate(input.forecast.globalSats.point),
+            stxShares,
+            bondShares,
+            feeBips,
+          }).toString(),
+          high: exactBucketFees({
+            simulation: simulate(input.forecast.globalSats.high),
+            stxShares,
+            bondShares,
+            feeBips,
+          }).toString(),
+        },
+        inputs: { stakers: stakers.length, buckets },
+        assumptions: [
+          "per-staker-per-bucket-integer-rounding",
+          ...(configuredAssumption ? (["configured-fee-until-claim"] as const) : []),
+        ],
+      },
+    };
+  } catch {
+    return { status: "unavailable", reason: "anchored-fee-inputs-unavailable" };
+  }
 }
 
 /**
@@ -790,10 +1109,31 @@ export async function readRewardOutlook(
   );
   const globalSats = decodeUInt(globalAccruedRewardsValue, "get-new-rewards").toString();
   const calculation = rewardCalculationStatus(lastRewardComputeBurnHeight, options.chainAnchor);
+  applyRewardCalculationGrace(calculation, options);
   let poolEstimate: Pox5CurrentPoolEstimate | null = null;
   let poolEstimateUnavailableReason: RewardOutlookStatus["poolEstimateUnavailableReason"] = null;
   let forecast: RewardOutlookStatus["forecast"] = null;
   let forecastUnavailableReason: RewardOutlookStatus["forecastUnavailableReason"] = null;
+  let operatorFeeForecast: RewardOutlookStatus["operatorFeeForecast"] = null;
+  let operatorFeeForecastUnavailableReason: RewardOutlookStatus["operatorFeeForecastUnavailableReason"] =
+    options.feeCapability?.executionAvailable
+      ? "forecast-unavailable"
+      : "reviewed-fee-capability-unavailable";
+  const calibration = assessRewardCalibration(
+    (
+      options.store.listRewardCalculationRealizations?.(
+        options.managerPrincipal,
+        options.pox5ContractId,
+        { limit: 50, canonicalOnly: true },
+      ) ?? []
+    ).map((realization) => ({
+      modelRevision: realization.modelRevision,
+      targetRewardCycle: realization.targetRewardCycle,
+      calculationBurnHeight: realization.calculationBurnHeight,
+      actualPoolSats: realization.poolEstimate?.grossSats ?? "0",
+      evaluation: realization.evaluation,
+    })),
+  );
   if (!options.chainAnchor) {
     poolEstimateUnavailableReason = "chain-anchor-unavailable";
     forecastUnavailableReason = "chain-anchor-unavailable";
@@ -875,6 +1215,22 @@ export async function readRewardOutlook(
             "contract-integer-rounding",
           ],
         };
+        forecast.confidence = calibratedForecastConfidence({
+          samplingConfidence: projected.forecast.confidence,
+          remainingBlocks: projected.forecast.sample.remainingBlocks,
+          calibration,
+        });
+        const feeProjection = await projectExactOperatorFees({
+          options,
+          snapshot: simulationSnapshot,
+          forecast,
+        });
+        if (feeProjection.status === "ready") {
+          operatorFeeForecast = feeProjection.forecast;
+          operatorFeeForecastUnavailableReason = null;
+        } else {
+          operatorFeeForecastUnavailableReason = feeProjection.reason;
+        }
       }
     } catch (error) {
       if (poolEstimate === null) {
@@ -902,6 +1258,9 @@ export async function readRewardOutlook(
     poolEstimateUnavailableReason,
     forecast,
     forecastUnavailableReason,
+    operatorFeeForecast,
+    operatorFeeForecastUnavailableReason,
+    calibration,
     calculation,
   };
   if (options.chainAnchor) {
@@ -913,10 +1272,20 @@ export async function readRewardOutlook(
       globalAccruedRewardsSats: globalSats,
       calculationState: calculation.state,
       lastRewardComputeBurnHeight: calculation.observedLastRewardComputeBurnHeight,
-      nextCalculation: calculation.next,
+      nextCalculation: calculation.next
+        ? {
+            state: calculation.next.state,
+            targetRewardCycle: calculation.next.targetRewardCycle,
+            targetCheckpoint: calculation.next.targetCheckpoint,
+            calculationBurnHeight: calculation.next.calculationBurnHeight,
+            eligibleBurnHeight: calculation.next.eligibleBurnHeight,
+            blocksRemaining: calculation.next.blocksRemaining,
+          }
+        : null,
       poolEstimate,
       poolEstimateUnavailableReason,
       forecast,
+      forecastModelRevision: forecast ? REWARD_FORECAST_MODEL_REVISION : null,
       forecastUnavailableReason,
     });
   }

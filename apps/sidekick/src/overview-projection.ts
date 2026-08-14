@@ -1020,34 +1020,34 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   }
 
   const calculation = snapshot.rewardOutlook?.calculation ?? snapshot.rewards?.calculation;
-  if (
-    calculation?.state === "pending" &&
-    calculation.expectedLastRewardComputeBurnHeight !== null &&
-    calculation.expectedLastRewardComputeBurnHeight <= snapshot.preflight.node.burnBlockHeight
-  ) {
+  const calculationGrace = calculation?.next?.grace ?? null;
+  if (calculation?.state === "pending" && calculationGrace?.state === "action-required") {
+    const canAct = snapshotCurrent;
     candidates.push({
       conditionKey: "rewards:calculation-due",
       operationScope: `calculate-rewards:${calculation.targetRewardCycle ?? "unknown"}:${calculation.targetCheckpoint ?? "unknown"}`,
       item: attentionItem({
         attentionId: `rewards:calculation-due:${calculation.targetRewardCycle ?? "unknown"}:${calculation.targetCheckpoint ?? "unknown"}`,
-        tier: "needs-attention",
+        tier: canAct ? "action-required" : "needs-attention",
         domain: "rewards",
         affectedDomains: ["rewards"],
         code: "reward-calculation-due",
         title: "PoX-5 reward calculation is due",
-        summary:
-          "The protocol checkpoint has passed, but the permissionless reward calculation has not been observed.",
+        summary: canAct
+          ? `The calculation remains pending after ${calculationGrace.elapsedMinutes} minutes and ${calculationGrace.canonicalStacksBlocks} canonical Stacks blocks.`
+          : "The calculation grace period passed, but current action witnesses are unavailable.",
         impact: "Manager and staker rewards cannot become claimable until calculation completes.",
         updatedAt,
         deadline: {
           kind: "burn-block",
-          burnBlockHeight: calculation.expectedLastRewardComputeBurnHeight,
+          burnBlockHeight:
+            calculation.next?.calculationBurnHeight ?? snapshot.preflight.node.burnBlockHeight,
           estimatedAt: null,
         },
         evidence: [localEvidence],
         relatedActivityId: null,
         relatedFindingId: null,
-        primaryAction: snapshotCurrent
+        primaryAction: canAct
           ? rewardsAction("calculation", "Review reward calculation")
           : { kind: "recheck", target: "node", label: "Refresh reward calculation state" },
         detailsAction: null,

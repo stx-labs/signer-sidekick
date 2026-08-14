@@ -95,6 +95,7 @@ const dashboardSnapshot = {
   activity: { withdrawals: [] },
   roster: [],
   alerts: [],
+  rewardFeedback: { calibration: null, realizations: [] },
 };
 
 const observerDomainStatus = {
@@ -252,7 +253,14 @@ describe("operator support bundle", () => {
           status: "ok",
           data: { dataSources: { nodeRpcUrl: "http://127.0.0.1:20443" } },
         },
-        operator: { status: "ok", data: { network: "mainnet", managerPrincipal } },
+        operator: {
+          status: "ok",
+          data: {
+            network: "mainnet",
+            managerPrincipal,
+            rewardFeedback: { calibration: null, realizations: [] },
+          },
+        },
         nodeAndSignerHealth: { status: "unavailable", data: null },
         database: { status: "ok", data: { schemaVersion: 21 } },
         observer: {
