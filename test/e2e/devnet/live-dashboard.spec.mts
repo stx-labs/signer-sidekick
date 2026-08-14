@@ -31,6 +31,10 @@ test("operator can inspect the running Devnet signer across every Sidekick scree
   test.skip(phase !== "inspect", `live phase is ${phase}`);
   const failedResponses: string[] = [];
   const consoleErrors: string[] = [];
+
+  // The signed-out shell intentionally probes the session endpoint and receives 401 before the
+  // operator submits a credential. Observe console/network health only after login succeeds.
+  await login(page);
   page.on("response", (response) => {
     if (response.url().includes("/api/") && response.status() >= 500) {
       failedResponses.push(`${response.status()} ${response.url()}`);
@@ -40,7 +44,6 @@ test("operator can inspect the running Devnet signer across every Sidekick scree
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
-  await login(page);
   await expect(page.locator(".app")).toHaveAttribute("data-network", "devnet");
   for (const [id, heading] of [
     ["health", "Signer Health"],
@@ -64,7 +67,9 @@ test("Sidekick recognizes the externally deployed manager and signer registratio
   test.skip(phase !== "inspect", `live phase is ${phase}`);
   await login(page);
   await openPage(page, "manager", "Manager");
-  await expect(page.getByText(state.managerPrincipal, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `Copy manager principal: ${state.managerPrincipal}` }),
+  ).toBeVisible();
   await expect(page.getByText("Connect a running signer manager.")).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Review signer rotation" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(state.authToken);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type ClarityValue,
   decodeClarityHex,
@@ -22,6 +23,11 @@ const nodeInfoSchema = z.object({
     .transform(
       (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
     )
+    .optional(),
+  stacks_tip_consensus_hash: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{40}$/i)
+    .transform((value) => value.replace(/^0x/i, "").toLowerCase())
     .optional(),
   is_fully_synced: z.boolean().optional(),
 });
@@ -347,6 +353,20 @@ export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
 export type TransactionDetail = z.infer<typeof transactionDetailSchema>;
 export type StacksBlockSummary = z.infer<typeof stacksBlockSummarySchema>;
+
+export function stacksTipIndexBlockHash(
+  info: Pick<NodeInfo, "stacks_tip" | "stacks_tip_consensus_hash">,
+): `0x${string}` | undefined {
+  if (!info.stacks_tip || !info.stacks_tip_consensus_hash) return undefined;
+  // Stacks Core addresses chainstate by StacksBlockId, the SHA-512/256 digest of the block-header
+  // hash followed by its consensus hash. /v2/info exposes those two inputs separately; stacks_tip
+  // alone is not a valid historical ?tip= value under Nakamoto.
+  const digest = createHash("sha512-256")
+    .update(Buffer.from(info.stacks_tip.slice(2), "hex"))
+    .update(Buffer.from(info.stacks_tip_consensus_hash, "hex"))
+    .digest("hex");
+  return `0x${digest}`;
+}
 
 export interface GasPayerMempoolActivityOptions {
   /** Rows requested per API page. The current v3 contract permits at most 50. */

@@ -269,6 +269,50 @@ async function stopSidekick(container) {
   run("docker", ["rm", "--force", container], { allowedExitCodes: [0, 1] });
 }
 
+async function enableDevnetTransactionIndex() {
+  const configPath = resolve(runtimeDirectory, "clarinet/conf/Stacks.toml");
+  const current = await readFile(configPath, "utf8");
+  let updated = current;
+  if (/^txindex\s*=/m.test(current)) {
+    updated = current.replace(/^txindex\s*=.*$/m, "txindex = true");
+  } else {
+    updated = current.replace(/^\[node\]\s*$/m, "[node]\ntxindex = true");
+  }
+  if (updated === current && !/^txindex\s*=\s*true\s*$/m.test(current)) {
+    throw new Error("Clarinet's generated Stacks node config did not contain a [node] section");
+  }
+  if (updated !== current) await writeFile(configPath, updated);
+
+  const containers = run(
+    "docker",
+    [
+      "ps",
+      "--filter",
+      `label=com.docker.compose.project=${clarinetProject}`,
+      "--filter",
+      "label=com.docker.compose.service=stacks-node",
+      "--format",
+      "{{.ID}}",
+    ],
+    { allowedExitCodes: [0, 1] },
+  )
+    .split("\n")
+    .filter(Boolean);
+  if (containers.length !== 1) {
+    throw new Error(`Expected one released Stacks node container, found ${containers.length}`);
+  }
+  log("Bootstrap: enabling the released node transaction index");
+  run("docker", ["restart", containers[0]]);
+  await Promise.all([
+    waitForHttp("http://127.0.0.1:20443/v2/info", "transaction-indexed stacks-node", 120_000),
+    waitForHttp(
+      "http://127.0.0.1:3999/extended/v1/status",
+      "Stacks API after node restart",
+      120_000,
+    ),
+  ]);
+}
+
 async function up() {
   const runId = `${Date.now()}-${process.pid}`;
   await acquireHarnessLock(harnessLockPath, { runId, pid: process.pid, phase: "starting" });
@@ -362,6 +406,7 @@ async function up() {
       waitForHttp("http://127.0.0.1:20443/v2/info", "stacks-node", 300_000),
       waitForHttp("http://127.0.0.1:3999/extended/v1/status", "Stacks API", 300_000),
     ]);
+    await enableDevnetTransactionIndex();
     await setBootstrapPhase(
       state,
       "chain-ready",
@@ -418,7 +463,9 @@ async function connectExistingManager(state) {
     body: "{}",
   });
   if (connection.status !== "connected") {
-    throw new Error(`Sidekick connection remained ${connection.status}`);
+    throw new Error(
+      `Sidekick connection remained ${connection.status}: ${JSON.stringify(connection)}`,
+    );
   }
   await waitForHttp("http://127.0.0.1:3700/health/live", "Sidekick private event listener");
   await proxyControl("observer", "pass");
@@ -450,30 +497,121 @@ async function ensureRewardPhase(actor) {
     async () => {
       const pox = await fetch("http://127.0.0.1:20443/v2/pox").then((response) => response.json());
       const untilPrepare = pox.next_cycle?.blocks_until_prepare_phase;
-      return typeof untilPrepare !== "number" || untilPrepare > 2 ? pox : null;
+      // The active-pool fixture confirms seven transactions serially. Leave enough reward-phase
+      // runway for every staking mutation to anchor before PoX rejects updates in prepare phase.
+      return typeof untilPrepare !== "number" || untilPrepare > 10 ? pox : null;
     },
-    "a PoX reward phase",
+    "a PoX reward phase with at least eleven blocks before prepare",
     180_000,
   );
 }
 
-async function interruptSynchronization(state, pathContains) {
-  await proxyControl("api", "fail-after", { pathContains, passCount: 1, statusCode: 503 });
-  try {
-    const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${state.authToken}`,
-        "content-type": "application/json",
+async function readSynchronizationOperation(state) {
+  const payload = await sidekickFetch(state, "/api/v1/sync");
+  const operation = payload?.operation;
+  if (
+    !operation ||
+    !["idle", "running", "succeeded", "failed"].includes(operation.status) ||
+    !(operation.operationId === null || typeof operation.operationId === "string")
+  ) {
+    throw new Error(
+      `Sidekick returned an invalid synchronization operation: ${JSON.stringify(payload)}`,
+    );
+  }
+  return operation;
+}
+
+async function waitForSynchronizationCompletion(state, operationId, label) {
+  return await waitFor(
+    async () => {
+      const operation = await readSynchronizationOperation(state);
+      if (operation.operationId !== operationId) {
+        throw new Error(
+          `Sidekick replaced synchronization ${operationId} with ${operation.operationId ?? "none"}`,
+        );
+      }
+      return operation.status === "running" ? null : operation;
+    },
+    label,
+    180_000,
+    250,
+  );
+}
+
+async function synchronizeSidekick(state, options = {}) {
+  const expectedStatus = options.expectedStatus ?? "succeeded";
+  const label = options.label ?? "Sidekick synchronization";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitFor(
+      async () => {
+        const operation = await readSynchronizationOperation(state);
+        return operation.status === "running" ? null : operation;
       },
-      body: "{}",
-    });
-    if (response.status < 500) {
-      throw new Error(`Interrupted synchronization returned HTTP ${response.status}`);
+      "any existing Sidekick synchronization to finish",
+      180_000,
+      250,
+    );
+    const accepted = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+    const started = accepted?.operation;
+    if (!started || typeof started.operationId !== "string") {
+      throw new Error(
+        `Sidekick did not accept a synchronization operation: ${JSON.stringify(accepted)}`,
+      );
     }
-    return response.status;
+    if (started.trigger !== "manual") {
+      await waitForSynchronizationCompletion(
+        state,
+        started.operationId,
+        "the competing automatic Sidekick synchronization to finish",
+      );
+      continue;
+    }
+    const completed =
+      started.status === "running"
+        ? await waitForSynchronizationCompletion(state, started.operationId, label)
+        : started;
+    if (completed.status !== expectedStatus) {
+      throw new Error(
+        `${label} ${completed.operationId} finished ${completed.status}, expected ${expectedStatus}: ${JSON.stringify(completed.error)}`,
+      );
+    }
+    return completed;
+  }
+  throw new Error(
+    `${label} could not start because automatic synchronization kept winning the race`,
+  );
+}
+
+function synchronizationReconciliation(operation, label) {
+  const reconciliation = operation.result?.reconciliation;
+  if (!reconciliation) {
+    throw new Error(
+      `${label} ${operation.operationId ?? "unknown"} did not include a reconciliation result`,
+    );
+  }
+  return reconciliation;
+}
+
+async function interruptSynchronization(
+  state,
+  pathContains,
+  { target = "api", passCount = 1 } = {},
+) {
+  await proxyControl(target, "fail-after", { pathContains, passCount, statusCode: 503 });
+  try {
+    const operation = await synchronizeSidekick(state, {
+      expectedStatus: "failed",
+      label: `Interrupted synchronization through ${target} ${pathContains}`,
+    });
+    return {
+      target,
+      pathContains,
+      operationId: operation.operationId,
+      status: operation.status,
+      error: operation.error,
+    };
   } finally {
-    await proxyControl("api", "pass");
+    await proxyControl(target, "pass");
   }
 }
 
@@ -493,33 +631,49 @@ async function activePool(state) {
   positions.push(await actor.stakeUpdate(DEVNET_ACCOUNTS.staker2));
   positions.push(await actor.unstake(DEVNET_ACCOUNTS.staker3));
 
-  const rosterInterruption = await interruptSynchronization(state, "/extended/v3/staking/signers/");
+  // Let the API enumeration seal its page checkpoint, then fail the first node verification read.
+  // Restart recovery must reuse that sealed, exact-tip-fenced roster instead of rediscovering it.
+  const rosterInterruption = await interruptSynchronization(state, "/get-bond-membership", {
+    target: "node",
+    passCount: 0,
+  });
   await restartSidekick(state);
-  const firstSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (!firstSync.result.stakers.resumed) {
+  const firstSync = await synchronizeSidekick(state, { label: "Roster resume synchronization" });
+  const firstSyncResult = synchronizationReconciliation(firstSync, "Roster resume synchronization");
+  if (!firstSyncResult.stakers.resumed) {
     throw new Error("Roster synchronization did not resume after restart");
   }
-  positions.push(await actor.updateFees(300));
-  positions.push(await actor.updateFees(400));
-  const eventInterruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  let eventInterruption;
+  await proxyControl("observer", "ack");
+  try {
+    positions.push(await actor.updateFees(300));
+    positions.push(await actor.updateFees(400));
+    eventInterruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  } finally {
+    await proxyControl("observer", "pass");
+  }
   await restartSidekick(state);
-  const eventResume = await sidekickFetch(state, "/api/v1/sync", {
-    method: "POST",
-    body: "{}",
+  // Startup anti-entropy owns this restart recovery and runs before the HTTP control plane can
+  // accept a manual sync. The injected failure allowed exactly one event page to commit, so a
+  // successful startup manager-activity run necessarily continued that persisted cursor.
+  const eventResumeMetrics = await waitFor(
+    async () => {
+      const metrics = await readObserverMetrics();
+      return metrics.managerSuccesses > 0 ? metrics : null;
+    },
+    "startup manager-activity reconciliation to resume the event cursor",
+    120_000,
+    250,
+  );
+  const replay = await synchronizeSidekick(state, {
+    label: "Manager event replay synchronization",
   });
-  if (!eventResume.result.events.resumed || eventResume.result.events.newEvents < 1) {
-    throw new Error("Manager event synchronization did not resume after restart");
-  }
-  const replay = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (firstSync.result.stakers.activeStakers < 2) throw new Error("Expected at least two stakers");
-  if (
-    firstSync.result.events.newEvents < 2 ||
-    firstSync.result.events.pagesProcessed < 2 ||
-    firstSync.result.events.decodeFailures !== 0
-  ) {
-    throw new Error("Expected two indexed, decoded, paginated manager print events");
-  }
-  if (replay.result.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
+  const replayResult = synchronizationReconciliation(
+    replay,
+    "Manager event replay synchronization",
+  );
+  if (firstSyncResult.stakers.activeStakers < 2) throw new Error("Expected at least two stakers");
+  if (replayResult.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
 
   const before = await fetch("http://127.0.0.1:20443/v2/pox").then((response) => response.json());
   const after = await actor.waitFor(
@@ -530,17 +684,21 @@ async function activePool(state) {
     "the next PoX reward cycle",
     240_000,
   );
-  const cycleSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+  const cycleSync = await synchronizeSidekick(state, { label: "Reward-cycle synchronization" });
+  const cycleSyncResult = synchronizationReconciliation(cycleSync, "Reward-cycle synchronization");
   return {
     connection,
     observer,
     transactionIds: positions.map((position) => position.txid),
     interruptions: { roster: rosterInterruption, events: eventInterruption },
-    firstSync: firstSync.result,
-    eventResume: eventResume.result,
-    replay: replay.result,
+    firstSync: firstSyncResult,
+    eventResume: {
+      startupAntiEntropy: true,
+      managerSuccesses: eventResumeMetrics.managerSuccesses,
+    },
+    replay: replayResult,
     cycle: { before: before.reward_cycle_id, after: after.reward_cycle_id },
-    cycleSync: cycleSync.result,
+    cycleSync: cycleSyncResult,
   };
 }
 
@@ -585,10 +743,35 @@ async function readObserverMetrics() {
 
 async function verifyRealObserverCallback(state, transaction, before) {
   const blockHeight = transaction.confirmed.block_height;
-  const indexBlockHash = transaction.confirmed.index_block_hash;
-  if (!Number.isSafeInteger(blockHeight) || !/^0x[0-9a-f]{64}$/i.test(indexBlockHash ?? "")) {
-    throw new Error("Confirmed Devnet transaction did not expose its canonical block anchor");
+  const blockHash = transaction.confirmed.block_hash;
+  if (
+    !Number.isSafeInteger(blockHeight) ||
+    typeof blockHash !== "string" ||
+    !/^0x[0-9a-f]{64}$/i.test(blockHash)
+  ) {
+    throw new Error(
+      `Confirmed Devnet transaction did not expose its canonical block anchor: ${JSON.stringify(transaction.confirmed)}`,
+    );
   }
+  const blockResponse = await fetch(`http://127.0.0.1:3999/extended/v2/blocks/${blockHeight}`);
+  if (!blockResponse.ok) {
+    throw new Error(`Stacks API block projection returned HTTP ${blockResponse.status}`);
+  }
+  const block = await blockResponse.json();
+  const rawIndexBlockHash = block.index_block_hash;
+  if (
+    block.canonical !== true ||
+    block.height !== blockHeight ||
+    typeof block.hash !== "string" ||
+    block.hash.toLowerCase() !== blockHash.toLowerCase() ||
+    typeof rawIndexBlockHash !== "string" ||
+    !/^(?:0x)?[0-9a-f]{64}$/i.test(rawIndexBlockHash)
+  ) {
+    throw new Error(
+      `Stacks API did not prove the confirmed transaction's canonical index block: ${JSON.stringify(block)}`,
+    );
+  }
+  const indexBlockHash = `0x${rawIndexBlockHash.replace(/^0x/i, "").toLowerCase()}`;
   const metrics = await waitFor(
     async () => {
       const current = await readObserverMetrics();
@@ -638,20 +821,41 @@ async function verifyRealObserverCallback(state, transaction, before) {
 
 async function eventResumeScenario(state) {
   const actor = createOperatorActor();
-  const transactions = [await actor.updateFees(500), await actor.updateFees(600)];
-  const interruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
-  await restartSidekick(state);
-  const resumed = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (!resumed.result.events.resumed || resumed.result.events.newEvents < 1) {
-    throw new Error("Manager event synchronization did not resume after restart");
+  const transactions = [];
+  let interruption;
+  await proxyControl("observer", "ack");
+  try {
+    transactions.push(await actor.updateFees(500), await actor.updateFees(600));
+    interruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  } finally {
+    await proxyControl("observer", "pass");
   }
-  const replay = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (replay.result.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
+  await restartSidekick(state);
+  const resumedMetrics = await waitFor(
+    async () => {
+      const metrics = await readObserverMetrics();
+      return metrics.managerSuccesses > 0 ? metrics : null;
+    },
+    "startup manager-activity reconciliation to resume the standalone event cursor",
+    120_000,
+    250,
+  );
+  const replay = await synchronizeSidekick(state, {
+    label: "Standalone event replay synchronization",
+  });
+  const replayResult = synchronizationReconciliation(
+    replay,
+    "Standalone event replay synchronization",
+  );
+  if (replayResult.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
   return {
     transactionIds: transactions.map(({ txid }) => txid),
     interruption,
-    resumed: resumed.result.events,
-    replay: replay.result.events,
+    resumed: {
+      startupAntiEntropy: true,
+      managerSuccesses: resumedMetrics.managerSuccesses,
+    },
+    replay: replayResult.events,
   };
 }
 
@@ -1129,18 +1333,15 @@ async function failureInjection(state) {
   const failedSync = async (target, mode, additional = {}) => {
     await proxyControl(target, mode, additional);
     try {
-      const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${state.authToken}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
+      const operation = await synchronizeSidekick(state, {
+        expectedStatus: "failed",
+        label: `Injected ${target} ${mode} failure`,
       });
-      if (response.status < 500) {
-        throw new Error(`Injected ${target} ${mode} failure returned HTTP ${response.status}`);
-      }
-      return response.status;
+      return {
+        operationId: operation.operationId,
+        status: operation.status,
+        error: operation.error,
+      };
     } finally {
       await proxyControl(target, "pass");
     }
@@ -1151,7 +1352,7 @@ async function failureInjection(state) {
   const currentApiStatus = await fetch("http://127.0.0.1:3999/extended/v1/status").then(
     (response) => response.json(),
   );
-  currentApiStatus.chain_tip.burn_block_height -= 2;
+  currentApiStatus.chain_tip.burn_block_height += 2;
   await proxyControl("api", "fixture", {
     pathContains: "/extended/v1/status",
     body: currentApiStatus,
@@ -1159,28 +1360,20 @@ async function failureInjection(state) {
   });
   let indexerLag;
   try {
-    const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${state.authToken}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
+    const operation = await synchronizeSidekick(state, {
+      expectedStatus: "failed",
+      label: "Injected local-node-behind failure",
     });
-    const payload = await response.json();
-    if (response.status < 500 || payload.error !== "internal_server_error") {
-      throw new Error(
-        `Injected API lag did not fail closed: HTTP ${response.status} ${JSON.stringify(payload)}`,
-      );
-    }
     indexerLag = {
-      status: response.status,
+      operationId: operation.operationId,
+      status: operation.status,
+      error: operation.error,
       failClosed: true,
     };
   } finally {
     await proxyControl("api", "pass");
   }
-  await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+  await synchronizeSidekick(state, { label: "Failure-injection recovery synchronization" });
   return {
     apiRateLimit,
     apiDisconnect,

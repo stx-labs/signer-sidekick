@@ -20,8 +20,12 @@ const nodeInfo = {
   parent_network_id: 0,
   burn_block_height: 962_250,
   stacks_tip_height: 8_750_000,
+  stacks_tip: "0xe332d0d28b57f7683a1a119edfa3e7cce166d62abace289e865a6bc455fd36bb" as const,
+  stacks_tip_consensus_hash: "87870f15496fba32a2f26ef47304478424153e51",
   is_fully_synced: true,
 };
+const indexBlockHash =
+  "0x74b8cbf99ffdbf02775f7b9e2e3754181f18e8144674929ac5054d15a314f5db" as const;
 
 const poxInfo = {
   current_burnchain_block_height: 962_250,
@@ -75,7 +79,7 @@ function service(options: {
   network?: "mainnet" | "testnet" | "devnet" | "regtest";
   expectedNetworkId?: number;
   now?: () => string;
-  inspectManager?: () => Promise<ConnectionManagerInspection>;
+  inspectManager?: (tip?: `0x${string}`) => Promise<ConnectionManagerInspection>;
   assessmentDeadlineMs?: number;
   runtime?: () => {
     config: {
@@ -113,7 +117,9 @@ afterEach(() => {
 describe("first-run connection assessment", () => {
   it("connects and binds an empty database using only local-node and trait evidence", async () => {
     const store = await memoryStore();
-    const result = await service({ store }).check();
+    const inspectManager = vi.fn(async () => managerReport());
+    const configuredNode = node();
+    const result = await service({ store, node: configuredNode, inspectManager }).check();
 
     expect(result).toMatchObject({
       status: "connected",
@@ -128,6 +134,8 @@ describe("first-run connection assessment", () => {
       },
       deploymentIdentity: { status: "bound", reason: null },
     });
+    expect(configuredNode.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
+    expect(inspectManager).toHaveBeenCalledWith(indexBlockHash);
     expect(store.getDeploymentIdentity()).toMatchObject({
       managerPrincipal: manager,
       network: "mainnet",

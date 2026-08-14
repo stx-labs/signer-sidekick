@@ -1644,6 +1644,7 @@ describe("Stacks node client", () => {
         burn_block_height: 202,
         stacks_tip_height: 500,
         stacks_tip: "AB".repeat(32),
+        stacks_tip_consensus_hash: "CD".repeat(20),
       },
       {
         current_burnchain_block_height: 202,
@@ -1670,6 +1671,7 @@ describe("Stacks node client", () => {
       network_id: 256,
       parent_network_id: 3_669_344_250,
       stacks_tip: `0x${"ab".repeat(32)}`,
+      stacks_tip_consensus_hash: "cd".repeat(20),
     });
     await expect(client.getPoxInfo()).resolves.toMatchObject({
       pox_5_sbtc_contract: expect.stringContaining(".sbtc-token"),

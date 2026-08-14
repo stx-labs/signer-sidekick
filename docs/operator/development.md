@@ -95,8 +95,9 @@ Sidekick; use `status` to follow that phase rather than starting a second run. O
 use the fixed local ports at a time. Use `pnpm e2e:devnet:reset` after an interrupted run. The
 `active-pool` scenario also routes a real stacks-node callback through Sidekick, requires its
 canonical block anchor to become node-verified, and waits for the affected current-state and
-manager-activity projections to reconcile. The version locks under `test/e2e/devnet` define the
-released artifacts.
+manager-activity projections to reconcile. The harness enables Core's transaction index on the
+released node before the scenario because local transaction inclusion is the independent witness
+for indexed manager events. The version locks under `test/e2e/devnet` define the released artifacts.
 
 ## Local dashboard
 

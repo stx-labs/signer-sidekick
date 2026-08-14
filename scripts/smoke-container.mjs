@@ -208,7 +208,7 @@ try {
     "support-bundle",
   ]);
   const supportBundle = parseJson(supportBundleOutput, "export support-bundle");
-  invariant(supportBundle.schemaVersion === 2, "Support bundle schema mismatch");
+  invariant(supportBundle.schemaVersion === 1, "Support bundle schema mismatch");
   invariant(!supportBundleOutput.includes(authToken), "Support bundle exposed the auth token");
   if (process.env.STACKS_API_KEY) {
     invariant(
@@ -258,7 +258,13 @@ for (let attempt = 0; attempt < 30; attempt += 1) {
 const dashboard = await fetch(base + "/");
 const dashboardBody = await dashboard.text();
 const denied = await fetch(base + "/api/v1/status");
-const ready = await fetch(base + "/health/ready");
+let ready;
+for (let attempt = 0; attempt < 120; attempt += 1) {
+  ready = await fetch(base + "/health/ready");
+  if (ready.ok) break;
+  if (attempt === 119) throw new Error("server did not become ready");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
 const status = await fetch(base + "/api/v1/status", {
   headers: { authorization: "Bearer " + token },
 });
@@ -269,6 +275,22 @@ const sync = await fetch(base + "/api/v1/sync", {
   body: "{}",
 });
 const syncBody = await sync.json();
+const operationId = syncBody.operation?.operationId;
+if (sync.status !== 202 || typeof operationId !== "string") {
+  throw new Error("server did not accept synchronization");
+}
+let syncOperation = syncBody.operation;
+for (let attempt = 0; syncOperation.status === "running" && attempt < 480; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const response = await fetch(base + "/api/v1/sync", {
+    headers: { authorization: "Bearer " + token },
+  });
+  const payload = await response.json();
+  syncOperation = payload.operation;
+  if (syncOperation?.operationId !== operationId) {
+    throw new Error("server replaced the accepted synchronization operation");
+  }
+}
 const metrics = await (await fetch(base + "/metrics")).text();
 console.log(JSON.stringify({
   dashboardStatus: dashboard.status,
@@ -279,7 +301,8 @@ console.log(JSON.stringify({
   registration: statusBody.registration,
   operatorReadiness: statusBody.readiness?.status ?? statusBody.setup?.status ?? null,
   syncStatus: sync.status,
-  syncResult: syncBody.result?.stakers?.status,
+  syncOperationStatus: syncOperation.status,
+  syncResult: syncOperation.result?.reconciliation?.stakers?.status,
   zeroSyncFailures: /sidekick_sync_failures_total 0(?:\n|$)/.test(metrics),
 }));
 `;
@@ -294,7 +317,12 @@ console.log(JSON.stringify({
   invariant(http.registration?.registered === true, "Manager is not registered");
   invariant(http.registration?.signerKeyGrantValid === true, "Manager signer grant is invalid");
   invariant(http.operatorReadiness !== "blocked", "Operator readiness is blocked");
-  invariant(http.syncStatus === 200 && http.syncResult === "completed", "HTTP sync failed");
+  invariant(
+    http.syncStatus === 202 &&
+      http.syncOperationStatus === "succeeded" &&
+      http.syncResult === "completed",
+    "HTTP sync failed",
+  );
   invariant(http.zeroSyncFailures === true, "HTTP metrics reported a sync failure");
 
   const logs = runDocker(["logs", containerName]);

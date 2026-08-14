@@ -4,7 +4,11 @@ import {
   connectionAssessmentSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
-import { type StacksNodeClient, UpstreamHttpError } from "./chain-clients.js";
+import {
+  type StacksNodeClient,
+  stacksTipIndexBlockHash,
+  UpstreamHttpError,
+} from "./chain-clients.js";
 import { configuredNetworkId, type SidekickConfig } from "./config.js";
 import { inspectManagerCapabilities } from "./manager-capabilities.js";
 import { activePox5ContractId } from "./preflight.js";
@@ -372,11 +376,10 @@ export class ConnectionAssessmentService {
       });
     }
 
+    const tip = stacksTipIndexBlockHash(nodeInfo);
     let poxInfo: Awaited<ReturnType<StacksNodeClient["getPoxInfo"]>>;
     try {
-      poxInfo = await node.getPoxInfo(
-        nodeInfo.stacks_tip ? { tip: nodeInfo.stacks_tip } : undefined,
-      );
+      poxInfo = await node.getPoxInfo(tip ? { tip } : undefined);
     } catch {
       setCheck(checks, "pox5", "unavailable", "The local node did not return PoX context.");
       return assessment({
@@ -442,7 +445,7 @@ export class ConnectionAssessmentService {
 
     let manager: ConnectionManagerInspection;
     try {
-      manager = await this.inspectManager(node, nodeInfo.stacks_tip);
+      manager = await this.inspectManager(node, tip);
     } catch (error) {
       if (error instanceof UpstreamHttpError && error.status === 404) {
         const observed = {
