@@ -541,65 +541,85 @@ describe("Overview projection", () => {
   it("keeps exact PoX-5 outlook available when manager settlement actions are unsupported", () => {
     const value = snapshot();
     if (!value.rewards) throw new Error("Test fixture must include rewards");
-    const result = projectOverview({
-      snapshot: {
-        ...value,
-        rewards: null,
-        rewardOutlook: {
-          pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
-          observedAt: generatedAt,
-          chainAnchor,
-          accrued: { globalSats: "2500", source: "pox5-get-new-rewards" },
-          poolEstimate: {
-            kind: "if-calculated-now",
-            targetRewardCycle: 141,
-            targetCheckpoint: "first-half",
-            calculationBurnHeight: 962_349,
-            grossSats: "500",
-            stxSats: "450",
-            bondSats: "50",
-            inputs: {
-              globalStxSharesUstx: "100000000000",
-              managerStxSharesUstx: "20000000000",
-              activeBonds: [],
-            },
-            assumptions: [
-              "current-global-accrual",
-              "current-cycle-shares",
-              "current-active-bond-set",
-              "contract-integer-rounding",
-            ],
-          },
-          poolEstimateUnavailableReason: null,
-          forecast: {
-            kind: "checkpoint-run-rate",
-            targetRewardCycle: 141,
-            targetCheckpoint: "first-half",
-            calculationBurnHeight: 962_349,
-            globalSats: { low: "2600", point: "3000", high: "3400" },
-            poolSats: { low: "520", point: "600", high: "680" },
-            sample: {
-              observations: 6,
-              firstObservedBurnHeight: 962_277,
-              lastObservedBurnHeight: 962_301,
-              sampleBlocks: 24,
-              elapsedBlocks: 52,
-              remainingBlocks: 48,
-            },
-            confidence: "developing",
-            assumptions: [
-              "zero-accrual-after-last-calculation",
-              "linear-global-accrual-run-rate",
-              "current-cycle-shares",
-              "current-active-bond-set",
-              "unchanged-reserve-before-calculation",
-              "contract-integer-rounding",
-            ],
-          },
-          forecastUnavailableReason: null,
-          calculation: value.rewards.calculation,
+    const outlook: NonNullable<DashboardSnapshot["rewardOutlook"]> = {
+      pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      observedAt: generatedAt,
+      chainAnchor,
+      accrued: { globalSats: "2500", source: "pox5-get-new-rewards" },
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 962_349,
+        grossSats: "500",
+        stxSats: "450",
+        bondSats: "50",
+        inputs: {
+          globalStxSharesUstx: "100000000000",
+          managerStxSharesUstx: "20000000000",
+          activeBonds: [],
+        },
+        assumptions: [
+          "current-global-accrual",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "contract-integer-rounding",
+        ],
+      },
+      poolEstimateUnavailableReason: null,
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 962_349,
+        globalSats: { low: "2600", point: "3000", high: "3400" },
+        poolSats: { low: "520", point: "600", high: "680" },
+        sample: {
+          observations: 6,
+          firstObservedBurnHeight: 962_277,
+          lastObservedBurnHeight: 962_301,
+          sampleBlocks: 24,
+          elapsedBlocks: 52,
+          remainingBlocks: 48,
+        },
+        confidence: "developing",
+        assumptions: [
+          "zero-accrual-after-last-calculation",
+          "linear-global-accrual-run-rate",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "unchanged-reserve-before-calculation",
+          "contract-integer-rounding",
+        ],
+      },
+      forecastUnavailableReason: null,
+      operatorFeeForecast: null,
+      operatorFeeForecastUnavailableReason: "reviewed-fee-capability-unavailable",
+      calibration: {
+        modelRevision: 1,
+        status: "collecting",
+        eligibleRealizations: 0,
+        rewardCycles: 0,
+        nonzeroOutcomes: 0,
+        rangeHits: 0,
+        medianPointErrorBips: null,
+        medianRangeWidthBips: null,
+        requirements: {
+          realizations: 6,
+          rewardCycles: 3,
+          nonzeroOutcomes: 4,
+          rangeHits: 5,
+          maxMedianPointErrorBips: "1500",
+          maxMedianRangeWidthBips: "5000",
+          evaluationLeadBlocks: 144,
+          evaluationToleranceBlocks: 12,
         },
       },
+      calculation: value.rewards.calculation,
+    };
+    const valueWithOutlook: DashboardSnapshot = { ...value, rewards: null, rewardOutlook: outlook };
+    const result = projectOverview({
+      snapshot: valueWithOutlook,
       health: health(),
       connection: null,
       now: new Date(generatedAt),
@@ -609,9 +629,44 @@ describe("Overview projection", () => {
       status: "ready",
       globalAccruedSats: "2500",
       estimatedPoolRewardSats: "600",
-      confidence: "estimated",
+      estimateKind: "checkpoint-forecast",
+      confidence: "developing",
+      operatorFeeSats: null,
+      operatorFeeUnavailableReason: "reviewed-fee-capability-unavailable",
       calculationState: "completed",
       actionableClaims: null,
+    });
+
+    outlook.operatorFeeForecast = {
+      kind: "reference-manager-exact",
+      sats: { low: "24", point: "28", high: "32" },
+      inputs: {
+        stakers: 2,
+        buckets: [{ bondIndex: null, feeBips: "500", source: "cycle-snapshot" }],
+      },
+      assumptions: ["per-staker-per-bucket-integer-rounding"],
+    };
+    outlook.operatorFeeForecastUnavailableReason = null;
+    expect(
+      projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards,
+    ).toMatchObject({
+      operatorFeeSats: "28",
+      operatorFeeUnavailableReason: null,
+    });
+
+    outlook.forecast = null;
+    outlook.forecastUnavailableReason = "insufficient-samples";
+    outlook.operatorFeeForecast = null;
+    outlook.operatorFeeForecastUnavailableReason = "reviewed-fee-capability-unavailable";
+
+    expect(
+      projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards,
+    ).toMatchObject({
+      estimatedPoolRewardSats: "500",
+      estimateKind: "if-calculated-now",
+      confidence: "contract-exact",
+      operatorFeeSats: null,
+      operatorFeeUnavailableReason: "reviewed-fee-capability-unavailable",
     });
   });
 

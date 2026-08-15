@@ -166,7 +166,9 @@ describe("Overview V1 contracts", () => {
         globalAccruedSats: "200000",
         estimatedPoolRewardSats: "150000",
         operatorFeeSats: "7500",
-        confidence: "exact" as const,
+        operatorFeeUnavailableReason: null,
+        estimateKind: "checkpoint-forecast" as const,
+        confidence: "calibrated" as const,
         calculationState: "completed" as const,
         actionableClaims: 2,
         evidence: [evidence],
@@ -184,6 +186,55 @@ describe("Overview V1 contracts", () => {
     const parsed = overviewPageSchema.safeParse(overviewFixture());
     if (!parsed.success) throw parsed.error;
     expect(parsed.data.schemaVersion).toBe(1);
+  });
+
+  it("keeps reward estimate provenance, confidence, and fee availability coherent", () => {
+    const fixture = overviewFixture();
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: {
+          ...fixture.rewards,
+          estimatedPoolRewardSats: "120000",
+          estimateKind: "if-calculated-now",
+          confidence: "contract-exact",
+          operatorFeeSats: null,
+          operatorFeeUnavailableReason: "forecast-unavailable",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: { ...fixture.rewards, confidence: "developing" },
+      }).success,
+    ).toBe(true);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: { ...fixture.rewards, confidence: "contract-exact" },
+      }).success,
+    ).toBe(false);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: {
+          ...fixture.rewards,
+          estimateKind: "if-calculated-now",
+          confidence: "contract-exact",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: {
+          ...fixture.rewards,
+          operatorFeeSats: null,
+          operatorFeeUnavailableReason: null,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects setup-only operations and arbitrary or mismatched navigation targets", () => {

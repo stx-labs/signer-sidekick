@@ -484,11 +484,14 @@ Implementation checkpoint (2026-08-14):
   when they remove a due capability, stale-action rechecks, and Activity-over-domain deduplication.
 - The Rewards summary prefers the persisted checkpoint run-rate point for
   `estimatedPoolRewardSats`; before the minimum sample gate is met, it falls back to the
-  contract-exact `if-calculated-now` pool estimate from one stable node anchor. Both remain labelled
-  estimated in Overview, while Rewards exposes which model produced the value, the observed-rate
-  range, sample window, assumptions, and omission reason. `operatorFeeSats` remains empty until fee
-  projection and realized-error calibration land. Exact accrued rewards, calculation state, and
-  actionable-claim counts remain independently available.
+  contract-exact `if-calculated-now` pool estimate from one stable node anchor. Overview preserves
+  that distinction through `estimateKind` and carries the checkpoint forecast's
+  `low`/`developing`/`calibrated` confidence instead of collapsing every value into `estimated`.
+  Rewards remains the detailed source for the observed-rate range, sample window, assumptions, and
+  omission reason. When reviewed manager fee semantics and anchored inputs are available,
+  `operatorFeeSats` exposes the exact per-staker/per-bucket forecast point; otherwise
+  `operatorFeeUnavailableReason` explains the omission. Exact accrued rewards, calculation state,
+  and actionable-claim counts remain independently available.
 - The stable shared chain anchor determines the next reward-calculation checkpoint, while its
   countdown uses the current local-node burn height displayed in the same cycle summary. This keeps
   protocol timing stable without introducing a normal one-block reference-indexer display skew.

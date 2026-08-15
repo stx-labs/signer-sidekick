@@ -2209,13 +2209,74 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
-    confidence: z.enum(["exact", "estimated", "unavailable"]),
+    operatorFeeUnavailableReason: z
+      .enum([
+        "reward-outlook-unavailable",
+        "reviewed-fee-capability-unavailable",
+        "forecast-unavailable",
+        "authoritative-roster-unavailable",
+        "per-staker-shares-incomplete",
+        "anchored-fee-inputs-unavailable",
+      ])
+      .nullable(),
+    estimateKind: z.enum(["checkpoint-forecast", "if-calculated-now", "unavailable"]),
+    confidence: z.enum(["contract-exact", "low", "developing", "calibrated", "unavailable"]),
     calculationState: z.enum(["pending", "completed", "ahead", "unknown"]).nullable(),
     actionableClaims: z.number().int().nonnegative().nullable(),
     evidence: z.array(overviewEvidenceSchema).min(1),
     detailsAction: rewardsDetailsActionSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.estimatedPoolRewardSats === null) {
+      if (value.estimateKind !== "unavailable" || value.confidence !== "unavailable") {
+        context.addIssue({
+          code: "custom",
+          path: ["estimatedPoolRewardSats"],
+          message: "An unavailable pool estimate must have unavailable kind and confidence",
+        });
+      }
+    } else if (value.estimateKind === "unavailable" || value.confidence === "unavailable") {
+      context.addIssue({
+        code: "custom",
+        path: ["estimatedPoolRewardSats"],
+        message: "An available pool estimate must identify its kind and confidence",
+      });
+    }
+    if (value.estimateKind === "if-calculated-now" && value.confidence !== "contract-exact") {
+      context.addIssue({
+        code: "custom",
+        path: ["confidence"],
+        message: "An if-calculated-now estimate must be contract-exact",
+      });
+    }
+    if (
+      value.estimateKind === "checkpoint-forecast" &&
+      value.confidence !== "low" &&
+      value.confidence !== "developing" &&
+      value.confidence !== "calibrated"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["confidence"],
+        message: "A checkpoint forecast must expose its calibration confidence",
+      });
+    }
+    if ((value.operatorFeeSats === null) === (value.operatorFeeUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["operatorFeeSats"],
+        message: "An operator fee must have either a value or an unavailability reason",
+      });
+    }
+    if (value.operatorFeeSats !== null && value.estimateKind !== "checkpoint-forecast") {
+      context.addIssue({
+        code: "custom",
+        path: ["operatorFeeSats"],
+        message: "An operator fee forecast requires a checkpoint pool forecast",
+      });
+    }
+  });
 export type OverviewRewardsSummary = z.infer<typeof overviewRewardsSummarySchema>;
 
 export const overviewPageSchema = z

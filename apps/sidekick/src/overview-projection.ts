@@ -523,6 +523,9 @@ function poolSummary(snapshot: DashboardSnapshot): OverviewPage["pool"] {
 function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
   const rewards = snapshot.rewards;
   const outlook = snapshot.rewardOutlook ?? null;
+  const forecast = outlook?.forecast ?? null;
+  const currentEstimate = outlook?.poolEstimate ?? null;
+  const operatorFeeForecast = outlook?.operatorFeeForecast ?? null;
   const available = outlook !== null || rewards !== null;
   const rewardEvidence = evidence({
     status: !available
@@ -548,12 +551,19 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
     globalAccruedSats:
       outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
-    estimatedPoolRewardSats:
-      outlook?.forecast?.poolSats.point ?? outlook?.poolEstimate?.grossSats ?? null,
-    operatorFeeSats: null,
-    // The current-share result is contract-exact for its anchor but remains an estimate of the
-    // future checkpoint because accrual, shares, or the active bond set can still change.
-    confidence: outlook?.forecast || outlook?.poolEstimate ? "estimated" : "unavailable",
+    estimatedPoolRewardSats: forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null,
+    operatorFeeSats: operatorFeeForecast?.sats.point ?? null,
+    operatorFeeUnavailableReason: operatorFeeForecast
+      ? null
+      : (outlook?.operatorFeeForecastUnavailableReason ?? "reward-outlook-unavailable"),
+    estimateKind: forecast
+      ? "checkpoint-forecast"
+      : currentEstimate
+        ? "if-calculated-now"
+        : "unavailable",
+    // The anchored current-share result is contract-exact at its source state, while checkpoint
+    // forecasts preserve the calibration confidence established by the rewards domain.
+    confidence: forecast?.confidence ?? (currentEstimate ? "contract-exact" : "unavailable"),
     calculationState: outlook?.calculation.state ?? rewards?.calculation.state ?? null,
     actionableClaims: rewards?.totals.actionableClaims ?? null,
     evidence: [rewardEvidence],
