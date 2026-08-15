@@ -2504,11 +2504,11 @@ export const overviewRewardsSummarySchema = z
         message: "An operator fee must have either a value or an unavailability reason",
       });
     }
-    if (value.operatorFeeSats !== null && value.estimateKind !== "checkpoint-forecast") {
+    if (value.operatorFeeSats !== null && value.estimateKind === "unavailable") {
       context.addIssue({
         code: "custom",
         path: ["operatorFeeSats"],
-        message: "An operator fee forecast requires a checkpoint pool forecast",
+        message: "An operator fee estimate requires an available pool estimate",
       });
     }
   });

@@ -777,6 +777,30 @@ describe("Overview projection", () => {
       operatorFeeSats: null,
       operatorFeeUnavailableReason: "reviewed-fee-capability-unavailable",
     });
+
+    outlook.operatorFeeEstimate = {
+      kind: "reference-manager-exact",
+      sats: "25",
+      inputs: {
+        stakers: 2,
+        buckets: [{ bondIndex: null, feeBips: "500", source: "cycle-snapshot" }],
+      },
+      assumptions: ["per-staker-per-bucket-integer-rounding"],
+    };
+    outlook.operatorFeeEstimateUnavailableReason = null;
+    const currentEstimate = projectOverview({
+      snapshot: valueWithOutlook,
+      health: health(),
+      connection: null,
+    });
+    expect(currentEstimate.rewards).toMatchObject({
+      estimatedPoolRewardSats: "500",
+      estimateKind: "if-calculated-now",
+      confidence: "contract-exact",
+      operatorFeeSats: "25",
+      operatorFeeUnavailableReason: null,
+    });
+    expect(() => overviewPageSchema.parse(currentEstimate)).not.toThrow();
   });
 
   it("suppresses derived safe-mode noise but retains ambiguity and Activity coverage warnings", () => {

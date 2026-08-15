@@ -313,6 +313,17 @@ describe("Overview V1 contracts", () => {
           confidence: "contract-exact",
         },
       }).success,
+    ).toBe(true);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: {
+          ...fixture.rewards,
+          estimatedPoolRewardSats: null,
+          estimateKind: "unavailable",
+          confidence: "unavailable",
+        },
+      }).success,
     ).toBe(false);
     expect(
       overviewPageSchema.safeParse({
