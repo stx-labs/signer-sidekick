@@ -284,7 +284,9 @@ const principalTransactionPageSchema = z
                   contract_id: contractPrincipalSchema,
                   function_name: z.string().regex(clarityFunctionNamePattern),
                 })
-                .nullable(),
+                .nullable()
+                .optional()
+                .default(null),
             }),
           })
           .strip(),

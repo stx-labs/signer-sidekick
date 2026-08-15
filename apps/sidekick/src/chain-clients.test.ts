@@ -262,8 +262,8 @@ describe("Stacks API client", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          total: 1,
-          limit: 1,
+          total: 2,
+          limit: 2,
           cursor: { current: cursor, previous: null, next: null },
           results: [
             {
@@ -283,6 +283,22 @@ describe("Stacks API client", () => {
               },
               involvement: "sender",
             },
+            {
+              transaction: {
+                tx_id: `0x${"44".repeat(32)}`,
+                status: "success",
+                type: "token_transfer",
+                block: {
+                  height: 8_599_999,
+                  hash: `0x${"55".repeat(32)}`,
+                  index_hash: `0x${"66".repeat(32)}`,
+                  time: 1_783_999_995,
+                  tx_index: 2,
+                },
+                bitcoin_block: { height: 960_239, time: 1_783_999_995 },
+              },
+              involvement: "sender",
+            },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -290,12 +306,15 @@ describe("Stacks API client", () => {
     );
     const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
 
-    await expect(client.getPrincipalTransactions(principal, cursor, 1)).resolves.toMatchObject({
-      total: 1,
-      results: [{ transaction: { tx_id: txId, contract_call: { contract_id: pox5 } } }],
+    await expect(client.getPrincipalTransactions(principal, cursor, 2)).resolves.toMatchObject({
+      total: 2,
+      results: [
+        { transaction: { tx_id: txId, contract_call: { contract_id: pox5 } } },
+        { transaction: { type: "token_transfer", contract_call: null } },
+      ],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      `https://api.example.test/extended/v3/principals/${principal}/transactions?limit=1&cursor=${encodeURIComponent(cursor)}`,
+      `https://api.example.test/extended/v3/principals/${principal}/transactions?limit=2&cursor=${encodeURIComponent(cursor)}`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
