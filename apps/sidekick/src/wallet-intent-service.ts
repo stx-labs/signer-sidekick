@@ -22,6 +22,7 @@ import {
   type BrowserWalletTransaction,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
+  onboardingBrowserWalletIntentCreateRequestSchema,
   type RecurringBrowserWalletIntentCreateRequest,
   type RecurringWalletIntentAction,
   recurringBrowserWalletIntentCreateRequestSchema,
@@ -144,6 +145,75 @@ const storedManifestV1Schema = z
 
 const walletIntentRequestSchema = recurringBrowserWalletIntentCreateRequestSchema;
 
+/**
+ * Append-only reader for setup intents written before Sidekick stopped owning day-zero manager
+ * deployment. These records remain useful transaction evidence, but this schema is deliberately
+ * not used by the current preparation API.
+ */
+const storedSetupManifestV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    id: z.uuid(),
+    action: z.enum(["deploy-manager", "register-self"]),
+    request: onboardingBrowserWalletIntentCreateRequestSchema,
+    network: z.enum(["mainnet", "pox5-testnet", "devnet", "regtest"]),
+    chainId: z.number().int().nonnegative().max(0xffff_ffff),
+    requiredSender: z.string().min(1),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    transaction: browserWalletTransactionSchema,
+    review: z
+      .object({
+        title: z.string().min(1),
+        summary: z.string().min(1),
+        expectedPostState: z.string().min(1),
+        fields: z
+          .array(z.object({ label: z.string().min(1), value: z.string().min(1) }).strict())
+          .min(1)
+          .max(16),
+      })
+      .strict(),
+    seal: z.object({ factsSha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.request.action !== value.action) {
+      context.addIssue({
+        code: "custom",
+        path: ["request"],
+        message: "Wallet intent request and action do not match",
+      });
+    }
+    const expectedChainId =
+      value.network === "mainnet"
+        ? mainnetChainId
+        : value.network === "pox5-testnet"
+          ? pox5TestnetChainId
+          : null;
+    if (
+      (expectedChainId !== null && value.chainId !== expectedChainId) ||
+      value.transaction.params.network !== value.network
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["network"],
+        message: "Wallet intent network binding does not match",
+      });
+    }
+    if (
+      (value.action === "deploy-manager" && value.transaction.method !== "stx_deployContract") ||
+      (value.action === "register-self" &&
+        (value.transaction.method !== "stx_callContract" ||
+          value.transaction.params.functionName !== "register-self"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["transaction"],
+        message: "Wallet intent action and transaction do not match",
+      });
+    }
+  });
+
 function walletNetworkChecksPass(snapshot: OperatorAnchorSnapshot, chainId: number): boolean {
   const nodeNetwork = snapshot.preflight.checks.find((check) => check.id === "node-network");
   const nodeSync = snapshot.preflight.checks.find((check) => check.id === "node-sync");
@@ -242,7 +312,11 @@ const storedManifestV2Schema = z
     }
   });
 
-const storedManifestSchema = z.union([storedManifestV1Schema, storedManifestV2Schema]);
+const storedManifestSchema = z.union([
+  storedManifestV1Schema,
+  storedSetupManifestV2Schema,
+  storedManifestV2Schema,
+]);
 type StoredManifest = z.infer<typeof storedManifestSchema>;
 
 const publicVerificationSchema = z
@@ -771,7 +845,18 @@ export class WalletIntentService {
   }
 
   private requestFromManifest(manifest: StoredManifest): RecurringBrowserWalletIntentCreateRequest {
-    if (manifest.schemaVersion === 2) return manifest.request;
+    if (manifest.schemaVersion === 2) {
+      if (manifest.request.action === "deploy-manager") {
+        throw new WalletIntentError(
+          "wallet_intent_invalid",
+          "Legacy setup transactions cannot be prepared again; start the recurring operation again",
+        );
+      }
+      if (manifest.request.action === "register-self" && !("actorPrincipal" in manifest.request)) {
+        return { action: "register-self", actorPrincipal: manifest.requiredSender };
+      }
+      return walletIntentRequestSchema.parse(manifest.request);
+    }
     if (manifest.action === "register-self") {
       return { action: "register-self", actorPrincipal: manifest.requiredSender };
     }
