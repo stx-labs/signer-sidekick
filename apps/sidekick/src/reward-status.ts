@@ -1547,7 +1547,9 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
     global: status.global,
     manager: status.manager,
     totals: status.totals,
-    stakers: status.stakers.map(({ rewardCycle: _rewardCycle, ...staker }) => staker),
+    stakers: status.stakers.map(
+      ({ rewardCycle: _rewardCycle, claims: _claims, ...staker }) => staker,
+    ),
   });
   return status;
 }

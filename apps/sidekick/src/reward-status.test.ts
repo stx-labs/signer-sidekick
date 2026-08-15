@@ -584,6 +584,11 @@ describe("STX-only reward status", () => {
         ]),
       }),
     );
+    const persistedStakers = vi.mocked(projectionStore.putRewardCycleSnapshot).mock.calls[0]?.[0]
+      .stakers;
+    expect(persistedStakers).toHaveLength(2);
+    expect(persistedStakers?.[0]).not.toHaveProperty("claims");
+    expect(persistedStakers?.[1]).not.toHaveProperty("claims");
     expect(projectionStore.putRewardOutlookObservation).not.toHaveBeenCalled();
   });
 
