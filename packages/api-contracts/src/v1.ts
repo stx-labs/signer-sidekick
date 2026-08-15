@@ -363,6 +363,7 @@ export const healthRollupSchema = z
     rejected: z.number().int().nonnegative().nullable(),
     disagreements: z.number().int().nonnegative().nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
+    validationP95Seconds: z.number().nonnegative().nullable().default(null),
   })
   .strict();
 
@@ -493,6 +494,9 @@ export const healthSnapshotSchema = z.looseObject({
       rejected: z.number().nullable(),
       rejectionPercent: z.number().nullable(),
       responseP95Seconds: z.number().nullable(),
+      // Retained health snapshots from before validation latency was exposed
+      // should remain readable after an upgrade.
+      validationP95Seconds: z.number().nullable().default(null),
       disagreements: z.number().nullable(),
       collectingBaseline: z.boolean(),
     }),
@@ -2366,6 +2370,8 @@ export const overviewSignerHealthSummarySchema = z
     acceptedLastHour: z.number().int().nonnegative().nullable(),
     rejectedLastHour: z.number().int().nonnegative().nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
+    // Overview payloads retained across a Sidekick upgrade predate this field.
+    validationP95Seconds: z.number().nonnegative().nullable().default(null),
     detail: z.string().min(1).max(1_000),
     evidence: z.array(overviewEvidenceSchema).min(1),
     detailsAction: signerHealthDetailsActionSchema,

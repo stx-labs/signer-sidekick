@@ -318,7 +318,7 @@ describe("Signer Health v2 diagnosis", () => {
     expect(staticSigner.findings.map(({ id }) => id)).not.toContain("signer-node-view-behind");
   });
 
-  it("monitors elevated end-to-end response time without attributing a local fault alone", () => {
+  it("retains elevated end-to-end response time without opening a health finding", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const first = signerMetrics({
       proposalsTotal: 10,
@@ -349,21 +349,81 @@ describe("Signer Health v2 diagnosis", () => {
       burnBlockTiming: null,
       operator,
     });
-    expect(snapshot.findings).toContainEqual(
-      expect.objectContaining({
-        id: "signer-response-latency-elevated",
-        severity: "info",
-        classification: "insufficient-evidence",
-      }),
-    );
-    expect(snapshot.overallStatus).toBe("monitoring");
-    expect(snapshot.diagnosis).toMatchObject({
-      status: "monitoring",
-      title: "End-to-end signer response time is elevated",
-    });
+    expect(snapshot.signer.last15Minutes.responseP95Seconds).toBeGreaterThan(5);
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain("signer-response-latency-elevated");
+    expect(snapshot.diagnosis.activeFindingIds).toEqual([]);
   });
 
-  it("detects response gaps, elevated rejection, latency, and agreement conflicts", () => {
+  it("alerts on sustained node-reported validation latency", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const first = signerMetrics({
+      validationAcceptedTotal: 10,
+      validationLatencyBuckets: { "1": 10, "10": 10, "+Inf": 10 },
+      nodeRpcLatencyBuckets: { "1": 10, "+Inf": 10 },
+    });
+    const last = signerMetrics({
+      validationAcceptedTotal: 30,
+      validationLatencyBuckets: { "1": 10, "10": 30, "+Inf": 30 },
+      nodeRpcLatencyBuckets: { "1": 30, "+Inf": 30 },
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        observation(new Date(startedAt).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: first,
+        }),
+        observation(new Date(startedAt + 60_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: last,
+        }),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.findings).toContainEqual(
+      expect.objectContaining({
+        id: "signer-validation-latency-elevated",
+        severity: "warning",
+        source: "node",
+        classification: "likely-local-node",
+        confidence: "medium",
+      }),
+    );
+  });
+
+  it("does not alert on validation latency before the minimum population", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        observation(new Date(startedAt).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({
+            validationAcceptedTotal: 0,
+            validationLatencyBuckets: { "1": 0, "10": 0, "+Inf": 0 },
+          }),
+        }),
+        observation(new Date(startedAt + 60_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({
+            validationAcceptedTotal: 19,
+            validationLatencyBuckets: { "1": 0, "10": 19, "+Inf": 19 },
+          }),
+        }),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.signer.last15Minutes.validationP95Seconds).toBeGreaterThan(5);
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain(
+      "signer-validation-latency-elevated",
+    );
+  });
+
+  it("detects response gaps, elevated rejection, validation latency, and agreement conflicts", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     // Proposals climb far faster than responses across samples that are all old enough to have been
     // answered, so the settled proposal/response gap is real rather than trailing-edge in-flight.
@@ -371,22 +431,28 @@ describe("Signer Health v2 diagnosis", () => {
       proposalsTotal: 10,
       acceptedTotal: 8,
       rejectedTotal: 2,
+      validationAcceptedTotal: 10,
       conflictTotal: 1,
       responseLatencyBuckets: { "1": 8, "10": 10, "+Inf": 10 },
+      validationLatencyBuckets: { "1": 0, "10": 10, "+Inf": 10 },
     });
     const middle = signerMetrics({
       proposalsTotal: 60,
       acceptedTotal: 12,
       rejectedTotal: 4,
+      validationAcceptedTotal: 60,
       conflictTotal: 3,
       responseLatencyBuckets: { "1": 9, "10": 15, "+Inf": 15 },
+      validationLatencyBuckets: { "1": 5, "10": 60, "+Inf": 60 },
     });
     const last = signerMetrics({
       proposalsTotal: 110,
       acceptedTotal: 20,
       rejectedTotal: 12,
+      validationAcceptedTotal: 110,
       conflictTotal: 5,
       responseLatencyBuckets: { "1": 10, "10": 30, "+Inf": 30 },
+      validationLatencyBuckets: { "1": 10, "10": 110, "+Inf": 110 },
     });
     const snapshot = buildHealthSnapshot({
       observations: [
@@ -412,7 +478,7 @@ describe("Signer Health v2 diagnosis", () => {
       expect.arrayContaining([
         "signer-proposal-response-gap",
         "signer-rejection-rate-elevated",
-        "signer-response-latency-elevated",
+        "signer-validation-latency-elevated",
         "signer-agreement-conflicts-elevated",
       ]),
     );

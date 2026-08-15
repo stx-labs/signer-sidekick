@@ -76,8 +76,8 @@ interface ActivityProjectionInput {
 }
 
 interface ActivityCursor {
-  version: 1;
-  updatedAt: string;
+  version: 2;
+  occurredAt: string;
   activityId: string;
   filterSha256: string;
 }
@@ -311,8 +311,8 @@ function decodeCursor(value: string, query: ActivityQuery): ActivityCursor {
   try {
     const parsed = z
       .object({
-        version: z.literal(1),
-        updatedAt: z.iso.datetime(),
+        version: z.literal(2),
+        occurredAt: z.iso.datetime(),
         activityId: activityIdSchema,
         filterSha256: z.string().regex(/^[0-9a-f]{64}$/),
       })
@@ -392,15 +392,15 @@ function matchesFilters(
     matchesStatus(item, query.status) &&
     matchesType(item, query.type) &&
     (query.domain === "all" || item.domain === query.domain) &&
-    (cutoff === null || isActive(item.displayStatus) || Date.parse(item.updatedAt) >= cutoff) &&
+    (cutoff === null || isActive(item.displayStatus) || Date.parse(item.occurredAt) >= cutoff) &&
     matchesSearch(item, query.search)
   );
 }
 
 function historyOrder(left: ActivityGroupSummary, right: ActivityGroupSummary): number {
-  const updatedDifference = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-  return updatedDifference !== 0
-    ? updatedDifference
+  const occurredDifference = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+  return occurredDifference !== 0
+    ? occurredDifference
     : left.activityId.localeCompare(right.activityId);
 }
 
@@ -418,8 +418,8 @@ export function projectActivityPage(input: ActivityProjectionInput): ActivityRes
     const cursor = decodeCursor(input.query.cursor, input.query);
     history = history.filter(
       (item) =>
-        Date.parse(item.updatedAt) < Date.parse(cursor.updatedAt) ||
-        (item.updatedAt === cursor.updatedAt && item.activityId > cursor.activityId),
+        Date.parse(item.occurredAt) < Date.parse(cursor.occurredAt) ||
+        (item.occurredAt === cursor.occurredAt && item.activityId > cursor.activityId),
     );
   }
   const items = history.slice(0, limit);
@@ -427,8 +427,8 @@ export function projectActivityPage(input: ActivityProjectionInput): ActivityRes
   const nextCursor =
     history.length > limit && last
       ? encodeCursor({
-          version: 1,
-          updatedAt: last.updatedAt,
+          version: 2,
+          occurredAt: last.occurredAt,
           activityId: last.activityId,
           filterSha256: filterSha256(input.query),
         })
@@ -887,6 +887,10 @@ function eventTitle(kind: string | null, decodedPayload: unknown): string {
   return kind ? kind.replaceAll("-", " ") : "Manager contract activity";
 }
 
+function chainEventOccurredAt(event: StoredActivityChainEvent): string {
+  return event.occurredAt ?? event.firstSeenAt;
+}
+
 function chainEventRecord(
   chainId: number,
   txid: string,
@@ -908,9 +912,12 @@ function chainEventRecord(
   const poolEvents =
     pox5ContractId === null ? [] : events.filter(({ contractId }) => contractId === pox5ContractId);
   const occurredAt =
-    [...events].sort(
-      (left, right) => Date.parse(left.firstSeenAt) - Date.parse(right.firstSeenAt),
-    )[0]?.firstSeenAt ??
+    [...events]
+      .sort(
+        (left, right) =>
+          Date.parse(chainEventOccurredAt(left)) - Date.parse(chainEventOccurredAt(right)),
+      )
+      .map(chainEventOccurredAt)[0] ??
     events[0]?.updatedAt ??
     new Date(0).toISOString();
   const updatedAt =
@@ -962,7 +969,7 @@ function chainEventRecord(
         code: event.canonical ? "verified-chain-event" : "chain-event-noncanonical",
         title: event.canonical ? "Verified contract event" : "Contract event became noncanonical",
         detail: `${decodedEventKind(event.decodedPayload)?.replaceAll("-", " ") ?? event.topic ?? "Manager print"} at event index ${event.eventIndex}.`,
-        occurredAt: event.updatedAt,
+        occurredAt: event.canonical ? chainEventOccurredAt(event) : event.updatedAt,
         source:
           pox5ContractId !== null && event.contractId === pox5ContractId
             ? ("indexed-pool-history" as const)

@@ -1,6 +1,10 @@
 import { decodeClarityHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { z } from "zod";
-import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
+import {
+  type SmartContractLogPage,
+  type TransactionSummary,
+  transactionOccurredAt,
+} from "./chain-clients.js";
 import {
   type ManagerEventNodeBlocks,
   type ManagerEventNodeTransactions,
@@ -199,6 +203,7 @@ export async function syncPox5PoolActivity(
         decodedPayload: { transactionStatus: transaction.status, event },
         evidenceLevel: transactionEvidence.get(log.tx_id),
         sourceId: options.sourceId,
+        occurredAt: transactionOccurredAt(transaction),
         observedAt: options.observedAt,
       };
     });

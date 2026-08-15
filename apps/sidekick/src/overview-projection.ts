@@ -11,6 +11,7 @@ import type {
   OverviewEvidence,
   OverviewPage,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { HEALTH_RULES } from "./health-monitoring-rules.js";
 
 interface ObserverGapStatus {
   status: "healthy" | "degraded" | "not-started" | "unknown";
@@ -794,6 +795,7 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
       acceptedLastHour: null,
       rejectedLastHour: null,
       responseP95Seconds: null,
+      validationP95Seconds: null,
       detail: "Signer monitoring evidence is not available.",
       evidence: [evidence({ status: "unavailable", observedAt: null, source: "signer" })],
       detailsAction: healthAction("signer", "Review signer health"),
@@ -823,6 +825,7 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
     acceptedLastHour: health.signer.lastHour.accepted,
     rejectedLastHour: health.signer.lastHour.rejected,
     responseP95Seconds: health.signer.lastHour.responseP95Seconds,
+    validationP95Seconds: health.signer.lastHour.validationP95Seconds,
     detail: notConfigured
       ? "Signer monitoring is not configured."
       : unavailable
@@ -1001,7 +1004,9 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   }
 
   if (health) {
-    const nodeUnavailable = health.findings.some(({ id }) => id === "node-rpc-unavailable");
+    const nodeUnavailable = health.findings.some(
+      ({ id }) => id === HEALTH_RULES.nodeRpcUnavailable.id,
+    );
     for (const finding of health.findings) {
       const domain: OverviewDomain =
         finding.source === "node" ? "node" : finding.source === "signer" ? "signer" : "network";
@@ -1009,11 +1014,11 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
       candidates.push({
         conditionKey,
         suppressedBy:
-          finding.id === "signer-node-heartbeat-failed" && nodeUnavailable
+          finding.id === HEALTH_RULES.signerNodeHeartbeatFailed.id && nodeUnavailable
             ? ["node:node-rpc-unavailable"]
             : [],
         suppresses:
-          finding.id === "node-rpc-unavailable"
+          finding.id === HEALTH_RULES.nodeRpcUnavailable.id
             ? [
                 "snapshot:delayed",
                 "node:node-behind-network",

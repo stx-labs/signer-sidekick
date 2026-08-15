@@ -565,13 +565,13 @@ export function SignerHealthPage({
                 ? "—"
                 : `${snapshot.signer.last15Minutes.rejectionPercent.toFixed(1)}%`}
             </Metric>
-            <Metric label="Response p95">
+            <Metric label="Response p95 estimate (diagnostic)">
               {displaySeconds(snapshot.signer.last15Minutes.responseP95Seconds)}
             </Metric>
             <Metric label="Node RPC p95">
               {displaySeconds(snapshot.signer.last15Minutes.nodeRpcP95Seconds)}
             </Metric>
-            <Metric label="Validation p95">
+            <Metric label="Validation p95 estimate">
               {displaySeconds(snapshot.signer.last15Minutes.validationP95Seconds)}
             </Metric>
             <Metric label="Capitulation p95">

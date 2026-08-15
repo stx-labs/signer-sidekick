@@ -149,8 +149,12 @@ describe("PoX-5 pool Activity synchronization", () => {
     expect(api.getTransaction).toHaveBeenCalledWith(txid);
     expect(api.getTransaction).toHaveBeenCalledWith(otherTxid);
     expect(nodeTransactions.lookupIndexedTransaction).toHaveBeenCalledWith(txid);
-    expect(sidekickStore.getChainEvent(1, txid, 3)?.decodedPayload).toMatchObject({
-      event: { kind: "stake", relationship: "joined", stakerPrincipal: staker },
+    expect(sidekickStore.getChainEvent(1, txid, 3)).toMatchObject({
+      occurredAt: "2026-08-15T13:20:00.000Z",
+      firstSeenAt: observedAt,
+      decodedPayload: {
+        event: { kind: "stake", relationship: "joined", stakerPrincipal: staker },
+      },
     });
     expect(sidekickStore.getChainEvent(1, otherTxid, 4)).toBeNull();
     expect(sidekickStore.getCursor(sourceId, pox5PoolActivityStream(pox5, manager))).toMatchObject({

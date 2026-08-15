@@ -1,4 +1,4 @@
-# Deployed signer-manager baseline
+# Manager compatibility baseline
 
 - Status: Registration-derived mainnet census complete; capability-level behavioral verification
   still required

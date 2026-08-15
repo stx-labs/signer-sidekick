@@ -793,6 +793,9 @@ test("shows active work and durable Activity evidence without horizontal overflo
   await expect(page.getByText("Active work", { exact: false })).toBeVisible();
   await expect(page.getByRole("link", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByText("Staker reward claimed", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("article").filter({ hasText: "Staker reward claimed" }).locator("time"),
+  ).toHaveAttribute("datetime", "2026-08-13T16:00:00.000Z");
 
   await page.getByRole("link", { name: "Update manager fee" }).click();
   await expect(page.getByRole("heading", { name: "Operation summary" })).toBeVisible();

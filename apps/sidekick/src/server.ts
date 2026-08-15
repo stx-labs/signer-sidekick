@@ -1555,9 +1555,16 @@ export function createServer(options: ServerOptions = {}) {
       }
       if (health.signer.last15Minutes.responseP95Seconds !== null) {
         metrics.push(
-          "# HELP sidekick_signer_response_p95_seconds Approximate signer response p95 in the rolling 15-minute window.",
+          "# HELP sidekick_signer_response_p95_seconds Diagnostic-only approximate signer response p95 in the rolling 15-minute window; this does not open health findings.",
           "# TYPE sidekick_signer_response_p95_seconds gauge",
           `sidekick_signer_response_p95_seconds ${health.signer.last15Minutes.responseP95Seconds}`,
+        );
+      }
+      if (health.signer.last15Minutes.validationP95Seconds !== null) {
+        metrics.push(
+          "# HELP sidekick_signer_validation_p95_seconds Approximate node-reported successful block-validation p95 in the rolling 15-minute window.",
+          "# TYPE sidekick_signer_validation_p95_seconds gauge",
+          `sidekick_signer_validation_p95_seconds ${health.signer.last15Minutes.validationP95Seconds}`,
         );
       }
     }

@@ -11,6 +11,7 @@ import {
   dashboardSnapshotSchema,
   deploymentRequirementsSchema,
   healthFindingSchema,
+  healthRollupSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   overviewPageSchema,
   reconciliationOperationSchema,
@@ -110,6 +111,26 @@ describe("Signer Health v2 contracts", () => {
     );
     expect(healthFindingSchema.safeParse({ ...finding, observations: [] }).success).toBe(false);
   });
+
+  it("defaults validation p95 for rollups written before validation alerting", () => {
+    expect(
+      healthRollupSchema.parse({
+        windowStartedAt: observedAt,
+        windowEndedAt: observedAt,
+        sampleCount: 1,
+        nodeRpcAvailabilityPercent: 100,
+        signerAvailabilityPercent: 100,
+        nodeStacksHeightStart: 100,
+        nodeStacksHeightEnd: 100,
+        nodeAdvanceCount: 0,
+        proposals: 0,
+        accepted: 0,
+        rejected: 0,
+        disagreements: 0,
+        responseP95Seconds: 1,
+      }),
+    ).toMatchObject({ validationP95Seconds: null });
+  });
 });
 
 describe("Overview V1 contracts", () => {
@@ -197,6 +218,7 @@ describe("Overview V1 contracts", () => {
         acceptedLastHour: 12,
         rejectedLastHour: 0,
         responseP95Seconds: 0.8,
+        validationP95Seconds: 0.4,
         detail: "Signer monitoring is healthy and aligned with the node.",
         evidence: [{ ...evidence, source: "signer" as const }],
         detailsAction: openHealth("signer"),
@@ -275,6 +297,14 @@ describe("Overview V1 contracts", () => {
     const parsed = overviewPageSchema.safeParse(overviewFixture());
     if (!parsed.success) throw parsed.error;
     expect(parsed.data.schemaVersion).toBe(1);
+  });
+
+  it("defaults validation p95 for retained Overview payloads", () => {
+    const fixture = overviewFixture();
+    const { validationP95Seconds: _legacyMissingField, ...legacySigner } = fixture.signer;
+    expect(
+      overviewPageSchema.parse({ ...fixture, signer: legacySigner }).signer.validationP95Seconds,
+    ).toBeNull();
   });
 
   it("keeps reward estimate provenance, confidence, and fee availability coherent", () => {

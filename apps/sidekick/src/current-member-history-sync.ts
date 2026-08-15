@@ -4,6 +4,7 @@ import type {
   TransactionEventPage,
   TransactionSummary,
 } from "./chain-clients.js";
+import { transactionOccurredAt } from "./chain-clients.js";
 import {
   type ManagerEventNodeBlocks,
   type ManagerEventNodeTransactions,
@@ -225,6 +226,7 @@ export async function syncCurrentMemberHistoryPass(
         decodedPayload: { transactionStatus: transaction.status, event: decoded },
         evidenceLevel,
         sourceId: options.sourceId,
+        occurredAt: transactionOccurredAt(transaction),
         observedAt: options.observedAt,
       });
     }

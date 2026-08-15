@@ -119,6 +119,7 @@ describe("HealthMonitoringRepository", () => {
         rejected: null,
         disagreements: null,
         responseP95Seconds: null,
+        validationP95Seconds: null,
       },
       "2026-08-14T12:00:05.000Z",
     );
@@ -222,6 +223,7 @@ describe("HealthMonitoringRepository", () => {
         rejected: null,
         disagreements: null,
         responseP95Seconds: null,
+        validationP95Seconds: null,
       },
       "2026-05-01T00:05:00.000Z",
     );

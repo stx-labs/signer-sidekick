@@ -96,7 +96,7 @@ make the next investigation step clear without inventing certainty.
 | Local node Prometheus | peer counts and warning/error counter changes | Supporting local evidence; missing release-specific metrics reduce coverage |
 | Local signer `/info` | signer key, address, network, version | Primary for the runtime identity the signer reports |
 | Local signer `/heartbeat` | whether the signer can reach its configured node | Primary first-person node-connectivity signal from the signer |
-| Local signer `/metrics` | node view, reward cycle, proposals, validation, responses, latency, conflicts | Primary for aggregate signer behavior; it does not explain what every other signer did |
+| Local signer `/metrics` | node view, reward cycle, proposals, validation, responses, latency, conflicts | Primary for what the signer reports; validation duration is reported by its local node, while response duration remains diagnostic only |
 | Anchored operator snapshot | registered signer key, grant, manager, current and next expected participation | Node-proved operator context; determines whether signer observations are relevant to expected participation |
 | Hiro reference API | independently indexed Stacks and Bitcoin tip progression | Comparison only; delay or failure is a source condition, not a local failure |
 | Separately configured indexed API | a second chain-progression comparison when its origin is distinct | Comparison only; the same origin is not counted twice |
@@ -158,33 +158,32 @@ can prove it.
 
 ### 4. Apply sustained rules
 
-The current closed thresholds are:
-
-| Condition | Finding threshold |
-| --- | --- |
-| Node or signer endpoint/heartbeat failure | 3 consecutive samples spanning at least 10 seconds |
-| Local node behind connected peers | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Local node tip stall | at least 90 seconds plus one advancing peer/API signal |
-| Suspected network stall | at least 180 seconds plus two distinct stalled peer/API signals |
-| Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while local advances |
-| Signer identity, network, or cycle mismatch | 3 samples spanning at least 10 seconds |
-| Signer node view behind local node | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses after a 30-second settling window, measured over 15 minutes |
-| Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes |
-| Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
-| Agreement conflicts | at least 3 conflicts in 15 minutes |
+Every finding requires a defined sample count and minimum duration (see "Time and repetition" above).
+The exact thresholds are the implementation contract and are listed once, in the
+[Signer Health v2](signer-health.md) thresholds table; this document does not restate them so the two
+cannot drift apart.
 
 These are product thresholds, not protocol constants. They should change only with test fixtures and
 real incident/calibration evidence showing that a different boundary improves operator decisions.
+The typed source of truth is `apps/sidekick/src/health-monitoring-rules.ts`; it records each rule's
+stable identifier, threshold, rationale, and false-positive guard. The evaluator must create a
+finding through that catalog, which prevents an undocumented ad hoc condition from opening a
+durable incident.
+
+End-to-end response p95 is intentionally not a rule. It remains available in telemetry and support
+data, but Stacks Signer derives it from the block header's wall-clock timestamp. It cannot open or
+strengthen a Sidekick health finding. Validation p95 is actionable because the local Stacks node
+reports `validation_time_ms` for each successful validation response.
 
 ### 5. Attribute without overstating
 
 The available classifications are:
 
 - `healthy`: no sustained actionable finding is supported.
-- `likely-local-node`: local RPC, peer-gap, sync, or local-stall evidence points to this node.
-- `likely-local-signer`: signer reachability, identity, node view, participation, or response-time
-  evidence points to this signer.
+- `likely-local-node`: local RPC, peer-gap, sync, local-stall, or node-reported validation evidence
+  points to this node.
+- `likely-local-signer`: signer reachability, identity, node view, or participation evidence points
+  to this signer.
 - `source-disagreement`: sources materially disagree, or one signer metric cannot safely identify
   whether the cause is local, a proposal, or broader network context.
 - `suspected-network-wide`: the local tip is stalled and at least two distinct peer/reference
@@ -295,7 +294,9 @@ A diagnosis-model change should include:
 | --- | --- |
 | Source collection and normalization | `apps/sidekick/src/health-monitoring-sources.ts` |
 | Polling, hydration, persistence, and episode updates | `apps/sidekick/src/health-monitoring.ts` |
-| Rolling calculations, thresholds, findings, and diagnosis | `apps/sidekick/src/health-monitoring-presentation.ts` |
+| Counter/histogram math (windows, resets, p95 interpolation) | `apps/sidekick/src/health-monitoring-state.ts` |
+| Rule catalog, thresholds, rationale, and false-positive guards | `apps/sidekick/src/health-monitoring-rules.ts` |
+| Finding evaluation and diagnosis | `apps/sidekick/src/health-monitoring-presentation.ts` |
 | Durable observations, rollups, and episodes | `apps/sidekick/src/storage/health-monitoring-repository.ts` |
 | Public health schemas | `packages/api-contracts/src/v1.ts` |
 | Operator-facing Signer Health page | `apps/dashboard/src/signer-health.tsx` |

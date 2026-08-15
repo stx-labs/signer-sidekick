@@ -192,6 +192,7 @@ describe("current-member history synchronization", () => {
       txId: txid,
       eventIndex: 1,
       evidenceLevel: "node-index-verified",
+      occurredAt: "2026-08-15T13:20:00.000Z",
       decodedPayload: { event: { stakerPrincipal: staker, signer: manager } },
     });
     expect(storedCursor).toMatchObject({

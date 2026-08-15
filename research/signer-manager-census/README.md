@@ -66,6 +66,6 @@ Refresh the checked-in snapshot:
 - at least monthly while mainnet PoX-5 managers are changing.
 
 The latest snapshot is the research baseline; older snapshots may be retained when needed to
-explain a behavioral change. A refresh can reprioritize review work, but cannot grant a transaction
-capability. That still requires immutable source fingerprints, behavioral review, golden vectors,
-and end-to-end action tests in runtime code.
+explain a behavioral change. A refresh can reprioritize review work but cannot grant a transaction
+capability; the admission gate is defined in
+[Manager compatibility baseline](../../docs/product/manager-compatibility-baseline.md).

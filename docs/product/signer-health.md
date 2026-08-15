@@ -25,7 +25,7 @@ does not stop collection.
 | --- | --- | --- |
 | Stacks node `/v2/info` and `/v3/health` | chain tip, network, sync, connected-peer height view | authoritative for local operating state |
 | Stacks node Prometheus | peers and node warning/error counters | local supporting evidence |
-| Signer `/info`, `/heartbeat`, `/metrics` | identity, node view, cycle, proposals, validation, responses, latency, agreement | authoritative for what this signer reports |
+| Signer `/info`, `/heartbeat`, `/metrics` | identity, node view, cycle, proposals, validation, responses, latency, agreement | authoritative for what this signer and its node report through signer monitoring |
 | Anchored operator snapshot | manager, registration, signer key/grant, current and next participation | node-proved operator context |
 | Hiro reference API | independent public tip progression | comparison only |
 | Configured indexed API | second comparison when it is a distinct origin | comparison only |
@@ -52,26 +52,37 @@ distinct-source count, confidence, and supporting/contradicting evidence.
 
 The current thresholds are deliberately closed and operator-readable:
 
-| Finding | Minimum evidence |
-| --- | --- |
-| Node/signer endpoint failure or heartbeat failure | 3 consecutive samples spanning at least 10 seconds |
-| Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
-| Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
-| Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
-| Signer identity, network, or cycle mismatch | 3 samples spanning at least 10 seconds |
-| Signer node view behind local node | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
-| Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes |
-| Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
-| Agreement conflicts | at least 3 conflicts in 15 minutes |
+| Rule ID | Finding | Minimum evidence |
+| --- | --- | --- |
+| `node-rpc-unavailable` | Node RPC unavailable | 3 consecutive samples spanning at least 10 seconds |
+| `signer-monitoring-unavailable` | Signer monitoring unavailable | 3 consecutive samples spanning at least 10 seconds |
+| `signer-node-heartbeat-failed` | Signer cannot reach its node | 3 consecutive samples spanning at least 10 seconds |
+| `signer-metrics-unavailable` | Signer metrics unavailable | 3 consecutive samples spanning at least 10 seconds; suppressed when all signer monitoring is unavailable |
+| `node-behind-network` | Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
+| `node-tip-stalled-locally` | Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
+| `network-tip-stalled` | Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
+| `reference-api-behind-local-node` / `configured-api-behind-local-node` | Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
+| `signer-identity-mismatch` / `signer-network-mismatch` / `signer-reward-cycle-mismatch` | Signer configuration mismatch | 3 samples spanning at least 10 seconds against node-proved context |
+| `signer-node-view-behind` | Signer node view behind local node | at least 3 Stacks blocks across 3 signer-height updates spanning at least 2 minutes; 2 healthy updates resolve it |
+| `signer-proposal-response-gap` | Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
+| `signer-rejection-rate-elevated` | Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes; cause remains unattributed |
+| `signer-validation-latency-elevated` | Elevated node validation latency | at least 20 successful validations and node-reported p95 above 5 seconds in 15 minutes |
+| `signer-agreement-conflicts-elevated` | Agreement conflicts | at least 3 conflicts in 15 minutes; cause remains unattributed |
 
 Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
 derive windowed p95 from cumulative-counter increases, re-baselining every bucket together on a
-reset and interpolating within the crossing bucket (as Prometheus `histogram_quantile` does) rather
+reset and interpolating within the crossing bucket (as Prometheus
+[`histogram_quantile`](https://prometheus.io/docs/prometheus/latest/querying/functions/#histogram_quantile)
+does) rather
 than reporting the bucket's upper boundary. Incomplete or non-monotonic histogram intervals are
 excluded rather than allowed to create a false latency finding. Missing release-specific metrics
 reduce coverage rather than failing the entire signer source.
+
+End-to-end response p95 remains visible as diagnostic telemetry and in support data, but it cannot
+open or strengthen a health finding. Stacks Signer derives that measurement from the block header's
+wall-clock timestamp, so Sidekick does not treat it as a reliable local alert boundary. The
+validation-latency rule instead uses `validation_time_ms` reported by the local Stacks node for
+successful validation responses.
 
 ## Durable history
 
@@ -82,7 +93,8 @@ and continues counter baselines. Changing the monitored configuration resolves t
 configuration's active episodes and starts a separate evidence stream.
 
 The API returns up to 288 recent rollups and 50 recent episodes. Rollups contain source
-availability, tip progression, proposal/response/rejection/conflict changes, and response p95.
+availability, tip progression, proposal/response/rejection/conflict changes, response p95 for
+diagnostics, and validation p95 for alert calibration.
 
 ## Operator and support surfaces
 
@@ -98,7 +110,8 @@ money-moving operations, not node and signer diagnosis.
 
 The existing Prometheus endpoint exports the one-hot diagnosis, active findings by classification,
 retained observation count, latest sample time, per-source availability, and the rolling signer
-response gap, rejection percentage, and response p95 when those measurements are available.
+response gap, rejection percentage, response p95, and validation p95 when those measurements are
+available. Exporting a diagnostic metric does not make it an alerting rule.
 
 Signer Health shows the primary diagnosis, evidence window, active findings, local node and signer
 state, distinct comparison sources, current/next participation expectation, 15-minute signing

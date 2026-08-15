@@ -163,7 +163,10 @@ describe("manager event synchronization", () => {
       }),
     ).resolves.toMatchObject({ newEvents: 1, nodeVerifiedTransactions: 1 });
     expect(nodeTransactions.lookupIndexedTransaction).toHaveBeenCalledWith(txOne);
-    expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toMatchObject({
+      occurredAt: "2026-07-14T03:33:20.000Z",
+      firstSeenAt: observedAt,
+    });
   });
 
   it("rejects a page atomically when the local transaction witness disagrees", async () => {

@@ -237,9 +237,11 @@ describe("Activity projection", () => {
     const terminal = [
       summary("activity:a", "observed", "observed", {
         kind: "configuration-change",
+        occurredAt: "2026-08-14T09:00:00.000Z",
         updatedAt: "2026-08-14T11:00:00.000Z",
       }),
       summary("activity:b", "complete", "succeeded", {
+        occurredAt: "2026-08-14T10:00:00.000Z",
         updatedAt: "2026-08-14T10:00:00.000Z",
       }),
     ];
@@ -250,8 +252,16 @@ describe("Activity projection", () => {
       context: { now, burnBlockHeight: null, rewardCycleId: null, phase: null },
     });
     expect(first.active.map(({ activityId }) => activityId)).toEqual(["activity:old-active"]);
-    expect(first.items.map(({ activityId }) => activityId)).toEqual(["activity:a"]);
+    expect(first.items.map(({ activityId }) => activityId)).toEqual(["activity:b"]);
     expect(first.nextCursor).not.toBeNull();
+    expect(
+      projectActivityPage({
+        records: terminal.map(record),
+        coverage: [{ ...sourceCoverage, source: "wallet-intents" }],
+        query: query({ time: "24h", cursor: first.nextCursor, limit: 1 }),
+        context: { now, burnBlockHeight: null, rewardCycleId: null, phase: null },
+      }).items.map(({ activityId }) => activityId),
+    ).toEqual(["activity:a"]);
     expect(() =>
       projectActivityPage({
         records: terminal.map(record),
@@ -419,6 +429,7 @@ describe("Activity projection", () => {
         },
       },
       sourceId,
+      occurredAt: "2026-08-01T09:30:00.000Z",
       observedAt: "2026-08-14T10:06:00.000Z",
     });
     store.putCursor({
@@ -444,14 +455,21 @@ describe("Activity projection", () => {
         domain: "pool",
         title: "Staker moved into the pool",
         actorPrincipal,
+        occurredAt: "2026-08-01T09:30:00.000Z",
+        updatedAt: "2026-08-14T10:06:00.000Z",
         coverage: expect.arrayContaining([
           expect.objectContaining({ source: "indexed-pool-history", status: "current" }),
         ]),
       }),
     ]);
     expect(service.detail(`chain-tx:1:${txid}`)?.timeline).toContainEqual(
-      expect.objectContaining({ source: "indexed-pool-history", txid }),
+      expect.objectContaining({
+        source: "indexed-pool-history",
+        txid,
+        occurredAt: "2026-08-01T09:30:00.000Z",
+      }),
     );
+    expect(service.page(query({ domain: "pool", time: "24h" })).items).toEqual([]);
   });
 
   it("links an expired transaction review to the replacement for the same operation scope", async () => {

@@ -120,7 +120,7 @@ function ActivityRow({ item, search }: { item: ActivityGroupSummary; search: str
           <span>{activityKindLabel(item.kind)}</span>
           <span>{activityStageLabel(item.stage)}</span>
           {deadline ? <span>Due {deadline}</span> : null}
-          <time dateTime={item.updatedAt}>{activityTimestamp(item.updatedAt)}</time>
+          <time dateTime={item.occurredAt}>{activityTimestamp(item.occurredAt)}</time>
         </div>
         <ActivityIdentifiers item={item} />
       </div>
@@ -604,9 +604,14 @@ function ActivityDetailPage({
           <StatLine label="Outcome">{item.outcome}</StatLine>
           <StatLine label="Domain">{activityDomainLabel(item.domain)}</StatLine>
           <StatLine label="Type">{activityKindLabel(item.kind)}</StatLine>
-          <StatLine label="Last updated">
-            <time dateTime={item.updatedAt}>{activityTimestamp(item.updatedAt)}</time>
+          <StatLine label="Occurred">
+            <time dateTime={item.occurredAt}>{activityTimestamp(item.occurredAt)}</time>
           </StatLine>
+          {item.updatedAt === item.occurredAt ? null : (
+            <StatLine label="Last updated">
+              <time dateTime={item.updatedAt}>{activityTimestamp(item.updatedAt)}</time>
+            </StatLine>
+          )}
           <StatLine label="Activity ID">
             <CopyableIdentifier
               value={item.activityId}

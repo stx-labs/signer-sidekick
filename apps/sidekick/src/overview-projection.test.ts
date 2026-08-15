@@ -437,6 +437,7 @@ function health(overrides: Partial<HealthSnapshot> = {}): HealthSnapshot {
         rejected: 0,
         rejectionPercent: 0,
         responseP95Seconds: 0.8,
+        validationP95Seconds: 0.8,
         disagreements: 0,
         collectingBaseline: false,
       },

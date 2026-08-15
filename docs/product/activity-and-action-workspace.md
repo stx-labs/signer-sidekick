@@ -2,8 +2,8 @@
 
 - Status: Approved product contract
 - Date: 2026-08-14
-- Parent: [Signer Sidekick scope reset](scope-reset-plan-2026-08-13.md)
-- Related: [Recurring operation contracts](recurring-operation-contracts-2026-08-13.md)
+- Parent: [Scope and decisions](scope-and-decisions.md)
+- Related: [Recurring operation contracts](recurring-operation-contracts.md)
 
 ## Purpose
 
@@ -16,8 +16,9 @@ The action workspace is the common place to inspect and execute one recurring op
 Pool, Rewards, Signer Health, Settings, and Activity may all link directly to it. Operators must not
 visit an intermediate Manager or Operations page before they can act.
 
-This contract replaces the current split between the Operations page, Manager action forms,
-Rewards action forms, transaction-engine job UI, and the claims/withdrawals-only activity response.
+This contract defines the unified surface that replaced the split between the Operations page,
+Manager action forms, Rewards action forms, transaction-engine job UI, and the earlier
+claims/withdrawals-only activity response.
 It does not replace the underlying wallet-intent or transaction-engine state machines.
 
 ## Research constraints
@@ -61,9 +62,8 @@ The navigation is frozen at:
 
 Manager and Operations are removed rather than retained as aliases. The installed population is
 small enough that old dashboard URLs do not require compatibility redirects. An unknown or removed
-hash routes to Overview without interpreting old query parameters. Remove the current special
-handling for `#registration`, `#setup`, and `#enrollment` in the same change; there is one routing
-rule for every deleted surface, not separate compatibility eras.
+hash routes to Overview without interpreting old query parameters. There is no special handling for
+the deleted `#registration`, `#setup`, or `#enrollment` surfaces.
 
 Stable product routes:
 
@@ -78,10 +78,10 @@ Stable product routes:
 | `#settings` | Attachment, sources, capabilities, observer, auth, and support |
 | `#action/<operation-code>` | Start or resume one contextual recurring operation |
 
-`#action/*` is a workspace route, not a seventh navigation item. When an action creates or resumes
-a durable operation, its canonical detail route becomes `#activity/<activity-id>`. Browser Back
-returns to the originating domain page and restores that page's in-memory filters and scroll
-position.
+`#action/*` is a workspace route, not a seventh navigation item. A durable operation is inspected at
+its canonical `#activity/<activity-id>` route. The action workspace provides an explicit return to
+Settings or Rewards, and Activity filter state is encoded in its URL rather than hidden in a global
+wizard state.
 
 ## What belongs in Activity
 
@@ -136,6 +136,12 @@ If there is no active work, omit the section rather than render a large empty ca
 Show terminal operations and verified observations in reverse meaningful-time order, grouped under
 Today, Yesterday, or an absolute local date. The group heading is textual; visual timeline breaks
 are decorative only.
+
+`occurredAt` is when the operation or chain event happened, while `updatedAt` is when Sidekick last
+changed its evidence. A canonical chain event uses the indexed transaction's Stacks block time after
+the local node verifies its block correlation. Discovery/backfill time must not replace that date.
+Legacy rows that predate occurrence-time storage may temporarily fall back to `firstSeenAt`; bounded
+current-member recovery enriches them when the indexed transaction remains available.
 
 The page is a list/timeline, never a wide data table. Each row shows:
 
@@ -234,7 +240,7 @@ Initial kinds:
 - `operation`
 - `chain-event`
 - `configuration-change`
-- `finding-change` (reserved until the Signer Health contract lands)
+- `finding-change` (reserved until durable Signer Health episodes are projected into Activity)
 
 Domains:
 
@@ -268,7 +274,7 @@ History uses opaque cursor pagination ordered by meaningful timestamp and stable
 cursor is bound to a hash of the active filters so it cannot be reused with a different query.
 Active work is returned separately and is not paginated with terminal history.
 
-The first read-model implementation always loads all active wallet-intent and engine authority
+The read model always loads all active wallet-intent and engine authority
 records, while terminal source histories are bounded to the newest 10,000 records per authority.
 Crossing a terminal window marks that source's coverage `delayed`; it must never return a 503 or
 silently imply that active work is absent. Complete cursor reachability beyond that window requires
@@ -489,7 +495,7 @@ Activity is a server-owned projection over wallet intents, transaction-engine jo
 verified manager events, claims/withdrawals, runtime-setting audit, and later finding episodes. The
 frontend must not merge and sort those repositories itself.
 
-The first implementation is a deterministic read model over those existing durable repositories,
+The implementation is a deterministic read model over those existing durable repositories,
 not a second write-side activity log. Activity IDs are derived from their authority records:
 
 - `wallet-intent:<intent-id>`;
@@ -504,7 +510,7 @@ keeps the underlying repositories authoritative and makes replay/reorg correctio
 maintaining another mutable copy. A materialized cache may be added later only if measured query
 cost requires it; it must be versioned and fully rebuildable from the authority records.
 
-Proposed summary contract:
+Versioned summary contract:
 
 ```ts
 type ActivityDisplayStatus =
@@ -566,8 +572,8 @@ interface ActivityDetail {
 }
 ```
 
-`GET /api/v1/activity` changes in place to this versioned response; no parallel legacy endpoint is
-added. All in-repository clients change atomically. `GET /api/v1/activity/<activity-id>` returns the
+`GET /api/v1/activity` uses this versioned response; no parallel legacy endpoint is
+maintained. `GET /api/v1/activity/<activity-id>` returns the
 detail contract above plus its ordered typed timeline and complete redacted evidence. When the
 requested ID has been absorbed, `requestedActivityId` preserves what the caller used,
 `canonicalActivityId` and `summary.activityId` identify the absorbing group, and `aliases` contains
@@ -576,22 +582,6 @@ every derived ID that resolves to that group.
 The action route may continue using the existing operation-specific preparation/submission APIs.
 The Activity projection supplies stable correlation IDs so those APIs do not become a second feed
 contract.
-
-## Current-code implementation map
-
-| Current area | Treatment |
-| --- | --- |
-| `packages/api-contracts/src/v1.ts` claims/withdrawals-only `activityResponseSchema` | Replace with the versioned group/page/detail and contextual-action contracts |
-| `packages/api-contracts/src/engine.ts` job/attempt/reconciliation contracts | Preserve as authority evidence behind the projection; do not expose raw states as page status |
-| `apps/sidekick/src/wallet-intent-service.ts` | Preserve its sealed intent and verification lifecycle; project it into one operation group |
-| `apps/sidekick/src/transaction-engine/` repository and runtime | Preserve job authority and cursor logic; reuse its summaries/details when building operation groups |
-| `apps/sidekick/src/server.ts` `/api/v1/activity` | Replace the narrow response and add the activity-detail route |
-| `apps/dashboard/src/features/operations/engine-api.ts` | Reuse the API helpers behind Activity/action data loaders |
-| `engine-job-review.tsx`, `browser-wallet-action.tsx`, recovery helpers | Extract into shared action-workspace sections rather than rewrite their safety-sensitive behavior |
-| `operations-page.tsx` | Replace with Activity and delete after its status/evidence is reachable there |
-| `manager-page.tsx` | Move attachment/capability evidence to Settings and action forms to the shared workspace, then delete |
-| `rewards-page.tsx` action forms | Replace local forms with contextual launch/resume links; keep domain data and explanations on Rewards |
-| `dashboard-route.ts` and `main.tsx` | Adopt the frozen six-page routes plus non-navigation action/activity-detail routes; remove legacy parsing |
 
 ## Responsive and accessibility contract
 
@@ -619,111 +609,3 @@ contract.
 | Transaction ambiguous | Preserve the transaction/nonce evidence and prohibit blind replacement. |
 | Reorg/noncanonical | Mark the existing group as rechecking; append correction evidence. |
 | Identity safe mode | Read-only Activity remains available; action controls are disabled. |
-
-## Implementation sequence
-
-1. Add versioned Activity group/detail contracts, contextual-action contracts, and fixture builders.
-2. Implement the server-owned projection and correlation rules over existing repositories.
-3. Build Activity active/history/detail UI and the new routes.
-4. Build the shared action workspace and migrate Rewards and Manager action forms into it.
-5. Move manager attachment/capability/provenance and advanced administration into Settings.
-6. Add typed contextual actions to findings/notices and link them directly to workspaces/details.
-7. Remove Manager and Operations navigation, routes, pages, old route parsing, and obsolete
-   page-specific projection code.
-8. Update browser, API-contract, accessibility, responsive, Devnet action, and support-snapshot
-   tests.
-
-Do not remove Manager or Operations before their actions and history are reachable through the new
-surfaces in the same change series. No compatibility redirects are required once they are removed.
-
-## Implementation checkpoint (2026-08-14)
-
-- The strict Activity group/detail, filter, cursor, source-coverage, deadline, and contextual-action
-  contracts and the read-only server projection are implemented. Wallet-intent and engine states
-  have exhaustive mappings, and Overview consumes this projection instead of interpreting engine
-  state again.
-- Active wallet and engine authority is loaded independently and remains complete. Terminal source
-  windows exceeding 10,000 records report delayed history coverage instead of failing the page;
-  source-aware cursor reachability beyond that window remains a release-claim gate.
-- Expired wallet intents link to their replacements, absorbed chain-transaction aliases resolve to
-  the canonical operation, and noncanonical engine work escalates after a stable five-minute
-  recovery deadline. Cached chain context supplies structured deadline ordering without a live read.
-- The Activity active/history/detail UI and its bookmarkable filter/detail routes are implemented,
-  including independent source coverage, retained evidence on refresh failure, and 15-second
-  visible-browser refreshes. The shared contextual action route now hosts manager actions, exact
-  staker settlements, and exact transaction-engine claim jobs; active wallet intents resume from
-  Activity without creating duplicates. First-time registration is denied in both the workspace and
-  the server authority path, while established signer repair and rotation remain available.
-- The six-page navigation cutover is implemented. Manager attachment, capability, signer-grant,
-  admin, observer, and transaction-policy controls now live in Settings; engine and wallet history
-  lives in Activity; all retained operations use contextual action routes. Manager, Operations,
-  setup, enrollment, and registration hashes now resolve through the normal unknown-route rule to
-  Overview without compatibility parsing.
-- Permissionless PoX-5 reward calculation is implemented through a reviewed protocol adapter. It
-  reads the complete bounded active-bond set at one node anchor, applies the contract's canonical
-  ordering, seals the exact PoX-5 source/profile and checkpoint binding, revalidates before wallet
-  signing, verifies the canonical post-state, and records a losing permissionless race as
-  superseded rather than failed. Real vendored-contract execution vectors cover both STX-only and
-  mixed STX/bond reward distributions.
-- The released-binary Devnet action gate is met. The acceptance harness injects a controlled
-  Leather-compatible provider into the real dashboard, reviews and signs Sidekick's exact
-  `update-fees` intent with the public Devnet fixture account, returns only the transaction ID,
-  and requires Sidekick to independently reconcile the Activity group to `complete`. The
-  2026-08-14 clean-chain run passed in 7.62 seconds for the wallet-action phase; the surrounding
-  observer, restart/recovery, external smoke, installed-profile, and failure-injection scenarios
-  passed in the same released-binary run.
-
-## Required contract tests
-
-- The dashboard boundary schema rejects the old claims/withdrawals-only `/api/v1/activity` shape,
-  missing or unknown `schemaVersion` values, unknown action variants, `deploy-manager`, other
-  setup-only operation codes, and unknown page-section combinations.
-- Wallet-intent and engine-job mappings are exhaustive functions ending in `assertNever`. Their
-  tests enumerate the authoritative runtime state tuples and assert the exact display status for
-  every state. Adding a state without a mapping must fail compilation or the mapping test.
-- Status/outcome tests reject every combination outside the closed compatibility table, and filter
-  tests prove Action required and every resolved status remain reachable.
-- Active-work ordering tests pin the full order: `needs-attention`, `action-required`, then
-  `in-progress`; overdue structured deadlines before future deadlines and no-deadline items last;
-  earlier normalized
-  `urgencyAt`; newer `updatedAt`; and finally ascending `activityId`.
-- Correlation tests prove that an absorbed `chain-tx` ID resolves to the canonical operation detail,
-  reports both IDs, and produces no duplicate feed row.
-- Route tests prove that `#setup`, `#enrollment`, `#registration`, `#manager`, `#operations`, and
-  unknown hashes land on Overview without interpreting legacy query parameters.
-- The Devnet action acceptance leg opens a contextual `#action/<operation-code>` route in the real
-  dashboard, creates a real Sidekick wallet intent, reviews and submits its exact transaction
-  through a controlled Devnet browser-wallet provider, and returns only the transaction ID to
-  Sidekick. Sidekick must independently fetch and verify the transaction, observe canonical
-  execution, and reconcile the Activity group to `complete`. The harness must not add a production
-  bypass or test-only trust path.
-
-## Acceptance contract
-
-- Navigation contains exactly the six frozen pages.
-- Every currently retained operation is launchable from its contextual domain and uses the shared
-  workspace.
-- A notice with a safe action opens that action directly; it never sends the operator through a
-  generic Manager or Operations page.
-- Internal wallet-intent and engine states are mapped by the backend into the stable Activity
-  vocabulary.
-- Submitted, mempool, canonical inclusion, execution status, finality, and reconciled post-state
-  remain separately inspectable.
-- Related plans, transactions, events, and post-state evidence appear once in one Activity group.
-- An absorbed Activity ID remains a working link and resolves to its canonical operation group.
-- Reorg and supersession update/link the existing groups without leaving false-success duplicates.
-- Raw observer claims and unverified callback event bytes never enter Activity.
-- Delayed indexed history does not hide local durable operation evidence.
-- Active ambiguity cannot be bypassed by blindly creating a replacement.
-- Activity and action workspaces are usable without horizontal scrolling on narrow screens and
-  expose equivalent keyboard/screen-reader meaning.
-- Closing the browser does not stop operation observation or state transitions.
-- The released-binary Devnet connect/observe/action leg exercises the shared action workspace and
-  reaches a reconciled `complete` Activity group.
-
-The reward-outlook path now includes the contract-proven simulator, a persisted single-anchor
-`if-calculated-now` pool estimate, and a sample-gated checkpoint run-rate range whose three bounds
-all use that exact simulator. The next implementation work is realized calculation-event capture,
-model-error calibration, calibrated confidence, and projected fees, followed by calibrated
-signer/network diagnosis and support handoff. The shared action workspace and released-binary
-action gate no longer block that work.

@@ -1,15 +1,16 @@
 # Recurring operation contracts
 
-Status: Slice 2 implementation contract. This document defines the day-2 wallet operations that
-survive removal of Initial Setup. The executable routing table is
+Status: Implemented product contract. This document defines the day-2 wallet operations retained
+after removal of Initial Setup. The executable routing table is
 `apps/sidekick/src/wallet-operation-contracts.ts`; reviewed manager capability evidence remains the
 gate for constructing new transactions.
 
 ## Lifecycle boundary
 
-`deploy-manager` is setup-only and leaves Sidekick in Slice 3. The following actions are recurring
-operator work: signer-key registration/rotation, manager administration, manager reward collection,
-staker settlement, and fee/refund withdrawal.
+`deploy-manager` is setup-only and is not accepted by the recurring-operation API or action
+workspace. Its schema remains only where old database and support evidence must still be readable.
+The following actions are recurring operator work: signer-key registration/rotation, manager
+administration, manager reward collection, staker settlement, and fee/refund withdrawal.
 
 Capability review is a **new-work gate**. Sidekick checks it while preparing a transaction and again
 while an unsigned prepared intent remains active. Once a transaction is submitted, Sidekick keeps

@@ -2093,4 +2093,34 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 33,
+    name: "chain_event_occurrence_time",
+    sql: `
+      -- Discovery time answers when Sidekick learned about an event; occurrence time answers when
+      -- the event actually happened. Keep both so a fresh install does not make historical pool
+      -- activity look new merely because it was just backfilled.
+      ALTER TABLE chain_events ADD COLUMN occurred_at TEXT;
+
+      -- Migration 32 already bounds historical recovery to current pool members. Requeue only
+      -- completed members whose imported events predate occurrence-time capture, allowing the
+      -- ordinary fair anti-entropy loop to enrich them without a global contract-history scan.
+      UPDATE current_member_history_recovery
+      SET status = 'pending', cursor = NULL, pages_processed = 0,
+          transactions_inspected = 0, relevant_events = 0,
+          updated_at = discovered_at, completed_at = NULL
+      WHERE status = 'complete'
+        AND EXISTS (
+          SELECT 1
+          FROM chain_events
+          WHERE chain_events.contract_id = current_member_history_recovery.pox5_contract_id
+            AND chain_events.occurred_at IS NULL
+            AND chain_events.decoded_payload_json IS NOT NULL
+            AND json_extract(
+              chain_events.decoded_payload_json,
+              '$.event.stakerPrincipal'
+            ) = current_member_history_recovery.staker_principal
+        );
+    `,
+  },
 ];

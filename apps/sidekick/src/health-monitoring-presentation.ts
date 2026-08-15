@@ -1,6 +1,12 @@
 import type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import type { SidekickConfig } from "./config.js";
 import {
+  HEALTH_RULE_THRESHOLDS,
+  HEALTH_RULES,
+  HEALTH_WINDOWS,
+  type HealthRuleDefinition,
+} from "./health-monitoring-rules.js";
+import {
   counterIncrease,
   healthSourceState,
   histogramP95,
@@ -23,29 +29,6 @@ import {
   type HealthFindingEpisode,
   type HealthRollup,
 } from "./storage/health-monitoring-repository.js";
-
-const networkAdvancementEvidenceWindowMs = 90_000;
-const localSourceFailureSamples = 3;
-const localSourceFailureWindowMs = 10_000;
-const nodeBehindSamples = 6;
-const nodeBehindWindowMs = 25_000;
-const signerHeightLagUpdates = 3;
-const signerHeightLagWindowMs = 2 * 60_000;
-const nodeStallWindowMs = 90_000;
-const networkStallWindowMs = 180_000;
-const sourceLagBlocks = 3;
-const signerHeightLagBlocks = 3;
-const signerResponseGapMinimum = 3;
-// A just-received proposal legitimately has no recorded response yet, so a cumulative
-// proposals-minus-responses delta over the window counts those still-in-flight proposals as a
-// gap. Only proposals outstanding at least this long are eligible to count toward the gap finding,
-// which removes the trailing-edge false positive without masking a real, sustained response outage.
-const signerResponseSettleMs = 30_000;
-const signerResponseSampleMinimum = 5;
-const signerRateSampleMinimum = 20;
-const signerRejectionPercentThreshold = 25;
-const signerResponseP95ThresholdSeconds = 5;
-const agreementConflictThreshold = 3;
 
 type FindingInput = Omit<HealthFinding, "episodeId">;
 
@@ -147,15 +130,21 @@ function evidenceWindow(
 }
 
 function finding(
-  value: Omit<FindingInput, "firstObservedAt" | "lastObservedAt" | "evidenceWindow"> & {
+  value: Omit<
+    FindingInput,
+    "id" | "severity" | "firstObservedAt" | "lastObservedAt" | "evidenceWindow"
+  > & {
+    rule: HealthRuleDefinition;
     observations: readonly HealthObservation[];
   },
 ): FindingInput {
   const firstObservedAt = value.observations.at(0)?.observedAt ?? new Date(0).toISOString();
   const lastObservedAt = value.observations.at(-1)?.observedAt ?? firstObservedAt;
   const distinctSources = new Set(value.evidence.map(({ source }) => source)).size;
-  const { observations: _observations, ...findingValue } = value;
+  const { observations: _observations, rule, ...findingValue } = value;
   return {
+    id: rule.id,
+    severity: rule.defaultSeverity,
     ...findingValue,
     firstObservedAt,
     lastObservedAt,
@@ -204,7 +193,9 @@ function signerWindow(
   // responses in the window. Aggregate counters cannot correlate a response to a specific proposal,
   // but allowing every response to account for an older proposal prevents normal in-flight work from
   // creating a false gap.
-  const settleCutoff = Date.parse(latest) - signerResponseSettleMs;
+  // A just-received proposal legitimately has no response yet. The settle window belongs to the
+  // proposal/response-gap rule catalog so the calculation and operator-facing rule cannot drift.
+  const settleCutoff = Date.parse(latest) - HEALTH_RULE_THRESHOLDS.proposalResponseGap.settleMs;
   const settledProposals = counterIncrease(
     observations.filter((observation) => Date.parse(observation.observedAt) <= settleCutoff),
     (sample) => sample.signerMetrics?.proposalsTotal ?? null,
@@ -251,7 +242,7 @@ function sourceAdvanceStatus(
   if (evidenceStartedAt === null) return "collecting";
   const current =
     Date.parse(latestObservedAt) - Date.parse(evidenceStartedAt) <=
-    networkAdvancementEvidenceWindowMs
+    HEALTH_WINDOWS.networkAdvancementMs
       ? lastAdvanceAt === null
         ? "collecting"
         : "advancing"
@@ -299,17 +290,36 @@ function evaluateHealthFindings(input: {
   if (!latest) return [];
   const findings: FindingInput[] = [];
   const latestAt = Date.parse(latest.observedAt);
-  const recent15m = windowSince(observations, 15 * 60 * 1_000);
+  const recent15m = windowSince(observations, HEALTH_WINDOWS.recentSignerMs);
+  const {
+    localEndpointFailure,
+    nodeBehindPeers,
+    localNodeStall,
+    networkStall,
+    comparisonSourceLag,
+    signerConfigurationMismatch,
+    signerNodeViewLag,
+    proposalResponseGap,
+    rejectionRate,
+    validationLatency,
+    agreementConflicts,
+  } = HEALTH_RULE_THRESHOLDS;
+
+  // Availability rules: these answer whether Sidekick still has the local first-person evidence
+  // needed for diagnosis. Repeated failures are required so one timeout never opens an incident.
 
   const nodeFailures = consecutiveMatching(observations, ({ nodeRpc }) => !nodeRpc.reachable);
   if (
-    nodeRpc.consecutiveFailures >= localSourceFailureSamples &&
-    sustained(nodeFailures, localSourceFailureSamples, localSourceFailureWindowMs)
+    nodeRpc.consecutiveFailures >= localEndpointFailure.minimumSamples &&
+    sustained(
+      nodeFailures,
+      localEndpointFailure.minimumSamples,
+      localEndpointFailure.minimumWindowMs,
+    )
   ) {
     findings.push(
       finding({
-        id: "node-rpc-unavailable",
-        severity: "critical",
+        rule: HEALTH_RULES.nodeRpcUnavailable,
         title: "Stacks node is unavailable",
         detail:
           "Sidekick could not reach the configured node RPC for a sustained local evidence window.",
@@ -336,13 +346,16 @@ function evaluateHealthFindings(input: {
     ({ signerInfoSource }) => signerInfoSource?.reachable === false,
   );
   if (
-    signerInfo.consecutiveFailures >= localSourceFailureSamples &&
-    sustained(signerInfoFailures, localSourceFailureSamples, localSourceFailureWindowMs)
+    signerInfo.consecutiveFailures >= localEndpointFailure.minimumSamples &&
+    sustained(
+      signerInfoFailures,
+      localEndpointFailure.minimumSamples,
+      localEndpointFailure.minimumWindowMs,
+    )
   ) {
     findings.push(
       finding({
-        id: "signer-monitoring-unavailable",
-        severity: "critical",
+        rule: HEALTH_RULES.signerMonitoringUnavailable,
         title: "Signer monitoring is unavailable",
         detail:
           "Sidekick could not reach the configured signer monitoring server for a sustained local evidence window.",
@@ -369,13 +382,16 @@ function evaluateHealthFindings(input: {
     ({ signerHeartbeat }) => signerHeartbeat?.reachable === false,
   );
   if (
-    signerHeartbeat.consecutiveFailures >= localSourceFailureSamples &&
-    sustained(heartbeatFailures, localSourceFailureSamples, localSourceFailureWindowMs)
+    signerHeartbeat.consecutiveFailures >= localEndpointFailure.minimumSamples &&
+    sustained(
+      heartbeatFailures,
+      localEndpointFailure.minimumSamples,
+      localEndpointFailure.minimumWindowMs,
+    )
   ) {
     findings.push(
       finding({
-        id: "signer-node-heartbeat-failed",
-        severity: "critical",
+        rule: HEALTH_RULES.signerNodeHeartbeatFailed,
         title: "Signer cannot reach its Stacks node",
         detail:
           "The signer heartbeat failed its node connection check throughout the evidence window.",
@@ -402,14 +418,17 @@ function evaluateHealthFindings(input: {
     ({ signerMetricsSource }) => signerMetricsSource?.reachable === false,
   );
   if (
-    signerMetrics.consecutiveFailures >= localSourceFailureSamples &&
-    sustained(signerMetricFailures, localSourceFailureSamples, localSourceFailureWindowMs) &&
-    !findings.some(({ id }) => id === "signer-monitoring-unavailable")
+    signerMetrics.consecutiveFailures >= localEndpointFailure.minimumSamples &&
+    sustained(
+      signerMetricFailures,
+      localEndpointFailure.minimumSamples,
+      localEndpointFailure.minimumWindowMs,
+    ) &&
+    !findings.some(({ id }) => id === HEALTH_RULES.signerMonitoringUnavailable.id)
   ) {
     findings.push(
       finding({
-        id: "signer-metrics-unavailable",
-        severity: "warning",
+        rule: HEALTH_RULES.signerMetricsUnavailable,
         title: "Signer participation metrics are unavailable",
         detail:
           "The signer identity endpoint is reachable, but Sidekick cannot verify recent proposal, response, latency, or agreement activity.",
@@ -431,17 +450,18 @@ function evaluateHealthFindings(input: {
     );
   }
 
+  // Local-chain rules: local node and peer evidence is authoritative. Public APIs may corroborate
+  // a stall but can never make an advancing local node unhealthy.
   const behindSamples = consecutiveMatching(
     observations,
     (observation) =>
       observation.nodeInfo?.is_fully_synced === false ||
-      (observation.nodeHealth?.difference_from_max_peer ?? 0) >= sourceLagBlocks,
+      (observation.nodeHealth?.difference_from_max_peer ?? 0) >= nodeBehindPeers.lagBlocks,
   );
-  if (sustained(behindSamples, nodeBehindSamples, nodeBehindWindowMs)) {
+  if (sustained(behindSamples, nodeBehindPeers.minimumSamples, nodeBehindPeers.minimumWindowMs)) {
     findings.push(
       finding({
-        id: "node-behind-network",
-        severity: "critical",
+        rule: HEALTH_RULES.nodeBehindNetwork,
         title: "Stacks node is behind its observed peers",
         detail:
           latest.nodeInfo?.is_fully_synced === false
@@ -470,31 +490,33 @@ function evaluateHealthFindings(input: {
   const hiroAdvancing =
     hiro.status === "healthy" &&
     hiroLastAdvanceAt !== null &&
-    latestAt - Date.parse(hiroLastAdvanceAt) <= networkAdvancementEvidenceWindowMs;
+    latestAt - Date.parse(hiroLastAdvanceAt) <= HEALTH_WINDOWS.networkAdvancementMs;
   const configuredApiAdvancing =
     configuredApi.status === "healthy" &&
     configuredApiLastAdvanceAt !== null &&
-    latestAt - Date.parse(configuredApiLastAdvanceAt) <= networkAdvancementEvidenceWindowMs;
+    latestAt - Date.parse(configuredApiLastAdvanceAt) <= HEALTH_WINDOWS.networkAdvancementMs;
   const peersAhead = (latest.nodeHealth?.difference_from_max_peer ?? 0) > 0;
   if (
     nodeStallAge !== null &&
-    nodeStallAge >= nodeStallWindowMs &&
+    nodeStallAge >= localNodeStall.minimumWindowMs &&
     (peersAhead || hiroAdvancing || configuredApiAdvancing) &&
-    !findings.some(({ id }) => id === "node-rpc-unavailable" || id === "node-behind-network")
+    !findings.some(
+      ({ id }) =>
+        id === HEALTH_RULES.nodeRpcUnavailable.id || id === HEALTH_RULES.nodeBehindNetwork.id,
+    )
   ) {
     const corroborating =
       Number(peersAhead) + Number(hiroAdvancing) + Number(configuredApiAdvancing);
     findings.push(
       finding({
-        id: "node-tip-stalled-locally",
-        severity: "critical",
+        rule: HEALTH_RULES.nodeTipStalledLocally,
         title: "Local Stacks tip stopped advancing",
         detail:
           "The local node stopped advancing while at least one independent source observed newer chain progress.",
         source: "node",
         classification: "likely-local-node",
         confidence: corroborating >= 2 ? "high" : "medium",
-        observations: windowSince(observations, nodeStallWindowMs),
+        observations: windowSince(observations, localNodeStall.minimumWindowMs),
         evidence: [
           {
             code: "local-tip-stall",
@@ -555,35 +577,34 @@ function evaluateHealthFindings(input: {
       observation.nodeHealth.max_stacks_height_of_neighbors ===
         observation.nodeHealth.node_stacks_tip_height,
   );
-  const peerViewAligned = sustained(peerViewAlignedSamples, 2, networkStallWindowMs);
+  const peerViewAligned = sustained(peerViewAlignedSamples, 2, networkStall.minimumWindowMs);
   const peerViewAlignedStartedAt = peerViewAlignedSamples.at(0)?.observedAt ?? null;
   const hiroStalled =
     hiro.status === "healthy" &&
     hiroStagnationStartedAt !== null &&
-    latestAt - Date.parse(hiroStagnationStartedAt) >= networkStallWindowMs;
+    latestAt - Date.parse(hiroStagnationStartedAt) >= networkStall.minimumWindowMs;
   const configuredApiStalled =
     configuredApi.status === "healthy" &&
     configuredApiStagnationStartedAt !== null &&
-    latestAt - Date.parse(configuredApiStagnationStartedAt) >= networkStallWindowMs;
+    latestAt - Date.parse(configuredApiStagnationStartedAt) >= networkStall.minimumWindowMs;
   const networkCorroboration =
     Number(peerViewAligned) + Number(hiroStalled) + Number(configuredApiStalled);
   if (
     nodeStallAge !== null &&
-    nodeStallAge >= networkStallWindowMs &&
-    networkCorroboration >= 2 &&
+    nodeStallAge >= networkStall.minimumWindowMs &&
+    networkCorroboration >= networkStall.minimumIndependentSignals &&
     !findings.some(({ classification }) => classification === "likely-local-node")
   ) {
     findings.push(
       finding({
-        id: "network-tip-stalled",
-        severity: "warning",
+        rule: HEALTH_RULES.networkTipStalled,
         title: "Stacks network may be stalled",
         detail:
           "The local node and at least two distinct comparison signals show no recent Stacks tip advancement.",
         source: "network",
         classification: "suspected-network-wide",
         confidence: networkCorroboration >= 3 ? "high" : "medium",
-        observations: windowSince(observations, networkStallWindowMs),
+        observations: windowSince(observations, networkStall.minimumWindowMs),
         evidence: [
           {
             code: "local-tip-stall",
@@ -639,14 +660,14 @@ function evaluateHealthFindings(input: {
 
   const sourceLag = [
     {
-      id: "reference-api",
+      rule: HEALTH_RULES.referenceApiBehindLocalNode,
       source: hiro,
       value: latest.hiro,
       stagnationStartedAt: hiroStagnationStartedAt,
       evidenceSource: "reference-api" as const,
     },
     {
-      id: "configured-api",
+      rule: HEALTH_RULES.configuredApiBehindLocalNode,
       source: configuredApi,
       value: latest.configuredApi,
       stagnationStartedAt: configuredApiStagnationStartedAt,
@@ -657,22 +678,22 @@ function evaluateHealthFindings(input: {
       source.status === "healthy" &&
       value &&
       latest.nodeInfo &&
-      latest.nodeInfo.stacks_tip_height - value.chain_tip.block_height >= sourceLagBlocks &&
+      latest.nodeInfo.stacks_tip_height - value.chain_tip.block_height >=
+        comparisonSourceLag.lagBlocks &&
       stagnationStartedAt !== null &&
-      latestAt - Date.parse(stagnationStartedAt) >= networkAdvancementEvidenceWindowMs,
+      latestAt - Date.parse(stagnationStartedAt) >= comparisonSourceLag.minimumWindowMs,
   );
-  if (sourceLag && nodeStallAge !== null && nodeStallAge < networkAdvancementEvidenceWindowMs) {
+  if (sourceLag && nodeStallAge !== null && nodeStallAge < HEALTH_WINDOWS.networkAdvancementMs) {
     findings.push(
       finding({
-        id: `${sourceLag.id}-behind-local-node`,
-        severity: "warning",
+        rule: sourceLag.rule,
         title: "A comparison source is behind the local node",
         detail:
           "The local node is advancing, but a configured comparison source remains several Stacks blocks behind.",
         source: "source",
         classification: "source-disagreement",
         confidence: "high",
-        observations: windowSince(observations, networkAdvancementEvidenceWindowMs),
+        observations: windowSince(observations, comparisonSourceLag.minimumWindowMs),
         evidence: [
           {
             code: "local-node-advancing",
@@ -699,6 +720,8 @@ function evaluateHealthFindings(input: {
     );
   }
 
+  // Signer-configuration rules compare the running process with node-proved operator context. The
+  // public API is intentionally absent from these identity and participation decisions.
   if (config.signerMonitoringUrl) {
     const identityMismatchSamples = consecutiveMatching(
       observations,
@@ -706,11 +729,16 @@ function evaluateHealthFindings(input: {
         Boolean(operator?.signerKeyHex && signerInfo?.signerPublicKey) &&
         signerInfo?.signerPublicKey.toLowerCase() !== operator?.signerKeyHex?.toLowerCase(),
     );
-    if (sustained(identityMismatchSamples, 3, localSourceFailureWindowMs)) {
+    if (
+      sustained(
+        identityMismatchSamples,
+        signerConfigurationMismatch.minimumSamples,
+        signerConfigurationMismatch.minimumWindowMs,
+      )
+    ) {
       findings.push(
         finding({
-          id: "signer-identity-mismatch",
-          severity: "critical",
+          rule: HEALTH_RULES.signerIdentityMismatch,
           title: "Signer identity does not match its on-chain registration",
           detail:
             "The signer monitoring public key differs from the signer key registered for this manager.",
@@ -745,11 +773,16 @@ function evaluateHealthFindings(input: {
       ({ signerInfo }) =>
         Boolean(signerInfo?.network) && signerInfo?.network.toLowerCase() !== config.network,
     );
-    if (sustained(networkMismatchSamples, 3, localSourceFailureWindowMs)) {
+    if (
+      sustained(
+        networkMismatchSamples,
+        signerConfigurationMismatch.minimumSamples,
+        signerConfigurationMismatch.minimumWindowMs,
+      )
+    ) {
       findings.push(
         finding({
-          id: "signer-network-mismatch",
-          severity: "critical",
+          rule: HEALTH_RULES.signerNetworkMismatch,
           title: "Signer is monitoring the wrong network",
           detail: `The signer reports ${latest.signerInfo?.network ?? "an unknown network"}, while Sidekick is connected to ${config.network}.`,
           source: "signer",
@@ -785,11 +818,16 @@ function evaluateHealthFindings(input: {
         signerMetrics?.rewardCycle !== null &&
         signerMetrics?.rewardCycle !== operator.currentRewardCycle,
     );
-    if (sustained(cycleMismatchSamples, 3, localSourceFailureWindowMs)) {
+    if (
+      sustained(
+        cycleMismatchSamples,
+        signerConfigurationMismatch.minimumSamples,
+        signerConfigurationMismatch.minimumWindowMs,
+      )
+    ) {
       findings.push(
         finding({
-          id: "signer-reward-cycle-mismatch",
-          severity: "warning",
+          rule: HEALTH_RULES.signerRewardCycleMismatch,
           title: "Signer reward cycle is out of sync",
           detail:
             "The signer monitoring cycle does not match the current cycle proved by the local node.",
@@ -828,14 +866,14 @@ function evaluateHealthFindings(input: {
         observation.signerMetrics?.nodeHeight === null ||
         observation.signerMetrics?.nodeHeight === undefined ||
         observation.nodeInfo.stacks_tip_height - observation.signerMetrics.nodeHeight >=
-          signerHeightLagBlocks
+          signerNodeViewLag.lagBlocks
       ) {
         break;
       }
       healthyUpdateCount += 1;
     }
     const lagEvaluationUpdates =
-      healthyUpdateCount >= 2
+      healthyUpdateCount >= signerNodeViewLag.recoveryUpdates
         ? []
         : heightUpdates.slice(0, heightUpdates.length - healthyUpdateCount);
     const signerLagSamples = consecutiveMatching(
@@ -845,17 +883,22 @@ function evaluateHealthFindings(input: {
         observation.signerMetrics?.nodeHeight !== undefined &&
         observation.nodeInfo !== null &&
         observation.nodeInfo.stacks_tip_height - observation.signerMetrics.nodeHeight >=
-          signerHeightLagBlocks,
+          signerNodeViewLag.lagBlocks,
     );
-    if (sustained(signerLagSamples, signerHeightLagUpdates, signerHeightLagWindowMs)) {
+    if (
+      sustained(
+        signerLagSamples,
+        signerNodeViewLag.minimumUpdates,
+        signerNodeViewLag.minimumWindowMs,
+      )
+    ) {
       const findingSamples = [
         ...signerLagSamples,
         ...heightUpdates.slice(heightUpdates.length - healthyUpdateCount),
       ];
       findings.push(
         finding({
-          id: "signer-node-view-behind",
-          severity: "critical",
+          rule: HEALTH_RULES.signerNodeViewBehind,
           title: "Signer is behind the local Stacks node",
           detail:
             "The signer persistently reports a Stacks node height several blocks behind Sidekick's local-node view.",
@@ -880,23 +923,29 @@ function evaluateHealthFindings(input: {
     }
   }
 
-  // signer15m.responseGap is a conservative lower bound after the settle window, so it will not read
-  // normal in-flight responses as a gap.
+  // Participation rules use first-person signer counters. End-to-end response latency is retained
+  // in the snapshot for troubleshooting but deliberately does not open a finding: Stacks Signer
+  // derives it from the block header wall-clock timestamp, which is not a trustworthy local alert
+  // boundary. Successful validation latency is eligible because the Stacks node reports that
+  // duration directly.
+  //
+  // signer15m.responseGap is a conservative lower bound after the settle window, so it will not
+  // read normal in-flight responses as a gap.
   if (
     signer15m.proposals !== null &&
-    signer15m.proposals >= signerResponseSampleMinimum &&
+    signer15m.proposals >= proposalResponseGap.minimumProposals &&
     signer15m.responseGap !== null &&
-    signer15m.responseGap >= signerResponseGapMinimum
+    signer15m.responseGap >= proposalResponseGap.minimumGap
   ) {
     findings.push(
       finding({
-        id: "signer-proposal-response-gap",
-        severity: "critical",
+        rule: HEALTH_RULES.signerProposalResponseGap,
         title: "Signer is not responding to every proposal",
-        detail: `At least ${signer15m.responseGap} proposal${signer15m.responseGap === 1 ? " is" : "s are"} not accounted for by the response counters after a ${Math.round(signerResponseSettleMs / 1_000)}-second settling window.`,
+        detail: `At least ${signer15m.responseGap} proposal${signer15m.responseGap === 1 ? " is" : "s are"} not accounted for by the response counters after a ${Math.round(proposalResponseGap.settleMs / 1_000)}-second settling window.`,
         source: "signer",
         classification: "likely-local-signer",
-        confidence: signer15m.proposals >= signerRateSampleMinimum ? "high" : "medium",
+        confidence:
+          signer15m.proposals >= proposalResponseGap.highConfidenceResponses ? "high" : "medium",
         observations: recent15m,
         evidence: [
           {
@@ -916,13 +965,12 @@ function evaluateHealthFindings(input: {
   if (
     signer15m.accepted !== null &&
     signer15m.rejected !== null &&
-    signer15m.accepted + signer15m.rejected >= signerRateSampleMinimum &&
-    (signer15m.rejectionPercent ?? 0) >= signerRejectionPercentThreshold
+    signer15m.accepted + signer15m.rejected >= rejectionRate.minimumResponses &&
+    (signer15m.rejectionPercent ?? 0) >= rejectionRate.percent
   ) {
     findings.push(
       finding({
-        id: "signer-rejection-rate-elevated",
-        severity: "warning",
+        rule: HEALTH_RULES.signerRejectionRateElevated,
         title: "Signer rejection rate is elevated",
         detail: `${signer15m.rejectionPercent?.toFixed(1)}% of recent signer responses rejected the proposed block. Review signer, node-validation, and network evidence together.`,
         source: "signer",
@@ -945,52 +993,29 @@ function evaluateHealthFindings(input: {
   }
 
   if (
-    signer15m.accepted !== null &&
-    signer15m.rejected !== null &&
-    signer15m.accepted + signer15m.rejected >= signerRateSampleMinimum &&
-    (signer15m.responseP95Seconds ?? 0) > signerResponseP95ThresholdSeconds
+    signer15m.validationAccepted !== null &&
+    signer15m.validationAccepted >= validationLatency.minimumAcceptedValidations &&
+    (signer15m.validationP95Seconds ?? 0) > validationLatency.p95Seconds
   ) {
-    const validationSlow =
-      (signer15m.validationP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
-    const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
-    const responsesMissing = (signer15m.responseGap ?? 0) >= signerResponseGapMinimum;
-    const corroborated = validationSlow || nodeRpcSlow || responsesMissing;
-    const latencyClassification = validationSlow
-      ? "likely-local-signer"
-      : nodeRpcSlow
-        ? "likely-local-node"
-        : "insufficient-evidence";
+    const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > validationLatency.p95Seconds;
     findings.push(
       finding({
-        id: "signer-response-latency-elevated",
-        severity: corroborated ? "warning" : "info",
-        title: "End-to-end signer response time is elevated",
-        detail: corroborated
-          ? `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)} and local evidence shows a correlated delay that needs attention.`
-          : `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)}, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
-        source: "signer",
-        classification: latencyClassification,
-        confidence: "medium",
+        rule: HEALTH_RULES.signerValidationLatencyElevated,
+        title: "Local node block validation is slow",
+        detail: `The local Stacks node reported a recent successful-validation p95 of ${formatSeconds(signer15m.validationP95Seconds)} across ${signer15m.validationAccepted} validations.`,
+        source: "node",
+        classification: "likely-local-node",
+        confidence: nodeRpcSlow ? "high" : "medium",
         observations: recent15m,
         evidence: [
           {
-            code: "signer-response-p95",
+            code: "signer-validation-p95",
             source: "signer-monitoring",
             status: "supporting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: formatSeconds(signer15m.responseP95Seconds),
-            detail:
-              "The official signer histogram measures end-to-end time from block timestamp to response broadcast.",
-          },
-          {
-            code: "signer-validation-p95",
-            source: "signer-monitoring",
-            status: validationSlow ? "supporting" : "contradicting",
-            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
             value: formatSeconds(signer15m.validationP95Seconds),
-            detail: validationSlow
-              ? "Local block validation latency is also elevated."
-              : "Local block validation latency is not elevated.",
+            detail:
+              "The signer records validation_time_ms reported by the local Stacks node for successful block validation responses.",
           },
           {
             code: "signer-node-rpc-p95",
@@ -999,19 +1024,18 @@ function evaluateHealthFindings(input: {
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
             value: formatSeconds(signer15m.nodeRpcP95Seconds),
             detail: nodeRpcSlow
-              ? "The signer's local node RPC latency is also elevated."
-              : "The signer's local node RPC latency is not elevated.",
+              ? "General signer-to-node RPC latency is also elevated, strengthening the local-node diagnosis."
+              : "General signer-to-node RPC latency is not elevated; the finding is limited to node-reported block validation.",
           },
         ],
       }),
     );
   }
 
-  if ((signer15m.disagreements ?? 0) >= agreementConflictThreshold) {
+  if ((signer15m.disagreements ?? 0) >= agreementConflicts.minimumConflicts) {
     findings.push(
       finding({
-        id: "signer-agreement-conflicts-elevated",
-        severity: "warning",
+        rule: HEALTH_RULES.signerAgreementConflictsElevated,
         title: "Signer agreement conflicts are elevated",
         detail: `${signer15m.disagreements} signer agreement conflicts were observed in the recent evidence window.`,
         source: "network",
@@ -1070,6 +1094,7 @@ export function buildHealthRollup(observations: readonly HealthObservation[]): H
     rejected: signer.rejected,
     disagreements: signer.disagreements,
     responseP95Seconds: signer.responseP95Seconds,
+    validationP95Seconds: signer.validationP95Seconds,
   };
 }
 
@@ -1313,7 +1338,7 @@ export function buildHealthSnapshot({
   ].some((source) => source.configured && source.status === "unavailable");
   const partial = !config.nodeMetricsUrl || !config.signerMonitoringUrl || configuredFailure;
   const overallStatus =
-    nodeRpc.consecutiveFailures >= localSourceFailureSamples
+    nodeRpc.consecutiveFailures >= HEALTH_RULE_THRESHOLDS.localEndpointFailure.minimumSamples
       ? "unavailable"
       : findings.some(({ severity }) => severity !== "info")
         ? "needs-attention"
@@ -1438,6 +1463,7 @@ export function buildHealthSnapshot({
         rejected: signer1h.rejected,
         rejectionPercent: signer1h.rejectionPercent,
         responseP95Seconds: signer1h.responseP95Seconds,
+        validationP95Seconds: signer1h.validationP95Seconds,
         disagreements: signer1h.disagreements,
         collectingBaseline: signer1h.collectingBaseline,
       },

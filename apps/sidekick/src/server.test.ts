@@ -161,6 +161,7 @@ function serverHealthSnapshot() {
           validationRejectedTotal: 2,
           acceptedTotal: 8,
           rejectedTotal: 2,
+          validationLatencyBuckets: { "0.5": 8, "+Inf": 8 },
           responseLatencyBuckets: { "1": 10, "10": 10, "+Inf": 10 },
         }),
       ),
@@ -174,6 +175,7 @@ function serverHealthSnapshot() {
           validationRejectedTotal: 2,
           acceptedTotal: 9,
           rejectedTotal: 2,
+          validationLatencyBuckets: { "0.5": 9, "+Inf": 9 },
           responseLatencyBuckets: { "1": 11, "10": 20, "+Inf": 20 },
         }),
       ),
@@ -185,6 +187,7 @@ function serverHealthSnapshot() {
           validationRejectedTotal: 12,
           acceptedTotal: 18,
           rejectedTotal: 12,
+          validationLatencyBuckets: { "0.5": 18, "+Inf": 18 },
           responseLatencyBuckets: { "1": 15, "10": 30, "+Inf": 30 },
         }),
       ),
@@ -919,8 +922,8 @@ describe("local API", () => {
 
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     // The settled proposal burst is old enough to be an unanswered gap, so the primary diagnosis is
-    // likely-local-signer, alongside the source-disagreement rejection finding and the corroborated
-    // (but unattributed) latency finding.
+    // likely-local-signer alongside the source-disagreement rejection finding. End-to-end response
+    // latency remains exported as diagnostic telemetry but no longer opens a finding.
     expect(metrics.body).toContain(
       'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
     );
@@ -931,7 +934,7 @@ describe("local API", () => {
       'sidekick_signer_health_active_findings{classification="source-disagreement"} 1',
     );
     expect(metrics.body).toContain(
-      'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 1',
+      'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 0',
     );
     expect(metrics.body).toContain(
       'sidekick_signer_health_source_available{source="configured-api"} 0',
@@ -941,6 +944,7 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_signer_rejection_percent 50");
     // Interpolated within the [1s, 10s] bucket instead of the raw 10s boundary.
     expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 9.4");
+    expect(metrics.body).toContain("sidekick_signer_validation_p95_seconds 0.475");
   });
 
   it("accepts only sealed wallet-intent actions and txids", async () => {

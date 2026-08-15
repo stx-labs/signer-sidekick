@@ -1,8 +1,8 @@
 # Fresh-install data recovery
 
-- Status: Active implementation
+- Status: Implemented
 - Date: 2026-08-15
-- Parent: [Scope-reset implementation plan](scope-reset-implementation-plan-2026-08-13.md)
+- Parent: [Scope and decisions](scope-and-decisions.md)
 
 ## Product promise
 
@@ -55,7 +55,8 @@ No history import is required to answer who is currently in the pool.
 - **Current-member pool history:** for each principal in the authoritative current roster, page the
   indexed API's principal-transaction stream, fetch transaction events, retain only decoded PoX-5
   prints that involve both the current member and configured manager, and independently verify the
-  transaction against the local node.
+  transaction against the local node. Persist the transaction's Stacks block time as occurrence
+  time; the backfill run time is observation metadata, not the activity date.
 - **Reward history:** recover calculate-rewards facts for the cycles relevant to the current roster
   and manager. Persist the emitted realization even when a pruned node cannot replay historical
   contract state; label forecast-versus-actual evaluation unavailable for that anchor.

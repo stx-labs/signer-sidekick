@@ -33,7 +33,7 @@ Docker Compose v2.24.4 or newer is required. Run `docker compose`, not the legac
 `docker-compose` v1 binary: it is unsupported and can fail recreating containers with current Docker.
 
 ```sh
-git clone --depth 1 --branch v1.0.0 https://github.com/stx-labs/signer-sidekick.git
+git clone --depth 1 --branch <release-tag> https://github.com/stx-labs/signer-sidekick.git
 cd signer-sidekick
 umask 077
 cp .env.mainnet.example .env
@@ -147,20 +147,11 @@ and attached-manager print subscriptions, plus `nodeToml` keys to merge into the
 `[node]` table. Restart the node only through its normal infrastructure workflow, then verify
 callback receipt in Sidekick's `/metrics` output or support snapshot.
 
-Callbacks are prompts, not chain authority. New block and burn-block deliveries initially remain
-`observer-claimed`; malformed, conflicting, or implausibly future claims are quarantined, and
-implicit attachment callbacks are durably expired because Sidekick does not use them. A
-restart-safe worker fences the node's info and tenure tips, then requires the block fetched by the
-callback's index ID to be byte-identical to the canonical Nakamoto block at that height under the
-stable tip. The callback block-hash field and embedded events remain untrusted and are never copied
-directly into operator history or current projections. Terminal raw JSON has time, count, and byte
-retention bounds while delivery evidence remains. Burn-block callbacks remain trigger-only and
-expire after the node reaches their height because the local Stacks RPC cannot prove the claimed
-burn hash. A PoX-5 print triggers a full roster scan only when its decoded routing hint names the
-configured manager; network-wide activity for other managers is ignored. Manager activity is read
-independently from the indexed API and becomes permanent only when the local transaction index
-confirms the event's exact canonical height and index-block hash; five-minute manager-history and
-30-minute full-roster backfills remain the recovery paths.
+Callbacks are prompts, not chain authority: Sidekick verifies each one against the local node before
+it can affect operator history, and keeps periodic reconciliation and API backfill as the recovery
+paths. The callback fencing, quarantine, and retention rules are documented in
+[Operations and settings](../architecture/operations-and-settings.md), and the node-side event
+subscription in [Node and signer requirements](node-signer-requirements.md#sidekick-event-observer).
 
 After deployment, measure the two-second p95 target over a bounded live window instead of relying
 on a single callback or lifetime counters. The default check observes at least 100 `current` domain
@@ -297,7 +288,8 @@ curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml por
 curl --fail "http://$(docker compose -f compose.yaml -f compose.release.yaml port sidekick 3998)/metrics"
 ```
 
-Use **Download support bundle** on the dashboard Overview page for escalation to Stacks Labs. The
+Use **Download support bundle** under **Settings → Support & security → Support & maintenance** for
+escalation to Stacks Labs. The
 authenticated download performs a fresh, failure-tolerant collection and records each source as
 `ok`, `failed`, or `unavailable`, so a broken node or signer does not prevent the artifact from
 being created. It includes:

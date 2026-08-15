@@ -9,6 +9,7 @@ import type {
   StacksNodeClient,
   TransactionSummary,
 } from "./chain-clients.js";
+import { transactionOccurredAt } from "./chain-clients.js";
 import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
 import type {
   ChainCursor,
@@ -336,6 +337,7 @@ export async function syncManagerEvents(
         decodedPayload: decoded ? { transactionStatus: transaction.status, event: decoded } : null,
         evidenceLevel: transactionEvidence?.get(event.tx_id) ?? "indexer-reported",
         sourceId: options.sourceId,
+        occurredAt: transactionOccurredAt(transaction),
         observedAt: options.observedAt,
       };
     });

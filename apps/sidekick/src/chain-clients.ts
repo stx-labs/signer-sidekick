@@ -440,6 +440,15 @@ export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
+
+/** Return the canonical Stacks block time for an indexed transaction as an ISO instant. */
+export function transactionOccurredAt(transaction: TransactionSummary): string {
+  const occurredAt = new Date(transaction.block.time * 1_000);
+  if (!Number.isFinite(occurredAt.getTime())) {
+    throw new Error(`Transaction ${transaction.tx_id} has an invalid Stacks block time`);
+  }
+  return occurredAt.toISOString();
+}
 export type PrincipalTransactionPage = z.infer<typeof principalTransactionPageSchema>;
 export type TransactionEventPage = z.infer<typeof transactionEventPageSchema>;
 export type TransactionDetail = z.infer<typeof transactionDetailSchema>;

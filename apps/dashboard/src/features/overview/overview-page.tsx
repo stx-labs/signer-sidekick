@@ -481,11 +481,11 @@ export function Overview({
                 value: `${number(data.signer.acceptedLastHour)} / ${number(data.signer.rejectedLastHour)}`,
               },
               {
-                label: "Response p95",
+                label: "Validation p95 estimate",
                 value:
-                  data.signer.responseP95Seconds === null
+                  data.signer.validationP95Seconds === null
                     ? "—"
-                    : `${data.signer.responseP95Seconds.toFixed(1)}s`,
+                    : `${data.signer.validationP95Seconds.toFixed(1)}s`,
               },
             ]}
             onRecheck={(target) => void recheck(target)}

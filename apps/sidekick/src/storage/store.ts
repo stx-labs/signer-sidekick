@@ -77,6 +77,7 @@ const eventInputSchema = z
       .optional()
       .default("indexer-reported"),
     sourceId: z.string().min(1),
+    occurredAt: z.iso.datetime().nullable().optional().default(null),
     observedAt: z.iso.datetime(),
   })
   .strict()
@@ -172,6 +173,7 @@ const eventRowSchema = z.object({
   decoded_payload_json: z.string().nullable(),
   evidence_level: z.enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"]),
   source_id: z.string(),
+  occurred_at: z.string().nullable(),
   first_seen_at: z.string(),
   updated_at: z.string(),
 });
@@ -1193,6 +1195,7 @@ export interface StoredActivityChainEvent {
   topic: string | null;
   decodedSchemaVersion: number | null;
   decodedPayload: unknown;
+  occurredAt: string | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -1477,6 +1480,7 @@ function toStoredChainEvent(row: unknown): StoredChainEvent {
       : null,
     evidenceLevel: value.evidence_level,
     sourceId: value.source_id,
+    occurredAt: value.occurred_at === null ? null : z.iso.datetime().parse(value.occurred_at),
     firstSeenAt: value.first_seen_at,
     updatedAt: value.updated_at,
   };
@@ -2995,8 +2999,8 @@ export class SidekickStore {
           chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, evidence_level, source_id, first_seen_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          decoded_payload_json, evidence_level, source_id, occurred_at, first_seen_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (chain_id, tx_id, event_index) DO UPDATE SET
           block_height = excluded.block_height,
           block_hash = excluded.block_hash,
@@ -3020,6 +3024,7 @@ export class SidekickStore {
             ELSE excluded.evidence_level
           END,
           source_id = excluded.source_id,
+          occurred_at = COALESCE(excluded.occurred_at, chain_events.occurred_at),
           updated_at = excluded.updated_at`,
         )
         .run(
@@ -3040,6 +3045,7 @@ export class SidekickStore {
           decodedPayloadJson,
           value.evidenceLevel,
           value.sourceId,
+          value.occurredAt,
           value.observedAt,
           value.observedAt,
         );
@@ -3145,7 +3151,7 @@ export class SidekickStore {
         `SELECT chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, evidence_level, source_id, first_seen_at, updated_at
+          decoded_payload_json, evidence_level, source_id, occurred_at, first_seen_at, updated_at
          FROM chain_events WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
       )
       .get(chainId, txId, eventIndex);
@@ -3376,10 +3382,11 @@ export class SidekickStore {
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
            evidence_level,
-           contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+           contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
+           first_seen_at, updated_at
          FROM chain_events
          WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")})
-         ORDER BY updated_at DESC, tx_id ASC, event_index ASC LIMIT ?`,
+         ORDER BY COALESCE(occurred_at, first_seen_at) DESC, tx_id ASC, event_index ASC LIMIT ?`,
       )
       .all(parsedChainId, ...contracts, parsedLimit) as Array<{
       chain_id: number;
@@ -3393,6 +3400,7 @@ export class SidekickStore {
       topic: string | null;
       decoded_schema_version: number | null;
       decoded_payload_json: string | null;
+      occurred_at: string | null;
       first_seen_at: string;
       updated_at: string;
     }>;
@@ -3416,6 +3424,7 @@ export class SidekickStore {
         row.decoded_payload_json === null
           ? null
           : (JSON.parse(row.decoded_payload_json) as unknown),
+      occurredAt: row.occurred_at === null ? null : z.iso.datetime().parse(row.occurred_at),
       firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
       updatedAt: z.iso.datetime().parse(row.updated_at),
     }));
@@ -3437,7 +3446,8 @@ export class SidekickStore {
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
            evidence_level,
-           contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+           contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
+           first_seen_at, updated_at
          FROM chain_events
          WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id = ?
          ORDER BY event_index ASC`,
@@ -3454,6 +3464,7 @@ export class SidekickStore {
       topic: string | null;
       decoded_schema_version: number | null;
       decoded_payload_json: string | null;
+      occurred_at: string | null;
       first_seen_at: string;
       updated_at: string;
     }>;
@@ -3477,6 +3488,7 @@ export class SidekickStore {
         row.decoded_payload_json === null
           ? null
           : (JSON.parse(row.decoded_payload_json) as unknown),
+      occurredAt: row.occurred_at === null ? null : z.iso.datetime().parse(row.occurred_at),
       firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
       updatedAt: z.iso.datetime().parse(row.updated_at),
     }));

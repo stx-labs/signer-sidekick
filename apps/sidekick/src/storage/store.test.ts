@@ -73,6 +73,7 @@ function registerNodeSource(store: SidekickStore): void {
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
     DROP TABLE current_member_history_recovery;
+    ALTER TABLE chain_events DROP COLUMN occurred_at;
     ALTER TABLE chain_events DROP COLUMN evidence_level;
     ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
     DROP TABLE local_node_authority;
@@ -374,7 +375,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 32,
+      schemaVersion: 33,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -454,6 +455,7 @@ describe("Sidekick SQLite store", () => {
   it("upserts replayed chain evidence without losing first-seen history", async () => {
     const store = await memoryStore();
     registerSource(store);
+    const occurredAt = "2026-07-14T11:58:00.000Z";
     store.putChainEvent({
       chainId: 1,
       txId,
@@ -471,6 +473,7 @@ describe("Sidekick SQLite store", () => {
       decodedSchemaVersion: 1,
       decodedPayload: { amountUstx: "50000000000" },
       sourceId,
+      occurredAt,
       observedAt,
     });
     store.putChainEvent({
@@ -498,6 +501,7 @@ describe("Sidekick SQLite store", () => {
       canonical: false,
       rawPayload: { amount_ustx: "51000000000" },
       decodedPayload: { amountUstx: "51000000000" },
+      occurredAt,
       firstSeenAt: observedAt,
       updatedAt: later,
     });
@@ -1461,7 +1465,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 32,
+      schemaVersion: 33,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1487,7 +1491,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1521,6 +1525,80 @@ describe("Sidekick SQLite store", () => {
         .prepare("SELECT name FROM pragma_table_info('pool_cycle_snapshots') WHERE name = ?")
         .get("chain_anchor_json"),
     ).toEqual({ name: "chain_anchor_json" });
+    inspection.close();
+  });
+
+  it("requeues bounded current-member history when occurrence times need enrichment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v32-occurrence-upgrade-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    createDatabaseThroughMigration(path, 32).close();
+    const existing = new DatabaseSync(path);
+    existing
+      .prepare(
+        `INSERT INTO chain_sources (
+          source_id, kind, network, base_url, created_at, last_seen_at
+        ) VALUES (?, 'api', 'mainnet', 'https://api.mainnet.hiro.so', ?, ?)`,
+      )
+      .run(sourceId, observedAt, observedAt);
+    existing
+      .prepare(
+        `INSERT INTO chain_events (
+          chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
+          microblock_hash, microblock_sequence, canonical, microblock_canonical,
+          contract_id, topic, raw_payload_json, decoded_schema_version,
+          decoded_payload_json, source_id, first_seen_at, updated_at, evidence_level
+        ) VALUES (1, ?, 0, 8600000, ?, ?, NULL, NULL, 1, 1, ?, 'stake', '{}', 1, ?, ?, ?, ?,
+          'node-index-verified')`,
+      )
+      .run(
+        txId,
+        blockHash,
+        indexBlockHash,
+        pox5,
+        JSON.stringify({ event: { kind: "stake", stakerPrincipal: stakerOne } }),
+        sourceId,
+        observedAt,
+        observedAt,
+      );
+    existing
+      .prepare(
+        `INSERT INTO current_member_history_recovery (
+          source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+          pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+          completed_at
+        ) VALUES (?, ?, ?, ?, 'complete', NULL, 3, 120, 1, ?, ?, ?)`,
+      )
+      .run(sourceId, manager, pox5, stakerOne, observedAt, later, later);
+    existing.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.store.schemaVersion()).toBe(33);
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspection
+        .prepare("SELECT name FROM pragma_table_info('chain_events') WHERE name = ?")
+        .get("occurred_at"),
+    ).toEqual({ name: "occurred_at" });
+    expect(
+      inspection
+        .prepare(
+          `SELECT status, cursor, pages_processed, transactions_inspected, relevant_events,
+             completed_at
+           FROM current_member_history_recovery
+           WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+             AND staker_principal = ?`,
+        )
+        .get(sourceId, manager, pox5, stakerOne),
+    ).toEqual({
+      status: "pending",
+      cursor: null,
+      pages_processed: 0,
+      transactions_inspected: 0,
+      relevant_events: 0,
+      completed_at: null,
+    });
     inspection.close();
   });
 
@@ -1603,7 +1681,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(32);
+    expect(upgraded.store.schemaVersion()).toBe(33);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1666,6 +1744,7 @@ describe("Sidekick SQLite store", () => {
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
       DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;
@@ -1693,7 +1772,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1844,7 +1923,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1967,6 +2046,7 @@ describe("Sidekick SQLite store", () => {
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
       DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;
@@ -1989,7 +2069,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -2027,6 +2107,7 @@ describe("Sidekick SQLite store", () => {
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
       DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;

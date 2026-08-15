@@ -1,8 +1,8 @@
 # First-run connection contract
 
-- Status: Implemented in the Slice 3 connection change
+- Status: Implemented product and connection contract
 - Date: 2026-08-13
-- Parent: [Signer Sidekick scope reset](scope-reset-plan-2026-08-13.md)
+- Parent: [Scope and decisions](scope-and-decisions.md)
 
 ## Purpose
 
@@ -37,9 +37,6 @@ Zero to Signing may display a handoff summary containing the network, signer-man
 registered signer public key, registration transaction, and initial stake transaction. Sidekick
 accepts only its normal deployment configuration and rediscovers the other facts. It must not
 import grant JSON, keys, transaction assertions, or a trusted `setup complete` flag.
-
-The external dApp should not call itself "Zero To Signing Sidekick" after this boundary ships.
-"Zero to Signing" or "Signer setup" avoids implying that it is this operations product.
 
 ## Configuration boundary
 
@@ -88,7 +85,7 @@ delivery to the five connection gates. It checks live behavior rather than trust
 - recommended Sidekick event delivery, which passes only after a callback is verified against the
   local node.
 
-The setup CLI emits this assessment beside the connection result. Settings loads the same assessment
+The `connection check` CLI emits this assessment beside the connection result. Settings loads the same assessment
 automatically and provides a forced read-only refresh. Every incomplete check names whether it is
 required or recommended, what capability is affected, the smallest configuration snippet, the
 services normally restarted after an operator-applied change, and the operator guide. Sidekick must
