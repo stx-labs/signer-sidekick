@@ -16,14 +16,17 @@ import {
   sortActiveActivity,
   walletIntentActivityStage,
   walletIntentActivityState,
+  walletIntentSummaryText,
 } from "./activity-projection.js";
 import { managerEventStream } from "./manager-event-vocabulary.js";
+import { pox5PoolActivityStream } from "./pox5-pool-activity-sync.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256, walletIntentStates } from "./storage/wallet-intent-repository.js";
 import { transactionJobStates } from "./transaction-engine/state-machine.js";
 
 const now = new Date("2026-08-14T12:00:00.000Z");
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
+const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";
 const actorPrincipal = "SP000000000000000000002Q6VF78";
 const txid = `0x${"11".repeat(32)}`;
 const blockHash = `0x${"22".repeat(32)}`;
@@ -154,6 +157,18 @@ describe("Activity projection", () => {
       ["ambiguous", "ambiguous"],
       ["noncanonical_reobserve", "reobserving"],
     ]);
+  });
+
+  it("distinguishes a recorded transaction ID from verified chain evidence", () => {
+    expect(walletIntentSummaryText({ state: "submitted" }, null)).toBe(
+      "The transaction ID is recorded, but no canonical transaction evidence has been found yet. Refresh verification to check the local node and indexed API again.",
+    );
+    expect(walletIntentSummaryText({ state: "mempool" }, { outcome: "mempool" })).toBe(
+      "The transaction is in the mempool and is waiting to be included in a block.",
+    );
+    expect(walletIntentSummaryText({ state: "confirmed" }, { outcome: "confirmed" })).toBe(
+      "The transaction is canonical; Sidekick is verifying the expected on-chain result.",
+    );
   });
 
   it("escalates noncanonical re-observation after its bounded recovery deadline", () => {
@@ -369,6 +384,74 @@ describe("Activity projection", () => {
     expect(listEngineHistory).not.toHaveBeenCalled();
     expect(listChainHistory).not.toHaveBeenCalled();
     expect(listSettingsHistory).not.toHaveBeenCalled();
+  });
+
+  it("shows verified staker actions for this pool without indexing other managers", async () => {
+    const store = await memoryStore();
+    store.upsertChainSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: now.toISOString(),
+    });
+    store.putChainEvent({
+      chainId: 1,
+      txId: txid,
+      eventIndex: 3,
+      blockHeight: 8_750_000,
+      blockHash,
+      indexBlockHash,
+      microblockHash: null,
+      microblockSequence: null,
+      canonical: true,
+      microblockCanonical: true,
+      contractId: pox5ContractId,
+      topic: "stake-update",
+      rawPayload: { omitted: true },
+      decodedSchemaVersion: 1,
+      decodedPayload: {
+        event: {
+          kind: "stake-update",
+          relationship: "joined",
+          stakerPrincipal: actorPrincipal,
+          signer: managerPrincipal,
+        },
+      },
+      sourceId,
+      observedAt: "2026-08-14T10:06:00.000Z",
+    });
+    store.putCursor({
+      sourceId,
+      stream: pox5PoolActivityStream(pox5ContractId, managerPrincipal),
+      cursor: null,
+      lastBlockHeight: 8_750_000,
+      lastIndexBlockHash: indexBlockHash,
+      updatedAt: "2026-08-14T10:06:00.000Z",
+    });
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      pox5ContractId: () => pox5ContractId,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+
+    const page = service.page(query({ domain: "pool" }));
+    expect(page.items).toEqual([
+      expect.objectContaining({
+        domain: "pool",
+        title: "Staker moved into the pool",
+        actorPrincipal,
+        coverage: expect.arrayContaining([
+          expect.objectContaining({ source: "indexed-pool-history", status: "current" }),
+        ]),
+      }),
+    ]);
+    expect(service.detail(`chain-tx:1:${txid}`)?.timeline).toContainEqual(
+      expect.objectContaining({ source: "indexed-pool-history", txid }),
+    );
   });
 
   it("links an expired transaction review to the replacement for the same operation scope", async () => {

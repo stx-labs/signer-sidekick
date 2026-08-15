@@ -5,6 +5,7 @@ import { type BrowserWalletRecoveryScope, LEATHER_PROVIDER_ID } from "./browser-
 import {
   automaticVerificationRefreshError,
   BrowserWalletActionPanel,
+  walletIntentStatusHeading,
 } from "./browser-wallet-action.js";
 import {
   type PendingBrowserWalletBroadcast,
@@ -57,6 +58,17 @@ class MemoryStorage {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("BrowserWalletActionPanel recovery", () => {
+  it("describes the saved transaction by its verified lifecycle state", () => {
+    expect(walletIntentStatusHeading("submitted")).toBe(
+      "Transaction recorded; verification pending.",
+    );
+    expect(walletIntentStatusHeading("mempool")).toBe("Transaction pending in the mempool.");
+    expect(walletIntentStatusHeading("confirmed")).toBe(
+      "Transaction confirmed; result verification pending.",
+    );
+    expect(walletIntentStatusHeading("complete")).toBe("Transaction verified.");
+  });
+
   it("does not suggest manual refresh while the Hiro API is rate limited", () => {
     const error = new ApiRequestError("rate limited", {
       kind: "http",

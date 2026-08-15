@@ -586,6 +586,7 @@ export const health = {
   coverage: { available: 22, total: 22 },
   diagnosis: {
     status: "healthy",
+    title: "Node and signer are operating normally",
     classification: "healthy",
     confidence: "high",
     summary: "The configured local node and signer are reachable and aligned.",

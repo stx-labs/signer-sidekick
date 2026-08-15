@@ -29,6 +29,8 @@ const localSourceFailureSamples = 3;
 const localSourceFailureWindowMs = 10_000;
 const nodeBehindSamples = 6;
 const nodeBehindWindowMs = 25_000;
+const signerHeightLagUpdates = 3;
+const signerHeightLagWindowMs = 2 * 60_000;
 const nodeStallWindowMs = 90_000;
 const networkStallWindowMs = 180_000;
 const sourceLagBlocks = 3;
@@ -104,6 +106,18 @@ function sustained(
       samples.length >= minimumSamples &&
       Date.parse(last.observedAt) - Date.parse(first.observedAt) >= minimumWindowMs,
   );
+}
+
+function signerHeightUpdates(observations: readonly HealthObservation[]): HealthObservation[] {
+  const updates: HealthObservation[] = [];
+  let previousHeight: number | null = null;
+  for (const observation of observations) {
+    const height = observation.signerMetrics?.nodeHeight ?? null;
+    if (height === null || height === previousHeight) continue;
+    updates.push(observation);
+    previousHeight = height;
+  }
+  return updates;
 }
 
 function evidenceWindow(
@@ -782,8 +796,27 @@ function evaluateHealthFindings(input: {
       );
     }
 
+    const heightUpdates = signerHeightUpdates(observations);
+    let healthyUpdateCount = 0;
+    for (let index = heightUpdates.length - 1; index >= 0; index -= 1) {
+      const observation = heightUpdates[index];
+      if (
+        !observation?.nodeInfo ||
+        observation.signerMetrics?.nodeHeight === null ||
+        observation.signerMetrics?.nodeHeight === undefined ||
+        observation.nodeInfo.stacks_tip_height - observation.signerMetrics.nodeHeight >=
+          signerHeightLagBlocks
+      ) {
+        break;
+      }
+      healthyUpdateCount += 1;
+    }
+    const lagEvaluationUpdates =
+      healthyUpdateCount >= 2
+        ? []
+        : heightUpdates.slice(0, heightUpdates.length - healthyUpdateCount);
     const signerLagSamples = consecutiveMatching(
-      observations,
+      lagEvaluationUpdates,
       (observation) =>
         observation.signerMetrics?.nodeHeight !== null &&
         observation.signerMetrics?.nodeHeight !== undefined &&
@@ -791,7 +824,11 @@ function evaluateHealthFindings(input: {
         observation.nodeInfo.stacks_tip_height - observation.signerMetrics.nodeHeight >=
           signerHeightLagBlocks,
     );
-    if (sustained(signerLagSamples, nodeBehindSamples, nodeBehindWindowMs)) {
+    if (sustained(signerLagSamples, signerHeightLagUpdates, signerHeightLagWindowMs)) {
+      const findingSamples = [
+        ...signerLagSamples,
+        ...heightUpdates.slice(heightUpdates.length - healthyUpdateCount),
+      ];
       findings.push(
         finding({
           id: "signer-node-view-behind",
@@ -802,7 +839,7 @@ function evaluateHealthFindings(input: {
           source: "signer",
           classification: "likely-local-signer",
           confidence: "high",
-          observations: signerLagSamples,
+          observations: findingSamples,
           evidence: [
             {
               code: "signer-node-height-gap",
@@ -888,14 +925,26 @@ function evaluateHealthFindings(input: {
     signer15m.accepted + signer15m.rejected >= signerRateSampleMinimum &&
     (signer15m.responseP95Seconds ?? 0) > signerResponseP95ThresholdSeconds
   ) {
+    const validationSlow =
+      (signer15m.validationP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
+    const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
+    const responsesMissing = (signer15m.responseGap ?? 0) >= signerResponseGapMinimum;
+    const corroborated = validationSlow || nodeRpcSlow || responsesMissing;
+    const latencyClassification = validationSlow
+      ? "likely-local-signer"
+      : nodeRpcSlow
+        ? "likely-local-node"
+        : "insufficient-evidence";
     findings.push(
       finding({
         id: "signer-response-latency-elevated",
-        severity: "warning",
-        title: "Signer responses are slower than the target block cadence",
-        detail: `The recent signer response p95 is ${signer15m.responseP95Seconds}s, above the five-second Stacks block target.`,
+        severity: corroborated ? "warning" : "info",
+        title: "End-to-end signer response time is elevated",
+        detail: corroborated
+          ? `The recent end-to-end signer response p95 is ${signer15m.responseP95Seconds}s and local evidence shows a correlated delay that needs attention.`
+          : `The recent end-to-end signer response p95 is ${signer15m.responseP95Seconds}s, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
         source: "signer",
-        classification: "likely-local-signer",
+        classification: latencyClassification,
         confidence: "medium",
         observations: recent15m,
         evidence: [
@@ -907,6 +956,27 @@ function evaluateHealthFindings(input: {
             value: `${signer15m.responseP95Seconds}s`,
             detail:
               "The official signer histogram measures end-to-end time from block timestamp to response broadcast.",
+          },
+          {
+            code: "signer-validation-p95",
+            source: "signer-monitoring",
+            status: validationSlow ? "supporting" : "contradicting",
+            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
+            value:
+              signer15m.validationP95Seconds === null ? null : `${signer15m.validationP95Seconds}s`,
+            detail: validationSlow
+              ? "Local block validation latency is also elevated."
+              : "Local block validation latency is not elevated.",
+          },
+          {
+            code: "signer-node-rpc-p95",
+            source: "signer-monitoring",
+            status: nodeRpcSlow ? "supporting" : "contradicting",
+            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
+            value: signer15m.nodeRpcP95Seconds === null ? null : `${signer15m.nodeRpcP95Seconds}s`,
+            detail: nodeRpcSlow
+              ? "The signer's local node RPC latency is also elevated."
+              : "The signer's local node RPC latency is not elevated.",
           },
         ],
       }),
@@ -985,7 +1055,10 @@ function diagnosis(
   partial: boolean,
 ): HealthSnapshot["diagnosis"] {
   const latest = observations.at(-1);
-  const window = evidenceWindow(windowSince(observations, 15 * 60 * 1_000), 0);
+  const window = evidenceWindow(
+    windowSince(observations, 15 * 60 * 1_000),
+    new Set(findings.flatMap(({ evidence }) => evidence.map(({ source }) => source))).size,
+  );
   const priority = [
     "likely-local-node",
     "likely-local-signer",
@@ -998,10 +1071,12 @@ function diagnosis(
   );
   if (findings.length > 0 && current) {
     const strongest = findings.find(({ classification }) => classification === current);
+    const actionable = findings.some(({ severity }) => severity !== "info");
     return {
-      status: "needs-attention",
+      status: actionable ? "needs-attention" : "monitoring",
       classification: current,
       confidence: strongest?.confidence ?? "low",
+      title: strongest?.title ?? "Signer health finding",
       summary:
         findings.length === 1
           ? (strongest?.detail ?? "Signer health needs attention.")
@@ -1015,6 +1090,7 @@ function diagnosis(
       status: "collecting",
       classification: "insufficient-evidence",
       confidence: "low",
+      title: "Local node check is not yet conclusive",
       summary:
         "The latest node check failed, but the sustained failure window is not yet complete.",
       evidenceWindow: window,
@@ -1026,6 +1102,7 @@ function diagnosis(
       status: "collecting",
       classification: "insufficient-evidence",
       confidence: observations.length < 3 ? "low" : "medium",
+      title: partial ? "Some health evidence is incomplete" : "Collecting signer-health evidence",
       summary: partial
         ? "Core local health is available; optional signer or comparison evidence is incomplete."
         : "Sidekick is collecting the initial signer-health evidence window.",
@@ -1037,6 +1114,7 @@ function diagnosis(
     status: "healthy",
     classification: "healthy",
     confidence: "high",
+    title: "No active signer-health issue",
     summary:
       "The configured local node and signer are reachable, aligned, and have no sustained actionable finding.",
     evidenceWindow: window,
@@ -1213,11 +1291,13 @@ export function buildHealthSnapshot({
   const overallStatus =
     nodeRpc.consecutiveFailures >= localSourceFailureSamples
       ? "unavailable"
-      : findings.length > 0
+      : findings.some(({ severity }) => severity !== "info")
         ? "needs-attention"
-        : partial
-          ? "partial"
-          : "healthy";
+        : findings.length > 0
+          ? "monitoring"
+          : partial
+            ? "partial"
+            : "healthy";
   const fallbackRollup = buildHealthRollup(last15Minutes);
   const recentRollups = history?.recentRollups ?? (fallbackRollup ? [fallbackRollup] : []);
   const observationSummary = history ?? {

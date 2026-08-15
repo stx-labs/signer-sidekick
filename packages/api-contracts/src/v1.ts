@@ -344,7 +344,7 @@ const signerWindowSchema = z
 export const healthSnapshotSchema = z.looseObject({
   schemaVersion: z.literal(2),
   generatedAt: z.iso.datetime(),
-  overallStatus: z.enum(["healthy", "needs-attention", "partial", "unavailable"]),
+  overallStatus: z.enum(["healthy", "monitoring", "needs-attention", "partial", "unavailable"]),
   coverage: z.looseObject({ available: z.number(), total: z.number() }),
   burnBlockTiming: z
     .looseObject({
@@ -356,9 +356,10 @@ export const healthSnapshotSchema = z.looseObject({
     .nullable(),
   diagnosis: z
     .object({
-      status: z.enum(["healthy", "needs-attention", "collecting", "unavailable"]),
+      status: z.enum(["healthy", "monitoring", "needs-attention", "collecting", "unavailable"]),
       classification: healthClassificationSchema,
       confidence: z.enum(["high", "medium", "low"]),
+      title: z.string().min(1).max(200),
       summary: z.string().min(1).max(2_000),
       evidenceWindow: healthEvidenceWindowSchema,
       activeFindingIds: z.array(z.string().min(1).max(120)),
@@ -1033,6 +1034,7 @@ export interface RewardOutlookStatus {
     confidence: "low" | "developing" | "calibrated";
     assumptions: Array<
       | "zero-accrual-after-last-calculation"
+      | "observed-accrual-sample-window"
       | "linear-global-accrual-run-rate"
       | "current-cycle-shares"
       | "current-active-bond-set"
@@ -1062,6 +1064,25 @@ export interface RewardOutlookStatus {
     };
     assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
   };
+  operatorFeeEstimate?: null | {
+    kind: "reference-manager-exact";
+    sats: string;
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeEstimateUnavailableReason?:
+    | "reviewed-fee-capability-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
   operatorFeeForecastUnavailableReason:
     | "reviewed-fee-capability-unavailable"
     | "forecast-unavailable"
@@ -2004,6 +2025,7 @@ export const activityCoverageSourceSchema = z.enum([
   "wallet-intents",
   "transaction-engine",
   "indexed-manager-history",
+  "indexed-pool-history",
   "observer",
   "settings-audit",
 ]);

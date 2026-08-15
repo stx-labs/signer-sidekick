@@ -12,6 +12,7 @@ import type { HealthObservation } from "../health-monitoring-types.js";
 export const HEALTH_RAW_RETENTION_HOURS = 72 as const;
 export const HEALTH_ROLLUP_RETENTION_DAYS = 90 as const;
 export const HEALTH_ROLLUP_INTERVAL_MINUTES = 5 as const;
+export const HEALTH_EPISODE_RECURRENCE_WINDOW_MS = 5 * 60 * 1_000;
 
 export type HealthRollup = HealthSnapshot["history"]["recentRollups"][number];
 export type HealthFindingEpisode = HealthSnapshot["history"]["recentEpisodes"][number];
@@ -278,24 +279,36 @@ export class HealthMonitoringRepository {
               `SELECT episode_id, status, finding_json, opened_at, last_observed_at,
                    resolved_at, occurrences
                  FROM health_finding_episodes
-                 WHERE config_fingerprint = ? AND finding_id = ? AND status = 'active'`,
+                 WHERE config_fingerprint = ? AND finding_id = ?
+                 ORDER BY (status = 'active') DESC, last_observed_at DESC
+                 LIMIT 1`,
             )
             .get(fingerprint, findingInput.id) ?? null,
         );
-        const episodeId = existing?.episode_id ?? randomUUID();
+        const reopenRecent = Boolean(
+          existing?.status === "resolved" &&
+            existing.resolved_at !== null &&
+            Date.parse(at) - Date.parse(existing.resolved_at) <=
+              HEALTH_EPISODE_RECURRENCE_WINDOW_MS,
+        );
+        const episodeId =
+          existing && (existing.status === "active" || reopenRecent)
+            ? existing.episode_id
+            : randomUUID();
+        const continuingEpisode = existing?.status === "active" || reopenRecent;
         const finding = healthFindingSchema.parse({
           ...findingInput,
           episodeId,
-          firstObservedAt: existing?.opened_at ?? findingInput.firstObservedAt,
+          firstObservedAt: continuingEpisode ? existing?.opened_at : findingInput.firstObservedAt,
           lastObservedAt: at,
         });
-        if (existing) {
+        if (existing?.status === "active" || reopenRecent) {
           this.db
             .prepare(
               `UPDATE health_finding_episodes
-               SET finding_json = ?, last_observed_at = ?,
+               SET status = 'active', finding_json = ?, last_observed_at = ?, resolved_at = NULL,
                    occurrences = occurrences + 1, updated_at = ?
-               WHERE episode_id = ? AND status = 'active'`,
+               WHERE episode_id = ?`,
             )
             .run(JSON.stringify(finding), at, at, episodeId);
         } else {

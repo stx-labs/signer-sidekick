@@ -189,9 +189,6 @@ export function PoolForecastChart({ view }: { view: PoolForecastView }) {
       <div className="forecast-legend" aria-hidden="true">
         <span className="confirmed">current</span>
         <span className="projected">projected</span>
-        {view.points.some(({ cycle }) => !cycle.threshold.meetsThreshold) ? (
-          <span className="under">below threshold</span>
-        ) : null}
       </div>
     </>
   );

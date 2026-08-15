@@ -338,7 +338,7 @@ export interface RewardOutlookStatus {
     };
     confidence: "low" | "developing" | "calibrated";
     assumptions: [
-      "zero-accrual-after-last-calculation",
+      "zero-accrual-after-last-calculation" | "observed-accrual-sample-window",
       "linear-global-accrual-run-rate",
       "current-cycle-shares",
       "current-active-bond-set",
@@ -368,6 +368,25 @@ export interface RewardOutlookStatus {
     };
     assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
   };
+  operatorFeeEstimate: null | {
+    kind: "reference-manager-exact";
+    sats: string;
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeEstimateUnavailableReason:
+    | "reviewed-fee-capability-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
   operatorFeeForecastUnavailableReason:
     | "reviewed-fee-capability-unavailable"
     | "forecast-unavailable"
@@ -905,9 +924,10 @@ function applyRewardCalculationGrace(
 }
 
 type OperatorFeeForecast = NonNullable<RewardOutlookStatus["operatorFeeForecast"]>;
+type OperatorFeeEstimate = NonNullable<RewardOutlookStatus["operatorFeeEstimate"]>;
 type OperatorFeeUnavailable = Exclude<
   RewardOutlookStatus["operatorFeeForecastUnavailableReason"],
-  null
+  null | "forecast-unavailable"
 >;
 
 function exactBucketFees(input: {
@@ -934,9 +954,15 @@ function exactBucketFees(input: {
 async function projectExactOperatorFees(input: {
   options: RewardOutlookOptions;
   snapshot: Pox5PoolSimulationSnapshot;
-  forecast: NonNullable<RewardOutlookStatus["forecast"]>;
+  targetRewardCycle: number;
+  currentGlobalSats: string;
+  forecastGlobalSats: NonNullable<RewardOutlookStatus["forecast"]>["globalSats"] | null;
 }): Promise<
-  | { status: "ready"; forecast: OperatorFeeForecast }
+  | {
+      status: "ready";
+      estimate: OperatorFeeEstimate;
+      forecast: OperatorFeeForecast | null;
+    }
   | { status: "unavailable"; reason: OperatorFeeUnavailable }
 > {
   const { options, snapshot } = input;
@@ -967,7 +993,7 @@ async function projectExactOperatorFees(input: {
   ) {
     return { status: "unavailable", reason: "authoritative-roster-unavailable" };
   }
-  const targetCycle = input.forecast.targetRewardCycle;
+  const targetCycle = input.targetRewardCycle;
   const memberships = options.store
     .listCycleMembershipsForCycle(options.managerPrincipal, targetCycle, options.sourceId)
     .filter(
@@ -1043,36 +1069,38 @@ async function projectExactOperatorFees(input: {
         ...snapshot.simulationInput,
         grossAccruedRewardsSats: BigInt(gross),
       });
+    const inputs = { stakers: stakers.length, buckets };
+    const assumptions: OperatorFeeEstimate["assumptions"] = [
+      "per-staker-per-bucket-integer-rounding",
+      ...(configuredAssumption ? (["configured-fee-until-claim"] as const) : []),
+    ];
+    const feeAt = (gross: string) =>
+      exactBucketFees({
+        simulation: simulate(gross),
+        stxShares,
+        bondShares,
+        feeBips,
+      }).toString();
     return {
       status: "ready",
-      forecast: {
+      estimate: {
         kind: "reference-manager-exact",
-        sats: {
-          low: exactBucketFees({
-            simulation: simulate(input.forecast.globalSats.low),
-            stxShares,
-            bondShares,
-            feeBips,
-          }).toString(),
-          point: exactBucketFees({
-            simulation: simulate(input.forecast.globalSats.point),
-            stxShares,
-            bondShares,
-            feeBips,
-          }).toString(),
-          high: exactBucketFees({
-            simulation: simulate(input.forecast.globalSats.high),
-            stxShares,
-            bondShares,
-            feeBips,
-          }).toString(),
-        },
-        inputs: { stakers: stakers.length, buckets },
-        assumptions: [
-          "per-staker-per-bucket-integer-rounding",
-          ...(configuredAssumption ? (["configured-fee-until-claim"] as const) : []),
-        ],
+        sats: feeAt(input.currentGlobalSats),
+        inputs,
+        assumptions,
       },
+      forecast: input.forecastGlobalSats
+        ? {
+            kind: "reference-manager-exact",
+            sats: {
+              low: feeAt(input.forecastGlobalSats.low),
+              point: feeAt(input.forecastGlobalSats.point),
+              high: feeAt(input.forecastGlobalSats.high),
+            },
+            inputs,
+            assumptions,
+          }
+        : null,
     };
   } catch {
     return { status: "unavailable", reason: "anchored-fee-inputs-unavailable" };
@@ -1125,6 +1153,11 @@ export async function readRewardOutlook(
   let operatorFeeForecastUnavailableReason: RewardOutlookStatus["operatorFeeForecastUnavailableReason"] =
     options.feeCapability?.executionAvailable
       ? "forecast-unavailable"
+      : "reviewed-fee-capability-unavailable";
+  let operatorFeeEstimate: RewardOutlookStatus["operatorFeeEstimate"] = null;
+  let operatorFeeEstimateUnavailableReason: RewardOutlookStatus["operatorFeeEstimateUnavailableReason"] =
+    options.feeCapability?.executionAvailable
+      ? "anchored-fee-inputs-unavailable"
       : "reviewed-fee-capability-unavailable";
   const calibration = assessRewardCalibration(
     (
@@ -1210,11 +1243,11 @@ export async function readRewardOutlook(
         if (!(BigInt(point.grossSats) <= BigInt(high.grossSats))) {
           throw new Pox5RewardSimulationError("projected pool point exceeds high");
         }
-        forecast = {
+        const projectedPoolForecast: NonNullable<RewardOutlookStatus["forecast"]> = {
           ...projected.forecast,
           poolSats: { low: low.grossSats, point: point.grossSats, high: high.grossSats },
           assumptions: [
-            "zero-accrual-after-last-calculation",
+            projected.forecast.assumptions[0],
             "linear-global-accrual-run-rate",
             "current-cycle-shares",
             "current-active-bond-set",
@@ -1222,22 +1255,30 @@ export async function readRewardOutlook(
             "contract-integer-rounding",
           ],
         };
-        forecast.confidence = calibratedForecastConfidence({
+        projectedPoolForecast.confidence = calibratedForecastConfidence({
           samplingConfidence: projected.forecast.confidence,
           remainingBlocks: projected.forecast.sample.remainingBlocks,
           calibration,
         });
-        const feeProjection = await projectExactOperatorFees({
-          options,
-          snapshot: simulationSnapshot,
-          forecast,
-        });
-        if (feeProjection.status === "ready") {
-          operatorFeeForecast = feeProjection.forecast;
-          operatorFeeForecastUnavailableReason = null;
-        } else {
-          operatorFeeForecastUnavailableReason = feeProjection.reason;
-        }
+        forecast = projectedPoolForecast;
+      }
+      const feeProjection = await projectExactOperatorFees({
+        options,
+        snapshot: simulationSnapshot,
+        targetRewardCycle: calculation.next.targetRewardCycle,
+        currentGlobalSats: globalSats,
+        forecastGlobalSats: forecast?.globalSats ?? null,
+      });
+      if (feeProjection.status === "ready") {
+        operatorFeeEstimate = feeProjection.estimate;
+        operatorFeeEstimateUnavailableReason = null;
+        operatorFeeForecast = feeProjection.forecast;
+        operatorFeeForecastUnavailableReason = feeProjection.forecast
+          ? null
+          : "forecast-unavailable";
+      } else {
+        operatorFeeEstimateUnavailableReason = feeProjection.reason;
+        operatorFeeForecastUnavailableReason = feeProjection.reason;
       }
     } catch (error) {
       if (poolEstimate === null) {
@@ -1267,6 +1308,8 @@ export async function readRewardOutlook(
     forecastUnavailableReason,
     operatorFeeForecast,
     operatorFeeForecastUnavailableReason,
+    operatorFeeEstimate,
+    operatorFeeEstimateUnavailableReason,
     calibration,
     calculation,
   };

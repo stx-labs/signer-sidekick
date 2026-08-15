@@ -6,6 +6,7 @@ import {
   type ActivityResponse,
   activityDetailSchema,
   activityResponseSchema,
+  browserWalletIntentResponseSchema,
   type DashboardSnapshot,
   operatorOperationCodeSchema,
   recurringWalletIntentActionSchema,
@@ -444,6 +445,8 @@ function ActivityDetailPage({
 }) {
   const [data, setData] = useState<ActivityDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshingEvidence, setRefreshingEvidence] = useState(false);
+  const [evidenceRefreshNotice, setEvidenceRefreshNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
@@ -530,6 +533,32 @@ function ActivityDetailPage({
   const activeOperation = ["action-required", "in-progress", "needs-attention"].includes(
     item.displayStatus,
   );
+  const refreshEvidence = async () => {
+    setRefreshingEvidence(true);
+    setEvidenceRefreshNotice(null);
+    setError(null);
+    try {
+      if (walletIntentId !== null) {
+        await apiJson(
+          token,
+          `/api/v1/wallet-intents/${encodeURIComponent(walletIntentId)}/refresh`,
+          browserWalletIntentResponseSchema,
+          { method: "POST", body: "{}" },
+        );
+        setEvidenceRefreshNotice(
+          "Verification checked. Sidekick queried the configured transaction sources and reloaded this operation’s evidence.",
+        );
+      } else {
+        setEvidenceRefreshNotice("Activity evidence reloaded.");
+      }
+      setRefresh((value) => value + 1);
+      await Promise.resolve(onOperatorStateChanged?.());
+    } catch (cause) {
+      setError(operatorErrorDetail(cause, "Sidekick could not refresh this evidence"));
+    } finally {
+      setRefreshingEvidence(false);
+    }
+  };
   return (
     <>
       <a className="activity-back" href={activityHash(null, search)}>
@@ -541,11 +570,12 @@ function ActivityDetailPage({
         actions={
           <button
             className="btn btn-tertiary sm"
-            disabled={loading}
-            onClick={() => setRefresh((value) => value + 1)}
+            disabled={loading || refreshingEvidence}
+            onClick={() => void refreshEvidence()}
             type="button"
           >
-            <ArrowClockwise className={loading ? "spin" : ""} /> Refresh evidence
+            <ArrowClockwise className={loading || refreshingEvidence ? "spin" : ""} />{" "}
+            {walletIntentId === null ? "Reload evidence" : "Refresh verification"}
           </button>
         }
       />
@@ -555,6 +585,11 @@ function ActivityDetailPage({
           <div className="body">
             Could not refresh this detail. Showing retained evidence: {error}
           </div>
+        </div>
+      ) : null}
+      {evidenceRefreshNotice ? (
+        <div className="callout callout-info content-notice" role="status">
+          <div className="body">{evidenceRefreshNotice}</div>
         </div>
       ) : null}
       <div className="grid cols-2-1 activity-detail-grid">

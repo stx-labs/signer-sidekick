@@ -82,6 +82,32 @@ describe("reward run-rate forecast", () => {
     ).toEqual({ status: "unavailable", reason: "insufficient-samples" });
   });
 
+  it("uses only observed deltas and waits for 24 blocks before the first PoX-5 calculation", () => {
+    const firstCalculation = (height: number, sats: string) =>
+      sample(height, sats, { lastRewardComputeBurnHeight: "0" });
+    expect(
+      projectGlobalRewardRunRate({
+        observations: [firstCalculation(1_010, "50000000"), firstCalculation(1_020, "51000000")],
+        current: firstCalculation(1_030, "52000000"),
+        target,
+      }),
+    ).toEqual({ status: "unavailable", reason: "insufficient-samples" });
+
+    const result = projectGlobalRewardRunRate({
+      observations: [firstCalculation(1_006, "50000000"), firstCalculation(1_018, "51200000")],
+      current: firstCalculation(1_030, "52400000"),
+      target,
+    });
+    expect(result).toMatchObject({
+      status: "available",
+      forecast: {
+        globalSats: { point: "59400000" },
+        sample: { sampleBlocks: 24, elapsedBlocks: 24, remainingBlocks: 70 },
+        assumptions: ["observed-accrual-sample-window", "linear-global-accrual-run-rate"],
+      },
+    });
+  });
+
   it("refuses to forecast a cumulative balance that decreases inside one calculation interval", () => {
     const current = sample(1_030, "2000");
     expect(

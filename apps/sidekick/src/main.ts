@@ -306,6 +306,7 @@ export async function executeCliCommand({
         },
         observerStatus: currentObserverStatus,
         context: () => service.activityProjectionContext(),
+        pox5ContractId: () => connection.current()?.observed?.pox5ContractId ?? null,
       });
       const deploymentRequirements = new DeploymentRequirementsService({
         getConfig: () => runtimeSettings.effectiveConfig(),

@@ -11,6 +11,7 @@ export type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 
 type SourceStatus =
   | "healthy"
+  | "monitoring"
   | "needs-attention"
   | "partial"
   | "collecting"
@@ -68,17 +69,18 @@ function StateBadge({ state }: { state: SourceStatus }) {
       : state === "needs-attention" || state === "unavailable"
         ? "error"
         : "caution";
-  return <span className={`badge b-${kind}`}>{state.replaceAll("-", " ")}</span>;
+  const label = state === "partial" ? "monitoring" : state.replaceAll("-", " ");
+  return <span className={`badge b-${kind}`}>{label}</span>;
 }
 
 function classificationLabel(value: HealthSnapshot["diagnosis"]["classification"]): string {
   const labels: Record<HealthSnapshot["diagnosis"]["classification"], string> = {
-    healthy: "No active fault",
-    "likely-local-node": "Likely local node",
-    "likely-local-signer": "Likely local signer",
-    "source-disagreement": "Comparison source disagreement",
-    "suspected-network-wide": "Suspected network-wide",
-    "insufficient-evidence": "Insufficient evidence",
+    healthy: "No active issue",
+    "likely-local-node": "This node",
+    "likely-local-signer": "This signer",
+    "source-disagreement": "Sources disagree",
+    "suspected-network-wide": "Stacks network",
+    "insufficient-evidence": "Undetermined",
   };
   return labels[value];
 }
@@ -274,10 +276,14 @@ export function SignerHealthPage({
             <h2>Current diagnosis</h2>
             <StateBadge state={snapshot.diagnosis.status} />
           </div>
-          <strong>{classificationLabel(snapshot.diagnosis.classification)}</strong>
+          <strong>{snapshot.diagnosis.title}</strong>
           <p>{snapshot.diagnosis.summary}</p>
         </div>
         <dl className="health-diagnosis-evidence">
+          <div>
+            <dt>Likely source</dt>
+            <dd>{classificationLabel(snapshot.diagnosis.classification)}</dd>
+          </div>
           <div>
             <dt>Confidence</dt>
             <dd>{snapshot.diagnosis.confidence}</dd>
@@ -290,6 +296,9 @@ export function SignerHealthPage({
                 snapshot.diagnosis.evidenceWindow.startedAt,
                 snapshot.diagnosis.evidenceWindow.endedAt,
               )}
+              {snapshot.diagnosis.evidenceWindow.distinctSources > 0
+                ? ` · ${snapshot.diagnosis.evidenceWindow.distinctSources} sources`
+                : ""}
             </dd>
           </div>
           <div>
@@ -339,7 +348,7 @@ export function SignerHealthPage({
                   </div>
                   <span>{finding.detail}</span>
                   <span className="mono muted">
-                    {classificationLabel(finding.classification)} ·{" "}
+                    Likely source: {classificationLabel(finding.classification)} ·{" "}
                     {finding.evidenceWindow.sampleCount} samples over{" "}
                     {displayDuration(
                       finding.evidenceWindow.startedAt,
@@ -593,7 +602,23 @@ export function SignerHealthPage({
           <div className="health-episode-list">
             {snapshot.history.recentEpisodes.slice(0, 10).map((episode) => (
               <div className="health-episode" key={episode.episodeId}>
-                <StateBadge state={episode.status === "active" ? "needs-attention" : "healthy"} />
+                <span
+                  className={`badge ${
+                    episode.status === "resolved"
+                      ? "b-neutral"
+                      : episode.severity === "critical"
+                        ? "b-error"
+                        : episode.severity === "warning"
+                          ? "b-caution"
+                          : "b-info"
+                  }`}
+                >
+                  {episode.status === "resolved"
+                    ? "resolved"
+                    : episode.severity === "info"
+                      ? "monitoring"
+                      : "active"}
+                </span>
                 <div>
                   <strong>{episode.title}</strong>
                   <span className="mono muted">
@@ -601,7 +626,9 @@ export function SignerHealthPage({
                     {displayTime(episode.lastObservedAt)} · {episode.occurrences} observations
                   </span>
                 </div>
-                <span className="mono">{classificationLabel(episode.classification)}</span>
+                <span className="mono">
+                  Likely source: {classificationLabel(episode.classification)}
+                </span>
               </div>
             ))}
           </div>

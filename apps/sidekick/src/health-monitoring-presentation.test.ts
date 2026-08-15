@@ -271,6 +271,98 @@ describe("Signer Health v2 diagnosis", () => {
     );
   });
 
+  it("judges signer height lag only on signer updates and requires two healthy updates to resolve", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const sampleAt = (seconds: number, nodeHeight: number, signerHeight: number) =>
+      observation(new Date(startedAt + seconds * 1_000).toISOString(), {
+        height: nodeHeight,
+        signerPublicKey: operator.signerKeyHex ?? undefined,
+        signer: signerMetrics({ nodeHeight: signerHeight }),
+      });
+    const lagging = [sampleAt(0, 110, 100), sampleAt(60, 112, 101), sampleAt(120, 114, 102)];
+    const lagSnapshot = buildHealthSnapshot({
+      observations: lagging,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(lagSnapshot.findings.map(({ id }) => id)).toContain("signer-node-view-behind");
+
+    const oneHealthy = buildHealthSnapshot({
+      observations: [...lagging, sampleAt(180, 115, 114)],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(oneHealthy.findings.map(({ id }) => id)).toContain("signer-node-view-behind");
+
+    const twoHealthy = buildHealthSnapshot({
+      observations: [...lagging, sampleAt(180, 115, 114), sampleAt(240, 116, 116)],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(twoHealthy.findings.map(({ id }) => id)).not.toContain("signer-node-view-behind");
+
+    const staticSigner = buildHealthSnapshot({
+      observations: [
+        sampleAt(0, 101, 101),
+        sampleAt(60, 106, 101),
+        sampleAt(120, 111, 101),
+        sampleAt(180, 116, 101),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(staticSigner.findings.map(({ id }) => id)).not.toContain("signer-node-view-behind");
+  });
+
+  it("monitors elevated end-to-end response time without attributing a local fault alone", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const first = signerMetrics({
+      proposalsTotal: 10,
+      acceptedTotal: 10,
+      responseLatencyBuckets: { "1": 0, "10": 10, "+Inf": 10 },
+      validationLatencyBuckets: { "1": 10, "+Inf": 10 },
+      nodeRpcLatencyBuckets: { "1": 10, "+Inf": 10 },
+    });
+    const last = signerMetrics({
+      proposalsTotal: 30,
+      acceptedTotal: 30,
+      responseLatencyBuckets: { "1": 0, "10": 30, "+Inf": 30 },
+      validationLatencyBuckets: { "1": 30, "+Inf": 30 },
+      nodeRpcLatencyBuckets: { "1": 30, "+Inf": 30 },
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        observation(new Date(startedAt).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: first,
+        }),
+        observation(new Date(startedAt + 60_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: last,
+        }),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(snapshot.findings).toContainEqual(
+      expect.objectContaining({
+        id: "signer-response-latency-elevated",
+        severity: "info",
+        classification: "insufficient-evidence",
+      }),
+    );
+    expect(snapshot.overallStatus).toBe("monitoring");
+    expect(snapshot.diagnosis).toMatchObject({
+      status: "monitoring",
+      title: "End-to-end signer response time is elevated",
+    });
+  });
+
   it("detects response gaps, elevated rejection, latency, and agreement conflicts", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const first = signerMetrics({

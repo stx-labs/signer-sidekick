@@ -168,7 +168,7 @@ export function Pool({
             {stx(cycles[0]?.contract.pendingStxUstx)} <span className="u">STX</span>
           </div>
           <div className="d">
-            {cycles[0]?.threshold.meetsThreshold ? "above threshold" : "below threshold"}
+            {cycles[0]?.threshold.meetsThreshold ? "eligible" : "not eligible"}
           </div>
         </div>
         <div className="tile">
@@ -189,6 +189,13 @@ export function Pool({
           <div className="d">recorded unlock heights</div>
         </div>
       </div>
+      {cycles[0] && !cycles[0].threshold.meetsThreshold ? (
+        <div className="callout callout-critical content-notice" role="alert">
+          <div className="body">
+            <strong>Pool is not eligible for signing.</strong> It is below the 50,000 STX minimum.
+          </div>
+        </div>
+      ) : null}
       <div className="section-title domain-section-anchor" id="pool-forecast">
         Pool forecast{" "}
         <span className="hint">Current cycle confirmed; future cycles may change.</span>

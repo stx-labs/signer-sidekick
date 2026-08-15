@@ -44,6 +44,29 @@ type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "st
 type ClaimSort = "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
 type WithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
 
+const rewardTerms = {
+  network:
+    "Total sBTC accumulated by PoX-5 for the next network calculation, shared across eligible signers and pools.",
+  pool: "Estimated amount allocated to this signer-manager before operator fees.",
+  fee: "Estimated portion earned by this pool operator, using per-staker and per-bucket integer rounding.",
+  net: "Estimated amount remaining for this pool's stakers after operator fees.",
+  payout:
+    "Stakers whose settled reward bucket can be paid after the manager claim, fee, and dust checks.",
+} as const;
+
+function RewardTerm({ label, help }: { label: string; help: string }) {
+  return (
+    <span className="reward-term" title={help}>
+      {label}
+    </span>
+  );
+}
+
+function subtractSats(gross: string | null, fee: string | null): string | null {
+  if (gross === null || fee === null) return null;
+  return (BigInt(gross) - BigInt(fee)).toString();
+}
+
 function poolEstimateUnavailableDetail(
   reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["poolEstimateUnavailableReason"],
 ): string {
@@ -74,7 +97,7 @@ function rewardForecastUnavailableDetail(
     case "current-pool-estimate-unavailable":
       return "The current anchored pool inputs are incomplete.";
     case "insufficient-samples":
-      return "At least three observations spanning six Bitcoin blocks are required.";
+      return "Sidekick is collecting enough observed accrual history to project the next allocation. The first PoX-5 calculation requires at least 24 Bitcoin blocks of observations.";
     case "non-monotonic-accrual":
       return "The cumulative reward balance changed unexpectedly inside this interval.";
     case "forecast-inputs-unavailable":
@@ -154,6 +177,7 @@ export function Rewards({
   const poolEstimate = rewardOutlook?.poolEstimate ?? null;
   const rewardForecast = rewardOutlook?.forecast ?? null;
   const operatorFeeForecast = rewardOutlook?.operatorFeeForecast ?? null;
+  const operatorFeeEstimate = rewardOutlook?.operatorFeeEstimate ?? null;
   const rewardCalibration = rewardOutlook?.calibration ?? null;
   const lastRewardComputeBurnHeight =
     rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
@@ -375,92 +399,79 @@ export function Rewards({
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
-      <div className="grid cols-3 reward-outlook domain-section-anchor" id="rewards-outlook">
+      <div className="grid cols-2 reward-outlook domain-section-anchor" id="rewards-outlook">
         <section className="card">
           <div className="card-head">
-            <h2>Accruing globally</h2>
-            <Badge state={globalAccruedSats === null ? "neutral" : "success"}>
-              {globalAccruedSats === null ? "Unavailable" : "Exact"}
+            <h2>Accrued so far</h2>
+            <Badge state={poolEstimate ? "info" : "neutral"}>
+              {poolEstimate ? "Current estimate" : "Unavailable"}
             </Badge>
           </div>
-          <StatLine label="Since the last calculation">
+          <p className="card-sub">Estimated allocation if the network calculation ran now.</p>
+          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
             <span className="btc-value src src-chain">
               {globalAccruedSats === null ? "Unavailable" : `${sbtc(globalAccruedSats)} sBTC`}
             </span>
           </StatLine>
-          <p className="tertiary balance-note">
-            PoX-5 global accrual, before bond, reserve, pool, and fee allocation.
-          </p>
-        </section>
-        <section className="card domain-section-anchor" id="rewards-calculation">
-          <div className="card-head">
-            <h2>Next global calculation</h2>
-            <Badge state={calculation?.next?.state === "due" ? "caution" : "neutral"}>
-              {!calculation?.next
-                ? "Unavailable"
-                : calculation.next.state === "due"
-                  ? "Due now"
-                  : "Scheduled"}
-            </Badge>
-          </div>
-          <StatLine label="Eligible Bitcoin block">
-            <span className="mono">
-              {calculation?.next
-                ? `#${number(String(calculation.next.eligibleBurnHeight))}`
-                : "Unavailable"}
-            </span>
+          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
+            {poolEstimate ? `${sbtc(poolEstimate.grossSats)} sBTC` : "Unavailable"}
           </StatLine>
-          <StatLine label="Distribution">
-            <span className="mono">
-              {calculation?.next
-                ? `Cycle ${calculation.next.targetRewardCycle} · ${calculation.next.targetCheckpoint}`
-                : "—"}
-            </span>
+          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
+            {operatorFeeEstimate ? `${sbtc(operatorFeeEstimate.sats)} sBTC` : "Unavailable"}
           </StatLine>
-          <p className="tertiary balance-note">
-            {!calculation?.next
-              ? "A valid anchored PoX-5 checkpoint is required."
-              : calculation.next.state === "scheduled"
-                ? `${number(String(calculation.next.blocksRemaining))} Bitcoin blocks remaining.`
-                : "The permissionless calculation can be prepared now."}
-          </p>
-        </section>
-        <section className="card">
-          <div className="card-head">
-            <h2>Pool if calculated now</h2>
-            <Badge state={poolEstimate ? "info" : "neutral"}>
-              {poolEstimate ? "Estimate" : "Unavailable"}
-            </Badge>
-          </div>
-          <StatLine label="Current-share result">
-            <span className="btc-value src src-chain">
-              {poolEstimate ? `${sbtc(poolEstimate.grossSats)} sBTC` : "Unavailable"}
-            </span>
+          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
+            {poolEstimate && operatorFeeEstimate
+              ? `${sbtc(subtractSats(poolEstimate.grossSats, operatorFeeEstimate.sats) ?? "0")} sBTC`
+              : "Unavailable"}
           </StatLine>
           {poolEstimate ? (
-            <StatLine label="STX / Bitcoin bonds">
+            <StatLine label="Pool allocation — STX / Bitcoin bonds">
               <span className="mono">
                 {sbtc(poolEstimate.stxSats)} / {sbtc(poolEstimate.bondSats)} sBTC
               </span>
             </StatLine>
           ) : null}
-          <StatLine label="Checkpoint projection">
-            <span className="btc-value src src-calculated">
-              {rewardForecast ? `${sbtc(rewardForecast.poolSats.point)} sBTC` : "Unavailable"}
-            </span>
+          <p className="tertiary balance-note">
+            {poolEstimate
+              ? "Contract-exact for the current accrued rewards, pool shares, and active Bitcoin bonds."
+              : poolEstimateUnavailableDetail(
+                  rewardOutlook?.poolEstimateUnavailableReason ?? "anchored-inputs-unavailable",
+                )}
+          </p>
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <h2>Projected next allocation</h2>
+            <Badge state={rewardForecast ? "info" : "neutral"}>
+              {rewardForecast ? `${rewardForecast.confidence} confidence` : "Collecting data"}
+            </Badge>
+          </div>
+          <p className="card-sub">
+            {calculation?.next
+              ? calculation.next.state === "due"
+                ? `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}; calculation is eligible now.`
+                : `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}, in ${number(String(calculation.next.blocksRemaining))} Bitcoin blocks.`
+              : "A valid anchored PoX-5 checkpoint is required."}
+          </p>
+          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
+            {rewardForecast ? `${sbtc(rewardForecast.globalSats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
+            {rewardForecast ? `${sbtc(rewardForecast.poolSats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
+            {operatorFeeForecast ? `${sbtc(operatorFeeForecast.sats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
+            {rewardForecast && operatorFeeForecast
+              ? `${sbtc(subtractSats(rewardForecast.poolSats.point, operatorFeeForecast.sats.point) ?? "0")} sBTC`
+              : "Unavailable"}
           </StatLine>
           {rewardForecast ? (
             <>
-              <StatLine label="Observed-rate range">
+              <StatLine label="Pool projection range">
                 <span className="mono">
                   {sbtc(rewardForecast.poolSats.low)}–{sbtc(rewardForecast.poolSats.high)} sBTC
-                </span>
-              </StatLine>
-              <StatLine label="Projected operator fee">
-                <span className="mono">
-                  {operatorFeeForecast
-                    ? `${sbtc(operatorFeeForecast.sats.low)}–${sbtc(operatorFeeForecast.sats.high)} sBTC`
-                    : "Unavailable"}
                 </span>
               </StatLine>
               <p className="tertiary balance-note">
@@ -503,13 +514,6 @@ export function Rewards({
               )}
             </p>
           )}
-          <p className="tertiary balance-note">
-            {poolEstimate
-              ? "Contract-exact for the current accrual, shares, and active bonds. This is not a checkpoint forecast."
-              : poolEstimateUnavailableDetail(
-                  rewardOutlook?.poolEstimateUnavailableReason ?? "anchored-inputs-unavailable",
-                )}
-          </p>
         </section>
       </div>
       <div className="card-standout pipeline-wrap">
@@ -544,7 +548,7 @@ export function Rewards({
             done={(rewards?.totals.actionableClaims ?? 0) === 0}
             title="Stakers paid"
             value={`${activity.claimTotal} recorded`}
-            detail={`${rewards?.totals.actionableClaims ?? 0} actionable`}
+            detail={`${rewards?.totals.actionableClaims ?? 0} ready for payout`}
           />
           <PipelineStage
             done={activity.pendingWithdrawalTotal === 0}
@@ -929,7 +933,7 @@ export function Rewards({
                   <SortableHeader
                     align="right"
                     column="actionable"
-                    label="Actionable"
+                    label="Ready for payout"
                     setSort={(sort) => {
                       setHistorySort(sort);
                       setCycleHistoryPage(0);

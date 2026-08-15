@@ -701,7 +701,7 @@ const rewardForecastSchema = z
       .strict(),
     confidence: z.enum(["low", "developing", "calibrated"]),
     assumptions: z.tuple([
-      z.literal("zero-accrual-after-last-calculation"),
+      z.enum(["zero-accrual-after-last-calculation", "observed-accrual-sample-window"]),
       z.literal("linear-global-accrual-run-rate"),
       z.literal("current-cycle-shares"),
       z.literal("current-active-bond-set"),
@@ -1139,6 +1139,7 @@ export interface StoredActivityChainEvent {
   blockHeight: number;
   indexBlockHash: string;
   canonical: boolean;
+  contractId: string;
   topic: string | null;
   decodedSchemaVersion: number | null;
   decodedPayload: unknown;
@@ -3025,25 +3026,30 @@ export class SidekickStore {
     chainId: number,
     managerPrincipal: string,
     limit = 10_001,
+    relatedContractIds: readonly string[] = [],
   ): StoredActivityChainEvent[] {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
+    const contracts = [
+      ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
+    ];
     const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
     const rows = this.db
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
-           topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+           contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
          FROM chain_events
-         WHERE chain_id = ? AND contract_id = ?
+         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")})
          ORDER BY updated_at DESC, tx_id ASC, event_index ASC LIMIT ?`,
       )
-      .all(parsedChainId, manager, parsedLimit) as Array<{
+      .all(parsedChainId, ...contracts, parsedLimit) as Array<{
       chain_id: number;
       tx_id: string;
       event_index: number;
       block_height: number;
       index_block_hash: string;
       canonical: 0 | 1;
+      contract_id: string;
       topic: string | null;
       decoded_schema_version: number | null;
       decoded_payload_json: string | null;
@@ -3057,6 +3063,7 @@ export class SidekickStore {
       blockHeight: z.number().int().nonnegative().parse(row.block_height),
       indexBlockHash: hashSchema.parse(row.index_block_hash),
       canonical: row.canonical === 1,
+      contractId: principalSchema.parse(row.contract_id),
       topic: z.string().min(1).max(500).nullable().parse(row.topic),
       decodedSchemaVersion: z
         .number()
@@ -3077,25 +3084,30 @@ export class SidekickStore {
     chainId: number,
     managerPrincipal: string,
     txId: string,
+    relatedContractIds: readonly string[] = [],
   ): StoredActivityChainEvent[] {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
+    const contracts = [
+      ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
+    ];
     const parsedTxId = hashSchema.parse(txId);
     const rows = this.db
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
-           topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
+           contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
          FROM chain_events
-         WHERE chain_id = ? AND contract_id = ? AND tx_id = ?
+         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id = ?
          ORDER BY event_index ASC`,
       )
-      .all(parsedChainId, manager, parsedTxId) as Array<{
+      .all(parsedChainId, ...contracts, parsedTxId) as Array<{
       chain_id: number;
       tx_id: string;
       event_index: number;
       block_height: number;
       index_block_hash: string;
       canonical: 0 | 1;
+      contract_id: string;
       topic: string | null;
       decoded_schema_version: number | null;
       decoded_payload_json: string | null;
@@ -3109,6 +3121,7 @@ export class SidekickStore {
       blockHeight: z.number().int().nonnegative().parse(row.block_height),
       indexBlockHash: hashSchema.parse(row.index_block_hash),
       canonical: row.canonical === 1,
+      contractId: principalSchema.parse(row.contract_id),
       topic: z.string().min(1).max(500).nullable().parse(row.topic),
       decodedSchemaVersion: z
         .number()

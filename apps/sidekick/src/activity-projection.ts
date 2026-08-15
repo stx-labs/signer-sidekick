@@ -17,6 +17,7 @@ import {
 import { z } from "zod";
 import { managerEventStream } from "./manager-event-vocabulary.js";
 import type { ObserverRuntimeStatus } from "./observer-server.js";
+import { pox5PoolActivityStream } from "./pox5-pool-activity-sync.js";
 import type { SidekickStore, StoredActivityChainEvent } from "./storage/store.js";
 import type {
   StoredWalletIntent,
@@ -522,20 +523,7 @@ function walletIntentSummary(
             label: "Review legacy setup intent",
           }
         : { kind: "resume-activity" as const, activityId, label: "Resume operation" };
-  const summary =
-    intent.state === "prepared"
-      ? "Transaction review is ready for the operator."
-      : intent.state === "complete"
-        ? "The expected on-chain result is canonical and reconciled."
-        : intent.state === "failed"
-          ? lastObservation?.outcome === "abort"
-            ? "The transaction executed and aborted."
-            : "Sidekick could not verify the expected result."
-          : intent.state === "expired"
-            ? "The sealed transaction review expired."
-            : intent.state === "superseded"
-              ? "A newer operation replaced this transaction review."
-              : `The transaction is ${intent.state.replaceAll("_", " ")}.`;
+  const summary = walletIntentSummaryText(intent, lastObservation);
   const timeline: ActivityTimelineEntry[] = includeTimeline
     ? [
         {
@@ -613,6 +601,34 @@ function walletIntentSummary(
     timeline: timeline.sort(timelineOrder),
     aliases: [activityId, ...txids.map((txid) => chainActivityId(intent.chainId, txid))].sort(),
   };
+}
+
+export function walletIntentSummaryText(
+  intent: Pick<StoredWalletIntent, "state">,
+  lastObservation: Pick<WalletIntentObservation, "outcome"> | null,
+): string {
+  switch (intent.state) {
+    case "prepared":
+      return "Transaction review is ready for the operator.";
+    case "submitted":
+      return "The transaction ID is recorded, but no canonical transaction evidence has been found yet. Refresh verification to check the local node and indexed API again.";
+    case "mempool":
+      return "The transaction is in the mempool and is waiting to be included in a block.";
+    case "confirmed":
+      return "The transaction is canonical; Sidekick is verifying the expected on-chain result.";
+    case "complete":
+      return "The expected on-chain result is canonical and reconciled.";
+    case "reobserve":
+      return "Previously observed transaction evidence is no longer canonical. Sidekick must observe it again before the result can be trusted.";
+    case "failed":
+      return lastObservation?.outcome === "abort"
+        ? "The transaction executed and aborted."
+        : "Sidekick could not verify the expected result.";
+    case "expired":
+      return "The sealed transaction review expired.";
+    case "superseded":
+      return "A newer operation replaced this transaction review.";
+  }
 }
 
 function engineSummaryText(job: StoredTransactionJob): string {
@@ -825,14 +841,59 @@ function decodedActor(value: unknown): string | null {
 }
 
 function eventDomain(kind: string | null): ActivityDomain {
-  return kind?.includes("reward") || kind?.includes("withdrawal") ? "rewards" : "manager";
+  if (kind?.includes("reward") || kind?.includes("withdrawal")) return "rewards";
+  if (
+    kind &&
+    [
+      "stake",
+      "stake-update",
+      "unstake",
+      "register-for-bond",
+      "update-bond-registration",
+      "unstake-sbtc",
+      "announce-l1-early-exit",
+    ].includes(kind)
+  ) {
+    return "pool";
+  }
+  return "manager";
+}
+
+function eventTitle(kind: string | null, decodedPayload: unknown): string {
+  const relationship =
+    decodedPayload && typeof decodedPayload === "object" && !Array.isArray(decodedPayload)
+      ? (decodedPayload as Record<string, unknown>).event
+      : null;
+  const relation =
+    relationship && typeof relationship === "object" && !Array.isArray(relationship)
+      ? (relationship as Record<string, unknown>).relationship
+      : null;
+  if (kind === "stake") return "Staker joined the pool";
+  if (kind === "stake-update") {
+    if (relation === "joined") return "Staker moved into the pool";
+    if (relation === "left") return "Staker moved to another pool";
+    return "Staker updated their pool position";
+  }
+  if (kind === "unstake") return "Staker scheduled a pool exit";
+  if (kind === "register-for-bond") return "Bond participant joined the pool";
+  if (kind === "update-bond-registration") {
+    if (relation === "joined") return "Bond participant moved into the pool";
+    if (relation === "left") return "Bond participant moved to another pool";
+    return "Bond participant updated their signer";
+  }
+  if (kind === "unstake-sbtc") return "Bond participant reduced locked sBTC";
+  if (kind === "announce-l1-early-exit") return "Bond participant announced an early exit";
+  if (kind === "claim-staker-rewards-for-signer") return "Staker reward payout recorded";
+  return kind ? kind.replaceAll("-", " ") : "Manager contract activity";
 }
 
 function chainEventRecord(
   chainId: number,
   txid: string,
   events: readonly StoredActivityChainEvent[],
-  sourceCoverage: ActivityCoverage,
+  managerCoverage: ActivityCoverage,
+  poolCoverage: ActivityCoverage,
+  pox5ContractId: string | null,
 ): ActivityRecord {
   const activityId = chainActivityId(chainId, txid);
   const canonicalEvents = events.filter(({ canonical }) => canonical);
@@ -844,6 +905,8 @@ function chainEventRecord(
     ),
   ].sort();
   const domain = eventDomain(kinds[0] ?? null);
+  const poolEvents =
+    pox5ContractId === null ? [] : events.filter(({ contractId }) => contractId === pox5ContractId);
   const occurredAt =
     [...events].sort(
       (left, right) => Date.parse(left.firstSeenAt) - Date.parse(right.firstSeenAt),
@@ -856,7 +919,11 @@ function chainEventRecord(
   const summary =
     canonicalEvents.length === 0
       ? "Previously observed contract activity is no longer canonical."
-      : `${canonicalEvents.length} verified manager contract event${canonicalEvents.length === 1 ? "" : "s"} observed.`;
+      : poolEvents.length > 0
+        ? `${canonicalEvents.length} verified PoX-5 pool event${canonicalEvents.length === 1 ? "" : "s"} observed.`
+        : `${canonicalEvents.length} verified manager contract event${canonicalEvents.length === 1 ? "" : "s"} observed.`;
+  const representative = events.find(({ decodedPayload }) => decodedEventKind(decodedPayload));
+  const sourceCoverages = [managerCoverage, ...(poolEvents.length > 0 ? [poolCoverage] : [])];
   return {
     summary: {
       schemaVersion: 1,
@@ -866,7 +933,7 @@ function chainEventRecord(
       code: kinds[0] ?? "manager-contract-event",
       title:
         kinds.length === 1 && kinds[0]
-          ? kinds[0].replaceAll("-", " ")
+          ? eventTitle(kinds[0], representative?.decodedPayload)
           : "Manager contract activity",
       summary,
       stage: "observed",
@@ -886,7 +953,7 @@ function chainEventRecord(
       supersedesActivityId: null,
       supersededByActivityId: null,
       primaryAction: null,
-      coverage: [sourceCoverage],
+      coverage: sourceCoverages,
     },
     timeline: events
       .map((event) => ({
@@ -896,7 +963,10 @@ function chainEventRecord(
         title: event.canonical ? "Verified contract event" : "Contract event became noncanonical",
         detail: `${decodedEventKind(event.decodedPayload)?.replaceAll("-", " ") ?? event.topic ?? "Manager print"} at event index ${event.eventIndex}.`,
         occurredAt: event.updatedAt,
-        source: "indexed-manager-history" as const,
+        source:
+          pox5ContractId !== null && event.contractId === pox5ContractId
+            ? ("indexed-pool-history" as const)
+            : ("indexed-manager-history" as const),
         txid,
         stacksBlockHeight: event.blockHeight,
         indexBlockHash: event.indexBlockHash,
@@ -908,16 +978,15 @@ function chainEventRecord(
   };
 }
 
-function mergeChainRecord(
-  operation: ActivityRecord,
-  chainRecord: ActivityRecord,
-  indexedCoverage: ActivityCoverage,
-): void {
+function mergeChainRecord(operation: ActivityRecord, chainRecord: ActivityRecord): void {
   operation.aliases = [...new Set([...operation.aliases, ...chainRecord.aliases])].sort();
   operation.timeline = [...operation.timeline, ...chainRecord.timeline].sort(timelineOrder);
   operation.summary.coverage = [
     ...new Map(
-      [...operation.summary.coverage, indexedCoverage].map((value) => [value.source, value]),
+      [...operation.summary.coverage, ...chainRecord.summary.coverage].map((value) => [
+        value.source,
+        value,
+      ]),
     ).values(),
   ];
   if (Date.parse(chainRecord.summary.updatedAt) > Date.parse(operation.summary.updatedAt)) {
@@ -1007,6 +1076,7 @@ export class ActivityProjectionService {
       observerStatus?(): ObserverRuntimeStatus;
       now?(): Date;
       context?(): Omit<ActivityProjectionContext, "now"> | null;
+      pox5ContractId?(): string | null;
     },
   ) {}
 
@@ -1080,9 +1150,18 @@ export class ActivityProjectionService {
       const job = this.options.store.transactionEngine.getLogicalJobByTxid(txid);
       if (job) return this.engineDetailRecord(job, readOnly, now);
       const events = this.detailChainEvents(txid);
+      const managerCoverage = this.indexedCoverage(events);
+      const poolCoverage = this.poolIndexedCoverage(events);
       return events.length === 0
         ? null
-        : chainEventRecord(this.options.chainId, txid, events, this.indexedCoverage(events));
+        : chainEventRecord(
+            this.options.chainId,
+            txid,
+            events,
+            managerCoverage,
+            poolCoverage,
+            this.pox5ContractId(),
+          );
     }
 
     const settingsMatch = /^settings:(\d+)$/.exec(requestedActivityId);
@@ -1144,6 +1223,7 @@ export class ActivityProjectionService {
       this.options.chainId,
       this.options.managerPrincipal,
       txid,
+      this.relatedActivityContracts(),
     );
   }
 
@@ -1151,11 +1231,18 @@ export class ActivityProjectionService {
     for (const txid of record.summary.txids) {
       const events = this.detailChainEvents(txid);
       if (events.length === 0) continue;
-      const indexedCoverage = this.indexedCoverage(events);
+      const managerCoverage = this.indexedCoverage(events);
+      const poolCoverage = this.poolIndexedCoverage(events);
       mergeChainRecord(
         record,
-        chainEventRecord(this.options.chainId, txid, events, indexedCoverage),
-        indexedCoverage,
+        chainEventRecord(
+          this.options.chainId,
+          txid,
+          events,
+          managerCoverage,
+          poolCoverage,
+          this.pox5ContractId(),
+        ),
       );
     }
   }
@@ -1233,6 +1320,7 @@ export class ActivityProjectionService {
       this.options.chainId,
       this.options.managerPrincipal,
       maximumAuthorityRecords + 1,
+      this.relatedActivityContracts(),
     );
     const chainHistoryTruncated = recentChainEvents.length > maximumAuthorityRecords;
     const chainEvents = recentChainEvents.slice(0, maximumAuthorityRecords);
@@ -1255,6 +1343,7 @@ export class ActivityProjectionService {
     );
     const engineRecordCoverage = coverage("transaction-engine", "current", engineObservedAt);
     const indexedCoverage = this.indexedCoverage(chainEvents, chainHistoryTruncated);
+    const poolIndexedCoverage = this.poolIndexedCoverage(chainEvents, chainHistoryTruncated);
     const settingsObservedAt = settingsAudit[0]?.changedAt ?? null;
     const settingsCoverage = historyCoverage(
       "settings-audit",
@@ -1358,13 +1447,20 @@ export class ActivityProjectionService {
     }
     const chainRecords: ActivityRecord[] = [];
     for (const [txid, events] of groupedEvents.entries()) {
-      const chainRecord = chainEventRecord(this.options.chainId, txid, events, indexedCoverage);
+      const chainRecord = chainEventRecord(
+        this.options.chainId,
+        txid,
+        events,
+        indexedCoverage,
+        poolIndexedCoverage,
+        this.pox5ContractId(),
+      );
       const operation = operationByTxid.get(txid);
       if (!operation) {
         chainRecords.push(chainRecord);
         continue;
       }
-      mergeChainRecord(operation, chainRecord, indexedCoverage);
+      mergeChainRecord(operation, chainRecord);
     }
 
     const settingsRecords = settingsAudit.map((audit) =>
@@ -1377,6 +1473,7 @@ export class ActivityProjectionService {
         walletCoverage,
         engineCoverage,
         indexedCoverage,
+        poolIndexedCoverage,
         observerCoverage,
         settingsCoverage,
       ],
@@ -1419,6 +1516,59 @@ export class ActivityProjectionService {
       cursor.cursor === null ? "current" : "delayed",
       cursor.updatedAt,
       cursor.cursor === null ? null : "Indexed manager history synchronization is incomplete.",
+    );
+  }
+
+  private pox5ContractId(): string | null {
+    return this.options.pox5ContractId?.() ?? null;
+  }
+
+  private relatedActivityContracts(): string[] {
+    const pox5ContractId = this.pox5ContractId();
+    return pox5ContractId === null ? [] : [pox5ContractId];
+  }
+
+  private poolIndexedCoverage(
+    events: readonly StoredActivityChainEvent[],
+    historyTruncated = false,
+  ): ActivityCoverage {
+    const pox5ContractId = this.pox5ContractId();
+    if (!pox5ContractId) {
+      return coverage(
+        "indexed-pool-history",
+        "not-configured",
+        null,
+        "PoX-5 pool activity is unavailable until the active contract is identified.",
+      );
+    }
+    const cursor = this.options.store.getCursor(
+      this.options.sourceId(),
+      pox5PoolActivityStream(pox5ContractId, this.options.managerPrincipal),
+    );
+    const poolEvents = events.filter(({ contractId }) => contractId === pox5ContractId);
+    if (!cursor) {
+      return coverage(
+        "indexed-pool-history",
+        "delayed",
+        latestObservedAt(poolEvents),
+        "No PoX-5 pool-activity synchronization cursor is available yet.",
+      );
+    }
+    if (historyTruncated) {
+      return coverage(
+        "indexed-pool-history",
+        "delayed",
+        cursor.updatedAt,
+        `Pool Activity history is bounded to the newest ${maximumAuthorityRecords} records.`,
+      );
+    }
+    return coverage(
+      "indexed-pool-history",
+      cursor.cursor === null ? "current" : "delayed",
+      cursor.updatedAt,
+      cursor.cursor === null
+        ? "Pool activity is captured from Sidekick observer activation forward."
+        : "PoX-5 pool activity synchronization is catching up to a verified observer trigger.",
     );
   }
 

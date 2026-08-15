@@ -44,6 +44,10 @@ function statusTone(value: string): Tone {
         : "neutral";
 }
 
+function rewardNetSats(gross: string | null, fee: string | null): string | null {
+  return gross === null || fee === null ? null : (BigInt(gross) - BigInt(fee)).toString();
+}
+
 function evidenceStatus(evidence: readonly OverviewEvidence[]): OverviewEvidence["status"] {
   const order: OverviewEvidence["status"][] = [
     "unavailable",
@@ -606,12 +610,8 @@ export function Overview({
               <dd>{pool.next ? `${stx(pool.next.amountUstx)} STX` : "—"}</dd>
             </div>
             <div>
-              <dt>Threshold margin</dt>
-              <dd>
-                {pool.nextThresholdMarginUstx === null
-                  ? "—"
-                  : `${stx(pool.nextThresholdMarginUstx)} STX`}
-              </dd>
+              <dt>Next-cycle eligibility</dt>
+              <dd>{pool.next ? (pool.next.inSignerSet ? "Eligible" : "Not eligible") : "—"}</dd>
             </div>
             <div>
               <dt>STX-only / bonds</dt>
@@ -652,9 +652,9 @@ export function Overview({
           <div className="overview-domain-primary">
             <span>
               {rewards.estimateKind === "checkpoint-forecast"
-                ? "Checkpoint forecast"
+                ? "Projected next allocation"
                 : rewards.estimateKind === "if-calculated-now"
-                  ? "If calculated now"
+                  ? "Accrued so far — pool gross"
                   : "Pool estimate"}
             </span>
             <strong>
@@ -666,7 +666,9 @@ export function Overview({
           </div>
           <dl>
             <div>
-              <dt>Global accrued</dt>
+              <dt title="Total sBTC accumulated by PoX-5 for the next network calculation, shared across eligible signers and pools.">
+                Network-wide rewards
+              </dt>
               <dd>
                 {rewards.globalAccruedSats === null
                   ? "Unavailable"
@@ -674,7 +676,9 @@ export function Overview({
               </dd>
             </div>
             <div>
-              <dt>Operator fee</dt>
+              <dt title="Estimated portion earned by this pool operator, using per-staker and per-bucket integer rounding.">
+                Operator fee estimate
+              </dt>
               <dd>
                 {rewards.operatorFeeSats === null
                   ? feeUnavailableLabel(rewards.operatorFeeUnavailableReason)
@@ -682,12 +686,19 @@ export function Overview({
               </dd>
             </div>
             <div>
-              <dt>Actionable claims</dt>
-              <dd>{number(rewards.actionableClaims)}</dd>
+              <dt title="Estimated amount remaining for this pool's stakers after operator fees.">
+                Net for your stakers
+              </dt>
+              <dd>
+                {rewardNetSats(rewards.estimatedPoolRewardSats, rewards.operatorFeeSats) === null
+                  ? "Unavailable"
+                  : `${sbtc(rewardNetSats(rewards.estimatedPoolRewardSats, rewards.operatorFeeSats) ?? "0")} sBTC`}
+              </dd>
             </div>
           </dl>
           <p className="overview-domain-note">
-            Reward calculation: {statusLabel(rewards.calculationState ?? "unavailable")}
+            {number(rewards.actionableClaims)} stakers ready for payout · Reward calculation:{" "}
+            {statusLabel(rewards.calculationState ?? "unavailable")}
           </p>
           <EvidenceLine evidence={rewards.evidence} />
           <ContextualActionControl

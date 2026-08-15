@@ -29,6 +29,7 @@ import {
 } from "./operator-anchor-snapshot.js";
 import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
+import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
 import { syncRewardRealizations } from "./reward-realization-sync.js";
 import {
@@ -1022,6 +1023,7 @@ export class OperatorService {
       observedAt: string;
       chainId: number;
       eventVocabulary: ManagerEventVocabulary;
+      pox5ContractId: string;
       stakers: Awaited<ReturnType<typeof syncSignerStakers>>;
     } | null = null;
     const maxAnchorAttempts = 3;
@@ -1103,6 +1105,7 @@ export class OperatorService {
           observedAt,
           chainId: preflight.node.networkId,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+          pox5ContractId: preflight.pox.pox5ContractId,
           stakers,
         };
         break;
@@ -1146,8 +1149,31 @@ export class OperatorService {
     if (events.reorgedEvents > 0 && this.options.managerVerification) {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }
+    const poolActivity = this.options.nodeTransactions
+      ? await syncPox5PoolActivity({
+          store,
+          api,
+          nodeTransactions: this.options.nodeTransactions,
+          nodeBlocks: node,
+          sourceId,
+          chainId: synchronized.chainId,
+          managerPrincipal,
+          pox5ContractId: synchronized.pox5ContractId,
+          observedAt: synchronized.observedAt,
+          pageLimit: config.eventPageLimit,
+          ...(options.minimumStacksHeight !== undefined
+            ? { minimumStacksHeight: options.minimumStacksHeight }
+            : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
+      : null;
     this.cached = null;
-    return { observedAt: synchronized.observedAt, stakers: synchronized.stakers, events };
+    return {
+      observedAt: synchronized.observedAt,
+      stakers: synchronized.stakers,
+      events,
+      poolActivity,
+    };
   }
 
   private async runManagerActivitySynchronization(options: ManagerActivitySynchronizationOptions) {

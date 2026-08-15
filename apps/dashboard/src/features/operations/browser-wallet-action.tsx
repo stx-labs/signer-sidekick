@@ -48,6 +48,29 @@ function walletName(providerId: string): string {
   return providerId === "LeatherProvider" ? "Leather" : "Xverse";
 }
 
+export function walletIntentStatusHeading(status: BrowserWalletIntent["status"]): string {
+  switch (status) {
+    case "prepared":
+      return "Transaction review ready.";
+    case "submitted":
+      return "Transaction recorded; verification pending.";
+    case "mempool":
+      return "Transaction pending in the mempool.";
+    case "confirmed":
+      return "Transaction confirmed; result verification pending.";
+    case "complete":
+      return "Transaction verified.";
+    case "reobserve":
+      return "Transaction must be observed again.";
+    case "failed":
+      return "Transaction failed.";
+    case "expired":
+      return "Transaction review expired.";
+    case "superseded":
+      return "Transaction review superseded.";
+  }
+}
+
 function walletIntentErrorMessage(cause: unknown): string {
   if (cause instanceof ApiRequestError) {
     const mismatch = walletIntentAnchorMismatchErrorSchema.safeParse(cause.body);
@@ -704,7 +727,7 @@ export function BrowserWalletActionPanel({
             <div className="callout callout-info" role="status">
               <ArrowClockwise className="ic" />
               <div className="body">
-                <strong>Transaction submitted.</strong>
+                <strong>{walletIntentStatusHeading(intent.status)}</strong>
                 <div>
                   Transaction{" "}
                   <CopyableIdentifier value={intent.txid} label="transaction ID" className="mono" />

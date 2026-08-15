@@ -1136,6 +1136,14 @@ export function Manager({
       </div>
 
       <div className="section-title">Signer-set eligibility</div>
+      {cycles.some((cycle) => !cycle.threshold.meetsThreshold) ? (
+        <div className="callout callout-critical content-notice" role="alert">
+          <div className="body">
+            <strong>One or more displayed cycles are not eligible for signing.</strong> The pool is
+            below the 50,000 STX minimum in those cycles.
+          </div>
+        </div>
+      ) : null}
       <div className="tbl-wrap">
         <table>
           <thead>
@@ -1150,13 +1158,6 @@ export function Manager({
                 align="right"
                 column="delegated"
                 label="Delegated STX"
-                setSort={setEligibilitySort}
-                sort={eligibilitySort}
-              />
-              <SortableHeader
-                align="right"
-                column="margin"
-                label="Threshold margin"
                 setSort={setEligibilitySort}
                 sort={eligibilitySort}
               />
@@ -1184,10 +1185,9 @@ export function Manager({
                   ) : null}
                 </td>
                 <td className="right mono">{stx(cycle.contract.pendingStxUstx)}</td>
-                <td className="right mono">{stx(cycle.threshold.marginUstx)}</td>
                 <td>
                   <Badge state={cycle.contract.inSignerSet ? "success" : "error"}>
-                    {cycle.contract.inSignerSet ? "Eligible" : "Below threshold"}
+                    {cycle.contract.inSignerSet ? "Eligible" : "Not eligible"}
                   </Badge>
                 </td>
                 <td>

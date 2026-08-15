@@ -142,7 +142,7 @@ describe("HealthMonitoringRepository", () => {
     ]);
   });
 
-  it("keeps one durable episode through repeated findings, resolves it, and opens a new episode", async () => {
+  it("keeps one durable episode through brief recurrence and opens a new one after five minutes", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-14T12:00:00.000Z");
     stores.push(store);
     const repository = store.healthMonitoring;
@@ -176,9 +176,22 @@ describe("HealthMonitoringRepository", () => {
       [finding(reopenedAt)],
       reopenedAt,
     );
-    expect(episodes).toHaveLength(2);
-    expect(episodes[0]).toMatchObject({ status: "active", occurrences: 1 });
-    expect(episodes[0]?.episodeId).not.toBe(first.episodeId);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]).toMatchObject({
+      episodeId: first.episodeId,
+      status: "active",
+      occurrences: 3,
+    });
+
+    repository.reconcileFindingEpisodes("config-a", [], "2026-08-14T12:00:20.000Z");
+    const later = repository.reconcileFindingEpisodes(
+      "config-a",
+      [finding("2026-08-14T12:06:00.000Z")],
+      "2026-08-14T12:06:00.000Z",
+    );
+    expect(later).toHaveLength(2);
+    expect(later[0]).toMatchObject({ status: "active", occurrences: 1 });
+    expect(later[0]?.episodeId).not.toBe(first.episodeId);
     expect(repository.listFindingEpisodes("config-b")).toEqual([]);
   });
 

@@ -124,10 +124,11 @@ async function enrichTransactions(
   return new Map(entries);
 }
 
-async function verifyTransactionsWithNode(
+export async function verifyIndexedApiTransactionsWithNode(
   node: ManagerEventNodeTransactions,
   nodeBlocks: ManagerEventNodeBlocks | undefined,
   transactions: ReadonlyMap<string, TransactionSummary>,
+  activityLabel: string,
   signal?: AbortSignal,
 ): Promise<number> {
   const entries = [...transactions.entries()];
@@ -152,17 +153,25 @@ async function verifyTransactionsWithNode(
             observation.status === "not-found"
               ? "not-found"
               : `${observation.status}:${observation.reason}`;
-          throw new Error(`Local node could not verify manager transaction ${txId}: ${reason}`);
+          throw new Error(
+            `Local node could not verify ${activityLabel} transaction ${txId}: ${reason}`,
+          );
         }
         const local = observation.value;
         if (!local.isCanonical) {
-          throw new Error(`Local node reports manager transaction ${txId} as non-canonical`);
+          throw new Error(
+            `Local node reports ${activityLabel} transaction ${txId} as non-canonical`,
+          );
         }
         if (local.indexBlockHash.toLowerCase() !== transaction.block.index_hash.toLowerCase()) {
-          throw new Error(`Local node and indexed API disagree on manager transaction ${txId}`);
+          throw new Error(
+            `Local node and indexed API disagree on ${activityLabel} transaction ${txId}`,
+          );
         }
         if (local.blockHeight === null || local.blockHeight !== BigInt(transaction.block.height)) {
-          throw new Error(`Local node and indexed API disagree on manager transaction ${txId}`);
+          throw new Error(
+            `Local node and indexed API disagree on ${activityLabel} transaction ${txId}`,
+          );
         }
         verified += 1;
       }),
@@ -262,10 +271,11 @@ export async function syncManagerEvents(
     const transactionById = await enrichTransactions(options.api, page, options.signal);
     options.signal?.throwIfAborted();
     if (options.nodeTransactions) {
-      nodeVerifiedTransactions += await verifyTransactionsWithNode(
+      nodeVerifiedTransactions += await verifyIndexedApiTransactionsWithNode(
         options.nodeTransactions,
         options.nodeBlocks,
         transactionById,
+        "manager",
         options.signal,
       );
     }

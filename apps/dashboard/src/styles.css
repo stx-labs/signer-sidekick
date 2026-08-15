@@ -23,6 +23,12 @@
   background: var(--surface-primary);
 }
 
+.reward-term {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .setup-notice-icon {
   display: grid;
   width: 48px;
@@ -1628,6 +1634,16 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.settings-mobile-picker {
+  display: none;
 }
 
 .set-nav a,
@@ -3306,6 +3322,10 @@
     flex-wrap: wrap;
   }
 
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .activity-filters {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -3320,6 +3340,18 @@
 }
 
 @media (max-width: 640px) {
+  .settings-mobile-picker {
+    display: grid;
+    gap: var(--space-1);
+    margin-bottom: var(--space-4);
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .settings-grid .set-nav {
+    display: none;
+  }
+
   .topbar {
     gap: var(--space-3);
   }

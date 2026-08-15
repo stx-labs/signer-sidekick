@@ -33,7 +33,10 @@ export interface GlobalRewardRunRateForecast {
     remainingBlocks: number;
   };
   confidence: "low" | "developing";
-  assumptions: ["zero-accrual-after-last-calculation", "linear-global-accrual-run-rate"];
+  assumptions: [
+    "zero-accrual-after-last-calculation" | "observed-accrual-sample-window",
+    "linear-global-accrual-run-rate",
+  ];
 }
 
 export type GlobalRewardForecastResult =
@@ -84,7 +87,9 @@ function validTarget(
  *
  * The range is deliberately empirical and conservative: the point uses the cumulative rate since
  * the last completed calculation, while low/high use the slowest and fastest observed interval
- * rates. Three distinct samples spanning six Bitcoin blocks are required before anything is shown.
+ * rates. After a completed calculation, three samples spanning six Bitcoin blocks are required.
+ * Before PoX-5's first calculation, the u0 sentinel has no real zero-accrual anchor, so Sidekick
+ * learns only from observed deltas and waits for at least 24 Bitcoin blocks.
  */
 export function projectGlobalRewardRunRate(input: {
   observations: readonly RewardForecastObservation[];
@@ -102,7 +107,7 @@ export function projectGlobalRewardRunRate(input: {
     .int()
     .min(3)
     .parse(input.minimumObservations ?? 3);
-  const minimumSampleBlocks = z
+  const configuredMinimumSampleBlocks = z
     .number()
     .int()
     .min(1)
@@ -122,6 +127,10 @@ export function projectGlobalRewardRunRate(input: {
   const currentAccrued = BigInt(
     unsignedIntegerTextSchema.parse(input.current.globalAccruedRewardsSats),
   );
+  const firstCalculation = lastComputeHeight === 0;
+  const minimumSampleBlocks = firstCalculation
+    ? Math.max(24, configuredMinimumSampleBlocks)
+    : configuredMinimumSampleBlocks;
   if (
     currentHeight <= lastComputeHeight ||
     !validTarget(input.current, input.target) ||
@@ -160,9 +169,9 @@ export function projectGlobalRewardRunRate(input: {
   }
 
   const rates: Rate[] = [];
-  let previousHeight = lastComputeHeight;
-  let previousAccrued = 0n;
-  for (const sample of samples) {
+  let previousHeight = firstCalculation ? first.observedBurnBlockHeight : lastComputeHeight;
+  let previousAccrued = firstCalculation ? BigInt(first.globalAccruedRewardsSats) : 0n;
+  for (const sample of firstCalculation ? samples.slice(1) : samples) {
     const accrued = BigInt(sample.globalAccruedRewardsSats);
     if (accrued < previousAccrued) {
       return { status: "unavailable", reason: "non-monotonic-accrual" };
@@ -176,10 +185,12 @@ export function projectGlobalRewardRunRate(input: {
   }
   if (rates.length === 0) return { status: "unavailable", reason: "insufficient-samples" };
 
-  const elapsedBlocks = currentHeight - lastComputeHeight;
+  const elapsedBlocks = firstCalculation ? sampleBlocks : currentHeight - lastComputeHeight;
   const remainingBlocks = Math.max(0, input.target.calculationBurnHeight - currentHeight);
   const pointRate: Rate = {
-    numerator: currentAccrued,
+    numerator: firstCalculation
+      ? currentAccrued - BigInt(first.globalAccruedRewardsSats)
+      : currentAccrued,
     denominator: BigInt(elapsedBlocks),
   };
   const orderedRates = [...rates, pointRate].sort(compareRates);
@@ -213,7 +224,10 @@ export function projectGlobalRewardRunRate(input: {
         remainingBlocks,
       },
       confidence: samples.length >= 6 && sampleBlocks >= 24 ? "developing" : "low",
-      assumptions: ["zero-accrual-after-last-calculation", "linear-global-accrual-run-rate"],
+      assumptions: [
+        firstCalculation ? "observed-accrual-sample-window" : "zero-accrual-after-last-calculation",
+        "linear-global-accrual-run-rate",
+      ],
     },
   };
 }

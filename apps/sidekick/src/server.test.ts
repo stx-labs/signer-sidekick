@@ -909,7 +909,10 @@ describe("local API", () => {
       'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
     );
     expect(metrics.body).toContain(
-      'sidekick_signer_health_active_findings{classification="likely-local-signer"} 2',
+      'sidekick_signer_health_active_findings{classification="likely-local-signer"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 1',
     );
     expect(metrics.body).toContain(
       'sidekick_signer_health_source_available{source="configured-api"} 0',

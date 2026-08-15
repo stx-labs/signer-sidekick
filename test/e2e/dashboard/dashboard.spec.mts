@@ -40,6 +40,17 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 }
 
+async function openSettingsSection(
+  page: Page,
+  section: "attachment" | "sources" | "capabilities" | "support",
+  heading: string,
+) {
+  await page.evaluate((settingsSection) => {
+    location.hash = `#settings?section=${settingsSection}`;
+  }, section);
+  await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+}
+
 test("shows focused recovery when the configured signer manager is not deployed", async ({
   page,
 }) => {
@@ -128,6 +139,7 @@ test("keeps diagnostics readable and actions disabled during identity safe mode"
   await openPage(page, "settings", "Settings");
   await expect(page.getByText(/configuration changes and source tests are disabled/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+  await openSettingsSection(page, "support", "Support & maintenance");
   const supportButtons = page.getByRole("button", { name: "Download support bundle" });
   await expect(supportButtons).toHaveCount(2);
   await expect(supportButtons.first()).toBeEnabled();
@@ -214,7 +226,7 @@ test("keeps healthy Overview domains visible when one domain is unavailable", as
   await expect(
     page.getByText("Signer monitoring is healthy and aligned with the node."),
   ).toBeVisible();
-  await expect(page.getByText("Checkpoint forecast", { exact: true })).toBeVisible();
+  await expect(page.getByText("Projected next allocation", { exact: true })).toBeVisible();
 });
 
 test("retains the last Overview projection when a forced refresh fails", async ({ page }) => {
@@ -605,7 +617,8 @@ test("keeps Settings and Signer Health usable when initial operator state fails"
 
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByText("Couldn’t load status")).toBeVisible();
-  await expect(page.getByLabel("Default theme")).toBeVisible();
+  await openSettingsSection(page, "sources", "Data sources");
+  await expect(page.getByLabel("Stacks node RPC URL")).toBeVisible();
 
   await openPage(page, "health", "Signer Health");
   await expect(page.getByRole("heading", { name: "Stacks node" })).toBeVisible();
@@ -639,12 +652,15 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
 
   await login(page);
   await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
   current = true;
+  await openSettingsSection(page, "attachment", "Manager attachment");
   await page.getByRole("button", { name: "Refresh attachment", exact: true }).click();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -679,12 +695,12 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   const readinessCard = page.locator(".engine-readiness-card");
   await readinessCard.getByRole("link", { name: "Review sources" }).click();
   await expect(page).toHaveURL(/#settings\?section=sources$/);
 
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await readinessCard.getByRole("link", { name: "Review attachment" }).click();
   await expect(page).toHaveURL(/#settings\?section=attachment$/);
 });
@@ -751,7 +767,18 @@ test("shows active work and durable Activity evidence without horizontal overflo
   page,
 }) => {
   const activityIntentId = "6ed58dac-c42c-4cb5-ad02-ed50671f3d27";
+  let evidenceRefreshRequests = 0;
   await page.route(`**/api/v1/wallet-intents/${activityIntentId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        updateFeesWalletIntent(snapshot.managerPrincipal.split(".")[0] ?? "", "submitted"),
+      ),
+    });
+  });
+  await page.route(`**/api/v1/wallet-intents/${activityIntentId}/refresh`, async (route) => {
+    evidenceRefreshRequests += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -770,9 +797,12 @@ test("shows active work and durable Activity evidence without horizontal overflo
   await page.getByRole("link", { name: "Update manager fee" }).click();
   await expect(page.getByRole("heading", { name: "Operation summary" })).toBeVisible();
   await expect(page.getByLabel("Browser wallet")).toBeVisible();
-  await expect(page.getByText("Transaction submitted.")).toBeVisible();
+  await expect(page.getByText("Transaction recorded; verification pending.")).toBeVisible();
   await expect(page.getByText("Evidence timeline", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Return to Activity" })).toBeVisible();
+  await page.locator(".page-head").getByRole("button", { name: "Refresh verification" }).click();
+  await expect.poll(() => evidenceRefreshRequests).toBe(1);
+  await expect(page.getByText(/Verification checked\. Sidekick queried/)).toBeVisible();
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
@@ -798,7 +828,7 @@ test("treats HTTP 501 engine and readiness endpoints as unavailable Settings cap
     });
   });
   await login(page);
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   const engine = page.locator("#transaction-capabilities");
   await expect(
     engine.getByText(
@@ -832,7 +862,7 @@ test("summarizes empty transaction work in Settings and links to Activity", asyn
   });
 
   await login(page);
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   const counts = page.locator("#transaction-capabilities .engine-job-counts");
   await expect(counts).toContainText("0active jobs");
   await expect(counts).toContainText("0awaiting approval");
@@ -953,7 +983,7 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect.poll(() => invalidationRequests).toBe(1);
   await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
 
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByText("assist", { exact: true })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Force Observe" }).click();
@@ -1040,7 +1070,7 @@ test("downloads the server-collected support bundle", async ({ page }) => {
 
   await login(page);
   await openPage(page, "settings", "Settings");
-  await page.getByRole("button", { name: "Support & maintenance" }).click();
+  await openSettingsSection(page, "support", "Support & maintenance");
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download support bundle" }).click();
   const download = await downloadPromise;
@@ -1091,6 +1121,7 @@ test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "sources", "Data sources");
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
 });
 
@@ -1106,6 +1137,8 @@ test("keeps sustained health findings on the Signer Health page", async ({ page 
             diagnosis: {
               ...health.diagnosis,
               status: "needs-attention",
+              title: "Signer cannot reach its Stacks node",
+              summary: "The signer heartbeat failed three consecutive checks.",
               classification: "likely-local-signer",
               activeFindingIds: ["signer-node-heartbeat-failed"],
             },
@@ -1150,7 +1183,7 @@ test("keeps sustained health findings on the Signer Health page", async ({ page 
     page.getByLabel("Health findings").getByText("Signer cannot reach its Stacks node"),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Current diagnosis" })).toBeVisible();
-  await expect(page.getByText("Likely local signer", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("This signer", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Incident history" })).toBeVisible();
   await expect(page.getByText(/3 observations/)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
@@ -1200,8 +1233,10 @@ test("explains manager attachment and trust evidence in Settings", async ({ page
   expect(copyBox).not.toBeNull();
   expect(valueBox).not.toBeNull();
   expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
+  await openSettingsSection(page, "support", "Support & maintenance");
   await expect(page.getByText("Manager trust")).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
+  await openSettingsSection(page, "sources", "Data sources");
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
@@ -1242,7 +1277,7 @@ test("starts an admin-history sync from Settings", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await page.getByRole("button", { name: "Sync admin history" }).click();
 
   await expect(page.getByText("Syncing chain data")).toBeVisible();
@@ -1253,20 +1288,18 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  const accrualCard = page.getByRole("heading", { name: "Accruing globally" }).locator("../..");
-  const calculationCard = page
-    .getByRole("heading", { name: "Next global calculation" })
-    .locator("../..");
-  const poolEstimateCard = page
-    .getByRole("heading", { name: "Pool if calculated now" })
+  const accrualCard = page.getByRole("heading", { name: "Accrued so far" }).locator("../..");
+  const projectedCard = page
+    .getByRole("heading", { name: "Projected next allocation" })
     .locator("../..");
   await expect(accrualCard).toBeVisible();
   await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
-  await expect(calculationCard.getByText("#10,290", { exact: true })).toBeVisible();
-  await expect(poolEstimateCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
-  await expect(poolEstimateCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
-  await expect(poolEstimateCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
-  await expect(poolEstimateCard.getByText("Estimate", { exact: true })).toBeVisible();
+  await expect(accrualCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks");
+  await expect(projectedCard.getByText("0.05 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("low confidence", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
@@ -1679,6 +1712,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await login(page);
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Custom source", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -1691,8 +1725,9 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 
   tier = "custom-observe";
   await page.reload();
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "attachment", "Manager attachment");
   await expect(page.getByText("Recorded custom source", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -1700,12 +1735,11 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 
   tier = "reference-render";
   await page.reload();
-  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "attachment", "Manager attachment");
   await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
-  await expect(
-    page.locator(".statline", { hasText: "Assist" }).getByText("Unavailable", { exact: true }),
-  ).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByText("Assist unavailable.", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -1955,7 +1989,7 @@ test("editing a Settings source invalidates its overlapping connection test", as
 
   try {
     await login(page);
-    await openPage(page, "settings", "Settings");
+    await openSettingsSection(page, "sources", "Data sources");
     const metricsUrl = page.getByLabel("Node metrics URL");
     await metricsUrl.locator("xpath=following-sibling::button").click();
     await expect.poll(() => sourceTestCalls).toBe(1);

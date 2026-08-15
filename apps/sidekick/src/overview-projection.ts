@@ -228,7 +228,10 @@ function activityEvidence(value: ActivityCoverage): OverviewEvidence {
     status: value.status,
     observedAt: value.observedAt,
     anchor: value.anchor,
-    source: value.source === "indexed-manager-history" ? "indexed-api" : "sidekick-store",
+    source:
+      value.source === "indexed-manager-history" || value.source === "indexed-pool-history"
+        ? "indexed-api"
+        : "sidekick-store",
     reason: value.reason,
   });
 }
@@ -551,6 +554,8 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
   const forecast = outlook?.forecast ?? null;
   const currentEstimate = outlook?.poolEstimate ?? null;
   const operatorFeeForecast = outlook?.operatorFeeForecast ?? null;
+  const operatorFeeEstimate = outlook?.operatorFeeEstimate ?? null;
+  const usesForecast = forecast !== null;
   const available = outlook !== null || rewards !== null;
   const rewardEvidence = evidence({
     status: !available
@@ -577,10 +582,18 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
     globalAccruedSats:
       outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
     estimatedPoolRewardSats: forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null,
-    operatorFeeSats: operatorFeeForecast?.sats.point ?? null,
-    operatorFeeUnavailableReason: operatorFeeForecast
-      ? null
-      : (outlook?.operatorFeeForecastUnavailableReason ?? "reward-outlook-unavailable"),
+    operatorFeeSats: usesForecast
+      ? (operatorFeeForecast?.sats.point ?? null)
+      : (operatorFeeEstimate?.sats ?? null),
+    operatorFeeUnavailableReason: usesForecast
+      ? operatorFeeForecast
+        ? null
+        : (outlook?.operatorFeeForecastUnavailableReason ?? "reward-outlook-unavailable")
+      : operatorFeeEstimate
+        ? null
+        : (outlook?.operatorFeeEstimateUnavailableReason ??
+          outlook?.operatorFeeForecastUnavailableReason ??
+          "reward-outlook-unavailable"),
     estimateKind: forecast
       ? "checkpoint-forecast"
       : currentEstimate
