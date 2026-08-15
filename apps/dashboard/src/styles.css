@@ -1662,6 +1662,100 @@
   gap: var(--space-2);
 }
 
+.deployment-requirement-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.deployment-requirement {
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+}
+
+.deployment-requirement-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.deployment-requirement-icon {
+  color: var(--status-warning);
+  font-size: 20px;
+}
+
+.requirement-pass .deployment-requirement-icon {
+  color: var(--status-success);
+}
+
+.deployment-requirement-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.deployment-requirement-title h3,
+.deployment-requirement-head p {
+  margin: 0;
+}
+
+.deployment-requirement-head p {
+  margin-top: var(--space-1);
+}
+
+.requirement-observed {
+  overflow-wrap: anywhere;
+}
+
+.deployment-remediation {
+  margin: var(--space-3) 0 0 32px;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.deployment-remediation summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.deployment-remediation ol {
+  padding-left: var(--space-5);
+}
+
+.deployment-config {
+  margin-top: var(--space-3);
+}
+
+.deployment-config .command-code {
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.deployment-remediation a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+@media (max-width: 720px) {
+  .deployment-requirement-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .deployment-requirement-head > .badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .deployment-remediation {
+    margin-left: 0;
+  }
+}
+
 .settings-inline-actions {
   display: flex;
   flex-wrap: wrap;

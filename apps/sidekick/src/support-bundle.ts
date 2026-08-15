@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   connectionAssessmentSchema,
   dashboardSnapshotSchema,
+  deploymentRequirementsSchema,
   engineJobPageSchema,
   engineStatusSchema,
   healthSnapshotSchema,
@@ -34,6 +35,9 @@ const operatorSectionSchema = supportSectionBaseSchema
   .strict();
 const connectionSectionSchema = supportSectionBaseSchema
   .extend({ data: connectionAssessmentSchema.nullable() })
+  .strict();
+const deploymentRequirementsSectionSchema = supportSectionBaseSchema
+  .extend({ data: deploymentRequirementsSchema.nullable() })
   .strict();
 const runtimeSettingsSectionSchema = supportSectionBaseSchema
   .extend({ data: runtimeSettingsSchema.nullable() })
@@ -371,6 +375,7 @@ export const operatorSupportBundleSchema = z
     sections: z
       .object({
         connection: connectionSectionSchema,
+        deploymentRequirements: deploymentRequirementsSectionSchema.optional(),
         runtimeSettings: runtimeSettingsSectionSchema,
         operator: operatorSectionSchema,
         nodeAndSignerHealth: healthSectionSchema,
@@ -563,6 +568,7 @@ export function operatorSupportApplication(
 export async function createOperatorSupportBundle(options: {
   application: OperatorSupportApplication;
   connection?: () => Promise<unknown> | unknown;
+  deploymentRequirements?: () => Promise<unknown> | unknown;
   runtimeSettings?: () => Promise<unknown> | unknown;
   operator?: () => Promise<unknown>;
   health?: () => Promise<unknown>;
@@ -578,6 +584,14 @@ export async function createOperatorSupportBundle(options: {
 }): Promise<OperatorSupportBundle> {
   const now = options.now ?? (() => new Date());
   const timeoutMs = options.timeoutMs ?? 30_000;
+  const deploymentRequirementsPromise = options.deploymentRequirements
+    ? collectSupportSection(
+        options.deploymentRequirements,
+        deploymentRequirementsSchema,
+        now,
+        timeoutMs,
+      )
+    : Promise.resolve(null);
   const [
     connection,
     runtimeSettings,
@@ -589,6 +603,7 @@ export async function createOperatorSupportBundle(options: {
     database,
     observer,
     automation,
+    deploymentRequirements,
   ] = await Promise.all([
     collectSupportSection(options.connection, connectionAssessmentSchema, now, timeoutMs),
     collectSupportSection(options.runtimeSettings, runtimeSettingsSchema, now, timeoutMs),
@@ -605,9 +620,11 @@ export async function createOperatorSupportBundle(options: {
     collectSupportSection(options.database, databaseStatusSchema, now, timeoutMs),
     collectSupportSection(options.observer, observerRuntimeStatusSchema, now, timeoutMs),
     collectSupportSection(options.automation, automationStatusSchema, now, timeoutMs),
+    deploymentRequirementsPromise,
   ]);
   const sections = {
     connection,
+    ...(deploymentRequirements ? { deploymentRequirements } : {}),
     runtimeSettings,
     operator,
     nodeAndSignerHealth,

@@ -8,9 +8,12 @@ using the current upstream documentation:
 - [stacks-core releases](https://github.com/stacks-network/stacks-core/releases)
 - [Hiro chainstate archive](https://docs.hiro.so/en/resources/archive)
 
-Sidekick requires a reachable node RPC endpoint for its baseline connection. The indexed Stacks API
-and signer-monitoring endpoints extend data coverage but do not determine whether Sidekick can
-connect. Sidekick does not need node/signer private keys or process access.
+Sidekick requires a reachable node RPC endpoint for its baseline connection, and complete
+manager/reward verification requires the node's transaction index. The indexed Stacks API,
+node-metrics, signer-monitoring, and event-observer paths extend data coverage but do not determine
+whether Sidekick can connect. Review the complete
+[node and signer requirements](node-signer-requirements.md) before installation. Sidekick does not
+need node/signer private keys or process access.
 
 Before deploying Sidekick, use [Zero to Signing](https://stx.fan/zero_to/signing/) to complete the
 wallet-signed signer-manager flow and configure `SIDEKICK_MANAGER_PRINCIPAL` to that deployed
@@ -115,8 +118,11 @@ signer-manager connection is established, but does not trigger restarts. `connec
 the same configured network, local node, manager, and database identity as `serve`, without waiting
 for indexed data, registration, eligibility, or telemetry. `doctor connectivity` remains the deeper
 node/API lag diagnostic. The authenticated Settings capability panel uses
-`/api/v1/operations/readiness` to report manager and engine blockers. Resolve failed connectivity
-checks before signing an operation.
+`/api/v1/operations/readiness` to report manager and engine blockers. The command also returns a
+separate `requirements` assessment for transaction indexing, monitoring endpoints, and event
+delivery, with exact remediation. It exits nonzero if connection fails or a required prerequisite is
+missing; recommended telemetry does not fail the command. Resolve required failures before relying
+on manager/reward history or signing an operation.
 
 ### Connect the private event listener
 
@@ -300,6 +306,7 @@ being created. It includes:
   operator snapshot;
 - connection outcome, durable deployment identity, and redacted runtime source configuration even
   when the operator snapshot is unavailable;
+- the latest read-only node/signer deployment-requirements assessment and its remediation state;
 - local Stacks node, signer, Hiro reference, and configured monitoring health;
 - manager registration, PoX-5 setup, pool roster/forecast/reward state, activity, alerts, and trust
   history; and

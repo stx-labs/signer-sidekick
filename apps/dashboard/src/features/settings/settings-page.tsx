@@ -19,6 +19,7 @@ import type { SettingsSection } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { operatorActionError } from "../../shared/operator-error.js";
+import { DeploymentRequirementsPanel } from "./deployment-requirements.js";
 import { EngineSettings } from "./engine-settings.js";
 import { ManagerSettings } from "./manager-settings.js";
 
@@ -63,13 +64,14 @@ export function SettingsPage({
   const [error, setError] = useState<string | null>(null);
   const [supportDownloadBusy, setSupportDownloadBusy] = useState(false);
   const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
+  const [deploymentCheckRevision, setDeploymentCheckRevision] = useState(0);
   const [sourceTest, setSourceTest] = useState<{
     kind: "node-metrics" | "signer-monitoring" | "hiro-reference";
     state: "testing" | "connected" | "failed";
     detail: string;
   } | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    initialSection ?? "attachment",
+    initialSection ?? "requirements",
   );
   const settingsLoadController = useRef<AbortController | null>(null);
   const sourceTestController = useRef<AbortController | null>(null);
@@ -153,6 +155,7 @@ export function SettingsPage({
       setApiKey("");
       setApiKeyAction("keep");
       setSaved(true);
+      setDeploymentCheckRevision((revision) => revision + 1);
       if (result.display.defaultTheme !== "system") setTheme(result.display.defaultTheme);
       try {
         await onSaved?.();
@@ -309,6 +312,7 @@ export function SettingsPage({
         <nav className="set-nav">
           {(
             [
+              ["requirements", "Deployment check"],
               ["attachment", "Attachment"],
               ["sources", "Data sources"],
               ["capabilities", "Capabilities"],
@@ -331,6 +335,11 @@ export function SettingsPage({
           ))}
         </nav>
         <fieldset className="settings-scroll settings-fields" disabled={busy || readOnly}>
+          <DeploymentRequirementsPanel
+            readOnly={readOnly}
+            refreshRevision={deploymentCheckRevision}
+            token={token}
+          />
           {data ? (
             <ManagerSettings
               data={data}
@@ -442,11 +451,17 @@ export function SettingsPage({
                 type="url"
                 value={settings.dataSources.nodeRpcUrl}
                 onChange={(event) =>
-                  update("dataSources", { ...settings.dataSources, nodeRpcUrl: event.target.value })
+                  update("dataSources", {
+                    ...settings.dataSources,
+                    nodeRpcUrl: event.target.value,
+                  })
                 }
               />
             </Field>
-            <Field label="Node metrics URL" help="Optional Prometheus endpoint from stacks-core.">
+            <Field
+              label="Node metrics URL"
+              help="Recommended Prometheus endpoint from stacks-core."
+            >
               <div className="field-inline-action">
                 <input
                   className="input mono"
@@ -477,7 +492,7 @@ export function SettingsPage({
                 </span>
               ) : null}
             </Field>
-            <Field label="Signer monitoring URL" help="Optional signer monitoring endpoint.">
+            <Field label="Signer monitoring URL" help="Recommended signer monitoring endpoint.">
               <div className="field-inline-action">
                 <input
                   className="input mono"

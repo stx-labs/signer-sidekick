@@ -1,6 +1,7 @@
 import {
   activityResponseSchema,
   type ConnectionAssessment,
+  type DeploymentRequirements,
   overviewPageSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -409,6 +410,25 @@ describe("local API", () => {
     } as unknown as ConnectionAssessment;
     const check = vi.fn(async (force = false) => (force ? connected : blocked));
     const onConnectionAssessed = vi.fn();
+    const requirementResult = {
+      schemaVersion: 1,
+      checkedAt: "2026-08-15T12:00:00.000Z",
+      status: "ready",
+      requiredReady: true,
+      checks: [
+        {
+          id: "node-rpc",
+          component: "node",
+          importance: "required",
+          status: "pass",
+          title: "Stacks node RPC",
+          summary: "Node verified.",
+          observed: "http://node:20443",
+          remediation: null,
+        },
+      ],
+    } as const satisfies DeploymentRequirements;
+    const checkRequirements = vi.fn(async () => requirementResult);
     const retainedHealth = serverHealthSnapshot();
     const health = {
       current: vi.fn().mockResolvedValue(retainedHealth),
@@ -423,6 +443,7 @@ describe("local API", () => {
     const server = createServer({
       service,
       connection: { current: () => blocked, check },
+      deploymentRequirements: { current: () => null, check: checkRequirements },
       isOperational: () => false,
       health,
       onConnectionAssessed,
@@ -439,6 +460,24 @@ describe("local API", () => {
       outcomeCode: "manager-not-deployed",
     });
     expect(check).toHaveBeenCalledWith();
+
+    const requirements = await server.inject({
+      method: "GET",
+      url: "/api/v1/deployment-requirements",
+      headers,
+    });
+    expect(requirements.statusCode).toBe(200);
+    expect(requirements.headers["cache-control"]).toBe("no-store");
+    expect(requirements.json()).toEqual(requirementResult);
+    expect(checkRequirements).toHaveBeenCalledWith();
+
+    const refreshedRequirements = await server.inject({
+      method: "POST",
+      url: "/api/v1/deployment-requirements/refresh",
+      headers,
+    });
+    expect(refreshedRequirements.statusCode).toBe(200);
+    expect(checkRequirements).toHaveBeenCalledWith(true);
 
     const status = await server.inject({ method: "GET", url: "/api/v1/status", headers });
     expect(status.statusCode).toBe(503);

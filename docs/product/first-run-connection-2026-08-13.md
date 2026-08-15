@@ -29,7 +29,9 @@ The expected lifecycle is:
 3. Deploy Sidekick with its network, local node RPC URL, signer-manager principal, and operator
    credential. API and signer-monitoring sources are optional.
 4. Let Sidekick verify the public result independently from its local node.
-5. Operate from Overview, Pool, Rewards, Activity, Signer Health, and Settings.
+5. Review the read-only node and signer requirements assessment and apply any infrastructure
+   changes through the operator's normal tooling.
+6. Operate from Overview, Pool, Rewards, Activity, Signer Health, and Settings.
 
 Zero to Signing may display a handoff summary containing the network, signer-manager principal,
 registered signer public key, registration transaction, and initial stake transaction. Sidekick
@@ -74,6 +76,24 @@ PoX-5 baseline:
 A stale or lagging local node is a critical operational finding and blocks actions that require
 current evidence, but it does not change the meaning of whether Sidekick connected to the intended
 network and manager.
+
+## Post-connection deployment assessment
+
+Connection success triggers a separate, read-only deployment-requirements assessment. It is not a
+replacement setup wizard, does not persist checklist progress, and does not add metrics or observer
+delivery to the five connection gates. It checks live behavior rather than trusting operator claims:
+
+- the required node RPC and local transaction-index endpoint;
+- recommended node Prometheus and signer `/info`, `/heartbeat`, and `/metrics` endpoints; and
+- recommended Sidekick event delivery, which passes only after a callback is verified against the
+  local node.
+
+The setup CLI emits this assessment beside the connection result. Settings loads the same assessment
+automatically and provides a forced read-only refresh. Every incomplete check names whether it is
+required or recommended, what capability is affected, the smallest configuration snippet, the
+services normally restarted after an operator-applied change, and the operator guide. Sidekick must
+never edit node/signer configuration, inspect keys or shared authentication secrets, or restart a
+service.
 
 ## Four independent states
 

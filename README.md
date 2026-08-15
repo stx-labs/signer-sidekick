@@ -15,6 +15,8 @@ Start with [the documentation index](docs/README.md). Use
 [Zero to Signing](https://stx.fan/zero_to/signing/) for first-time signer-manager setup and
 [stacksup](https://github.com/stx-labs/stacksup) for node and signer infrastructure. Sidekick begins
 with a configured manager principal after those day-zero steps.
+Before deploying, review the [node and signer requirements](docs/operator/node-signer-requirements.md);
+Sidekick checks them read-only during `connection check` and in Settings.
 
 ## Scope
 

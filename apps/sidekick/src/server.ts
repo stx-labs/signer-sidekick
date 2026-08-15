@@ -9,7 +9,9 @@ import {
   browserWalletIntentSubmissionRequestSchema,
   type ConnectionAssessment,
   type DashboardAlert,
+  type DeploymentRequirements,
   dashboardSnapshotSchema,
+  deploymentRequirementsSchema,
   type EngineApprovalRequest,
   type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
@@ -361,6 +363,10 @@ export interface ServerOptions {
   connection?: {
     current(): ConnectionAssessment | null;
     check(force?: boolean): Promise<ConnectionAssessment>;
+  };
+  deploymentRequirements?: {
+    current(): DeploymentRequirements | null;
+    check(force?: boolean): Promise<DeploymentRequirements>;
   };
   isOperational?(): boolean;
   onConnectionAssessed?(assessment: ConnectionAssessment): Promise<void> | void;
@@ -983,7 +989,10 @@ function engineActor(): string {
 
 export function createServer(options: ServerOptions = {}) {
   if (
-    (options.service || options.connection || options.activityProjection) &&
+    (options.service ||
+      options.connection ||
+      options.deploymentRequirements ||
+      options.activityProjection) &&
     (!options.authToken ||
       options.authToken.length < 24 ||
       options.authToken === "replace-with-at-least-24-random-characters")
@@ -1296,6 +1305,8 @@ export function createServer(options: ServerOptions = {}) {
       pathname === "/api/v1/auth/session" ||
       pathname === "/api/v1/connection" ||
       pathname === "/api/v1/connection/recheck" ||
+      pathname === "/api/v1/deployment-requirements" ||
+      pathname === "/api/v1/deployment-requirements/refresh" ||
       pathname === "/api/v1/support-bundle" ||
       (pathname === "/api/v1/health" && (request.method === "GET" || request.method === "HEAD")) ||
       ((pathname === "/api/v1/activity" || pathname.startsWith("/api/v1/activity/")) &&
@@ -1344,6 +1355,26 @@ export function createServer(options: ServerOptions = {}) {
     const result = await interactive(request, async () => await connection.check(true));
     await options.onConnectionAssessed?.(result);
     return result;
+  });
+  server.get("/api/v1/deployment-requirements", async (request, reply) => {
+    const requirements = requireFeature(
+      options.deploymentRequirements,
+      "operator_service_unavailable",
+    );
+    const result = await interactive(request, async () =>
+      deploymentRequirementsSchema.parse(await requirements.check()),
+    );
+    return reply.header("cache-control", "no-store").send(result);
+  });
+  server.post("/api/v1/deployment-requirements/refresh", async (request, reply) => {
+    const requirements = requireFeature(
+      options.deploymentRequirements,
+      "operator_service_unavailable",
+    );
+    const result = await interactive(request, async () =>
+      deploymentRequirementsSchema.parse(await requirements.check(true)),
+    );
+    return reply.header("cache-control", "no-store").send(result);
   });
   server.get("/health/ready", async (request, reply) => {
     if (options.connection) {
@@ -1739,6 +1770,9 @@ export function createServer(options: ServerOptions = {}) {
     const bundle = await createOperatorSupportBundle({
       application,
       ...(options.connection ? { connection: async () => await options.connection?.check() } : {}),
+      ...(options.deploymentRequirements
+        ? { deploymentRequirements: async () => await options.deploymentRequirements?.check() }
+        : {}),
       ...(service?.settings ? { runtimeSettings: () => service.settings?.() } : {}),
       ...(service && operational
         ? {

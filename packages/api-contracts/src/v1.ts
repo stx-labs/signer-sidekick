@@ -114,6 +114,73 @@ export const connectionAssessmentSchema = z
   });
 export type ConnectionAssessment = z.infer<typeof connectionAssessmentSchema>;
 
+export const deploymentRequirementSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
+    component: z.enum(["node", "signer", "sidekick"]),
+    importance: z.enum(["required", "recommended"]),
+    status: z.enum(["pass", "attention", "not-configured", "unavailable"]),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(2_000),
+    observed: z.string().max(1_000).nullable(),
+    remediation: z
+      .object({
+        steps: z.array(z.string().min(1).max(1_000)).min(1).max(12),
+        configuration: z
+          .array(
+            z
+              .object({
+                label: z.string().min(1).max(120),
+                format: z.enum(["toml", "dotenv", "command"]),
+                content: z.string().min(1).max(10_000),
+              })
+              .strict(),
+          )
+          .max(8),
+        restartServices: z.array(z.enum(["stacks-node", "stacks-signer", "sidekick"])).max(3),
+        docsUrl: z.url().nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type DeploymentRequirement = z.infer<typeof deploymentRequirementSchema>;
+
+export const deploymentRequirementsSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    checkedAt: z.iso.datetime(),
+    status: z.enum(["ready", "attention", "blocked"]),
+    requiredReady: z.boolean(),
+    checks: z.array(deploymentRequirementSchema).min(1).max(32),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const requiredReady = value.checks
+      .filter(({ importance }) => importance === "required")
+      .every(({ status }) => status === "pass");
+    const expectedStatus = !requiredReady
+      ? "blocked"
+      : value.checks.every(({ status }) => status === "pass")
+        ? "ready"
+        : "attention";
+    if (value.requiredReady !== requiredReady) {
+      context.addIssue({
+        code: "custom",
+        path: ["requiredReady"],
+        message: "requiredReady must reflect every required deployment check",
+      });
+    }
+    if (value.status !== expectedStatus) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "Deployment status must reflect required and recommended checks",
+      });
+    }
+  });
+export type DeploymentRequirements = z.infer<typeof deploymentRequirementsSchema>;
+
 export const rateLimitInfoSchema = z
   .object({
     source: z.enum(["hiro-api", "stacks-api", "node"]),

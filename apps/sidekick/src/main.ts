@@ -14,6 +14,7 @@ import {
 } from "./cli-runtime.js";
 import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 import { ConnectionAssessmentService } from "./connection-assessment.js";
+import { DeploymentRequirementsService } from "./deployment-requirements.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
@@ -306,10 +307,16 @@ export async function executeCliCommand({
         observerStatus: currentObserverStatus,
         context: () => service.activityProjectionContext(),
       });
+      const deploymentRequirements = new DeploymentRequirementsService({
+        getConfig: () => runtimeSettings.effectiveConfig(),
+        getConnection: () => connection.current(),
+        getObserverStatus: currentObserverStatus,
+      });
       const server = createServer({
         service,
         activityProjection,
         connection,
+        deploymentRequirements,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
           if (result.status === "connected") await startOperationalRuntime();
@@ -548,16 +555,26 @@ export async function executeCliCommand({
     await withStore(
       () => openSidekickStore(config.databasePath),
       async ({ store }) => {
+        const connectionService = new ConnectionAssessmentService({
+          config,
+          managerPrincipal,
+          node,
+          store,
+        });
         const connection = await withInteractiveRequestDeadline(15_000, async () =>
-          new ConnectionAssessmentService({
-            config,
-            managerPrincipal,
-            node,
-            store,
-          }).check(true),
+          connectionService.check(true),
         );
-        writeCliJson(output, { config: redactConfig(config), connection });
-        if (connection.status !== "connected") output.setExitCode(2);
+        const observerConfig = loadObserverServerConfig(env);
+        const requirements = await new DeploymentRequirementsService({
+          getConfig: () => config,
+          getConnection: () => connection,
+          getObserverStatus: () =>
+            observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+        }).check(true);
+        writeCliJson(output, { config: redactConfig(config), connection, requirements });
+        if (connection.status !== "connected" || !requirements.requiredReady) {
+          output.setExitCode(2);
+        }
       },
     );
   } else if (command === "observer" && arguments_[0] === "config") {
@@ -911,12 +928,19 @@ export async function executeCliCommand({
         const connectionResult = await withInteractiveRequestDeadline(15_000, async () =>
           connection.check(true),
         );
+        const deploymentRequirements = new DeploymentRequirementsService({
+          getConfig: () => runtimeSettings.effectiveConfig(),
+          getConnection: () => connectionResult,
+          getObserverStatus: () =>
+            observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+        });
         if (connectionResult.status !== "connected") {
           writeCliJson(
             output,
             await createOperatorSupportBundle({
               application: operatorSupportApplication(env),
               connection: () => connectionResult,
+              deploymentRequirements: () => deploymentRequirements.check(true),
               runtimeSettings: () => runtimeSettings.publicSettings(),
               database: () => store.databaseStatus(),
               observer: () => observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
@@ -951,6 +975,7 @@ export async function executeCliCommand({
           const bundle = await createOperatorSupportBundle({
             application: operatorSupportApplication(env),
             connection: () => connectionResult,
+            deploymentRequirements: () => deploymentRequirements.check(true),
             runtimeSettings: () => runtimeSettings.publicSettings(),
             operator: async () => service.supportSnapshot(true),
             health: async () => health.refresh(),
@@ -1038,7 +1063,7 @@ Usage:
   sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
   sidekick database backup <output.sqlite>  Create and integrity-check an online backup
   sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-  sidekick connection check  Verify the configured local node and signer-manager connection
+  sidekick connection check  Verify connection plus node and signer deployment requirements
   sidekick observer config <host:port>  Render exact private Stacks event-dispatcher settings
   sidekick manager verify <manager>  Verify deployed source and interface compatibility
   sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
@@ -1056,6 +1081,8 @@ Environment:
   SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
   STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
+  STACKS_NODE_METRICS_URL  Recommended private Stacks Core Prometheus endpoint
+  STACKS_SIGNER_MONITORING_URL  Recommended private signer monitoring base URL
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
   SIDEKICK_EVENT_HTTP_ENABLED  Optional private event listener toggle; defaults to true
   SIDEKICK_EVENT_HTTP_HOST  Optional private event listener address; defaults to loopback

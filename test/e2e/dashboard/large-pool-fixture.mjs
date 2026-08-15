@@ -52,6 +52,50 @@ export const connection = {
   ],
 };
 
+export const deploymentRequirements = {
+  schemaVersion: 1,
+  checkedAt: "2026-08-15T12:00:00.000Z",
+  status: "blocked",
+  requiredReady: false,
+  checks: [
+    {
+      id: "node-rpc",
+      component: "node",
+      importance: "required",
+      status: "pass",
+      title: "Stacks node RPC",
+      summary: "Sidekick reached the configured node and verified its network and PoX-5 state.",
+      observed: "http://127.0.0.1:20443",
+      remediation: null,
+    },
+    {
+      id: "node-transaction-index",
+      component: "node",
+      importance: "required",
+      status: "not-configured",
+      title: "Node transaction index",
+      summary: "Stacks Core returned HTTP 501 because transaction indexing is disabled.",
+      observed: "HTTP 501 transaction-index-unavailable",
+      remediation: {
+        steps: [
+          "Add txindex = true to the node's existing [node] table.",
+          "Restart stacks-node and allow its transaction index to catch up.",
+        ],
+        configuration: [
+          {
+            label: "Stacks node [node] table",
+            format: "toml",
+            content: "[node]\ntxindex = true",
+          },
+        ],
+        restartServices: ["stacks-node"],
+        docsUrl:
+          "https://github.com/stx-labs/signer-sidekick/blob/main/docs/operator/node-signer-requirements.md",
+      },
+    },
+  ],
+};
+
 function principal(index) {
   return `ST${String(index).padStart(38, "0")}`;
 }
@@ -1091,6 +1135,11 @@ export function responseFor(url) {
     request.pathname === "/api/v1/connection/recheck"
   )
     return connection;
+  if (
+    request.pathname === "/api/v1/deployment-requirements" ||
+    request.pathname === "/api/v1/deployment-requirements/refresh"
+  )
+    return deploymentRequirements;
   if (request.pathname === "/api/v1/overview") return overview;
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/activity") {

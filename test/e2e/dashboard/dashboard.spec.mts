@@ -1205,6 +1205,24 @@ test("explains manager attachment and trust evidence in Settings", async ({ page
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
+test("checks deployment requirements and shows exact operator-owned remediation", async ({
+  page,
+}) => {
+  await login(page);
+  await openPage(page, "settings", "Settings");
+
+  await expect(page.getByRole("heading", { name: "Node & signer requirements" })).toBeVisible();
+  await expect(page.getByText("A required feature needs attention.")).toBeVisible();
+  const transactionIndex = page.locator(".deployment-requirement", {
+    hasText: "Node transaction index",
+  });
+  await expect(transactionIndex).toContainText("HTTP 501");
+  await transactionIndex.getByText("How to resolve").click();
+  await expect(transactionIndex.locator("pre")).toContainText("txindex = true");
+  await expect(transactionIndex).toContainText("Restart after changing configuration: stacks-node");
+  await expect(transactionIndex).toBeInViewport();
+});
+
 test("starts an admin-history sync from Settings", async ({ page }) => {
   let syncRequests = 0;
   let syncStarted = false;

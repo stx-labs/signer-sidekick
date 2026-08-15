@@ -32,6 +32,7 @@ export type DomainSection = NonNullable<
   Extract<ContextualAction, { kind: "open-domain" }>["section"]
 >;
 export const settingsSections = [
+  "requirements",
   "attachment",
   "sources",
   "capabilities",

@@ -43,6 +43,7 @@ describe("dashboard routes", () => {
 
   it("builds only frozen page and typed Settings-section links", () => {
     expect(dashboardHash("rewards")).toBe("#rewards");
+    expect(settingsHash("requirements")).toBe("#settings?section=requirements");
     expect(settingsHash("capabilities")).toBe("#settings?section=capabilities");
     expect(parseDashboardHash(settingsHash("observer"))).toMatchObject({
       page: "settings",

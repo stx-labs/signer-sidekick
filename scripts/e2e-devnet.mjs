@@ -617,6 +617,19 @@ async function interruptSynchronization(
 
 async function activePool(state) {
   const connection = await connectExistingManager(state);
+  const deploymentRequirements = await sidekickFetch(
+    state,
+    "/api/v1/deployment-requirements/refresh",
+    { method: "POST" },
+  );
+  const transactionIndex = deploymentRequirements.checks?.find(
+    ({ id }) => id === "node-transaction-index",
+  );
+  if (!deploymentRequirements.requiredReady || transactionIndex?.status !== "pass") {
+    throw new Error(
+      `Devnet did not prove the required node deployment features: ${JSON.stringify(deploymentRequirements)}`,
+    );
+  }
   const actor = createOperatorActor();
   await ensureRewardPhase(actor);
   const positions = [];
@@ -688,6 +701,11 @@ async function activePool(state) {
   const cycleSyncResult = synchronizationReconciliation(cycleSync, "Reward-cycle synchronization");
   return {
     connection,
+    deploymentRequirements: {
+      status: deploymentRequirements.status,
+      requiredReady: deploymentRequirements.requiredReady,
+      transactionIndex: transactionIndex.status,
+    },
     observer,
     transactionIds: positions.map((position) => position.txid),
     interruptions: { roster: rosterInterruption, events: eventInterruption },

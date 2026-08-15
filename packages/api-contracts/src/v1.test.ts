@@ -9,6 +9,7 @@ import {
   browserWalletIntentSchema,
   contextualActionSchema,
   dashboardSnapshotSchema,
+  deploymentRequirementsSchema,
   healthFindingSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   overviewPageSchema,
@@ -23,6 +24,52 @@ import {
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("deployment requirement contracts", () => {
+  const required = {
+    id: "node-transaction-index",
+    component: "node" as const,
+    importance: "required" as const,
+    status: "pass" as const,
+    title: "Node transaction index",
+    summary: "The endpoint is enabled.",
+    observed: "HTTP 404",
+    remediation: null,
+  };
+
+  it("derives readiness from required and recommended checks", () => {
+    expect(
+      deploymentRequirementsSchema.parse({
+        schemaVersion: 1,
+        checkedAt: "2026-08-15T12:00:00.000Z",
+        status: "attention",
+        requiredReady: true,
+        checks: [
+          required,
+          {
+            ...required,
+            id: "signer-monitoring",
+            component: "signer",
+            importance: "recommended",
+            status: "not-configured",
+          },
+        ],
+      }),
+    ).toMatchObject({ status: "attention", requiredReady: true });
+  });
+
+  it("rejects summaries that contradict their check states", () => {
+    expect(
+      deploymentRequirementsSchema.safeParse({
+        schemaVersion: 1,
+        checkedAt: "2026-08-15T12:00:00.000Z",
+        status: "ready",
+        requiredReady: true,
+        checks: [{ ...required, status: "not-configured" }],
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("Signer Health v2 contracts", () => {
   const observedAt = "2026-08-14T12:00:00.000Z";

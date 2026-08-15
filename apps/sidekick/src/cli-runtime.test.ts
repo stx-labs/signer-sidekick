@@ -65,7 +65,7 @@ describe("CLI dispatch", () => {
         sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
         sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-        sidekick connection check  Verify the configured local node and signer-manager connection
+        sidekick connection check  Verify connection plus node and signer deployment requirements
         sidekick observer config <host:port>  Render exact private Stacks event-dispatcher settings
         sidekick manager verify <manager>  Verify deployed source and interface compatibility
         sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
@@ -83,6 +83,8 @@ describe("CLI dispatch", () => {
         SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
         STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
         STACKS_API_KEY       Optional API key; never included in output
+        STACKS_NODE_METRICS_URL  Recommended private Stacks Core Prometheus endpoint
+        STACKS_SIGNER_MONITORING_URL  Recommended private signer monitoring base URL
         SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
         SIDEKICK_EVENT_HTTP_ENABLED  Optional private event listener toggle; defaults to true
         SIDEKICK_EVENT_HTTP_HOST  Optional private event listener address; defaults to loopback

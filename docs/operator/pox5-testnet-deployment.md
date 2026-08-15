@@ -43,8 +43,10 @@ docker compose up -d
 docker compose exec -T sidekick node /app/dist/main.js connection check
 ```
 
-The result should show a compatible manager, the expected registration, and current operator
-readiness. A missing or incompatible manager is repaired outside Sidekick, then rechecked here.
+The result should show the baseline node/manager connection plus the separate node and signer
+requirements assessment. Registration, grant, and operator readiness appear after Sidekick starts;
+they are intentionally not connection gates. A missing or incompatible manager is repaired outside
+Sidekick, then rechecked here.
 
 ### Leather custom network
 

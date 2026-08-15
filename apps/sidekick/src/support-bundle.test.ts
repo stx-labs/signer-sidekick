@@ -140,6 +140,36 @@ describe("operator support bundle", () => {
     const bundle = await createOperatorSupportBundle({
       application,
       connection: async () => connectionAssessment,
+      deploymentRequirements: async () => ({
+        schemaVersion: 1,
+        checkedAt: "2026-08-13T12:00:00.000Z",
+        status: "attention",
+        requiredReady: true,
+        checks: [
+          {
+            id: "signer-monitoring",
+            component: "signer",
+            importance: "recommended",
+            status: "not-configured",
+            title: "Signer monitoring",
+            summary: "Configure signer monitoring for complete diagnosis.",
+            observed: null,
+            remediation: {
+              steps: ["Enable the private signer monitoring endpoint."],
+              configuration: [
+                {
+                  label: "Signer configuration",
+                  format: "toml",
+                  content: 'metrics_endpoint = "127.0.0.1:30001"',
+                },
+              ],
+              restartServices: ["stacks-signer", "sidekick"],
+              docsUrl:
+                "https://github.com/stx-labs/signer-sidekick/blob/main/docs/operator/node-signer-requirements.md",
+            },
+          },
+        ],
+      }),
       runtimeSettings: () => ({
         schemaVersion: 1,
         revision: 0,
@@ -261,6 +291,10 @@ describe("operator support bundle", () => {
       },
       sections: {
         connection: { status: "ok", data: { status: "connected" } },
+        deploymentRequirements: {
+          status: "ok",
+          data: { status: "attention", requiredReady: true },
+        },
         runtimeSettings: {
           status: "ok",
           data: { dataSources: { nodeRpcUrl: "http://127.0.0.1:20443" } },
