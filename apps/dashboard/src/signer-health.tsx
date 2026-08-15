@@ -92,31 +92,9 @@ function displayDuration(startedAt: string, endedAt: string): string {
   return `${(seconds / 3_600).toFixed(1)}h`;
 }
 
-// Exact durations read to a single decimal; histogram evidence is rendered as its bucket range.
+// Interpolated latency measurements read to a single decimal (e.g. "4.8s"); "—" for not-measured.
 function displaySeconds(value: number | null): string {
   return value === null ? "—" : `${value.toFixed(1)}s`;
-}
-
-type TimingMeasurement = NonNullable<
-  HealthSnapshot["signer"]["blockTelemetry"]
->["last15Minutes"]["response"];
-
-function displayTimingMeasurement(
-  measurement: TimingMeasurement | undefined,
-  fallback: number | null,
-): string {
-  if (!measurement) return displaySeconds(fallback);
-  if (measurement.source === "exact" && measurement.p95Seconds !== null) {
-    return `${measurement.p95Seconds.toFixed(1)}s exact · ${measurement.sampleCount} blocks`;
-  }
-  if (measurement.source === "histogram-range" && measurement.lowerBoundSeconds !== null) {
-    const range =
-      measurement.upperBoundSeconds === null
-        ? `≥${measurement.lowerBoundSeconds.toFixed(1)}s`
-        : `${measurement.lowerBoundSeconds.toFixed(1)}-${measurement.upperBoundSeconds.toFixed(1)}s`;
-    return `${range} bucket · ${measurement.sampleCount} responses`;
-  }
-  return "—";
 }
 
 function Metric({ label, children }: { label: string; children: React.ReactNode }) {
@@ -587,53 +565,14 @@ export function SignerHealthPage({
                 ? "—"
                 : `${snapshot.signer.last15Minutes.rejectionPercent.toFixed(1)}%`}
             </Metric>
-            <Metric label="Timing evidence">
-              {snapshot.signer.blockTelemetry?.capability === "available"
-                ? `Per-block telemetry · ${snapshot.signer.blockTelemetry.last15Minutes.finalizedRecords} finalized blocks`
-                : snapshot.signer.blockTelemetry?.capability === "unsupported"
-                  ? "Signer histograms · per-block endpoint unsupported"
-                  : snapshot.signer.blockTelemetry?.capability === "unavailable"
-                    ? "Signer histograms · per-block endpoint unavailable"
-                    : "Signer histograms"}
-            </Metric>
             <Metric label="Response p95">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.response,
-                snapshot.signer.last15Minutes.responseP95Seconds,
-              )}
-            </Metric>
-            <Metric label="Proposal received to response">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.proposalToResponse,
-                null,
-              )}
+              {displaySeconds(snapshot.signer.last15Minutes.responseP95Seconds)}
             </Metric>
             <Metric label="Node RPC p95">
               {displaySeconds(snapshot.signer.last15Minutes.nodeRpcP95Seconds)}
             </Metric>
             <Metric label="Validation p95">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.validation,
-                snapshot.signer.last15Minutes.validationP95Seconds,
-              )}
-            </Metric>
-            <Metric label="Proposal to validation result">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.proposalToValidationResult,
-                null,
-              )}
-            </Metric>
-            <Metric label="Pre-commit consensus wait">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.precommitWait,
-                null,
-              )}
-            </Metric>
-            <Metric label="Response publication">
-              {displayTimingMeasurement(
-                snapshot.signer.blockTelemetry?.last15Minutes.responsePublication,
-                null,
-              )}
+              {displaySeconds(snapshot.signer.last15Minutes.validationP95Seconds)}
             </Metric>
             <Metric label="Capitulation p95">
               {displaySeconds(snapshot.signer.last15Minutes.capitulationP95Seconds)}

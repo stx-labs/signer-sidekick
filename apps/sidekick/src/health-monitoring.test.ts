@@ -99,11 +99,6 @@ stacks_signer_block_responses_sent{response_type="accepted"} 12
       acceptedTotal: 12,
       rejectedTotal: 0,
     });
-    expect(observation.signerBlockTelemetry).toMatchObject({
-      status: "unsupported",
-      errorCode: "unsupported",
-      records: [],
-    });
   });
 
   it("combines live node, Hiro, and signer signals with reset-safe rolling values", async () => {
@@ -113,9 +108,7 @@ stacks_signer_block_responses_sent{response_type="accepted"} 12
     let conflicts = 1;
     let heartbeatHealthy = true;
     let hiroTip = 200_001;
-    let telemetryRequests = 0;
     const server = createServer((request, response) => {
-      if (request.url?.startsWith("/v1/block-telemetry")) telemetryRequests += 1;
       if (request.url === "/v2/info") {
         response.setHeader("content-type", "application/json");
         response.end(
@@ -230,7 +223,6 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     });
 
     const initial = await health.refresh();
-    expect(telemetryRequests).toBe(1);
     expect(initial.overallStatus).toBe("healthy");
     expect(initial.node).toMatchObject({
       inboundPeers: 8,
@@ -255,7 +247,6 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     hiroTip += 1;
     now += 5 * 60 * 1_000;
     const progressed = await health.refresh();
-    expect(telemetryRequests).toBe(2);
     expect(progressed.hiro.lastTipAdvanceAt).toBe("2026-07-17T12:05:00.000Z");
     expect(progressed.hiro.advancementStatus).toBe("advancing");
     expect(progressed.signer.lastHour).toMatchObject({
@@ -284,7 +275,6 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     conflicts = 0;
     now += 30_000;
     const reset = await health.refresh();
-    expect(telemetryRequests).toBe(2);
     expect(reset.signer.lastHour.accepted).toBe(5);
 
     heartbeatHealthy = false;

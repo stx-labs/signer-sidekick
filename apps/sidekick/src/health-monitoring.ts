@@ -25,8 +25,6 @@ export type {
 const burnBlockTimingRefreshMs = 5 * 60 * 1_000;
 const defaultPollIntervalMs = 5_000;
 const defaultReferencePollIntervalMs = 30_000;
-const unsupportedTelemetryProbeIntervalMs = 5 * 60_000;
-const unavailableTelemetryRetryIntervalMs = 30_000;
 
 export class HealthMonitoringService {
   private observations: HealthObservation[] = [];
@@ -35,7 +33,6 @@ export class HealthMonitoringService {
   private burnBlockTiming: BurnBlockTiming | null = null;
   private burnBlockTimingAttemptedAt = 0;
   private referenceAttemptedAt = 0;
-  private telemetryAttemptedAt = 0;
   private configFingerprint: string | null = null;
 
   constructor(private readonly options: HealthMonitoringOptions) {}
@@ -101,7 +98,6 @@ export class HealthMonitoringService {
       this.burnBlockTiming = null;
       this.burnBlockTimingAttemptedAt = 0;
       this.referenceAttemptedAt = 0;
-      this.telemetryAttemptedAt = 0;
     }
     this.configFingerprint = configFingerprint;
     if (this.observations.length === 0) this.hydrate();
@@ -116,23 +112,10 @@ export class HealthMonitoringService {
       observedAtMs - this.referenceAttemptedAt >=
       (this.options.referencePollIntervalMs ?? defaultReferencePollIntervalMs);
     if (shouldRefreshReferences) this.referenceAttemptedAt = observedAtMs;
-    const latestTelemetry = this.observations.at(-1)?.signerBlockTelemetry;
-    const telemetryIntervalMs =
-      latestTelemetry?.status === "unsupported"
-        ? unsupportedTelemetryProbeIntervalMs
-        : latestTelemetry?.status === "unavailable"
-          ? unavailableTelemetryRetryIntervalMs
-          : 0;
-    const shouldRefreshSignerBlockTelemetry =
-      Boolean(config.signerMonitoringUrl) &&
-      (telemetryIntervalMs === 0 ||
-        observedAtMs - this.telemetryAttemptedAt >= telemetryIntervalMs);
-    if (shouldRefreshSignerBlockTelemetry) this.telemetryAttemptedAt = observedAtMs;
 
     const [observation, burnBlocks] = await Promise.all([
       collectHealthObservation(config, observedAt, {
         includeReferences: shouldRefreshReferences,
-        includeSignerBlockTelemetry: shouldRefreshSignerBlockTelemetry,
         previous: this.observations.at(-1) ?? null,
       }),
       shouldRefreshBurnTiming

@@ -18,7 +18,6 @@ Choose the shortest path for your task.
 | Contract compatibility reviewer | [Deployed signer-manager baseline](reviews/deployed-signer-manager-baseline-2026-08-13.md) | Mainnet contract families, universal PoX-5 baseline, and capability-adapter policy |
 | Signer-health model reviewer | [Diagnosis model](product/signer-health-diagnosis-model.md) | Evidence hierarchy, attribution logic, external-reference boundary, and calibration process |
 | Signer-health implementer | [Signer Health](product/signer-health.md) | Implemented monitoring sources, thresholds, retention, and API behavior |
-| Signer telemetry implementer | [Per-block signer telemetry](product/per-block-signer-telemetry-plan-2026-08-15.md) | Exact timing producer contract, Sidekick fallback, retention, and cross-repository release gates |
 | Assist reviewer | [Transaction engine safety contract](architecture/transaction-engine.md) | Authority and execution invariants before reviewing Assist |
 
 ## Dashboard

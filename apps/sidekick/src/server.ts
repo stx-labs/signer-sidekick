@@ -1555,38 +1555,10 @@ export function createServer(options: ServerOptions = {}) {
       }
       if (health.signer.last15Minutes.responseP95Seconds !== null) {
         metrics.push(
-          "# HELP sidekick_signer_response_p95_seconds Signer response p95 in the rolling 15-minute window; inspect sidekick_signer_timing_source for precision.",
+          "# HELP sidekick_signer_response_p95_seconds Approximate signer response p95 in the rolling 15-minute window.",
           "# TYPE sidekick_signer_response_p95_seconds gauge",
           `sidekick_signer_response_p95_seconds ${health.signer.last15Minutes.responseP95Seconds}`,
         );
-      }
-      const responseTiming = health.signer.blockTelemetry?.last15Minutes.response;
-      if (responseTiming) {
-        metrics.push(
-          "# HELP sidekick_signer_timing_source Precision source for the rolling signer response timing.",
-          "# TYPE sidekick_signer_timing_source gauge",
-          ...(["exact", "histogram-range", "unavailable"] as const).map(
-            (source) =>
-              `sidekick_signer_timing_source{source="${source}"} ${responseTiming.source === source ? 1 : 0}`,
-          ),
-          "# HELP sidekick_signer_timing_samples Samples supporting the rolling signer response timing.",
-          "# TYPE sidekick_signer_timing_samples gauge",
-          `sidekick_signer_timing_samples ${responseTiming.sampleCount}`,
-        );
-        if (responseTiming.lowerBoundSeconds !== null) {
-          metrics.push(
-            "# HELP sidekick_signer_response_p95_lower_bound_seconds Lower bound of the response p95 histogram bucket.",
-            "# TYPE sidekick_signer_response_p95_lower_bound_seconds gauge",
-            `sidekick_signer_response_p95_lower_bound_seconds ${responseTiming.lowerBoundSeconds}`,
-          );
-        }
-        if (responseTiming.upperBoundSeconds !== null) {
-          metrics.push(
-            "# HELP sidekick_signer_response_p95_upper_bound_seconds Upper bound of the response p95 histogram bucket.",
-            "# TYPE sidekick_signer_response_p95_upper_bound_seconds gauge",
-            `sidekick_signer_response_p95_upper_bound_seconds ${responseTiming.upperBoundSeconds}`,
-          );
-        }
       }
     }
     if (observer) {

@@ -17,10 +17,6 @@ import {
   samplesNamed,
   sampleValue,
 } from "./prometheus-text.js";
-import {
-  fetchSignerBlockTelemetryPage,
-  SignerBlockTelemetryUnsupportedError,
-} from "./signer-block-telemetry.js";
 
 const nodeInfoSchema: z.ZodType<NodeInfo> = z.object({
   server_version: z.string().min(1).optional(),
@@ -248,11 +244,7 @@ export async function testHealthSource(
 export async function collectHealthObservation(
   config: SidekickConfig,
   observedAt: string,
-  options: {
-    includeReferences?: boolean;
-    includeSignerBlockTelemetry?: boolean;
-    previous?: HealthObservation | null;
-  } = {},
+  options: { includeReferences?: boolean; previous?: HealthObservation | null } = {},
 ): Promise<HealthObservation> {
   const includeReferences = options.includeReferences ?? true;
   const configuredApiDistinct =
@@ -267,7 +259,6 @@ export async function collectHealthObservation(
     signerInfo,
     signerHeartbeat,
     signerMetrics,
-    signerBlockTelemetry,
   ] = await Promise.all([
     readJson(endpoint(config.nodeRpcUrl, "/v2/info"), nodeInfoSchema, observedAt).catch(
       (error) => ({
@@ -330,46 +321,6 @@ export async function collectHealthObservation(
           }),
         )
       : null,
-    config.signerMonitoringUrl && (options.includeSignerBlockTelemetry ?? true)
-      ? fetchSignerBlockTelemetryPage(
-          config.signerMonitoringUrl,
-          options.previous?.signerBlockTelemetry?.nextCursor ?? null,
-        )
-          .then(({ page, latencyMs }) => ({
-            status: "available" as const,
-            checkedAt: observedAt,
-            latencyMs,
-            errorCode: null,
-            producerVersion: page.producer.version,
-            bootId: page.producer.bootId,
-            records: page.records,
-            nextCursor: page.nextCursor,
-            hasMore: page.hasMore,
-            cursorReset: page.cursorReset,
-          }))
-          .catch((error) => ({
-            status:
-              error instanceof SignerBlockTelemetryUnsupportedError
-                ? ("unsupported" as const)
-                : ("unavailable" as const),
-            checkedAt: observedAt,
-            latencyMs: null,
-            errorCode:
-              error instanceof SignerBlockTelemetryUnsupportedError
-                ? "unsupported"
-                : error instanceof HealthSourceError
-                  ? error.code
-                  : "unexpected-content",
-            producerVersion: options.previous?.signerBlockTelemetry?.producerVersion ?? null,
-            bootId: options.previous?.signerBlockTelemetry?.bootId ?? null,
-            records: [],
-            nextCursor: options.previous?.signerBlockTelemetry?.nextCursor ?? null,
-            hasMore: false,
-            cursorReset: false,
-          }))
-      : options.previous?.signerBlockTelemetry
-        ? { ...options.previous.signerBlockTelemetry, records: [] }
-        : null,
   ]);
 
   return {
@@ -388,6 +339,5 @@ export async function collectHealthObservation(
     signerHeartbeat,
     signerMetricsSource: signerMetrics?.source ?? null,
     signerMetrics: signerMetrics?.samples ? signerMetricValues(signerMetrics.samples) : null,
-    signerBlockTelemetry,
   };
 }

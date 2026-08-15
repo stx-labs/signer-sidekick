@@ -137,16 +137,12 @@ than raw responses. The store retains raw observations for 72 hours and five-min
 days.
 
 Signer counters are cumulative, so Sidekick calculates increases across the relevant window and
-handles counter resets as a new epoch. A compatible Signer's finalized per-block records are
-de-duplicated by boot and record ID, and exact percentiles use the auditable nearest-rank method.
-
-For Signer releases that expose only histograms, bucket increases—not the lifetime histogram—form
-the window. Every bucket is re-baselined together whenever the `+Inf` total drops, so a mid-window
-restart cannot desynchronize the buckets. Prometheus-style interpolation remains available for
-alert continuity, but the operator surface shows the crossing bucket (for example, `5-10s`) rather
-than implying the interpolated estimate is a measured raw duration. The versioned contract and
-upstream release dependency are recorded in the
-[per-block telemetry plan](per-block-signer-telemetry-plan-2026-08-15.md).
+handles counter resets as a new epoch. Histogram percentiles are calculated from bucket increases,
+not the lifetime cumulative histogram: every bucket is re-baselined together whenever the `+Inf`
+total drops (a joint reset), so a mid-window signer restart cannot desynchronize the buckets and
+inflate the percentile. The crossing bucket is then linearly interpolated (as Prometheus
+`histogram_quantile` does) rather than reported at its upper boundary, so a p95 of 4.8s reads as
+`4.8s` instead of rounding up to the enclosing bucket edge.
 
 ### 3. Establish expectation
 

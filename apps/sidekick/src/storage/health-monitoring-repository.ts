@@ -8,7 +8,6 @@ import {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import type { HealthObservation } from "../health-monitoring-types.js";
-import { signerBlockTelemetryRecordSchema } from "../signer-block-telemetry.js";
 
 export const HEALTH_RAW_RETENTION_HOURS = 72 as const;
 export const HEALTH_ROLLUP_RETENTION_DAYS = 90 as const;
@@ -116,22 +115,6 @@ const healthObservationSchema = z.looseObject({
   signerHeartbeat: sourceObservationSchema.nullable(),
   signerMetricsSource: sourceObservationSchema.nullable(),
   signerMetrics: signerMetricValuesSchema.nullable(),
-  signerBlockTelemetry: z
-    .object({
-      status: z.enum(["available", "unsupported", "unavailable"]),
-      checkedAt: z.iso.datetime(),
-      latencyMs: z.number().nonnegative().nullable(),
-      errorCode: z.string().nullable(),
-      producerVersion: z.string().nullable(),
-      bootId: z.string().nullable(),
-      records: z.array(signerBlockTelemetryRecordSchema).max(500),
-      nextCursor: z.string().min(1).max(500).nullable(),
-      hasMore: z.boolean(),
-      cursorReset: z.boolean(),
-    })
-    .strict()
-    .nullable()
-    .optional(),
 });
 
 const observationRowSchema = z.object({

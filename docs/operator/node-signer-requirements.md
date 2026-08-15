@@ -17,7 +17,7 @@ merge them into the existing TOML instead of replacing the complete configuratio
 | Private node RPC reachable from Sidekick | Required | Establishes network, PoX-5, manager, current chain, and action anchors | Connects to the configured RPC and verifies network/PoX-5/manager identity |
 | Stacks Core transaction index | Required for complete manager/reward operation history | Independently verifies canonical manager events and reward calculations rather than trusting an indexed API alone | Probes `/v3/transaction/<unknown-txid>`; `404` proves the endpoint exists and `501` proves `txindex` is off |
 | Node Prometheus endpoint | Recommended | Adds peer, tip, warning, error, and latency evidence for local-versus-network diagnosis | Parses the configured Prometheus endpoint and counts recognized node signals |
-| Signer monitoring endpoint | Recommended | Identifies the running signer and adds heartbeat, proposal, response, latency, and agreement evidence | Requires valid `/info`, `/heartbeat`, and `/metrics` responses from the configured base URL; Sidekick also detects optional `/v1/block-telemetry` support |
+| Signer monitoring endpoint | Recommended | Identifies the running signer and adds heartbeat, proposal, response, latency, and agreement evidence | Requires valid `/info`, `/heartbeat`, and `/metrics` responses from the configured base URL |
 | Sidekick event-observer subscription | Recommended | Drives prompt, event-based reconciliation instead of waiting for bounded polling | Requires a callback accepted by Sidekick and verified against the local node |
 
 The baseline connection deliberately remains narrower than this table. Missing telemetry or event
@@ -125,8 +125,7 @@ metrics_endpoint = "127.0.0.1:30001"
 - `metrics_endpoint` should remain private but must be reachable from Sidekick for full health
   diagnosis.
 
-Configure the signer monitoring base URL; Sidekick appends `/info`, `/heartbeat`, `/metrics`, and
-the optional versioned per-block telemetry path:
+Configure the signer monitoring base URL; Sidekick appends `/info`, `/heartbeat`, and `/metrics`:
 
 ```dotenv
 STACKS_SIGNER_MONITORING_URL=http://127.0.0.1:30001
@@ -134,13 +133,6 @@ STACKS_SIGNER_MONITORING_URL=http://127.0.0.1:30001
 
 Do not copy `stacks_private_key`, `auth_password`, seed phrases, or any other signer secret into the
 Sidekick environment, dashboard, issue, or support artifact.
-
-Stacks Signer 4.0.1 and the upstream `main` branch do not yet expose per-block records. With those
-versions, Sidekick continues to work and labels latency as the official Prometheus bucket range.
-Once a Signer release implements the documented
-[per-block telemetry contract](../product/per-block-signer-telemetry-plan-2026-08-15.md), Sidekick
-automatically uses exact response, validation, consensus-wait, and publication timings without a
-new URL or Sidekick setting.
 
 ## Sidekick event observer
 

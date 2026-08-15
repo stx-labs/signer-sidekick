@@ -91,21 +91,10 @@ describe("HealthMonitoringRepository", () => {
     const first = opened.store;
     stores.push(first);
 
-    first.healthMonitoring.recordObservation("config-a", {
-      ...observation("2026-08-14T12:00:00.000Z", 100),
-      signerBlockTelemetry: {
-        status: "available",
-        checkedAt: "2026-08-14T12:00:00.000Z",
-        latencyMs: 2,
-        errorCode: null,
-        producerVersion: "stacks-signer 4.1.0",
-        bootId: "boot-1",
-        records: [],
-        nextCursor: "boot-1:42",
-        hasMore: false,
-        cursorReset: false,
-      },
-    });
+    first.healthMonitoring.recordObservation(
+      "config-a",
+      observation("2026-08-14T12:00:00.000Z", 100),
+    );
     first.healthMonitoring.recordObservation(
       "config-a",
       observation("2026-08-14T12:00:05.000Z", 101),
@@ -138,12 +127,6 @@ describe("HealthMonitoringRepository", () => {
 
     const reopened = await openSidekickStore(path, "2026-08-14T12:01:00.000Z");
     stores.push(reopened.store);
-    expect(
-      reopened.store.healthMonitoring.listObservations("config-a")[0]?.signerBlockTelemetry,
-    ).toMatchObject({
-      status: "available",
-      nextCursor: "boot-1:42",
-    });
     expect(
       reopened.store.healthMonitoring
         .listObservations("config-a")
