@@ -9,12 +9,15 @@ import {
   type StacksNodeClient,
 } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
+import { syncCurrentMemberHistoryPass } from "./current-member-history-sync.js";
 import type { HealthOperatorContext } from "./health-monitoring-types.js";
+import { advanceLocalNodeAuthority } from "./local-node-authority.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { type ManagerEventNodeTransactions, syncManagerEvents } from "./manager-event-sync.js";
 import {
   type ManagerEventVocabulary,
+  managerEventStream,
   managerEventVocabularyFor,
 } from "./manager-event-vocabulary.js";
 import {
@@ -31,7 +34,7 @@ import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
-import { syncRewardRealizations } from "./reward-realization-sync.js";
+import { rewardRealizationStream, syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
   readRewardOutlook,
@@ -1167,12 +1170,41 @@ export class OperatorService {
           ...(options.signal ? { signal: options.signal } : {}),
         })
       : null;
+    const currentMemberHistory = [];
+    if (this.options.nodeTransactions && synchronized.stakers.authoritative) {
+      const currentStakerPrincipals = store
+        .listSignerStakers(managerPrincipal, true, sourceId)
+        .map(({ stakerPrincipal }) => stakerPrincipal);
+      // One bounded pass advances at most five principal pages. The persisted queue orders by
+      // pages processed, so each current member gets a turn before a long-lived wallet gets a
+      // second page.
+      for (let page = 0; page < 5; page += 1) {
+        options.signal?.throwIfAborted();
+        const result = await syncCurrentMemberHistoryPass({
+          store,
+          api,
+          nodeTransactions: this.options.nodeTransactions,
+          nodeBlocks: node,
+          sourceId,
+          chainId: synchronized.chainId,
+          managerPrincipal,
+          pox5ContractId: synchronized.pox5ContractId,
+          currentStakerPrincipals,
+          observedAt: new Date(Date.parse(synchronized.observedAt) + page).toISOString(),
+          pageLimit: Math.min(50, config.eventPageLimit),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+        currentMemberHistory.push(result);
+        if (result.memberProcessed === null) break;
+      }
+    }
     this.cached = null;
     return {
       observedAt: synchronized.observedAt,
       stakers: synchronized.stakers,
       events,
       poolActivity,
+      currentMemberHistory,
     };
   }
 
@@ -1309,6 +1341,7 @@ export class OperatorService {
       api,
       node,
       nodeTransactions: this.options.nodeTransactions,
+      nodeBlocks: node,
       sourceId,
       chainId: preflight.node.networkId,
       managerPrincipal,
@@ -1335,6 +1368,15 @@ export class OperatorService {
       reportMissingManager: true,
     });
     const { chainAnchor, preflight, manager, registration, readiness } = operatorSnapshot;
+    const nodeAuthority = store.putLocalNodeAuthority(
+      managerPrincipal,
+      advanceLocalNodeAuthority(store.getLocalNodeAuthority(managerPrincipal), {
+        observedAt: generatedAt,
+        stacksTipHeight: preflight.node.stacksTipHeight,
+        isFullySynced: preflight.node.isFullySynced ?? null,
+        peerHeightDifference: preflight.node.peerHeightDifference ?? null,
+      }),
+    );
     const pox5ContractId = preflight.pox.pox5ContractId;
     const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
     const trustAudit = store.listManagerTrustAudit(managerPrincipal);
@@ -1425,6 +1467,62 @@ export class OperatorService {
       eventVocabulary: managerEventVocabularyFor(manager.capabilities),
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
+    const managerCursor = store.getCursor(
+      sourceId,
+      managerEventStream(managerPrincipal, managerEventVocabularyFor(manager.capabilities)),
+    );
+    const rewardCursor = pox5ContractId
+      ? store.getCursor(sourceId, rewardRealizationStream(pox5ContractId))
+      : null;
+    const completedRosterRun = store.getLatestCompletedSignerStakerRun(sourceId, managerPrincipal);
+    const memberCoverage = pox5ContractId
+      ? store.currentMemberHistoryCoverage(sourceId, managerPrincipal, pox5ContractId)
+      : {
+          currentMembers: 0,
+          membersComplete: 0,
+          pagesProcessed: 0,
+          transactionsInspected: 0,
+          relevantEvents: 0,
+          updatedAt: null,
+        };
+    const currentMemberHistoryStatus = !completedRosterRun?.authoritative
+      ? "not-started"
+      : memberCoverage.currentMembers === memberCoverage.membersComplete
+        ? "complete"
+        : memberCoverage.pagesProcessed > 0 || memberCoverage.currentMembers > 0
+          ? "reconstructing"
+          : "not-started";
+    const monitoringStartedAt = store.getDeploymentIdentity()?.boundAt ?? null;
+    const historyRecovery = {
+      schemaVersion: 1 as const,
+      monitoringStartedAt,
+      managerHistory: {
+        status: managerCursor
+          ? managerCursor.cursor === null
+            ? ("complete" as const)
+            : ("reconstructing" as const)
+          : ("not-started" as const),
+        updatedAt: managerCursor?.updatedAt ?? null,
+        recoveryBoundaryStacksHeight: managerCursor?.lastBlockHeight ?? null,
+      },
+      currentMemberHistory: {
+        status: currentMemberHistoryStatus,
+        ...memberCoverage,
+      },
+      rewardHistory: {
+        status: rewardCursor
+          ? rewardCursor.cursor === null
+            ? ("complete" as const)
+            : ("reconstructing" as const)
+          : ("not-started" as const),
+        updatedAt: rewardCursor?.updatedAt ?? null,
+        recoveryBoundaryStacksHeight: rewardCursor?.lastBlockHeight ?? null,
+      },
+      signerHealthHistory: {
+        status: "monitoring-since-install" as const,
+        monitoringStartedAt,
+      },
+    };
     const partial = {
       preflight,
       manager,
@@ -1448,6 +1546,8 @@ export class OperatorService {
         : {}),
       managerPrincipal,
       chainAnchor,
+      nodeAuthority,
+      historyRecovery,
       ...partial,
       readiness,
       trustAudit,

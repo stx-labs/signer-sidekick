@@ -72,6 +72,10 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE current_member_history_recovery;
+    ALTER TABLE chain_events DROP COLUMN evidence_level;
+    ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+    DROP TABLE local_node_authority;
     DROP TABLE health_finding_episodes;
     DROP TABLE health_rollups;
     DROP TABLE health_observations;
@@ -230,6 +234,37 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
+  it("persists local-node authority independently for each manager", async () => {
+    const store = await memoryStore();
+    expect(store.getLocalNodeAuthority(manager)).toBeNull();
+
+    const authority = store.putLocalNodeAuthority(manager, {
+      schemaVersion: 1,
+      status: "current",
+      observedAt,
+      stacksTipHeight: 8_600_000,
+      highestProvenCurrentStacksTipHeight: 8_600_000,
+      consecutiveCurrentObservations: 2,
+      reason: "The local node is current.",
+    });
+    expect(authority).toEqual(store.getLocalNodeAuthority(manager));
+
+    expect(
+      store.putLocalNodeAuthority(manager, {
+        ...authority,
+        status: "catching-up",
+        observedAt: later,
+        stacksTipHeight: 8_599_000,
+        consecutiveCurrentObservations: 0,
+        reason: "The local node is catching up.",
+      }),
+    ).toMatchObject({
+      status: "catching-up",
+      highestProvenCurrentStacksTipHeight: 8_600_000,
+      consecutiveCurrentObservations: 0,
+    });
+  });
+
   it("deduplicates durable manager automation-eligibility transitions", async () => {
     const store = await memoryStore();
     const base = {
@@ -339,7 +374,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 30,
+      schemaVersion: 32,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1144,6 +1179,64 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
+  it("persists a first-calculation forecast measured over its observed sample window", async () => {
+    const store = await memoryStore();
+    store.putRewardOutlookObservation({
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt,
+      chainAnchor,
+      globalAccruedRewardsSats: "100",
+      calculationState: "completed",
+      lastRewardComputeBurnHeight: "0",
+      nextCalculation: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_300,
+        eligibleBurnHeight: 960_301,
+        blocksRemaining: 61,
+      },
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_300,
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_216,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 24,
+          elapsedBlocks: 24,
+          remainingBlocks: 60,
+        },
+        confidence: "low",
+        assumptions: [
+          "observed-accrual-sample-window",
+          "linear-global-accrual-run-rate",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "unchanged-reserve-before-calculation",
+          "contract-integer-rounding",
+        ],
+      },
+      forecastModelRevision: 1,
+      forecastUnavailableReason: null,
+    });
+
+    expect(store.listRewardOutlookObservations(manager, pox5).items[0]).toMatchObject({
+      lastRewardComputeBurnHeight: "0",
+      forecast: {
+        sample: { sampleBlocks: 24, elapsedBlocks: 24 },
+        assumptions: expect.arrayContaining(["observed-accrual-sample-window"]),
+      },
+    });
+  });
+
   it("persists canonical reward realizations with their fixed-horizon evaluation", async () => {
     const store = await memoryStore();
     registerSource(store);
@@ -1155,6 +1248,7 @@ describe("Sidekick SQLite store", () => {
       managerPrincipal: manager,
       pox5ContractId: pox5,
       canonical: true,
+      evidenceLevel: "node-index-verified",
       blockHeight: 8_600_001,
       indexBlockHash,
       burnBlockHeight: 960_241,
@@ -1272,6 +1366,42 @@ describe("Sidekick SQLite store", () => {
       stacksTipHeight: 8_600_000,
     });
 
+    expect(
+      store.ensureCurrentMemberHistoryRecovery({
+        sourceId,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        stakerPrincipals: [stakerOne, stakerTwo, stakerOne],
+        observedAt,
+      }),
+    ).toBe(2);
+    expect(store.nextCurrentMemberHistoryRecovery(sourceId, manager, pox5)).toMatchObject({
+      stakerPrincipal: stakerOne,
+      status: "pending",
+      pagesProcessed: 0,
+    });
+    expect(
+      store.recordCurrentMemberHistoryRecoveryPage({
+        sourceId,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        stakerPrincipal: stakerOne,
+        nextCursor: "8500000:2147483647:0",
+        transactionsInspected: 50,
+        relevantEvents: 2,
+        observedAt: later,
+      }),
+    ).toMatchObject({
+      status: "pending",
+      cursor: "8500000:2147483647:0",
+      pagesProcessed: 1,
+      transactionsInspected: 50,
+      relevantEvents: 2,
+    });
+    expect(store.nextCurrentMemberHistoryRecovery(sourceId, manager, pox5)).toMatchObject({
+      stakerPrincipal: stakerTwo,
+    });
+
     const partial = store.startOrResumeSignerStakerRun(sourceId, manager, later);
     const checkpoint = store.commitSignerStakerPage({
       runId: partial.runId,
@@ -1331,7 +1461,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 30,
+      schemaVersion: 32,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1357,7 +1487,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1473,7 +1603,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(30);
+    expect(upgraded.store.schemaVersion()).toBe(32);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1535,6 +1665,10 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
       DROP TABLE health_finding_episodes;
       DROP TABLE health_rollups;
       DROP TABLE health_observations;
@@ -1559,7 +1693,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1710,7 +1844,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1832,6 +1966,10 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
       DROP TABLE health_finding_episodes;
       DROP TABLE health_rollups;
       DROP TABLE health_observations;
@@ -1851,7 +1989,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(32);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1888,6 +2026,10 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE current_member_history_recovery;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
       DROP TABLE health_finding_episodes;
       DROP TABLE health_rollups;
       DROP TABLE health_observations;

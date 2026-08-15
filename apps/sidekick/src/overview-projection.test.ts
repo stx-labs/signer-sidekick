@@ -631,6 +631,42 @@ describe("Overview projection", () => {
     ).toMatchObject({ burnBlockHeight: 962_350, blocksRemaining: 49 });
   });
 
+  it("curtains state-derived pool, reward, and cycle conclusions while the node catches up", () => {
+    const value = snapshot({
+      nodeAuthority: {
+        schemaVersion: 1,
+        status: "catching-up",
+        observedAt: generatedAt,
+        stacksTipHeight: 8_740_000,
+        highestProvenCurrentStacksTipHeight: 8_750_000,
+        consecutiveCurrentObservations: 0,
+        reason: "The local node is below its last proven-current height.",
+      },
+    });
+    const result = projectOverview({ snapshot: value, health: null, connection: null });
+
+    expect(() => overviewPageSchema.parse(result)).not.toThrow();
+    expect(result.cycle).toMatchObject({
+      status: "unavailable",
+      rewardCycleId: null,
+      burnBlockHeight: null,
+      nextRewardCalculation: { status: "unavailable" },
+    });
+    expect(result.pool).toMatchObject({ status: "unavailable", current: null, participants: null });
+    expect(result.rewards).toMatchObject({
+      status: "unavailable",
+      estimatedPoolRewardSats: null,
+      estimateKind: "unavailable",
+    });
+    expect(result.attention).toMatchObject([
+      {
+        attentionId: "node:authority-unavailable",
+        code: "node-catching-up",
+        title: "Local node is catching up",
+      },
+    ]);
+  });
+
   it("marks reward calculation due only once the eligible burn block arrives", () => {
     const checkpoint = snapshot();
     checkpoint.preflight.node.burnBlockHeight = 962_349;

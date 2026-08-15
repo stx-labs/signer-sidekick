@@ -273,16 +273,25 @@ function activityOperationScope(activity: ActivityGroupSummary): string {
   return activity.operationScope ?? activity.activityId;
 }
 
+function localNodeAuthoritative(snapshot: DashboardSnapshot): boolean {
+  // Snapshots created before the authority contract was introduced remain compatible. Every new
+  // snapshot carries the explicit value and must prove `current` before current-state projection.
+  return snapshot.nodeAuthority === undefined || snapshot.nodeAuthority.status === "current";
+}
+
 function snapshotEvidence(snapshot: DashboardSnapshot): OverviewEvidence {
+  const authorityUnavailable = !localNodeAuthoritative(snapshot);
   const delayed = snapshot.freshness?.status === "stale";
   return evidence({
-    status: delayed ? "delayed" : "current",
-    observedAt: snapshot.generatedAt,
+    status: authorityUnavailable ? "unavailable" : delayed ? "delayed" : "current",
+    observedAt: snapshot.nodeAuthority?.observedAt ?? snapshot.generatedAt,
     anchor: snapshot.chainAnchor,
     source: "local-node",
-    reason: delayed
-      ? `The cached operator snapshot is delayed (${snapshot.freshness?.reason ?? "refreshing"}).`
-      : null,
+    reason: authorityUnavailable
+      ? (snapshot.nodeAuthority?.reason ?? "Current local-node authority is unavailable.")
+      : delayed
+        ? `The cached operator snapshot is delayed (${snapshot.freshness?.reason ?? "refreshing"}).`
+        : null,
   });
 }
 
@@ -453,6 +462,18 @@ function nextForecastCycle(snapshot: DashboardSnapshot) {
 }
 
 function poolSummary(snapshot: DashboardSnapshot): OverviewPage["pool"] {
+  if (!localNodeAuthoritative(snapshot)) {
+    return {
+      status: "unavailable",
+      current: null,
+      next: null,
+      nextThresholdMarginUstx: null,
+      participants: null,
+      nextChange: null,
+      evidence: [snapshotEvidence(snapshot)],
+      detailsAction: poolAction("forecast", "Open pool history"),
+    };
+  }
   const current = currentForecastCycle(snapshot);
   const next = nextForecastCycle(snapshot);
   const projectionDelayed = indexedProjectionDelayed(snapshot);
@@ -549,6 +570,22 @@ function poolSummary(snapshot: DashboardSnapshot): OverviewPage["pool"] {
 }
 
 function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
+  if (!localNodeAuthoritative(snapshot)) {
+    return {
+      status: "unavailable",
+      rewardCycleId: null,
+      globalAccruedSats: null,
+      estimatedPoolRewardSats: null,
+      operatorFeeSats: null,
+      operatorFeeUnavailableReason: "reward-outlook-unavailable",
+      estimateKind: "unavailable",
+      confidence: "unavailable",
+      calculationState: null,
+      actionableClaims: null,
+      evidence: [snapshotEvidence(snapshot)],
+      detailsAction: rewardsAction("outlook", "Open reward history"),
+    };
+  }
   const rewards = snapshot.rewards;
   const outlook = snapshot.rewardOutlook ?? null;
   const forecast = outlook?.forecast ?? null;
@@ -824,7 +861,8 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   const candidates: OverviewAttentionCandidate[] = [];
   const updatedAt = snapshot.generatedAt;
   const localEvidence = snapshotEvidence(snapshot);
-  const snapshotCurrent = snapshot.freshness?.status !== "stale";
+  const snapshotCurrent =
+    localNodeAuthoritative(snapshot) && snapshot.freshness?.status !== "stale";
 
   if (connection?.status === "blocked" || connection?.status === "unavailable") {
     const identityMismatch = connection.outcomeCode === "deployment-identity-mismatch";
@@ -865,6 +903,44 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         relatedFindingId: null,
         primaryAction: { kind: "recheck", target: "connection", label: "Recheck connection" },
         detailsAction: { kind: "open-settings", section: "attachment", label: "Review attachment" },
+      }),
+    });
+  }
+
+  if (!localNodeAuthoritative(snapshot)) {
+    const catchingUp = snapshot.nodeAuthority?.status === "catching-up";
+    candidates.push({
+      conditionKey: "node:authority-unavailable",
+      suppresses: [
+        "snapshot:delayed",
+        "signer:registration-missing",
+        "signer:grant-invalid",
+        "pool:roster-unavailable",
+        "pool:next-cycle-threshold",
+        "pool:fixed-cycle-exclusion",
+        "rewards:calculation-due",
+        "rewards:claims-due",
+      ],
+      item: attentionItem({
+        attentionId: "node:authority-unavailable",
+        tier: "needs-attention",
+        domain: "node",
+        affectedDomains: ["node", "manager", "pool", "rewards"],
+        code: catchingUp ? "node-catching-up" : "node-authority-unknown",
+        title: catchingUp
+          ? "Local node is catching up"
+          : "Current local-node state is not yet proven",
+        summary:
+          snapshot.nodeAuthority?.reason ??
+          "Sidekick does not yet have enough sync evidence to treat the local node as current.",
+        impact:
+          "Current pool, reward, and manager conclusions remain unavailable; retained historical activity is still readable.",
+        updatedAt: snapshot.nodeAuthority?.observedAt ?? updatedAt,
+        evidence: [localEvidence],
+        relatedActivityId: null,
+        relatedFindingId: null,
+        primaryAction: { kind: "recheck", target: "node", label: "Recheck local node" },
+        detailsAction: healthAction("node", "Review node health"),
       }),
     });
   }
@@ -1336,6 +1412,7 @@ export function projectOverview(input: OverviewProjectionInput): OverviewPage {
       : snapshot.preflight.cycle.isPreparePhase === false
         ? "reward"
         : null);
+  const nodeCurrent = localNodeAuthoritative(snapshot);
   const attentionContext = {
     now,
     burnBlockHeight: snapshot.preflight.node.burnBlockHeight,
@@ -1351,13 +1428,29 @@ export function projectOverview(input: OverviewProjectionInput): OverviewPage {
       managerPrincipal: snapshot.managerPrincipal,
     },
     cycle: {
-      status: "current",
-      rewardCycleId: cycleId,
-      phase,
-      burnBlockHeight: snapshot.preflight.node.burnBlockHeight,
-      stacksTipHeight: snapshot.preflight.node.stacksTipHeight,
-      nextRewardCalculation: nextCalculation(snapshot, averageBurnSeconds),
-      nextPreparePhase: nextPrepare(snapshot, averageBurnSeconds),
+      status: nodeCurrent ? "current" : "unavailable",
+      rewardCycleId: nodeCurrent ? cycleId : null,
+      phase: nodeCurrent ? phase : null,
+      burnBlockHeight: nodeCurrent ? snapshot.preflight.node.burnBlockHeight : null,
+      stacksTipHeight: nodeCurrent ? snapshot.preflight.node.stacksTipHeight : null,
+      nextRewardCalculation: nodeCurrent
+        ? nextCalculation(snapshot, averageBurnSeconds)
+        : {
+            status: "unavailable",
+            burnBlockHeight: null,
+            blocksRemaining: null,
+            estimatedAt: null,
+            evidence: [localEvidence],
+          },
+      nextPreparePhase: nodeCurrent
+        ? nextPrepare(snapshot, averageBurnSeconds)
+        : {
+            status: "unavailable",
+            burnBlockHeight: null,
+            blocksRemaining: null,
+            estimatedAt: null,
+            evidence: [localEvidence],
+          },
       evidence: [localEvidence],
     },
     network: networkSummary(health),

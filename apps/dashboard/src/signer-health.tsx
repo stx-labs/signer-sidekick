@@ -92,6 +92,11 @@ function displayDuration(startedAt: string, endedAt: string): string {
   return `${(seconds / 3_600).toFixed(1)}h`;
 }
 
+// Interpolated latency measurements read to a single decimal (e.g. "4.8s"); "—" for not-measured.
+function displaySeconds(value: number | null): string {
+  return value === null ? "—" : `${value.toFixed(1)}s`;
+}
+
 function Metric({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="statline">
@@ -561,24 +566,16 @@ export function SignerHealthPage({
                 : `${snapshot.signer.last15Minutes.rejectionPercent.toFixed(1)}%`}
             </Metric>
             <Metric label="Response p95">
-              {snapshot.signer.last15Minutes.responseP95Seconds === null
-                ? "—"
-                : `${snapshot.signer.last15Minutes.responseP95Seconds}s`}
+              {displaySeconds(snapshot.signer.last15Minutes.responseP95Seconds)}
             </Metric>
             <Metric label="Node RPC p95">
-              {snapshot.signer.last15Minutes.nodeRpcP95Seconds === null
-                ? "—"
-                : `${snapshot.signer.last15Minutes.nodeRpcP95Seconds}s`}
+              {displaySeconds(snapshot.signer.last15Minutes.nodeRpcP95Seconds)}
             </Metric>
             <Metric label="Validation p95">
-              {snapshot.signer.last15Minutes.validationP95Seconds === null
-                ? "—"
-                : `${snapshot.signer.last15Minutes.validationP95Seconds}s`}
+              {displaySeconds(snapshot.signer.last15Minutes.validationP95Seconds)}
             </Metric>
             <Metric label="Capitulation p95">
-              {snapshot.signer.last15Minutes.capitulationP95Seconds === null
-                ? "—"
-                : `${snapshot.signer.last15Minutes.capitulationP95Seconds}s`}
+              {displaySeconds(snapshot.signer.last15Minutes.capitulationP95Seconds)}
             </Metric>
             <Metric label="Agreement conflicts">
               {displayNumber(snapshot.signer.last15Minutes.disagreements)}

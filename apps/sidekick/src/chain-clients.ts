@@ -89,6 +89,7 @@ const safeUstxNumberSchema = z
   .refine(Number.isSafeInteger, "uSTX value exceeds JavaScript's safe integer range");
 
 const poxInfoSchema = z.object({
+  first_burnchain_block_height: z.number().int().nonnegative().optional(),
   current_burnchain_block_height: z.number().int().nonnegative(),
   reward_cycle_id: z.number().int().nonnegative(),
   reward_cycle_length: z.number().int().positive(),
@@ -256,6 +257,80 @@ const transactionSummarySchema = z.object({
   }),
 });
 
+const historyCursorSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[0-9:]+$/);
+const principalTransactionPageSchema = z
+  .object({
+    total: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(50),
+    cursor: z
+      .object({
+        next: historyCursorSchema.nullable(),
+        previous: historyCursorSchema.nullable(),
+        current: historyCursorSchema.nullable(),
+      })
+      .strict(),
+    results: z
+      .array(
+        z
+          .object({
+            transaction: transactionSummarySchema.extend({
+              type: z.string(),
+              contract_call: z
+                .object({
+                  contract_id: contractPrincipalSchema,
+                  function_name: z.string().regex(clarityFunctionNamePattern),
+                })
+                .nullable(),
+            }),
+          })
+          .strip(),
+      )
+      .max(50),
+  })
+  .strict();
+
+const historicalTransactionEventSchema = z
+  .object({
+    event_index: z.number().int().nonnegative().safe(),
+    type: z.string().min(1),
+    contract_log: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        topic: z.string(),
+        value: z.object({ hex: z.string(), repr: z.string() }).strict(),
+      })
+      .optional(),
+  })
+  .strip()
+  .superRefine((value, context) => {
+    if (value.type === "contract_log" && !value.contract_log) {
+      context.addIssue({
+        code: "custom",
+        path: ["contract_log"],
+        message: "A contract-log event must include its contract log",
+      });
+    }
+  });
+
+const transactionEventPageSchema = z
+  .object({
+    total: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(100),
+    cursor: z
+      .object({
+        next: historyCursorSchema.nullable(),
+        previous: historyCursorSchema.nullable(),
+        current: historyCursorSchema.nullable(),
+      })
+      .strict(),
+    results: z.array(historicalTransactionEventSchema).max(100),
+  })
+  .strict();
+
 // `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
 // endpoint supplies the signed transaction's public call details needed for the narrow fallback
 // used when a node explicitly has transaction indexing disabled.
@@ -363,6 +438,8 @@ export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
+export type PrincipalTransactionPage = z.infer<typeof principalTransactionPageSchema>;
+export type TransactionEventPage = z.infer<typeof transactionEventPageSchema>;
 export type TransactionDetail = z.infer<typeof transactionDetailSchema>;
 export type StacksBlockSummary = z.infer<typeof stacksBlockSummarySchema>;
 
@@ -1013,6 +1090,42 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v3/transactions/${parsedTxId}`,
       transactionSummarySchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getPrincipalTransactions(
+    principal: string,
+    cursor: string | null = null,
+    limit = 50,
+  ): Promise<PrincipalTransactionPage> {
+    if (!validatePrincipal(principal)) throw new Error("Invalid principal");
+    if (cursor !== null) historyCursorSchema.parse(cursor);
+    const parsedLimit = z.number().int().min(1).max(50).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit) });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/principals/${encodeURIComponent(principal)}/transactions?${query}`,
+      principalTransactionPageSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getTransactionEvents(
+    txId: string,
+    cursor: string | null = null,
+    limit = 100,
+  ): Promise<TransactionEventPage> {
+    const parsedTxId = canonicalHex.parse(txId);
+    if (cursor !== null) historyCursorSchema.parse(cursor);
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit) });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/transactions/${parsedTxId}/events?${query}`,
+      transactionEventPageSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }

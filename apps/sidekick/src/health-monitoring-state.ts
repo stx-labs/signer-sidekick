@@ -113,25 +113,99 @@ export function histogramP95For(
   observations: readonly HealthObservation[],
   select: (observation: HealthObservation) => Record<string, number>,
 ): number | null {
-  const bounds = new Set<string>();
-  for (const observation of observations) {
-    for (const bound of Object.keys(select(observation))) {
-      bounds.add(bound);
+  const latestBuckets = [...observations]
+    .reverse()
+    .map(select)
+    .find((buckets) => buckets["+Inf"] !== undefined);
+  if (!latestBuckets) return null;
+
+  const bounds = Object.keys(latestBuckets)
+    .filter((bound) => bound !== "+Inf")
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  if (bounds.length === 0 || new Set(bounds).size !== bounds.length) return null;
+
+  interface HistogramSnapshot {
+    counts: number[];
+    total: number;
+  }
+  const readSnapshot = (buckets: Record<string, number>): HistogramSnapshot | null => {
+    const finiteEntries = Object.entries(buckets)
+      .filter(([bound]) => bound !== "+Inf")
+      .map(([bound, value]) => ({ upper: Number(bound), value }))
+      .filter(({ upper }) => Number.isFinite(upper))
+      .sort((left, right) => left.upper - right.upper);
+    if (
+      finiteEntries.length !== bounds.length ||
+      finiteEntries.some(({ upper }, index) => upper !== bounds[index])
+    ) {
+      return null;
     }
+    const total = buckets["+Inf"];
+    if (total === undefined || !Number.isFinite(total) || total < 0) return null;
+    const counts = finiteEntries.map(({ value }) => value);
+    if (
+      counts.some((count) => !Number.isFinite(count) || count < 0) ||
+      counts.some((count, index) => index > 0 && count < (counts[index - 1] ?? 0)) ||
+      (counts.at(-1) ?? 0) > total
+    ) {
+      return null;
+    }
+    return { counts, total };
+  };
+
+  // Accumulate each cumulative bucket's windowed increase in lockstep, using the "+Inf" total as
+  // the joint reset signal: when it drops the whole histogram restarted, so we re-baseline every
+  // bucket together and skip that interval. A partial or non-monotonic scrape also breaks the
+  // interval rather than letting different buckets accumulate over different sample pairs.
+  const increase = bounds.map(() => 0);
+  let totalIncrease = 0;
+  let previous: HistogramSnapshot | null = null;
+  for (const observation of observations) {
+    const current = readSnapshot(select(observation));
+    if (!current) {
+      previous = null;
+      continue;
+    }
+    if (previous !== null && current.total >= previous.total) {
+      const deltas = current.counts.map((count, index) => count - (previous?.counts[index] ?? 0));
+      const totalDelta = current.total - previous.total;
+      const validInterval =
+        deltas.every((delta) => delta >= 0) &&
+        deltas.every((delta, index) => index === 0 || delta >= (deltas[index - 1] ?? 0)) &&
+        (deltas.at(-1) ?? 0) <= totalDelta;
+      if (!validInterval) {
+        previous = null;
+        continue;
+      }
+      for (const [index, delta] of deltas.entries()) {
+        increase[index] = (increase[index] ?? 0) + delta;
+      }
+      totalIncrease += totalDelta;
+    }
+    previous = current;
   }
-  const deltas = [...bounds].map((bound) => ({
-    bound,
-    value: counterIncrease(observations, (observation) => select(observation)[bound] ?? null),
-  }));
-  const total = deltas.find(({ bound }) => bound === "+Inf")?.value ?? null;
-  if (total === null || total < 1) return null;
-  const target = total * 0.95;
-  for (const bucket of deltas
-    .filter(({ bound }) => bound !== "+Inf")
-    .sort((left, right) => Number(left.bound) - Number(right.bound))) {
-    if (bucket.value !== null && bucket.value >= target) return Number(bucket.bound);
+
+  if (totalIncrease < 1) return null;
+  const target = totalIncrease * 0.95;
+
+  // Linearly interpolate within the crossing bucket (Prometheus histogram_quantile), so a p95 that
+  // falls partway through the [lower, upper] bucket is not rounded up to the bucket boundary.
+  let lowerBound = 0;
+  let lowerCount = 0;
+  for (const [index, upperBound] of bounds.entries()) {
+    const count = increase[index] ?? 0;
+    if (count >= target) {
+      const span = count - lowerCount;
+      if (span <= 0) return upperBound;
+      return lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span);
+    }
+    lowerBound = upperBound;
+    lowerCount = count;
   }
-  return null;
+  // The 95th percentile sits above the largest finite bucket; report it as a conservative floor.
+  return bounds.at(-1) ?? null;
 }
 
 export function histogramP95(observations: readonly HealthObservation[]): number | null {

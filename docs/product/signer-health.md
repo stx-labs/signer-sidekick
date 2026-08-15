@@ -61,14 +61,17 @@ The current thresholds are deliberately closed and operator-readable:
 | Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
 | Signer identity, network, or cycle mismatch | 3 samples spanning at least 10 seconds |
 | Signer node view behind local node | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Proposal/response gap | at least 5 proposals and 3 unaccounted-for responses in 15 minutes |
+| Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
 | Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes |
 | Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
 | Agreement conflicts | at least 3 conflicts in 15 minutes |
 
 Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
-derive windowed p95 from cumulative-counter increases. Missing release-specific metrics reduce
-coverage rather than failing the entire signer source.
+derive windowed p95 from cumulative-counter increases, re-baselining every bucket together on a
+reset and interpolating within the crossing bucket (as Prometheus `histogram_quantile` does) rather
+than reporting the bucket's upper boundary. Incomplete or non-monotonic histogram intervals are
+excluded rather than allowed to create a false latency finding. Missing release-specific metrics
+reduce coverage rather than failing the entire signer source.
 
 ## Durable history
 

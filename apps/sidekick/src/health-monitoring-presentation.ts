@@ -36,6 +36,11 @@ const networkStallWindowMs = 180_000;
 const sourceLagBlocks = 3;
 const signerHeightLagBlocks = 3;
 const signerResponseGapMinimum = 3;
+// A just-received proposal legitimately has no recorded response yet, so a cumulative
+// proposals-minus-responses delta over the window counts those still-in-flight proposals as a
+// gap. Only proposals outstanding at least this long are eligible to count toward the gap finding,
+// which removes the trailing-edge false positive without masking a real, sustained response outage.
+const signerResponseSettleMs = 30_000;
 const signerResponseSampleMinimum = 5;
 const signerRateSampleMinimum = 20;
 const signerRejectionPercentThreshold = 25;
@@ -43,6 +48,13 @@ const signerResponseP95ThresholdSeconds = 5;
 const agreementConflictThreshold = 3;
 
 type FindingInput = Omit<HealthFinding, "episodeId">;
+
+// Latency measurements are interpolated within histogram buckets, so render them to a single
+// decimal (e.g. "4.8s") rather than exposing raw floating-point noise. Returns null passthrough so
+// callers can keep a not-measured value distinct from a real zero.
+function formatSeconds(value: number | null): string | null {
+  return value === null ? null : `${value.toFixed(1)}s`;
+}
 
 interface HealthHistoryInput {
   observedSince: string | null;
@@ -188,6 +200,15 @@ function signerWindow(
     (sample) => sample.signerMetrics?.rejectedTotal ?? null,
   );
   const responses = accepted !== null && rejected !== null ? accepted + rejected : null;
+  // This is a conservative lower bound: compare proposals old enough to have been answered with all
+  // responses in the window. Aggregate counters cannot correlate a response to a specific proposal,
+  // but allowing every response to account for an older proposal prevents normal in-flight work from
+  // creating a false gap.
+  const settleCutoff = Date.parse(latest) - signerResponseSettleMs;
+  const settledProposals = counterIncrease(
+    observations.filter((observation) => Date.parse(observation.observedAt) <= settleCutoff),
+    (sample) => sample.signerMetrics?.proposalsTotal ?? null,
+  );
   return {
     startedAt: earliest,
     endedAt: latest,
@@ -198,7 +219,9 @@ function signerWindow(
     accepted,
     rejected,
     responseGap:
-      proposals !== null && responses !== null ? Math.max(0, proposals - responses) : null,
+      settledProposals !== null && responses !== null
+        ? Math.max(0, settledProposals - responses)
+        : null,
     rejectionPercent:
       responses !== null && responses > 0 && rejected !== null
         ? (rejected / responses) * 100
@@ -857,6 +880,8 @@ function evaluateHealthFindings(input: {
     }
   }
 
+  // signer15m.responseGap is a conservative lower bound after the settle window, so it will not read
+  // normal in-flight responses as a gap.
   if (
     signer15m.proposals !== null &&
     signer15m.proposals >= signerResponseSampleMinimum &&
@@ -868,7 +893,7 @@ function evaluateHealthFindings(input: {
         id: "signer-proposal-response-gap",
         severity: "critical",
         title: "Signer is not responding to every proposal",
-        detail: `${signer15m.responseGap} recently received proposal${signer15m.responseGap === 1 ? " has" : "s have"} no recorded signer response.`,
+        detail: `At least ${signer15m.responseGap} proposal${signer15m.responseGap === 1 ? " is" : "s are"} not accounted for by the response counters after a ${Math.round(signerResponseSettleMs / 1_000)}-second settling window.`,
         source: "signer",
         classification: "likely-local-signer",
         confidence: signer15m.proposals >= signerRateSampleMinimum ? "high" : "medium",
@@ -881,7 +906,7 @@ function evaluateHealthFindings(input: {
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
             value: String(signer15m.responseGap),
             detail:
-              "The proposal counter advanced more than the accepted and rejected response counters.",
+              "The settled proposal count advanced more than all accepted and rejected response counters in the same observation window.",
           },
         ],
       }),
@@ -941,8 +966,8 @@ function evaluateHealthFindings(input: {
         severity: corroborated ? "warning" : "info",
         title: "End-to-end signer response time is elevated",
         detail: corroborated
-          ? `The recent end-to-end signer response p95 is ${signer15m.responseP95Seconds}s and local evidence shows a correlated delay that needs attention.`
-          : `The recent end-to-end signer response p95 is ${signer15m.responseP95Seconds}s, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
+          ? `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)} and local evidence shows a correlated delay that needs attention.`
+          : `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)}, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
         source: "signer",
         classification: latencyClassification,
         confidence: "medium",
@@ -953,7 +978,7 @@ function evaluateHealthFindings(input: {
             source: "signer-monitoring",
             status: "supporting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: `${signer15m.responseP95Seconds}s`,
+            value: formatSeconds(signer15m.responseP95Seconds),
             detail:
               "The official signer histogram measures end-to-end time from block timestamp to response broadcast.",
           },
@@ -962,8 +987,7 @@ function evaluateHealthFindings(input: {
             source: "signer-monitoring",
             status: validationSlow ? "supporting" : "contradicting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value:
-              signer15m.validationP95Seconds === null ? null : `${signer15m.validationP95Seconds}s`,
+            value: formatSeconds(signer15m.validationP95Seconds),
             detail: validationSlow
               ? "Local block validation latency is also elevated."
               : "Local block validation latency is not elevated.",
@@ -973,7 +997,7 @@ function evaluateHealthFindings(input: {
             source: "signer-monitoring",
             status: nodeRpcSlow ? "supporting" : "contradicting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: signer15m.nodeRpcP95Seconds === null ? null : `${signer15m.nodeRpcP95Seconds}s`,
+            value: formatSeconds(signer15m.nodeRpcP95Seconds),
             detail: nodeRpcSlow
               ? "The signer's local node RPC latency is also elevated."
               : "The signer's local node RPC latency is not elevated.",

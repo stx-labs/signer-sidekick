@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import {
+  type LocalNodeAuthority,
+  localNodeAuthoritySchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import type { Pox5CalculateRewardsEvent } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
@@ -68,6 +72,10 @@ const eventInputSchema = z
     rawPayload: z.unknown(),
     decodedSchemaVersion: z.number().int().positive().nullable(),
     decodedPayload: z.unknown().nullable(),
+    evidenceLevel: z
+      .enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"])
+      .optional()
+      .default("indexer-reported"),
     sourceId: z.string().min(1),
     observedAt: z.iso.datetime(),
   })
@@ -162,6 +170,7 @@ const eventRowSchema = z.object({
   raw_payload_json: z.string(),
   decoded_schema_version: z.number().int().positive().nullable(),
   decoded_payload_json: z.string().nullable(),
+  evidence_level: z.enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"]),
   source_id: z.string(),
   first_seen_at: z.string(),
   updated_at: z.string(),
@@ -833,15 +842,25 @@ const rewardOutlookObservationInputSchema = z
     }
     if (value.forecast) {
       const lastComputeHeight = Number(value.lastRewardComputeBurnHeight);
-      if (
-        !Number.isSafeInteger(lastComputeHeight) ||
-        value.forecast.sample.elapsedBlocks !==
-          value.chainAnchor.burnBlockHeight - lastComputeHeight
-      ) {
+      const firstCalculation = lastComputeHeight === 0;
+      const observedWindow = value.forecast.assumptions[0] === "observed-accrual-sample-window";
+      if (!Number.isSafeInteger(lastComputeHeight) || firstCalculation !== observedWindow) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "assumptions", 0],
+          message: "forecast sampling basis must match the calculation history",
+        });
+      }
+      const expectedElapsedBlocks = observedWindow
+        ? value.forecast.sample.sampleBlocks
+        : value.chainAnchor.burnBlockHeight - lastComputeHeight;
+      if (value.forecast.sample.elapsedBlocks !== expectedElapsedBlocks) {
         context.addIssue({
           code: "custom",
           path: ["forecast", "sample", "elapsedBlocks"],
-          message: "elapsedBlocks must be measured from the last completed calculation",
+          message: observedWindow
+            ? "elapsedBlocks must match the observed sample window before the first calculation"
+            : "elapsedBlocks must be measured from the last completed calculation",
         });
       }
       if (value.forecast.sample.lastObservedBurnHeight !== value.chainAnchor.burnBlockHeight) {
@@ -930,6 +949,11 @@ const rewardCalculationRealizationInputSchema = z
     managerPrincipal: principalSchema,
     pox5ContractId: principalSchema,
     canonical: z.boolean(),
+    evidenceLevel: z.enum([
+      "node-index-verified",
+      "canonical-block-correlated",
+      "indexer-reported",
+    ]),
     blockHeight: z.number().int().nonnegative().safe(),
     indexBlockHash: hashSchema,
     burnBlockHeight: z.number().int().nonnegative().safe(),
@@ -998,6 +1022,7 @@ const rewardCalculationRealizationRowSchema = z.object({
   manager_principal: principalSchema,
   pox5_contract_id: principalSchema,
   canonical: z.union([z.literal(0), z.literal(1)]),
+  evidence_level: z.enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"]),
   block_height: z.number().int().nonnegative(),
   index_block_hash: hashSchema,
   burn_block_height: z.number().int().nonnegative(),
@@ -1055,7 +1080,7 @@ const rewardCycleSummaryRowSchema = z.object({
 
 export type ChainSourceInput = z.infer<typeof sourceInputSchema>;
 export type ChainCursorInput = z.infer<typeof cursorInputSchema>;
-export type ChainEventInput = z.infer<typeof eventInputSchema>;
+export type ChainEventInput = z.input<typeof eventInputSchema>;
 export type ObserverDeliveryInput = z.infer<typeof observerDeliveryInputSchema>;
 
 export interface AcceptedObserverDelivery {
@@ -1127,9 +1152,33 @@ export interface ChainCursor {
   updatedAt: string;
 }
 
-export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
+export interface StoredChainEvent extends Omit<z.output<typeof eventInputSchema>, "observedAt"> {
   firstSeenAt: string;
   updatedAt: string;
+}
+
+export interface CurrentMemberHistoryRecovery {
+  sourceId: string;
+  managerPrincipal: string;
+  pox5ContractId: string;
+  stakerPrincipal: string;
+  status: "pending" | "complete";
+  cursor: string | null;
+  pagesProcessed: number;
+  transactionsInspected: number;
+  relevantEvents: number;
+  discoveredAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface CurrentMemberHistoryCoverage {
+  currentMembers: number;
+  membersComplete: number;
+  pagesProcessed: number;
+  transactionsInspected: number;
+  relevantEvents: number;
+  updatedAt: string | null;
 }
 
 export interface StoredActivityChainEvent {
@@ -1139,6 +1188,7 @@ export interface StoredActivityChainEvent {
   blockHeight: number;
   indexBlockHash: string;
   canonical: boolean;
+  evidenceLevel: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
   contractId: string;
   topic: string | null;
   decodedSchemaVersion: number | null;
@@ -1314,6 +1364,7 @@ export interface StoredRewardCalculationRealization {
   managerPrincipal: string;
   pox5ContractId: string;
   canonical: boolean;
+  evidenceLevel: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
   blockHeight: number;
   indexBlockHash: string;
   burnBlockHeight: number;
@@ -1424,6 +1475,7 @@ function toStoredChainEvent(row: unknown): StoredChainEvent {
     decodedPayload: value.decoded_payload_json
       ? (JSON.parse(value.decoded_payload_json) as unknown)
       : null,
+    evidenceLevel: value.evidence_level,
     sourceId: value.source_id,
     firstSeenAt: value.first_seen_at,
     updatedAt: value.updated_at,
@@ -1483,6 +1535,7 @@ function toStoredRewardCalculationRealization(row: unknown): StoredRewardCalcula
     managerPrincipal: value.manager_principal,
     pox5ContractId: value.pox5_contract_id,
     canonical: value.canonical === 1,
+    evidenceLevel: value.evidence_level,
     blockHeight: value.block_height,
     indexBlockHash: value.index_block_hash,
     burnBlockHeight: value.burn_block_height,
@@ -2305,6 +2358,74 @@ export class SidekickStore {
     };
   }
 
+  getLocalNodeAuthority(managerPrincipal: string): LocalNodeAuthority | null {
+    const manager = principalSchema.parse(managerPrincipal);
+    const row = this.db
+      .prepare(
+        `SELECT schema_version, status, observed_at, stacks_tip_height,
+          highest_proven_current_stacks_tip_height, consecutive_current_observations, reason
+         FROM local_node_authority WHERE manager_principal = ?`,
+      )
+      .get(manager) as
+      | {
+          schema_version: number;
+          status: string;
+          observed_at: string;
+          stacks_tip_height: number;
+          highest_proven_current_stacks_tip_height: number | null;
+          consecutive_current_observations: number;
+          reason: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return localNodeAuthoritySchema.parse({
+      schemaVersion: row.schema_version,
+      status: row.status,
+      observedAt: row.observed_at,
+      stacksTipHeight: row.stacks_tip_height,
+      highestProvenCurrentStacksTipHeight: row.highest_proven_current_stacks_tip_height,
+      consecutiveCurrentObservations: row.consecutive_current_observations,
+      reason: row.reason,
+    });
+  }
+
+  putLocalNodeAuthority(
+    managerPrincipal: string,
+    authority: LocalNodeAuthority,
+  ): LocalNodeAuthority {
+    const manager = principalSchema.parse(managerPrincipal);
+    const value = localNodeAuthoritySchema.parse(authority);
+    this.db
+      .prepare(
+        `INSERT INTO local_node_authority (
+          manager_principal, schema_version, status, observed_at, stacks_tip_height,
+          highest_proven_current_stacks_tip_height, consecutive_current_observations, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(manager_principal) DO UPDATE SET
+          schema_version = excluded.schema_version,
+          status = excluded.status,
+          observed_at = excluded.observed_at,
+          stacks_tip_height = excluded.stacks_tip_height,
+          highest_proven_current_stacks_tip_height =
+            excluded.highest_proven_current_stacks_tip_height,
+          consecutive_current_observations = excluded.consecutive_current_observations,
+          reason = excluded.reason`,
+      )
+      .run(
+        manager,
+        value.schemaVersion,
+        value.status,
+        value.observedAt,
+        value.stacksTipHeight,
+        value.highestProvenCurrentStacksTipHeight,
+        value.consecutiveCurrentObservations,
+        value.reason,
+      );
+    const stored = this.getLocalNodeAuthority(manager);
+    if (!stored) throw new Error("Local node authority was not persisted");
+    return stored;
+  }
+
   inspectLegacyDeploymentEvidence(): LegacyDeploymentEvidence {
     const networks = this.db
       .prepare(
@@ -2874,8 +2995,8 @@ export class SidekickStore {
           chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, source_id, first_seen_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          decoded_payload_json, evidence_level, source_id, first_seen_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (chain_id, tx_id, event_index) DO UPDATE SET
           block_height = excluded.block_height,
           block_hash = excluded.block_hash,
@@ -2889,6 +3010,15 @@ export class SidekickStore {
           raw_payload_json = excluded.raw_payload_json,
           decoded_schema_version = excluded.decoded_schema_version,
           decoded_payload_json = excluded.decoded_payload_json,
+          evidence_level = CASE
+            WHEN chain_events.evidence_level = 'node-index-verified'
+              THEN chain_events.evidence_level
+            WHEN excluded.evidence_level = 'node-index-verified'
+              THEN excluded.evidence_level
+            WHEN chain_events.evidence_level = 'canonical-block-correlated'
+              THEN chain_events.evidence_level
+            ELSE excluded.evidence_level
+          END,
           source_id = excluded.source_id,
           updated_at = excluded.updated_at`,
         )
@@ -2908,6 +3038,7 @@ export class SidekickStore {
           rawPayloadJson,
           value.decodedSchemaVersion,
           decodedPayloadJson,
+          value.evidenceLevel,
           value.sourceId,
           value.observedAt,
           value.observedAt,
@@ -3014,12 +3145,219 @@ export class SidekickStore {
         `SELECT chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, source_id, first_seen_at, updated_at
+          decoded_payload_json, evidence_level, source_id, first_seen_at, updated_at
          FROM chain_events WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
       )
       .get(chainId, txId, eventIndex);
     if (!row) return null;
     return toStoredChainEvent(row);
+  }
+
+  ensureCurrentMemberHistoryRecovery(input: {
+    sourceId: string;
+    managerPrincipal: string;
+    pox5ContractId: string;
+    stakerPrincipals: readonly string[];
+    observedAt: string;
+  }): number {
+    const sourceId = z.string().min(1).parse(input.sourceId);
+    const managerPrincipal = principalSchema.parse(input.managerPrincipal);
+    const pox5ContractId = principalSchema.parse(input.pox5ContractId);
+    const stakerPrincipals = [
+      ...new Set(input.stakerPrincipals.map((value) => principalSchema.parse(value))),
+    ];
+    const observedAt = z.iso.datetime().parse(input.observedAt);
+    const insert = this.db.prepare(
+      `INSERT INTO current_member_history_recovery (
+        source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+        pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+        completed_at
+      ) VALUES (?, ?, ?, ?, 'pending', NULL, 0, 0, 0, ?, ?, NULL)
+      ON CONFLICT(source_id, manager_principal, pox5_contract_id, staker_principal) DO NOTHING`,
+    );
+    let inserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const stakerPrincipal of stakerPrincipals) {
+        inserted += Number(
+          insert.run(
+            sourceId,
+            managerPrincipal,
+            pox5ContractId,
+            stakerPrincipal,
+            observedAt,
+            observedAt,
+          ).changes,
+        );
+      }
+      this.db.exec("COMMIT");
+      return inserted;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  nextCurrentMemberHistoryRecovery(
+    sourceId: string,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): CurrentMemberHistoryRecovery | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.source_id, r.manager_principal, r.pox5_contract_id, r.staker_principal,
+          r.status, r.cursor, r.pages_processed, r.transactions_inspected, r.relevant_events,
+          r.discovered_at, r.updated_at, r.completed_at
+         FROM current_member_history_recovery r
+         JOIN stakers s
+           ON s.manager_principal = r.manager_principal
+          AND s.staker_principal = r.staker_principal
+          AND s.source_id = r.source_id
+         WHERE r.source_id = ? AND r.manager_principal = ? AND r.pox5_contract_id = ?
+           AND r.status = 'pending' AND s.active = 1
+         ORDER BY r.pages_processed, r.updated_at, r.staker_principal
+         LIMIT 1`,
+      )
+      .get(
+        z.string().min(1).parse(sourceId),
+        principalSchema.parse(managerPrincipal),
+        principalSchema.parse(pox5ContractId),
+      );
+    if (!row) return null;
+    const value = z
+      .object({
+        source_id: z.string(),
+        manager_principal: principalSchema,
+        pox5_contract_id: principalSchema,
+        staker_principal: principalSchema,
+        status: z.enum(["pending", "complete"]),
+        cursor: z.string().nullable(),
+        pages_processed: z.number().int().nonnegative(),
+        transactions_inspected: z.number().int().nonnegative(),
+        relevant_events: z.number().int().nonnegative(),
+        discovered_at: z.string(),
+        updated_at: z.string(),
+        completed_at: z.string().nullable(),
+      })
+      .parse(row);
+    return {
+      sourceId: value.source_id,
+      managerPrincipal: value.manager_principal,
+      pox5ContractId: value.pox5_contract_id,
+      stakerPrincipal: value.staker_principal,
+      status: value.status,
+      cursor: value.cursor,
+      pagesProcessed: value.pages_processed,
+      transactionsInspected: value.transactions_inspected,
+      relevantEvents: value.relevant_events,
+      discoveredAt: value.discovered_at,
+      updatedAt: value.updated_at,
+      completedAt: value.completed_at,
+    };
+  }
+
+  currentMemberHistoryCoverage(
+    sourceId: string,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): CurrentMemberHistoryCoverage {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS current_members,
+          COALESCE(SUM(CASE WHEN r.status = 'complete' THEN 1 ELSE 0 END), 0)
+            AS members_complete,
+          COALESCE(SUM(r.pages_processed), 0) AS pages_processed,
+          COALESCE(SUM(r.transactions_inspected), 0) AS transactions_inspected,
+          COALESCE(SUM(r.relevant_events), 0) AS relevant_events,
+          MAX(r.updated_at) AS updated_at
+         FROM stakers s
+         LEFT JOIN current_member_history_recovery r
+           ON r.source_id = s.source_id
+          AND r.manager_principal = s.manager_principal
+          AND r.staker_principal = s.staker_principal
+          AND r.pox5_contract_id = ?
+         WHERE s.source_id = ? AND s.manager_principal = ? AND s.active = 1`,
+      )
+      .get(
+        principalSchema.parse(pox5ContractId),
+        z.string().min(1).parse(sourceId),
+        principalSchema.parse(managerPrincipal),
+      ) as Record<string, unknown>;
+    return {
+      currentMembers: z.number().int().nonnegative().parse(row.current_members),
+      membersComplete: z.number().int().nonnegative().parse(row.members_complete),
+      pagesProcessed: z.number().int().nonnegative().parse(row.pages_processed),
+      transactionsInspected: z.number().int().nonnegative().parse(row.transactions_inspected),
+      relevantEvents: z.number().int().nonnegative().parse(row.relevant_events),
+      updatedAt: z.string().nullable().parse(row.updated_at),
+    };
+  }
+
+  recordCurrentMemberHistoryRecoveryPage(input: {
+    sourceId: string;
+    managerPrincipal: string;
+    pox5ContractId: string;
+    stakerPrincipal: string;
+    nextCursor: string | null;
+    transactionsInspected: number;
+    relevantEvents: number;
+    observedAt: string;
+  }): CurrentMemberHistoryRecovery {
+    const observedAt = z.iso.datetime().parse(input.observedAt);
+    const result = this.db
+      .prepare(
+        `UPDATE current_member_history_recovery SET
+          status = CASE WHEN ? IS NULL THEN 'complete' ELSE 'pending' END,
+          cursor = ?, pages_processed = pages_processed + 1,
+          transactions_inspected = transactions_inspected + ?,
+          relevant_events = relevant_events + ?, updated_at = ?,
+          completed_at = CASE WHEN ? IS NULL THEN ? ELSE NULL END
+         WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+           AND staker_principal = ? AND status = 'pending'`,
+      )
+      .run(
+        input.nextCursor,
+        input.nextCursor,
+        z.number().int().nonnegative().parse(input.transactionsInspected),
+        z.number().int().nonnegative().parse(input.relevantEvents),
+        observedAt,
+        input.nextCursor,
+        observedAt,
+        z.string().min(1).parse(input.sourceId),
+        principalSchema.parse(input.managerPrincipal),
+        principalSchema.parse(input.pox5ContractId),
+        principalSchema.parse(input.stakerPrincipal),
+      );
+    if (result.changes !== 1) throw new Error("Current-member history recovery is not pending");
+    const value = this.db
+      .prepare(
+        `SELECT source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+          pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+          completed_at
+         FROM current_member_history_recovery
+         WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+           AND staker_principal = ?`,
+      )
+      .get(
+        input.sourceId,
+        input.managerPrincipal,
+        input.pox5ContractId,
+        input.stakerPrincipal,
+      ) as Record<string, unknown>;
+    return {
+      sourceId: z.string().parse(value.source_id),
+      managerPrincipal: principalSchema.parse(value.manager_principal),
+      pox5ContractId: principalSchema.parse(value.pox5_contract_id),
+      stakerPrincipal: principalSchema.parse(value.staker_principal),
+      status: z.enum(["pending", "complete"]).parse(value.status),
+      cursor: z.string().nullable().parse(value.cursor),
+      pagesProcessed: z.number().int().nonnegative().parse(value.pages_processed),
+      transactionsInspected: z.number().int().nonnegative().parse(value.transactions_inspected),
+      relevantEvents: z.number().int().nonnegative().parse(value.relevant_events),
+      discoveredAt: z.string().parse(value.discovered_at),
+      updatedAt: z.string().parse(value.updated_at),
+      completedAt: z.string().nullable().parse(value.completed_at),
+    };
   }
 
   listManagerActivityChainEvents(
@@ -3037,6 +3375,7 @@ export class SidekickStore {
     const rows = this.db
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           evidence_level,
            contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
          FROM chain_events
          WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")})
@@ -3049,6 +3388,7 @@ export class SidekickStore {
       block_height: number;
       index_block_hash: string;
       canonical: 0 | 1;
+      evidence_level: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
       contract_id: string;
       topic: string | null;
       decoded_schema_version: number | null;
@@ -3063,6 +3403,7 @@ export class SidekickStore {
       blockHeight: z.number().int().nonnegative().parse(row.block_height),
       indexBlockHash: hashSchema.parse(row.index_block_hash),
       canonical: row.canonical === 1,
+      evidenceLevel: row.evidence_level,
       contractId: principalSchema.parse(row.contract_id),
       topic: z.string().min(1).max(500).nullable().parse(row.topic),
       decodedSchemaVersion: z
@@ -3095,6 +3436,7 @@ export class SidekickStore {
     const rows = this.db
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           evidence_level,
            contract_id, topic, decoded_schema_version, decoded_payload_json, first_seen_at, updated_at
          FROM chain_events
          WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id = ?
@@ -3107,6 +3449,7 @@ export class SidekickStore {
       block_height: number;
       index_block_hash: string;
       canonical: 0 | 1;
+      evidence_level: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
       contract_id: string;
       topic: string | null;
       decoded_schema_version: number | null;
@@ -3121,6 +3464,7 @@ export class SidekickStore {
       blockHeight: z.number().int().nonnegative().parse(row.block_height),
       indexBlockHash: hashSchema.parse(row.index_block_hash),
       canonical: row.canonical === 1,
+      evidenceLevel: row.evidence_level,
       contractId: principalSchema.parse(row.contract_id),
       topic: z.string().min(1).max(500).nullable().parse(row.topic),
       decodedSchemaVersion: z
@@ -4554,17 +4898,26 @@ export class SidekickStore {
       .prepare(
         `INSERT INTO reward_calculation_realizations (
           chain_id, tx_id, event_index, source_id, manager_principal, pox5_contract_id,
-          canonical, block_height, index_block_hash, burn_block_height,
+          canonical, evidence_level, block_height, index_block_hash, burn_block_height,
           target_reward_cycle, target_checkpoint, calculation_burn_height, event_json,
           pool_estimate_json, pool_estimate_unavailable_reason, model_revision,
           evaluation_json, observed_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (chain_id, tx_id, event_index)
         DO UPDATE SET
           source_id = excluded.source_id,
           manager_principal = excluded.manager_principal,
           pox5_contract_id = excluded.pox5_contract_id,
           canonical = excluded.canonical,
+          evidence_level = CASE
+            WHEN reward_calculation_realizations.evidence_level = 'node-index-verified'
+              THEN reward_calculation_realizations.evidence_level
+            WHEN excluded.evidence_level = 'node-index-verified'
+              THEN excluded.evidence_level
+            WHEN reward_calculation_realizations.evidence_level = 'canonical-block-correlated'
+              THEN reward_calculation_realizations.evidence_level
+            ELSE excluded.evidence_level
+          END,
           block_height = excluded.block_height,
           index_block_hash = excluded.index_block_hash,
           burn_block_height = excluded.burn_block_height,
@@ -4587,6 +4940,7 @@ export class SidekickStore {
         value.managerPrincipal,
         value.pox5ContractId,
         value.canonical ? 1 : 0,
+        value.evidenceLevel,
         value.blockHeight,
         value.indexBlockHash,
         value.burnBlockHeight,

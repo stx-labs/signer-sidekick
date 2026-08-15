@@ -136,23 +136,30 @@ function signerMetricValues(samples: readonly PrometheusSample[]): SignerMetricV
     return result;
   };
   const conflictTotals = labeledTotals("stacks_signer_agreement_state_conflicts", "conflict");
+  const validationResponseSamples = samplesNamed(
+    samples,
+    "stacks_signer_block_validation_responses",
+  );
+  const validationResponseTotals = labeledTotals(
+    "stacks_signer_block_validation_responses",
+    "response_type",
+  );
+  const blockResponseSamples = samplesNamed(samples, "stacks_signer_block_responses_sent");
+  const blockResponseTotals = labeledTotals("stacks_signer_block_responses_sent", "response_type");
   return {
     nodeHeight: sampleValue(samples, "stacks_signer_stacks_node_height"),
     rewardCycle: sampleValue(samples, "stacks_signer_current_reward_cycle"),
     stxBalanceUstx: sampleValue(samples, "stacks_signer_stx_balance"),
     proposalsTotal: sampleValue(samples, "stacks_signer_block_proposals_received"),
-    validationAcceptedTotal: sampleValue(samples, "stacks_signer_block_validation_responses", {
-      response_type: "accepted",
-    }),
-    validationRejectedTotal: sampleValue(samples, "stacks_signer_block_validation_responses", {
-      response_type: "rejected",
-    }),
-    acceptedTotal: sampleValue(samples, "stacks_signer_block_responses_sent", {
-      response_type: "accepted",
-    }),
-    rejectedTotal: sampleValue(samples, "stacks_signer_block_responses_sent", {
-      response_type: "rejected",
-    }),
+    // Prometheus counter vectors create a labeled series lazily. Once either expected outcome is
+    // present, the absent sibling means that outcome has not happened in this signer process and
+    // is therefore zero; it does not mean the whole metric family is unavailable.
+    validationAcceptedTotal:
+      validationResponseSamples.length > 0 ? (validationResponseTotals.accepted ?? 0) : null,
+    validationRejectedTotal:
+      validationResponseSamples.length > 0 ? (validationResponseTotals.rejected ?? 0) : null,
+    acceptedTotal: blockResponseSamples.length > 0 ? (blockResponseTotals.accepted ?? 0) : null,
+    rejectedTotal: blockResponseSamples.length > 0 ? (blockResponseTotals.rejected ?? 0) : null,
     preCommitsTotal: sampleValue(samples, "stacks_signer_block_pre_commits_sent"),
     conflictTotal:
       conflictSamples.length > 0

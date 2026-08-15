@@ -649,6 +649,41 @@ function App() {
       : ageMs < 60_000
         ? `${Math.floor(ageMs / 1_000)}s old`
         : `${Math.floor(ageMs / 60_000)}m old`;
+  const freshnessStatusLabel = diagnosticSafeMode
+    ? "Deployment identity mismatch · Read-only diagnostic mode"
+    : connectionUnavailableAfterSuccess
+      ? "Local node unavailable · Actions paused"
+      : !data
+        ? "Connecting"
+        : stale
+          ? rateLimited
+            ? `${rateLimitHeading(rateLimit)} — retrying automatically`
+            : data.freshness?.reason === "refreshing"
+              ? "Refreshing data"
+              : "Data may be stale"
+          : data.preflight.status === "fail"
+            ? "Chain sources need attention"
+            : indexedDataDelayed
+              ? "Local node live · Indexed data delayed"
+              : "Live";
+  const freshnessDetailLabel = diagnosticSafeMode
+    ? "Stored evidence retained · actions disabled"
+    : connectionUnavailableAfterSuccess && connection?.lastSuccessful
+      ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
+      : data
+        ? data.preflight.api.available === false
+          ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
+          : !indexedApiChecksPass
+            ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
+            : data.preflight.api.position === "behind"
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+              : data.preflight.api.position === "ahead"
+                ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+        : "loading status";
+  const showFreshnessRefresh =
+    (connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited;
+  const showHiroRateLimitAction = rateLimited && isHiroRateLimit(rateLimit);
   const handleOverviewLoaded = useCallback(
     (summary: { network: string; attentionCount: number }) => setOverviewMeta(summary),
     [],
@@ -834,72 +869,48 @@ function App() {
         {page !== "overview" ? (
           <div
             className={`freshness ${diagnosticSafeMode || connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
+            role="status"
           >
-            <span className="dot" />
-            <span>
-              {diagnosticSafeMode
-                ? "Deployment identity mismatch · Read-only diagnostic mode"
-                : connectionUnavailableAfterSuccess
-                  ? "Local node unavailable · Actions paused"
-                  : !data
-                    ? "Connecting"
-                    : stale
-                      ? rateLimited
-                        ? `${rateLimitHeading(rateLimit)} — retrying automatically`
-                        : data.freshness?.reason === "refreshing"
-                          ? "Refreshing data"
-                          : "Data may be stale"
-                      : data.preflight.status === "fail"
-                        ? "Chain sources need attention"
-                        : indexedDataDelayed
-                          ? "Local node live · Indexed data delayed"
-                          : "Live"}
-            </span>
-            <span className="sep">·</span>
-            <span className="mono">
-              {diagnosticSafeMode
-                ? "Stored evidence retained · actions disabled"
-                : connectionUnavailableAfterSuccess && connection?.lastSuccessful
-                  ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
-                  : data
-                    ? data.preflight.api.available === false
-                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
-                      : !indexedApiChecksPass
-                        ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
-                        : data.preflight.api.position === "behind"
-                          ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                          : data.preflight.api.position === "ahead"
-                            ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                            : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
-                    : "loading status"}
-            </span>
-            {(connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited ? (
-              <button
-                type="button"
-                className="btn btn-tertiary sm"
-                disabled={connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus}
-                onClick={() =>
-                  void (connectionUnavailableAfterSuccess ? loadConnection(true) : refreshStatus())
-                }
-              >
-                {connectionUnavailableAfterSuccess
-                  ? checkingConnection
-                    ? "Checking…"
-                    : "Recheck node"
-                  : refreshingStatus
-                    ? "Refreshing…"
-                    : "Refresh"}
-              </button>
-            ) : null}
-            {rateLimited && isHiroRateLimit(rateLimit) ? (
-              <a
-                className="btn btn-tertiary sm"
-                href="https://platform.hiro.so"
-                target="_blank"
-                rel="noreferrer"
-              >
-                {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
-              </a>
+            <div className="freshness-primary">
+              <span className="dot" aria-hidden="true" />
+              <strong className="freshness-state">{freshnessStatusLabel}</strong>
+              <span className="freshness-detail mono">{freshnessDetailLabel}</span>
+            </div>
+            {showFreshnessRefresh || showHiroRateLimitAction ? (
+              <div className="freshness-actions">
+                {showFreshnessRefresh ? (
+                  <button
+                    type="button"
+                    className="btn btn-tertiary sm"
+                    disabled={
+                      connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus
+                    }
+                    onClick={() =>
+                      void (connectionUnavailableAfterSuccess
+                        ? loadConnection(true)
+                        : refreshStatus())
+                    }
+                  >
+                    {connectionUnavailableAfterSuccess
+                      ? checkingConnection
+                        ? "Checking…"
+                        : "Recheck node"
+                      : refreshingStatus
+                        ? "Refreshing…"
+                        : "Refresh"}
+                  </button>
+                ) : null}
+                {showHiroRateLimitAction ? (
+                  <a
+                    className="btn btn-tertiary sm"
+                    href="https://platform.hiro.so"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
+                  </a>
+                ) : null}
+              </div>
             ) : null}
             <span className="right">
               <span className="hint-dot-legend">

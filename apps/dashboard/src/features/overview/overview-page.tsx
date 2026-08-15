@@ -485,7 +485,7 @@ export function Overview({
                 value:
                   data.signer.responseP95Seconds === null
                     ? "—"
-                    : `${data.signer.responseP95Seconds}s`,
+                    : `${data.signer.responseP95Seconds.toFixed(1)}s`,
               },
             ]}
             onRecheck={(target) => void recheck(target)}

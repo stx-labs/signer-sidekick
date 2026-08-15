@@ -9,6 +9,7 @@ import {
   type Pox5CalculateRewardsEvent,
 } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { z } from "zod";
+import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   createChainAnchor,
@@ -18,6 +19,7 @@ import {
   type StacksBlockSummary,
   type TransactionSummary,
 } from "./chain-clients.js";
+import type { ManagerEventNodeBlocks } from "./manager-event-sync.js";
 import {
   Pox5CalculateRewardsError,
   readPox5PoolSimulationSnapshot,
@@ -107,6 +109,7 @@ export interface SyncRewardRealizationsOptions {
   api: RewardRealizationApi;
   node: RewardRealizationNode;
   nodeTransactions: RewardRealizationNodeTransactions;
+  nodeBlocks?: ManagerEventNodeBlocks;
   sourceId: string;
   chainId: number;
   managerPrincipal: string;
@@ -130,7 +133,7 @@ export interface SyncRewardRealizationsResult {
   skippedReason: "no-forecast-history" | null;
 }
 
-function streamFor(pox5ContractId: string): string {
+export function rewardRealizationStream(pox5ContractId: string): string {
   return `pox5-reward-realizations:v1:${pox5ContractId}`;
 }
 
@@ -270,7 +273,10 @@ async function revalidateCalibrationWindow(
 async function nodeTransaction(
   options: SyncRewardRealizationsOptions,
   transaction: TransactionSummary,
-): Promise<IndexedTransactionObservation | null> {
+): Promise<{
+  evidenceLevel: "node-index-verified" | "canonical-block-correlated";
+  observation: IndexedTransactionObservation | null;
+} | null> {
   const lookup = await options.nodeTransactions.lookupIndexedTransaction(transaction.tx_id);
   if (lookup.status === "observed") {
     if (!lookup.value.isCanonical) return null;
@@ -282,10 +288,37 @@ async function nodeTransaction(
         `Local node and indexed API disagree on reward calculation ${transaction.tx_id}`,
       );
     }
-    return lookup.value;
+    return { evidenceLevel: "node-index-verified", observation: lookup.value };
+  }
+  if (lookup.status === "not-found" && options.nodeBlocks) {
+    await proveCanonicalNodeBlock(options.nodeBlocks, {
+      blockHeight: transaction.block.height,
+      indexBlockHash: transaction.block.index_hash,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return { evidenceLevel: "canonical-block-correlated", observation: null };
   }
   const reason = lookup.status === "not-found" ? "not-found" : `${lookup.status}:${lookup.reason}`;
   throw new Error(`Local node could not verify reward calculation ${transaction.tx_id}: ${reason}`);
+}
+
+function inferHistoricalCheckpoint(
+  eventRewardCycle: number,
+  calculationBurnHeight: number,
+  pox: PoxInfo,
+): "first-half" | "second-half" | null {
+  if (pox.first_burnchain_block_height === undefined || pox.reward_cycle_length % 2 !== 0) {
+    return null;
+  }
+  const cycleStart = pox.first_burnchain_block_height + eventRewardCycle * pox.reward_cycle_length;
+  if (!Number.isSafeInteger(cycleStart) || cycleStart < 0) return null;
+  if (calculationBurnHeight === cycleStart + pox.reward_cycle_length / 2 - 1) {
+    return "first-half";
+  }
+  if (calculationBurnHeight === cycleStart + pox.reward_cycle_length - 1) {
+    return "second-half";
+  }
+  return null;
 }
 
 async function buildRealization(
@@ -347,72 +380,94 @@ async function buildRealization(
   if (!parentBlock.canonical || parentBlock.height + 1 !== transactionBlock.height) {
     throw new Error(`Indexed API returned an inconsistent parent block for ${transaction.tx_id}`);
   }
-  const [nodeInfo, parentPoxInfo, transactionPoxInfo] = await Promise.all([
-    options.node.getInfo(options.signal ? { signal: options.signal } : {}),
-    options.node.getPoxInfo({
-      tip: parentBlock.index_block_hash,
-      ...(options.signal ? { signal: options.signal } : {}),
-    }),
-    options.node.getPoxInfo({
-      tip: transactionBlock.index_block_hash,
-      ...(options.signal ? { signal: options.signal } : {}),
-    }),
-  ]);
-  const parentAnchor = createChainAnchor(nodeInfo, targetApiStatus(parentBlock), parentPoxInfo);
-  const transactionAnchor = createChainAnchor(
-    nodeInfo,
-    targetApiStatus(transactionBlock),
-    transactionPoxInfo,
-  );
-  const target = deriveRewardCalculationTarget(parentAnchor);
-  if (
-    target.status !== "ready" ||
-    target.rewardCycle !== eventRewardCycle ||
-    target.expectedLastRewardComputeBurnHeight !== calculationBurnHeight
-  ) {
-    throw new Error(`PoX-5 event target does not match its canonical parent anchor`);
-  }
-  targetCheckpoint = target.calculationCheckpoint;
-
+  let parentAnchor: ReturnType<typeof createChainAnchor> | null = null;
+  let transactionAnchor: ReturnType<typeof createChainAnchor> | null = null;
   try {
-    const snapshot = await readPox5PoolSimulationSnapshot({
-      node: options.node,
-      pox5ContractId: options.pox5ContractId,
-      managerPrincipal: options.managerPrincipal,
-      chainAnchor: parentAnchor,
-      targetRewardCycle: eventRewardCycle,
-      targetCheckpoint,
-      calculationBurnHeight,
-      grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
-    });
-    const simulation = simulatePox5CalculateRewards({
-      ...snapshot.simulationInput,
-      grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
-    });
-    assertSimulationMatchesEvent(event, simulation);
-    const postSnapshot = await readPox5PoolSimulationSnapshot({
-      node: options.node,
-      pox5ContractId: options.pox5ContractId,
-      managerPrincipal: options.managerPrincipal,
-      chainAnchor: transactionAnchor,
-      targetRewardCycle: eventRewardCycle,
-      targetCheckpoint,
-      calculationBurnHeight,
-      grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
-    });
-    if (calculationSharesStable(snapshot.simulationInput, postSnapshot.simulationInput)) {
-      poolEstimate = snapshot.currentEstimate;
-      poolEstimateUnavailableReason = null;
-    } else {
-      poolEstimateUnavailableReason = "same-block-state-ambiguous";
+    const [nodeInfo, parentPoxInfo, transactionPoxInfo] = await Promise.all([
+      options.node.getInfo(options.signal ? { signal: options.signal } : {}),
+      options.node.getPoxInfo({
+        tip: parentBlock.index_block_hash,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+      options.node.getPoxInfo({
+        tip: transactionBlock.index_block_hash,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+    ]);
+    parentAnchor = createChainAnchor(nodeInfo, targetApiStatus(parentBlock), parentPoxInfo);
+    transactionAnchor = createChainAnchor(
+      nodeInfo,
+      targetApiStatus(transactionBlock),
+      transactionPoxInfo,
+    );
+  } catch {
+    parentAnchor = null;
+    transactionAnchor = null;
+  }
+  if (parentAnchor && transactionAnchor) {
+    const target = deriveRewardCalculationTarget(parentAnchor);
+    if (
+      target.status !== "ready" ||
+      target.rewardCycle !== eventRewardCycle ||
+      target.expectedLastRewardComputeBurnHeight !== calculationBurnHeight
+    ) {
+      throw new Error(`PoX-5 event target does not match its canonical parent anchor`);
     }
-  } catch (error) {
-    poolEstimateUnavailableReason =
-      error instanceof Pox5CalculateRewardsError
-        ? "anchored-inputs-unavailable"
-        : error instanceof Pox5RewardSimulationError
-          ? "contract-simulation-failed"
-          : "anchored-inputs-unavailable";
+    targetCheckpoint = target.calculationCheckpoint;
+  } else {
+    const currentPox = await options.node.getPoxInfo(
+      options.signal ? { signal: options.signal } : {},
+    );
+    const inferred = inferHistoricalCheckpoint(eventRewardCycle, calculationBurnHeight, currentPox);
+    if (!inferred) {
+      throw new Error(
+        `PoX-5 historical calculation ${transaction.tx_id} cannot be placed at an exact checkpoint`,
+      );
+    }
+    targetCheckpoint = inferred;
+  }
+
+  if (parentAnchor && transactionAnchor) {
+    try {
+      const snapshot = await readPox5PoolSimulationSnapshot({
+        node: options.node,
+        pox5ContractId: options.pox5ContractId,
+        managerPrincipal: options.managerPrincipal,
+        chainAnchor: parentAnchor,
+        targetRewardCycle: eventRewardCycle,
+        targetCheckpoint,
+        calculationBurnHeight,
+        grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
+      });
+      const simulation = simulatePox5CalculateRewards({
+        ...snapshot.simulationInput,
+        grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
+      });
+      assertSimulationMatchesEvent(event, simulation);
+      const postSnapshot = await readPox5PoolSimulationSnapshot({
+        node: options.node,
+        pox5ContractId: options.pox5ContractId,
+        managerPrincipal: options.managerPrincipal,
+        chainAnchor: transactionAnchor,
+        targetRewardCycle: eventRewardCycle,
+        targetCheckpoint,
+        calculationBurnHeight,
+        grossAccruedRewardsSats: BigInt(event.grossAccruedRewardsSats),
+      });
+      if (calculationSharesStable(snapshot.simulationInput, postSnapshot.simulationInput)) {
+        poolEstimate = snapshot.currentEstimate;
+        poolEstimateUnavailableReason = null;
+      } else {
+        poolEstimateUnavailableReason = "same-block-state-ambiguous";
+      }
+    } catch (error) {
+      poolEstimateUnavailableReason =
+        error instanceof Pox5CalculateRewardsError
+          ? "anchored-inputs-unavailable"
+          : error instanceof Pox5RewardSimulationError
+            ? "contract-simulation-failed"
+            : "anchored-inputs-unavailable";
+    }
   }
 
   const forecast = options.store.getRewardEvaluationForecast(
@@ -446,6 +501,7 @@ async function buildRealization(
     managerPrincipal: options.managerPrincipal,
     pox5ContractId: options.pox5ContractId,
     canonical: true,
+    evidenceLevel: local.evidenceLevel,
     blockHeight: transaction.block.height,
     indexBlockHash: transaction.block.index_hash,
     burnBlockHeight: transaction.bitcoin_block.height,
@@ -506,8 +562,8 @@ export async function syncRewardRealizations(
     .min(1)
     .max(100)
     .parse(options.maxPages ?? 10);
-  const stream = streamFor(options.pox5ContractId);
-  const floor = options.store.rewardRealizationScanFloor(
+  const stream = rewardRealizationStream(options.pox5ContractId);
+  let floor = options.store.rewardRealizationScanFloor(
     options.managerPrincipal,
     options.pox5ContractId,
   );
@@ -522,7 +578,13 @@ export async function syncRewardRealizations(
     decodeFailures: 0,
     caughtUp: true,
   };
-  if (floor === null) return { ...empty, skippedReason: "no-forecast-history" };
+  if (floor === null) {
+    const pox = await options.node.getPoxInfo(options.signal ? { signal: options.signal } : {});
+    floor =
+      pox.contract_versions.find(({ contract_id }) => contract_id === options.pox5ContractId)
+        ?.activation_burnchain_block_height ?? null;
+    if (floor === null) return { ...empty, skippedReason: "no-forecast-history" };
+  }
 
   const revalidation = await revalidateCalibrationWindow(options);
   const retried = await retryUnresolvedRealizations(options, revalidation.canonical);

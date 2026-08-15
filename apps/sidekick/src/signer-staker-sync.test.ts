@@ -410,18 +410,21 @@ describe("signer-staker synchronization", () => {
     });
   });
 
-  it("does not present a cold-start empty API roster as authoritatively complete", async () => {
+  it("accepts a cold-start empty roster after the API anchor is fenced and revalidated", async () => {
     const sidekickStore = await store();
     const api = { getSignerStakers: vi.fn().mockResolvedValue(page([], null, null, 0)) };
     const node = { callReadOnly: vi.fn() };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
-      status: "incomplete",
-      authoritative: false,
+      status: "completed",
+      authoritative: true,
       activeStakers: 0,
     });
     expect(node.callReadOnly).not.toHaveBeenCalled();
-    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toBeNull();
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toMatchObject({
+      authoritative: true,
+      chainAnchor,
+    });
   });
 
   it("uses exact cycle membership when the latest signer has changed", async () => {

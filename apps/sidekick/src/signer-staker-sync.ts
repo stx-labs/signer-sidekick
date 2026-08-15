@@ -509,9 +509,6 @@ export async function syncSignerStakers(
     throw new Error("stakerConcurrency must be an integer from 1 through 16");
   }
   options.signal?.throwIfAborted();
-  const hasPriorAuthoritativeRun =
-    options.store.getLatestCompletedSignerStakerRun(options.sourceId, options.managerPrincipal) !==
-    null;
   const retainedStakers = options.store.listSignerStakers(options.managerPrincipal);
   const retainedByPrincipal = new Map(
     retainedStakers.map((staker) => [staker.stakerPrincipal, staker] as const),
@@ -776,7 +773,6 @@ export async function syncSignerStakers(
     authoritativeCompletion:
       apiScan.anchorFenced &&
       canonicalAnchorVerified &&
-      (apiScan.expectedTotal > 0 || retainedCandidates.size > 0 || hasPriorAuthoritativeRun) &&
       verifiedItems.every((item) => item.reconciliationComplete),
     ...(reconciliationAnchor ? { chainAnchor: reconciliationAnchor } : {}),
     observedAt: options.observedAt,

@@ -164,10 +164,23 @@ function serverHealthSnapshot() {
           responseLatencyBuckets: { "1": 10, "10": 10, "+Inf": 10 },
         }),
       ),
+      // A middle sample older than the 30s settle window carries the unanswered proposal burst, so
+      // the gap is settled (real) rather than trailing-edge in-flight.
       observation(
-        "2026-08-14T12:01:00.000Z",
+        "2026-08-14T12:00:45.000Z",
         signerMetrics({
-          proposalsTotal: 35,
+          proposalsTotal: 40,
+          validationAcceptedTotal: 9,
+          validationRejectedTotal: 2,
+          acceptedTotal: 9,
+          rejectedTotal: 2,
+          responseLatencyBuckets: { "1": 11, "10": 20, "+Inf": 20 },
+        }),
+      ),
+      observation(
+        "2026-08-14T12:01:30.000Z",
+        signerMetrics({
+          proposalsTotal: 60,
           validationAcceptedTotal: 18,
           validationRejectedTotal: 12,
           acceptedTotal: 18,
@@ -905,6 +918,9 @@ describe("local API", () => {
     ).toBe(400);
 
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    // The settled proposal burst is old enough to be an unanswered gap, so the primary diagnosis is
+    // likely-local-signer, alongside the source-disagreement rejection finding and the corroborated
+    // (but unattributed) latency finding.
     expect(metrics.body).toContain(
       'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
     );
@@ -912,14 +928,19 @@ describe("local API", () => {
       'sidekick_signer_health_active_findings{classification="likely-local-signer"} 1',
     );
     expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="source-disagreement"} 1',
+    );
+    expect(metrics.body).toContain(
       'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 1',
     );
     expect(metrics.body).toContain(
       'sidekick_signer_health_source_available{source="configured-api"} 0',
     );
-    expect(metrics.body).toContain("sidekick_signer_response_gap 5");
+    // Settled gap: 30 proposals outstanding past the settle window against 20 responses.
+    expect(metrics.body).toContain("sidekick_signer_response_gap 10");
     expect(metrics.body).toContain("sidekick_signer_rejection_percent 50");
-    expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 10");
+    // Interpolated within the [1s, 10s] bucket instead of the raw 10s boundary.
+    expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 9.4");
   });
 
   it("accepts only sealed wallet-intent actions and txids", async () => {

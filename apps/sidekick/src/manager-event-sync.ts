@@ -40,6 +40,8 @@ export type ManagerEventNodeBlocks = Pick<
   "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
 >;
 
+export type ChainEventEvidenceLevel = "node-index-verified" | "canonical-block-correlated";
+
 export interface ManagerEventStore {
   getCursor(sourceId: string, stream: string): ChainCursor | null;
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null;
@@ -131,8 +133,26 @@ export async function verifyIndexedApiTransactionsWithNode(
   activityLabel: string,
   signal?: AbortSignal,
 ): Promise<number> {
+  return (
+    await verifyIndexedApiTransactionEvidenceWithNode(
+      node,
+      nodeBlocks,
+      transactions,
+      activityLabel,
+      signal,
+    )
+  ).size;
+}
+
+export async function verifyIndexedApiTransactionEvidenceWithNode(
+  node: ManagerEventNodeTransactions,
+  nodeBlocks: ManagerEventNodeBlocks | undefined,
+  transactions: ReadonlyMap<string, TransactionSummary>,
+  activityLabel: string,
+  signal?: AbortSignal,
+): Promise<ReadonlyMap<string, ChainEventEvidenceLevel>> {
   const entries = [...transactions.entries()];
-  let verified = 0;
+  const evidence = new Map<string, ChainEventEvidenceLevel>();
   for (let index = 0; index < entries.length; index += 8) {
     signal?.throwIfAborted();
     const batch = entries.slice(index, index + 8);
@@ -145,7 +165,7 @@ export async function verifyIndexedApiTransactionsWithNode(
             indexBlockHash: transaction.block.index_hash,
             ...(signal ? { signal } : {}),
           });
-          verified += 1;
+          evidence.set(txId, "canonical-block-correlated");
           return;
         }
         if (observation.status !== "observed") {
@@ -173,12 +193,12 @@ export async function verifyIndexedApiTransactionsWithNode(
             `Local node and indexed API disagree on ${activityLabel} transaction ${txId}`,
           );
         }
-        verified += 1;
+        evidence.set(txId, "node-index-verified");
       }),
     );
     signal?.throwIfAborted();
   }
-  return verified;
+  return evidence;
 }
 
 export async function syncManagerEvents(
@@ -270,15 +290,16 @@ export async function syncManagerEvents(
     }
     const transactionById = await enrichTransactions(options.api, page, options.signal);
     options.signal?.throwIfAborted();
-    if (options.nodeTransactions) {
-      nodeVerifiedTransactions += await verifyIndexedApiTransactionsWithNode(
-        options.nodeTransactions,
-        options.nodeBlocks,
-        transactionById,
-        "manager",
-        options.signal,
-      );
-    }
+    const transactionEvidence = options.nodeTransactions
+      ? await verifyIndexedApiTransactionEvidenceWithNode(
+          options.nodeTransactions,
+          options.nodeBlocks,
+          transactionById,
+          "manager",
+          options.signal,
+        )
+      : null;
+    nodeVerifiedTransactions += transactionEvidence?.size ?? 0;
     options.signal?.throwIfAborted();
     const storedEvents: ChainEventInput[] = page.results.map((event, index) => {
       const transaction = transactionById.get(event.tx_id);
@@ -313,6 +334,7 @@ export async function syncManagerEvents(
         },
         decodedSchemaVersion: decoded ? 1 : null,
         decodedPayload: decoded ? { transactionStatus: transaction.status, event: decoded } : null,
+        evidenceLevel: transactionEvidence?.get(event.tx_id) ?? "indexer-reported",
         sourceId: options.sourceId,
         observedAt: options.observedAt,
       };

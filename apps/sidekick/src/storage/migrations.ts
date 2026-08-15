@@ -2023,4 +2023,74 @@ export const migrations: readonly Migration[] = [
         ON health_finding_episodes (config_fingerprint, opened_at DESC, episode_id DESC);
     `,
   },
+  {
+    version: 31,
+    name: "local_node_authority",
+    sql: `
+      -- Current-state projections must not silently become authoritative while a fresh or
+      -- recovering local node is still catching up. Keep the last proven-current height so a
+      -- transient or restarted process cannot erase that safety boundary.
+      CREATE TABLE local_node_authority (
+        manager_principal TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        status TEXT NOT NULL CHECK (status IN ('current', 'catching-up', 'unknown')),
+        observed_at TEXT NOT NULL,
+        stacks_tip_height INTEGER NOT NULL CHECK (stacks_tip_height >= 0),
+        highest_proven_current_stacks_tip_height INTEGER CHECK (
+          highest_proven_current_stacks_tip_height IS NULL
+          OR highest_proven_current_stacks_tip_height >= 0
+        ),
+        consecutive_current_observations INTEGER NOT NULL CHECK (
+          consecutive_current_observations >= 0
+        ),
+        reason TEXT NOT NULL CHECK (length(reason) > 0)
+      ) STRICT, WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 32,
+    name: "current_member_history_recovery",
+    sql: `
+      -- Evidence strength is part of each imported event rather than an inference from whichever
+      -- source happens to be configured later.
+      ALTER TABLE chain_events ADD COLUMN evidence_level TEXT NOT NULL
+        DEFAULT 'indexer-reported'
+        CHECK (evidence_level IN (
+          'node-index-verified', 'canonical-block-correlated', 'indexer-reported'
+        ));
+
+      ALTER TABLE reward_calculation_realizations ADD COLUMN evidence_level TEXT NOT NULL
+        DEFAULT 'indexer-reported'
+        CHECK (evidence_level IN (
+          'node-index-verified', 'canonical-block-correlated', 'indexer-reported'
+        ));
+
+      -- Fresh installs backfill only principals in the authoritative current roster. Progress is
+      -- per member so work remains restart-safe, bounded, and fair across long-lived wallets.
+      CREATE TABLE current_member_history_recovery (
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
+        cursor TEXT,
+        pages_processed INTEGER NOT NULL DEFAULT 0 CHECK (pages_processed >= 0),
+        transactions_inspected INTEGER NOT NULL DEFAULT 0 CHECK (transactions_inspected >= 0),
+        relevant_events INTEGER NOT NULL DEFAULT 0 CHECK (relevant_events >= 0),
+        discovered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, manager_principal, pox5_contract_id, staker_principal),
+        CHECK (
+          (status = 'pending' AND completed_at IS NULL)
+          OR (status = 'complete' AND cursor IS NULL AND completed_at IS NOT NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX current_member_history_recovery_fair_queue
+        ON current_member_history_recovery (
+          source_id, manager_principal, pox5_contract_id, status, updated_at, staker_principal
+        );
+    `,
+  },
 ];

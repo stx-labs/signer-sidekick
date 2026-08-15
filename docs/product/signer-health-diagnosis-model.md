@@ -138,7 +138,11 @@ days.
 
 Signer counters are cumulative, so Sidekick calculates increases across the relevant window and
 handles counter resets as a new epoch. Histogram percentiles are calculated from bucket increases,
-not the lifetime cumulative histogram.
+not the lifetime cumulative histogram: every bucket is re-baselined together whenever the `+Inf`
+total drops (a joint reset), so a mid-window signer restart cannot desynchronize the buckets and
+inflate the percentile. The crossing bucket is then linearly interpolated (as Prometheus
+`histogram_quantile` does) rather than reported at its upper boundary, so a p95 of 4.8s reads as
+`4.8s` instead of rounding up to the enclosing bucket edge.
 
 ### 3. Establish expectation
 
@@ -165,7 +169,7 @@ The current closed thresholds are:
 | Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while local advances |
 | Signer identity, network, or cycle mismatch | 3 samples spanning at least 10 seconds |
 | Signer node view behind local node | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
-| Proposal/response gap | at least 5 proposals and 3 unaccounted-for responses in 15 minutes |
+| Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses after a 30-second settling window, measured over 15 minutes |
 | Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes |
 | Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
 | Agreement conflicts | at least 3 conflicts in 15 minutes |

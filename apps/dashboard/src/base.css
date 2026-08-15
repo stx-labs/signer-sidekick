@@ -273,14 +273,22 @@ a {
 
 /* ============ FRESHNESS BANNER ============ */
 .freshness {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px 20px;
+  min-height: 46px;
   padding: 8px 24px;
   font-size: 12px;
   background: var(--surface-secondary);
   border-bottom: 1px solid var(--border-secondary);
   color: var(--text-secondary);
+}
+.freshness-primary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
 }
 .freshness .dot {
   width: 7px;
@@ -296,15 +304,32 @@ a {
 .freshness.stale .dot {
   background: var(--yellow-600);
 }
+.freshness-state {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.freshness.stale .freshness-state {
+  color: var(--status-caution);
+}
+.freshness .freshness-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.freshness.stale .freshness-detail {
+  color: color-mix(in srgb, var(--status-caution) 72%, var(--text-secondary));
+}
 .freshness .mono {
   font-family: var(--font-mono);
-  color: inherit;
 }
-.freshness .sep {
-  color: var(--text-tertiary);
+.freshness-actions {
+  display: flex;
+  align-items: center;
 }
 .freshness .right {
-  margin-left: auto;
   display: flex;
   gap: 16px;
   align-items: center;

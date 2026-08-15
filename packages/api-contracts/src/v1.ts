@@ -190,6 +190,53 @@ export const rateLimitInfoSchema = z
   .strict();
 export type RateLimitInfo = z.infer<typeof rateLimitInfoSchema>;
 
+export const localNodeAuthoritySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["current", "catching-up", "unknown"]),
+    observedAt: z.iso.datetime(),
+    stacksTipHeight: z.number().int().nonnegative(),
+    highestProvenCurrentStacksTipHeight: z.number().int().nonnegative().nullable(),
+    consecutiveCurrentObservations: z.number().int().nonnegative(),
+    reason: z.string().min(1).max(1_000),
+  })
+  .strict();
+export type LocalNodeAuthority = z.infer<typeof localNodeAuthoritySchema>;
+
+const historyRecoveryDomainSchema = z
+  .object({
+    status: z.enum(["not-started", "reconstructing", "complete"]),
+    updatedAt: z.iso.datetime().nullable(),
+  })
+  .strict();
+
+export const historyRecoveryCoverageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    monitoringStartedAt: z.iso.datetime().nullable(),
+    managerHistory: historyRecoveryDomainSchema.extend({
+      recoveryBoundaryStacksHeight: z.number().int().nonnegative().nullable(),
+    }),
+    currentMemberHistory: historyRecoveryDomainSchema.extend({
+      currentMembers: z.number().int().nonnegative(),
+      membersComplete: z.number().int().nonnegative(),
+      pagesProcessed: z.number().int().nonnegative(),
+      transactionsInspected: z.number().int().nonnegative(),
+      relevantEvents: z.number().int().nonnegative(),
+    }),
+    rewardHistory: historyRecoveryDomainSchema.extend({
+      recoveryBoundaryStacksHeight: z.number().int().nonnegative().nullable(),
+    }),
+    signerHealthHistory: z
+      .object({
+        status: z.literal("monitoring-since-install"),
+        monitoringStartedAt: z.iso.datetime().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type HistoryRecoveryCoverage = z.infer<typeof historyRecoveryCoverageSchema>;
+
 const runtimeSettingsShape = z.object({
   schemaVersion: z.literal(1),
   revision: z.number().int().nonnegative(),
@@ -1140,6 +1187,9 @@ export interface DashboardSnapshot extends OperatorSnapshot {
   schemaVersion: 1;
   generatedAt: string;
   chainAnchor?: EngineChainAnchor;
+  /** Whether cycle-sensitive local-node reads can be treated as present-day authority. */
+  nodeAuthority?: LocalNodeAuthority;
+  historyRecovery?: HistoryRecoveryCoverage;
   freshness?: {
     status: "current" | "stale";
     snapshotGeneratedAt: string;
@@ -1426,6 +1476,10 @@ function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
     typeof value.managerPrincipal === "string" &&
     (value.chainAnchor === undefined ||
       engineChainAnchorSchema.safeParse(value.chainAnchor).success) &&
+    (value.nodeAuthority === undefined ||
+      localNodeAuthoritySchema.safeParse(value.nodeAuthority).success) &&
+    (value.historyRecovery === undefined ||
+      historyRecoveryCoverageSchema.safeParse(value.historyRecovery).success) &&
     hasRecord(value, "preflight") &&
     hasRecord(value, "manager") &&
     isManagerCapabilities(value.manager.capabilities) &&

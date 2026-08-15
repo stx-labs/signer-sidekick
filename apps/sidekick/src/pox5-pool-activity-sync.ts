@@ -4,7 +4,7 @@ import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.j
 import {
   type ManagerEventNodeBlocks,
   type ManagerEventNodeTransactions,
-  verifyIndexedApiTransactionsWithNode,
+  verifyIndexedApiTransactionEvidenceWithNode,
 } from "./manager-event-sync.js";
 import { decodePox5PoolActivityEvent } from "./pox5-pool-events.js";
 import type {
@@ -161,13 +161,14 @@ export async function syncPox5PoolActivity(
       );
     }
     const transactions = new Map(transactionEntries);
-    nodeVerifiedTransactions += await verifyIndexedApiTransactionsWithNode(
+    const transactionEvidence = await verifyIndexedApiTransactionEvidenceWithNode(
       options.nodeTransactions,
       options.nodeBlocks,
       transactions,
       "PoX-5 pool activity",
       options.signal,
     );
+    nodeVerifiedTransactions += transactionEvidence.size;
 
     const storedEvents: ChainEventInput[] = decoded.map(({ log, event }) => {
       const transaction = transactions.get(log.tx_id);
@@ -196,6 +197,7 @@ export async function syncPox5PoolActivity(
         },
         decodedSchemaVersion: 1,
         decodedPayload: { transactionStatus: transaction.status, event },
+        evidenceLevel: transactionEvidence.get(log.tx_id),
         sourceId: options.sourceId,
         observedAt: options.observedAt,
       };

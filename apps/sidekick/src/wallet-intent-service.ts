@@ -921,6 +921,7 @@ export class WalletIntentService {
     network: WalletTransactionNetworkBinding,
     action: RecurringWalletIntentAction,
   ): void {
+    this.assertStoredLocalNodeAuthority(managerPrincipal);
     const capabilityId = managerCapabilityForWalletAction(action);
     const capability = capabilityId
       ? managerActionCapability(snapshot.manager.capabilities, capabilityId)
@@ -944,6 +945,7 @@ export class WalletIntentService {
     snapshot: OperatorAnchorSnapshot,
     network: WalletTransactionNetworkBinding,
   ): string {
+    this.assertStoredLocalNodeAuthority(this.options.readState().managerPrincipal);
     const pox5ContractId = snapshot.preflight.pox.pox5ContractId;
     if (
       !walletNetworkChecksPass(snapshot, network.chainId) ||
@@ -958,6 +960,17 @@ export class WalletIntentService {
       );
     }
     return pox5ContractId;
+  }
+
+  private assertStoredLocalNodeAuthority(managerPrincipal: string): void {
+    const authority = this.options.store.getLocalNodeAuthority(managerPrincipal);
+    if (authority && authority.status !== "current") {
+      throw new WalletIntentError(
+        "wallet_execution_unavailable",
+        `The local node is ${authority.status === "catching-up" ? "catching up" : "not yet proven current"}. Wait for current node authority before preparing a transaction`,
+        true,
+      );
+    }
   }
 
   private assertActionPrincipal(principal: string, network: BrowserWalletIntentNetwork): void {

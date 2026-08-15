@@ -254,6 +254,92 @@ describe("Stacks API client", () => {
     });
   });
 
+  it("reads cursor-paginated principal transactions for scoped history discovery", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const pox5 = "SP000000000000000000002Q6VF78.pox-5";
+    const txId = `0x${"11".repeat(32)}`;
+    const cursor = "8600000:2147483647:0";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          total: 1,
+          limit: 1,
+          cursor: { current: cursor, previous: null, next: null },
+          results: [
+            {
+              transaction: {
+                tx_id: txId,
+                status: "success",
+                type: "contract_call",
+                contract_call: { contract_id: pox5, function_name: "stake" },
+                block: {
+                  height: 8_600_000,
+                  hash: `0x${"22".repeat(32)}`,
+                  index_hash: `0x${"33".repeat(32)}`,
+                  time: 1_784_000_000,
+                  tx_index: 3,
+                },
+                bitcoin_block: { height: 960_240, time: 1_784_000_000 },
+              },
+              involvement: "sender",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getPrincipalTransactions(principal, cursor, 1)).resolves.toMatchObject({
+      total: 1,
+      results: [{ transaction: { tx_id: txId, contract_call: { contract_id: pox5 } } }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v3/principals/${principal}/transactions?limit=1&cursor=${encodeURIComponent(cursor)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("reads bounded transaction events for scoped history decoding", async () => {
+    const txId = `0x${"11".repeat(32)}`;
+    const pox5 = "SP000000000000000000002Q6VF78.pox-5";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          total: 2,
+          limit: 100,
+          cursor: { current: "0", previous: null, next: null },
+          results: [
+            {
+              event_index: 0,
+              type: "stx_asset",
+            },
+            {
+              event_index: 1,
+              type: "contract_log",
+              contract_log: {
+                contract_id: pox5,
+                topic: "print",
+                value: { hex: "0x03", repr: "true" },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionEvents(txId)).resolves.toMatchObject({
+      total: 2,
+      results: [{ type: "stx_asset" }, { type: "contract_log", event_index: 1 }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v3/transactions/${txId}/events?limit=100`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("reads public transaction details for the node-index fallback", async () => {
     const txId = `0x${"ab".repeat(32)}`;
     const blockHash = `0x${"cd".repeat(32)}`;

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SidekickConfig } from "./config.js";
 import { calculateBurnBlockTiming, HealthMonitoringService } from "./health-monitoring.js";
+import { collectHealthObservation } from "./health-monitoring-sources.js";
 import type { HealthOperatorContext } from "./health-monitoring-types.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
@@ -37,6 +38,67 @@ describe("HealthMonitoringService", () => {
       sampleBlocks: 72,
     });
     expect(calculateBurnBlockTiming({ results: blocks.slice(0, 6) })).toBeNull();
+  });
+
+  it("treats an absent response outcome label as zero once the metric family exists", async () => {
+    const server = createServer((request, response) => {
+      if (request.url === "/v2/info") {
+        response.end(JSON.stringify({ network_id: 1, burn_block_height: 1, stacks_tip_height: 1 }));
+        return;
+      }
+      if (request.url === "/info") {
+        response.end(
+          JSON.stringify({
+            signerPublicKey: `02${"11".repeat(32)}`,
+            network: "mainnet",
+            stxAddress: "SP000000000000000000002Q6VF78",
+            version: "4.0.1.0.0",
+          }),
+        );
+        return;
+      }
+      if (request.url === "/heartbeat") {
+        response.end("OK");
+        return;
+      }
+      if (request.url === "/metrics") {
+        response.end(`
+stacks_signer_block_validation_responses{response_type="accepted"} 12
+stacks_signer_block_responses_sent{response_type="accepted"} 12
+`);
+        return;
+      }
+      response.statusCode = 404;
+      response.end("missing");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const observation = await collectHealthObservation(
+      {
+        network: "mainnet",
+        nodeRpcUrl: baseUrl,
+        apiUrl: baseUrl,
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        stakerPageLimit: 200,
+        eventPageLimit: 100,
+        databasePath: ":memory:",
+        signerMonitoringUrl: baseUrl,
+      },
+      "2026-08-15T12:00:00.000Z",
+      { includeReferences: false },
+    );
+
+    expect(observation.signerMetrics).toMatchObject({
+      validationAcceptedTotal: 12,
+      validationRejectedTotal: 0,
+      acceptedTotal: 12,
+      rejectedTotal: 0,
+    });
   });
 
   it("combines live node, Hiro, and signer signals with reset-safe rolling values", async () => {
@@ -195,14 +257,15 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
       collectingBaseline: false,
     });
     expect(progressed.signer.lastHour.rejectionPercent).toBe(20);
-    expect(progressed.signer.lastHour.responseP95Seconds).toBe(60);
+    // Interpolated within the [1s, 60s] bucket rather than reported as the raw 60s upper boundary.
+    expect(progressed.signer.lastHour.responseP95Seconds).toBeCloseTo(45.25, 2);
     expect(progressed.signer.last15Minutes).toMatchObject({
       validationAccepted: 4,
       validationRejected: 1,
       preCommits: 5,
-      nodeRpcP95Seconds: 0.1,
-      validationP95Seconds: 1,
-      capitulationP95Seconds: 5,
+      nodeRpcP95Seconds: 0.095,
+      validationP95Seconds: 0.95,
+      capitulationP95Seconds: 4.75,
       collectingBaseline: false,
     });
 

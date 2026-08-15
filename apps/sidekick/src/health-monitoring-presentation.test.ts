@@ -365,6 +365,8 @@ describe("Signer Health v2 diagnosis", () => {
 
   it("detects response gaps, elevated rejection, latency, and agreement conflicts", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    // Proposals climb far faster than responses across samples that are all old enough to have been
+    // answered, so the settled proposal/response gap is real rather than trailing-edge in-flight.
     const first = signerMetrics({
       proposalsTotal: 10,
       acceptedTotal: 8,
@@ -372,9 +374,16 @@ describe("Signer Health v2 diagnosis", () => {
       conflictTotal: 1,
       responseLatencyBuckets: { "1": 8, "10": 10, "+Inf": 10 },
     });
+    const middle = signerMetrics({
+      proposalsTotal: 60,
+      acceptedTotal: 12,
+      rejectedTotal: 4,
+      conflictTotal: 3,
+      responseLatencyBuckets: { "1": 9, "10": 15, "+Inf": 15 },
+    });
     const last = signerMetrics({
-      proposalsTotal: 35,
-      acceptedTotal: 18,
+      proposalsTotal: 110,
+      acceptedTotal: 20,
       rejectedTotal: 12,
       conflictTotal: 5,
       responseLatencyBuckets: { "1": 10, "10": 30, "+Inf": 30 },
@@ -386,6 +395,10 @@ describe("Signer Health v2 diagnosis", () => {
           signer: first,
         }),
         observation(new Date(startedAt + 60_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: middle,
+        }),
+        observation(new Date(startedAt + 120_000).toISOString(), {
           signerPublicKey: operator.signerKeyHex ?? undefined,
           signer: last,
         }),
@@ -403,5 +416,124 @@ describe("Signer Health v2 diagnosis", () => {
         "signer-agreement-conflicts-elevated",
       ]),
     );
+  });
+
+  it("does not flag a proposal/response gap from proposals still within the settle window", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    // Proposals older than the 30s settle window are fully answered; a late burst of proposals all
+    // arrived within the last 30s and simply has responses in flight. The raw window gap here is 15
+    // (which the pre-settle rule would have flagged critical), but no proposal is old enough to be
+    // considered unanswered, so the settled gap is 0 and the finding must not fire.
+    const proposalsByOffsetSeconds: Array<[number, number]> = [
+      [0, 10],
+      [5, 10],
+      [10, 12],
+      [15, 14],
+      [20, 16],
+      [25, 18],
+      [30, 20],
+      [35, 25],
+    ];
+    const observations = proposalsByOffsetSeconds.map(([offsetSeconds, proposalsTotal]) =>
+      observation(new Date(startedAt + offsetSeconds * 1_000).toISOString(), {
+        signerPublicKey: operator.signerKeyHex ?? undefined,
+        signer: signerMetrics({ proposalsTotal, acceptedTotal: 8, rejectedTotal: 2 }),
+      }),
+    );
+    const snapshot = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain("signer-proposal-response-gap");
+  });
+
+  it("interpolates response p95 within the bucket and survives a mid-window counter reset", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    // Cumulative histogram where ~95% of responses land at or below 5s. A restart drops every
+    // bucket together mid-window; a per-bucket delta would fold the post-reset totals back in and
+    // push the crossing bucket upward. The joint reset handling instead counts only the two
+    // monotonic intervals, and interpolation keeps the result inside the [1s, 5s] bucket.
+    const bucketsFor = (multiplier: number) => ({
+      "1": 90 * multiplier,
+      "5": 99 * multiplier,
+      "10": 100 * multiplier,
+      "+Inf": 100 * multiplier,
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        observation(new Date(startedAt).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(1) }),
+        }),
+        observation(new Date(startedAt + 5_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(2) }),
+        }),
+        // Restart: counters reset far below the previous cumulative values.
+        observation(new Date(startedAt + 10_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({
+            responseLatencyBuckets: { "1": 9, "5": 10, "10": 10, "+Inf": 10 },
+          }),
+        }),
+        observation(new Date(startedAt + 15_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(1) }),
+        }),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    const p95 = snapshot.signer.last15Minutes.responseP95Seconds;
+    expect(p95).not.toBeNull();
+    expect(p95).toBeGreaterThan(1);
+    expect(p95).toBeLessThan(5);
+    expect(p95).toBeCloseTo(3.24, 1);
+  });
+
+  it("excludes a partial histogram interval instead of inflating response p95", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const bucketsFor = (multiplier: number) => ({
+      "1": 90 * multiplier,
+      "5": 99 * multiplier,
+      "10": 100 * multiplier,
+      "+Inf": 100 * multiplier,
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        observation(new Date(startedAt).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(1) }),
+        }),
+        observation(new Date(startedAt + 5_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(2) }),
+        }),
+        observation(new Date(startedAt + 10_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({
+            responseLatencyBuckets: { "1": 270, "10": 300, "+Inf": 300 },
+          }),
+        }),
+        observation(new Date(startedAt + 15_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(4) }),
+        }),
+        observation(new Date(startedAt + 20_000).toISOString(), {
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ responseLatencyBuckets: bucketsFor(5) }),
+        }),
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.signer.last15Minutes.responseP95Seconds).toBeCloseTo(3.22, 1);
   });
 });

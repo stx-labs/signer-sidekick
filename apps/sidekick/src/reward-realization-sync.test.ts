@@ -77,6 +77,7 @@ function storedRealization(
     managerPrincipal: manager,
     pox5ContractId: pox5,
     canonical: true,
+    evidenceLevel: "node-index-verified",
     blockHeight: 8_600_002,
     indexBlockHash: txIndexHash,
     burnBlockHeight: 960_241,
@@ -316,12 +317,78 @@ describe("PoX-5 reward realization synchronization", () => {
     const realization = repository.putRewardCalculationRealizationPage.mock.calls[0]?.[0]?.[0];
     expect(realization).toMatchObject({
       canonical: true,
+      evidenceLevel: "node-index-verified",
       targetRewardCycle: 141,
       targetCheckpoint: "first-half",
       calculationBurnHeight: 960_240,
       poolEstimate: { grossSats: simulation.manager?.grossRewardSats.toString() },
       poolEstimateUnavailableReason: null,
       evaluation: { leadBlocks: 144, rangeContainsActual: true },
+    });
+  });
+
+  it("recovers an emitted reward fact without prior forecasts or historical node state", async () => {
+    const repository = store();
+    repository.value.rewardRealizationScanFloor.mockReturnValue(null);
+    repository.value.getRewardEvaluationForecast.mockReturnValue(null);
+    const runtime = environment();
+    runtime.nodeTransactions.lookupIndexedTransaction.mockResolvedValue({
+      status: "not-found",
+      httpStatus: 404,
+    });
+    runtime.node.getPoxInfo.mockImplementation(async (options?: { tip?: string }) => {
+      if (options?.tip) throw new Error("historical chainstate pruned");
+      return {
+        first_burnchain_block_height: 663_091,
+        current_burnchain_block_height: 960_241,
+        reward_cycle_id: 141,
+        reward_cycle_length: 2_100,
+        prepare_cycle_length: 100,
+        contract_id: pox5,
+        contract_versions: [
+          {
+            contract_id: pox5,
+            activation_burnchain_block_height: 960_230,
+            first_reward_cycle_id: 141,
+          },
+        ],
+      };
+    });
+    const blockBytes = new Uint8Array([1, 2, 3]);
+    const nodeBlocks = {
+      getTenureInfo: vi.fn().mockResolvedValue({
+        tip_block_id: `0x${"99".repeat(32)}` as `0x${string}`,
+        tip_height: 8_700_000,
+        reward_cycle: 141,
+      }),
+      getNakamotoBlockById: vi.fn().mockResolvedValue(blockBytes),
+      getNakamotoBlockAtHeight: vi.fn().mockResolvedValue(blockBytes),
+    };
+
+    await expect(
+      syncRewardRealizations({
+        store: repository.value,
+        ...runtime,
+        nodeBlocks,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        observedAt,
+      }),
+    ).resolves.toMatchObject({
+      skippedReason: null,
+      calculationsFound: 1,
+      realizationsStored: 1,
+      caughtUp: true,
+    });
+    expect(repository.putRewardCalculationRealizationPage.mock.calls[0]?.[0]?.[0]).toMatchObject({
+      canonical: true,
+      evidenceLevel: "canonical-block-correlated",
+      targetCheckpoint: "first-half",
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "historical-anchor-unavailable",
+      evaluation: null,
     });
   });
 
