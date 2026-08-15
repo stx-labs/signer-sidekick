@@ -237,6 +237,8 @@ function App() {
   const authenticated = Boolean(token) || automaticAuth === "authenticated";
   const [route, setRoute] = useState(() => parseDashboardHash(location.hash));
   const page = route.page;
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
   );
@@ -250,6 +252,10 @@ function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [checkingConnection, setCheckingConnection] = useState(false);
   const [data, setData] = useState<Snapshot | null>(null);
+  const [overviewMeta, setOverviewMeta] = useState<{
+    network: string;
+    attentionCount: number;
+  } | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusRateLimit, setStatusRateLimit] = useState<RateLimitInfo | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -344,10 +350,13 @@ function App() {
   );
   const connectionAllowsDashboard =
     connection?.status === "connected" || connectionUnavailableAfterSuccess;
+  const diagnosticSafeMode =
+    connection?.status === "blocked" && connection.outcomeCode === "deployment-identity-mismatch";
   const load = useCallback(
     async (background = false, force = false) => {
       if (
         !authenticated ||
+        pageRef.current === "overview" ||
         !connectionAllowsDashboard ||
         (background && activeStatusRequests.current > 0)
       )
@@ -390,8 +399,8 @@ function App() {
     [authenticated, connectionAllowsDashboard, connectionStatus, token],
   );
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (page !== "overview") void load();
+  }, [load, page]);
   useEffect(() => {
     const rejectAuth = () => {
       statusRequestGeneration.current += 1;
@@ -403,6 +412,7 @@ function App() {
       setConnectionError(null);
       setCheckingConnection(false);
       setData(null);
+      setOverviewMeta(null);
       setStatusError(null);
       setStatusRateLimit(null);
       setSyncError(null);
@@ -417,10 +427,10 @@ function App() {
   }, []);
   useEffect(() => {
     const refreshIfVisible = () => {
-      // A visible operator expects the current Stacks tip, not merely the retained server cache.
-      // Forced reads are coalesced server-side and preserve the last snapshot if an upstream source
-      // is temporarily unavailable or rate limited.
-      if (document.visibilityState === "visible") void load(true, true);
+      // Sidekick refreshes the retained snapshot autonomously. Poll that snapshot while the page is
+      // visible so multiple browsers do not turn the 15-second UI cadence into repeated full chain
+      // reads. Manual Refresh remains the explicit forced-read path.
+      if (document.visibilityState === "visible") void load(true);
     };
     const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
     document.addEventListener("visibilitychange", refreshIfVisible);
@@ -467,6 +477,7 @@ function App() {
     setConnectionError(null);
     setCheckingConnection(false);
     setData(null);
+    setOverviewMeta(null);
     setStatusError(null);
     setStatusRateLimit(null);
     setSyncError(null);
@@ -638,11 +649,30 @@ function App() {
       : ageMs < 60_000
         ? `${Math.floor(ageMs / 1_000)}s old`
         : `${Math.floor(ageMs / 60_000)}m old`;
+  const handleOverviewLoaded = useCallback(
+    (summary: { network: string; attentionCount: number }) => setOverviewMeta(summary),
+    [],
+  );
   const content = (() => {
+    if (page === "overview") {
+      return (
+        <Overview
+          connectionUnavailable={connectionUnavailableAfterSuccess}
+          onConnectionRecheck={async () => {
+            await loadConnection(true);
+          }}
+          onLoaded={handleOverviewLoaded}
+          section={route.domainSection}
+          token={token}
+        />
+      );
+    }
     if (page === "health") {
       return (
         <SignerHealthPage
           token={token}
+          section={route.domainSection}
+          readOnly={diagnosticSafeMode}
           context={
             data
               ? {
@@ -676,6 +706,7 @@ function App() {
         <SettingsPage
           data={data}
           initialSection={route.settingsSection}
+          readOnly={diagnosticSafeMode}
           onRefreshStatus={refreshStatus}
           token={token}
           setTheme={setTheme}
@@ -692,21 +723,27 @@ function App() {
           activityId={route.activityId}
           data={data}
           key={`${route.activityId ?? "feed"}:${route.activitySearch}`}
-          operatorStateStale={stale}
+          operatorStateStale={stale || diagnosticSafeMode}
           onOperatorStateChanged={refreshOperatorState}
           search={route.activitySearch}
+          section={route.domainSection}
           token={token}
         />
       );
     }
     if (!data) return null;
     switch (page) {
-      case "overview":
-        return <Overview data={data} token={token} sync={sync} syncing={syncing} />;
       case "pool":
-        return <Pool data={data} token={token} />;
+        return <Pool data={data} section={route.domainSection} token={token} />;
       case "rewards":
-        return <Rewards data={data} operatorStateStale={stale} token={token} />;
+        return (
+          <Rewards
+            data={data}
+            operatorStateStale={stale}
+            section={route.domainSection}
+            token={token}
+          />
+        );
       default:
         return null;
     }
@@ -720,7 +757,9 @@ function App() {
       />
     );
   }
-  if (connectionNeedsRecoveryPage(connection)) {
+  const diagnosticPageAllowed =
+    diagnosticSafeMode && (page === "activity" || page === "health" || page === "settings");
+  if (connectionNeedsRecoveryPage(connection) && !diagnosticPageAllowed) {
     return (
       <ConnectionPage
         assessment={connection}
@@ -733,8 +772,12 @@ function App() {
       />
     );
   }
+  const shellNetwork =
+    (page === "overview" ? overviewMeta?.network : data?.network) ?? connection?.configured.network;
+  const shellAttentionCount =
+    page === "overview" ? (overviewMeta?.attentionCount ?? 0) : (data?.alerts.length ?? 0);
   return (
-    <div className="app" data-network={data?.network ?? "mainnet"}>
+    <div className="app" data-network={shellNetwork ?? "mainnet"}>
       <aside className="sidebar">
         <div className="brand">
           <div className="glyph">
@@ -758,8 +801,8 @@ function App() {
               >
                 {item.icon ? <item.icon /> : null}
                 {item.label}
-                {item.id === "overview" && data?.alerts.length ? (
-                  <span className="count alert">{data.alerts.length}</span>
+                {item.id === "overview" && shellAttentionCount ? (
+                  <span className="count alert">{shellAttentionCount}</span>
                 ) : null}
               </a>
             ),
@@ -769,14 +812,14 @@ function App() {
       </aside>
       <div className={`content ${page === "settings" ? "content-settings" : ""}`}>
         <div className="topbar">
-          <MobilePageMenu key={page} page={page} alertCount={data?.alerts.length ?? 0} />
+          <MobilePageMenu key={page} page={page} alertCount={shellAttentionCount} />
           <div className="crumbs">
             Signer Sidekick / <strong>{nav.find((item) => item.id === page)?.label}</strong>
           </div>
           <div className="right">
-            <span className={`net ${data?.network === "mainnet" ? "net-mainnet" : "net-testnet"}`}>
+            <span className={`net ${shellNetwork === "mainnet" ? "net-mainnet" : "net-testnet"}`}>
               <span className="dot" />
-              {data?.network ?? "Connecting"}
+              {shellNetwork ?? "Connecting"}
             </span>
             <button
               type="button"
@@ -788,81 +831,87 @@ function App() {
             </button>
           </div>
         </div>
-        <div
-          className={`freshness ${connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
-        >
-          <span className="dot" />
-          <span>
-            {connectionUnavailableAfterSuccess
-              ? "Local node unavailable · Actions paused"
-              : !data
-                ? "Connecting"
-                : stale
-                  ? rateLimited
-                    ? `${rateLimitHeading(rateLimit)} — retrying automatically`
-                    : data.freshness?.reason === "refreshing"
-                      ? "Refreshing data"
-                      : "Data may be stale"
-                  : data.preflight.status === "fail"
-                    ? "Chain sources need attention"
-                    : indexedDataDelayed
-                      ? "Local node live · Indexed data delayed"
-                      : "Live"}
-          </span>
-          <span className="sep">·</span>
-          <span className="mono">
-            {connectionUnavailableAfterSuccess && connection?.lastSuccessful
-              ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
-              : data
-                ? data.preflight.api.available === false
-                  ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
-                  : !indexedApiChecksPass
-                    ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
-                    : data.preflight.api.position === "behind"
-                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                      : data.preflight.api.position === "ahead"
-                        ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                        : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
-                : "loading status"}
-          </span>
-          {(connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited ? (
-            <button
-              type="button"
-              className="btn btn-tertiary sm"
-              disabled={connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus}
-              onClick={() =>
-                void (connectionUnavailableAfterSuccess ? loadConnection(true) : refreshStatus())
-              }
-            >
-              {connectionUnavailableAfterSuccess
-                ? checkingConnection
-                  ? "Checking…"
-                  : "Recheck node"
-                : refreshingStatus
-                  ? "Refreshing…"
-                  : "Refresh"}
-            </button>
-          ) : null}
-          {rateLimited && isHiroRateLimit(rateLimit) ? (
-            <a
-              className="btn btn-tertiary sm"
-              href="https://platform.hiro.so"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
-            </a>
-          ) : null}
-          <span className="right">
-            <span className="hint-dot-legend">
-              <span className="src src-chain">on-chain</span>
-              <span className="src src-api">indexed / estimated</span>
-              <span className="src src-local">calculated</span>
+        {page !== "overview" ? (
+          <div
+            className={`freshness ${diagnosticSafeMode || connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
+          >
+            <span className="dot" />
+            <span>
+              {diagnosticSafeMode
+                ? "Deployment identity mismatch · Read-only diagnostic mode"
+                : connectionUnavailableAfterSuccess
+                  ? "Local node unavailable · Actions paused"
+                  : !data
+                    ? "Connecting"
+                    : stale
+                      ? rateLimited
+                        ? `${rateLimitHeading(rateLimit)} — retrying automatically`
+                        : data.freshness?.reason === "refreshing"
+                          ? "Refreshing data"
+                          : "Data may be stale"
+                      : data.preflight.status === "fail"
+                        ? "Chain sources need attention"
+                        : indexedDataDelayed
+                          ? "Local node live · Indexed data delayed"
+                          : "Live"}
             </span>
-          </span>
-        </div>
+            <span className="sep">·</span>
+            <span className="mono">
+              {diagnosticSafeMode
+                ? "Stored evidence retained · actions disabled"
+                : connectionUnavailableAfterSuccess && connection?.lastSuccessful
+                  ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
+                  : data
+                    ? data.preflight.api.available === false
+                      ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
+                      : !indexedApiChecksPass
+                        ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
+                        : data.preflight.api.position === "behind"
+                          ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                          : data.preflight.api.position === "ahead"
+                            ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                            : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+                    : "loading status"}
+            </span>
+            {(connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited ? (
+              <button
+                type="button"
+                className="btn btn-tertiary sm"
+                disabled={connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus}
+                onClick={() =>
+                  void (connectionUnavailableAfterSuccess ? loadConnection(true) : refreshStatus())
+                }
+              >
+                {connectionUnavailableAfterSuccess
+                  ? checkingConnection
+                    ? "Checking…"
+                    : "Recheck node"
+                  : refreshingStatus
+                    ? "Refreshing…"
+                    : "Refresh"}
+              </button>
+            ) : null}
+            {rateLimited && isHiroRateLimit(rateLimit) ? (
+              <a
+                className="btn btn-tertiary sm"
+                href="https://platform.hiro.so"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
+              </a>
+            ) : null}
+            <span className="right">
+              <span className="hint-dot-legend">
+                <span className="src src-chain">on-chain</span>
+                <span className="src src-api">indexed / estimated</span>
+                <span className="src src-local">calculated</span>
+              </span>
+            </span>
+          </div>
+        ) : null}
         <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
-          {connectionUnavailableAfterSuccess ? (
+          {page !== "overview" && connectionUnavailableAfterSuccess ? (
             <div className="callout callout-caution app-status-banner" role="status">
               <WarningCircle className="ic" />
               <div className="body">
@@ -874,7 +923,7 @@ function App() {
               </div>
             </div>
           ) : null}
-          {syncOperation?.status === "running" ? (
+          {page !== "overview" && syncOperation?.status === "running" ? (
             <div
               className="callout callout-info app-status-banner"
               role="status"
@@ -897,7 +946,7 @@ function App() {
               </div>
             </div>
           ) : null}
-          {syncOperation?.status === "failed" && !syncError ? (
+          {page !== "overview" && syncOperation?.status === "failed" && !syncError ? (
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
@@ -916,7 +965,7 @@ function App() {
               </div>
             </div>
           ) : null}
-          {syncError ? (
+          {page !== "overview" && syncError ? (
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
@@ -935,7 +984,7 @@ function App() {
               </div>
             </div>
           ) : null}
-          {statusError ? (
+          {page !== "overview" && statusError ? (
             <div className="callout callout-critical app-status-banner error-banner">
               <WarningCircle className="ic" />
               <div className="body">

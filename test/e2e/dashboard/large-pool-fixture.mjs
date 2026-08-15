@@ -536,9 +536,43 @@ export const engineJobs = {
 };
 
 export const health = {
+  schemaVersion: 2,
   generatedAt: "2026-07-15T12:10:00.000Z",
   overallStatus: "healthy",
   coverage: { available: 22, total: 22 },
+  diagnosis: {
+    status: "healthy",
+    classification: "healthy",
+    confidence: "high",
+    summary: "The configured local node and signer are reachable and aligned.",
+    evidenceWindow: {
+      startedAt: "2026-07-15T12:00:00.000Z",
+      endedAt: "2026-07-15T12:10:00.000Z",
+      sampleCount: 121,
+      distinctSources: 4,
+    },
+    activeFindingIds: [],
+  },
+  history: {
+    sampleIntervalSeconds: 5,
+    rawRetentionHours: 72,
+    rollupIntervalMinutes: 5,
+    rollupRetentionDays: 90,
+    observedSince: "2026-07-15T10:10:00.000Z",
+    observationCount: 1441,
+    recentRollups: [],
+    recentEpisodes: [],
+  },
+  operator: {
+    network: "testnet",
+    managerPrincipal: "ST000000000000000000002AMW42H.signer-manager",
+    currentRewardCycle: 141,
+    registered: true,
+    signerKeyHex: "03b01234567890abcdef01234567890abcdef01234567890abcdef01234567890ab",
+    signerKeyGrantValid: true,
+    expectedCurrentParticipation: true,
+    expectedNextParticipation: true,
+  },
   burnBlockTiming: {
     averageSeconds: 600,
     windowHours: 24,
@@ -588,6 +622,26 @@ export const health = {
     burnBlockHeight: 13000,
     localStacksDifference: 0,
     localBurnDifference: 0,
+    lastTipAdvanceAt: "2026-07-15T12:09:42.000Z",
+    advancementStatus: "advancing",
+  },
+  configuredApi: {
+    distinctFromReference: false,
+    source: {
+      configured: false,
+      status: "not-configured",
+      checkedAt: null,
+      lastSuccessAt: null,
+      latencyMs: null,
+      consecutiveFailures: 0,
+      errorCode: null,
+    },
+    stacksTipHeight: null,
+    burnBlockHeight: null,
+    localStacksDifference: null,
+    localBurnDifference: null,
+    lastTipAdvanceAt: null,
+    advancementStatus: "insufficient-evidence",
   },
   signer: {
     infoSource: {
@@ -625,6 +679,28 @@ export const health = {
     nodeHeightDifference: 0,
     rewardCycle: 141,
     stxBalanceUstx: 125000000,
+    identityMatchesRegistration: true,
+    networkMatchesConfiguration: true,
+    rewardCycleMatchesNode: true,
+    last15Minutes: {
+      startedAt: "2026-07-15T11:55:00.000Z",
+      endedAt: "2026-07-15T12:10:00.000Z",
+      sampleCount: 181,
+      proposals: 4,
+      validationAccepted: 4,
+      validationRejected: 0,
+      accepted: 4,
+      rejected: 0,
+      responseGap: 0,
+      rejectionPercent: 0,
+      responseP95Seconds: 1,
+      validationP95Seconds: 0.5,
+      nodeRpcP95Seconds: 0.1,
+      capitulationP95Seconds: null,
+      disagreements: 0,
+      preCommits: 4,
+      collectingBaseline: false,
+    },
     lastHour: {
       proposals: 12,
       accepted: 11,
@@ -636,6 +712,38 @@ export const health = {
     },
   },
 };
+
+export function healthFinding(overrides) {
+  return {
+    id: "signer-node-heartbeat-failed",
+    episodeId: "10000000-0000-4000-8000-000000000001",
+    severity: "critical",
+    title: "Signer cannot reach its Stacks node",
+    detail: "The signer heartbeat failed three consecutive checks.",
+    source: "signer",
+    classification: "likely-local-signer",
+    confidence: "high",
+    firstObservedAt: "2026-07-15T12:09:50.000Z",
+    lastObservedAt: "2026-07-15T12:10:00.000Z",
+    evidenceWindow: {
+      startedAt: "2026-07-15T12:09:50.000Z",
+      endedAt: "2026-07-15T12:10:00.000Z",
+      sampleCount: 3,
+      distinctSources: 1,
+    },
+    evidence: [
+      {
+        code: "signer-heartbeat-node-failure",
+        source: "signer-monitoring",
+        status: "supporting",
+        observedAt: "2026-07-15T12:10:00.000Z",
+        value: "failed",
+        detail: "The signer heartbeat reports that its node connection is unhealthy.",
+      },
+    ],
+    ...overrides,
+  };
+}
 
 function page(items, offset, limit) {
   return items.slice(offset, offset + limit);
@@ -796,6 +904,183 @@ export function reconciliationResponse(status = "idle") {
   };
 }
 
+const overviewAnchor = {
+  stacksBlockHeight: 14_200,
+  indexBlockHash: `0x${"11".repeat(32)}`,
+  burnBlockHeight: 9_240,
+  rewardCycle: 140,
+  rewardCycleLength: 2_100,
+  prepareCycleLength: 100,
+  cyclePosition: 1_000,
+  phase: "reward",
+  checkpoint: "first-half",
+};
+
+const overviewEvidence = {
+  status: "current",
+  observedAt: "2026-08-14T17:05:00.000Z",
+  anchor: overviewAnchor,
+  source: "local-node",
+  reason: null,
+};
+
+export const overview = {
+  schemaVersion: 1,
+  generatedAt: "2026-08-14T17:05:00.000Z",
+  monitoring: { network: "PoX-5 Testnet", managerPrincipal },
+  cycle: {
+    status: "current",
+    rewardCycleId: 140,
+    phase: "reward",
+    burnBlockHeight: 9_240,
+    stacksTipHeight: 14_200,
+    nextRewardCalculation: {
+      status: "scheduled",
+      burnBlockHeight: 9_249,
+      blocksRemaining: 9,
+      estimatedAt: "2026-08-14T18:35:00.000Z",
+      evidence: [overviewEvidence],
+    },
+    nextPreparePhase: {
+      status: "scheduled",
+      burnBlockHeight: 10_240,
+      blocksRemaining: 1_000,
+      estimatedAt: "2026-08-21T10:00:00.000Z",
+      evidence: [overviewEvidence],
+    },
+    evidence: [overviewEvidence],
+  },
+  network: {
+    status: "advancing",
+    reference: "Hiro reference API",
+    stacksTipHeight: 14_200,
+    burnBlockHeight: 9_240,
+    lastObservedAt: "2026-08-14T17:05:00.000Z",
+    detail: "The independently observed network tip is advancing.",
+    evidence: [{ ...overviewEvidence, source: "network-reference" }],
+    detailsAction: {
+      kind: "open-domain",
+      page: "health",
+      section: "network",
+      label: "Review network evidence",
+    },
+  },
+  node: {
+    status: "aligned",
+    stacksTipHeight: 14_200,
+    burnBlockHeight: 9_240,
+    peerHeightDifference: 0,
+    lastAdvancedAt: "2026-08-14T17:05:00.000Z",
+    detail: "The local node is aligned with its observed peers.",
+    evidence: [overviewEvidence],
+    detailsAction: {
+      kind: "open-domain",
+      page: "health",
+      section: "node",
+      label: "Review node evidence",
+    },
+  },
+  signer: {
+    status: "healthy",
+    rewardCycleId: 140,
+    nodeHeightDifference: 0,
+    proposalsLastHour: 12,
+    acceptedLastHour: 12,
+    rejectedLastHour: 0,
+    responseP95Seconds: 0.8,
+    detail: "Signer monitoring is healthy and aligned with the node.",
+    evidence: [{ ...overviewEvidence, source: "signer" }],
+    detailsAction: {
+      kind: "open-domain",
+      page: "health",
+      section: "signer",
+      label: "Review signer evidence",
+    },
+  },
+  attention: [
+    {
+      schemaVersion: 1,
+      attentionId: "pool:next-cycle-threshold",
+      tier: "action-required",
+      domain: "pool",
+      affectedDomains: ["pool"],
+      code: "next-cycle-below-threshold",
+      title: "Next cycle is below threshold",
+      summary: "Cycle 141 does not currently meet the signer threshold.",
+      impact: "The manager will not enter the next signer set unless the position changes.",
+      openedAt: "2026-08-14T17:05:00.000Z",
+      updatedAt: "2026-08-14T17:05:00.000Z",
+      deadline: { kind: "burn-block", burnBlockHeight: 10_240, estimatedAt: null },
+      urgencyAt: "2026-08-21T10:00:00.000Z",
+      evidence: [overviewEvidence],
+      relatedActivityId: null,
+      relatedFindingId: null,
+      primaryAction: {
+        kind: "open-domain",
+        page: "pool",
+        section: "forecast",
+        label: "Review next cycle",
+      },
+      detailsAction: null,
+    },
+  ],
+  inProgress: [
+    {
+      schemaVersion: 1,
+      activityId: activeActivity.activityId,
+      domain: "rewards",
+      title: "Reward claim is awaiting approval",
+      stage: "awaiting approval",
+      updatedAt: "2026-08-14T17:04:00.000Z",
+      evidence: [{ ...overviewEvidence, source: "sidekick-store" }],
+      primaryAction: {
+        kind: "resume-activity",
+        activityId: activeActivity.activityId,
+        label: "Resume claim",
+      },
+    },
+  ],
+  pool: {
+    status: "needs-attention",
+    current: { rewardCycleId: 140, amountUstx: "16800000000000", inSignerSet: true },
+    next: { rewardCycleId: 141, amountUstx: "16600000000000", inSignerSet: false },
+    nextThresholdMarginUstx: "-200000000000",
+    participants: { stxOnly: 158, bitcoinBond: 79 },
+    nextChange: {
+      kind: "amount-change",
+      rewardCycleId: 141,
+      participantCount: 3,
+      amountDeltaUstx: "-200000000000",
+    },
+    evidence: [overviewEvidence],
+    detailsAction: {
+      kind: "open-domain",
+      page: "pool",
+      section: "forecast",
+      label: "Open pool forecast",
+    },
+  },
+  rewards: {
+    status: "ready",
+    rewardCycleId: 140,
+    globalAccruedSats: "200000",
+    estimatedPoolRewardSats: "150000",
+    operatorFeeSats: "7500",
+    operatorFeeUnavailableReason: null,
+    estimateKind: "checkpoint-forecast",
+    confidence: "calibrated",
+    calculationState: "completed",
+    actionableClaims: 2,
+    evidence: [overviewEvidence],
+    detailsAction: {
+      kind: "open-domain",
+      page: "rewards",
+      section: "outlook",
+      label: "Open rewards",
+    },
+  },
+};
+
 export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
@@ -806,6 +1091,7 @@ export function responseFor(url) {
     request.pathname === "/api/v1/connection/recheck"
   )
     return connection;
+  if (request.pathname === "/api/v1/overview") return overview;
   if (request.pathname === "/api/v1/status") return snapshot;
   if (request.pathname === "/api/v1/activity") {
     return {

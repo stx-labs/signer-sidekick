@@ -360,7 +360,10 @@ function rewardCheckpoint(input: ManagerClaimObservationInput): {
 } | null {
   const { rewards, setup } = input;
   if (!rewards) return null;
-  const target = deriveRewardCalculationTarget(setup.chainAnchor);
+  const target = deriveRewardCalculationTarget(
+    setup.chainAnchor,
+    setup.preflight.pox.firstRewardCycleId,
+  );
   if (target.status === "invalid") return null;
   const lastHeight = parsedUnsigned(
     rewards.global.lastRewardComputeBurnHeight,

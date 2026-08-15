@@ -1969,4 +1969,58 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 30,
+    name: "durable_signer_health_evidence",
+    sql: `
+      -- Five-second local evidence is retained for short-horizon diagnosis. Five-minute rollups
+      -- preserve longer trends without allowing raw monitoring samples to grow without bound.
+      CREATE TABLE health_observations (
+        config_fingerprint TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        observation_json TEXT NOT NULL CHECK (json_valid(observation_json)),
+        PRIMARY KEY (config_fingerprint, observed_at)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX health_observations_recent
+        ON health_observations (config_fingerprint, observed_at DESC);
+
+      CREATE TABLE health_rollups (
+        config_fingerprint TEXT NOT NULL,
+        window_started_at TEXT NOT NULL,
+        window_ended_at TEXT NOT NULL,
+        rollup_json TEXT NOT NULL CHECK (json_valid(rollup_json)),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (config_fingerprint, window_started_at)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX health_rollups_recent
+        ON health_rollups (config_fingerprint, window_started_at DESC);
+
+      -- Findings are episode-oriented: a sustained condition opens one durable record, subsequent
+      -- observations update its evidence, and recovery resolves it without deleting the history.
+      CREATE TABLE health_finding_episodes (
+        episode_id TEXT PRIMARY KEY,
+        config_fingerprint TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'resolved')),
+        finding_json TEXT NOT NULL CHECK (json_valid(finding_json)),
+        opened_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        resolved_at TEXT,
+        occurrences INTEGER NOT NULL CHECK (occurrences > 0),
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (status = 'active' AND resolved_at IS NULL)
+          OR (status = 'resolved' AND resolved_at IS NOT NULL)
+        )
+      ) STRICT;
+
+      CREATE UNIQUE INDEX health_finding_one_active_episode
+        ON health_finding_episodes (config_fingerprint, finding_id)
+        WHERE status = 'active';
+      CREATE INDEX health_finding_episode_history
+        ON health_finding_episodes (config_fingerprint, opened_at DESC, episode_id DESC);
+    `,
+  },
 ];

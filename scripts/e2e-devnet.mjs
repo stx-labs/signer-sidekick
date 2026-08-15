@@ -772,23 +772,36 @@ async function verifyRealObserverCallback(state, transaction, before) {
     );
   }
   const indexBlockHash = `0x${rawIndexBlockHash.replace(/^0x/i, "").toLowerCase()}`;
-  const metrics = await waitFor(
-    async () => {
-      const current = await readObserverMetrics();
-      return current.deliveries > before.deliveries &&
-        current.verified > before.verified &&
-        current.currentSuccesses > before.currentSuccesses &&
-        current.currentLatencySamples > before.currentLatencySamples &&
-        current.managerSuccesses > before.managerSuccesses &&
-        current.managerLatencySamples > before.managerLatencySamples &&
-        current.queueDepth === 0
-        ? current
-        : null;
-    },
-    "a real stacks-node callback to verify and reconcile",
-    120_000,
-    500,
-  );
+  let lastMetrics = before;
+  let metrics;
+  try {
+    metrics = await waitFor(
+      async () => {
+        const current = await readObserverMetrics();
+        lastMetrics = current;
+        return current.deliveries > before.deliveries &&
+          current.verified > before.verified &&
+          current.currentSuccesses > before.currentSuccesses &&
+          current.currentLatencySamples > before.currentLatencySamples &&
+          current.managerSuccesses > before.managerSuccesses &&
+          current.managerLatencySamples > before.managerLatencySamples &&
+          current.queueDepth === 0
+          ? current
+          : null;
+      },
+      "a real stacks-node callback to verify and reconcile",
+      120_000,
+      500,
+    );
+  } catch (error) {
+    const support = await sidekickFetch(state, "/api/v1/support-bundle").catch((supportError) => ({
+      error: supportError instanceof Error ? supportError.message : String(supportError),
+    }));
+    const observer = support.sections?.observer?.data ?? support;
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify({ before, lastMetrics, observer })}`,
+    );
+  }
   const bundle = await sidekickFetch(state, "/api/v1/support-bundle");
   const observer = bundle.sections?.observer?.data;
   const verified = observer?.inbox?.lastVerifiedStacksBlock;

@@ -10,6 +10,7 @@ import type { ConnectionAssessment } from "@stx-labs/signer-sidekick-api-contrac
 import { useState } from "react";
 import { apiDownload } from "./api-client.js";
 import { connectionPresentation } from "./connection-presentation.js";
+import { dashboardHash } from "./dashboard-route.js";
 import { DOCUMENT_LINKS } from "./shared/document-links.js";
 
 export function ConnectionPage({
@@ -154,6 +155,19 @@ export function ConnectionPage({
           <button className="btn btn-tertiary" onClick={() => void downloadSupport()} type="button">
             <DownloadSimple /> Download support snapshot
           </button>
+          {assessment?.outcomeCode === "deployment-identity-mismatch" ? (
+            <>
+              <a className="btn btn-tertiary" href={dashboardHash("activity")}>
+                Review Activity
+              </a>
+              <a className="btn btn-tertiary" href={dashboardHash("health")}>
+                Review signer health
+              </a>
+              <a className="btn btn-tertiary" href={dashboardHash("settings")}>
+                Review settings
+              </a>
+            </>
+          ) : null}
         </div>
         {presentation.showZeroToSigning ? (
           <small className="connection-restart-note">

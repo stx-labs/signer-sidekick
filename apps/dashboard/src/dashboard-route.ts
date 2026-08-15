@@ -28,6 +28,9 @@ export const managerActionIds = [
 
 export type ManagerActionId = (typeof managerActionIds)[number];
 export type ActionContext = Extract<ContextualAction, { kind: "launch-operation" }>["context"];
+export type DomainSection = NonNullable<
+  Extract<ContextualAction, { kind: "open-domain" }>["section"]
+>;
 export const settingsSections = [
   "attachment",
   "sources",
@@ -40,11 +43,28 @@ export type SettingsSection = (typeof settingsSections)[number];
 
 export interface DashboardRoute {
   page: DashboardPage;
+  domainSection: DomainSection | null;
   activityId: string | null;
   activitySearch: string;
   operation: OperatorOperationCode | null;
   operationContext: ActionContext;
   settingsSection: SettingsSection | null;
+}
+
+const domainSections = {
+  overview: ["attention", "cycle", "pool", "rewards", "health"],
+  pool: ["positions", "forecast", "roster"],
+  rewards: ["outlook", "calculation", "claims", "fees", "withdrawals", "history"],
+  activity: ["active", "history"],
+  health: ["findings", "node", "signer", "network", "sources"],
+  settings: [],
+} as const satisfies Record<DashboardPage, readonly DomainSection[]>;
+
+function parseDomainSection(page: DashboardPage, query: URLSearchParams): DomainSection | null {
+  const candidate = query.get("section");
+  return candidate && domainSections[page].some((section) => section === candidate)
+    ? (candidate as DomainSection)
+    : null;
 }
 
 function isDashboardPage(value: string): value is DashboardPage {
@@ -105,6 +125,7 @@ export function parseDashboardHash(hash: string): DashboardRoute {
       const query = new URLSearchParams(rawQuery);
       return {
         page: actionPage(operation.data),
+        domainSection: null,
         activityId: null,
         activitySearch: "",
         operation: operation.data,
@@ -114,6 +135,7 @@ export function parseDashboardHash(hash: string): DashboardRoute {
     }
   }
   const page = isDashboardPage(rawPage) ? rawPage : "overview";
+  const query = new URLSearchParams(rawQuery);
   let activityId: string | null = null;
   if (page === "activity" && rawPath.startsWith("activity/")) {
     try {
@@ -121,6 +143,7 @@ export function parseDashboardHash(hash: string): DashboardRoute {
     } catch {
       return {
         page: "overview",
+        domainSection: null,
         activityId: null,
         activitySearch: "",
         operation: null,
@@ -131,6 +154,7 @@ export function parseDashboardHash(hash: string): DashboardRoute {
   }
   return {
     page,
+    domainSection: parseDomainSection(page, query),
     activityId,
     activitySearch: page === "activity" ? rawQuery : "",
     operation: null,
@@ -138,7 +162,7 @@ export function parseDashboardHash(hash: string): DashboardRoute {
     settingsSection:
       page === "settings"
         ? (() => {
-            const candidate = new URLSearchParams(rawQuery).get("section");
+            const candidate = query.get("section");
             return isSettingsSection(candidate) ? candidate : null;
           })()
         : null,
@@ -147,6 +171,11 @@ export function parseDashboardHash(hash: string): DashboardRoute {
 
 export function dashboardHash(page: DashboardPage): string {
   return `#${page}`;
+}
+
+export function domainHash(page: DashboardPage, section: DomainSection | null = null): string {
+  const allowed = section ? domainSections[page].some((candidate) => candidate === section) : false;
+  return `#${page}${allowed ? `?section=${section}` : ""}`;
 }
 
 export function settingsHash(section: SettingsSection | null = null): string {

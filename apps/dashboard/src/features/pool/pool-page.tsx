@@ -6,6 +6,7 @@ import {
 import { useEffect, useState } from "react";
 import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
+import type { DomainSection } from "../../dashboard-route.js";
 import {
   Badge,
   PageHead,
@@ -13,6 +14,7 @@ import {
   SortableHeader,
   type TableSort,
 } from "../../shared/dashboard-ui.js";
+import { useDomainSection } from "../../shared/domain-section.js";
 import { number, short, stx } from "../../shared/format.js";
 import {
   operatorActionError,
@@ -32,7 +34,16 @@ type RosterSort =
   | "bond"
   | "status";
 
-export function Pool({ data, token }: { data: Snapshot; token: string }) {
+export function Pool({
+  data,
+  token,
+  section,
+}: {
+  data: Snapshot;
+  token: string;
+  section: DomainSection | null;
+}) {
+  useDomainSection("pool", section);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<TableSort<RosterSort>>({ key: "staker", direction: "asc" });
@@ -143,7 +154,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
           {downloadError}
         </div>
       ) : null}
-      <div className="kpi pool-kpi">
+      <div className="kpi pool-kpi domain-section-anchor" id="pool-positions">
         <div className="tile hero">
           <div className="l">Stakers</div>
           <div className="v">{data.rosterTotal ?? data.roster.length}</div>
@@ -178,14 +189,16 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
           <div className="d">recorded unlock heights</div>
         </div>
       </div>
-      <div className="section-title">
+      <div className="section-title domain-section-anchor" id="pool-forecast">
         Pool forecast{" "}
         <span className="hint">Current cycle confirmed; future cycles may change.</span>
       </div>
       <div className="card forecast-card">
         <PoolForecastChart view={forecastView} />
       </div>
-      <div className="section-title">Staker roster</div>
+      <div className="section-title domain-section-anchor" id="pool-roster">
+        Staker roster
+      </div>
       {rosterError ? (
         <div className="callout callout-critical content-notice" role="alert">
           <div className="body">

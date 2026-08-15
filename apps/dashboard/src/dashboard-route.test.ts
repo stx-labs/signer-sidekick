@@ -3,12 +3,14 @@ import {
   actionHash,
   activityHash,
   dashboardHash,
+  domainHash,
   managerActionIds,
   parseDashboardHash,
   settingsHash,
 } from "./dashboard-route.js";
 
 const noOperation = {
+  domainSection: null,
   operation: null,
   operationContext: { kind: "none" },
   settingsSection: null,
@@ -49,6 +51,18 @@ describe("dashboard routes", () => {
     expect(parseDashboardHash("#settings?section=unknown")).toMatchObject({
       page: "settings",
       settingsSection: null,
+    });
+  });
+
+  it("round-trips only page-specific domain sections", () => {
+    expect(domainHash("rewards", "fees")).toBe("#rewards?section=fees");
+    expect(parseDashboardHash(domainHash("rewards", "fees"))).toMatchObject({
+      page: "rewards",
+      domainSection: "fees",
+    });
+    expect(parseDashboardHash("#rewards?section=roster")).toMatchObject({
+      page: "rewards",
+      domainSection: null,
     });
   });
 

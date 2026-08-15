@@ -47,9 +47,12 @@ function countConsecutiveFailures(
   key: HealthSourceKey,
 ): number {
   let failures = 0;
+  let lastCheckedAt: string | null = null;
   for (let index = observations.length - 1; index >= 0; index -= 1) {
     const source = observations[index]?.[key];
     if (!source || source.reachable) break;
+    if (source.checkedAt === lastCheckedAt) continue;
+    lastCheckedAt = source.checkedAt;
     failures += 1;
   }
   return failures;
@@ -79,8 +82,8 @@ export function healthSourceState(
   return {
     configured: true,
     status: source?.reachable ? "healthy" : "unavailable",
-    checkedAt: latest?.observedAt ?? null,
-    lastSuccessAt: lastSuccess?.observedAt ?? null,
+    checkedAt: source?.checkedAt ?? latest?.observedAt ?? null,
+    lastSuccessAt: lastSuccess?.[key]?.checkedAt ?? lastSuccess?.observedAt ?? null,
     latencyMs: source?.latencyMs ?? null,
     consecutiveFailures: countConsecutiveFailures(observations, key),
     errorCode: source?.errorCode ?? null,
@@ -106,19 +109,19 @@ export function counterIncrease<T>(
   return transitions > 0 ? increase : null;
 }
 
-export function histogramP95(observations: readonly HealthObservation[]): number | null {
+export function histogramP95For(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): number | null {
   const bounds = new Set<string>();
   for (const observation of observations) {
-    for (const bound of Object.keys(observation.signerMetrics?.responseLatencyBuckets ?? {})) {
+    for (const bound of Object.keys(select(observation))) {
       bounds.add(bound);
     }
   }
   const deltas = [...bounds].map((bound) => ({
     bound,
-    value: counterIncrease(
-      observations,
-      (observation) => observation.signerMetrics?.responseLatencyBuckets[bound] ?? null,
-    ),
+    value: counterIncrease(observations, (observation) => select(observation)[bound] ?? null),
   }));
   const total = deltas.find(({ bound }) => bound === "+Inf")?.value ?? null;
   if (total === null || total < 1) return null;
@@ -129,6 +132,13 @@ export function histogramP95(observations: readonly HealthObservation[]): number
     if (bucket.value !== null && bucket.value >= target) return Number(bucket.bound);
   }
   return null;
+}
+
+export function histogramP95(observations: readonly HealthObservation[]): number | null {
+  return histogramP95For(
+    observations,
+    (observation) => observation.signerMetrics?.responseLatencyBuckets ?? {},
+  );
 }
 
 export function lastTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
@@ -159,6 +169,27 @@ export function lastHiroTipAdvanceAt(observations: readonly HealthObservation[])
         observation.hiro.chain_tip.burn_block_height !== previous.hiro.chain_tip.burn_block_height)
     ) {
       lastAdvance = observation.observedAt;
+    }
+    previous = observation;
+  }
+  return lastAdvance;
+}
+
+export function lastConfiguredApiTipAdvanceAt(
+  observations: readonly HealthObservation[],
+): string | null {
+  let previous: HealthObservation | null = null;
+  let lastAdvance: string | null = null;
+  for (const observation of observations) {
+    if (
+      previous?.configuredApi &&
+      observation.configuredApi &&
+      (observation.configuredApi.chain_tip.block_height !==
+        previous.configuredApi.chain_tip.block_height ||
+        observation.configuredApi.chain_tip.burn_block_height !==
+          previous.configuredApi.chain_tip.burn_block_height)
+    ) {
+      lastAdvance = observation.configuredApiSource?.checkedAt ?? observation.observedAt;
     }
     previous = observation;
   }

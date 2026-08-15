@@ -15,6 +15,7 @@ import {
 } from "../reward-calibration.js";
 import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
+import { HealthMonitoringRepository } from "./health-monitoring-repository.js";
 import { type Migration, migrations } from "./migrations.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
 
@@ -1781,10 +1782,12 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 export class SidekickStore {
   readonly transactionEngine: TransactionEngineRepository;
   readonly walletIntents: WalletIntentRepository;
+  readonly healthMonitoring: HealthMonitoringRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.transactionEngine = new TransactionEngineRepository(db);
     this.walletIntents = new WalletIntentRepository(db);
+    this.healthMonitoring = new HealthMonitoringRepository(db);
   }
 
   close(): void {

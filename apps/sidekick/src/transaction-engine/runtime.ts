@@ -752,7 +752,10 @@ export async function createSidekickTransactionEngineRuntime(
           reportMissingManager: true,
         });
         const pox5ContractId = setup.preflight.pox.pox5ContractId;
-        const rewardCalculation = deriveRewardCalculationTarget(setup.chainAnchor);
+        const rewardCalculation = deriveRewardCalculationTarget(
+          setup.chainAnchor,
+          setup.preflight.pox.firstRewardCycleId,
+        );
         const rewards =
           setup.manager.attachAllowed &&
           pox5ContractId &&
@@ -770,6 +773,7 @@ export async function createSidekickTransactionEngineRuntime(
                 burnBlockHeight: setup.chainAnchor.burnBlockHeight,
                 stacksTipHeight: setup.chainAnchor.stacksBlockHeight,
                 chainAnchor: setup.chainAnchor,
+                firstRewardCycleId: setup.preflight.pox.firstRewardCycleId,
               })
             : null;
         return {

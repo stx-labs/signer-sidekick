@@ -387,22 +387,23 @@ function apiStatusMatchesAnchor(status: ApiStatus, anchor: ChainAnchor): boolean
   );
 }
 
-function apiStatusesHaveSameTip(left: ApiStatus, right: ApiStatus): boolean {
+function apiStatusesHaveSameStacksTip(left: ApiStatus, right: ApiStatus): boolean {
   return (
     left.chain_tip.block_height === right.chain_tip.block_height &&
     left.chain_tip.block_hash.toLowerCase() === right.chain_tip.block_hash.toLowerCase() &&
-    left.chain_tip.index_block_hash.toLowerCase() ===
-      right.chain_tip.index_block_hash.toLowerCase() &&
-    left.chain_tip.burn_block_height === right.chain_tip.burn_block_height
+    left.chain_tip.index_block_hash.toLowerCase() === right.chain_tip.index_block_hash.toLowerCase()
   );
 }
 
 function blockMatchesAnchor(block: StacksBlockSummary, anchor: ChainAnchor): boolean {
+  // `anchor.burnBlockHeight` is the live Bitcoin height observed while the Stacks snapshot was
+  // sealed. The canonical Stacks block may have been anchored at an older Bitcoin height when no
+  // new Stacks block was produced in the meantime, so its immutable identity is height + index
+  // block hash rather than an exact burn-height match.
   return (
     block.canonical &&
     block.height === anchor.stacksBlockHeight &&
-    block.index_block_hash.toLowerCase() === anchor.indexBlockHash.toLowerCase() &&
-    block.burn_block_height === anchor.burnBlockHeight
+    block.index_block_hash.toLowerCase() === anchor.indexBlockHash.toLowerCase()
   );
 }
 
@@ -459,7 +460,9 @@ export async function proveSignerStakerAnchorRemainsCanonical(
       signal?.throwIfAborted();
       const after = await api.getStatus();
       signal?.throwIfAborted();
-      if (!apiStatusesHaveSameTip(before, after)) {
+      // A Bitcoin-only advance does not move or invalidate the Stacks tip being proved. Retry only
+      // when the API's Stacks identity changes around the canonical block lookup.
+      if (!apiStatusesHaveSameStacksTip(before, after)) {
         if (attempt < 3) continue;
         throw new SignerStakerAnchorError(
           "Chain tip moved while revalidating the sealed signer-staker anchor",

@@ -9,6 +9,7 @@ import {
   browserWalletIntentSchema,
   contextualActionSchema,
   dashboardSnapshotSchema,
+  healthFindingSchema,
   onboardingBrowserWalletIntentCreateRequestSchema,
   overviewPageSchema,
   reconciliationOperationSchema,
@@ -22,6 +23,47 @@ import {
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("Signer Health v2 contracts", () => {
+  const observedAt = "2026-08-14T12:00:00.000Z";
+  const finding = {
+    id: "node-behind-network",
+    episodeId: "10000000-0000-4000-8000-000000000001",
+    severity: "critical",
+    title: "Stacks node is behind its observed peers",
+    detail: "The local node remained behind its most advanced peer.",
+    source: "node",
+    classification: "likely-local-node",
+    confidence: "high",
+    firstObservedAt: observedAt,
+    lastObservedAt: observedAt,
+    evidenceWindow: {
+      startedAt: observedAt,
+      endedAt: observedAt,
+      sampleCount: 6,
+      distinctSources: 1,
+    },
+    evidence: [
+      {
+        code: "node-peer-height-gap",
+        source: "node-peers",
+        status: "supporting",
+        observedAt,
+        value: "3",
+        detail: "The peer-health endpoint reports a sustained canonical height gap.",
+      },
+    ],
+  };
+
+  it("requires attributed evidence and rejects healthy active findings", () => {
+    expect(healthFindingSchema.safeParse(finding).success).toBe(true);
+    expect(healthFindingSchema.safeParse({ ...finding, evidence: [] }).success).toBe(false);
+    expect(healthFindingSchema.safeParse({ ...finding, classification: "healthy" }).success).toBe(
+      false,
+    );
+    expect(healthFindingSchema.safeParse({ ...finding, observations: [] }).success).toBe(false);
+  });
+});
 
 describe("Overview V1 contracts", () => {
   const observedAt = "2026-08-14T12:00:00.000Z";

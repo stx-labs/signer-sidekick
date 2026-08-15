@@ -14,7 +14,8 @@ Choose the shortest path for your task.
 | Overview implementer | [Overview attention model](product/overview-attention-model-2026-08-14.md) | Operator attention policy, root-cause suppression, domain summaries, freshness, and migration contract |
 | Operation adapter reviewer | [Recurring operation contracts](product/recurring-operation-contracts-2026-08-13.md) | Retained actions, authority, safety inputs, and completion evidence |
 | Contract compatibility reviewer | [Deployed signer-manager baseline](reviews/deployed-signer-manager-baseline-2026-08-13.md) | Mainnet contract families, universal PoX-5 baseline, and capability-adapter policy |
-| Signer-health reviewer | [Signer Health](product/signer-health.md) | Monitoring sources, behavior, and scope |
+| Signer-health model reviewer | [Diagnosis model](product/signer-health-diagnosis-model.md) | Evidence hierarchy, attribution logic, external-reference boundary, and calibration process |
+| Signer-health implementer | [Signer Health](product/signer-health.md) | Implemented monitoring sources, thresholds, retention, and API behavior |
 | Assist reviewer | [Transaction engine safety contract](architecture/transaction-engine.md) | Authority and execution invariants before reviewing Assist |
 
 ## Dashboard

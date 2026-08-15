@@ -250,6 +250,8 @@ export async function executeCliCommand({
       });
       const health = new HealthMonitoringService({
         getConfig: () => runtimeSettings.effectiveConfig(),
+        store,
+        getOperatorContext: () => service.healthMonitoringContext(),
         getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
@@ -379,7 +381,6 @@ export async function executeCliCommand({
             );
           }
           operationalStarted = true;
-          health.start();
           engine.start();
           snapshotRefresh = startSnapshotRefreshLoop(
             {
@@ -448,6 +449,15 @@ export async function executeCliCommand({
       });
       await server.listen({ host, port });
       serverOwnsStore = true;
+      health.start((error) =>
+        server.log.warn(
+          { error: error instanceof Error ? error.message : String(error) },
+          "Signer health background collection failed; the next interval will retry",
+        ),
+      );
+      server.log.info(
+        "Signer health background monitoring is enabled independently of manager readiness",
+      );
       server.log.info(
         {
           connectionStatus: initialConnection.status,
@@ -703,6 +713,7 @@ export async function executeCliCommand({
           managerPrincipal,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
           nodeTransactions: new LiveTransactionReader({ baseUrl: config.nodeRpcUrl }),
+          nodeBlocks: node,
           observedAt,
           pageLimit: config.eventPageLimit,
         });
@@ -736,7 +747,7 @@ export async function executeCliCommand({
   } else if (command === "events" && arguments_[0] === "sync") {
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
-    const { config, api, preflight, manager } = await operatorContext(managerPrincipal, env);
+    const { config, node, api, preflight, manager } = await operatorContext(managerPrincipal, env);
     if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
       throw preflightBlocked("Event sync");
     }
@@ -761,6 +772,7 @@ export async function executeCliCommand({
           managerPrincipal,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
           nodeTransactions: new LiveTransactionReader({ baseUrl: config.nodeRpcUrl }),
+          nodeBlocks: node,
           observedAt,
           pageLimit: config.eventPageLimit,
         });
@@ -834,7 +846,10 @@ export async function executeCliCommand({
     if (!rewardCapability.executionAvailable) {
       throw new Error(`Reward status is unavailable: ${rewardCapability.reason}`);
     }
-    const defaultRewardCalculation = deriveRewardCalculationTarget(chainAnchor);
+    const defaultRewardCalculation = deriveRewardCalculationTarget(
+      chainAnchor,
+      preflight.pox.firstRewardCycleId,
+    );
     if (!rewardCycleArgument && defaultRewardCalculation.status === "invalid") {
       throw new Error(
         `The current chain anchor has no completed PoX-5 reward calculation: ${defaultRewardCalculation.reason}`,
@@ -868,6 +883,7 @@ export async function executeCliCommand({
           burnBlockHeight: chainAnchor.burnBlockHeight,
           stacksTipHeight: chainAnchor.stacksBlockHeight,
           chainAnchor,
+          firstRewardCycleId: preflight.pox.firstRewardCycleId,
         });
         writeCliJson(output, {
           config: redactConfig(config),
@@ -928,6 +944,8 @@ export async function executeCliCommand({
           });
           const health = new HealthMonitoringService({
             getConfig: () => runtimeSettings.effectiveConfig(),
+            store,
+            getOperatorContext: () => service.healthMonitoringContext(),
             getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
           });
           const bundle = await createOperatorSupportBundle({

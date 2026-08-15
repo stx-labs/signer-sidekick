@@ -38,6 +38,8 @@ export interface OverviewAttentionCandidate {
   conditionKey: string;
   suppressedBy?: readonly string[];
   suppresses?: readonly string[];
+  /** Safety or coverage evidence that must remain visible under broad root-cause suppression. */
+  survivesWildcardSuppression?: boolean;
   operationScope?: string | null;
   authority?: "domain" | "activity";
 }
@@ -117,8 +119,8 @@ export function correlateOverviewAttention(
     }
     for (const condition of candidate.suppresses ?? []) {
       if (condition === "*") {
-        candidates.forEach((_target, target) => {
-          addEdge(index, target);
+        candidates.forEach((targetCandidate, target) => {
+          if (!targetCandidate.survivesWildcardSuppression) addEdge(index, target);
         });
       } else {
         for (const target of byCondition.get(condition) ?? []) addEdge(index, target);
@@ -297,6 +299,29 @@ function sourceEvidence(
     source: kind,
     reason: source.errorCode,
   });
+}
+
+function findingEvidence(finding: HealthSnapshot["findings"][number]): OverviewEvidence[] {
+  return finding.evidence.map((item) =>
+    evidence({
+      status:
+        item.status === "unavailable"
+          ? "unavailable"
+          : item.status === "collecting"
+            ? "delayed"
+            : "current",
+      observedAt: item.observedAt,
+      source:
+        item.source === "local-node" || item.source === "node-peers"
+          ? "local-node"
+          : item.source === "signer-monitoring"
+            ? "signer"
+            : item.source === "on-chain"
+              ? "sidekick-store"
+              : "network-reference",
+      reason: item.detail,
+    }),
+  );
 }
 
 function estimateAt(observedAt: string, blocksRemaining: number | null, seconds: number | null) {
@@ -586,32 +611,79 @@ function networkSummary(health: HealthSnapshot | null): OverviewPage["network"] 
       detailsAction: healthAction("network", "Review network evidence"),
     };
   }
-  const source = health.hiro.source;
-  const observed = sourceEvidence(source, health.generatedAt, "network-reference");
-  const configured = source.status !== "not-configured";
-  const available = source.status === "healthy";
-  const lastAdvanceAt = health.hiro.lastTipAdvanceAt;
-  const advancing = available && health.hiro.advancementStatus === "advancing";
+  const comparisons = [
+    ...(health.hiro.source.status !== "not-configured"
+      ? [
+          {
+            label: "public reference API",
+            source: health.hiro.source,
+            stacksTipHeight: health.hiro.stacksTipHeight,
+            burnBlockHeight: health.hiro.burnBlockHeight,
+            lastAdvanceAt: health.hiro.lastTipAdvanceAt,
+            advancementStatus: health.hiro.advancementStatus,
+          },
+        ]
+      : []),
+    ...(health.configuredApi.distinctFromReference &&
+    health.configuredApi.source.status !== "not-configured"
+      ? [
+          {
+            label: "configured indexed API",
+            source: health.configuredApi.source,
+            stacksTipHeight: health.configuredApi.stacksTipHeight,
+            burnBlockHeight: health.configuredApi.burnBlockHeight,
+            lastAdvanceAt: health.configuredApi.lastTipAdvanceAt,
+            advancementStatus: health.configuredApi.advancementStatus,
+          },
+        ]
+      : []),
+  ];
+  const selected =
+    comparisons.find(
+      ({ source, advancementStatus }) =>
+        source.status === "healthy" && advancementStatus === "advancing",
+    ) ??
+    comparisons.find(({ source }) => source.status === "healthy") ??
+    comparisons.at(0);
+  const advancing = comparisons.some(
+    ({ source, advancementStatus }) =>
+      source.status === "healthy" && advancementStatus === "advancing",
+  );
+  const unavailable =
+    comparisons.length > 0 && comparisons.every(({ source }) => source.status === "unavailable");
+  const networkFinding = health.findings.find(
+    ({ source }) => source === "network" || source === "source",
+  );
   return {
-    status: !configured
-      ? "insufficient-evidence"
-      : !available
-        ? "unavailable"
-        : advancing
-          ? "advancing"
-          : "insufficient-evidence",
-    reference: configured ? "configured network reference" : null,
-    stacksTipHeight: health.hiro.stacksTipHeight,
-    burnBlockHeight: health.hiro.burnBlockHeight,
-    lastObservedAt: lastAdvanceAt ?? source.lastSuccessAt,
-    detail: !configured
-      ? "No optional independent network reference is configured."
-      : !available
-        ? "The configured network reference is currently unavailable."
-        : advancing
-          ? "The independently observed network tip is advancing."
-          : "The network reference is reachable, but recent advancement is not proved inside the evidence window.",
-    evidence: [observed],
+    status: networkFinding
+      ? "needs-attention"
+      : comparisons.length === 0
+        ? "insufficient-evidence"
+        : unavailable
+          ? "unavailable"
+          : advancing
+            ? "advancing"
+            : "insufficient-evidence",
+    reference: comparisons.map(({ label }) => label).join(" and ") || null,
+    stacksTipHeight: selected?.stacksTipHeight ?? null,
+    burnBlockHeight: selected?.burnBlockHeight ?? null,
+    lastObservedAt: selected?.lastAdvanceAt ?? selected?.source.lastSuccessAt ?? null,
+    detail: networkFinding
+      ? networkFinding.detail
+      : comparisons.length === 0
+        ? "No optional independent network reference is configured."
+        : unavailable
+          ? "Every configured network comparison source is currently unavailable."
+          : advancing
+            ? "At least one independently observed network tip is advancing."
+            : "Network comparison sources are reachable, but recent advancement is not proved inside the evidence window.",
+    evidence: networkFinding
+      ? findingEvidence(networkFinding)
+      : comparisons.length > 0
+        ? comparisons.map(({ source }) =>
+            sourceEvidence(source, health.generatedAt, "network-reference"),
+          )
+        : [evidence({ status: "unavailable", observedAt: null, source: "network-reference" })],
     detailsAction: healthAction("network", "Review network evidence"),
   };
 }
@@ -633,7 +705,8 @@ function nodeSummary(
     };
   }
   const unavailable = health.node.rpc.status === "unavailable";
-  const behind = health.findings.some(({ id }) => id === "node-behind-network");
+  const nodeFinding = health.findings.find(({ source }) => source === "node");
+  const behind = nodeFinding !== undefined;
   const aligned = !unavailable && !behind && health.node.rpc.status === "healthy";
   return {
     status: unavailable
@@ -650,11 +723,13 @@ function nodeSummary(
     detail: unavailable
       ? "The configured local node RPC is unavailable."
       : behind
-        ? "The local node reports that it is behind its observed peers."
+        ? nodeFinding.detail
         : aligned
           ? "The local node is reachable and aligned with its observed peers."
           : "Sidekick is still collecting enough evidence to determine node alignment.",
-    evidence: [sourceEvidence(health.node.rpc, health.generatedAt, "local-node")],
+    evidence: nodeFinding
+      ? findingEvidence(nodeFinding)
+      : [sourceEvidence(health.node.rpc, health.generatedAt, "local-node")],
     detailsAction: healthAction("node", "Review node health"),
   };
 }
@@ -680,16 +755,14 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
     source.status === "unavailable" ||
     health.signer.heartbeat.status === "unavailable" ||
     health.signer.metrics.status === "unavailable";
-  const signerFinding = health.findings.some(
-    ({ source: findingSource }) => findingSource === "signer",
-  );
+  const signerFinding = health.findings.find(({ source }) => source === "signer");
   const collecting = health.signer.lastHour.collectingBaseline;
   return {
     status: notConfigured
       ? "not-configured"
       : unavailable
         ? "unavailable"
-        : signerFinding
+        : signerFinding !== undefined
           ? "needs-attention"
           : collecting
             ? "collecting"
@@ -705,15 +778,17 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
       : unavailable
         ? "The configured signer monitoring source is unavailable."
         : signerFinding
-          ? "Signer monitoring reports a condition that needs attention."
+          ? signerFinding.detail
           : collecting
             ? "Signer monitoring is healthy and collecting a participation baseline."
             : "Signer monitoring is healthy and aligned with the local node.",
-    evidence: [
-      sourceEvidence(source, health.generatedAt, "signer"),
-      sourceEvidence(health.signer.heartbeat, health.generatedAt, "signer"),
-      sourceEvidence(health.signer.metrics, health.generatedAt, "signer"),
-    ],
+    evidence: signerFinding
+      ? findingEvidence(signerFinding)
+      : [
+          sourceEvidence(source, health.generatedAt, "signer"),
+          sourceEvidence(health.signer.heartbeat, health.generatedAt, "signer"),
+          sourceEvidence(health.signer.metrics, health.generatedAt, "signer"),
+        ],
     detailsAction: healthAction("signer", "Review signer health"),
   };
 }
@@ -839,8 +914,9 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   if (health) {
     const nodeUnavailable = health.findings.some(({ id }) => id === "node-rpc-unavailable");
     for (const finding of health.findings) {
-      const domain: OverviewDomain = finding.source === "node" ? "node" : "signer";
-      const conditionKey = `${finding.source}:${finding.id}`;
+      const domain: OverviewDomain =
+        finding.source === "node" ? "node" : finding.source === "signer" ? "signer" : "network";
+      const conditionKey = `${domain}:${finding.id}`;
       candidates.push({
         conditionKey,
         suppressedBy:
@@ -861,7 +937,11 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
             currentInSignerSet && finding.severity === "critical" ? "urgent" : "needs-attention",
           domain,
           affectedDomains:
-            finding.source === "node" ? ["node", "signer", "pool", "rewards"] : ["signer"],
+            domain === "node"
+              ? ["node", "signer", "pool", "rewards"]
+              : domain === "signer"
+                ? ["signer"]
+                : ["network"],
           code: finding.id,
           title: finding.title,
           summary: finding.detail,
@@ -869,18 +949,13 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
             finding.source === "node"
               ? "Local signer participation and current-state operations may be affected."
               : "Signer participation evidence or signing activity may be affected.",
-          updatedAt: health.generatedAt,
-          evidence: [
-            sourceEvidence(
-              finding.source === "node" ? health.node.rpc : health.signer.infoSource,
-              health.generatedAt,
-              finding.source === "node" ? "local-node" : "signer",
-            ),
-          ],
+          openedAt: finding.firstObservedAt,
+          updatedAt: finding.lastObservedAt,
+          evidence: findingEvidence(finding),
           relatedActivityId: null,
           relatedFindingId: finding.id,
           primaryAction: healthAction(
-            finding.source === "node" ? "node" : "signer",
+            domain === "node" ? "node" : domain === "signer" ? "signer" : "network",
             "Review health evidence",
           ),
           detailsAction: null,
@@ -1170,6 +1245,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
   if (activitySource?.status === "unavailable") {
     candidates.push({
       conditionKey: "activity:unavailable",
+      survivesWildcardSuppression: true,
       item: attentionItem({
         attentionId: "sidekick:activity-unavailable",
         tier: "needs-attention",
@@ -1200,6 +1276,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
     if (active.displayStatus === "needs-attention" || active.displayStatus === "action-required") {
       candidates.push({
         conditionKey: `activity:${active.activityId}`,
+        survivesWildcardSuppression: active.outcome === "ambiguous",
         operationScope: activityOperationScope(active),
         authority: "activity",
         item: activityAttentionItem(active),

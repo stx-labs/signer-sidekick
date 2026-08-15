@@ -275,11 +275,88 @@ function source(status: "healthy" | "unavailable" | "not-configured" = "healthy"
   };
 }
 
+function healthFinding(
+  overrides: Pick<
+    HealthSnapshot["findings"][number],
+    "id" | "severity" | "title" | "detail" | "source"
+  > &
+    Partial<HealthSnapshot["findings"][number]>,
+): HealthSnapshot["findings"][number] {
+  return {
+    episodeId: "10000000-0000-4000-8000-000000000001",
+    classification:
+      overrides.source === "node"
+        ? "likely-local-node"
+        : overrides.source === "signer"
+          ? "likely-local-signer"
+          : "source-disagreement",
+    confidence: "high",
+    firstObservedAt: generatedAt,
+    lastObservedAt: generatedAt,
+    evidenceWindow: {
+      startedAt: generatedAt,
+      endedAt: generatedAt,
+      sampleCount: 3,
+      distinctSources: 1,
+    },
+    evidence: [
+      {
+        code: overrides.id,
+        source:
+          overrides.source === "node"
+            ? "local-node"
+            : overrides.source === "signer"
+              ? "signer-monitoring"
+              : "reference-api",
+        status: "supporting",
+        observedAt: generatedAt,
+        value: null,
+        detail: overrides.detail,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function health(overrides: Partial<HealthSnapshot> = {}): HealthSnapshot {
   const base = {
+    schemaVersion: 2 as const,
     generatedAt,
     overallStatus: "healthy" as const,
     coverage: { available: 20, total: 20 },
+    diagnosis: {
+      status: "healthy" as const,
+      classification: "healthy" as const,
+      confidence: "high" as const,
+      summary: "No active health finding is supported.",
+      evidenceWindow: {
+        startedAt: generatedAt,
+        endedAt: generatedAt,
+        sampleCount: 1,
+        distinctSources: 1,
+      },
+      activeFindingIds: [],
+    },
+    history: {
+      sampleIntervalSeconds: 5 as const,
+      rawRetentionHours: 72 as const,
+      rollupIntervalMinutes: 5 as const,
+      rollupRetentionDays: 90 as const,
+      observedSince: generatedAt,
+      observationCount: 1,
+      recentRollups: [],
+      recentEpisodes: [],
+    },
+    operator: {
+      network: "mainnet",
+      managerPrincipal,
+      currentRewardCycle: 141,
+      registered: true,
+      signerKeyHex: `02${"22".repeat(32)}`,
+      signerKeyGrantValid: true,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: true,
+    },
     burnBlockTiming: {
       averageSeconds: 600,
       windowHours: 12 as const,
@@ -310,6 +387,16 @@ function health(overrides: Partial<HealthSnapshot> = {}): HealthSnapshot {
       lastTipAdvanceAt: generatedAt,
       advancementStatus: "advancing" as const,
     },
+    configuredApi: {
+      distinctFromReference: false,
+      source: source("not-configured"),
+      stacksTipHeight: null,
+      burnBlockHeight: null,
+      localStacksDifference: null,
+      localBurnDifference: null,
+      lastTipAdvanceAt: null,
+      advancementStatus: "insufficient-evidence" as const,
+    },
     signer: {
       infoSource: source(),
       heartbeat: source(),
@@ -322,6 +409,28 @@ function health(overrides: Partial<HealthSnapshot> = {}): HealthSnapshot {
       nodeHeightDifference: 0,
       rewardCycle: 141,
       stxBalanceUstx: 1_000_000,
+      identityMatchesRegistration: true,
+      networkMatchesConfiguration: true,
+      rewardCycleMatchesNode: true,
+      last15Minutes: {
+        startedAt: generatedAt,
+        endedAt: generatedAt,
+        sampleCount: 1,
+        proposals: 12,
+        validationAccepted: 12,
+        validationRejected: 0,
+        accepted: 12,
+        rejected: 0,
+        responseGap: 0,
+        rejectionPercent: 0,
+        responseP95Seconds: 0.8,
+        validationP95Seconds: 0.8,
+        nodeRpcP95Seconds: 0.1,
+        capitulationP95Seconds: null,
+        disagreements: 0,
+        preCommits: 12,
+        collectingBaseline: false,
+      },
       lastHour: {
         proposals: 12,
         accepted: 12,
@@ -670,17 +779,17 @@ describe("Overview projection", () => {
     });
   });
 
-  it("returns one safe-mode root cause and suppresses derived signer, health, and pool symptoms", () => {
+  it("suppresses derived safe-mode noise but retains ambiguity and Activity coverage warnings", () => {
     const belowThreshold = forecastCycle(142, false, "-100000000");
     const unhealthy = health({
       findings: [
-        {
+        healthFinding({
           id: "node-rpc-unavailable",
           severity: "critical",
           title: "Node unavailable",
           detail: "Three failures",
           source: "node",
-        },
+        }),
       ],
     });
     const result = projectOverview({
@@ -698,6 +807,19 @@ describe("Overview projection", () => {
         },
       }),
       health: unhealthy,
+      activity: activity([
+        activityGroup(
+          "update-fees",
+          "needs-attention",
+          "ambiguous",
+          "wallet-intent:4e011bf7-f291-42c4-a35b-ab299a87ff8c",
+        ),
+      ]),
+      activitySource: {
+        status: "unavailable",
+        observedAt: generatedAt,
+        reason: "Durable Activity projection could not be read.",
+      },
       connection: {
         schemaVersion: 1,
         status: "blocked",
@@ -724,9 +846,17 @@ describe("Overview projection", () => {
       now: new Date(generatedAt),
     });
 
-    expect(result.attention.map(({ attentionId }) => attentionId)).toEqual([
-      "connection:deployment-identity",
-    ]);
+    const attentionIds = result.attention.map(({ attentionId }) => attentionId);
+    expect(attentionIds).toHaveLength(3);
+    expect(attentionIds).toEqual(
+      expect.arrayContaining([
+        "connection:deployment-identity",
+        "wallet-intent:4e011bf7-f291-42c4-a35b-ab299a87ff8c",
+        "sidekick:activity-unavailable",
+      ]),
+    );
+    expect(attentionIds).not.toContain("health:node-rpc-unavailable");
+    expect(attentionIds).not.toContain("pool:threshold:142");
   });
 
   it("absorbs grant consequences into one actionable registration repair", () => {
@@ -785,13 +915,13 @@ describe("Overview projection", () => {
       snapshot: snapshot(),
       health: health({
         findings: [
-          {
+          healthFinding({
             id: "node-behind-network",
             severity: "critical",
             title: "Local node is behind",
             detail: "The local node remained behind its peers.",
             source: "node",
-          },
+          }),
         ],
       }),
       connection: null,
@@ -805,18 +935,77 @@ describe("Overview projection", () => {
     });
   });
 
+  it("keeps an ambiguous signer finding in the signer domain", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health({
+        findings: [
+          healthFinding({
+            id: "signer-rejection-rate-elevated",
+            severity: "warning",
+            title: "Signer rejection rate is elevated",
+            detail: "Recent signer responses rejected an elevated share of proposals.",
+            source: "signer",
+            classification: "source-disagreement",
+          }),
+        ],
+      }),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.signer.status).toBe("needs-attention");
+    expect(result.network.status).toBe("advancing");
+    expect(result.attention[0]).toMatchObject({ domain: "signer" });
+  });
+
+  it("uses a distinct configured API when the public reference is absent", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health({
+        hiro: {
+          source: source("not-configured"),
+          stacksTipHeight: null,
+          burnBlockHeight: null,
+          localStacksDifference: null,
+          localBurnDifference: null,
+          lastTipAdvanceAt: null,
+          advancementStatus: "insufficient-evidence",
+        },
+        configuredApi: {
+          distinctFromReference: true,
+          source: source(),
+          stacksTipHeight: 8_750_000,
+          burnBlockHeight: 962_300,
+          localStacksDifference: 0,
+          localBurnDifference: 0,
+          lastTipAdvanceAt: generatedAt,
+          advancementStatus: "advancing",
+        },
+      }),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.network).toMatchObject({
+      status: "advancing",
+      reference: "configured indexed API",
+      stacksTipHeight: 8_750_000,
+    });
+  });
+
   it("keeps a participating signer's node outage urgent and suppresses the derived connection symptom", () => {
     const result = projectOverview({
       snapshot: snapshot(),
       health: health({
         findings: [
-          {
+          healthFinding({
             id: "node-rpc-unavailable",
             severity: "critical",
             title: "Node unavailable",
             detail: "The local node failed its persistence threshold.",
             source: "node",
-          },
+          }),
         ],
       }),
       connection: connection(),
@@ -1319,13 +1508,13 @@ describe("Overview projection", () => {
         overview({
           health: health({
             findings: [
-              {
+              healthFinding({
                 id: "node-rpc-unavailable",
                 severity: "critical",
                 title: "Node unavailable",
                 detail: "Persisted failure",
                 source: "node",
-              },
+              }),
             ],
           }),
           connection: connection(),
@@ -1338,13 +1527,13 @@ describe("Overview projection", () => {
         overview({
           health: health({
             findings: [
-              {
+              healthFinding({
                 id: "signer-node-heartbeat-failed",
                 severity: "critical",
                 title: "Signer heartbeat failed",
                 detail: "Persisted failure",
                 source: "signer",
-              },
+              }),
             ],
           }),
         }),

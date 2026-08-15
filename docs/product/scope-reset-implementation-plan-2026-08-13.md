@@ -349,6 +349,13 @@ STX-only and mixed STX/sBTC-bond distributions.
 - Define a time-correlated StacksUp or operator-observability companion artifact without adding host
   control or unrestricted logs to Sidekick.
 
+Implementation checkpoint (2026-08-14): Signer Health v2 implements five-second durable local
+evidence, 30-second reference sampling, 72-hour raw retention, 90-day five-minute rollups, durable
+finding episodes, node/signer/source/network classifications, anchored operator context, official
+signer participation and latency signals, Overview attribution, and the time-correlated optional
+infrastructure companion-artifact request. A single API can never establish a network-wide fault;
+that classification requires the stalled local tip plus two distinct peer/reference signals.
+
 ### Slice 8: operator information architecture
 
 - Implement the server-owned Activity projection over durable authority records, including closed
@@ -404,6 +411,21 @@ the reviewed slice for operator signing.
 
 ## Recorded product decisions
 
+- **Signer-health confidence and retention (2026-08-14):** Sidekick samples local node/signer
+  evidence every five seconds and distinct API references every 30 seconds, retains 72 hours of raw
+  evidence and 90 days of five-minute rollups, and records findings as durable episodes. A single
+  API is comparison evidence only. `suspected-network-wide` requires a stalled local tip plus two
+  distinct peer/reference signals; an advancing local node with a lagging API is a source
+  disagreement, not a local or network failure. Exact thresholds and evidence contracts are
+  normative in [Signer Health v2](signer-health.md), and the authority, attribution, Slotwatch, and
+  external-reference boundaries are normative in the
+  [Signer Health diagnosis model](signer-health-diagnosis-model.md). Sidekick does not require the
+  Hiro Signer Metrics API or build a signer-cohort explorer for routine local diagnosis.
+- **Support-artifact seam (2026-08-14):** the Sidekick support bundle remains the complete protocol,
+  manager, signer, observer, and Sidekick record. It carries a correlation window and requests an
+  optional StacksUp/operator infrastructure companion artifact for host/process/log/storage/network
+  evidence. Sidekick does not gain host control or unrestricted log collection, and lack of the
+  companion artifact does not prevent bundle generation.
 - **External first-time setup boundary (2026-08-14):** Sidekick treats
   `https://stx.fan/zero_to/signing/` as the preferred replaceable day-zero handoff, not as a
   Sidekick-owned dependency or release artifact. Sidekick support begins once a trait-compatible

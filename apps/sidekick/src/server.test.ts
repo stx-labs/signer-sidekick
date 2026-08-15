@@ -6,7 +6,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
+import type { SidekickConfig } from "./config.js";
 import { HealthSourceError } from "./health-http.js";
+import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
+import type { HealthObservation, SignerMetricValues } from "./health-monitoring-types.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
@@ -64,6 +67,127 @@ function reconciliationResult() {
       stoppedAtKnownOverlap: true,
     },
   };
+}
+
+function serverHealthSnapshot() {
+  const config: SidekickConfig = {
+    network: "mainnet",
+    nodeRpcUrl: "http://127.0.0.1:20443",
+    apiUrl: "https://configured.example.com",
+    apiKeyHeader: "x-api-key",
+    maxApiBurnBlockLag: 12,
+    forecastHorizonCycles: 6,
+    stakerPageLimit: 200,
+    eventPageLimit: 100,
+    databasePath: ":memory:",
+    nodeMetricsUrl: "http://127.0.0.1:9154",
+    signerMonitoringUrl: "http://127.0.0.1:9153",
+    hiroReferenceApiUrl: "https://reference.example.com",
+  };
+  const signerKeyHex = `02${"11".repeat(32)}`;
+  const source = (checkedAt: string) => ({
+    reachable: true,
+    latencyMs: 2,
+    errorCode: null,
+    checkedAt,
+  });
+  const signerMetrics = (overrides: Partial<SignerMetricValues>): SignerMetricValues => ({
+    nodeHeight: 200_000,
+    rewardCycle: 141,
+    stxBalanceUstx: 1_000_000,
+    proposalsTotal: 0,
+    validationAcceptedTotal: 0,
+    validationRejectedTotal: 0,
+    acceptedTotal: 0,
+    rejectedTotal: 0,
+    preCommitsTotal: 0,
+    conflictTotal: 0,
+    conflictTotals: {},
+    stateChangeTotals: {},
+    nodeRpcLatencyBuckets: {},
+    validationLatencyBuckets: {},
+    responseLatencyBuckets: {},
+    capitulationLatencyBuckets: {},
+    ...overrides,
+  });
+  const observation = (observedAt: string, metrics: SignerMetricValues): HealthObservation => ({
+    observedAt,
+    nodeRpc: source(observedAt),
+    nodeInfo: {
+      network_id: 1,
+      burn_block_height: 960_000,
+      stacks_tip_height: 200_000,
+      is_fully_synced: true,
+    },
+    nodeHealth: {
+      difference_from_max_peer: 0,
+      max_stacks_height_of_neighbors: 200_000,
+      node_stacks_tip_height: 200_000,
+    },
+    nodeMetricsSource: source(observedAt),
+    nodeMetrics: null,
+    hiroSource: source(observedAt),
+    hiro: {
+      status: "ready",
+      chain_tip: { block_height: 200_000, burn_block_height: 960_000 },
+    },
+    configuredApiSource: {
+      reachable: false,
+      latencyMs: null,
+      errorCode: "upstream-timeout",
+      checkedAt: observedAt,
+    },
+    configuredApi: null,
+    signerInfoSource: source(observedAt),
+    signerInfo: {
+      signerPublicKey: signerKeyHex,
+      network: "mainnet",
+      stxAddress: "SP000000000000000000002Q6VF78",
+      version: "4.0.2.0.0",
+    },
+    signerHeartbeat: source(observedAt),
+    signerMetricsSource: source(observedAt),
+    signerMetrics: metrics,
+  });
+
+  return buildHealthSnapshot({
+    observations: [
+      observation(
+        "2026-08-14T12:00:00.000Z",
+        signerMetrics({
+          proposalsTotal: 10,
+          validationAcceptedTotal: 8,
+          validationRejectedTotal: 2,
+          acceptedTotal: 8,
+          rejectedTotal: 2,
+          responseLatencyBuckets: { "1": 10, "10": 10, "+Inf": 10 },
+        }),
+      ),
+      observation(
+        "2026-08-14T12:01:00.000Z",
+        signerMetrics({
+          proposalsTotal: 35,
+          validationAcceptedTotal: 18,
+          validationRejectedTotal: 12,
+          acceptedTotal: 18,
+          rejectedTotal: 12,
+          responseLatencyBuckets: { "1": 15, "10": 30, "+Inf": 30 },
+        }),
+      ),
+    ],
+    config,
+    burnBlockTiming: null,
+    operator: {
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      currentRewardCycle: 141,
+      registered: true,
+      signerKeyHex,
+      signerKeyGrantValid: true,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: true,
+    },
+  });
 }
 
 afterEach(async () => {
@@ -285,6 +409,12 @@ describe("local API", () => {
     } as unknown as ConnectionAssessment;
     const check = vi.fn(async (force = false) => (force ? connected : blocked));
     const onConnectionAssessed = vi.fn();
+    const retainedHealth = serverHealthSnapshot();
+    const health = {
+      current: vi.fn().mockResolvedValue(retainedHealth),
+      refresh: vi.fn().mockResolvedValue(retainedHealth),
+      testSource: vi.fn(),
+    };
     const service = {
       snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
       synchronize: vi.fn(async () => ({})),
@@ -294,6 +424,7 @@ describe("local API", () => {
       service,
       connection: { current: () => blocked, check },
       isOperational: () => false,
+      health,
       onConnectionAssessed,
       authToken: token,
       logger: false,
@@ -313,6 +444,20 @@ describe("local API", () => {
     expect(status.statusCode).toBe(503);
     expect(status.json()).toMatchObject({ error: "connection_required", retryable: true });
     expect(service.snapshot).not.toHaveBeenCalled();
+
+    const healthResponse = await server.inject({ method: "GET", url: "/api/v1/health", headers });
+    expect(healthResponse.statusCode).toBe(200);
+    expect(healthResponse.json()).toEqual(retainedHealth);
+    expect(health.current).toHaveBeenCalledOnce();
+    expect(
+      (await server.inject({ method: "POST", url: "/api/v1/health/refresh", headers })).statusCode,
+    ).toBe(503);
+
+    const support = await server.inject({ method: "GET", url: "/api/v1/support-bundle", headers });
+    expect(support.statusCode).toBe(200);
+    expect(support.json()).toMatchObject({
+      sections: { nodeAndSignerHealth: { status: "ok", data: retainedHealth } },
+    });
 
     const settings = await server.inject({ method: "GET", url: "/api/v1/settings", headers });
     expect(settings.statusCode).toBe(200);
@@ -543,6 +688,7 @@ describe("local API", () => {
       /^attachment; filename="signer-sidekick-support-.+\.json"$/,
     );
     expect(response.json()).toMatchObject({
+      schemaVersion: 2,
       documentType: "signer-sidekick-operator-support-bundle",
       collectionStatus: "partial",
       application: { version: "1.2.3", buildCommit: "abcdef1" },
@@ -675,9 +821,11 @@ describe("local API", () => {
 
   it("protects and forwards signer health reads, refreshes, and source tests", async () => {
     const token = "test-operator-token-with-32-chars";
+    const currentSnapshot = serverHealthSnapshot();
+    const refreshedSnapshot = { ...currentSnapshot, overallStatus: "partial" as const };
     const health = {
-      current: vi.fn().mockResolvedValue({ overallStatus: "healthy" }),
-      refresh: vi.fn().mockResolvedValue({ overallStatus: "partial" }),
+      current: vi.fn().mockResolvedValue(currentSnapshot),
+      refresh: vi.fn().mockResolvedValue(refreshedSnapshot),
       testSource: vi.fn().mockResolvedValue({ status: "connected", signals: 7 }),
     };
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
@@ -687,11 +835,11 @@ describe("local API", () => {
 
     expect((await server.inject({ method: "GET", url: "/api/v1/health" })).statusCode).toBe(401);
     expect((await server.inject({ method: "GET", url: "/api/v1/health", headers })).json()).toEqual(
-      { overallStatus: "healthy" },
+      currentSnapshot,
     );
     expect(
       (await server.inject({ method: "POST", url: "/api/v1/health/refresh", headers })).json(),
-    ).toEqual({ overallStatus: "partial" });
+    ).toEqual(refreshedSnapshot);
     expect(
       (
         await server.inject({
@@ -716,6 +864,20 @@ describe("local API", () => {
         })
       ).statusCode,
     ).toBe(400);
+
+    const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="likely-local-signer"} 2',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_source_available{source="configured-api"} 0',
+    );
+    expect(metrics.body).toContain("sidekick_signer_response_gap 5");
+    expect(metrics.body).toContain("sidekick_signer_rejection_percent 50");
+    expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 10");
   });
 
   it("accepts only sealed wallet-intent actions and txids", async () => {

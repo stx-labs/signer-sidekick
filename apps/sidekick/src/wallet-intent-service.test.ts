@@ -27,6 +27,7 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { UpstreamHttpError } from "./chain-clients.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256 } from "./storage/wallet-intent-repository.js";
@@ -287,6 +288,7 @@ async function proveRecurringManagerAction(input: {
   expectedOutcome?: "complete" | "canonical-success" | "mismatch";
   repeatable?: boolean;
   transactionIndexUnavailable?: boolean;
+  transactionMissingFromIndex?: boolean;
   apiDetails?: Partial<{
     sponsored: boolean;
     anchorMode: "any" | "on_chain_only" | "off_chain_only";
@@ -340,7 +342,17 @@ async function proveRecurringManagerAction(input: {
     runtimeSettings: {
       clients: () => ({
         config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
-        node: { getInfo: vi.fn(async () => ({ network_id: 1 })), ...input.node },
+        node: {
+          getInfo: vi.fn(async () => ({ network_id: 1 })),
+          getTenureInfo: vi.fn(async () => ({
+            tip_block_id: `0x${"99".repeat(32)}`,
+            tip_height: blockHeight + 100,
+            reward_cycle: 141,
+          })),
+          getNakamotoBlockById: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+          getNakamotoBlockAtHeight: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+          ...input.node,
+        },
         api,
       }),
     } as unknown as RuntimeSettingsController,
@@ -348,26 +360,31 @@ async function proveRecurringManagerAction(input: {
     canRepairSignerRegistration,
     readerFactory: () => ({
       lookupIndexedTransaction: async () =>
-        input.transactionIndexUnavailable
+        input.transactionMissingFromIndex
           ? {
-              status: "unavailable" as const,
-              httpStatus: 501,
-              reason: "transaction-index-unavailable" as const,
+              status: "not-found" as const,
+              httpStatus: 404 as const,
             }
-          : {
-              status: "observed" as const,
-              httpStatus: 200,
-              value: {
-                txid,
-                transactionHex,
-                nonce: 9n,
-                feeUstx: 1_000n,
-                indexBlockHash,
-                blockHeight: BigInt(blockHeight),
-                isCanonical: true,
-                resultRepr: "(ok true)",
+          : input.transactionIndexUnavailable
+            ? {
+                status: "unavailable" as const,
+                httpStatus: 501,
+                reason: "transaction-index-unavailable" as const,
+              }
+            : {
+                status: "observed" as const,
+                httpStatus: 200,
+                value: {
+                  txid,
+                  transactionHex,
+                  nonce: 9n,
+                  feeUstx: 1_000n,
+                  indexBlockHash,
+                  blockHeight: BigInt(blockHeight),
+                  isCanonical: true,
+                  resultRepr: "(ok true)",
+                },
               },
-            },
       lookupUnconfirmedTransaction: async () => ({ status: "not-found" as const, httpStatus: 404 }),
     }),
   });
@@ -457,7 +474,12 @@ async function submittedFeeActionHarness() {
     callReadOnly: vi.fn(async () => trueCV()),
     getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
   };
-  const api = { getNodeInfo: vi.fn(async () => ({ network_id: 1 })) };
+  const api = {
+    getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
+    getTransactionDetails: vi.fn(async () => {
+      throw new UpstreamHttpError("not found", 404);
+    }),
+  };
   const runtimeSettings = {
     clients: () => ({
       config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
@@ -1190,6 +1212,24 @@ describe("manager wallet action preparation", () => {
     await proveRecurringManagerAction({
       request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
       transactionIndexUnavailable: true,
+      node: {
+        callReadOnly: vi.fn(async () => trueCV()),
+        getDataVar: vi.fn(async () => uintCV(currentFeeBips)),
+      },
+      setCanonicalPoststate: () => {
+        currentFeeBips = 250n;
+      },
+      restoreAuthoritativeFacts: () => {
+        currentFeeBips = 100n;
+      },
+    });
+  });
+
+  it("uses node-canonical block proof when a historical transaction is absent from the index", async () => {
+    let currentFeeBips = 100n;
+    await proveRecurringManagerAction({
+      request: { action: "update-fees", actorPrincipal: requiredSender, feeBips: "250" },
+      transactionMissingFromIndex: true,
       node: {
         callReadOnly: vi.fn(async () => trueCV()),
         getDataVar: vi.fn(async () => uintCV(currentFeeBips)),

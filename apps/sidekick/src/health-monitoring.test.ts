@@ -2,10 +2,14 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SidekickConfig } from "./config.js";
 import { calculateBurnBlockTiming, HealthMonitoringService } from "./health-monitoring.js";
+import type { HealthOperatorContext } from "./health-monitoring-types.js";
+import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
+const stores: SidekickStore[] = [];
 
 afterEach(async () => {
+  for (const store of stores.splice(0)) store.close();
   await Promise.all(
     servers
       .splice(0)
@@ -110,12 +114,21 @@ stacks_signer_stacks_node_height 200000
 stacks_signer_current_reward_cycle 140
 stacks_signer_stx_balance 100000000
 stacks_signer_block_proposals_received ${proposals}
+stacks_signer_block_validation_responses{response_type="accepted"} ${accepted}
+stacks_signer_block_validation_responses{response_type="rejected"} ${rejected}
 stacks_signer_block_responses_sent{response_type="accepted"} ${accepted}
 stacks_signer_block_responses_sent{response_type="rejected"} ${rejected}
+stacks_signer_block_pre_commits_sent ${proposals}
 stacks_signer_agreement_state_conflicts{conflict="miner_view"} ${conflicts}
+stacks_signer_node_rpc_call_latencies_histogram_bucket{le="0.1"} ${accepted + rejected}
+stacks_signer_node_rpc_call_latencies_histogram_bucket{le="+Inf"} ${accepted + rejected}
+stacks_signer_block_validation_latencies_histogram_bucket{le="1"} ${accepted + rejected}
+stacks_signer_block_validation_latencies_histogram_bucket{le="+Inf"} ${accepted + rejected}
 stacks_signer_block_response_latencies_histogram_bucket{le="1"} ${accepted}
 stacks_signer_block_response_latencies_histogram_bucket{le="60"} ${accepted + rejected}
 stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + rejected}
+stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="5"} ${accepted + rejected}
+stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${accepted + rejected}
 `);
         return;
       }
@@ -170,9 +183,9 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
     proposals = 17;
     conflicts = 2;
     hiroTip += 1;
-    now += 30 * 60 * 1_000;
+    now += 5 * 60 * 1_000;
     const progressed = await health.refresh();
-    expect(progressed.hiro.lastTipAdvanceAt).toBe("2026-07-17T12:30:00.000Z");
+    expect(progressed.hiro.lastTipAdvanceAt).toBe("2026-07-17T12:05:00.000Z");
     expect(progressed.hiro.advancementStatus).toBe("advancing");
     expect(progressed.signer.lastHour).toMatchObject({
       proposals: 5,
@@ -183,6 +196,15 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
     });
     expect(progressed.signer.lastHour.rejectionPercent).toBe(20);
     expect(progressed.signer.lastHour.responseP95Seconds).toBe(60);
+    expect(progressed.signer.last15Minutes).toMatchObject({
+      validationAccepted: 4,
+      validationRejected: 1,
+      preCommits: 5,
+      nodeRpcP95Seconds: 0.1,
+      validationP95Seconds: 1,
+      capitulationP95Seconds: 5,
+      collectingBaseline: false,
+    });
 
     accepted = 1;
     rejected = 0;
@@ -242,6 +264,19 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("test server did not bind");
+    let now = Date.parse("2026-07-17T12:00:00.000Z");
+    const { store } = await openSidekickStore(":memory:", new Date(now).toISOString());
+    stores.push(store);
+    let operatorContext: HealthOperatorContext | null = {
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      currentRewardCycle: 141,
+      registered: true,
+      signerKeyHex: `02${"11".repeat(32)}`,
+      signerKeyGrantValid: true,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: true,
+    };
     const health = new HealthMonitoringService({
       getConfig: () => ({
         network: "mainnet",
@@ -254,15 +289,36 @@ stacks_signer_block_response_latencies_histogram_bucket{le="+Inf"} ${accepted + 
         eventPageLimit: 100,
         databasePath: ":memory:",
       }),
+      store,
+      getOperatorContext: () => operatorContext,
+      now: () => new Date(now),
     });
 
-    expect((await health.refresh()).findings).toEqual([]);
-    expect((await health.refresh()).findings).toEqual([]);
-    expect((await health.refresh()).findings).toContainEqual(
+    for (let sample = 0; sample < 5; sample += 1) {
+      expect((await health.refresh()).findings).toEqual([]);
+      now += 5_000;
+    }
+    const active = await health.refresh();
+    expect(active.findings).toContainEqual(
       expect.objectContaining({ id: "node-behind-network", source: "node" }),
     );
+    const episodeId = active.findings.find(({ id }) => id === "node-behind-network")?.episodeId;
+    expect(episodeId).toEqual(expect.any(String));
+
+    // Background reconciliation temporarily clears the cached operator snapshot. This context
+    // transition must not look like a deployment change or resolve a continuing incident.
+    operatorContext = null;
+    now += 5_000;
+    const withoutCachedContext = await health.refresh();
+    expect(
+      withoutCachedContext.findings.find(({ id }) => id === "node-behind-network")?.episodeId,
+    ).toBe(episodeId);
+    expect(
+      withoutCachedContext.history.recentEpisodes.find(({ episodeId: id }) => id === episodeId),
+    ).toMatchObject({ status: "active", resolvedAt: null });
 
     fullySynced = true;
+    now += 5_000;
     expect((await health.refresh()).findings).not.toContainEqual(
       expect.objectContaining({ id: "node-behind-network" }),
     );

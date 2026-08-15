@@ -26,6 +26,7 @@ import {
   engineDisableAdapterRequestSchema,
   engineForceObserveRequestSchema,
   engineInvalidateApprovalRequestSchema,
+  type HealthSnapshot,
   healthSnapshotSchema,
   healthSourceTestRequestSchema,
   managerSignerGrantPrepareRequestSchema,
@@ -372,8 +373,8 @@ export interface ServerOptions {
   wallet?: WalletIntentService;
   signerGrant?: SignerGrantService;
   health?: {
-    current(): Promise<unknown>;
-    refresh(): Promise<unknown>;
+    current(): Promise<HealthSnapshot>;
+    refresh(): Promise<HealthSnapshot>;
     testSource(
       kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
       url: string,
@@ -1296,6 +1297,7 @@ export function createServer(options: ServerOptions = {}) {
       pathname === "/api/v1/connection" ||
       pathname === "/api/v1/connection/recheck" ||
       pathname === "/api/v1/support-bundle" ||
+      (pathname === "/api/v1/health" && (request.method === "GET" || request.method === "HEAD")) ||
       ((pathname === "/api/v1/activity" || pathname.startsWith("/api/v1/activity/")) &&
         (request.method === "GET" || request.method === "HEAD")) ||
       (pathname === "/api/v1/settings" &&
@@ -1376,6 +1378,7 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/metrics", async (_request, reply) => {
     reply.type("text/plain; version=0.0.4; charset=utf-8");
+    const health = options.health ? await options.health.current().catch(() => null) : null;
     const refresh = options.snapshotRefreshMetrics?.snapshot() ?? {
       attemptsTotal: 0,
       successesTotal: 0,
@@ -1455,6 +1458,78 @@ export function createServer(options: ServerOptions = {}) {
       "# TYPE sidekick_operator_snapshot_fresh gauge",
       `sidekick_operator_snapshot_fresh ${refresh.snapshotFresh}`,
     ];
+    if (health) {
+      const findingsByClassification = new Map<string, number>();
+      for (const finding of health.findings) {
+        findingsByClassification.set(
+          finding.classification,
+          (findingsByClassification.get(finding.classification) ?? 0) + 1,
+        );
+      }
+      metrics.push(
+        "# HELP sidekick_signer_health_diagnosis Current evidence-backed diagnosis as a one-hot classified gauge.",
+        "# TYPE sidekick_signer_health_diagnosis gauge",
+        ...[
+          "healthy",
+          "likely-local-node",
+          "likely-local-signer",
+          "source-disagreement",
+          "suspected-network-wide",
+          "insufficient-evidence",
+        ].map(
+          (classification) =>
+            `sidekick_signer_health_diagnosis{classification="${classification}"} ${health.diagnosis.classification === classification ? 1 : 0}`,
+        ),
+        "# HELP sidekick_signer_health_active_findings Active health findings by evidence-backed classification.",
+        "# TYPE sidekick_signer_health_active_findings gauge",
+        ...[
+          "likely-local-node",
+          "likely-local-signer",
+          "source-disagreement",
+          "suspected-network-wide",
+          "insufficient-evidence",
+        ].map(
+          (classification) =>
+            `sidekick_signer_health_active_findings{classification="${classification}"} ${findingsByClassification.get(classification) ?? 0}`,
+        ),
+        "# HELP sidekick_signer_health_observations Retained raw observations for the active configuration.",
+        "# TYPE sidekick_signer_health_observations gauge",
+        `sidekick_signer_health_observations ${health.history.observationCount}`,
+        "# HELP sidekick_signer_health_generated_timestamp_seconds Timestamp of the latest local health observation.",
+        "# TYPE sidekick_signer_health_generated_timestamp_seconds gauge",
+        `sidekick_signer_health_generated_timestamp_seconds ${Date.parse(health.generatedAt) / 1_000}`,
+        "# HELP sidekick_signer_health_source_available Whether a configured health source is currently reachable.",
+        "# TYPE sidekick_signer_health_source_available gauge",
+        `sidekick_signer_health_source_available{source="node-rpc"} ${health.node.rpc.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="node-metrics"} ${health.node.metrics.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="signer-info"} ${health.signer.infoSource.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="signer-heartbeat"} ${health.signer.heartbeat.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="signer-metrics"} ${health.signer.metrics.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="reference-api"} ${health.hiro.source.status === "healthy" ? 1 : 0}`,
+        `sidekick_signer_health_source_available{source="configured-api"} ${health.configuredApi.source.status === "healthy" ? 1 : 0}`,
+      );
+      if (health.signer.last15Minutes.responseGap !== null) {
+        metrics.push(
+          "# HELP sidekick_signer_response_gap Unaccounted-for proposals in the rolling 15-minute window.",
+          "# TYPE sidekick_signer_response_gap gauge",
+          `sidekick_signer_response_gap ${health.signer.last15Minutes.responseGap}`,
+        );
+      }
+      if (health.signer.last15Minutes.rejectionPercent !== null) {
+        metrics.push(
+          "# HELP sidekick_signer_rejection_percent Rejected signer responses in the rolling 15-minute window.",
+          "# TYPE sidekick_signer_rejection_percent gauge",
+          `sidekick_signer_rejection_percent ${health.signer.last15Minutes.rejectionPercent}`,
+        );
+      }
+      if (health.signer.last15Minutes.responseP95Seconds !== null) {
+        metrics.push(
+          "# HELP sidekick_signer_response_p95_seconds Approximate signer response p95 in the rolling 15-minute window.",
+          "# TYPE sidekick_signer_response_p95_seconds gauge",
+          `sidekick_signer_response_p95_seconds ${health.signer.last15Minutes.responseP95Seconds}`,
+        );
+      }
+    }
     if (observer) {
       metrics.push(
         "# HELP sidekick_observer_enabled Whether the private Stacks event listener is configured.",
@@ -1675,7 +1750,7 @@ export function createServer(options: ServerOptions = {}) {
                   : service.snapshot(connectionCurrent),
           }
         : {}),
-      ...(options.health && operational
+      ...(options.health
         ? {
             health: async () =>
               connectionCurrent ? options.health?.refresh() : options.health?.current(),

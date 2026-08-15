@@ -1,388 +1,702 @@
 import {
   ArrowClockwise,
   CheckCircle,
-  DownloadSimple,
+  Clock,
+  Pulse,
   Warning,
   WarningCircle,
 } from "@phosphor-icons/react";
-import type { DashboardSnapshot, HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useState } from "react";
-import { apiDownload } from "../../api-client.js";
-import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { AlertActionButton } from "../../shared/alert-action-button.js";
-import { Badge, ErrorCallout, PageHead, StatLine } from "../../shared/dashboard-ui.js";
-import { compactDuration, number, sbtc, short, stx } from "../../shared/format.js";
-import { operatorActionError } from "../../shared/operator-error.js";
-import { PipelineStage } from "../../shared/pipeline-stage.js";
-import { fetchHealthSnapshot } from "../../signer-health.js";
+import {
+  type ContextualAction,
+  type OverviewAttentionItem,
+  type OverviewEvidence,
+  type OverviewPage,
+  overviewPageSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiJson } from "../../api-client.js";
+import type { DomainSection } from "../../dashboard-route.js";
+import { ContextualActionControl } from "../../shared/contextual-action.js";
+import { Badge, PageHead } from "../../shared/dashboard-ui.js";
+import { useDomainSection } from "../../shared/domain-section.js";
+import { compactDuration, number, sbtc, stx } from "../../shared/format.js";
+import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 
-type Snapshot = DashboardSnapshot;
+const OVERVIEW_POLL_MS = 15_000;
+const INITIAL_ATTENTION_COUNT = 5;
 
-type HealthLight = "green" | "yellow" | "red";
+type RecheckTarget = Extract<ContextualAction, { kind: "recheck" }>["target"];
+type Tone = "success" | "caution" | "error" | "neutral" | "info";
 
-function sourceHealthLight(
-  snapshot: HealthSnapshot | null,
-  source: "node" | "signer",
-  transportFailed: boolean,
-): HealthLight {
-  if (transportFailed) return "yellow";
-  if (!snapshot) return "yellow";
-  const findings = snapshot.findings.filter((finding) => finding.source === source);
-  if (findings.some(({ severity }) => severity === "critical")) return "red";
-  if (findings.length > 0) return "yellow";
-  const states =
-    source === "node"
-      ? [snapshot.node.rpc, ...(snapshot.node.metrics.configured ? [snapshot.node.metrics] : [])]
-      : [snapshot.signer.infoSource, snapshot.signer.heartbeat, snapshot.signer.metrics];
-  if (
-    states.some(
-      ({ status, consecutiveFailures }) => status === "unavailable" && consecutiveFailures >= 3,
-    )
-  ) {
-    return "red";
-  }
-  return states.every(({ status }) => status === "healthy") ? "green" : "yellow";
+function statusLabel(value: string): string {
+  return value.replaceAll("-", " ");
 }
 
-function healthLightLabel(light: HealthLight): string {
-  return light === "green" ? "healthy" : light === "yellow" ? "needs attention" : "unavailable";
+function statusTone(value: string): Tone {
+  return ["advancing", "aligned", "healthy", "ready", "current", "completed"].includes(value)
+    ? "success"
+    : ["needs-attention", "behind", "unavailable"].includes(value)
+      ? "error"
+      : ["insufficient-evidence", "collecting", "not-configured", "pending", "unknown"].includes(
+            value,
+          )
+        ? "caution"
+        : "neutral";
+}
+
+function evidenceStatus(evidence: readonly OverviewEvidence[]): OverviewEvidence["status"] {
+  const order: OverviewEvidence["status"][] = [
+    "unavailable",
+    "delayed",
+    "not-configured",
+    "current",
+  ];
+  return order.find((status) => evidence.some((item) => item.status === status)) ?? "unavailable";
+}
+
+function latestEvidenceTime(evidence: readonly OverviewEvidence[]): string | null {
+  return (
+    evidence
+      .map(({ observedAt }) => observedAt)
+      .filter((value): value is string => value !== null)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
+  );
+}
+
+function EvidenceLine({ evidence }: { evidence: readonly OverviewEvidence[] }) {
+  const state = evidenceStatus(evidence);
+  const observedAt = latestEvidenceTime(evidence);
+  const reason = evidence.find((item) => item.status === state)?.reason ?? null;
+  return (
+    <div className={`overview-evidence evidence-${state}`}>
+      <span className="overview-evidence-dot" />
+      <span>{statusLabel(state)}</span>
+      {observedAt ? <span>· {new Date(observedAt).toLocaleString()}</span> : null}
+      {reason ? <span className="overview-evidence-reason">· {reason}</span> : null}
+    </div>
+  );
+}
+
+function ProtocolMoment({
+  label,
+  moment,
+}: {
+  label: string;
+  moment: OverviewPage["cycle"]["nextRewardCalculation"];
+}) {
+  const relativeEstimate = (() => {
+    if (!moment.estimatedAt) return null;
+    const seconds = Math.round((Date.parse(moment.estimatedAt) - Date.now()) / 1_000);
+    return seconds > 0
+      ? `in about ${compactDuration(seconds)}`
+      : seconds < 0
+        ? `about ${compactDuration(Math.abs(seconds))} ago`
+        : "about now";
+  })();
+  return (
+    <div className="overview-moment">
+      <span>{label}</span>
+      <strong>
+        {moment.status === "unavailable"
+          ? "Unavailable"
+          : moment.status === "due"
+            ? "Due now"
+            : `${number(moment.blocksRemaining)} Bitcoin blocks`}
+      </strong>
+      <small>
+        {moment.burnBlockHeight === null
+          ? "No verified checkpoint"
+          : `Bitcoin #${number(moment.burnBlockHeight)}`}
+        {relativeEstimate ? ` · ${relativeEstimate}` : ""}
+      </small>
+    </div>
+  );
+}
+
+function deadlineLabel(deadline: OverviewAttentionItem["deadline"]): string | null {
+  if (!deadline) return null;
+  if (deadline.kind === "burn-block") {
+    return `Before Bitcoin #${number(deadline.burnBlockHeight)}${deadline.estimatedAt ? ` · ~${new Date(deadline.estimatedAt).toLocaleString()}` : ""}`;
+  }
+  if (deadline.kind === "reward-cycle") {
+    return `Cycle ${deadline.rewardCycleId} · ${statusLabel(deadline.phase)}`;
+  }
+  return `By ${new Date(deadline.at).toLocaleString()}`;
+}
+
+function AttentionCard({
+  item,
+  onRecheck,
+  rechecking,
+}: {
+  item: OverviewAttentionItem;
+  onRecheck: (target: RecheckTarget) => void;
+  rechecking: boolean;
+}) {
+  const tone =
+    item.tier === "urgent" ? "critical" : item.tier === "action-required" ? "caution" : "info";
+  const deadline = deadlineLabel(item.deadline);
+  return (
+    <article className={`overview-attention callout callout-${tone}`}>
+      {item.tier === "urgent" ? <Warning /> : <WarningCircle />}
+      <div className="body">
+        <div className="overview-attention-head">
+          <strong>{item.title}</strong>
+          <Badge state={item.tier === "urgent" ? "error" : "caution"}>
+            {statusLabel(item.tier)}
+          </Badge>
+        </div>
+        <p>{item.summary}</p>
+        <p className="overview-impact">Impact: {item.impact}</p>
+        {deadline ? (
+          <p className="overview-deadline">
+            <Clock /> {deadline}
+          </p>
+        ) : null}
+        <EvidenceLine evidence={item.evidence} />
+        <div className="actions">
+          <ContextualActionControl
+            action={item.primaryAction}
+            emphasis={item.tier === "needs-attention" ? "secondary" : "primary"}
+            onRecheck={onRecheck}
+            rechecking={rechecking}
+          />
+          {item.detailsAction ? (
+            <ContextualActionControl
+              action={item.detailsAction}
+              emphasis="tertiary"
+              onRecheck={onRecheck}
+              rechecking={rechecking}
+            />
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function HealthCard({
+  title,
+  status,
+  detail,
+  facts,
+  evidence,
+  action,
+  onRecheck,
+  rechecking,
+}: {
+  title: string;
+  status: string;
+  detail: string;
+  facts: Array<{ label: string; value: string }>;
+  evidence: readonly OverviewEvidence[];
+  action: ContextualAction;
+  onRecheck: (target: RecheckTarget) => void;
+  rechecking: boolean;
+}) {
+  return (
+    <article className="card overview-health-card">
+      <div className="card-head">
+        <h2>{title}</h2>
+        <Badge state={statusTone(status)}>{statusLabel(status)}</Badge>
+      </div>
+      <p>{detail}</p>
+      <dl>
+        {facts.map((fact) => (
+          <div key={fact.label}>
+            <dt>{fact.label}</dt>
+            <dd>{fact.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <EvidenceLine evidence={evidence} />
+      <ContextualActionControl
+        action={action}
+        emphasis="tertiary"
+        onRecheck={onRecheck}
+        rechecking={rechecking}
+      />
+    </article>
+  );
+}
+
+function feeUnavailableLabel(
+  reason: OverviewPage["rewards"]["operatorFeeUnavailableReason"],
+): string {
+  switch (reason) {
+    case "reviewed-fee-capability-unavailable":
+      return "Manager fee semantics have not been reviewed";
+    case "forecast-unavailable":
+      return "A checkpoint forecast is not available yet";
+    case "authoritative-roster-unavailable":
+      return "The authoritative roster is unavailable";
+    case "per-staker-shares-incomplete":
+      return "Per-staker share evidence is incomplete";
+    case "anchored-fee-inputs-unavailable":
+      return "Anchored fee inputs are unavailable";
+    default:
+      return "The reward outlook is unavailable";
+  }
 }
 
 export function Overview({
-  data,
   token,
-  sync,
-  syncing,
+  section,
+  connectionUnavailable,
+  onConnectionRecheck,
+  onLoaded,
 }: {
-  data: Snapshot;
   token: string;
-  sync: () => void;
-  syncing: boolean;
+  section: DomainSection | null;
+  connectionUnavailable: boolean;
+  onConnectionRecheck: () => Promise<void>;
+  onLoaded: (summary: { network: string; attentionCount: number }) => void;
 }) {
-  const [health, setHealth] = useState<HealthSnapshot | null>(null);
-  const [healthUnavailable, setHealthUnavailable] = useState(false);
-  const [supportDownloadBusy, setSupportDownloadBusy] = useState(false);
-  const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    const loadHealth = async () => {
+  const [data, setData] = useState<OverviewPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showAllAttention, setShowAllAttention] = useState(false);
+  const activeRequest = useRef<AbortController | null>(null);
+  const hasData = useRef(false);
+  useDomainSection("overview", section);
+
+  const load = useCallback(
+    async (force = false, indicateRefresh = false) => {
+      if (!force && activeRequest.current) return;
+      activeRequest.current?.abort();
+      const controller = new AbortController();
+      activeRequest.current = controller;
+      if (indicateRefresh) setRefreshing(true);
+      if (!hasData.current) setLoading(true);
       try {
-        const snapshot = await fetchHealthSnapshot(token);
-        if (!active) return;
-        setHealth(snapshot);
-        setHealthUnavailable(false);
-      } catch {
-        if (active) setHealthUnavailable(true);
+        const result = await apiJson(
+          token,
+          force ? "/api/v1/overview?refresh=1" : "/api/v1/overview",
+          overviewPageSchema,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        hasData.current = true;
+        setData(result);
+        setError(null);
+        onLoaded({ network: result.monitoring.network, attentionCount: result.attention.length });
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setError(operatorErrorDetail(cause, "Sidekick returned no Overview error detail"));
+        }
+      } finally {
+        if (activeRequest.current === controller) {
+          activeRequest.current = null;
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
+    },
+    [onLoaded, token],
+  );
+
+  useEffect(() => {
+    void load();
+    const refreshIfVisible = () => {
+      // The server keeps the operator snapshot current without a browser. Visible-page polling
+      // should read that retained snapshot; only an explicit operator refresh should force another
+      // full chain read.
+      if (document.visibilityState === "visible") void load();
     };
-    void loadHealth();
-    const interval = setInterval(() => void loadHealth(), 30_000);
+    const interval = window.setInterval(refreshIfVisible, OVERVIEW_POLL_MS);
+    document.addEventListener("visibilitychange", refreshIfVisible);
     return () => {
-      active = false;
-      clearInterval(interval);
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      activeRequest.current?.abort();
+      activeRequest.current = null;
     };
-  }, [token]);
-  const current = data.forecast?.cycles[0];
-  const next = data.forecast?.cycles[1];
-  const rewards = data.rewards;
-  const requiredAlerts = data.alerts.filter(({ action }) => Boolean(action));
-  const blocksUntilPrepare = data.preflight.cycle.blocksUntilPreparePhase;
-  const currentCycleIsFixed =
-    (data.readiness ?? data.setup)?.enrollmentWindow.status === "prepare-phase" &&
-    current !== undefined &&
-    !current.contract.inSignerSet;
-  const prepareEta =
-    blocksUntilPrepare === null || !health?.burnBlockTiming
-      ? null
-      : compactDuration(blocksUntilPrepare * health.burnBlockTiming.averageSeconds);
-  const nodeHealth = sourceHealthLight(health, "node", healthUnavailable);
-  const signerHealth = sourceHealthLight(health, "signer", healthUnavailable);
-  const nodeHealthLabel = healthUnavailable
-    ? "unknown; latest health read failed"
-    : healthLightLabel(nodeHealth);
-  const signerHealthLabel = healthUnavailable
-    ? "unknown; latest health read failed"
-    : healthLightLabel(signerHealth);
-  const downloadSupportBundle = async () => {
-    setSupportDownloadBusy(true);
-    setSupportDownloadError(null);
-    try {
-      await apiDownload(token, "/api/v1/support-bundle", {
-        expectedContentTypes: ["application/json"],
-        fallbackFilename: "signer-sidekick-support.json",
-        timeoutMs: 90_000,
-      });
-    } catch (cause) {
-      setSupportDownloadError(
-        operatorActionError(cause, "Could not download the support bundle", "Retrying is safe"),
-      );
-    } finally {
-      setSupportDownloadBusy(false);
-    }
+  }, [load]);
+
+  const recheck = async (target: RecheckTarget) => {
+    if (target === "connection") await onConnectionRecheck();
+    await load(true, true);
   };
+
+  if (!data && loading) {
+    return (
+      <div className="overview-loading" aria-live="polite" role="status">
+        <ArrowClockwise className="spin" />
+        <div>
+          <strong>Loading Overview</strong>
+          <span>Other pages remain independently available.</span>
+        </div>
+      </div>
+    );
+  }
+  if (!data) {
+    return (
+      <>
+        <PageHead title="Overview" lede="What needs attention and what is happening next." />
+        <div className="callout callout-critical" role="alert">
+          <WarningCircle className="ic" />
+          <div className="body">
+            <strong>Could not load Overview</strong>
+            <span>{operatorErrorSentence(error ?? "Overview is unavailable")}</span>
+            <div className="actions">
+              <button
+                className="btn btn-secondary sm"
+                onClick={() => void load(true, true)}
+                type="button"
+              >
+                Retry Overview
+              </button>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  const visibleAttention = showAllAttention
+    ? data.attention
+    : data.attention.slice(0, INITIAL_ATTENTION_COUNT);
+  const checkedAgeSeconds = Math.max(
+    0,
+    Math.round((Date.now() - Date.parse(data.generatedAt)) / 1_000),
+  );
+  const pool = data.pool;
+  const rewards = data.rewards;
+  const forecastConfidence =
+    rewards.confidence === "contract-exact"
+      ? "Contract-exact now"
+      : rewards.confidence === "unavailable"
+        ? "Unavailable"
+        : `${statusLabel(rewards.confidence)} confidence`;
+
   return (
     <>
       <PageHead
         title="Overview"
-        lede="Current pool status and required actions."
+        lede="What needs attention, what is in progress, and what happens next."
         actions={
-          <>
-            <button type="button" className="btn btn-tertiary sm" onClick={sync} disabled={syncing}>
-              <ArrowClockwise />
-              {syncing ? "Syncing" : "Sync now"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary sm"
-              disabled={supportDownloadBusy}
-              onClick={() => void downloadSupportBundle()}
-            >
-              <DownloadSimple />
-              {supportDownloadBusy ? "Collecting support bundle" : "Download support bundle"}
-            </button>
-          </>
+          <button
+            className="btn btn-tertiary sm"
+            disabled={refreshing}
+            onClick={() => void load(true, true)}
+            type="button"
+          >
+            <ArrowClockwise className={refreshing ? "spin" : undefined} />
+            {refreshing ? "Refreshing" : "Refresh current state"}
+          </button>
         }
       />
-      <ErrorCallout error={supportDownloadError} />
-      <div className="cycle-clock card">
+      {error ? (
+        <div className="callout callout-info content-notice" role="status">
+          <WarningCircle className="ic" />
+          <div className="body">
+            <strong>Could not refresh Overview</strong>
+            <span>{operatorErrorSentence(error)} Showing the last successful projection.</span>
+          </div>
+        </div>
+      ) : null}
+      {connectionUnavailable ? (
+        <div className="callout callout-caution content-notice" role="status">
+          <WarningCircle className="ic" />
+          <div className="body">
+            <strong>Local node unavailable · actions paused</strong>
+            <span>Retained domain evidence remains visible while Sidekick rechecks the node.</span>
+          </div>
+        </div>
+      ) : null}
+
+      <section
+        className="overview-identity card"
+        id="overview-cycle"
+        aria-label="Current operation"
+      >
         <div>
           <span>Reward cycle</span>
-          <strong>#{data.preflight.cycle.currentId}</strong>
-          <small className="src src-chain">PoX-5 contract</small>
-        </div>
-        <div>
-          <span>Bitcoin block height</span>
-          <strong>{number(data.preflight.node.burnBlockHeight)}</strong>
-          <small className="src src-chain">Reported by Stacks node</small>
-        </div>
-        <div>
-          <span>Next prepare phase</span>
           <strong>
-            {number(blocksUntilPrepare)}{" "}
-            <em>Bitcoin blocks (#{number(data.preflight.cycle.preparePhaseStartBurnHeight)})</em>
+            {data.cycle.rewardCycleId === null ? "—" : `#${data.cycle.rewardCycleId}`}
           </strong>
-          <small className="prepare-eta">{prepareEta ? `~${prepareEta}` : "ETA unavailable"}</small>
-        </div>
-        <a className="cycle-health" href="#health" aria-label="Open Node and Signer Health">
-          <span>Node &amp; Signer Health</span>
-          <div className="cycle-health-states">
-            <span role="img" aria-label={`Node health: ${nodeHealthLabel}`} title={nodeHealthLabel}>
-              <i className={`health-light ${nodeHealth}`} aria-hidden="true" /> Node
-            </span>
-            <span
-              role="img"
-              aria-label={`Signer health: ${signerHealthLabel}`}
-              title={signerHealthLabel}
-            >
-              <i className={`health-light ${signerHealth}`} aria-hidden="true" /> Signer
-            </span>
-          </div>
           <small>
-            {healthUnavailable ? "Latest read failed · open details" : "Open health details"}
+            {data.monitoring.network}
+            {data.cycle.phase ? ` · ${data.cycle.phase} phase` : " · phase unavailable"}
           </small>
-        </a>
-      </div>
-      <div className="section-title">
-        <WarningCircle color="var(--status-caution)" />
-        Required actions{" "}
-        <span className="hint">
-          {requiredAlerts.length === 0
-            ? "No items need attention"
-            : requiredAlerts.length === 1
-              ? "1 item needs attention"
-              : `${requiredAlerts.length} items need attention`}
-        </span>
-      </div>
-      {requiredAlerts.length ? (
-        <div className="grid cols-3 action-grid">
-          {requiredAlerts.slice(0, 3).map((alert) => (
-            <div
-              className={`callout callout-${alert.severity === "critical" ? "critical" : alert.severity === "warning" ? "caution" : "info"}`}
-              key={alert.id}
-            >
-              <Warning className="ic" />
-              <div className="body">
-                <strong>{alert.title}</strong>
-                <br />
-                {alert.detail}
-                <div className="actions">
-                  <AlertActionButton alert={alert} sync={sync} syncing={syncing} />
-                </div>
-              </div>
+        </div>
+        <ProtocolMoment label="Next reward calculation" moment={data.cycle.nextRewardCalculation} />
+        <ProtocolMoment label="Next prepare phase" moment={data.cycle.nextPreparePhase} />
+      </section>
+      <EvidenceLine evidence={data.cycle.evidence} />
+
+      <section id="overview-health" aria-labelledby="overview-health-heading">
+        <div className="section-title overview-section-title">
+          <span id="overview-health-heading">Node, signer &amp; network</span>
+          <span className="hint">Independent evidence; no inferred network-wide verdict.</span>
+        </div>
+        <div className="grid cols-3 overview-health-grid">
+          <HealthCard
+            action={data.network.detailsAction}
+            detail={data.network.detail}
+            evidence={data.network.evidence}
+            facts={[
+              { label: "Reference", value: data.network.reference ?? "Not configured" },
+              { label: "Stacks tip", value: number(data.network.stacksTipHeight) },
+              { label: "Bitcoin tip", value: number(data.network.burnBlockHeight) },
+            ]}
+            onRecheck={(target) => void recheck(target)}
+            rechecking={refreshing}
+            status={data.network.status}
+            title="Network reference"
+          />
+          <HealthCard
+            action={data.node.detailsAction}
+            detail={data.node.detail}
+            evidence={data.node.evidence}
+            facts={[
+              { label: "Stacks tip", value: number(data.node.stacksTipHeight) },
+              { label: "Bitcoin tip", value: number(data.node.burnBlockHeight) },
+              {
+                label: "Peer difference",
+                value:
+                  data.node.peerHeightDifference === null
+                    ? "—"
+                    : `${data.node.peerHeightDifference > 0 ? "+" : ""}${data.node.peerHeightDifference}`,
+              },
+            ]}
+            onRecheck={(target) => void recheck(target)}
+            rechecking={refreshing}
+            status={data.node.status}
+            title="Local node"
+          />
+          <HealthCard
+            action={data.signer.detailsAction}
+            detail={data.signer.detail}
+            evidence={data.signer.evidence}
+            facts={[
+              { label: "Proposals · 1h", value: number(data.signer.proposalsLastHour) },
+              {
+                label: "Accepted / rejected",
+                value: `${number(data.signer.acceptedLastHour)} / ${number(data.signer.rejectedLastHour)}`,
+              },
+              {
+                label: "Response p95",
+                value:
+                  data.signer.responseP95Seconds === null
+                    ? "—"
+                    : `${data.signer.responseP95Seconds}s`,
+              },
+            ]}
+            onRecheck={(target) => void recheck(target)}
+            rechecking={refreshing}
+            status={data.signer.status}
+            title="Signer"
+          />
+        </div>
+      </section>
+
+      <section id="overview-attention" aria-labelledby="overview-attention-heading">
+        <div className="section-title overview-section-title">
+          <span id="overview-attention-heading">Attention</span>
+          <span className="hint">
+            {data.attention.length === 0
+              ? "No operator decisions right now"
+              : `${data.attention.length} current ${data.attention.length === 1 ? "item" : "items"}`}
+          </span>
+        </div>
+        {data.attention.length === 0 ? (
+          <div className="callout callout-neutral overview-clear-state">
+            <CheckCircle className="ic" />
+            <div className="body">
+              <strong>No action is required right now.</strong>
+              <span>
+                Current evidence was checked {compactDuration(checkedAgeSeconds)} ago. Scheduled
+                work remains on Pool and Rewards until it becomes actionable.
+              </span>
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="callout callout-neutral">
-          <CheckCircle className="ic" />
-          <div className="body">
-            <strong>No action is required right now.</strong>
           </div>
-        </div>
-      )}
-      <div className="section-title">Pool at a glance</div>
-      <div className="kpi">
-        <div className="tile hero">
-          <div className="l">
-            Stacked this cycle <span className="src src-chain" />
-          </div>
-          <div className="v">
-            {stx(current?.contract.pendingStxUstx)} <span className="u">STX</span>
-          </div>
-          <div className={current?.threshold.meetsThreshold ? "d up" : "d down"}>
-            {current
-              ? `${stx(current.threshold.marginUstx)} STX threshold margin`
-              : "Roster not synced"}
-          </div>
-        </div>
-        <div className="tile">
-          <div className="l">
-            Next cycle <span className="src src-local" />
-          </div>
-          <div className="v">
-            {stx(next?.contract.pendingStxUstx)} <span className="u">STX</span>
-          </div>
-          <div className="d">cycle {next?.cycleId ?? "—"} projection</div>
-        </div>
-        <div className="tile">
-          <div className="l">
-            Unclaimed rewards <span className="src src-chain" />
-          </div>
-          <div className="v btc-value">
-            {sbtc(rewards?.manager.unclaimedStakerRewardsSats)} <span className="u">sBTC</span>
-          </div>
-          <div className="d">{rewards?.totals.actionableClaims ?? 0} actionable claims</div>
-        </div>
-        <div className="tile">
-          <div className="l">
-            Registration <span className="src src-chain" />
-          </div>
-          <div className="v status-value">
-            {data.registration?.signerKeyGrantValid ? "Valid" : "Attention"}
-          </div>
-          <div className="d">
-            {data.registration?.registered ? "manager registered" : "registration missing"}
-          </div>
-        </div>
-      </div>
-      <div className="section-title">
-        Reward pipeline <span className="hint">cycle {data.preflight.cycle.currentId}</span>
-      </div>
-      <div className="card-standout pipeline-wrap">
-        <div className="pipeline">
-          <PipelineStage
-            done={BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) > 0n}
-            title="Global calculated"
-            value={
-              rewards?.global.lastRewardComputeBurnHeight === "0"
-                ? "Waiting"
-                : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
-            }
-            detail="last calculation"
-          />
-          <PipelineStage
-            done={BigInt(rewards?.global.signerEarnedBeforeManagerClaimSats ?? 0) === 0n}
-            title="Manager claim"
-            value={`${sbtc(rewards?.global.signerEarnedBeforeManagerClaimSats)} sBTC`}
-            detail="unclaimed by manager"
-          />
-          <PipelineStage
-            done={(rewards?.totals.actionableClaims ?? 0) === 0}
-            title="Stakers paid"
-            value={`${data.activity.claimTotal} recorded`}
-            detail={`${rewards?.totals.actionableClaims ?? 0} currently actionable`}
-          />
-          <PipelineStage
-            done={data.activity.withdrawals.every(({ state }) => state !== "pending")}
-            title="Bitcoin withdrawals"
-            value={`${data.activity.withdrawalTotal - data.activity.pendingWithdrawalTotal} / ${data.activity.withdrawalTotal}`}
-            detail="completed requests"
-          />
-        </div>
-      </div>
-      <div className="grid cols-2-1 overview-bottom">
-        <div className="card">
-          <div className="card-head">
-            <h2>Registration &amp; eligibility</h2>
-            <Badge
-              state={(data.readiness ?? data.setup)?.status === "ready" ? "success" : "caution"}
-            >
-              {(data.readiness ?? data.setup)?.status ?? "Unavailable"}
-            </Badge>
-          </div>
-          <StatLine label="Manager">
-            <CopyableIdentifier
-              value={data.managerPrincipal}
-              display={short(data.managerPrincipal)}
-              label="manager principal"
-              className="identifier"
-            />
-          </StatLine>
-          <StatLine label="Grant">
-            <Badge state={data.registration?.signerKeyGrantValid ? "success" : "error"}>
-              {data.registration?.signerKeyGrantValid ? "Valid" : "Invalid"}
-            </Badge>
-          </StatLine>
-          <StatLine label={`Signer set · ${current?.cycleId ?? "—"}`}>
-            <span className="eligibility-status">
-              <Badge state={current?.contract.inSignerSet ? "success" : "error"}>
-                {current?.contract.inSignerSet ? "Eligible" : "Not eligible"}
-              </Badge>
-              {currentCycleIsFixed ? (
-                <span
-                  className="hint"
-                  title="The prepare phase has started, so stake changes cannot affect this cycle."
-                >
-                  Cycle is fixed
-                </span>
-              ) : null}
-            </span>
-          </StatLine>
-          <StatLine label="Source hash">
-            <CopyableIdentifier
-              value={data.manager.source.sha256}
-              display={short(data.manager.source.sha256)}
-              label="manager source hash"
-              className="identifier src src-chain"
-            />
-          </StatLine>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <h2>Recent activity</h2>
-          </div>
-          <div className="timeline">
-            {data.activity.claims.slice(0, 4).map((claim) => (
-              <div className="ev ok" key={`${claim.txId}:${claim.eventIndex}`}>
-                <div className="t">Staker reward claimed</div>
-                <div className="m">
-                  {sbtc(claim.amountSats)} sBTC ·{" "}
-                  <CopyableIdentifier
-                    value={claim.stakerPrincipal}
-                    display={short(claim.stakerPrincipal)}
-                    label="staker principal"
-                    className="mono"
-                  />
-                </div>
-                <div className="h">
-                  Stacks block {number(claim.blockHeight)} ·{" "}
-                  <CopyableIdentifier
-                    value={claim.txId}
-                    display={short(claim.txId)}
-                    label="transaction ID"
-                    className="mono"
-                  />
-                </div>
-              </div>
+        ) : (
+          <div className="overview-attention-list">
+            {visibleAttention.map((item) => (
+              <AttentionCard
+                item={item}
+                key={item.attentionId}
+                onRecheck={(target) => void recheck(target)}
+                rechecking={refreshing}
+              />
             ))}
-            {data.activity.claims.length === 0 ? (
-              <div className="ev">
-                <div className="t">No manager claims yet</div>
-                <div className="m">Sync chain data to update event history.</div>
-              </div>
+            {data.attention.length > INITIAL_ATTENTION_COUNT ? (
+              <button
+                className="btn btn-tertiary overview-show-all"
+                aria-expanded={showAllAttention}
+                onClick={() => {
+                  if (!showAllAttention) setShowAllAttention(true);
+                }}
+                type="button"
+              >
+                {showAllAttention
+                  ? `All ${data.attention.length} items shown`
+                  : `Show all ${data.attention.length} items`}
+              </button>
             ) : null}
           </div>
-        </div>
+        )}
+      </section>
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {data.attention.length === 0
+          ? "No current attention items."
+          : `${visibleAttention.length} of ${data.attention.length} current attention items shown.`}
+      </span>
+
+      {data.inProgress.length > 0 ? (
+        <section aria-labelledby="overview-progress-heading">
+          <div className="section-title overview-section-title">
+            <span id="overview-progress-heading">In progress</span>
+            <span className="hint">Durable work continues without this browser.</span>
+          </div>
+          <div className="overview-progress-list">
+            {data.inProgress.map((item) => (
+              <article className="card overview-progress" key={item.activityId}>
+                <Pulse />
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{statusLabel(item.stage)}</span>
+                  <EvidenceLine evidence={item.evidence} />
+                </div>
+                <ContextualActionControl
+                  action={item.primaryAction}
+                  onRecheck={(target) => void recheck(target)}
+                  rechecking={refreshing}
+                />
+              </article>
+            ))}
+          </div>
+          <ContextualActionControl
+            action={{
+              kind: "open-domain",
+              page: "activity",
+              section: "active",
+              label: "View all in Activity",
+            }}
+            emphasis="tertiary"
+            onRecheck={(target) => void recheck(target)}
+          />
+        </section>
+      ) : null}
+
+      <div className="grid cols-2 overview-domain-grid">
+        <section
+          className="card overview-domain"
+          id="overview-pool"
+          aria-labelledby="overview-pool-heading"
+        >
+          <div className="card-head">
+            <h2 id="overview-pool-heading">Pool</h2>
+            <Badge state={statusTone(pool.status)}>{statusLabel(pool.status)}</Badge>
+          </div>
+          <div className="overview-domain-primary">
+            <span>Current</span>
+            <strong>{pool.current ? `${stx(pool.current.amountUstx)} STX` : "Unavailable"}</strong>
+            <small>
+              {pool.current
+                ? `Cycle ${pool.current.rewardCycleId} · ${pool.current.inSignerSet ? "in signer set" : "not in signer set"}`
+                : "Current pool state unavailable"}
+            </small>
+          </div>
+          <dl>
+            <div>
+              <dt>Next cycle</dt>
+              <dd>{pool.next ? `${stx(pool.next.amountUstx)} STX` : "—"}</dd>
+            </div>
+            <div>
+              <dt>Threshold margin</dt>
+              <dd>
+                {pool.nextThresholdMarginUstx === null
+                  ? "—"
+                  : `${stx(pool.nextThresholdMarginUstx)} STX`}
+              </dd>
+            </div>
+            <div>
+              <dt>STX-only / bonds</dt>
+              <dd>
+                {pool.participants
+                  ? `${pool.participants.stxOnly} / ${pool.participants.bitcoinBond}`
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          {pool.nextChange ? (
+            <p className="overview-domain-note">
+              Next change: {statusLabel(pool.nextChange.kind)} in cycle{" "}
+              {pool.nextChange.rewardCycleId}
+              {pool.nextChange.amountDeltaUstx === null
+                ? ""
+                : ` · ${stx(pool.nextChange.amountDeltaUstx)} STX`}
+            </p>
+          ) : null}
+          <EvidenceLine evidence={pool.evidence} />
+          <ContextualActionControl
+            action={pool.detailsAction}
+            emphasis="tertiary"
+            onRecheck={(target) => void recheck(target)}
+            rechecking={refreshing}
+          />
+        </section>
+
+        <section
+          className="card overview-domain"
+          id="overview-rewards"
+          aria-labelledby="overview-rewards-heading"
+        >
+          <div className="card-head">
+            <h2 id="overview-rewards-heading">Rewards</h2>
+            <Badge state={statusTone(rewards.status)}>{statusLabel(rewards.status)}</Badge>
+          </div>
+          <div className="overview-domain-primary">
+            <span>
+              {rewards.estimateKind === "checkpoint-forecast"
+                ? "Checkpoint forecast"
+                : rewards.estimateKind === "if-calculated-now"
+                  ? "If calculated now"
+                  : "Pool estimate"}
+            </span>
+            <strong>
+              {rewards.estimatedPoolRewardSats === null
+                ? "Unavailable"
+                : `${sbtc(rewards.estimatedPoolRewardSats)} sBTC`}
+            </strong>
+            <small>{forecastConfidence}</small>
+          </div>
+          <dl>
+            <div>
+              <dt>Global accrued</dt>
+              <dd>
+                {rewards.globalAccruedSats === null
+                  ? "Unavailable"
+                  : `${sbtc(rewards.globalAccruedSats)} sBTC`}
+              </dd>
+            </div>
+            <div>
+              <dt>Operator fee</dt>
+              <dd>
+                {rewards.operatorFeeSats === null
+                  ? feeUnavailableLabel(rewards.operatorFeeUnavailableReason)
+                  : `${sbtc(rewards.operatorFeeSats)} sBTC`}
+              </dd>
+            </div>
+            <div>
+              <dt>Actionable claims</dt>
+              <dd>{number(rewards.actionableClaims)}</dd>
+            </div>
+          </dl>
+          <p className="overview-domain-note">
+            Reward calculation: {statusLabel(rewards.calculationState ?? "unavailable")}
+          </p>
+          <EvidenceLine evidence={rewards.evidence} />
+          <ContextualActionControl
+            action={rewards.detailsAction}
+            emphasis="tertiary"
+            onRecheck={(target) => void recheck(target)}
+            rechecking={refreshing}
+          />
+        </section>
       </div>
     </>
   );

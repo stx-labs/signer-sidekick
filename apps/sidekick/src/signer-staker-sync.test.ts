@@ -1007,6 +1007,40 @@ describe("signer-staker synchronization", () => {
     );
   });
 
+  it("keeps a sealed roster canonical across Bitcoin-only advances", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+      getStatus: vi
+        .fn()
+        // The discovery fence remains exact to the sealed snapshot.
+        .mockResolvedValueOnce(apiStatus())
+        .mockResolvedValueOnce(apiStatus())
+        // Bitcoin advances on either side of the canonical block lookup without a new Stacks tip.
+        .mockResolvedValueOnce(apiStatus({ burn_block_height: chainAnchor.burnBlockHeight + 1 }))
+        .mockResolvedValueOnce(apiStatus({ burn_block_height: chainAnchor.burnBlockHeight + 2 })),
+      // The unchanged canonical Stacks block retains the Bitcoin height that originally anchored
+      // it; it does not inherit the snapshot's newer live burn height.
+      getBlock: vi
+        .fn()
+        .mockResolvedValue(apiBlock({ burn_block_height: chainAnchor.burnBlockHeight - 1 })),
+    };
+
+    await expect(
+      syncSignerStakers(options(sidekickStore, api, nodeReads())),
+    ).resolves.toMatchObject({
+      status: "completed",
+      authoritative: true,
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(4);
+    expect(api.getBlock).toHaveBeenCalledWith(chainAnchor.stacksBlockHeight);
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)?.chainAnchor).toEqual(
+      chainAnchor,
+    );
+  });
+
   it("rejects a sealed roster when its pinned anchor became noncanonical", async () => {
     const sidekickStore = await store();
     const api = {

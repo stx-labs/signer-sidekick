@@ -11,7 +11,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { actionHash } from "../../dashboard-route.js";
+import { actionHash, type DomainSection } from "../../dashboard-route.js";
 import {
   Badge,
   PageHead,
@@ -20,6 +20,7 @@ import {
   StatLine,
   type TableSort,
 } from "../../shared/dashboard-ui.js";
+import { useDomainSection } from "../../shared/domain-section.js";
 import { number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
@@ -131,12 +132,15 @@ function RequestState({
 export function Rewards({
   data,
   operatorStateStale,
+  section,
   token,
 }: {
   data: Snapshot;
   operatorStateStale: boolean;
+  section: DomainSection | null;
   token: string;
 }) {
+  useDomainSection("rewards", section);
   const rewards = data.rewards;
   const rewardOutlook = data.rewardOutlook ?? null;
   const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
@@ -371,7 +375,7 @@ export function Rewards({
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
-      <div className="grid cols-3 reward-outlook">
+      <div className="grid cols-3 reward-outlook domain-section-anchor" id="rewards-outlook">
         <section className="card">
           <div className="card-head">
             <h2>Accruing globally</h2>
@@ -388,7 +392,7 @@ export function Rewards({
             PoX-5 global accrual, before bond, reserve, pool, and fee allocation.
           </p>
         </section>
-        <section className="card">
+        <section className="card domain-section-anchor" id="rewards-calculation">
           <div className="card-head">
             <h2>Next global calculation</h2>
             <Badge state={calculation?.next?.state === "due" ? "caution" : "neutral"}>
@@ -674,7 +678,7 @@ export function Rewards({
         </p>
       ) : null}
       <div className="grid cols-2 reward-ledger">
-        <div className="card">
+        <div className="card domain-section-anchor" id="rewards-fees">
           <div className="card-head">
             <h2>Reward ledger</h2>
           </div>
@@ -829,7 +833,9 @@ export function Rewards({
           </tbody>
         </table>
       </div>
-      <div className="section-title">Reward cycle ledger</div>
+      <div className="section-title domain-section-anchor" id="rewards-history">
+        Reward cycle ledger
+      </div>
       <RequestState
         label="reward cycle history"
         loading={historyLoading}
@@ -982,7 +988,9 @@ export function Rewards({
           </>
         ) : null}
       </div>
-      <div className="section-title">Per-staker claims</div>
+      <div className="section-title domain-section-anchor" id="rewards-claims">
+        Per-staker claims
+      </div>
       <RequestState
         label="per-staker rewards"
         loading={stakersLoading}
@@ -1229,7 +1237,9 @@ export function Rewards({
           </>
         ) : null}
       </div>
-      <div className="section-title">Bitcoin withdrawal queue</div>
+      <div className="section-title domain-section-anchor" id="rewards-withdrawals">
+        Bitcoin withdrawal queue
+      </div>
       {activityLoading || activityError ? (
         <p className={activityError ? "field-error" : "muted"} role="status">
           {activityLoading

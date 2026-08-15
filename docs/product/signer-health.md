@@ -1,95 +1,118 @@
-# Signer Health
+# Signer Health v2
 
-Signer Health gives a pool operator one page for the operational state of the Stacks node and signer.
-It is local monitoring, not a replacement for a full observability stack.
+Signer Health answers the operator question: **is my node and signer operating and signing
+properly, and is a problem likely local, external-source-specific, or network-wide?** It combines
+local Stacks node and signer evidence with on-chain operator context and bounded comparison sources.
+It does not run the signer, control the host, or replace infrastructure observability.
 
-This page documents the current V1 implementation. The proposed target in the
-[scope reset plan](scope-reset-plan-2026-08-13.md#signer-and-network-health-boundary) expands it into
-an evidence-backed network-versus-local diagnosis, durable incident history, and support handoff
-while retaining the same infrastructure boundary.
+The Overview consumes the same typed diagnosis and finding episodes. It does not reinterpret raw
+tips or counters into separate health verdicts.
 
-Detailed findings appear only on **Signer Health**. The Overview shows compact node and signer
-traffic lights that link to that page. V1 does not send notifications or add global badges.
+The reasoning, authority hierarchy, external-reference boundary, examples, and model-change process
+are normative in the [Signer Health diagnosis model](signer-health-diagnosis-model.md). In
+particular, Sidekick does not build a signer-cohort explorer or require the Hiro Signer Metrics API;
+detailed signer-network exploration belongs in [Slotwatch](https://slotwatch.dev/).
 
-## V1 scope
+## Evidence model
 
-Sources:
+Sidekick polls cheap local node and signer endpoints every five seconds. Public/configured API
+references are refreshed every 30 seconds and their original `checkedAt` time is retained between
+polls; reusing a reference sample never counts as an additional failure or independent source.
+Browser pages read the server-owned snapshot every 15 seconds while visible. Closing the browser
+does not stop collection.
 
-| Source | Configuration | Used for |
+| Source | Role | Authority |
 | --- | --- | --- |
-| Stacks node RPC | existing `STACKS_NODE_RPC_URL` | version, network, chain tips, reachability |
-| Stacks node Prometheus | optional `STACKS_NODE_METRICS_URL` | peers and node counters |
-| Signer monitoring server | optional `STACKS_SIGNER_MONITORING_URL` | `/info`, `/heartbeat`, `/metrics` |
-| Hiro public API | network default or `HIRO_REFERENCE_API_URL` | independent public chaintip comparison |
-| Configured Stacks API | existing `STACKS_API_URL` | recent burn-block timing for prepare-phase ETA |
+| Stacks node `/v2/info` and `/v3/health` | chain tip, network, sync, connected-peer height view | authoritative for local operating state |
+| Stacks node Prometheus | peers and node warning/error counters | local supporting evidence |
+| Signer `/info`, `/heartbeat`, `/metrics` | identity, node view, cycle, proposals, validation, responses, latency, agreement | authoritative for what this signer reports |
+| Anchored operator snapshot | manager, registration, signer key/grant, current and next participation | node-proved operator context |
+| Hiro reference API | independent public tip progression | comparison only |
+| Configured indexed API | second comparison when it is a distinct origin | comparison only |
 
-Included:
+One delayed or unavailable API cannot classify a local node as unhealthy and cannot produce a
+network-wide diagnosis. `suspected-network-wide` requires the local node to stop advancing and at
+least two distinct comparison/peer signals to corroborate the same condition. A healthy advancing
+local node instead classifies a lagging API as `source-disagreement`.
 
-- Local node and Hiro Stacks/Bitcoin tips, with signed differences.
-- Node RPC response time, last observed tip advance, peers, and one-hour warning/error deltas.
-- Signer identity, heartbeat, observed node height, reward cycle, STX balance, registration, grant,
-  and current/next-cycle eligibility.
-- One-hour signer proposal, response, rejection, latency, and agreement-conflict observations.
-- Source coverage and advanced source status.
-- A five-minute-cached 12/24-hour Bitcoin block-time sample for the Overview prepare-phase ETA.
-- Settings fields with connection tests.
+## Classifications
 
-Not included:
+Every active finding includes its first and last observation, sample count, evidence duration,
+distinct-source count, confidence, and supporting/contradicting evidence.
 
-- Host CPU, memory, disk, network, container, or process metrics.
-- Logs, historical charts, durable health history, notifications, or automated remediation.
-- Threshold-based findings for peer count, tip lag, rejection rate, response latency, or conflicts.
-- Any signing or broadcast authority.
+- `likely-local-node` — sustained local RPC, peer-height, or local-tip evidence points at this node.
+- `likely-local-signer` — signer reachability, identity, network/cycle, node-view, or participation
+  telemetry points at this signer.
+- `source-disagreement` — a comparison source disagrees with an advancing local node, or one local
+  signer metric cannot safely attribute the cause.
+- `suspected-network-wide` — the local tip and at least two distinct nonlocal/peer signals agree on
+  a network stall.
+- `insufficient-evidence` — coverage or baseline is not sufficient to attribute a condition.
+- `healthy` — no active finding is supported.
 
-## Behavior
+The current thresholds are deliberately closed and operator-readable:
 
-Sidekick starts its HTTP control plane before the first health collection. It polls every 30 seconds
-and retains two hours of observations in memory. A manual refresh uses the same bounded collector.
+| Finding | Minimum evidence |
+| --- | --- |
+| Node/signer endpoint failure or heartbeat failure | 3 consecutive samples spanning at least 10 seconds |
+| Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
+| Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
+| Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
+| Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
+| Signer identity, network, or cycle mismatch | 3 samples spanning at least 10 seconds |
+| Signer node view behind local node | at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
+| Proposal/response gap | at least 5 proposals and 3 unaccounted-for responses in 15 minutes |
+| Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes |
+| Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
+| Agreement conflicts | at least 3 conflicts in 15 minutes |
 
-The page degrades by capability:
+Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
+derive windowed p95 from cumulative-counter increases. Missing release-specific metrics reduce
+coverage rather than failing the entire signer source.
 
-- Node RPC alone still renders core node health.
-- Metrics absent from a newer or older upstream release do not make the source fail.
-- A restart shows `Collecting baseline` until enough counter samples exist.
-- Counter resets are treated as a new counter epoch instead of a negative event rate.
+## Durable history
 
-Only unambiguous, sustained reachability failures produce findings in V1:
+The SQLite store keeps raw observations for 72 hours and five-minute rollups for 90 days. A finding
+opens one episode; repeated samples update that episode and recovery resolves it without deleting
+history. A Sidekick restart hydrates the recent diagnostic window, preserves active episode IDs,
+and continues counter baselines. Changing the monitored configuration resolves the old
+configuration's active episodes and starts a separate evidence stream.
 
-- Node RPC unavailable for three consecutive checks.
-- Signer monitoring `/info` unavailable for three consecutive checks.
-- Signer `/heartbeat` failing for three consecutive checks.
+The API returns up to 288 recent rollups and 50 recent episodes. Rollups contain source
+availability, tip progression, proposal/response/rejection/conflict changes, and response p95.
 
-All other values are observations during testnet calibration. In particular, a tip mismatch is not
-automatically a fault because independently updated sources can briefly disagree.
+## Operator and support surfaces
 
-## API
+All health routes require the existing operator credential:
 
-All routes require the existing operator bearer credential:
+- `GET /api/v1/health` returns the latest server-owned v2 snapshot and collects once if empty.
+- `POST /api/v1/health/refresh` forces one bounded collection.
+- `POST /api/v1/health/test-source` validates and tests a candidate source URL.
 
-- `GET /api/v1/health` — latest normalized snapshot; collects once when no sample exists.
-- `POST /api/v1/health/refresh` — collect immediately and return the new snapshot.
-- `POST /api/v1/health/test-source` — validate and test one candidate metrics/reference URL.
+The five-second collector starts with the Sidekick control plane and remains server-owned even when
+the manager connection is not yet operational or no browser is open. Manager readiness gates
+money-moving operations, not node and signer diagnosis.
 
-Responses contain normalized values and bounded error codes, not raw upstream bodies or URLs.
+The existing Prometheus endpoint exports the one-hot diagnosis, active findings by classification,
+retained observation count, latest sample time, per-source availability, and the rolling signer
+response gap, rejection percentage, and response p95 when those measurements are available.
+
+Signer Health shows the primary diagnosis, evidence window, active findings, local node and signer
+state, distinct comparison sources, current/next participation expectation, 15-minute signing
+telemetry, and durable incident history. Advanced source details retain bounded error codes and
+source timestamps.
+
+The support bundle schema v2 includes this complete normalized health snapshot, its incidents and rollups,
+the node-proved operator state, connection/observer/automation evidence, and a correlation window
+for an optional `stacksup-or-operator-infrastructure-support-bundle`. The companion artifact should
+cover host saturation, process/container lifecycle, service logs, disk/filesystem health, and host
+networking for the same window. Sidekick deliberately does not collect unrestricted logs, control
+the host, or include private keys.
 
 ## Endpoint safety
 
-Health endpoints are operator-configured but still treated as untrusted input.
-
-- HTTP(S) only; credentials, query strings, and fragments are rejected.
-- DNS is resolved before each request and the connection is pinned to the checked address.
-- Redirects are not followed.
-- Timeouts and response sizes are bounded.
-- Unspecified, link-local, multicast, and known cloud-metadata addresses are blocked, including
-  IPv4-mapped IPv6 forms.
-- Private, loopback, Docker-network, and tailnet addresses are permitted for local deployments;
-  filtering and DNS pinning still limit rebinding and common SSRF mistakes.
-- An unresolved hostname may be saved for a container that is not running yet, but it must pass the
-  same resolution policy before a request is made.
-
-## Metric compatibility
-
-Collectors normalize recognized Prometheus signals, ignore unknown metrics, and report missing
-metrics as reduced coverage. Metric names are isolated in the collector so aliases do not change the
-API or UI. Stacks 4.0.1 node and signer monitoring contracts are the current baseline; testnet
-operation calibrates release-specific behavior.
+Health endpoints are operator-configured but treated as untrusted input. HTTP(S) is required;
+credentials, query strings, fragments, redirects, oversized responses, and cloud-metadata or
+invalid address ranges are rejected. DNS is resolved for each request and the connection is pinned
+to the checked address. Private, loopback, Docker, and tailnet addresses remain available for local
+deployments under the same rebinding protections.

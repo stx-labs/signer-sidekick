@@ -133,6 +133,7 @@ export interface RewardStatusOptions {
   burnBlockHeight: number;
   stacksTipHeight: number;
   chainAnchor?: ChainAnchor;
+  firstRewardCycleId?: number | null;
   rewardOutlook?: RewardOutlookStatus;
 }
 
@@ -153,6 +154,7 @@ export interface RewardOutlookOptions {
   pox5ContractId: string;
   observedAt: string;
   chainAnchor?: ChainAnchor;
+  firstRewardCycleId?: number | null;
   sourceId?: string;
   feeCapability?: {
     executionAvailable: boolean;
@@ -773,6 +775,7 @@ async function readBondBuckets(
 function rewardCalculationStatus(
   observedLastRewardComputeBurnHeight: bigint,
   chainAnchor: ChainAnchor | undefined,
+  firstRewardCycleId?: number | null,
 ): RewardCalculationStatus {
   const base = {
     observedLastRewardComputeBurnHeight: observedLastRewardComputeBurnHeight.toString(),
@@ -787,7 +790,7 @@ function rewardCalculationStatus(
       next: null,
     };
   }
-  const target = deriveRewardCalculationTarget(chainAnchor);
+  const target = deriveRewardCalculationTarget(chainAnchor, firstRewardCycleId);
   if (target.status === "invalid") {
     return {
       ...base,
@@ -1108,7 +1111,11 @@ export async function readRewardOutlook(
     "get-last-reward-compute-height",
   );
   const globalSats = decodeUInt(globalAccruedRewardsValue, "get-new-rewards").toString();
-  const calculation = rewardCalculationStatus(lastRewardComputeBurnHeight, options.chainAnchor);
+  const calculation = rewardCalculationStatus(
+    lastRewardComputeBurnHeight,
+    options.chainAnchor,
+    options.firstRewardCycleId,
+  );
   applyRewardCalculationGrace(calculation, options);
   let poolEstimate: Pox5CurrentPoolEstimate | null = null;
   let poolEstimateUnavailableReason: RewardOutlookStatus["poolEstimateUnavailableReason"] = null;
@@ -1332,6 +1339,9 @@ export async function readStxRewardStatus(options: RewardStatusOptions): Promise
       pox5ContractId: options.pox5ContractId,
       observedAt: options.observedAt,
       ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
+      ...(options.firstRewardCycleId !== undefined
+        ? { firstRewardCycleId: options.firstRewardCycleId }
+        : {}),
     }));
   const [
     configuredFeeValue,

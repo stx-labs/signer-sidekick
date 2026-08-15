@@ -352,8 +352,9 @@ export async function readPox5CalculateRewardsObservation(input: {
   pox5ContractId: string;
   sender: string;
   chainAnchor: ChainAnchor;
+  firstRewardCycleId?: number | null;
 }): Promise<Pox5CalculateRewardsObservation> {
-  const target = deriveRewardCalculationTarget(input.chainAnchor);
+  const target = deriveRewardCalculationTarget(input.chainAnchor, input.firstRewardCycleId);
   if (target.status === "invalid") {
     throw new Pox5CalculateRewardsError(
       "invalid-target",

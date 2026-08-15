@@ -9,6 +9,7 @@ import {
   type StacksNodeClient,
 } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
+import type { HealthOperatorContext } from "./health-monitoring-types.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { type ManagerEventNodeTransactions, syncManagerEvents } from "./manager-event-sync.js";
@@ -548,6 +549,26 @@ export class OperatorService {
           : snapshot.preflight.cycle.isPreparePhase === false
             ? "reward"
             : null),
+    };
+  }
+
+  /** Cached chain-authoritative identity and participation facts for Signer Health correlation. */
+  healthMonitoringContext(): HealthOperatorContext | null {
+    const snapshot = this.cached?.value;
+    if (!snapshot) return null;
+    const currentCycle = snapshot.preflight.cycle.currentId;
+    const nextCycle = snapshot.preflight.cycle.nextId;
+    const current = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === currentCycle);
+    const next = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === nextCycle);
+    return {
+      network: snapshot.network,
+      managerPrincipal: snapshot.managerPrincipal,
+      currentRewardCycle: currentCycle,
+      registered: snapshot.registration?.registered ?? null,
+      signerKeyHex: snapshot.registration?.signerKeyHex ?? null,
+      signerKeyGrantValid: snapshot.registration?.signerKeyGrantValid ?? null,
+      expectedCurrentParticipation: current?.contract.inSignerSet === true,
+      expectedNextParticipation: next?.contract.inSignerSet === true,
     };
   }
 
@@ -1107,6 +1128,7 @@ export class OperatorService {
       managerPrincipal,
       eventVocabulary: synchronized.eventVocabulary,
       ...(this.options.nodeTransactions ? { nodeTransactions: this.options.nodeTransactions } : {}),
+      nodeBlocks: node,
       observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -1179,6 +1201,7 @@ export class OperatorService {
       observedAt,
       pageLimit: config.eventPageLimit,
       nodeTransactions: this.options.nodeTransactions,
+      nodeBlocks: node,
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.onProgress
         ? {
@@ -1308,7 +1331,10 @@ export class OperatorService {
       liveAnchor: chainAnchor,
       indexedApiAvailable: indexedApiCompatible(preflight),
     });
-    const rewardCalculation = deriveRewardCalculationTarget(projectionAnchor);
+    const rewardCalculation = deriveRewardCalculationTarget(
+      projectionAnchor,
+      preflight.pox.firstRewardCycleId,
+    );
     const forecast =
       manager.attachAllowed && pox5ContractId
         ? await readPoolForecast({
@@ -1338,6 +1364,7 @@ export class OperatorService {
             pox5ContractId,
             observedAt: generatedAt,
             chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
             sourceId,
             feeCapability: rewardCapability,
           })
@@ -1355,6 +1382,7 @@ export class OperatorService {
             burnBlockHeight: projectionAnchor.burnBlockHeight,
             stacksTipHeight: projectionAnchor.stacksBlockHeight,
             chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
             rewardOutlook,
           })
         : null;

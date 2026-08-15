@@ -182,8 +182,10 @@ whether this operator can participate, earn, or safely act. Persist enough evide
 - **Signing participation:** Is the signer receiving proposals it is expected to see, producing
   responses on time, and seeing those responses accepted? What rejection, timeout, or missed
   participation reasons are actually evidenced?
-- **Comparative diagnosis:** Are other observable signers or network references showing the same
-  failure pattern, or is the anomaly confined to the operator's node, signer, or data source?
+- **Comparative diagnosis:** Do connected peers or independent chain-progression references show
+  the same failure pattern, or is the anomaly confined to the operator's node, signer, or data
+  source? Detailed signer-cohort exploration belongs in [Slotwatch](https://slotwatch.dev/), not
+  Sidekick's normal collection path.
 - **Recovery evidence:** What changed, when did the problem start, which sources were available,
   and what bounded redacted evidence should Stacks Labs receive?
 
@@ -191,8 +193,10 @@ Findings must name both evidence and uncertainty. Classify them as `likely-local
 `likely-local-signer`, `source-disagreement`, `suspected-network-wide`, or
 `insufficient-evidence`; never turn one unavailable API or one silent metric into a network-wide
 claim. Keep raw and rolled-up history long enough to compare the incident window with prior healthy
-behavior. Exact metrics, windows, and alert thresholds are deliverables of #19, not assumptions to
-hard-code during the scope reset.
+behavior. The implemented metrics, windows, thresholds, evidence rules, and support seam are
+normative in [Signer Health v2](signer-health.md), with the authority and attribution rules defined
+in the [Signer Health diagnosis model](signer-health-diagnosis-model.md); changing them requires a
+model revision and fresh calibration evidence.
 
 Host CPU, disk, process lifecycle, Docker/systemd management, and unrestricted log collection stay
 in StacksUp or the operator's observability stack. Sidekick consumes documented node/signer
@@ -794,8 +798,9 @@ The scope reset is complete when:
 
 ## Open decisions
 
-The manager-version gate, bond-participant coverage, and Sidekick's responsibility for
-operator-relevant signer diagnosis are no longer open. The remaining decisions are:
+The manager-version gate, bond-participant coverage, Sidekick's responsibility for
+operator-relevant signer diagnosis, network-reference confidence rule, health retention, and
+support handoff are no longer open. The remaining decisions are:
 
 1. **Capability-adapter ownership:** executable capability admission requires byte-exact source
    matching to an immutable fingerprint reviewed for that capability, exact-signature matching,
@@ -806,24 +811,15 @@ operator-relevant signer diagnosis are no longer open. The remaining decisions a
    population. Decide the minimum transaction/event sample needed to establish semantics and
    whether the deployment supplement is refreshed on every new trait-matching deployment, on
    release, or on a schedule.
-3. **Network reference set:** choose the independent sources and confidence rule that permit
-   “suspected network-wide” rather than “local/source disagreement.” Decide acceptable API
-   dependencies, privacy, rate limits, and behavior during a broad provider outage.
-4. **Signer-health contract:** select the exact release-stable node/signer metrics and persistence
-   windows for proposal receipt, response latency, acceptance/rejection, participation, and key
-   identity; then decide which combinations are informational, warning, or paging findings.
-5. **Support handoff:** decide whether StacksUp emits a companion redacted infrastructure/log bundle
-   that Sidekick references by time window, or whether Stacks Labs support accepts two artifacts.
-   Sidekick should not grow Docker, systemd, filesystem, or unrestricted log access.
-6. **Push transport:** use server-sent events as the default one-way invalidation channel unless
+3. **Push transport:** use server-sent events as the default one-way invalidation channel unless
    implementation evidence requires WebSockets; retain visibility-aware 15-second cached-state
    polling as fallback. Confirm proxy timeout/keepalive requirements before committing to SSE.
-7. **Indexed and high-risk freshness:** set maximum ages independently for roster/history display
+4. **Indexed and high-risk freshness:** set maximum ages independently for roster/history display
    and each action-planning witness. The proposed 30-minute roster baseline is not permission to
    plan an action from 30-minute-old inputs.
-8. **Reward-model confidence:** choose the minimum sample window and realized-error history required
+5. **Reward-model confidence:** choose the minimum sample window and realized-error history required
    before a projection advances from low to developing or calibrated confidence.
-9. **Permissionless calculation policy:** decide who is expected to call `calculate-rewards` and
+6. **Permissionless calculation policy:** decide who is expected to call `calculate-rewards` and
    after what grace period the due action becomes an alert or an Assist candidate.
 None of these questions changes the core boundary: Sidekick owns durable signer/pool operations,
 not setup or infrastructure lifecycle.

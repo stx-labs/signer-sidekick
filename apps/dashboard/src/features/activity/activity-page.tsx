@@ -13,8 +13,14 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { actionHash, activityHash, dashboardHash } from "../../dashboard-route.js";
+import {
+  actionHash,
+  activityHash,
+  type DomainSection,
+  dashboardHash,
+} from "../../dashboard-route.js";
 import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
+import { useDomainSection } from "../../shared/domain-section.js";
 import { short } from "../../shared/format.js";
 import { operatorErrorDetail } from "../../shared/operator-error.js";
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
@@ -238,7 +244,16 @@ function ActivityFiltersForm({
   );
 }
 
-function ActivityFeed({ token, search }: { token: string; search: string }) {
+function ActivityFeed({
+  token,
+  search,
+  section,
+}: {
+  token: string;
+  search: string;
+  section: DomainSection | null;
+}) {
+  useDomainSection("activity", section);
   const filters = useMemo(() => parseActivityFilters(search), [search]);
   const filterSearch = activityFilterSearch(filters);
   const [searchDraft, setSearchDraft] = useState(filters.search);
@@ -341,19 +356,25 @@ function ActivityFeed({ token, search }: { token: string; search: string }) {
         </div>
       ) : null}
       {data ? <Coverage coverage={data.coverage} /> : null}
-      {data?.active.length ? (
-        <section aria-labelledby="activity-active-heading">
-          <div className="section-title" id="activity-active-heading">
-            Active work <span className="hint">{data.active.length} open</span>
-          </div>
-          <div className="activity-list activity-active-list">
-            {data.active.map((item) => (
-              <ActivityRow item={item} key={item.activityId} search={filterSearch} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-      <section aria-labelledby="activity-history-heading">
+      <div className="domain-section-anchor" id="activity-active">
+        {data?.active.length ? (
+          <section aria-labelledby="activity-active-heading">
+            <div className="section-title" id="activity-active-heading">
+              Active work <span className="hint">{data.active.length} open</span>
+            </div>
+            <div className="activity-list activity-active-list">
+              {data.active.map((item) => (
+                <ActivityRow item={item} key={item.activityId} search={filterSearch} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+      <section
+        aria-labelledby="activity-history-heading"
+        className="domain-section-anchor"
+        id="activity-history"
+      >
         <div className="section-title" id="activity-history-heading">
           History
         </div>
@@ -656,25 +677,35 @@ function ActivityDetailPage({
           )}
         </section>
       ) : activeOperation && engineJobId && engineOperation.success ? (
-        <section
-          className="card activity-resume-operation"
-          aria-labelledby="activity-operation-heading"
-        >
-          <div>
-            <span className="eyebrow">CURRENT OPERATION</span>
-            <h2 id="activity-operation-heading">Resume the exact transaction job</h2>
-            <p className="muted">
-              Sidekick will reload and validate this job before enabling approval or wallet
-              controls.
-            </p>
+        operatorStateStale ? (
+          <div className="callout callout-caution" role="status">
+            <WarningCircle className="ic" />
+            <div className="body">
+              This transaction job remains readable, but approval and wallet controls are disabled
+              until the current deployment identity and operator snapshot recover.
+            </div>
           </div>
-          <a
-            className="btn btn-accent"
-            href={actionHash(engineOperation.data, { kind: "engine-job", jobId: engineJobId })}
+        ) : (
+          <section
+            className="card activity-resume-operation"
+            aria-labelledby="activity-operation-heading"
           >
-            {item.primaryAction?.label ?? "Resume operation"}
-          </a>
-        </section>
+            <div>
+              <span className="eyebrow">CURRENT OPERATION</span>
+              <h2 id="activity-operation-heading">Resume the exact transaction job</h2>
+              <p className="muted">
+                Sidekick will reload and validate this job before enabling approval or wallet
+                controls.
+              </p>
+            </div>
+            <a
+              className="btn btn-accent"
+              href={actionHash(engineOperation.data, { kind: "engine-job", jobId: engineJobId })}
+            >
+              {item.primaryAction?.label ?? "Resume operation"}
+            </a>
+          </section>
+        )
       ) : null}
       <section aria-labelledby="activity-timeline-heading">
         <div className="section-title" id="activity-timeline-heading">
@@ -719,6 +750,7 @@ export function Activity({
   operatorStateStale,
   onOperatorStateChanged,
   search,
+  section,
 }: {
   data: DashboardSnapshot | null;
   token: string;
@@ -726,6 +758,7 @@ export function Activity({
   operatorStateStale: boolean;
   onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
   search: string;
+  section: DomainSection | null;
 }) {
   return activityId ? (
     <ActivityDetailPage
@@ -737,6 +770,6 @@ export function Activity({
       token={token}
     />
   ) : (
-    <ActivityFeed search={search} token={token} />
+    <ActivityFeed search={search} section={section} token={token} />
   );
 }

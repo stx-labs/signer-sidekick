@@ -39,6 +39,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
+import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
 import { UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import { managerActionCapability } from "./manager-capabilities.js";
@@ -670,7 +671,10 @@ export class WalletIntentService {
     if (indexed.status === "observed") {
       return await this.refreshIndexed(stored, manifest, indexed.value, observedAt, clients);
     }
-    if (indexed.status === "unavailable" && indexed.reason === "transaction-index-unavailable") {
+    if (
+      indexed.status === "not-found" ||
+      (indexed.status === "unavailable" && indexed.reason === "transaction-index-unavailable")
+    ) {
       const fallback = await this.refreshIndexedFromApi(stored, manifest, observedAt, clients);
       if (fallback) return fallback;
     }
@@ -974,6 +978,7 @@ export class WalletIntentService {
           pox5ContractId: pox5CalculationContract,
           sender: actorPrincipal,
           chainAnchor: snapshot.chainAnchor,
+          firstRewardCycleId: snapshot.preflight.pox.firstRewardCycleId,
         });
         assertStateUnchanged();
         const activeBondPeriods = observation.activeBonds.map(({ bondIndex }) => bondIndex);
@@ -1954,10 +1959,10 @@ export class WalletIntentService {
           indexBlockHash: indexed.indexBlockHash,
           detail: complete
             ? verifiedByApi
-              ? "Transaction inclusion confirmed by the configured API and expected on-chain state verified. Node transaction indexing is disabled, so Sidekick could not inspect raw transaction bytes"
+              ? "Transaction details matched the prepared request, its block was proved canonical by the local node, and the expected on-chain state was verified. Raw transaction bytes were unavailable from the local transaction index"
               : "Transaction and expected on-chain state verified"
             : verifiedByApi
-              ? "Transaction inclusion confirmed by the configured API. Node transaction indexing is disabled, so Sidekick could not inspect raw transaction bytes"
+              ? "Transaction details matched the prepared request and its block was proved canonical by the local node. Raw transaction bytes were unavailable from the local transaction index"
               : customAssetSemanticsUnattested && decoded.postConditionCount === 1
                 ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
                 : "Transaction confirmed. Waiting for the expected on-chain state",
@@ -2026,8 +2031,12 @@ export class WalletIntentService {
         );
         return this.publicIntent(stored);
       }
-      // The API does not publish a transaction-level chain ID. The explicit API network check
-      // above binds this fallback without making normal local-node verification depend on it.
+      await proveCanonicalNodeBlock(clients.node, {
+        blockHeight: block.height,
+        indexBlockHash: block.index_block_hash,
+      });
+      // The API supplies the exact public call details while the local node independently proves
+      // the containing block canonical and verifies the resulting on-chain state below.
       const verified = this.verifyApiIndexedTransaction(stored, manifest, details, observedAt);
       if (!verified) return this.publicIntent(this.requireStored(stored.id));
       return await this.refreshIndexed(

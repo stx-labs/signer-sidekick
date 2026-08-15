@@ -279,6 +279,57 @@ describe("STX-only reward status", () => {
     });
   });
 
+  it("does not treat the pre-activation cycle as an overdue first PoX-5 calculation", async () => {
+    const activationAnchor: ChainAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: 962_569,
+      rewardCycle: 141,
+      cyclePosition: 419,
+      checkpoint: "first-half",
+    };
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 0n,
+          globalAccruedRewards: 64_574_704n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 392_447_554_847_960n,
+          stxShares: 3_999_770_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-08-15T12:00:00.000Z",
+      chainAnchor: activationAnchor,
+      firstRewardCycleId: 141,
+    });
+
+    expect(outlook).toMatchObject({
+      calculation: {
+        state: "pending",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: 963_199,
+        next: {
+          state: "scheduled",
+          calculationBurnHeight: 963_199,
+          eligibleBurnHeight: 963_200,
+          blocksRemaining: 631,
+        },
+      },
+      poolEstimate: {
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        inputs: {
+          globalStxSharesUstx: "392447554847960",
+          managerStxSharesUstx: "3999770000000",
+        },
+      },
+    });
+    expect(BigInt(outlook.poolEstimate?.grossSats ?? "0")).toBeGreaterThan(0n);
+  });
+
   it("exposes the contract-rounded pool reward if current anchored inputs were calculated now", async () => {
     const outlook = await readRewardOutlook({
       store: store(),

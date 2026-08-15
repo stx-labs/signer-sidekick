@@ -3,7 +3,12 @@ import {
   decodeManagerPrintEvent,
   type ManagerPrintEvent,
 } from "@stx-labs/signer-sidekick-protocol/manager-events";
-import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
+import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
+import type {
+  SmartContractLogPage,
+  StacksNodeClient,
+  TransactionSummary,
+} from "./chain-clients.js";
 import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
 import type {
   ChainCursor,
@@ -29,6 +34,11 @@ export interface ManagerEventApi {
 export interface ManagerEventNodeTransactions {
   lookupIndexedTransaction(txId: string): Promise<LiveLookup<IndexedTransactionObservation>>;
 }
+
+export type ManagerEventNodeBlocks = Pick<
+  StacksNodeClient,
+  "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
+>;
 
 export interface ManagerEventStore {
   getCursor(sourceId: string, stream: string): ChainCursor | null;
@@ -57,6 +67,8 @@ export interface SyncManagerEventsOptions {
    * Callback bodies are never accepted as this witness.
    */
   nodeTransactions?: ManagerEventNodeTransactions;
+  /** Local canonical-block witness used when an older transaction is absent from the tx index. */
+  nodeBlocks?: ManagerEventNodeBlocks;
   observedAt: string;
   pageLimit?: number;
   signal?: AbortSignal;
@@ -114,6 +126,7 @@ async function enrichTransactions(
 
 async function verifyTransactionsWithNode(
   node: ManagerEventNodeTransactions,
+  nodeBlocks: ManagerEventNodeBlocks | undefined,
   transactions: ReadonlyMap<string, TransactionSummary>,
   signal?: AbortSignal,
 ): Promise<number> {
@@ -125,6 +138,15 @@ async function verifyTransactionsWithNode(
     await Promise.all(
       batch.map(async ([txId, transaction]) => {
         const observation = await node.lookupIndexedTransaction(txId);
+        if (observation.status === "not-found" && nodeBlocks) {
+          await proveCanonicalNodeBlock(nodeBlocks, {
+            blockHeight: transaction.block.height,
+            indexBlockHash: transaction.block.index_hash,
+            ...(signal ? { signal } : {}),
+          });
+          verified += 1;
+          return;
+        }
         if (observation.status !== "observed") {
           const reason =
             observation.status === "not-found"
@@ -242,6 +264,7 @@ export async function syncManagerEvents(
     if (options.nodeTransactions) {
       nodeVerifiedTransactions += await verifyTransactionsWithNode(
         options.nodeTransactions,
+        options.nodeBlocks,
         transactionById,
         options.signal,
       );

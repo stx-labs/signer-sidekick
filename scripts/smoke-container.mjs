@@ -208,7 +208,7 @@ try {
     "support-bundle",
   ]);
   const supportBundle = parseJson(supportBundleOutput, "export support-bundle");
-  invariant(supportBundle.schemaVersion === 1, "Support bundle schema mismatch");
+  invariant(supportBundle.schemaVersion === 2, "Support bundle schema mismatch");
   invariant(!supportBundleOutput.includes(authToken), "Support bundle exposed the auth token");
   if (process.env.STACKS_API_KEY) {
     invariant(

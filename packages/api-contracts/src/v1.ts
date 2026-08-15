@@ -163,15 +163,120 @@ export type RuntimeSettings = z.infer<typeof runtimeSettingsSchema>;
 const sourceStateSchema = z.looseObject({
   configured: z.boolean(),
   status: z.enum(["healthy", "unavailable", "not-configured"]),
-  checkedAt: z.string().nullable(),
-  lastSuccessAt: z.string().nullable(),
-  latencyMs: z.number().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+  lastSuccessAt: z.iso.datetime().nullable(),
+  latencyMs: z.number().nonnegative().nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
   errorCode: z.string().nullable(),
 });
 
+export const healthClassificationSchema = z.enum([
+  "healthy",
+  "likely-local-node",
+  "likely-local-signer",
+  "source-disagreement",
+  "suspected-network-wide",
+  "insufficient-evidence",
+]);
+export type HealthClassification = z.infer<typeof healthClassificationSchema>;
+
+const healthEvidenceWindowSchema = z
+  .object({
+    startedAt: z.iso.datetime(),
+    endedAt: z.iso.datetime(),
+    sampleCount: z.number().int().nonnegative(),
+    distinctSources: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const healthFindingEvidenceSchema = z
+  .object({
+    code: z.string().min(1).max(120),
+    source: z.enum([
+      "local-node",
+      "node-peers",
+      "signer-monitoring",
+      "configured-api",
+      "reference-api",
+      "on-chain",
+    ]),
+    status: z.enum(["supporting", "contradicting", "unavailable", "collecting"]),
+    observedAt: z.iso.datetime().nullable(),
+    value: z.string().max(500).nullable(),
+    detail: z.string().min(1).max(1_000),
+  })
+  .strict();
+
+export const healthFindingSchema = z
+  .object({
+    id: z.string().min(1).max(120),
+    episodeId: z.string().uuid().nullable(),
+    severity: z.enum(["critical", "warning", "info"]),
+    title: z.string().min(1).max(200),
+    detail: z.string().min(1).max(2_000),
+    source: z.enum(["node", "signer", "network", "source"]),
+    classification: healthClassificationSchema.exclude(["healthy"]),
+    confidence: z.enum(["high", "medium", "low"]),
+    firstObservedAt: z.iso.datetime(),
+    lastObservedAt: z.iso.datetime(),
+    evidenceWindow: healthEvidenceWindowSchema,
+    evidence: z.array(healthFindingEvidenceSchema).min(1).max(20),
+  })
+  .strict();
+
+export const healthFindingEpisodeSchema = healthFindingSchema
+  .omit({ episodeId: true })
+  .extend({
+    episodeId: z.string().uuid(),
+    status: z.enum(["active", "resolved"]),
+    resolvedAt: z.iso.datetime().nullable(),
+    occurrences: z.number().int().positive(),
+  })
+  .strict();
+
+export const healthRollupSchema = z
+  .object({
+    windowStartedAt: z.iso.datetime(),
+    windowEndedAt: z.iso.datetime(),
+    sampleCount: z.number().int().positive(),
+    nodeRpcAvailabilityPercent: z.number().min(0).max(100),
+    signerAvailabilityPercent: z.number().min(0).max(100).nullable(),
+    nodeStacksHeightStart: z.number().int().nonnegative().nullable(),
+    nodeStacksHeightEnd: z.number().int().nonnegative().nullable(),
+    nodeAdvanceCount: z.number().int().nonnegative(),
+    proposals: z.number().int().nonnegative().nullable(),
+    accepted: z.number().int().nonnegative().nullable(),
+    rejected: z.number().int().nonnegative().nullable(),
+    disagreements: z.number().int().nonnegative().nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+  })
+  .strict();
+
+const signerWindowSchema = z
+  .object({
+    startedAt: z.iso.datetime(),
+    endedAt: z.iso.datetime(),
+    sampleCount: z.number().int().nonnegative(),
+    proposals: z.number().int().nonnegative().nullable(),
+    validationAccepted: z.number().int().nonnegative().nullable(),
+    validationRejected: z.number().int().nonnegative().nullable(),
+    accepted: z.number().int().nonnegative().nullable(),
+    rejected: z.number().int().nonnegative().nullable(),
+    responseGap: z.number().int().nonnegative().nullable(),
+    rejectionPercent: z.number().min(0).max(100).nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+    validationP95Seconds: z.number().nonnegative().nullable(),
+    nodeRpcP95Seconds: z.number().nonnegative().nullable(),
+    capitulationP95Seconds: z.number().nonnegative().nullable(),
+    disagreements: z.number().int().nonnegative().nullable(),
+    preCommits: z.number().int().nonnegative().nullable(),
+    collectingBaseline: z.boolean(),
+  })
+  .strict();
+
 export const healthSnapshotSchema = z.looseObject({
-  generatedAt: z.string(),
+  schemaVersion: z.literal(2),
+  generatedAt: z.iso.datetime(),
   overallStatus: z.enum(["healthy", "needs-attention", "partial", "unavailable"]),
   coverage: z.looseObject({ available: z.number(), total: z.number() }),
   burnBlockTiming: z
@@ -179,18 +284,45 @@ export const healthSnapshotSchema = z.looseObject({
       averageSeconds: z.number(),
       windowHours: z.union([z.literal(12), z.literal(24)]),
       sampleBlocks: z.number(),
-      sampledAt: z.string(),
+      sampledAt: z.iso.datetime(),
     })
     .nullable(),
-  findings: z.array(
-    z.looseObject({
-      id: z.string(),
-      severity: z.enum(["critical", "warning", "info"]),
-      title: z.string(),
-      detail: z.string(),
-      source: z.enum(["node", "signer"]),
-    }),
-  ),
+  diagnosis: z
+    .object({
+      status: z.enum(["healthy", "needs-attention", "collecting", "unavailable"]),
+      classification: healthClassificationSchema,
+      confidence: z.enum(["high", "medium", "low"]),
+      summary: z.string().min(1).max(2_000),
+      evidenceWindow: healthEvidenceWindowSchema,
+      activeFindingIds: z.array(z.string().min(1).max(120)),
+    })
+    .strict(),
+  findings: z.array(healthFindingSchema),
+  history: z
+    .object({
+      sampleIntervalSeconds: z.literal(5),
+      rawRetentionHours: z.literal(72),
+      rollupIntervalMinutes: z.literal(5),
+      rollupRetentionDays: z.literal(90),
+      observedSince: z.iso.datetime().nullable(),
+      observationCount: z.number().int().nonnegative(),
+      recentRollups: z.array(healthRollupSchema).max(288),
+      recentEpisodes: z.array(healthFindingEpisodeSchema).max(50),
+    })
+    .strict(),
+  operator: z
+    .object({
+      network: z.string(),
+      managerPrincipal: z.string(),
+      currentRewardCycle: z.number().int().nonnegative(),
+      registered: z.boolean().nullable(),
+      signerKeyHex: z.string().nullable(),
+      signerKeyGrantValid: z.boolean().nullable(),
+      expectedCurrentParticipation: z.boolean(),
+      expectedNextParticipation: z.boolean(),
+    })
+    .strict()
+    .nullable(),
   node: z.looseObject({
     rpc: sourceStateSchema,
     metrics: sourceStateSchema,
@@ -214,6 +346,16 @@ export const healthSnapshotSchema = z.looseObject({
     lastTipAdvanceAt: z.iso.datetime().nullable().optional(),
     advancementStatus: z.enum(["advancing", "collecting", "insufficient-evidence"]).optional(),
   }),
+  configuredApi: z.looseObject({
+    distinctFromReference: z.boolean(),
+    source: sourceStateSchema,
+    stacksTipHeight: z.number().nullable(),
+    burnBlockHeight: z.number().nullable(),
+    localStacksDifference: z.number().nullable(),
+    localBurnDifference: z.number().nullable(),
+    lastTipAdvanceAt: z.iso.datetime().nullable(),
+    advancementStatus: z.enum(["advancing", "collecting", "insufficient-evidence"]),
+  }),
   signer: z.looseObject({
     infoSource: sourceStateSchema,
     heartbeat: sourceStateSchema,
@@ -226,6 +368,10 @@ export const healthSnapshotSchema = z.looseObject({
     nodeHeightDifference: z.number().nullable(),
     rewardCycle: z.number().nullable(),
     stxBalanceUstx: z.number().nullable(),
+    identityMatchesRegistration: z.boolean().nullable(),
+    networkMatchesConfiguration: z.boolean().nullable(),
+    rewardCycleMatchesNode: z.boolean().nullable(),
+    last15Minutes: signerWindowSchema,
     lastHour: z.looseObject({
       proposals: z.number().nullable(),
       accepted: z.number().nullable(),

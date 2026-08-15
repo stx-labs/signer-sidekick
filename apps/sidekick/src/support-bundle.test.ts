@@ -247,6 +247,18 @@ describe("operator support bundle", () => {
         buildCommit: "abcdef1234567",
         runtime: { uptimeSeconds: 120 },
       },
+      handoff: {
+        correlation: {
+          startedAt: "2026-08-13T11:01:00.000Z",
+          endedAt: "2026-08-13T12:01:00.000Z",
+          activeHealthEpisodeIds: [],
+        },
+        companionArtifact: {
+          kind: "stacksup-or-operator-infrastructure-support-bundle",
+          required: false,
+          excludedFromSidekick: ["host-control", "unrestricted-logs", "private-key-material"],
+        },
+      },
       sections: {
         connection: { status: "ok", data: { status: "connected" } },
         runtimeSettings: {

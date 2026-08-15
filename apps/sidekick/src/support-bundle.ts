@@ -328,14 +328,46 @@ const operatorSupportApplicationSchema = z
   })
   .strict();
 
+const supportHandoffSchema = z
+  .object({
+    correlation: z
+      .object({
+        startedAt: z.iso.datetime(),
+        endedAt: z.iso.datetime(),
+        activeHealthEpisodeIds: z.array(z.string().uuid()).max(50),
+      })
+      .strict(),
+    companionArtifact: z
+      .object({
+        kind: z.literal("stacksup-or-operator-infrastructure-support-bundle"),
+        required: z.literal(false),
+        purpose: z.string().min(1).max(1_000),
+        requestedEvidence: z.array(
+          z.enum([
+            "host-resource-saturation",
+            "process-or-container-lifecycle",
+            "service-logs",
+            "disk-and-filesystem-health",
+            "host-network-connectivity",
+          ]),
+        ),
+        excludedFromSidekick: z.array(
+          z.enum(["host-control", "unrestricted-logs", "private-key-material"]),
+        ),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const operatorSupportBundleSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     documentType: z.literal("signer-sidekick-operator-support-bundle"),
     bundleId: z.string().uuid(),
     generatedAt: z.iso.datetime(),
     collectionStatus: z.enum(["complete", "partial", "failed"]),
     application: operatorSupportApplicationSchema,
+    handoff: supportHandoffSchema,
     sections: z
       .object({
         connection: connectionSectionSchema,
@@ -592,13 +624,44 @@ export async function createOperatorSupportBundle(options: {
     : statuses.every((status) => status !== "ok")
       ? "failed"
       : "partial";
+  const generatedAt = now().toISOString();
+  const healthData = healthSnapshotSchema.safeParse(nodeAndSignerHealth.data);
+  const activeEpisodes = healthData.success
+    ? healthData.data.history.recentEpisodes.filter(({ status }) => status === "active")
+    : [];
+  const correlationStart = activeEpisodes
+    .map(({ firstObservedAt }) => firstObservedAt)
+    .sort()
+    .at(0);
   const bundle = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     documentType: "signer-sidekick-operator-support-bundle",
     bundleId: options.bundleId ?? randomUUID(),
-    generatedAt: now().toISOString(),
+    generatedAt,
     collectionStatus,
     application: options.application,
+    handoff: {
+      correlation: {
+        startedAt:
+          correlationStart ?? new Date(Date.parse(generatedAt) - 60 * 60 * 1_000).toISOString(),
+        endedAt: generatedAt,
+        activeHealthEpisodeIds: activeEpisodes.map(({ episodeId }) => episodeId),
+      },
+      companionArtifact: {
+        kind: "stacksup-or-operator-infrastructure-support-bundle",
+        required: false,
+        purpose:
+          "Correlate Sidekick's protocol and signer evidence with infrastructure conditions from the same time window when escalation needs host-level context.",
+        requestedEvidence: [
+          "host-resource-saturation",
+          "process-or-container-lifecycle",
+          "service-logs",
+          "disk-and-filesystem-health",
+          "host-network-connectivity",
+        ],
+        excludedFromSidekick: ["host-control", "unrestricted-logs", "private-key-material"],
+      },
+    },
     sections,
     safety: {
       construction: "reviewed-sources-with-explicit-secret-denylist",

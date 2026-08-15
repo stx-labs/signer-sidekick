@@ -72,6 +72,9 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE health_finding_episodes;
+    DROP TABLE health_rollups;
+    DROP TABLE health_observations;
     DROP TABLE reward_calculation_realizations;
     DROP TABLE reward_outlook_observations;
     DROP TABLE observer_deliveries;
@@ -336,7 +339,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 29,
+      schemaVersion: 30,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1328,7 +1331,7 @@ describe("Sidekick SQLite store", () => {
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 29,
+      schemaVersion: 30,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1354,7 +1357,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
     expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1470,7 +1473,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(29);
+    expect(upgraded.store.schemaVersion()).toBe(30);
     expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
       id: intentId,
       state: "submitted",
@@ -1532,6 +1535,9 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
       DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       DROP TABLE signer_staker_api_scan_items;
@@ -1553,7 +1559,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1704,7 +1710,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
     expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1826,6 +1832,9 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
       DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
@@ -1842,7 +1851,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(29);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(30);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1879,6 +1888,9 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
       DROP TABLE reward_calculation_realizations;
       DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;

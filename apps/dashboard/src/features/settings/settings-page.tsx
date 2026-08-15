@@ -31,6 +31,7 @@ const healthSourceLabels = {
 export function SettingsPage({
   data,
   initialSection,
+  readOnly = false,
   onRefreshStatus,
   token,
   setTheme,
@@ -41,6 +42,7 @@ export function SettingsPage({
 }: {
   data: DashboardSnapshot | null;
   initialSection: SettingsSection | null;
+  readOnly?: boolean;
   onRefreshStatus?: (() => void | Promise<void>) | undefined;
   token: string;
   setTheme: (theme: "light" | "dark") => void;
@@ -255,18 +257,36 @@ export function SettingsPage({
     <div className="settings-page">
       <PageHead
         title="Settings"
-        lede="Configure this Sidekick deployment."
+        lede={readOnly ? "Review this Sidekick deployment." : "Configure this Sidekick deployment."}
         actions={
-          <button
-            type="button"
-            className="btn btn-accent"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            {busy ? "Saving" : "Save changes"}
-          </button>
+          readOnly ? (
+            <button
+              className="btn btn-secondary"
+              disabled={supportDownloadBusy}
+              onClick={() => void downloadSupportBundle()}
+              type="button"
+            >
+              <DownloadSimple />
+              {supportDownloadBusy ? "Collecting support bundle" : "Download support bundle"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-accent"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              {busy ? "Saving" : "Save changes"}
+            </button>
+          )
         }
       />
+      {readOnly ? (
+        <div className="callout callout-caution content-notice" role="status">
+          Deployment identity does not match. Settings and support evidence remain readable, but
+          configuration changes and source tests are disabled.
+        </div>
+      ) : null}
       {loading ? (
         <div className="callout callout-neutral content-notice" role="status">
           Refreshing settings…
@@ -310,7 +330,7 @@ export function SettingsPage({
             </button>
           ))}
         </nav>
-        <fieldset className="settings-scroll settings-fields" disabled={busy}>
+        <fieldset className="settings-scroll settings-fields" disabled={busy || readOnly}>
           {data ? (
             <ManagerSettings
               data={data}
