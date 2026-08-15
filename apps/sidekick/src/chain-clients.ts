@@ -271,7 +271,19 @@ const transactionDetailSchema = z
         function_name: z.string().regex(clarityFunctionNamePattern),
         function_args: z.array(z.object({ hex: z.string().regex(clarityHexPattern) }).strip()),
       })
-      .nullable(),
+      .nullable()
+      .optional()
+      .default(null),
+    smart_contract: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        source_code: z.string(),
+        // The indexed API currently returns null for some historical deployments.
+        clarity_version: z.number().int().nonnegative().safe().nullable().optional().default(null),
+      })
+      .nullable()
+      .optional()
+      .default(null),
     post_conditions: z.array(z.unknown()),
     sponsored: z.boolean(),
     anchor_mode: z.enum(["any", "on_chain_only", "off_chain_only"]),

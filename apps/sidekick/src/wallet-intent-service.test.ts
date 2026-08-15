@@ -2107,37 +2107,62 @@ describe("manager wallet action preparation", () => {
     });
   });
 
-  it("reconciles a submitted V2 setup deployment without reopening setup", async () => {
+  it("reconciles a submitted V2 setup deployment through historical API evidence", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
     const fixture = await createLegacyV2SubmittedDeployment(store);
     readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
+    const node = {
+      getInfo: vi.fn(async () => ({ network_id: 1 })),
+      getTenureInfo: vi.fn(async () => ({
+        tip_block_id: `0x${"99".repeat(32)}`,
+        tip_height: blockHeight + 100,
+        reward_cycle: 141,
+      })),
+      getNakamotoBlockById: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+      getNakamotoBlockAtHeight: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    };
+    const api = {
+      getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
+      getTransactionDetails: vi.fn(async () => ({
+        tx_id: fixture.txid,
+        tx_status: "success" as const,
+        sender_address: requiredSender,
+        tx_type: "smart_contract",
+        contract_call: null,
+        smart_contract: {
+          contract_id: managerPrincipal,
+          source_code: source,
+          clarity_version: null,
+        },
+        post_conditions: [],
+        sponsored: false,
+        anchor_mode: "any" as const,
+        post_condition_mode: "deny" as const,
+        canonical: true,
+        block_hash: blockHash,
+        block_height: blockHeight,
+      })),
+      getBlock: vi.fn(async () => ({
+        canonical: true,
+        height: blockHeight,
+        hash: blockHash,
+        index_block_hash: indexBlockHash,
+      })),
+    };
     const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
           config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
-          node: { getInfo: vi.fn(async () => ({ network_id: 1 })) },
-          api: {},
+          node,
+          api,
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
       canRepairSignerRegistration,
       readerFactory: () => ({
-        lookupIndexedTransaction: async () => ({
-          status: "observed" as const,
-          httpStatus: 200,
-          value: {
-            txid: fixture.txid,
-            transactionHex: fixture.transactionHex,
-            nonce: 7n,
-            feeUstx: 1_000n,
-            indexBlockHash,
-            blockHeight: BigInt(blockHeight),
-            isCanonical: true,
-            resultRepr: "(ok true)",
-          },
-        }),
+        lookupIndexedTransaction: async () => ({ status: "not-found" as const, httpStatus: 404 }),
         lookupUnconfirmedTransaction: async () => ({
           status: "not-found" as const,
           httpStatus: 404,

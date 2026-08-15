@@ -297,6 +297,45 @@ describe("Stacks API client", () => {
     );
   });
 
+  it("reads historical contract deployments when the indexed API omits contract_call", async () => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const blockHash = `0x${"cd".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: txId,
+          tx_status: "success",
+          sender_address: "SP000000000000000000002Q6VF78",
+          tx_type: "smart_contract",
+          smart_contract: {
+            contract_id: "SP000000000000000000002Q6VF78.signer-manager",
+            source_code: "(define-public (ping) (ok true))",
+            clarity_version: null,
+          },
+          post_conditions: [],
+          sponsored: false,
+          anchor_mode: "any",
+          post_condition_mode: "deny",
+          canonical: true,
+          block_hash: blockHash,
+          block_height: 8_600_000,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionDetails(txId)).resolves.toMatchObject({
+      tx_type: "smart_contract",
+      contract_call: null,
+      smart_contract: {
+        contract_id: "SP000000000000000000002Q6VF78.signer-manager",
+        source_code: "(define-public (ping) (ok true))",
+        clarity_version: null,
+      },
+    });
+  });
+
   it("reads a bounded canonical block projection by height", async () => {
     const blockHash = `0x${"12".repeat(32)}`;
     const indexHash = `0x${"34".repeat(32)}`;

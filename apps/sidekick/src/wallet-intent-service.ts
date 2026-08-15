@@ -2176,7 +2176,19 @@ export class WalletIntentService {
     if (details.anchor_mode !== "any") return fail("anchor mode");
     if (details.post_condition_mode !== "deny") return fail("post-condition mode");
     if (manifest.transaction.method === "stx_deployContract") {
-      if (details.tx_type !== "smart_contract") return fail("transaction type");
+      const deployment = details.smart_contract;
+      const expected = manifest.transaction.params;
+      if (
+        details.tx_type !== "smart_contract" ||
+        !deployment ||
+        deployment.contract_id !== `${manifest.requiredSender}.${expected.name}` ||
+        textSha256(deployment.source_code) !== textSha256(expected.clarityCode) ||
+        (deployment.clarity_version !== null &&
+          deployment.clarity_version !== expected.clarityVersion) ||
+        details.post_conditions.length !== expected.postConditions.length
+      ) {
+        return fail("contract deployment");
+      }
       return {
         txid: details.tx_id,
         sender: details.sender_address,
@@ -2191,9 +2203,9 @@ export class WalletIntentService {
         postConditionCount: details.post_conditions.length,
         payload: {
           kind: "deploy-contract",
-          contractName: manifest.transaction.params.name,
-          clarityVersion: manifest.transaction.params.clarityVersion,
-          sourceSha256: textSha256(manifest.transaction.params.clarityCode),
+          contractName: expected.name,
+          clarityVersion: expected.clarityVersion,
+          sourceSha256: textSha256(expected.clarityCode),
         },
       };
     }
