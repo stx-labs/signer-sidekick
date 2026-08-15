@@ -1,6 +1,7 @@
 import type { HealthSnapshot as ApiHealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import type { BurnBlockPage } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import type { SignerBlockTelemetryRecord } from "./signer-block-telemetry.js";
 import type { SidekickStore } from "./storage/store.js";
 
 export type HealthSnapshot = ApiHealthSnapshot;
@@ -74,6 +75,19 @@ export interface SignerMetricValues {
   capitulationLatencyBuckets: Record<string, number>;
 }
 
+export interface SignerBlockTelemetryObservation {
+  status: "available" | "unsupported" | "unavailable";
+  checkedAt: string;
+  latencyMs: number | null;
+  errorCode: string | null;
+  producerVersion: string | null;
+  bootId: string | null;
+  records: SignerBlockTelemetryRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  cursorReset: boolean;
+}
+
 export interface HealthObservation {
   observedAt: string;
   nodeRpc: SourceObservation;
@@ -90,6 +104,7 @@ export interface HealthObservation {
   signerHeartbeat: SourceObservation | null;
   signerMetricsSource: SourceObservation | null;
   signerMetrics: SignerMetricValues | null;
+  signerBlockTelemetry?: SignerBlockTelemetryObservation | null;
 }
 
 export type HealthSourceKey =

@@ -25,7 +25,7 @@ does not stop collection.
 | --- | --- | --- |
 | Stacks node `/v2/info` and `/v3/health` | chain tip, network, sync, connected-peer height view | authoritative for local operating state |
 | Stacks node Prometheus | peers and node warning/error counters | local supporting evidence |
-| Signer `/info`, `/heartbeat`, `/metrics` | identity, node view, cycle, proposals, validation, responses, latency, agreement | authoritative for what this signer reports |
+| Signer `/info`, `/heartbeat`, `/metrics`, and optional `/v1/block-telemetry` | identity, node view, cycle, proposals, validation, responses, exact lifecycle timing, agreement | authoritative for what this signer reports |
 | Anchored operator snapshot | manager, registration, signer key/grant, current and next participation | node-proved operator context |
 | Hiro reference API | independent public tip progression | comparison only |
 | Configured indexed API | second comparison when it is a distinct origin | comparison only |
@@ -66,12 +66,18 @@ The current thresholds are deliberately closed and operator-readable:
 | Elevated response latency | at least 20 responses and p95 above 5 seconds in 15 minutes |
 | Agreement conflicts | at least 3 conflicts in 15 minutes |
 
-Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
-derive windowed p95 from cumulative-counter increases, re-baselining every bucket together on a
-reset and interpolating within the crossing bucket (as Prometheus `histogram_quantile` does) rather
-than reporting the bucket's upper boundary. Incomplete or non-monotonic histogram intervals are
-excluded rather than allowed to create a false latency finding. Missing release-specific metrics
-reduce coverage rather than failing the entire signer source.
+Signer counters are reset-safe. When the Signer exposes the versioned per-block telemetry endpoint,
+Sidekick de-duplicates finalized proposal records and calculates p95 by nearest rank from the exact
+durations. It separately reports node validation, proposal-to-validation result, pre-commit wait,
+and response publication. See the [per-block telemetry plan](per-block-signer-telemetry-plan-2026-08-15.md)
+for the producer contract and release gate.
+
+Current Signer releases expose only official histogram buckets. Sidekick derives windowed counts
+from cumulative-counter increases, re-baselining every bucket together on a reset. It retains the
+Prometheus-style interpolation for compatibility and alert continuity, but the operator UI labels
+the actual crossing bucket range rather than presenting that interpolation as an exact time.
+Incomplete or non-monotonic intervals are excluded. An older Signer's HTTP 404 for per-block
+telemetry is normal compatibility behavior and does not create a health finding.
 
 ## Durable history
 
@@ -118,4 +124,6 @@ Health endpoints are operator-configured but treated as untrusted input. HTTP(S)
 credentials, query strings, fragments, redirects, oversized responses, and cloud-metadata or
 invalid address ranges are rejected. DNS is resolved for each request and the connection is pinned
 to the checked address. Private, loopback, Docker, and tailnet addresses remain available for local
-deployments under the same rebinding protections.
+deployments under the same rebinding protections. Sidekick itself adds only the bounded, encoded
+cursor and limit query parameters to the fixed per-block telemetry path; operators cannot persist
+arbitrary query strings.

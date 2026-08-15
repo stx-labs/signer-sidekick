@@ -10,6 +10,8 @@ const MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_TIMEOUT_MS = 3_000;
 
 export class HealthSourceError extends Error {
+  readonly status: number | null;
+
   constructor(
     readonly code:
       | "invalid-url"
@@ -21,10 +23,11 @@ export class HealthSourceError extends Error {
       | "http-error"
       | "unexpected-content",
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { status?: number },
   ) {
     super(message, options);
     this.name = "HealthSourceError";
+    this.status = options?.status ?? null;
   }
 }
 
@@ -171,10 +174,28 @@ export async function validateHealthEndpointForSave(
 
 export async function fetchHealthSource(
   input: string,
-  options: { timeoutMs?: number; maxBytes?: number } = {},
+  options: { timeoutMs?: number; maxBytes?: number; allowQuery?: boolean } = {},
 ): Promise<HealthHttpResponse> {
-  const normalized = validateHealthEndpointUrl(input);
-  const url = new URL(normalized);
+  let url: URL;
+  if (options.allowQuery) {
+    try {
+      url = new URL(input);
+      if (
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.username ||
+        url.password ||
+        url.hash
+      ) {
+        throw new Error("invalid telemetry request URL");
+      }
+    } catch (error) {
+      throw new HealthSourceError("invalid-url", "Health endpoint URL is invalid", {
+        cause: error,
+      });
+    }
+  } else {
+    url = new URL(validateHealthEndpointUrl(input));
+  }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
   const startedAt = performance.now();
@@ -225,7 +246,9 @@ export async function fetchHealthSource(
           if (settled) return;
           if (status < 200 || status >= 300) {
             finishError(
-              new HealthSourceError("http-error", `Health endpoint returned HTTP ${status}`),
+              new HealthSourceError("http-error", `Health endpoint returned HTTP ${status}`, {
+                status,
+              }),
             );
             return;
           }

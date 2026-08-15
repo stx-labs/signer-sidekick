@@ -48,6 +48,19 @@ function rewardNetSats(gross: string | null, fee: string | null): string | null 
   return gross === null || fee === null ? null : (BigInt(gross) - BigInt(fee)).toString();
 }
 
+function signerResponseTiming(signer: OverviewPage["signer"]): string {
+  const timing = signer.responseTiming;
+  if (timing?.source === "exact" && timing.p95Seconds !== null) {
+    return `${timing.p95Seconds.toFixed(1)}s exact`;
+  }
+  if (timing?.source === "histogram-range" && timing.lowerBoundSeconds !== null) {
+    return timing.upperBoundSeconds === null
+      ? `≥${timing.lowerBoundSeconds.toFixed(1)}s bucket`
+      : `${timing.lowerBoundSeconds.toFixed(1)}-${timing.upperBoundSeconds.toFixed(1)}s bucket`;
+  }
+  return signer.responseP95Seconds === null ? "—" : `${signer.responseP95Seconds.toFixed(1)}s`;
+}
+
 function evidenceStatus(evidence: readonly OverviewEvidence[]): OverviewEvidence["status"] {
   const order: OverviewEvidence["status"][] = [
     "unavailable",
@@ -482,10 +495,7 @@ export function Overview({
               },
               {
                 label: "Response p95",
-                value:
-                  data.signer.responseP95Seconds === null
-                    ? "—"
-                    : `${data.signer.responseP95Seconds.toFixed(1)}s`,
+                value: signerResponseTiming(data.signer),
               },
             ]}
             onRecheck={(target) => void recheck(target)}

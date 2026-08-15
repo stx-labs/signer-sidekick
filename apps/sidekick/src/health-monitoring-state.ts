@@ -109,10 +109,17 @@ export function counterIncrease<T>(
   return transitions > 0 ? increase : null;
 }
 
-export function histogramP95For(
+export interface HistogramP95Summary {
+  estimateSeconds: number;
+  lowerBoundSeconds: number;
+  upperBoundSeconds: number | null;
+  sampleCount: number;
+}
+
+export function histogramP95SummaryFor(
   observations: readonly HealthObservation[],
   select: (observation: HealthObservation) => Record<string, number>,
-): number | null {
+): HistogramP95Summary | null {
   const latestBuckets = [...observations]
     .reverse()
     .map(select)
@@ -198,14 +205,37 @@ export function histogramP95For(
     const count = increase[index] ?? 0;
     if (count >= target) {
       const span = count - lowerCount;
-      if (span <= 0) return upperBound;
-      return lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span);
+      const estimateSeconds =
+        span <= 0
+          ? upperBound
+          : lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span);
+      return {
+        estimateSeconds,
+        lowerBoundSeconds: lowerBound,
+        upperBoundSeconds: upperBound,
+        sampleCount: totalIncrease,
+      };
     }
     lowerBound = upperBound;
     lowerCount = count;
   }
   // The 95th percentile sits above the largest finite bucket; report it as a conservative floor.
-  return bounds.at(-1) ?? null;
+  const lowerBoundSeconds = bounds.at(-1);
+  return lowerBoundSeconds === undefined
+    ? null
+    : {
+        estimateSeconds: lowerBoundSeconds,
+        lowerBoundSeconds,
+        upperBoundSeconds: null,
+        sampleCount: totalIncrease,
+      };
+}
+
+export function histogramP95For(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): number | null {
+  return histogramP95SummaryFor(observations, select)?.estimateSeconds ?? null;
 }
 
 export function histogramP95(observations: readonly HealthObservation[]): number | null {

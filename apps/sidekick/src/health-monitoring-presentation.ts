@@ -5,6 +5,7 @@ import {
   healthSourceState,
   histogramP95,
   histogramP95For,
+  histogramP95SummaryFor,
   lastConfiguredApiTipAdvanceAt,
   lastHiroTipAdvanceAt,
   lastTipAdvanceAt,
@@ -16,6 +17,7 @@ import type {
   HealthOperatorContext,
   HealthSourceState,
 } from "./health-monitoring-types.js";
+import { nearestRankP95, type SignerBlockTelemetryRecord } from "./signer-block-telemetry.js";
 import {
   HEALTH_RAW_RETENTION_HOURS,
   HEALTH_ROLLUP_INTERVAL_MINUTES,
@@ -54,6 +56,28 @@ type FindingInput = Omit<HealthFinding, "episodeId">;
 // callers can keep a not-measured value distinct from a real zero.
 function formatSeconds(value: number | null): string | null {
   return value === null ? null : `${value.toFixed(1)}s`;
+}
+
+function timingAboveThreshold(
+  measurement: TimingMeasurement,
+  thresholdSeconds: number,
+  histogramEstimateSeconds: number | null,
+): boolean {
+  return measurement.source === "exact"
+    ? (measurement.p95Seconds ?? 0) > thresholdSeconds
+    : measurement.source === "histogram-range"
+      ? (histogramEstimateSeconds ?? 0) > thresholdSeconds
+      : false;
+}
+
+function formatTiming(measurement: TimingMeasurement): string | null {
+  if (measurement.source === "exact") return formatSeconds(measurement.p95Seconds);
+  if (measurement.source !== "histogram-range" || measurement.lowerBoundSeconds === null) {
+    return null;
+  }
+  return measurement.upperBoundSeconds === null
+    ? `at least ${measurement.lowerBoundSeconds.toFixed(1)}s`
+    : `${measurement.lowerBoundSeconds.toFixed(1)}-${measurement.upperBoundSeconds.toFixed(1)}s`;
 }
 
 interface HealthHistoryInput {
@@ -242,6 +266,139 @@ function signerWindow(
   };
 }
 
+type TimingMeasurement = NonNullable<
+  HealthSnapshot["signer"]["blockTelemetry"]
+>["last15Minutes"]["response"];
+type TimingWindow = NonNullable<HealthSnapshot["signer"]["blockTelemetry"]>["last15Minutes"];
+
+function unavailableTiming(): TimingMeasurement {
+  return {
+    source: "unavailable",
+    sampleCount: 0,
+    p95Seconds: null,
+    lowerBoundSeconds: null,
+    upperBoundSeconds: null,
+  };
+}
+
+function exactTiming(
+  records: readonly SignerBlockTelemetryRecord[],
+  select: (record: SignerBlockTelemetryRecord) => number | null,
+): TimingMeasurement | null {
+  const values = records.map(select).filter((value): value is number => value !== null);
+  const p95Ms = nearestRankP95(values);
+  return p95Ms === null
+    ? null
+    : {
+        source: "exact",
+        sampleCount: values.length,
+        p95Seconds: p95Ms / 1_000,
+        lowerBoundSeconds: null,
+        upperBoundSeconds: null,
+      };
+}
+
+function histogramTiming(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): TimingMeasurement {
+  const summary = histogramP95SummaryFor(observations, select);
+  return summary
+    ? {
+        source: "histogram-range",
+        sampleCount: summary.sampleCount,
+        p95Seconds: null,
+        lowerBoundSeconds: summary.lowerBoundSeconds,
+        upperBoundSeconds: summary.upperBoundSeconds,
+      }
+    : unavailableTiming();
+}
+
+function telemetryRecords(
+  observations: readonly HealthObservation[],
+): SignerBlockTelemetryRecord[] {
+  const latest = new Map<string, SignerBlockTelemetryRecord>();
+  for (const observation of observations) {
+    const page = observation.signerBlockTelemetry;
+    if (page?.status !== "available" || !page.bootId) continue;
+    for (const record of page.records) {
+      const key = `${page.bootId}\u0000${record.recordId}`;
+      const existing = latest.get(key);
+      if (!existing || record.sequence > existing.sequence) latest.set(key, record);
+    }
+  }
+  return [...latest.values()];
+}
+
+function signerTimingWindow(observations: readonly HealthObservation[]): TimingWindow {
+  const startedAt = observations.at(0)?.observedAt ?? new Date(0).toISOString();
+  const endedAt = observations.at(-1)?.observedAt ?? startedAt;
+  const finalized = telemetryRecords(observations).filter((record) => {
+    const finalizedAt = record.timestamps.responseAckedAt;
+    return (
+      record.stage === "response-acknowledged" &&
+      finalizedAt !== null &&
+      finalizedAt >= startedAt &&
+      finalizedAt <= endedAt
+    );
+  });
+  return {
+    startedAt,
+    endedAt,
+    finalizedRecords: finalized.length,
+    response:
+      exactTiming(finalized, (record) => record.durationsMs.headerToResponseAck) ??
+      histogramTiming(
+        observations,
+        (observation) => observation.signerMetrics?.responseLatencyBuckets ?? {},
+      ),
+    proposalToResponse:
+      exactTiming(finalized, (record) => record.durationsMs.proposalToResponseAck) ??
+      unavailableTiming(),
+    validation:
+      exactTiming(finalized, (record) => record.durationsMs.nodeValidation) ??
+      histogramTiming(
+        observations,
+        (observation) => observation.signerMetrics?.validationLatencyBuckets ?? {},
+      ),
+    proposalToValidationResult:
+      exactTiming(finalized, (record) => record.durationsMs.proposalToValidationResult) ??
+      unavailableTiming(),
+    precommitWait:
+      exactTiming(finalized, (record) => record.durationsMs.precommitWait) ?? unavailableTiming(),
+    responsePublication:
+      exactTiming(finalized, (record) => record.durationsMs.responsePublication) ??
+      unavailableTiming(),
+  };
+}
+
+function signerBlockTelemetrySummary(
+  observations: readonly HealthObservation[],
+  config: SidekickConfig,
+): NonNullable<HealthSnapshot["signer"]["blockTelemetry"]> {
+  const pages = observations
+    .map((observation) => observation.signerBlockTelemetry)
+    .filter((page) => page !== undefined && page !== null);
+  const latest = pages.at(-1) ?? null;
+  const successful = [...pages].reverse().find(({ status }) => status === "available") ?? null;
+  const finalized = telemetryRecords(observations)
+    .filter((record) => record.stage === "response-acknowledged")
+    .map((record) => record.timestamps.responseAckedAt)
+    .filter((value): value is string => value !== null)
+    .sort();
+  return {
+    capability: !config.signerMonitoringUrl ? "not-configured" : (latest?.status ?? "unavailable"),
+    producerVersion: successful?.producerVersion ?? null,
+    checkedAt: latest?.checkedAt ?? null,
+    lastSuccessAt: successful?.checkedAt ?? null,
+    latestFinalizedAt: finalized.at(-1) ?? null,
+    cursorResetCount: pages.filter(({ cursorReset }) => cursorReset).length,
+    collectionGap: pages.some(({ cursorReset }) => cursorReset),
+    last15Minutes: signerTimingWindow(windowSince(observations, 15 * 60 * 1_000)),
+    lastHour: signerTimingWindow(windowSince(observations, 60 * 60 * 1_000)),
+  };
+}
+
 function sourceAdvanceStatus(
   lastAdvanceAt: string | null,
   stagnationStartedAt: string | null,
@@ -276,6 +433,7 @@ function evaluateHealthFindings(input: {
   configuredApiLastAdvanceAt: string | null;
   configuredApiStagnationStartedAt: string | null;
   signer15m: HealthSnapshot["signer"]["last15Minutes"];
+  signerTiming15m: TimingWindow;
 }): FindingInput[] {
   const {
     observations,
@@ -294,6 +452,7 @@ function evaluateHealthFindings(input: {
     configuredApiLastAdvanceAt,
     configuredApiStagnationStartedAt,
     signer15m,
+    signerTiming15m,
   } = input;
   const latest = observations.at(-1);
   if (!latest) return [];
@@ -945,13 +1104,18 @@ function evaluateHealthFindings(input: {
   }
 
   if (
-    signer15m.accepted !== null &&
-    signer15m.rejected !== null &&
-    signer15m.accepted + signer15m.rejected >= signerRateSampleMinimum &&
-    (signer15m.responseP95Seconds ?? 0) > signerResponseP95ThresholdSeconds
+    signerTiming15m.response.sampleCount >= signerRateSampleMinimum &&
+    timingAboveThreshold(
+      signerTiming15m.response,
+      signerResponseP95ThresholdSeconds,
+      signer15m.responseP95Seconds,
+    )
   ) {
-    const validationSlow =
-      (signer15m.validationP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
+    const validationSlow = timingAboveThreshold(
+      signerTiming15m.validation,
+      signerResponseP95ThresholdSeconds,
+      signer15m.validationP95Seconds,
+    );
     const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > signerResponseP95ThresholdSeconds;
     const responsesMissing = (signer15m.responseGap ?? 0) >= signerResponseGapMinimum;
     const corroborated = validationSlow || nodeRpcSlow || responsesMissing;
@@ -966,8 +1130,8 @@ function evaluateHealthFindings(input: {
         severity: corroborated ? "warning" : "info",
         title: "End-to-end signer response time is elevated",
         detail: corroborated
-          ? `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)} and local evidence shows a correlated delay that needs attention.`
-          : `The recent end-to-end signer response p95 is ${formatSeconds(signer15m.responseP95Seconds)}, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
+          ? `The recent end-to-end signer response p95 is ${formatTiming(signerTiming15m.response)} and local evidence shows a correlated delay that needs attention.`
+          : `The recent end-to-end signer response p95 is ${formatTiming(signerTiming15m.response)}, but local node validation and RPC remain fast and no proposal responses are missing. Continue monitoring before attributing a local fault.`,
         source: "signer",
         classification: latencyClassification,
         confidence: "medium",
@@ -978,16 +1142,18 @@ function evaluateHealthFindings(input: {
             source: "signer-monitoring",
             status: "supporting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: formatSeconds(signer15m.responseP95Seconds),
+            value: formatTiming(signerTiming15m.response),
             detail:
-              "The official signer histogram measures end-to-end time from block timestamp to response broadcast.",
+              signerTiming15m.response.source === "exact"
+                ? `Exact per-block telemetry across ${signerTiming15m.response.sampleCount} finalized responses.`
+                : `The official signer histogram only proves the p95 bucket range across ${signerTiming15m.response.sampleCount} responses.`,
           },
           {
             code: "signer-validation-p95",
             source: "signer-monitoring",
             status: validationSlow ? "supporting" : "contradicting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: formatSeconds(signer15m.validationP95Seconds),
+            value: formatTiming(signerTiming15m.validation),
             detail: validationSlow
               ? "Local block validation latency is also elevated."
               : "Local block validation latency is not elevated.",
@@ -1240,6 +1406,19 @@ export function buildHealthSnapshot({
   );
   const signer15m = signerWindow(last15Minutes);
   const signer1h = signerWindow(lastHour);
+  const blockTelemetry = signerBlockTelemetrySummary(observations, config);
+  if (blockTelemetry.last15Minutes.response.source === "exact") {
+    signer15m.responseP95Seconds = blockTelemetry.last15Minutes.response.p95Seconds;
+  }
+  if (blockTelemetry.last15Minutes.validation.source === "exact") {
+    signer15m.validationP95Seconds = blockTelemetry.last15Minutes.validation.p95Seconds;
+  }
+  if (blockTelemetry.lastHour.response.source === "exact") {
+    signer1h.responseP95Seconds = blockTelemetry.lastHour.response.p95Seconds;
+  }
+  if (blockTelemetry.lastHour.validation.source === "exact") {
+    signer1h.validationP95Seconds = blockTelemetry.lastHour.validation.p95Seconds;
+  }
   const provisionalFindings = evaluateHealthFindings({
     observations,
     config,
@@ -1257,6 +1436,7 @@ export function buildHealthSnapshot({
     configuredApiLastAdvanceAt: configuredApiLastTipAdvanceAt,
     configuredApiStagnationStartedAt,
     signer15m,
+    signerTiming15m: blockTelemetry.last15Minutes,
   });
   const episodeByFinding = new Map(
     (history?.recentEpisodes ?? [])
@@ -1441,6 +1621,7 @@ export function buildHealthSnapshot({
         disagreements: signer1h.disagreements,
         collectingBaseline: signer1h.collectingBaseline,
       },
+      blockTelemetry,
     },
   };
 }

@@ -794,6 +794,13 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
       acceptedLastHour: null,
       rejectedLastHour: null,
       responseP95Seconds: null,
+      responseTiming: {
+        source: "unavailable",
+        sampleCount: 0,
+        p95Seconds: null,
+        lowerBoundSeconds: null,
+        upperBoundSeconds: null,
+      },
       detail: "Signer monitoring evidence is not available.",
       evidence: [evidence({ status: "unavailable", observedAt: null, source: "signer" })],
       detailsAction: healthAction("signer", "Review signer health"),
@@ -823,6 +830,7 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
     acceptedLastHour: health.signer.lastHour.accepted,
     rejectedLastHour: health.signer.lastHour.rejected,
     responseP95Seconds: health.signer.lastHour.responseP95Seconds,
+    responseTiming: health.signer.blockTelemetry?.lastHour.response,
     detail: notConfigured
       ? "Signer monitoring is not configured."
       : unavailable

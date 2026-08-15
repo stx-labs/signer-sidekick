@@ -388,6 +388,48 @@ const signerWindowSchema = z
   })
   .strict();
 
+const signerTimingMeasurementSchema = z
+  .object({
+    source: z.enum(["exact", "histogram-range", "unavailable"]),
+    sampleCount: z.number().int().nonnegative(),
+    p95Seconds: z.number().nonnegative().nullable(),
+    lowerBoundSeconds: z.number().nonnegative().nullable(),
+    upperBoundSeconds: z.number().nonnegative().nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.source === "exact" && value.p95Seconds === null) {
+      context.addIssue({ code: "custom", message: "Exact timing requires a p95 value" });
+    }
+    if (
+      value.source === "histogram-range" &&
+      (value.lowerBoundSeconds === null || value.sampleCount === 0)
+    ) {
+      context.addIssue({ code: "custom", message: "Histogram timing requires a populated range" });
+    }
+    if (
+      value.upperBoundSeconds !== null &&
+      value.lowerBoundSeconds !== null &&
+      value.upperBoundSeconds < value.lowerBoundSeconds
+    ) {
+      context.addIssue({ code: "custom", message: "Timing range bounds are reversed" });
+    }
+  });
+
+const signerBlockTimingWindowSchema = z
+  .object({
+    startedAt: z.iso.datetime(),
+    endedAt: z.iso.datetime(),
+    finalizedRecords: z.number().int().nonnegative(),
+    response: signerTimingMeasurementSchema,
+    proposalToResponse: signerTimingMeasurementSchema,
+    validation: signerTimingMeasurementSchema,
+    proposalToValidationResult: signerTimingMeasurementSchema,
+    precommitWait: signerTimingMeasurementSchema,
+    responsePublication: signerTimingMeasurementSchema,
+  })
+  .strict();
+
 export const healthSnapshotSchema = z.looseObject({
   schemaVersion: z.literal(2),
   generatedAt: z.iso.datetime(),
@@ -496,6 +538,20 @@ export const healthSnapshotSchema = z.looseObject({
       disagreements: z.number().nullable(),
       collectingBaseline: z.boolean(),
     }),
+    blockTelemetry: z
+      .object({
+        capability: z.enum(["available", "unsupported", "unavailable", "not-configured"]),
+        producerVersion: z.string().nullable(),
+        checkedAt: z.iso.datetime().nullable(),
+        lastSuccessAt: z.iso.datetime().nullable(),
+        latestFinalizedAt: z.iso.datetime().nullable(),
+        cursorResetCount: z.number().int().nonnegative(),
+        collectionGap: z.boolean(),
+        last15Minutes: signerBlockTimingWindowSchema,
+        lastHour: signerBlockTimingWindowSchema,
+      })
+      .strict()
+      .optional(),
   }),
 });
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
@@ -2366,6 +2422,7 @@ export const overviewSignerHealthSummarySchema = z
     acceptedLastHour: z.number().int().nonnegative().nullable(),
     rejectedLastHour: z.number().int().nonnegative().nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
+    responseTiming: signerTimingMeasurementSchema.optional(),
     detail: z.string().min(1).max(1_000),
     evidence: z.array(overviewEvidenceSchema).min(1),
     detailsAction: signerHealthDetailsActionSchema,

@@ -494,6 +494,124 @@ describe("Signer Health v2 diagnosis", () => {
     expect(p95).toBeGreaterThan(1);
     expect(p95).toBeLessThan(5);
     expect(p95).toBeCloseTo(3.24, 1);
+    expect(snapshot.signer.blockTelemetry?.last15Minutes.response).toEqual({
+      source: "histogram-range",
+      sampleCount: 190,
+      p95Seconds: null,
+      lowerBoundSeconds: 1,
+      upperBoundSeconds: 5,
+    });
+  });
+
+  it("uses finalized per-block records for exact p95 and phase timing", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const first = observation(new Date(startedAt).toISOString(), {
+      signerPublicKey: operator.signerKeyHex ?? undefined,
+      signer: signerMetrics({ acceptedTotal: 0, proposalsTotal: 0 }),
+    });
+    const secondAt = new Date(startedAt + 30_000).toISOString();
+    const records = Array.from({ length: 20 }, (_, index) => {
+      const finalizedAt = new Date(startedAt + 5_000 + index * 1_000).toISOString();
+      return {
+        recordId: `proposal-${index}`,
+        sequence: index + 1,
+        blockId: `0x${(index + 1).toString(16).padStart(64, "0")}`,
+        signerSighash: `0x${(index + 101).toString(16).padStart(64, "0")}`,
+        blockHeight: 1_000 + index,
+        blockTimestamp: new Date(startedAt + index * 1_000).toISOString(),
+        stage: "response-acknowledged" as const,
+        outcome: "accepted" as const,
+        rejectReason: null,
+        timestamps: {
+          proposalReceivedAt: new Date(startedAt + index * 1_000 + 100).toISOString(),
+          validationSubmittedAt: new Date(startedAt + index * 1_000 + 200).toISOString(),
+          validationResultAt: new Date(startedAt + index * 1_000 + 600).toISOString(),
+          precommitSentAt: new Date(startedAt + index * 1_000 + 700).toISOString(),
+          precommitThresholdAt: new Date(startedAt + index * 1_000 + 1_000).toISOString(),
+          responseStartedAt: new Date(startedAt + index * 1_000 + 1_100).toISOString(),
+          responseAckedAt: finalizedAt,
+        },
+        durationsMs: {
+          proposalToValidationSubmission: 100,
+          proposalToValidationResult: 500,
+          nodeValidation: 400,
+          validationResultToPrecommit: 100,
+          precommitWait: 300 + index,
+          responsePublication: 100,
+          proposalToResponseAck: 1_100 + index,
+          headerToResponseAck: (index + 1) * 1_000,
+        },
+      };
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: [
+        first,
+        {
+          ...observation(secondAt, {
+            signerPublicKey: operator.signerKeyHex ?? undefined,
+            signer: signerMetrics({ acceptedTotal: 20, proposalsTotal: 20 }),
+          }),
+          signerBlockTelemetry: {
+            status: "available",
+            checkedAt: secondAt,
+            latencyMs: 3,
+            errorCode: null,
+            producerVersion: "stacks-signer 4.1.0",
+            bootId: "boot-1",
+            records,
+            nextCursor: "boot-1:20",
+            hasMore: false,
+            cursorReset: false,
+          },
+        },
+        {
+          ...observation(new Date(startedAt + 35_000).toISOString(), {
+            signerPublicKey: operator.signerKeyHex ?? undefined,
+            signer: signerMetrics({ acceptedTotal: 20, proposalsTotal: 20 }),
+          }),
+          signerBlockTelemetry: {
+            status: "available",
+            checkedAt: new Date(startedAt + 35_000).toISOString(),
+            latencyMs: 3,
+            errorCode: null,
+            producerVersion: "stacks-signer 4.1.0",
+            bootId: "boot-1",
+            records: records.map((record) => ({
+              ...record,
+              sequence: record.sequence + 100,
+              durationsMs: {
+                ...record.durationsMs,
+                headerToResponseAck: (record.durationsMs.headerToResponseAck ?? 0) + 1_000,
+              },
+            })),
+            nextCursor: "boot-1:120",
+            hasMore: false,
+            cursorReset: true,
+          },
+        },
+      ],
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:9153" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.signer.blockTelemetry).toMatchObject({
+      capability: "available",
+      producerVersion: "stacks-signer 4.1.0",
+      collectionGap: true,
+      cursorResetCount: 1,
+      last15Minutes: {
+        finalizedRecords: 20,
+        response: { source: "exact", sampleCount: 20, p95Seconds: 20 },
+        proposalToResponse: { source: "exact", sampleCount: 20, p95Seconds: 1.118 },
+        validation: { source: "exact", sampleCount: 20, p95Seconds: 0.4 },
+        proposalToValidationResult: { source: "exact", p95Seconds: 0.5 },
+        precommitWait: { source: "exact", p95Seconds: 0.318 },
+        responsePublication: { source: "exact", p95Seconds: 0.1 },
+      },
+    });
+    expect(snapshot.signer.last15Minutes.responseP95Seconds).toBe(20);
+    expect(snapshot.signer.last15Minutes.validationP95Seconds).toBe(0.4);
   });
 
   it("excludes a partial histogram interval instead of inflating response p95", () => {
