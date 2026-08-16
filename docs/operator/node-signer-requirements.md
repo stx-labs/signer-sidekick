@@ -149,6 +149,12 @@ service name on a shared container network or a firewalled private address acros
 the returned `observerToml` stanza and returned `[node]` keys into the existing node configuration;
 do not remove the separate signer observer.
 
+The Stacks event dispatcher does not authenticate callbacks. Keep the listener on loopback, a
+private container network, or a firewall/Tailnet rule that allows only the Stacks node. Do not put it
+behind the public dashboard proxy. Sidekick bounds each request and its durable pending inbox; when
+the inbox reaches 2,000 deliveries or 64 MiB of pending callback JSON, it returns HTTP 503 with a
+retry delay so the node can retry after reconciliation catches up.
+
 Sidekick accepts callbacks as untrusted prompts, persists them before acknowledgement, and verifies
 block claims against the local node. Until a verified callback arrives, the deployment check says
 that the listener is ready but the node subscription is not yet proved. When callbacks fall behind,

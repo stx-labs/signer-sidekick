@@ -80,8 +80,6 @@ export const runtimeSettingsUpdateSchema = persistedRuntimeSettingsSchema
   })
   .strict();
 
-export type RuntimeSettingsUpdate = z.infer<typeof runtimeSettingsUpdateSchema>;
-
 export type RuntimeSettingsSourceValidator = (
   config: SidekickConfig,
   node: StacksNodeClient,

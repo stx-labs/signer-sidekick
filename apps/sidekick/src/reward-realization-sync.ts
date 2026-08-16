@@ -605,6 +605,7 @@ export async function syncRewardRealizations(
   let noncanonicalRealizations = revalidation.invalidated;
   let decodeFailures = 0;
   let caughtUp = false;
+  const requestedCursors = new Set<string | null>();
   const transactionCache = new Map<string, TransactionSummary>();
   const getTransaction = async (txId: string) => {
     const cached = transactionCache.get(txId);
@@ -616,11 +617,18 @@ export async function syncRewardRealizations(
 
   while (pagesProcessed < maxPages) {
     options.signal?.throwIfAborted();
+    if (requestedCursors.has(apiCursor)) {
+      throw new Error(`PoX-5 reward API repeated cursor ${apiCursor ?? "<initial>"}`);
+    }
+    requestedCursors.add(apiCursor);
     const page = await options.api.getSmartContractLogs(
       options.pox5ContractId,
       apiCursor,
       pageLimit,
     );
+    if (page.prev_cursor !== null && page.prev_cursor === apiCursor) {
+      throw new Error(`PoX-5 reward API did not advance cursor ${apiCursor}`);
+    }
     const boundary = page.results.at(-1);
     const newest = page.results[0];
     const [boundaryTransaction, newestTransaction] = await Promise.all([

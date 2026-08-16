@@ -46,7 +46,6 @@ export type ChainEventEvidenceLevel = "node-index-verified" | "canonical-block-c
 export interface ManagerEventStore {
   getCursor(sourceId: string, stream: string): ChainCursor | null;
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null;
-  hasChainEventsForContract(chainId: number, contractId: string): boolean;
   putChainEventPage(events: readonly ChainEventInput[], cursor: ChainCursorInput): void;
   markMissingCanonicalContractEvents(
     chainId: number,
@@ -125,24 +124,6 @@ async function enrichTransactions(
     entries.push(...batchEntries);
   }
   return new Map(entries);
-}
-
-export async function verifyIndexedApiTransactionsWithNode(
-  node: ManagerEventNodeTransactions,
-  nodeBlocks: ManagerEventNodeBlocks | undefined,
-  transactions: ReadonlyMap<string, TransactionSummary>,
-  activityLabel: string,
-  signal?: AbortSignal,
-): Promise<number> {
-  return (
-    await verifyIndexedApiTransactionEvidenceWithNode(
-      node,
-      nodeBlocks,
-      transactions,
-      activityLabel,
-      signal,
-    )
-  ).size;
 }
 
 export async function verifyIndexedApiTransactionEvidenceWithNode(

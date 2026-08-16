@@ -1464,6 +1464,8 @@ describe("Sidekick SQLite store", () => {
 
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
       schemaVersion: 33,
       journalMode: "wal",
@@ -1949,6 +1951,7 @@ describe("Sidekick SQLite store", () => {
       quickCheck: "ok",
     });
     expect((await stat(destination)).size).toBeGreaterThan(0);
+    expect((await stat(destination)).mode & 0o777).toBe(0o600);
     await expect(backupSidekickDatabase(path, destination)).rejects.toThrow(
       "Backup destination already exists",
     );

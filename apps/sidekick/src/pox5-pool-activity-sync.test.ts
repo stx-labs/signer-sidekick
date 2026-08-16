@@ -197,4 +197,41 @@ describe("PoX-5 pool Activity synchronization", () => {
     ).rejects.toThrow("disagree on PoX-5 pool activity transaction");
     expect(sidekickStore.getChainEvent(1, txid, 3)).toBeNull();
   });
+
+  it("fails closed when the API repeats a pagination cursor", async () => {
+    const sidekickStore = await store();
+    const repeatedPage = { ...page(), prev_cursor: "repeat" };
+
+    await expect(
+      syncPox5PoolActivity({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi.fn().mockResolvedValue(repeatedPage),
+          getTransaction: vi.fn(async (id: string) => transaction(id)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockImplementation(async (id: string) => ({
+            status: "observed" as const,
+            httpStatus: 200,
+            value: {
+              txid: id,
+              transactionHex: "00",
+              nonce: 0n,
+              feeUstx: 0n,
+              indexBlockHash: `0x${"44".repeat(32)}` as `0x${string}`,
+              blockHeight: 8_700_000n,
+              isCanonical: true,
+              resultRepr: "(ok true)",
+            },
+          })),
+        },
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        observedAt,
+        minimumStacksHeight: 8_600_000,
+      }),
+    ).rejects.toThrow("did not advance cursor repeat");
+  });
 });

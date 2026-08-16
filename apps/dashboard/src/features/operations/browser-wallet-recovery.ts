@@ -1,6 +1,7 @@
-import type {
-  BrowserWalletIntent,
-  BrowserWalletIntentNetwork,
+import {
+  type BrowserWalletIntent,
+  type BrowserWalletIntentNetwork,
+  browserWalletIntentActionSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   type BrowserWalletAction,
@@ -57,16 +58,7 @@ const txidPattern = /^0x[0-9a-f]{64}$/;
 const mainnetAddressPattern = /^S[PM][0-9A-Z]{20,50}$/;
 const testnetAddressPattern = /^S[TN][0-9A-Z]{20,50}$/;
 const contractNamePattern = /^[a-zA-Z][a-zA-Z0-9-_]{0,127}$/;
-const actionIds = new Set<BrowserWalletAction>([
-  "deploy-manager",
-  "register-self",
-  "add-admin",
-  "remove-admin",
-  "update-fees",
-  "withdraw-fees",
-  "sweep-fee-refunds",
-  "claim-rewards",
-]);
+const actionIds = new Set<BrowserWalletAction>(browserWalletIntentActionSchema.options);
 const recoveryInFlight = new Map<string, Promise<PendingBroadcastRecovery>>();
 
 function validNetworkBinding(network: BrowserWalletIntentNetwork, chainId: number): boolean {

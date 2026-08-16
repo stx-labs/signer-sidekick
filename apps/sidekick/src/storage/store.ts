@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, rm, stat } from "node:fs/promises";
+import { access, chmod, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import {
@@ -124,6 +124,8 @@ const observerDeliveryInputSchema = z
 const OBSERVER_RAW_PAYLOAD_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_RETAINED_OBSERVER_RAW_PAYLOADS = 25_000;
 const MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES = 64 * 1_024 * 1_024;
+const MAX_PENDING_OBSERVER_DELIVERIES = 2_000;
+const MAX_PENDING_OBSERVER_PAYLOAD_BYTES = 64 * 1_024 * 1_024;
 
 const storedObserverDeliveryRowSchema = z.object({
   delivery_id: z.string().uuid(),
@@ -1092,6 +1094,18 @@ export interface AcceptedObserverDelivery {
   deliveryAttempts: number;
 }
 
+export interface ObserverInboxLimits {
+  maximumPendingDeliveries: number;
+  maximumPendingPayloadBytes: number;
+}
+
+export class ObserverInboxCapacityError extends Error {
+  constructor() {
+    super("Observer inbox capacity is exhausted; retry after Sidekick processes pending callbacks");
+    this.name = "ObserverInboxCapacityError";
+  }
+}
+
 export interface StoredObserverDelivery {
   deliveryId: string;
   endpointKind: "new-block" | "new-burn-block" | "attachments";
@@ -1659,6 +1673,14 @@ export interface OpenSidekickStoreResult {
   backupPath: string | null;
 }
 
+async function chmodIfPresent(path: string, mode: number): Promise<void> {
+  try {
+    await chmod(path, mode);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 export interface DatabaseBackupResult {
   sourcePath: string;
   destinationPath: string;
@@ -1683,11 +1705,12 @@ export async function backupSidekickDatabase(
     .catch(() => false);
   if (destinationExists) throw new Error(`Backup destination already exists: ${destination}`);
 
-  await mkdir(dirname(destination), { recursive: true });
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(source, { allowExtension: false, readOnly: true, timeout: 5_000 });
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     await backup(db, destination);
+    await chmod(destination, 0o600);
   } catch (error) {
     await rm(destination, { force: true });
     throw error;
@@ -1726,13 +1749,14 @@ export async function openSidekickStore(
   const databasePath = isMemory ? path : resolve(path);
   let existingSize = 0;
   if (!isMemory) {
-    await mkdir(dirname(databasePath), { recursive: true });
+    await mkdir(dirname(databasePath), { recursive: true, mode: 0o700 });
     existingSize = await stat(databasePath)
       .then((value) => value.size)
       .catch(() => 0);
   }
   const db = new DatabaseSync(databasePath, { allowExtension: false, timeout: 5_000 });
   try {
+    if (!isMemory) await chmod(databasePath, 0o600);
     db.exec("PRAGMA foreign_keys = ON");
     db.exec("PRAGMA busy_timeout = 5000");
     if (isMemory) {
@@ -1755,8 +1779,16 @@ export async function openSidekickStore(
       const timestamp = now.replaceAll(":", "-");
       backupPath = `${databasePath}.v${before}.backup-${timestamp}`;
       await backup(db, backupPath);
+      await chmod(backupPath, 0o600);
     }
     applyMigrations(db, now);
+    if (!isMemory) {
+      await Promise.all([
+        chmodIfPresent(databasePath, 0o600),
+        chmodIfPresent(`${databasePath}-wal`, 0o600),
+        chmodIfPresent(`${databasePath}-shm`, 0o600),
+      ]);
+    }
     return { store: new SidekickStore(db), backupPath };
   } catch (error) {
     db.close();
@@ -1879,8 +1911,21 @@ export class SidekickStore {
     };
   }
 
-  acceptObserverDelivery(input: ObserverDeliveryInput): AcceptedObserverDelivery {
+  acceptObserverDelivery(
+    input: ObserverDeliveryInput,
+    limits: ObserverInboxLimits = {
+      maximumPendingDeliveries: MAX_PENDING_OBSERVER_DELIVERIES,
+      maximumPendingPayloadBytes: MAX_PENDING_OBSERVER_PAYLOAD_BYTES,
+    },
+  ): AcceptedObserverDelivery {
     const value = observerDeliveryInputSchema.parse(input);
+    const parsedLimits = z
+      .object({
+        maximumPendingDeliveries: z.number().int().positive(),
+        maximumPendingPayloadBytes: z.number().int().positive(),
+      })
+      .strict()
+      .parse(limits);
     const proposedDeliveryId = randomUUID();
     let accepted: z.infer<typeof acceptedObserverDeliveryRowSchema>;
     this.db.exec("BEGIN IMMEDIATE");
@@ -1994,6 +2039,28 @@ export class SidekickStore {
           value.receivedAt,
         );
       accepted = acceptedObserverDeliveryRowSchema.parse(row);
+      if (accepted.delivery_id === proposedDeliveryId && accepted.state === "observer-claimed") {
+        const pending = z
+          .object({
+            deliveries: z.number().int().nonnegative(),
+            payload_bytes: z.number().int().nonnegative(),
+          })
+          .parse(
+            this.db
+              .prepare(
+                `SELECT COUNT(*) AS deliveries, COALESCE(SUM(payload_bytes), 0) AS payload_bytes
+                 FROM observer_deliveries
+                 WHERE state IN ('observer-claimed', 'processing')`,
+              )
+              .get(),
+          );
+        if (
+          pending.deliveries > parsedLimits.maximumPendingDeliveries ||
+          pending.payload_bytes > parsedLimits.maximumPendingPayloadBytes
+        ) {
+          throw new ObserverInboxCapacityError();
+        }
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -3129,20 +3196,6 @@ export class SidekickStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
-  }
-
-  hasChainEventsForContract(chainId: number, contractId: string): boolean {
-    const parsedChainId = z.number().int().nonnegative().parse(chainId);
-    const parsedContractId = principalSchema.parse(contractId);
-    return Boolean(
-      this.db
-        .prepare(
-          `SELECT 1 FROM chain_events
-           WHERE chain_id = ? AND contract_id = ? AND canonical = 1
-           LIMIT 1`,
-        )
-        .get(parsedChainId, parsedContractId),
-    );
   }
 
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null {

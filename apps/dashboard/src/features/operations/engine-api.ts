@@ -8,14 +8,12 @@ import {
   type EngineInvalidateApprovalRequest,
   type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
-  type EngineJobPage,
   type EngineStatus,
   engineApprovalResponseSchema,
   engineDisableAdapterResponseSchema,
   engineForceObserveResponseSchema,
   engineInvalidateApprovalResponseSchema,
   engineJobDetailSchema,
-  engineJobPageSchema,
   engineStatusSchema,
   type OperationReadiness,
   operationReadinessSchema,
@@ -42,21 +40,6 @@ export async function loadOperationReadiness(
     token,
     "/api/v1/operations/readiness",
     operationReadinessSchema,
-    signal ? { signal } : {},
-  );
-}
-
-export async function loadEngineJobs(
-  token: string,
-  cursor: string | null,
-  signal?: AbortSignal,
-): Promise<EngineJobPage> {
-  const query = new URLSearchParams({ limit: "20" });
-  if (cursor) query.set("cursor", cursor);
-  return apiJson(
-    token,
-    `/api/v1/engine/jobs?${query}`,
-    engineJobPageSchema,
     signal ? { signal } : {},
   );
 }

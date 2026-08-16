@@ -703,6 +703,50 @@ async function cancelResponse(response: Response): Promise<void> {
   }
 }
 
+async function readBoundedResponse(
+  response: Response,
+  endpoint: string,
+  maximumBytes: number,
+  description: string,
+  cancellationSignal?: AbortSignal,
+): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > maximumBytes) {
+    await cancelResponse(response);
+    throw new UpstreamSchemaError(`${endpoint} returned an oversized ${description}`);
+  }
+  if (!response.body) return new Uint8Array();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      cancellationSignal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new UpstreamSchemaError(`${endpoint} returned an oversized ${description}`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+const MAX_JSON_RESPONSE_BYTES = 8 * 1_024 * 1_024;
+
 async function fetchJson<T>(
   fetchImpl: Fetch,
   url: string,
@@ -712,9 +756,17 @@ async function fetchJson<T>(
   const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
   cancellationSignal?.throwIfAborted();
   try {
-    return schema.parse(await response.json());
+    const bytes = await readBoundedResponse(
+      response,
+      endpoint,
+      MAX_JSON_RESPONSE_BYTES,
+      "JSON response",
+      cancellationSignal,
+    );
+    return schema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
   } catch (error) {
     cancellationSignal?.throwIfAborted();
+    if (error instanceof UpstreamSchemaError) throw error;
     throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
       cause: error,
     });
@@ -804,12 +856,13 @@ async function fetchBoundedBytes(
 ): Promise<Uint8Array> {
   const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
   cancellationSignal?.throwIfAborted();
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > MAX_NAKAMOTO_BLOCK_BYTES) {
-    await cancelResponse(response);
-    throw new UpstreamSchemaError(`${endpoint} returned an oversized Nakamoto block`);
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await readBoundedResponse(
+    response,
+    endpoint,
+    MAX_NAKAMOTO_BLOCK_BYTES,
+    "Nakamoto block",
+    cancellationSignal,
+  );
   cancellationSignal?.throwIfAborted();
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_NAKAMOTO_BLOCK_BYTES) {
     throw new UpstreamSchemaError(`${endpoint} returned an invalid Nakamoto block size`);

@@ -6,9 +6,11 @@ import type { ObserverGapStatus } from "./observer-gap-monitor.js";
 import type { ObserverReconciliationStatus } from "./observer-reconciliation.js";
 import type {
   AcceptedObserverDelivery,
+  ObserverInboxLimits,
   ObserverInboxStatus,
   SidekickStore,
 } from "./storage/store.js";
+import { ObserverInboxCapacityError } from "./storage/store.js";
 
 const canonicalHash = z
   .string()
@@ -254,6 +256,7 @@ export function createObserverServer(options: {
   maxBodyBytes: number;
   logger?: boolean;
   now?: () => Date;
+  inboxLimits?: ObserverInboxLimits;
   onAccepted?: (delivery: AcceptedObserverDelivery) => Promise<void> | void;
 }): FastifyInstance {
   const now = options.now ?? (() => new Date());
@@ -283,14 +286,28 @@ export function createObserverServer(options: {
         return reply.code(400).send({ error: "body must be valid JSON" });
       }
       const claim = deliveryClaim(endpointKind, payload);
-      const delivery = options.store.acceptObserverDelivery({
-        endpointKind,
-        contentSha256: createHash("sha256").update(request.body, "utf8").digest("hex"),
-        rawPayloadJson: request.body,
-        payloadBytes: Buffer.byteLength(request.body, "utf8"),
-        ...claim,
-        receivedAt: now().toISOString(),
-      });
+      let delivery: AcceptedObserverDelivery;
+      try {
+        delivery = options.store.acceptObserverDelivery(
+          {
+            endpointKind,
+            contentSha256: createHash("sha256").update(request.body, "utf8").digest("hex"),
+            rawPayloadJson: request.body,
+            payloadBytes: Buffer.byteLength(request.body, "utf8"),
+            ...claim,
+            receivedAt: now().toISOString(),
+          },
+          options.inboxLimits,
+        );
+      } catch (error) {
+        if (error instanceof ObserverInboxCapacityError) {
+          return reply
+            .header("retry-after", "15")
+            .code(503)
+            .send({ error: "observer inbox is full; retry later" });
+        }
+        throw error;
+      }
       if (options.onAccepted) {
         queueMicrotask(() => {
           void Promise.resolve(options.onAccepted?.(delivery)).catch((error: unknown) => {

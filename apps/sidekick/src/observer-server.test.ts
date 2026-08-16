@@ -281,6 +281,82 @@ describe("observer delivery ingress", () => {
     await server.close();
   });
 
+  it("rejects new callbacks at the durable pending limit but still acknowledges duplicates", async () => {
+    const result = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
+    const { store } = result;
+    opened.push(store);
+    const server = createObserverServer({
+      store,
+      maxBodyBytes: 4 * 1_024 * 1_024,
+      inboxLimits: { maximumPendingDeliveries: 1, maximumPendingPayloadBytes: 1_024 * 1_024 },
+      now: () => new Date("2026-08-13T12:01:00.000Z"),
+    });
+    const payload = {
+      block_hash: blockHash,
+      block_height: 8_750_000,
+      index_block_hash: indexBlockHash,
+      events: [],
+      transactions: [],
+    };
+
+    expect((await server.inject({ method: "POST", url: "/new_block", payload })).statusCode).toBe(
+      200,
+    );
+    expect((await server.inject({ method: "POST", url: "/new_block", payload })).statusCode).toBe(
+      200,
+    );
+    const full = await server.inject({
+      method: "POST",
+      url: "/new_block",
+      payload: {
+        ...payload,
+        block_hash: `0x${"55".repeat(32)}`,
+        block_height: 8_750_001,
+        index_block_hash: `0x${"66".repeat(32)}`,
+      },
+    });
+    expect(full.statusCode).toBe(503);
+    expect(full.headers["retry-after"]).toBe("15");
+    expect(store.observerInboxStatus()).toMatchObject({
+      uniqueDeliveries: 1,
+      deliveryAttempts: 2,
+      queueDepth: 1,
+    });
+    await server.close();
+  });
+
+  it("rolls back a new callback that would exceed the pending payload-byte limit", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
+    opened.push(store);
+    const server = createObserverServer({
+      store,
+      maxBodyBytes: 4 * 1_024 * 1_024,
+      inboxLimits: { maximumPendingDeliveries: 10, maximumPendingPayloadBytes: 32 },
+      now: () => new Date("2026-08-13T12:01:00.000Z"),
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/new_block",
+      payload: {
+        block_hash: blockHash,
+        block_height: 8_750_000,
+        index_block_hash: indexBlockHash,
+        events: [],
+        transactions: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["retry-after"]).toBe("15");
+    expect(store.observerInboxStatus()).toMatchObject({
+      uniqueDeliveries: 0,
+      deliveryAttempts: 0,
+      queueDepth: 0,
+    });
+    await server.close();
+  });
+
   it("bounds retained raw callback JSON while preserving terminal delivery evidence", async () => {
     const { store, server } = await fixture();
     const oldPayload = '{"old":true}';

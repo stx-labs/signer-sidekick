@@ -504,72 +504,6 @@ export const healthSnapshotSchema = z.looseObject({
 });
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 
-export interface ActivationStep {
-  id: string;
-  status: "complete" | "ready" | "pending" | "attention" | "blocked";
-  title: string;
-  detail: string;
-  command: string | null;
-}
-
-export interface OnboardingState {
-  path: "attach" | "fresh";
-  status: "in-progress" | "blocked" | "complete";
-  currentStep: string;
-  managerPrincipal: string;
-  updatedAt: string;
-  activationPlan: null | { status: string; steps: ActivationStep[] };
-  freshInput: null | {
-    adminPrincipal: string;
-    contractName: string;
-    authId: string;
-    signerConfigPath: string;
-  };
-  artifact: {
-    available: boolean;
-    sourceFile: string | null;
-    manifestFile: string | null;
-    manifest: null | {
-      operatorReviewRequired: true;
-      warnings: string[];
-      network: string;
-      adminPrincipal: string;
-      artifact: { sourceSha256: string; canonicalSourceSha256: string };
-      transaction: { contractName: string; clarityVersion: 6 };
-    };
-  };
-  signerGrant: {
-    preparation: null | { command: string; expectedMessageHashHex: string; authId: string };
-    verified: null | {
-      managerPrincipal: string;
-      authId: string;
-      signerKeyHex: string;
-      signerSignatureHex: string;
-      expectedMessageHashHex: string;
-      registerSelfCall: {
-        contract: string;
-        functionName: string;
-        arguments: string[];
-        signingPrincipal: string;
-      };
-    };
-  };
-  audit: Array<{
-    action: string;
-    path: "attach" | "fresh";
-    currentStep: string;
-    status: string;
-    changedAt: string;
-  }>;
-}
-
-export interface OnboardingWizardState {
-  dismissed: boolean;
-  dismissedAt: string | null;
-  updatedAt: string | null;
-  audit: Array<{ action: "dismissed" | "resumed"; changedAt: string }>;
-}
-
 export type BrowserWalletIntentAction =
   | "deploy-manager"
   | "register-self"
@@ -1368,28 +1302,6 @@ export interface DashboardSnapshot extends OperatorSnapshot {
   alerts: DashboardAlert[];
 }
 
-export interface EnrollmentDocument {
-  pool: { displayName: string; websiteUrl?: string; support?: { email?: string; url?: string } };
-  chain: { network: string; burnBlockHeight: number; rewardCycleId: number };
-  manager: { principal: string; sourceSha256: string };
-  signer: { publicKeyHex: string | null; grantValid: boolean | null };
-  fee: { currentConfiguredBips: number };
-  eligibility: {
-    current: null | { delegatedUstx: string; meetsThreshold: boolean; inSignerSet: boolean };
-  };
-  links: { managerExplorer: string; officialPlatforms: Array<{ label: string; url: string }> };
-}
-
-export interface PoolCardArtifact {
-  mode: "live" | "static";
-  filename: string;
-  contentType: string;
-  body: string;
-  json: { filename: string; contentType: string; body: string };
-  enrollment: EnrollmentDocument;
-  liveFields: string[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1492,22 +1404,6 @@ function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
     Array.isArray(value.alerts)
   );
 }
-
-function isOnboardingState(value: unknown): value is OnboardingState {
-  return (
-    isRecord(value) &&
-    (value.path === "attach" || value.path === "fresh") &&
-    typeof value.currentStep === "string" &&
-    typeof value.managerPrincipal === "string" &&
-    hasRecord(value, "artifact") &&
-    hasRecord(value, "signerGrant") &&
-    Array.isArray(value.audit)
-  );
-}
-
-const onboardingStateSchema = z.custom<OnboardingState>(isOnboardingState, {
-  error: "Invalid onboarding response",
-});
 
 export const dashboardSnapshotSchema = z.custom<DashboardSnapshot>(isDashboardSnapshot, {
   error: "Invalid dashboard snapshot",
@@ -1677,50 +1573,6 @@ export const rewardHistoryResponseSchema = z.custom<{
 });
 export type RewardHistoryResponse = z.infer<typeof rewardHistoryResponseSchema>;
 
-export const onboardingEnvelopeSchema = z.custom<{
-  onboarding: OnboardingState | null;
-  wizard: OnboardingWizardState;
-}>(
-  (value) =>
-    isRecord(value) &&
-    (value.onboarding === null || isOnboardingState(value.onboarding)) &&
-    isRecord(value.wizard) &&
-    typeof value.wizard.dismissed === "boolean" &&
-    Array.isArray(value.wizard.audit),
-  { error: "Invalid onboarding response" },
-);
-export type OnboardingEnvelope = z.infer<typeof onboardingEnvelopeSchema>;
-
-export const onboardingActionResponseSchema = z.object({ onboarding: onboardingStateSchema });
-export type OnboardingActionResponse = z.infer<typeof onboardingActionResponseSchema>;
-
-export const freshRefreshResponseSchema = z.custom<{
-  onboarding: OnboardingState;
-  preflight: OperatorSnapshot["preflight"];
-  setup: NonNullable<OperatorSnapshot["setup"]>;
-}>(
-  (value) =>
-    isRecord(value) &&
-    isOnboardingState(value.onboarding) &&
-    hasRecord(value, "preflight") &&
-    hasRecord(value, "setup"),
-  { error: "Invalid onboarding refresh response" },
-);
-export type FreshRefreshResponse = z.infer<typeof freshRefreshResponseSchema>;
-
-export const poolCardResponseSchema = z.custom<PoolCardArtifact>(
-  (value) =>
-    isRecord(value) &&
-    (value.mode === "live" || value.mode === "static") &&
-    typeof value.filename === "string" &&
-    typeof value.contentType === "string" &&
-    typeof value.body === "string" &&
-    hasRecord(value, "json") &&
-    hasRecord(value, "enrollment") &&
-    Array.isArray(value.liveFields),
-  { error: "Invalid pool card response" },
-);
-
 const walletIntentChainTipSchema = z
   .object({
     stacksTipHeight: z.number().int().nonnegative(),
@@ -1769,19 +1621,6 @@ export const healthSourceTestResponseSchema = z.looseObject({
   signals: z.number().int().nonnegative(),
 });
 export type HealthSourceTestResponse = z.infer<typeof healthSourceTestResponseSchema>;
-
-export const onboardingStartRequestSchema = z
-  .object({ path: z.enum(["attach", "fresh"]), reset: z.boolean().optional() })
-  .strict();
-export type OnboardingStartRequest = z.infer<typeof onboardingStartRequestSchema>;
-
-export const onboardingAttachRequestSchema = z
-  .object({ managerPrincipal: z.string().min(1) })
-  .strict();
-export type OnboardingAttachRequest = z.infer<typeof onboardingAttachRequestSchema>;
-
-export const onboardingGrantVerifyRequestSchema = z.object({ signerOutput: z.unknown() }).strict();
-export type OnboardingGrantVerifyRequest = z.infer<typeof onboardingGrantVerifyRequestSchema>;
 
 export const managerSignerGrantPrepareRequestSchema = z
   .object({
@@ -1833,11 +1672,6 @@ export const signerGrantSessionResponseSchema = z
   .object({ signerGrant: signerGrantSessionSchema })
   .strict();
 export type SignerGrantSessionResponse = z.infer<typeof signerGrantSessionResponseSchema>;
-
-export const onboardingProgressRequestSchema = z
-  .object({ currentStep: z.string().min(1) })
-  .strict();
-export type OnboardingProgressRequest = z.infer<typeof onboardingProgressRequestSchema>;
 
 export const browserWalletIntentActionSchema = z.enum([
   "deploy-manager",
@@ -2731,16 +2565,6 @@ export const recurringBrowserWalletIntentCreateRequestSchema =
     )
     .transform((value) => value as RecurringBrowserWalletIntentCreateRequest);
 
-/** One settleable tuple and why it is or is not worth a transaction. */
-export interface StakerClaimCandidate {
-  stakerPrincipal: string;
-  bondIndex: string | null;
-  payout: { kind: "direct-sbtc" | "bitcoin-l1"; maxFeeSats: string | null };
-  rewards: { earnedSats: string; feeSats: string; grossSats: string };
-  claimable: boolean;
-  blockedReason: null | "nothing-settled" | "l1-below-max-fee";
-}
-
 /**
  * What settling a cycle costs, shown before the operator signs anything. The outstanding claim
  * count is the transaction count: the contract offers no way to combine them.
@@ -2802,17 +2626,6 @@ export const stakerClaimsResponseSchema = z
   })
   .strict();
 
-export interface StakerClaimDiscoveryResponse {
-  rewardCycle: number;
-  page: { stakerPrincipals: string[]; nextCursor: string | null };
-  settlement: {
-    outstandingClaims: number;
-    transactionCount: number;
-    totalNetSats: string;
-    blockedClaims: number;
-  };
-  candidates: StakerClaimCandidate[];
-}
 export const browserWalletIntentSubmissionRequestSchema = z
   .object({ txid: z.string().regex(/^0x[0-9a-f]{64}$/i) })
   .strict();
@@ -3130,8 +2943,3 @@ export const browserWalletIntentResponseSchema = z
   .object({ intent: browserWalletIntentSchema })
   .strict();
 export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
-
-export const poolCardGenerateRequestSchema = z
-  .object({ mode: z.enum(["live", "static"]) })
-  .strict();
-export type PoolCardGenerateRequest = z.infer<typeof poolCardGenerateRequestSchema>;

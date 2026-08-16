@@ -1101,5 +1101,8 @@ Environment:
 
 const entryPath = process.argv[1];
 if (entryPath && pathToFileURL(resolve(entryPath)).href === import.meta.url) {
+  // Runtime settings include the optional indexed-API credential, and SQLite may create WAL/SHM
+  // sidecars after startup. Keep every file created by the CLI private by default.
+  process.umask(0o077);
   await dispatchCli(process.argv.slice(2), executeCliCommand);
 }

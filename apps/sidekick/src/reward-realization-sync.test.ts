@@ -295,6 +295,28 @@ function environment(txIndex = 0, postManagerSharesUstx?: number) {
 }
 
 describe("PoX-5 reward realization synchronization", () => {
+  it("fails closed when the API repeats a pagination cursor", async () => {
+    const repository = store();
+    const runtime = environment();
+    const repeatedPage = await runtime.api.getSmartContractLogs(pox5, null, 100);
+    runtime.api.getSmartContractLogs.mockResolvedValue({
+      ...repeatedPage,
+      prev_cursor: "repeat",
+    });
+
+    await expect(
+      syncRewardRealizations({
+        store: repository.value,
+        ...runtime,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        observedAt,
+      }),
+    ).rejects.toThrow("did not advance cursor repeat");
+  });
+
   it("persists a node-verified exact pool realization and fixed-horizon evaluation", async () => {
     const repository = store();
     const runtime = environment();

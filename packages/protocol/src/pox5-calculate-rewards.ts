@@ -4,7 +4,6 @@ import { MAX_BOND_PERIODS_PER_CYCLE } from "./pox5-bonds.js";
 
 export const POX5_CALCULATE_REWARDS_ADAPTER_ID = "pox5-calculate-rewards" as const;
 export const POX5_CALCULATE_REWARDS_ADAPTER_REVISION = 1 as const;
-export const POX5_CALCULATE_REWARDS_FUNCTION_NAME = "calculate-rewards" as const;
 /** `PRECISION` in the reviewed PoX-5 contract. */
 export const POX5_REWARD_PRECISION = 1_000_000_000_000_000_000n;
 /** `RESERVE_RATIO` in the reviewed PoX-5 contract, expressed in basis points. */

@@ -1159,54 +1159,6 @@ td .avatar {
   font-size: 12px;
 }
 
-/* alert list row */
-.alert-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--border-tertiary);
-}
-.alert-row:last-child {
-  border-bottom: 0;
-}
-.alert-row .sev {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 5px;
-  flex-shrink: 0;
-}
-.sev-critical {
-  background: var(--red-500);
-}
-.sev-warning {
-  background: var(--yellow-600);
-}
-.sev-info {
-  background: var(--blue-500);
-}
-.alert-row .body {
-  flex: 1;
-  min-width: 0;
-}
-.alert-row .body .t {
-  font-size: 13px;
-  font-weight: 500;
-}
-.alert-row .body .m {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 1px;
-}
-.alert-row .meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-tertiary);
-  text-align: right;
-  white-space: nowrap;
-}
-
 /* required-action list */
 .actions-list {
   display: flex;

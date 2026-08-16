@@ -1,5 +1,8 @@
 import type { StacksProvider } from "@stacks/connect";
-import type { BrowserWalletIntent } from "@stx-labs/signer-sidekick-api-contracts";
+import {
+  type BrowserWalletIntent,
+  browserWalletIntentActionSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type BrowserWalletAction,
@@ -268,16 +271,7 @@ function dependencies({
 
 describe("browser wallet execution", () => {
   it("defines the exact provider matrix once for every supported action and network", () => {
-    const actions: BrowserWalletAction[] = [
-      "deploy-manager",
-      "register-self",
-      "add-admin",
-      "remove-admin",
-      "update-fees",
-      "withdraw-fees",
-      "sweep-fee-refunds",
-      "claim-rewards",
-    ];
+    const actions: BrowserWalletAction[] = browserWalletIntentActionSchema.options;
     const xverseMainnetActions = new Set<BrowserWalletAction>([
       "register-self",
       "add-admin",

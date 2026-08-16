@@ -149,7 +149,6 @@ interface OperatorSnapshotService {
     sort?: PoolRosterSort;
     direction?: SortDirection;
   }): Promise<unknown>;
-  poolHistory?(options?: { offset?: number; limit?: number }): Promise<unknown>;
   rewardsPage?(options?: {
     offset?: number;
     limit?: number;
@@ -1920,19 +1919,6 @@ export function createServer(options: ServerOptions = {}) {
       health.testSource(parsed.data.kind, parsed.data.url),
     );
   });
-  server.get("/api/v1/registration", async (request) => {
-    const snapshot = await interactive(request, async () => options.service?.snapshot());
-    return {
-      generatedAt: snapshot?.generatedAt,
-      network: snapshot?.network,
-      managerPrincipal: snapshot?.managerPrincipal,
-      preflight: snapshot?.preflight,
-      manager: snapshot?.manager,
-      registration: snapshot?.registration,
-      readiness: snapshot?.readiness,
-      setup: snapshot?.setup,
-    };
-  });
   server.get("/api/v1/pool", async (request, _reply) => {
     if (options.service?.poolPage) {
       const pageOptions = parsePagination(request.url, { includeQuery: true });
@@ -1984,13 +1970,6 @@ export function createServer(options: ServerOptions = {}) {
     reply.header("content-disposition", 'attachment; filename="signer-sidekick-roster.csv"');
     return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
   });
-  server.get("/api/v1/pool/history", async (request, _reply) => {
-    const service = requireFeature(options.service, "operator_service_unavailable");
-    const poolHistory = requireFeature(service.poolHistory, "pool_history_unavailable");
-    return await interactive(request, async () =>
-      poolHistory.call(service, parsePagination(request.url)),
-    );
-  });
   server.get("/api/v1/pool/roster.json", async (request, reply) => {
     const snapshot = await interactive(request, async () => options.service?.snapshot());
     reply.type("application/json; charset=utf-8");
@@ -2025,13 +2004,6 @@ export function createServer(options: ServerOptions = {}) {
       stakerClaims.call(service, parsePagination(request.url)),
     );
   });
-  server.get("/api/v1/withdrawals", async (request) => {
-    const snapshot = await interactive(request, async () => options.service?.snapshot());
-    return {
-      generatedAt: snapshot?.generatedAt,
-      withdrawals: snapshot?.activity?.withdrawals ?? [],
-    };
-  });
   server.get("/api/v1/rewards/history", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const rewardsHistory = requireFeature(service.rewardsHistory, "reward_history_unavailable");
@@ -2050,13 +2022,6 @@ export function createServer(options: ServerOptions = {}) {
     ] as const);
     if (sort) Object.assign(pageOptions, sort);
     return await interactive(request, async () => rewardsHistory.call(service, pageOptions));
-  });
-  server.get("/api/v1/alerts", async (request) => {
-    const snapshot = await interactive(request, async () => options.service?.snapshot());
-    const withObserver = snapshot
-      ? withObserverAlerts(snapshot, options.observerStatus?.())
-      : snapshot;
-    return { generatedAt: withObserver?.generatedAt, alerts: withObserver?.alerts ?? [] };
   });
   server.get("/api/v1/rewards/activity", async (request) => {
     const service = requireFeature(options.service, "operator_service_unavailable");

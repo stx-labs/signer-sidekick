@@ -2124,7 +2124,6 @@ describe("local API", () => {
       summary: vi.fn().mockResolvedValue({ rosterTotal: 500, roster: [] }),
       synchronize: vi.fn().mockResolvedValue({}),
       poolPage: vi.fn().mockResolvedValue({ total: 500, offset: 100, limit: 50, roster: [] }),
-      poolHistory: vi.fn().mockResolvedValue({ total: 96, offset: 25, limit: 25, items: [] }),
       rewardsPage: vi.fn().mockResolvedValue({ total: 500, offset: 50, limit: 50, rewards: {} }),
       rewardsHistory: vi.fn().mockResolvedValue({ total: 96, offset: 25, limit: 25, items: [] }),
       activity: vi.fn().mockResolvedValue({ claimTotal: 4_000, withdrawalTotal: 400 }),
@@ -2149,13 +2148,6 @@ describe("local API", () => {
       sort: "amount",
       direction: "desc",
     });
-
-    await server.inject({
-      method: "GET",
-      url: "/api/v1/pool/history?offset=25&limit=25",
-      headers,
-    });
-    expect(service.poolHistory).toHaveBeenCalledWith({ offset: 25, limit: 25 });
 
     await server.inject({
       method: "GET",

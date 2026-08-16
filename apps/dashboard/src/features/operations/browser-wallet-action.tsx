@@ -567,7 +567,7 @@ export function BrowserWalletActionPanel({
                         {recoveryMessages[messageKey] ? (
                           <p role="status">{recoveryMessages[messageKey]}</p>
                         ) : null}
-                        <div className="setup-result-actions">
+                        <div className="wallet-result-actions">
                           <button
                             type="button"
                             className="btn btn-secondary"
@@ -648,7 +648,7 @@ export function BrowserWalletActionPanel({
                   <strong>Expected result:</strong> {intent.review.expectedPostState}
                 </div>
               </div>
-              <details className="setup-advanced">
+              <details className="wallet-operation-advanced">
                 <summary>Request fingerprints</summary>
                 <div className="wallet-intent-seals">
                   <CopyableIdentifier
@@ -663,7 +663,7 @@ export function BrowserWalletActionPanel({
                   />
                 </div>
               </details>
-              <details className="setup-advanced">
+              <details className="wallet-operation-advanced">
                 <summary>Transaction details</summary>
                 <div className="wallet-intent-payload">
                   <div>
@@ -779,7 +779,7 @@ export function BrowserWalletActionPanel({
             </div>
           ) : null}
 
-          <div className="setup-result-actions">
+          <div className="wallet-result-actions">
             {canPrepare ? (
               <button
                 type="button"

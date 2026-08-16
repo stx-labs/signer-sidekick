@@ -38,19 +38,6 @@ export interface NetworkCompatibilityStore {
   issues: NetworkCompatibilityLoadIssue[];
 }
 
-export function compatibilityProfileByIdentity(
-  store: NetworkCompatibilityStore,
-  profileId: string | null,
-  revision: number | null,
-): LoadedNetworkCompatibilityProfile | null {
-  if (!profileId || revision === null) return null;
-  return (
-    store.profiles.find(
-      ({ profile }) => profile.id === profileId && profile.revision === revision,
-    ) ?? null
-  );
-}
-
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

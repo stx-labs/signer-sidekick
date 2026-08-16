@@ -16,6 +16,25 @@ import {
 const indexBlockHash = `0x${"ab".repeat(32)}`;
 
 describe("Stacks API client", () => {
+  it("rejects oversized JSON responses even without a content-length header", async () => {
+    const oversized = new Uint8Array(4 * 1_024 * 1_024 + 1).fill(0x20);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(oversized);
+            controller.enqueue(oversized);
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getNodeInfo()).rejects.toThrow("oversized JSON response");
+  });
+
   it("reads recent burn-block timestamps for empirical timing estimates", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -1179,6 +1198,7 @@ describe("Stacks node client", () => {
   });
 
   it("rejects empty and oversized Nakamoto block responses", async () => {
+    const oversizedWithoutHeader = new Uint8Array(1_024 * 1_024 + 1).fill(1);
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(new Uint8Array(), { status: 200 }))
@@ -1187,11 +1207,26 @@ describe("Stacks node client", () => {
           status: 200,
           headers: { "content-length": String(2 * 1_024 * 1_024 + 1) },
         }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(oversizedWithoutHeader);
+              controller.enqueue(oversizedWithoutHeader);
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
       );
     const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
 
     await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
       "invalid Nakamoto block size",
+    );
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "oversized Nakamoto block",
     );
     await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
       "oversized Nakamoto block",

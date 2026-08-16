@@ -131,7 +131,10 @@ Compose file publishes that port on host loopback; the host-network overlay also
 to loopback. Do not route this listener through the operator reverse proxy or publish it to the
 internet. The listener accepts only `/new_block`, `/new_burn_block`, and the node's implicit
 `/attachments/new` callback, limits JSON bodies to 4 MiB by default, and commits each callback to
-the SQLite inbox before returning HTTP 200.
+the SQLite inbox before returning HTTP 200. Because Stacks Core does not authenticate event
+callbacks, a non-loopback listener must be restricted to the node by its private network or firewall.
+Sidekick also caps pending inbox work at 2,000 callbacks or 64 MiB; a full inbox returns HTTP 503 and
+`Retry-After: 15` instead of acknowledging data it cannot retain.
 
 After `connection check` succeeds, render subscriptions from the node-observed PoX-5 contract and
 the configured manager instead of copying network-specific principals from documentation:

@@ -126,10 +126,18 @@ export async function syncPox5PoolActivity(
   let caughtUp = targetHeight === null;
   let lastBlockHeight = checkpoint?.lastBlockHeight ?? null;
   let lastIndexBlockHash = checkpoint?.lastIndexBlockHash ?? null;
+  const requestedCursors = new Set<string | null>();
 
   while (pagesProcessed < (targetHeight === null ? 1 : maxPages)) {
     options.signal?.throwIfAborted();
+    if (requestedCursors.has(cursor)) {
+      throw new Error(`PoX-5 pool activity API repeated cursor ${cursor ?? "<initial>"}`);
+    }
+    requestedCursors.add(cursor);
     const page = await options.api.getSmartContractLogs(options.pox5ContractId, cursor, pageLimit);
+    if (page.prev_cursor !== null && page.prev_cursor === cursor) {
+      throw new Error(`PoX-5 pool activity API did not advance cursor ${cursor}`);
+    }
     logsInspected += page.results.length;
 
     const decoded = page.results.flatMap((log) => {

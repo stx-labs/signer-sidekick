@@ -103,6 +103,20 @@ function intent(
 }
 
 describe("browser wallet broadcast recovery", () => {
+  it.each([
+    "claim-staker-rewards",
+    "calculate-rewards",
+  ] as const)("persists and restores recovery evidence for %s", (rewardAction) => {
+    const storage = new MemoryStorage();
+    const rewardScope = { ...scope, action: rewardAction };
+
+    expect(persistPendingBrowserWalletBroadcast(rewardScope, pending, [storage])).toBe(true);
+    expect(loadPendingBrowserWalletBroadcast(rewardScope, [storage])).toMatchObject({
+      ...pending,
+      action: rewardAction,
+    });
+  });
+
   it("persists under chain, manager, action, and intent and recovers without another wallet request", async () => {
     const storage = new MemoryStorage();
     const requestWallet = vi.fn().mockResolvedValue(pending);

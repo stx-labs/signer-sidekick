@@ -825,10 +825,6 @@ export class OperatorService {
     };
   }
 
-  async poolHistory(options: { offset?: number; limit?: number } = {}) {
-    return this.options.store.listLatestPoolCycleSnapshots(this.options.managerPrincipal, options);
-  }
-
   async rewardsPage(
     options: {
       offset?: number;
