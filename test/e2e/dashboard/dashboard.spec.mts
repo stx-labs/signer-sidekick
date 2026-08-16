@@ -1292,6 +1292,29 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
   });
   expect(selectStyle.appearance).toBe("none");
   expect(selectStyle.backgroundImage).not.toBe("none");
+  await expect(activityStatus).toHaveCSS("height", "36px");
+
+  const activityFilters = page.locator("form.activity-filters");
+  const filterBarStyle = await activityFilters.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const bodyStyle = getComputedStyle(document.body);
+    return {
+      backgroundColor: style.backgroundColor,
+      bodyBackgroundColor: bodyStyle.backgroundColor,
+      borderRadius: Number.parseFloat(style.borderRadius),
+      overflowWidth: element.scrollWidth - element.clientWidth,
+      paddingTop: style.paddingTop,
+    };
+  });
+  expect(filterBarStyle.backgroundColor).not.toBe(filterBarStyle.bodyBackgroundColor);
+  expect(filterBarStyle.borderRadius).toBeGreaterThanOrEqual(10);
+  expect(filterBarStyle.overflowWidth).toBe(0);
+  expect(filterBarStyle.paddingTop).toBe("12px");
+
+  if ((page.viewportSize()?.width ?? 0) > 1080) {
+    const filterBarBox = await activityFilters.boundingBox();
+    expect(filterBarBox?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
+  }
 
   await openSettingsSection(page, "capabilities", "Pool forecast");
   const capability = page.getByRole("button", {

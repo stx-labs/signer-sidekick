@@ -2171,28 +2171,49 @@
 
 .activity-filters {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 0.65fr)) minmax(260px, 1.5fr) auto;
+  grid-template-columns: repeat(4, minmax(112px, 0.6fr)) minmax(260px, 1.6fr) auto;
   align-items: end;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-bottom: var(--space-5);
-  padding: var(--space-4);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-  background: var(--surface-primary);
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  background: var(--surface-secondary);
 }
 
 .activity-filters label {
   display: grid;
   min-width: 0;
-  gap: var(--space-1);
+  gap: 6px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .activity-filters .select,
-.activity-filters .input,
+.activity-filters .input {
+  height: 36px;
+  border-color: var(--border-secondary);
+  background-color: var(--surface-fourth);
+  font-size: 13px;
+}
+
+.activity-filters .select:hover,
+.activity-filters .input:hover {
+  border-color: var(--border-primary);
+}
+
+.activity-filters label:focus-within {
+  color: var(--accent-text);
+}
+
 .activity-filters > .btn {
-  min-height: 38px;
+  min-height: 36px;
+  padding-right: var(--space-4);
+  padding-left: var(--space-4);
 }
 
 .activity-search-control {
@@ -2204,7 +2225,7 @@
 
 .activity-search-control > svg {
   position: absolute;
-  left: var(--space-3);
+  left: 10px;
   z-index: 1;
   width: 16px;
   height: 16px;
@@ -2214,7 +2235,7 @@
 
 .activity-search-control .input {
   width: 100%;
-  padding-left: 36px;
+  padding-left: 34px;
 }
 
 .activity-coverage {
