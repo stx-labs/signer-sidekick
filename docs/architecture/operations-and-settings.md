@@ -85,4 +85,4 @@ gas-payer private keys are forbidden from SQLite.
 Settings revisions take precedence over later environment changes. Ingestion cursors remain scoped
 to their source endpoint, preventing one provider's checkpoint from being reused for another.
 
-See [deployment](../operator/deployment.md) for backup, restore, and support-bundle procedures.
+See [operations](../operator/operations.md) for backup, restore, and support collection.
