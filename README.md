@@ -4,7 +4,7 @@ Signer Sidekick monitors and operates one running Stacks PoX-5 signer and pool. 
 registration, pool membership, rewards, manager actions, and signer health against the operator's
 node and an indexed Stacks API.
 
-![Signer Sidekick dashboard overview](docs/assets/dashboard-overview.jpg)
+![Signer Sidekick dashboard overview with fixture data](docs/assets/dashboard-overview.jpg)
 
 ## Use
 
