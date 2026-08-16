@@ -18,6 +18,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
+import { parseCanonicalInstant } from "../time.js";
 import {
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
@@ -306,10 +307,9 @@ async function assertCurrentEligibility(input: {
   observation: ManagerClaimWalletAuthoritativeObservation;
 }): Promise<void> {
   const job = exactJob(input.repository, input.jobId);
-  const observedAt = Date.parse(input.observation.observedAt);
+  const observedAt = parseCanonicalInstant(input.observation.observedAt);
   if (
-    !Number.isFinite(observedAt) ||
-    new Date(observedAt).toISOString() !== input.observation.observedAt ||
+    !observedAt ||
     input.observation.job.jobId !== job.jobId ||
     input.observation.job.operationScopeKey !== job.operationScopeKey ||
     input.observation.job.intentSha256 !== job.intentSha256 ||
@@ -326,7 +326,7 @@ async function assertCurrentEligibility(input: {
     accepted === null ||
     accepted.acceptedState.revision !== job.attestation.revision ||
     accepted.acceptedState.payloadSha256 !== job.attestation.payloadSha256 ||
-    Date.parse(accepted.document.payload.expiresAt) <= observedAt
+    Date.parse(accepted.document.payload.expiresAt) <= observedAt.getTime()
   ) {
     unavailable("This claim job's compatibility attestation expired or changed. Sync chain data");
   }

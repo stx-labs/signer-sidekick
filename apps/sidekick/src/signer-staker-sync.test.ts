@@ -94,14 +94,14 @@ function page(
 async function store(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
   openStores.push(store);
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId,
     kind: "api",
     network: "mainnet",
     baseUrl: apiUrl,
     observedAt,
   });
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: nodeSourceId,
     kind: "node",
     network: "mainnet",
@@ -1306,14 +1306,14 @@ describe("signer-staker synchronization", () => {
     temporaryDirectories.push(directory);
     const databasePath = join(directory, "sidekick.sqlite");
     const first = await openSidekickStore(databasePath, observedAt);
-    first.store.upsertChainSource({
+    first.store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: "mainnet",
       baseUrl: apiUrl,
       observedAt,
     });
-    first.store.upsertChainSource({
+    first.store.chainState.upsertSource({
       sourceId: nodeSourceId,
       kind: "node",
       network: "mainnet",

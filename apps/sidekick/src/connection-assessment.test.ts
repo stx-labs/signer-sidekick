@@ -136,7 +136,7 @@ describe("first-run connection assessment", () => {
     });
     expect(configuredNode.getPoxInfo).toHaveBeenCalledWith({ tip: indexBlockHash });
     expect(inspectManager).toHaveBeenCalledWith(indexBlockHash);
-    expect(store.getDeploymentIdentity()).toMatchObject({
+    expect(store.deploymentIdentity.get()).toMatchObject({
       managerPrincipal: manager,
       network: "mainnet",
       networkId: 1,
@@ -197,7 +197,7 @@ describe("first-run connection assessment", () => {
     const result = await (await build(store)).check();
     expect(result.status).toBe("blocked");
     expect(result.outcomeCode).toBe(expected);
-    expect(store.getDeploymentIdentity()).toBeNull();
+    expect(store.deploymentIdentity.get()).toBeNull();
   });
 
   it("preserves the last successful anchor as stale when the local node later fails", async () => {
@@ -279,7 +279,7 @@ describe("first-run connection assessment", () => {
 
   it("enters diagnostic safe mode before reading the node when a bound identity differs", async () => {
     const store = await memoryStore();
-    store.bindDeploymentIdentity({
+    store.deploymentIdentity.bind({
       network: "mainnet",
       networkId: 1,
       parentNetworkId: 0,
@@ -311,7 +311,7 @@ describe("first-run connection assessment", () => {
 
   it("rejects ambiguous legacy evidence but auto-binds matching evidence after proof", async () => {
     const conflicting = await memoryStore();
-    conflicting.recordManagerTrustState({
+    conflicting.managerTrust.record({
       managerPrincipal: otherManager,
       recognitionTier: "unrecognized",
       profileId: null,
@@ -327,14 +327,14 @@ describe("first-run connection assessment", () => {
     );
 
     const matching = await memoryStore();
-    matching.upsertChainSource({
+    matching.chainState.upsertSource({
       sourceId: "node:mainnet:legacy",
       kind: "node",
       network: "mainnet",
       baseUrl: "http://127.0.0.1:20443",
       observedAt: checkedAt,
     });
-    matching.recordManagerTrustState({
+    matching.managerTrust.record({
       managerPrincipal: manager,
       recognitionTier: "unrecognized",
       profileId: null,
@@ -346,7 +346,7 @@ describe("first-run connection assessment", () => {
       observedAt: checkedAt,
     });
     expect((await service({ store: matching }).check()).status).toBe("connected");
-    expect(matching.getDeploymentIdentity()?.bindingSource).toBe("legacy-evidence");
+    expect(matching.deploymentIdentity.get()?.bindingSource).toBe("legacy-evidence");
   });
 
   it("coalesces simultaneous forced rechecks without starting any synchronization", async () => {

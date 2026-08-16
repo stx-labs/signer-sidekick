@@ -20,6 +20,7 @@ import {
 } from "../operator-anchor-snapshot.js";
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
 import { createChainSourceId, type SidekickStore } from "../storage/store.js";
+import { copyValidDate, parseCanonicalInstant } from "../time.js";
 import type { TransactionAdmissionInput } from "./admission.js";
 import { RepositoryTransactionEngineApiService } from "./api-service.js";
 import {
@@ -130,11 +131,11 @@ const recoverableJobStates = [
 const defaultMaintenanceIntervalMs = 15_000;
 
 function exactNow(clock: () => Date): Date {
-  const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  const now = copyValidDate(clock());
+  if (!now) {
     throw new Error("Transaction engine clock returned an invalid instant");
   }
-  return new Date(now.getTime());
+  return now;
 }
 
 function runtimeFailureReason(error: unknown): string {
@@ -396,8 +397,8 @@ export class SidekickTransactionEngineRuntime {
       );
       if (proof.status === "proven") samePassConfirmedJobIds.push(result.jobId);
     }
-    const observedAt = new Date(input.observedAt);
-    if (!Number.isFinite(observedAt.getTime()) || observedAt.toISOString() !== input.observedAt) {
+    const observedAt = parseCanonicalInstant(input.observedAt);
+    if (!observedAt) {
       throw new Error("Transaction engine observation time is invalid");
     }
     const attestation = await this.#composition.loadAttestation(observedAt);
@@ -447,11 +448,8 @@ export class SidekickTransactionEngineRuntime {
         if (fresh.sourceId !== expectedSourceId) {
           throw new Error("Transaction engine approval source changed before revalidation");
         }
-        const observedAt = new Date(fresh.observedAt);
-        if (
-          !Number.isFinite(observedAt.getTime()) ||
-          observedAt.toISOString() !== fresh.observedAt
-        ) {
+        const observedAt = parseCanonicalInstant(fresh.observedAt);
+        if (!observedAt) {
           throw new Error("Transaction engine approval observation time is invalid");
         }
         const attestation = await this.#composition.loadAttestation(observedAt);

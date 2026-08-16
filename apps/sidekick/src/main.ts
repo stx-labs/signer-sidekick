@@ -46,7 +46,7 @@ import {
   startSnapshotRefreshLoop,
 } from "./operator-snapshot-refresh.js";
 import { readPoolForecast } from "./pool-forecast.js";
-import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
+import { indexedWorkflowsReady, runOperatorPreflight } from "./preflight.js";
 import { withInteractiveRequestDeadline } from "./request-context.js";
 import { readStxRewardStatus } from "./reward-status.js";
 import { RuntimeSettingsController } from "./runtime-settings.js";
@@ -145,7 +145,7 @@ export async function executeCliCommand({
       throw new Error("The operator API and private event listener must use different addresses");
     }
     const { store } = await openSidekickStore(config.databasePath);
-    store.pruneObserverPayloads(new Date().toISOString());
+    store.observerInbox.prunePayloads(new Date().toISOString());
     let serverOwnsStore = false;
     let storeClosed = false;
     let transactionEngine: Awaited<
@@ -260,7 +260,7 @@ export async function executeCliCommand({
       let observerReconciliation: ObserverReconciliationScheduler | null = null;
       let observerGapMonitor: ObserverGapMonitor | null = null;
       const observerProcessor = new ObserverInboxProcessor({
-        store,
+        store: store.observerInbox,
         getNode: () => runtimeSettings.clients().node,
         canProcess: () => connection.current()?.status === "connected",
         onError: (error) => reportObserverInboxError(error),
@@ -269,7 +269,7 @@ export async function executeCliCommand({
       });
       const observerServer = observerConfig.enabled
         ? createObserverServer({
-            store,
+            store: store.observerInbox,
             maxBodyBytes: observerConfig.maxBodyBytes,
             logger: false,
             onAccepted: () => observerProcessor.notify(),
@@ -284,7 +284,7 @@ export async function executeCliCommand({
       const currentObserverStatus = () =>
         observerRuntimeStatus(
           observerConfig,
-          store.observerInboxStatus(),
+          store.observerInbox.status(),
           observerListening,
           observerReconciliation?.status() ?? null,
           observerGapMonitor?.status() ?? null,
@@ -361,7 +361,7 @@ export async function executeCliCommand({
       });
       observerGapMonitor = new ObserverGapMonitor({
         getNode: () => runtimeSettings.clients().node,
-        getInbox: () => store.observerInboxStatus(),
+        getInbox: () => store.observerInbox.status(),
         onGap: (status) =>
           observerReconciliation?.request("current", {
             stacksHeight: status.nodeStacksHeight,
@@ -570,7 +570,7 @@ export async function executeCliCommand({
           getConfig: () => config,
           getConnection: () => connection,
           getObserverStatus: () =>
-            observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+            observerRuntimeStatus(observerConfig, store.observerInbox.status()),
         }).check(true);
         writeCliJson(output, { config: redactConfig(config), connection, requirements });
         if (connection.status !== "connected" || !requirements.requiredReady) {
@@ -675,11 +675,7 @@ export async function executeCliCommand({
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick pool sync-stakers <manager-principal>");
     const { config, node, api, preflight, manager } = await operatorContext(managerPrincipal, env);
-    if (
-      preflight.status === "fail" ||
-      !indexedApiCompatible(preflight) ||
-      !preflight.pox.pox5ContractId
-    ) {
+    if (!indexedWorkflowsReady(preflight) || !preflight.pox.pox5ContractId) {
       throw preflightBlocked("Signer-staker sync");
     }
     const pox5ContractId = preflight.pox.pox5ContractId;
@@ -694,14 +690,14 @@ export async function executeCliCommand({
     await withStore(
       () => openSidekickStore(config.databasePath, observedAt),
       async ({ store, backupPath }) => {
-        store.upsertChainSource({
+        store.chainState.upsertSource({
           sourceId,
           kind: "api",
           network: config.network,
           baseUrl: config.apiUrl,
           observedAt,
         });
-        store.upsertChainSource({
+        store.chainState.upsertSource({
           sourceId: nodeSourceId,
           kind: "node",
           network: config.network,
@@ -766,7 +762,7 @@ export async function executeCliCommand({
     const [, managerPrincipal] = arguments_;
     if (!managerPrincipal) throw new Error("Usage: sidekick events sync <manager-principal>");
     const { config, node, api, preflight, manager } = await operatorContext(managerPrincipal, env);
-    if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
+    if (!indexedWorkflowsReady(preflight)) {
       throw preflightBlocked("Event sync");
     }
     if (!manager.attachAllowed) throw managerCompatibilityBlocked("Event sync");
@@ -775,7 +771,7 @@ export async function executeCliCommand({
     await withStore(
       () => openSidekickStore(config.databasePath, observedAt),
       async ({ store, backupPath }) => {
-        store.upsertChainSource({
+        store.chainState.upsertSource({
           sourceId,
           kind: "api",
           network: config.network,
@@ -836,10 +832,6 @@ export async function executeCliCommand({
         });
         if (forecast.status === "attention") output.setExitCode(2);
       },
-    );
-  } else if (command === "setup" && arguments_[0] === "record") {
-    throw new Error(
-      "The setup record was a public-enrollment artifact and is no longer generated by Sidekick. Use the operator support bundle for support handoff",
     );
   } else if (command === "rewards" && arguments_[0] === "status") {
     const [, managerPrincipal, rewardCycleArgument] = arguments_;
@@ -933,7 +925,7 @@ export async function executeCliCommand({
           getConfig: () => runtimeSettings.effectiveConfig(),
           getConnection: () => connectionResult,
           getObserverStatus: () =>
-            observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+            observerRuntimeStatus(observerConfig, store.observerInbox.status()),
         });
         if (connectionResult.status !== "connected") {
           writeCliJson(
@@ -944,7 +936,7 @@ export async function executeCliCommand({
               deploymentRequirements: () => deploymentRequirements.check(true),
               runtimeSettings: () => runtimeSettings.publicSettings(),
               database: () => store.databaseStatus(),
-              observer: () => observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+              observer: () => observerRuntimeStatus(observerConfig, store.observerInbox.status()),
             }),
           );
           return;
@@ -983,17 +975,13 @@ export async function executeCliCommand({
             engine: async () => engine.api.status(),
             recentOperations: async () => engine.api.listJobs({ cursor: null, limit: 50 }),
             database: () => store.databaseStatus(),
-            observer: () => observerRuntimeStatus(observerConfig, store.observerInboxStatus()),
+            observer: () => observerRuntimeStatus(observerConfig, store.observerInbox.status()),
           });
           writeCliJson(output, bundle);
         } finally {
           await engine.close();
         }
       },
-    );
-  } else if (command === "manager" && arguments_[0] === "render") {
-    throw new Error(
-      "Signer-manager deployment moved to https://stx.fan/zero_to/signing/. Configure SIDEKICK_MANAGER_PRINCIPAL after setup, then run sidekick connection check",
     );
   } else if (command === "signer-grant" && arguments_[0] === "prepare") {
     const [, managerPrincipal, authId, signerConfigPath] = arguments_;

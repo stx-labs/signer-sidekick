@@ -963,7 +963,7 @@ export class WalletIntentService {
   }
 
   private assertStoredLocalNodeAuthority(managerPrincipal: string): void {
-    const authority = this.options.store.getLocalNodeAuthority(managerPrincipal);
+    const authority = this.options.store.deploymentIdentity.getLocalNodeAuthority(managerPrincipal);
     if (authority && authority.status !== "current") {
       throw new WalletIntentError(
         "wallet_execution_unavailable",

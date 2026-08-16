@@ -123,6 +123,11 @@ export function indexedApiCompatible(preflight: PreflightResult): boolean {
   });
 }
 
+/** Whether workflows that require indexed API evidence may proceed. */
+export function indexedWorkflowsReady(preflight: PreflightResult): boolean {
+  return preflight.status !== "fail" && indexedApiCompatible(preflight);
+}
+
 export function pox5VersionFrom(info: PoxInfo) {
   return info.contract_versions.find((version) => version.contract_id.endsWith(".pox-5"));
 }

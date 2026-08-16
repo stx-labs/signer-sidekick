@@ -90,7 +90,7 @@ function transaction(id: string): TransactionSummary {
 async function store(): Promise<SidekickStore> {
   const opened = await openSidekickStore(":memory:", observedAt);
   stores.push(opened.store);
-  opened.store.upsertChainSource({
+  opened.store.chainState.upsertSource({
     sourceId,
     kind: "api",
     network: "mainnet",
@@ -157,7 +157,9 @@ describe("PoX-5 pool Activity synchronization", () => {
       },
     });
     expect(sidekickStore.getChainEvent(1, otherTxid, 4)).toBeNull();
-    expect(sidekickStore.getCursor(sourceId, pox5PoolActivityStream(pox5, manager))).toMatchObject({
+    expect(
+      sidekickStore.chainState.getCursor(sourceId, pox5PoolActivityStream(pox5, manager)),
+    ).toMatchObject({
       cursor: null,
       lastBlockHeight: 8_700_000,
     });

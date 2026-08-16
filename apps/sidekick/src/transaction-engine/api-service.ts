@@ -34,6 +34,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { z } from "zod";
 import type { TransactionEngineApiService } from "../server.js";
+import { copyValidDate } from "../time.js";
 import {
   type ManagerClaimIntentRecord,
   type ManagerClaimPolicyRecord,
@@ -453,11 +454,11 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
   }
 
   #now(): Date {
-    const now = this.#clock();
-    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    const now = copyValidDate(this.#clock());
+    if (!now) {
       throw new Error("Transaction engine API clock returned an invalid instant");
     }
-    return new Date(now.getTime());
+    return now;
   }
 
   #effectiveMode(): TransactionEngineMode {

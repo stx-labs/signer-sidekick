@@ -66,8 +66,6 @@ export interface SignerMetricValues {
   rejectedTotal: number | null;
   preCommitsTotal: number | null;
   conflictTotal: number | null;
-  conflictTotals: Record<string, number>;
-  stateChangeTotals: Record<string, number>;
   nodeRpcLatencyBuckets: Record<string, number>;
   validationLatencyBuckets: Record<string, number>;
   responseLatencyBuckets: Record<string, number>;

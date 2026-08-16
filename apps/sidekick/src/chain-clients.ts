@@ -1609,21 +1609,15 @@ function sameNodeTip(
   );
 }
 
-/** Capture the local node's current canonical position without consulting an external indexer. */
-export async function captureNodeChainAnchor(node: StacksNodeClient): Promise<ChainAnchor> {
+async function retryChainAnchorCapture(
+  capture: () => Promise<ChainAnchor>,
+  failureMessage: string,
+): Promise<ChainAnchor> {
   const maxAttempts = 3;
   let lastError: ChainAnchorError | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const [beforeInfo, beforeTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
-      const poxInfo = await node.getPoxInfo({ tip: beforeTenure.tip_block_id });
-      const [afterInfo, afterTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
-      if (!sameNodeTip(beforeInfo, beforeTenure, afterInfo, afterTenure)) {
-        throw new ChainAnchorError("Node tip moved while the anchor was being captured", {
-          retryable: true,
-        });
-      }
-      return createNodeChainAnchor(beforeInfo, beforeTenure, poxInfo);
+      return await capture();
     } catch (error) {
       if (!(error instanceof ChainAnchorError) || !error.retryable || attempt === maxAttempts) {
         throw error;
@@ -1631,48 +1625,41 @@ export async function captureNodeChainAnchor(node: StacksNodeClient): Promise<Ch
       lastError = error;
     }
   }
-  throw lastError ?? new ChainAnchorError("Unable to capture a stable local node anchor");
+  throw lastError ?? new ChainAnchorError(failureMessage);
+}
+
+/** Capture the local node's current canonical position without consulting an external indexer. */
+export async function captureNodeChainAnchor(node: StacksNodeClient): Promise<ChainAnchor> {
+  return retryChainAnchorCapture(async () => {
+    const [beforeInfo, beforeTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+    const poxInfo = await node.getPoxInfo({ tip: beforeTenure.tip_block_id });
+    const [afterInfo, afterTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+    if (!sameNodeTip(beforeInfo, beforeTenure, afterInfo, afterTenure)) {
+      throw new ChainAnchorError("Node tip moved while the anchor was being captured", {
+        retryable: true,
+      });
+    }
+    return createNodeChainAnchor(beforeInfo, beforeTenure, poxInfo);
+  }, "Unable to capture a stable local node anchor");
 }
 
 export async function captureChainAnchor(
   node: StacksNodeClient,
   api: StacksApiClient,
 ): Promise<ChainAnchor> {
-  const maxAttempts = 3;
-  let lastError: ChainAnchorError | null = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  return retryChainAnchorCapture(async () => {
+    const before = await api.getStatus();
+    const nodeInfo = await node.getInfo();
+    const sharedStatus = await sharedApiStatus(before, nodeInfo, api);
+    let poxInfo: PoxInfo;
     try {
-      const before = await api.getStatus();
-      const nodeInfo = await node.getInfo();
-      const sharedStatus = await sharedApiStatus(before, nodeInfo, api);
-      let poxInfo: PoxInfo;
-      try {
-        // Successfully executing the query at the API's stable index block hash is the node's
-        // proof that this older position is available locally. This is what makes a node-ahead,
-        // API-lagging anchor safe without pretending the two live tips are identical.
-        poxInfo = await node.getPoxInfo({ tip: sharedStatus.chain_tip.index_block_hash });
-      } catch (error) {
-        if (error instanceof UpstreamHttpError && error.status === 404) {
-          throw new ChainAnchorError("The shared API anchor is not yet readable from the node", {
-            retryable: true,
-            tips: {
-              node: {
-                stacksTipHeight: nodeInfo.stacks_tip_height,
-                burnBlockHeight: nodeInfo.burn_block_height,
-              },
-              api: {
-                stacksTipHeight: sharedStatus.chain_tip.block_height,
-                burnBlockHeight: sharedStatus.chain_tip.burn_block_height,
-              },
-              poxBurnBlockHeight: nodeInfo.burn_block_height,
-            },
-          });
-        }
-        throw error;
-      }
-      const after = await api.getStatus();
-      if (!sameApiTip(before, after)) {
-        throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
+      // Successfully executing the query at the API's stable index block hash is the node's
+      // proof that this older position is available locally. This is what makes a node-ahead,
+      // API-lagging anchor safe without pretending the two live tips are identical.
+      poxInfo = await node.getPoxInfo({ tip: sharedStatus.chain_tip.index_block_hash });
+    } catch (error) {
+      if (error instanceof UpstreamHttpError && error.status === 404) {
+        throw new ChainAnchorError("The shared API anchor is not yet readable from the node", {
           retryable: true,
           tips: {
             node: {
@@ -1680,20 +1667,32 @@ export async function captureChainAnchor(
               burnBlockHeight: nodeInfo.burn_block_height,
             },
             api: {
-              stacksTipHeight: after.chain_tip.block_height,
-              burnBlockHeight: after.chain_tip.burn_block_height,
+              stacksTipHeight: sharedStatus.chain_tip.block_height,
+              burnBlockHeight: sharedStatus.chain_tip.burn_block_height,
             },
-            poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
+            poxBurnBlockHeight: nodeInfo.burn_block_height,
           },
         });
       }
-      return createChainAnchor(nodeInfo, sharedStatus, poxInfo);
-    } catch (error) {
-      if (!(error instanceof ChainAnchorError) || !error.retryable || attempt === maxAttempts) {
-        throw error;
-      }
-      lastError = error;
+      throw error;
     }
-  }
-  throw lastError ?? new ChainAnchorError("Unable to capture a stable shared chain anchor");
+    const after = await api.getStatus();
+    if (!sameApiTip(before, after)) {
+      throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
+        retryable: true,
+        tips: {
+          node: {
+            stacksTipHeight: nodeInfo.stacks_tip_height,
+            burnBlockHeight: nodeInfo.burn_block_height,
+          },
+          api: {
+            stacksTipHeight: after.chain_tip.block_height,
+            burnBlockHeight: after.chain_tip.burn_block_height,
+          },
+          poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
+        },
+      });
+    }
+    return createChainAnchor(nodeInfo, sharedStatus, poxInfo);
+  }, "Unable to capture a stable shared chain anchor");
 }

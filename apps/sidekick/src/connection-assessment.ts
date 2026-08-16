@@ -18,9 +18,9 @@ import {
 } from "./request-context.js";
 import type {
   LegacyDeploymentEvidence,
-  SidekickStore,
   StoredDeploymentIdentity,
-} from "./storage/store.js";
+} from "./storage/deployment-identity-repository.js";
+import type { SidekickStore } from "./storage/store.js";
 
 type ConnectionCheck = ConnectionAssessment["checks"][number];
 type ObservedConnection = NonNullable<ConnectionAssessment["observed"]>;
@@ -135,13 +135,7 @@ export interface ConnectionAssessmentOptions {
     config: Pick<SidekickConfig, "network" | "nodeRpcUrl" | "expectedNetworkId">;
     node: StacksNodeClient;
   };
-  store: Pick<
-    SidekickStore,
-    | "getDeploymentIdentity"
-    | "inspectLegacyDeploymentEvidence"
-    | "bindDeploymentIdentity"
-    | "recordDeploymentIdentityVerification"
-  >;
+  store: Pick<SidekickStore, "deploymentIdentity">;
   now?: () => string;
   assessmentDeadlineMs?: number;
   inspectManager?: (tip: `0x${string}` | undefined) => Promise<ConnectionManagerInspection>;
@@ -237,7 +231,7 @@ export class ConnectionAssessmentService {
     const configured = this.configured(config);
     const checkedAt = this.options.now?.() ?? new Date().toISOString();
     const checks = emptyChecks();
-    const identity = this.options.store.getDeploymentIdentity();
+    const identity = this.options.store.deploymentIdentity.get();
     setCheck(
       checks,
       "deployment-identity",
@@ -271,8 +265,10 @@ export class ConnectionAssessmentService {
     const configured = this.configured(config);
     const checkedAt = this.options.now?.() ?? new Date().toISOString();
     const checks = emptyChecks();
-    let identity = this.options.store.getDeploymentIdentity();
-    const legacyEvidence = identity ? null : this.options.store.inspectLegacyDeploymentEvidence();
+    let identity = this.options.store.deploymentIdentity.get();
+    const legacyEvidence = identity
+      ? null
+      : this.options.store.deploymentIdentity.inspectLegacyEvidence();
     const identityMismatch = identity
       ? boundIdentityMismatch(identity, configured)
       : legacyEvidenceMismatch(
@@ -527,7 +523,7 @@ export class ConnectionAssessmentService {
     setCheck(checks, "manager-trait", "pass", traitReason);
 
     identity = identity
-      ? this.options.store.recordDeploymentIdentityVerification({
+      ? this.options.store.deploymentIdentity.recordVerification({
           network: config.network,
           networkId: nodeInfo.network_id,
           parentNetworkId: nodeInfo.parent_network_id ?? null,
@@ -537,7 +533,7 @@ export class ConnectionAssessmentService {
           burnBlockHeight: nodeInfo.burn_block_height,
           pox5ContractId,
         })
-      : this.options.store.bindDeploymentIdentity({
+      : this.options.store.deploymentIdentity.bind({
           network: config.network,
           networkId: nodeInfo.network_id,
           parentNetworkId: nodeInfo.parent_network_id ?? null,

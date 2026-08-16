@@ -4,7 +4,7 @@ import type {
   TransactionEventPage,
   TransactionSummary,
 } from "./chain-clients.js";
-import { transactionOccurredAt } from "./chain-clients.js";
+import { buildChainEventInput } from "./chain-event-input.js";
 import {
   type ManagerEventNodeBlocks,
   type ManagerEventNodeTransactions,
@@ -201,34 +201,29 @@ export async function syncCurrentMemberHistoryPass(
       throw new Error(`Missing verified transaction evidence for ${txId}`);
     }
     for (const { eventIndex, contractLog, decoded } of relevant) {
-      storedEvents.push({
-        chainId: options.chainId,
-        txId,
-        eventIndex,
-        blockHeight: transaction.block.height,
-        blockHash: transaction.block.hash,
-        indexBlockHash: transaction.block.index_hash,
-        microblockHash: null,
-        microblockSequence: null,
-        canonical: true,
-        microblockCanonical: true,
-        contractId: options.pox5ContractId,
-        topic: decoded.topic,
-        rawPayload: {
-          schema: "stacks-api-v3-current-member-history",
-          stakerPrincipal: recovery.stakerPrincipal,
-          transactionStatus: transaction.status,
-          transactionIndex: transaction.block.tx_index,
-          bitcoinBlockHeight: transaction.bitcoin_block.height,
-          contractLog,
-        },
-        decodedSchemaVersion: 1,
-        decodedPayload: { transactionStatus: transaction.status, event: decoded },
-        evidenceLevel,
-        sourceId: options.sourceId,
-        occurredAt: transactionOccurredAt(transaction),
-        observedAt: options.observedAt,
-      });
+      storedEvents.push(
+        buildChainEventInput({
+          chainId: options.chainId,
+          txId,
+          eventIndex,
+          transaction,
+          contractId: options.pox5ContractId,
+          topic: decoded.topic,
+          rawPayload: {
+            schema: "stacks-api-v3-current-member-history",
+            stakerPrincipal: recovery.stakerPrincipal,
+            transactionStatus: transaction.status,
+            transactionIndex: transaction.block.tx_index,
+            bitcoinBlockHeight: transaction.bitcoin_block.height,
+            contractLog,
+          },
+          decodedSchemaVersion: 1,
+          decodedPayload: { transactionStatus: transaction.status, event: decoded },
+          evidenceLevel,
+          sourceId: options.sourceId,
+          observedAt: options.observedAt,
+        }),
+      );
     }
   }
 

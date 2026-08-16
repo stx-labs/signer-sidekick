@@ -369,10 +369,11 @@ an Activity group and always carries its canonical `activityId`.
 available domain projections with independent evidence states. The dashboard boundary schema is
 strict and versioned.
 
-The legacy `/api/v1/status`, `DashboardAlert`, `OperatorAlert`, and browser-side alert-action switch
-remain compatibility debt while a few non-Overview surfaces still consume them. Remove them once
-those routes use independent page contracts; no new Overview behavior may depend on that parallel
-attention system. Non-Overview pages must not wait on an Overview response before rendering.
+The legacy `/api/v1/status`, `DashboardAlert`, `OperatorAlert`, and alert-count projection remain
+compatibility debt while a few non-Overview surfaces still consume them. The obsolete alert-action
+payload has been removed. Remove the remaining projection once those routes use independent page
+contracts; no new Overview behavior may depend on that parallel attention system. Non-Overview
+pages must not wait on an Overview response before rendering.
 
 ## Responsive and accessibility contract
 

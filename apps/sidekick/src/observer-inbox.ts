@@ -4,7 +4,10 @@ import {
   type StacksNodeClient,
   UpstreamHttpError,
 } from "./chain-clients.js";
-import type { SidekickStore, StoredObserverDelivery } from "./storage/store.js";
+import type {
+  ObserverInboxRepository,
+  StoredObserverDelivery,
+} from "./storage/observer-inbox-repository.js";
 
 const MAX_HEADER_PROOF_DEPTH = 2_100;
 const MAX_FUTURE_BLOCK_DISTANCE = 12;
@@ -12,11 +15,8 @@ const DEFAULT_RETRY_INTERVAL_MS = 15_000;
 const DEFAULT_MAX_BATCH_SIZE = 100;
 
 type ObserverInboxStore = Pick<
-  SidekickStore,
-  | "claimNextObserverDelivery"
-  | "finishObserverDelivery"
-  | "recoverObserverDeliveries"
-  | "retryObserverDelivery"
+  ObserverInboxRepository,
+  "claimNextDelivery" | "finishDelivery" | "recoverDeliveries" | "retryDelivery"
 >;
 
 type ObserverVerificationNode = Pick<
@@ -234,7 +234,7 @@ export class ObserverInboxProcessor {
   start(): number {
     if (this.#started) return 0;
     this.#started = true;
-    const recovered = this.#store.recoverObserverDeliveries(this.#now().toISOString());
+    const recovered = this.#store.recoverDeliveries(this.#now().toISOString());
     this.#retryTimer = setInterval(() => this.notify(), this.#retryIntervalMs);
     this.#retryTimer.unref?.();
     this.notify();
@@ -280,7 +280,7 @@ export class ObserverInboxProcessor {
       let batchAttempts = 0;
       for (let batchIndex = 0; batchIndex < this.#maxBatchSize && this.#started; batchIndex += 1) {
         const now = this.#now().toISOString();
-        const delivery = this.#store.claimNextObserverDelivery(now);
+        const delivery = this.#store.claimNextDelivery(now);
         if (!delivery) break;
         batchAttempts += 1;
         try {
@@ -303,7 +303,7 @@ export class ObserverInboxProcessor {
             }
             continue;
           }
-          this.#store.finishObserverDelivery({
+          this.#store.finishDelivery({
             deliveryId: delivery.deliveryId,
             state: outcome.state,
             reason: outcome.reason,
@@ -346,15 +346,15 @@ export class ObserverInboxProcessor {
     return processed;
   }
 
-  #returnToQueue(input: Parameters<ObserverInboxStore["retryObserverDelivery"]>[0]): Error | null {
+  #returnToQueue(input: Parameters<ObserverInboxStore["retryDelivery"]>[0]): Error | null {
     try {
-      this.#store.retryObserverDelivery(input);
+      this.#store.retryDelivery(input);
       return null;
     } catch (retryError) {
       try {
         // A targeted retry update can fail after a transient store fault. Recover every processing
         // claim immediately so this process does not require a restart to make the row eligible.
-        this.#store.recoverObserverDeliveries(input.retriedAt);
+        this.#store.recoverDeliveries(input.retriedAt);
       } catch (recoveryError) {
         return new AggregateError(
           [retryError, recoveryError],

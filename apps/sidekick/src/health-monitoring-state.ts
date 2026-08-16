@@ -215,59 +215,68 @@ export function histogramP95(observations: readonly HealthObservation[]): number
   );
 }
 
-export function lastTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
-  let previous: HealthObservation | null = null;
+interface TipPosition {
+  stacks: number;
+  burn: number;
+}
+
+function lastAdvanceAt(
+  observations: readonly HealthObservation[],
+  position: (observation: HealthObservation) => TipPosition | null,
+  occurredAt: (observation: HealthObservation) => string = (observation) => observation.observedAt,
+): string | null {
+  let previous: TipPosition | null = null;
   let lastAdvance: string | null = null;
   for (const observation of observations) {
+    const current = position(observation);
     if (
-      previous?.nodeInfo &&
-      observation.nodeInfo &&
-      (observation.nodeInfo.stacks_tip_height !== previous.nodeInfo.stacks_tip_height ||
-        observation.nodeInfo.burn_block_height !== previous.nodeInfo.burn_block_height)
+      previous &&
+      current &&
+      (current.stacks !== previous.stacks || current.burn !== previous.burn)
     ) {
-      lastAdvance = observation.observedAt;
+      lastAdvance = occurredAt(observation);
     }
-    previous = observation;
+    previous = current;
   }
   return lastAdvance;
 }
 
+export function lastTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
+  return lastAdvanceAt(observations, (observation) =>
+    observation.nodeInfo
+      ? {
+          stacks: observation.nodeInfo.stacks_tip_height,
+          burn: observation.nodeInfo.burn_block_height,
+        }
+      : null,
+  );
+}
+
 export function lastHiroTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
-  let previous: HealthObservation | null = null;
-  let lastAdvance: string | null = null;
-  for (const observation of observations) {
-    if (
-      previous?.hiro &&
-      observation.hiro &&
-      (observation.hiro.chain_tip.block_height !== previous.hiro.chain_tip.block_height ||
-        observation.hiro.chain_tip.burn_block_height !== previous.hiro.chain_tip.burn_block_height)
-    ) {
-      lastAdvance = observation.observedAt;
-    }
-    previous = observation;
-  }
-  return lastAdvance;
+  return lastAdvanceAt(observations, (observation) =>
+    observation.hiro
+      ? {
+          stacks: observation.hiro.chain_tip.block_height,
+          burn: observation.hiro.chain_tip.burn_block_height,
+        }
+      : null,
+  );
 }
 
 export function lastConfiguredApiTipAdvanceAt(
   observations: readonly HealthObservation[],
 ): string | null {
-  let previous: HealthObservation | null = null;
-  let lastAdvance: string | null = null;
-  for (const observation of observations) {
-    if (
-      previous?.configuredApi &&
-      observation.configuredApi &&
-      (observation.configuredApi.chain_tip.block_height !==
-        previous.configuredApi.chain_tip.block_height ||
-        observation.configuredApi.chain_tip.burn_block_height !==
-          previous.configuredApi.chain_tip.burn_block_height)
-    ) {
-      lastAdvance = observation.configuredApiSource?.checkedAt ?? observation.observedAt;
-    }
-    previous = observation;
-  }
-  return lastAdvance;
+  return lastAdvanceAt(
+    observations,
+    (observation) =>
+      observation.configuredApi
+        ? {
+            stacks: observation.configuredApi.chain_tip.block_height,
+            burn: observation.configuredApi.chain_tip.burn_block_height,
+          }
+        : null,
+    (observation) => observation.configuredApiSource?.checkedAt ?? observation.observedAt,
+  );
 }
 
 export function trimHealthObservations(

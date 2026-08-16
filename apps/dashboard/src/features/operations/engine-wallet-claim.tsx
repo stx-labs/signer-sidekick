@@ -1,11 +1,11 @@
 import type { EngineJobDetail, EngineStatus } from "@stx-labs/signer-sidekick-api-contracts";
 import { useMemo, useState } from "react";
 import { Field } from "../../shared/dashboard-ui.js";
+import { isStacksAddressForNetwork } from "../../shared/principal.js";
 import { browserWalletIntentNetwork } from "./browser-wallet.js";
 import { BrowserWalletActionPanel } from "./browser-wallet-action.js";
 
 const claimAdapterId = "reference-manager-claim-rewards";
-const standardPrincipalPattern = /^S[PMTN][0-9A-Z]{20,50}$/;
 
 export function isWalletClaimJobEligible(job: EngineJobDetail, status: EngineStatus): boolean {
   const adapter = status.adapters.find(({ adapter }) => adapter.id === claimAdapterId);
@@ -26,10 +26,6 @@ export function isWalletClaimJobEligible(job: EngineJobDetail, status: EngineSta
   );
 }
 
-function principalMatchesNetwork(principal: string, network: string): boolean {
-  return network === "mainnet" ? /^S[PM]/.test(principal) : /^S[TN]/.test(principal);
-}
-
 export function EngineWalletClaim({
   chainId,
   job,
@@ -46,14 +42,14 @@ export function EngineWalletClaim({
   const [actorPrincipal, setActorPrincipal] = useState("");
   const walletNetwork = browserWalletIntentNetwork(network);
   const actor = actorPrincipal.trim().toUpperCase();
-  const actorValid =
-    standardPrincipalPattern.test(actor) &&
-    walletNetwork !== null &&
-    principalMatchesNetwork(actor, walletNetwork);
+  const actorValid = walletNetwork !== null && isStacksAddressForNetwork(actor, walletNetwork);
   const eligible =
     isWalletClaimJobEligible(job, status) &&
     walletNetwork !== null &&
-    principalMatchesNetwork(job.review.managerPrincipal, walletNetwork);
+    isStacksAddressForNetwork(
+      job.review.managerPrincipal.slice(0, job.review.managerPrincipal.indexOf(".")),
+      walletNetwork,
+    );
   const request = useMemo(
     () =>
       actorValid

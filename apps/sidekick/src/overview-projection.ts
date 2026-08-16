@@ -12,13 +12,12 @@ import type {
   OverviewPage,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { HEALTH_RULES } from "./health-monitoring-rules.js";
+import type { ObserverGapStatus as CompleteObserverGapStatus } from "./observer-gap-monitor.js";
 
-interface ObserverGapStatus {
-  status: "healthy" | "degraded" | "not-started" | "unknown";
-  nodeStacksHeight: number | null;
-  observerStacksHeight: number | null;
-  observerSilenceSeconds: number | null;
-}
+type ObserverGapStatus = Pick<
+  CompleteObserverGapStatus,
+  "status" | "nodeStacksHeight" | "observerStacksHeight" | "observerSilenceSeconds"
+>;
 
 export interface OverviewProjectionInput {
   snapshot: DashboardSnapshot;

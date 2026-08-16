@@ -26,8 +26,8 @@ import {
 } from "./pox5-calculate-rewards.js";
 import { evaluateRewardForecast, REWARD_FORECAST_MODEL_REVISION } from "./reward-calibration.js";
 import type { RewardStatusNode } from "./reward-status.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
 import type {
-  ChainCursor,
   ChainCursorInput,
   RewardCalculationRealizationInput,
   StoredRewardCalculationRealization,
@@ -68,8 +68,7 @@ interface RewardRealizationNodeTransactions {
 }
 
 export interface RewardRealizationStore {
-  getCursor(sourceId: string, stream: string): ChainCursor | null;
-  putCursor(input: ChainCursorInput): void;
+  chainState: Pick<ChainStateRepository, "getCursor">;
   putRewardCalculationRealizationPage(
     realizations: readonly RewardCalculationRealizationInput[],
     cursor: ChainCursorInput,
@@ -589,7 +588,7 @@ export async function syncRewardRealizations(
   const revalidation = await revalidateCalibrationWindow(options);
   const retried = await retryUnresolvedRealizations(options, revalidation.canonical);
 
-  const checkpoint = options.store.getCursor(options.sourceId, stream);
+  const checkpoint = options.store.chainState.getCursor(options.sourceId, stream);
   const resumed = checkpoint?.cursor
     ? cursorStateSchema.parse(JSON.parse(checkpoint.cursor))
     : null;

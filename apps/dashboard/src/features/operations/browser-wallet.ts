@@ -4,6 +4,7 @@ import type {
   BrowserWalletIntent,
   BrowserWalletIntentNetwork,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { isStacksAddress, isStacksAddressForNetwork } from "../../shared/principal.js";
 
 export const LEATHER_PROVIDER_ID = "LeatherProvider";
 export const XVERSE_PROVIDER_ID = "XverseProviders.BitcoinProvider";
@@ -240,10 +241,7 @@ function normalizedContractPrincipal(value: string): string | null {
   }
   const address = value.slice(0, separator).toUpperCase();
   const contractName = value.slice(separator + 1);
-  if (
-    !/^S[PMTN][0-9A-Z]{20,50}$/.test(address) ||
-    !/^[a-zA-Z][a-zA-Z0-9-_]{0,127}$/.test(contractName)
-  ) {
+  if (!isStacksAddress(address) || !/^[a-zA-Z][a-zA-Z0-9-_]{0,127}$/.test(contractName)) {
     return null;
   }
   return `${address}.${contractName}`;
@@ -360,12 +358,11 @@ async function assertSealedRequest(intent: BrowserWalletIntent): Promise<WalletN
   const postConditions = params.postConditions;
   const requiresAssetPostconditions = ASSET_POSTCONDITION_ACTIONS.has(action);
   const managerPrincipal = browserWalletManagerPrincipal(intent);
-  const addressPattern =
-    network.sidekickNetwork === "mainnet" ? /^S[PM][0-9A-Z]{20,50}$/ : /^S[TN][0-9A-Z]{20,50}$/;
+  const managerAddress = managerPrincipal.slice(0, managerPrincipal.indexOf("."));
   if (
     params.address !== intent.requiredSender ||
-    !addressPattern.test(intent.requiredSender) ||
-    !addressPattern.test(managerPrincipal.slice(0, managerPrincipal.indexOf("."))) ||
+    !isStacksAddressForNetwork(intent.requiredSender, network.sidekickNetwork) ||
+    !isStacksAddressForNetwork(managerAddress, network.sidekickNetwork) ||
     params.sponsored !== false ||
     params.postConditionMode !== "deny" ||
     !Array.isArray(postConditions) ||

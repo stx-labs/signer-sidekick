@@ -7,10 +7,10 @@ import type { ObserverReconciliationStatus } from "./observer-reconciliation.js"
 import type {
   AcceptedObserverDelivery,
   ObserverInboxLimits,
+  ObserverInboxRepository,
   ObserverInboxStatus,
-  SidekickStore,
-} from "./storage/store.js";
-import { ObserverInboxCapacityError } from "./storage/store.js";
+} from "./storage/observer-inbox-repository.js";
+import { ObserverInboxCapacityError } from "./storage/observer-inbox-repository.js";
 
 const canonicalHash = z
   .string()
@@ -252,7 +252,7 @@ export function observerRuntimeStatus(
 }
 
 export function createObserverServer(options: {
-  store: Pick<SidekickStore, "acceptObserverDelivery">;
+  store: Pick<ObserverInboxRepository, "acceptDelivery">;
   maxBodyBytes: number;
   logger?: boolean;
   now?: () => Date;
@@ -288,7 +288,7 @@ export function createObserverServer(options: {
       const claim = deliveryClaim(endpointKind, payload);
       let delivery: AcceptedObserverDelivery;
       try {
-        delivery = options.store.acceptObserverDelivery(
+        delivery = options.store.acceptDelivery(
           {
             endpointKind,
             contentSha256: createHash("sha256").update(request.body, "utf8").digest("hex"),

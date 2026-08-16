@@ -5,6 +5,7 @@ import { apiJson } from "./api-client.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 import type { DomainSection } from "./dashboard-route.js";
 import { useDomainSection } from "./shared/domain-section.js";
+import { stx } from "./shared/format.js";
 import { operatorErrorDetail, operatorErrorSentence } from "./shared/operator-error.js";
 
 export type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
@@ -55,7 +56,7 @@ function displayTime(value: string | null): string {
 
 function displayStx(ustx: number | null): string {
   if (ustx === null) return "—";
-  return `${(ustx / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 2 })} STX`;
+  return `${stx(String(ustx))} STX`;
 }
 
 function abbreviated(value: string, left = 10, right = 8): string {

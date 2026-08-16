@@ -1,22 +1,16 @@
 import { decodeClarityHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { z } from "zod";
-import {
-  type SmartContractLogPage,
-  type TransactionSummary,
-  transactionOccurredAt,
-} from "./chain-clients.js";
+import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
+import { buildChainEventInput } from "./chain-event-input.js";
 import {
   type ManagerEventNodeBlocks,
   type ManagerEventNodeTransactions,
   verifyIndexedApiTransactionEvidenceWithNode,
 } from "./manager-event-sync.js";
 import { decodePox5PoolActivityEvent } from "./pox5-pool-events.js";
-import type {
-  ChainCursor,
-  ChainEventInput,
-  SidekickStore,
-  StoredChainEvent,
-} from "./storage/store.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
+import type { ChainEventInput, SidekickStore, StoredChainEvent } from "./storage/store.js";
+import { loadTransactionSummaries } from "./transaction-enrichment.js";
 
 const cursorStateSchema = z
   .object({
@@ -36,7 +30,7 @@ export interface Pox5PoolActivityApi {
 }
 
 export interface Pox5PoolActivityStore {
-  getCursor(sourceId: string, stream: string): ChainCursor | null;
+  chainState: Pick<ChainStateRepository, "getCursor">;
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null;
   putChainEventPage(
     events: readonly ChainEventInput[],
@@ -111,7 +105,7 @@ export async function syncPox5PoolActivity(
     .nullable()
     .parse(options.minimumStacksHeight ?? null);
   const stream = pox5PoolActivityStream(options.pox5ContractId, options.managerPrincipal);
-  const checkpoint = options.store.getCursor(options.sourceId, stream);
+  const checkpoint = options.store.chainState.getCursor(options.sourceId, stream);
   const resumed = checkpoint?.cursor
     ? cursorStateSchema.parse(JSON.parse(checkpoint.cursor))
     : null;
@@ -155,24 +149,11 @@ export async function syncPox5PoolActivity(
     });
     relevantEvents += decoded.length;
 
-    const transactionIds = [...new Set(decoded.map(({ log }) => log.tx_id))];
-    const transactionEntries: Array<[string, TransactionSummary]> = [];
-    for (let index = 0; index < transactionIds.length; index += 8) {
-      options.signal?.throwIfAborted();
-      transactionEntries.push(
-        ...(await Promise.all(
-          transactionIds
-            .slice(index, index + 8)
-            .map(
-              async (txId): Promise<[string, TransactionSummary]> => [
-                txId,
-                await options.api.getTransaction(txId),
-              ],
-            ),
-        )),
-      );
-    }
-    const transactions = new Map(transactionEntries);
+    const transactions = await loadTransactionSummaries(
+      options.api,
+      decoded.map(({ log }) => log.tx_id),
+      options.signal,
+    );
     const transactionEvidence = await verifyIndexedApiTransactionEvidenceWithNode(
       options.nodeTransactions,
       options.nodeBlocks,
@@ -187,17 +168,11 @@ export async function syncPox5PoolActivity(
       if (!transaction) throw new Error(`Missing transaction enrichment for ${log.tx_id}`);
       if (options.store.getChainEvent(chainId, log.tx_id, log.event_index)) replayedEvents += 1;
       else newEvents += 1;
-      return {
+      return buildChainEventInput({
         chainId,
         txId: log.tx_id,
         eventIndex: log.event_index,
-        blockHeight: transaction.block.height,
-        blockHash: transaction.block.hash,
-        indexBlockHash: transaction.block.index_hash,
-        microblockHash: null,
-        microblockSequence: null,
-        canonical: true,
-        microblockCanonical: true,
+        transaction,
         contractId: options.pox5ContractId,
         topic: event.topic,
         rawPayload: {
@@ -211,9 +186,8 @@ export async function syncPox5PoolActivity(
         decodedPayload: { transactionStatus: transaction.status, event },
         evidenceLevel: transactionEvidence.get(log.tx_id),
         sourceId: options.sourceId,
-        occurredAt: transactionOccurredAt(transaction),
         observedAt: options.observedAt,
-      };
+      });
     });
 
     const boundary = page.results.at(-1);

@@ -3,7 +3,7 @@ import { decodeClarityHex } from "@stx-labs/signer-sidekick-protocol/clarity-cod
 import { z } from "zod";
 import { RateLimitedError } from "./chain-clients.js";
 import type { ObserverVerificationOutcome } from "./observer-inbox.js";
-import type { StoredObserverDelivery } from "./storage/store.js";
+import type { StoredObserverDelivery } from "./storage/observer-inbox-repository.js";
 
 export type ObserverReconciliationDomain = "current" | "manager-activity" | "rewards" | "roster";
 

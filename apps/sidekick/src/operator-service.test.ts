@@ -204,23 +204,11 @@ describe("operator service", () => {
           severity: "info",
           title: "Custom Manager Attached",
           detail: expect.stringContaining("PoX-5 baseline state remains available"),
-          action: {
-            kind: "navigate",
-            label: "Review capabilities",
-            target: "settings",
-            settingsSection: "capabilities",
-          },
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
           title: "Manager Assist Eligibility Lost",
-          action: {
-            kind: "navigate",
-            label: "Review manager profiles",
-            target: "settings",
-            settingsSection: "capabilities",
-          },
         }),
       ]),
     );
@@ -239,17 +227,11 @@ describe("operator service", () => {
         id: "manager:trust-transition-degraded:2026-07-16T12:00:00.000Z",
         severity: "warning",
         title: "Manager Recognition Degraded",
-        action: {
-          kind: "navigate",
-          label: "Review manager profiles",
-          target: "settings",
-          settingsSection: "capabilities",
-        },
       }),
     );
   });
 
-  it("routes connection and manager compatibility alerts to their repair screens", () => {
+  it("describes connection and manager compatibility alerts", () => {
     const input = alertInput({});
     input.forecast = null;
     input.preflight.checks = [
@@ -264,57 +246,32 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "preflight:stacks-api",
           detail: "Stacks API is unavailable.",
-          action: {
-            kind: "navigate",
-            label: "Review sources",
-            target: "settings",
-            settingsSection: "sources",
-          },
         }),
         expect.objectContaining({
           id: "manager:unsupported",
           detail: "Manager network does not match.",
-          action: {
-            kind: "navigate",
-            label: "Review attachment",
-            target: "settings",
-            settingsSection: "attachment",
-          },
         }),
         expect.objectContaining({
           id: "manager:profile-load-issues",
           detail: "1 manager profile could not be loaded.",
-          action: {
-            kind: "navigate",
-            label: "Review profile issues",
-            target: "settings",
-            settingsSection: "capabilities",
-          },
         }),
       ]),
     );
   });
 
-  it("uses the live threshold, routes to the pool, and preserves readiness alerts", () => {
+  it("uses the live threshold and preserves readiness alerts", () => {
     const alerts = buildAlerts(alertInput({ belowThreshold: true, readinessBlocked: true }));
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "pool:forecast-attention",
         title: "Pool Below Signer-Set Threshold",
         detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 144.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "readiness:blocked",
         detail: "Grant is revoked.",
-        action: {
-          kind: "navigate",
-          label: "Repair signer authorization",
-          target: "settings",
-          managerAction: "register-self",
-        },
       }),
     );
   });
@@ -324,7 +281,6 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Forecast Needs Attention",
         detail: "Pool checks need attention for reward cycle 144.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
   });
@@ -353,7 +309,6 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Below Signer-Set Threshold",
         detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 6.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
   });
@@ -416,7 +371,7 @@ describe("operator service", () => {
     );
   });
 
-  it("attaches the resolving control to roster and withdrawal alerts", () => {
+  it("describes incomplete roster and pending withdrawal alerts", () => {
     const input = alertInput({});
     input.forecast = null;
     input.rewards = { status: "attention" } as typeof input.rewards;
@@ -426,17 +381,11 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "rewards:incomplete",
           detail: "The individual staker roster has not been synced.",
-          action: { kind: "reconcile", label: "Sync now" },
         }),
         expect.objectContaining({
           id: "withdrawals:pending",
           title: "Bitcoin Withdrawals Await Resolution",
           detail: "2 Bitcoin withdrawal requests remain pending.",
-          action: {
-            kind: "navigate",
-            label: "Review Bitcoin withdrawals",
-            target: "rewards",
-          },
         }),
       ]),
     );
@@ -811,7 +760,7 @@ describe("operator service", () => {
     await expect(service.observeManagerTrustState()).resolves.toMatchObject({
       transition: { transition: "lost" },
     });
-    expect(store.listManagerTrustAudit(managerPrincipal)).toMatchObject([
+    expect(store.managerTrust.listAudit(managerPrincipal)).toMatchObject([
       { transition: "lost" },
       { transition: "gained" },
     ]);

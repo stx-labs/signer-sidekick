@@ -67,6 +67,7 @@ import type {
 } from "./operator-service.js";
 import type { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { projectOverview } from "./overview-projection.js";
+import { PrometheusText } from "./prometheus-text.js";
 import {
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
@@ -769,11 +770,7 @@ function walletIntentAnchorError(
 ): WalletIntentAnchorMismatchError | WalletIntentAnchorUnstableError | null {
   if (error instanceof ChainAnchorError && error.retryable) {
     const { tips } = error;
-    const sourcesDiffer =
-      tips !== null &&
-      (tips.node.stacksTipHeight < tips.api.stacksTipHeight ||
-        tips.node.burnBlockHeight < tips.api.burnBlockHeight ||
-        tips.poxBurnBlockHeight !== tips.node.burnBlockHeight);
+    const sourcesDiffer = tips !== null && chainSourcesDiffer(error);
     return sourcesDiffer
       ? {
           error: "wallet_intent_anchor_mismatch",
@@ -1423,71 +1420,108 @@ export function createServer(options: ServerOptions = {}) {
     };
     const rosterRefresh = rosterReconciliationMetrics.snapshot();
     const observer = options.observerStatus?.();
-    const metrics = [
-      "# HELP sidekick_http_requests_total HTTP requests handled by this process.",
-      "# TYPE sidekick_http_requests_total counter",
-      `sidekick_http_requests_total ${requestCount}`,
-      "# HELP sidekick_sync_total Synchronization attempts.",
-      "# TYPE sidekick_sync_total counter",
-      `sidekick_sync_total ${syncCount}`,
-      "# HELP sidekick_sync_requests_total Synchronization requests accepted by this process.",
-      "# TYPE sidekick_sync_requests_total counter",
-      `sidekick_sync_requests_total ${syncRequestCount}`,
-      "# HELP sidekick_sync_failures_total Failed synchronization attempts.",
-      "# TYPE sidekick_sync_failures_total counter",
-      `sidekick_sync_failures_total ${syncFailureCount}`,
-      "# HELP sidekick_roster_reconciliation_attempts_total Automatic roster reconciliation attempts.",
-      "# TYPE sidekick_roster_reconciliation_attempts_total counter",
-      `sidekick_roster_reconciliation_attempts_total ${rosterRefresh.attemptsTotal}`,
-      "# HELP sidekick_roster_reconciliation_successes_total Successful automatic roster reconciliations.",
-      "# TYPE sidekick_roster_reconciliation_successes_total counter",
-      `sidekick_roster_reconciliation_successes_total ${rosterRefresh.successesTotal}`,
-      "# HELP sidekick_roster_reconciliation_skips_total Automatic roster reconciliations skipped because setup was incomplete or another sync was running.",
-      "# TYPE sidekick_roster_reconciliation_skips_total counter",
-      `sidekick_roster_reconciliation_skips_total ${rosterRefresh.skipsTotal}`,
-      "# HELP sidekick_roster_reconciliation_failures_total Failed automatic roster reconciliations.",
-      "# TYPE sidekick_roster_reconciliation_failures_total counter",
-      `sidekick_roster_reconciliation_failures_total ${rosterRefresh.failuresTotal}`,
-      "# HELP sidekick_roster_reconciliation_consecutive_failures Consecutive automatic roster reconciliation failures.",
-      "# TYPE sidekick_roster_reconciliation_consecutive_failures gauge",
-      `sidekick_roster_reconciliation_consecutive_failures ${rosterRefresh.consecutiveFailures}`,
-      "# HELP sidekick_roster_reconciliation_retry_backoff_seconds Delay before retrying a failed automatic roster reconciliation.",
-      "# TYPE sidekick_roster_reconciliation_retry_backoff_seconds gauge",
-      `sidekick_roster_reconciliation_retry_backoff_seconds ${rosterRefresh.retryBackoffSeconds}`,
-      "# HELP sidekick_roster_reconciliation_last_success_timestamp_seconds Unix timestamp of the last successful automatic roster reconciliation.",
-      "# TYPE sidekick_roster_reconciliation_last_success_timestamp_seconds gauge",
-      `sidekick_roster_reconciliation_last_success_timestamp_seconds ${rosterRefresh.lastSuccessTimestampSeconds}`,
-      "# HELP sidekick_roster_reconciliation_next_attempt_timestamp_seconds Unix timestamp of the next automatic roster reconciliation attempt.",
-      "# TYPE sidekick_roster_reconciliation_next_attempt_timestamp_seconds gauge",
-      `sidekick_roster_reconciliation_next_attempt_timestamp_seconds ${rosterRefresh.nextAttemptTimestampSeconds}`,
-      "# HELP sidekick_operator_snapshot_refresh_attempts_total Autonomous snapshot refresh attempts.",
-      "# TYPE sidekick_operator_snapshot_refresh_attempts_total counter",
-      `sidekick_operator_snapshot_refresh_attempts_total ${refresh.attemptsTotal}`,
-      "# HELP sidekick_operator_snapshot_refresh_successes_total Successful autonomous snapshot refreshes.",
-      "# TYPE sidekick_operator_snapshot_refresh_successes_total counter",
-      `sidekick_operator_snapshot_refresh_successes_total ${refresh.successesTotal}`,
-      "# HELP sidekick_operator_snapshot_refresh_failures_total Failed autonomous snapshot refreshes.",
-      "# TYPE sidekick_operator_snapshot_refresh_failures_total counter",
-      `sidekick_operator_snapshot_refresh_failures_total ${refresh.failuresTotal}`,
-      "# HELP sidekick_operator_snapshot_refresh_consecutive_failures Consecutive autonomous snapshot refresh failures.",
-      "# TYPE sidekick_operator_snapshot_refresh_consecutive_failures gauge",
-      `sidekick_operator_snapshot_refresh_consecutive_failures ${refresh.consecutiveFailures}`,
-      "# HELP sidekick_operator_snapshot_retry_backoff_seconds Delay before the next autonomous refresh attempt.",
-      "# TYPE sidekick_operator_snapshot_retry_backoff_seconds gauge",
-      `sidekick_operator_snapshot_retry_backoff_seconds ${refresh.retryBackoffSeconds}`,
-      "# HELP sidekick_operator_snapshot_last_success_timestamp_seconds Unix timestamp of the last successful autonomous refresh.",
-      "# TYPE sidekick_operator_snapshot_last_success_timestamp_seconds gauge",
-      `sidekick_operator_snapshot_last_success_timestamp_seconds ${refresh.lastSuccessTimestampSeconds}`,
-      "# HELP sidekick_operator_snapshot_generated_timestamp_seconds Unix timestamp carried by the retained operator snapshot.",
-      "# TYPE sidekick_operator_snapshot_generated_timestamp_seconds gauge",
-      `sidekick_operator_snapshot_generated_timestamp_seconds ${refresh.snapshotGeneratedTimestampSeconds}`,
-      "# HELP sidekick_operator_snapshot_age_seconds Age of the retained operator snapshot.",
-      "# TYPE sidekick_operator_snapshot_age_seconds gauge",
-      `sidekick_operator_snapshot_age_seconds ${refresh.snapshotAgeSeconds}`,
-      "# HELP sidekick_operator_snapshot_fresh Whether the autonomous snapshot refresh is current and healthy.",
-      "# TYPE sidekick_operator_snapshot_fresh gauge",
-      `sidekick_operator_snapshot_fresh ${refresh.snapshotFresh}`,
-    ];
+    const metrics = new PrometheusText();
+    metrics.counter(
+      "sidekick_http_requests_total",
+      "HTTP requests handled by this process.",
+      requestCount,
+    );
+    metrics.counter("sidekick_sync_total", "Synchronization attempts.", syncCount);
+    metrics.counter(
+      "sidekick_sync_requests_total",
+      "Synchronization requests accepted by this process.",
+      syncRequestCount,
+    );
+    metrics.counter(
+      "sidekick_sync_failures_total",
+      "Failed synchronization attempts.",
+      syncFailureCount,
+    );
+    metrics.counter(
+      "sidekick_roster_reconciliation_attempts_total",
+      "Automatic roster reconciliation attempts.",
+      rosterRefresh.attemptsTotal,
+    );
+    metrics.counter(
+      "sidekick_roster_reconciliation_successes_total",
+      "Successful automatic roster reconciliations.",
+      rosterRefresh.successesTotal,
+    );
+    metrics.counter(
+      "sidekick_roster_reconciliation_skips_total",
+      "Automatic roster reconciliations skipped because setup was incomplete or another sync was running.",
+      rosterRefresh.skipsTotal,
+    );
+    metrics.counter(
+      "sidekick_roster_reconciliation_failures_total",
+      "Failed automatic roster reconciliations.",
+      rosterRefresh.failuresTotal,
+    );
+    metrics.gauge(
+      "sidekick_roster_reconciliation_consecutive_failures",
+      "Consecutive automatic roster reconciliation failures.",
+      rosterRefresh.consecutiveFailures,
+    );
+    metrics.gauge(
+      "sidekick_roster_reconciliation_retry_backoff_seconds",
+      "Delay before retrying a failed automatic roster reconciliation.",
+      rosterRefresh.retryBackoffSeconds,
+    );
+    metrics.gauge(
+      "sidekick_roster_reconciliation_last_success_timestamp_seconds",
+      "Unix timestamp of the last successful automatic roster reconciliation.",
+      rosterRefresh.lastSuccessTimestampSeconds,
+    );
+    metrics.gauge(
+      "sidekick_roster_reconciliation_next_attempt_timestamp_seconds",
+      "Unix timestamp of the next automatic roster reconciliation attempt.",
+      rosterRefresh.nextAttemptTimestampSeconds,
+    );
+    metrics.counter(
+      "sidekick_operator_snapshot_refresh_attempts_total",
+      "Autonomous snapshot refresh attempts.",
+      refresh.attemptsTotal,
+    );
+    metrics.counter(
+      "sidekick_operator_snapshot_refresh_successes_total",
+      "Successful autonomous snapshot refreshes.",
+      refresh.successesTotal,
+    );
+    metrics.counter(
+      "sidekick_operator_snapshot_refresh_failures_total",
+      "Failed autonomous snapshot refreshes.",
+      refresh.failuresTotal,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_refresh_consecutive_failures",
+      "Consecutive autonomous snapshot refresh failures.",
+      refresh.consecutiveFailures,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_retry_backoff_seconds",
+      "Delay before the next autonomous refresh attempt.",
+      refresh.retryBackoffSeconds,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_last_success_timestamp_seconds",
+      "Unix timestamp of the last successful autonomous refresh.",
+      refresh.lastSuccessTimestampSeconds,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_generated_timestamp_seconds",
+      "Unix timestamp carried by the retained operator snapshot.",
+      refresh.snapshotGeneratedTimestampSeconds,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_age_seconds",
+      "Age of the retained operator snapshot.",
+      refresh.snapshotAgeSeconds,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_fresh",
+      "Whether the autonomous snapshot refresh is current and healthy.",
+      refresh.snapshotFresh,
+    );
     if (health) {
       const findingsByClassification = new Map<string, number>();
       for (const finding of health.findings) {
@@ -1496,10 +1530,10 @@ export function createServer(options: ServerOptions = {}) {
           (findingsByClassification.get(finding.classification) ?? 0) + 1,
         );
       }
-      metrics.push(
-        "# HELP sidekick_signer_health_diagnosis Current evidence-backed diagnosis as a one-hot classified gauge.",
-        "# TYPE sidekick_signer_health_diagnosis gauge",
-        ...[
+      metrics.gauge(
+        "sidekick_signer_health_diagnosis",
+        "Current evidence-backed diagnosis as a one-hot classified gauge.",
+        [
           "healthy",
           "likely-local-node",
           "likely-local-signer",
@@ -1508,11 +1542,16 @@ export function createServer(options: ServerOptions = {}) {
           "insufficient-evidence",
         ].map(
           (classification) =>
-            `sidekick_signer_health_diagnosis{classification="${classification}"} ${health.diagnosis.classification === classification ? 1 : 0}`,
+            [
+              `{classification="${classification}"}`,
+              health.diagnosis.classification === classification ? 1 : 0,
+            ] as const,
         ),
-        "# HELP sidekick_signer_health_active_findings Active health findings by evidence-backed classification.",
-        "# TYPE sidekick_signer_health_active_findings gauge",
-        ...[
+      );
+      metrics.gauge(
+        "sidekick_signer_health_active_findings",
+        "Active health findings by evidence-backed classification.",
+        [
           "likely-local-node",
           "likely-local-signer",
           "source-disagreement",
@@ -1520,180 +1559,255 @@ export function createServer(options: ServerOptions = {}) {
           "insufficient-evidence",
         ].map(
           (classification) =>
-            `sidekick_signer_health_active_findings{classification="${classification}"} ${findingsByClassification.get(classification) ?? 0}`,
+            [
+              `{classification="${classification}"}`,
+              findingsByClassification.get(classification) ?? 0,
+            ] as const,
         ),
-        "# HELP sidekick_signer_health_observations Retained raw observations for the active configuration.",
-        "# TYPE sidekick_signer_health_observations gauge",
-        `sidekick_signer_health_observations ${health.history.observationCount}`,
-        "# HELP sidekick_signer_health_generated_timestamp_seconds Timestamp of the latest local health observation.",
-        "# TYPE sidekick_signer_health_generated_timestamp_seconds gauge",
-        `sidekick_signer_health_generated_timestamp_seconds ${Date.parse(health.generatedAt) / 1_000}`,
-        "# HELP sidekick_signer_health_source_available Whether a configured health source is currently reachable.",
-        "# TYPE sidekick_signer_health_source_available gauge",
-        `sidekick_signer_health_source_available{source="node-rpc"} ${health.node.rpc.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="node-metrics"} ${health.node.metrics.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="signer-info"} ${health.signer.infoSource.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="signer-heartbeat"} ${health.signer.heartbeat.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="signer-metrics"} ${health.signer.metrics.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="reference-api"} ${health.hiro.source.status === "healthy" ? 1 : 0}`,
-        `sidekick_signer_health_source_available{source="configured-api"} ${health.configuredApi.source.status === "healthy" ? 1 : 0}`,
+      );
+      metrics.gauge(
+        "sidekick_signer_health_observations",
+        "Retained raw observations for the active configuration.",
+        health.history.observationCount,
+      );
+      metrics.gauge(
+        "sidekick_signer_health_generated_timestamp_seconds",
+        "Timestamp of the latest local health observation.",
+        Date.parse(health.generatedAt) / 1_000,
+      );
+      metrics.gauge(
+        "sidekick_signer_health_source_available",
+        "Whether a configured health source is currently reachable.",
+        [
+          ['{source="node-rpc"}', health.node.rpc.status === "healthy" ? 1 : 0],
+          ['{source="node-metrics"}', health.node.metrics.status === "healthy" ? 1 : 0],
+          ['{source="signer-info"}', health.signer.infoSource.status === "healthy" ? 1 : 0],
+          ['{source="signer-heartbeat"}', health.signer.heartbeat.status === "healthy" ? 1 : 0],
+          ['{source="signer-metrics"}', health.signer.metrics.status === "healthy" ? 1 : 0],
+          ['{source="reference-api"}', health.hiro.source.status === "healthy" ? 1 : 0],
+          ['{source="configured-api"}', health.configuredApi.source.status === "healthy" ? 1 : 0],
+        ],
       );
       if (health.signer.last15Minutes.responseGap !== null) {
-        metrics.push(
-          "# HELP sidekick_signer_response_gap Unaccounted-for proposals in the rolling 15-minute window.",
-          "# TYPE sidekick_signer_response_gap gauge",
-          `sidekick_signer_response_gap ${health.signer.last15Minutes.responseGap}`,
+        metrics.gauge(
+          "sidekick_signer_response_gap",
+          "Unaccounted-for proposals in the rolling 15-minute window.",
+          health.signer.last15Minutes.responseGap,
         );
       }
       if (health.signer.last15Minutes.rejectionPercent !== null) {
-        metrics.push(
-          "# HELP sidekick_signer_rejection_percent Rejected signer responses in the rolling 15-minute window.",
-          "# TYPE sidekick_signer_rejection_percent gauge",
-          `sidekick_signer_rejection_percent ${health.signer.last15Minutes.rejectionPercent}`,
+        metrics.gauge(
+          "sidekick_signer_rejection_percent",
+          "Rejected signer responses in the rolling 15-minute window.",
+          health.signer.last15Minutes.rejectionPercent,
         );
       }
       if (health.signer.last15Minutes.responseP95Seconds !== null) {
-        metrics.push(
-          "# HELP sidekick_signer_response_p95_seconds Diagnostic-only approximate signer response p95 in the rolling 15-minute window; this does not open health findings.",
-          "# TYPE sidekick_signer_response_p95_seconds gauge",
-          `sidekick_signer_response_p95_seconds ${health.signer.last15Minutes.responseP95Seconds}`,
+        metrics.gauge(
+          "sidekick_signer_response_p95_seconds",
+          "Diagnostic-only approximate signer response p95 in the rolling 15-minute window; this does not open health findings.",
+          health.signer.last15Minutes.responseP95Seconds,
         );
       }
       if (health.signer.last15Minutes.validationP95Seconds !== null) {
-        metrics.push(
-          "# HELP sidekick_signer_validation_p95_seconds Approximate node-reported successful block-validation p95 in the rolling 15-minute window.",
-          "# TYPE sidekick_signer_validation_p95_seconds gauge",
-          `sidekick_signer_validation_p95_seconds ${health.signer.last15Minutes.validationP95Seconds}`,
+        metrics.gauge(
+          "sidekick_signer_validation_p95_seconds",
+          "Approximate node-reported successful block-validation p95 in the rolling 15-minute window.",
+          health.signer.last15Minutes.validationP95Seconds,
         );
       }
     }
     if (observer) {
-      metrics.push(
-        "# HELP sidekick_observer_enabled Whether the private Stacks event listener is configured.",
-        "# TYPE sidekick_observer_enabled gauge",
-        `sidekick_observer_enabled ${observer.enabled ? 1 : 0}`,
-        "# HELP sidekick_observer_listening Whether the private Stacks event listener is accepting callbacks.",
-        "# TYPE sidekick_observer_listening gauge",
-        `sidekick_observer_listening ${observer.listening ? 1 : 0}`,
-        "# HELP sidekick_observer_deliveries_total Event callback delivery attempts durably recorded.",
-        "# TYPE sidekick_observer_deliveries_total counter",
-        `sidekick_observer_deliveries_total ${observer.inbox.deliveryAttempts}`,
-        "# HELP sidekick_observer_duplicates_total Duplicate event callback delivery attempts.",
-        "# TYPE sidekick_observer_duplicates_total counter",
-        `sidekick_observer_duplicates_total ${observer.inbox.duplicates}`,
-        "# HELP sidekick_observer_processing_attempts_total Durable callback verification attempts.",
-        "# TYPE sidekick_observer_processing_attempts_total counter",
-        `sidekick_observer_processing_attempts_total ${observer.inbox.processingAttempts}`,
-        "# HELP sidekick_observer_queue_depth Observer-claimed callbacks awaiting verification.",
-        "# TYPE sidekick_observer_queue_depth gauge",
-        `sidekick_observer_queue_depth ${observer.inbox.queueDepth}`,
-        "# HELP sidekick_observer_processing Observer callbacks currently claimed by the verification worker.",
-        "# TYPE sidekick_observer_processing gauge",
-        `sidekick_observer_processing ${observer.inbox.processing}`,
-        "# HELP sidekick_observer_quarantined Event callbacks currently quarantined before projection.",
-        "# TYPE sidekick_observer_quarantined gauge",
-        `sidekick_observer_quarantined ${observer.inbox.quarantined}`,
-        "# HELP sidekick_observer_node_verified Event callbacks currently retained after node verification.",
-        "# TYPE sidekick_observer_node_verified gauge",
-        `sidekick_observer_node_verified ${observer.inbox.nodeVerified}`,
-        "# HELP sidekick_observer_expired Event callbacks currently retained as expired triggers.",
-        "# TYPE sidekick_observer_expired gauge",
-        `sidekick_observer_expired ${observer.inbox.expired}`,
-        "# HELP sidekick_observer_retained_payload_bytes Raw callback JSON bytes retained for support evidence.",
-        "# TYPE sidekick_observer_retained_payload_bytes gauge",
-        `sidekick_observer_retained_payload_bytes ${observer.inbox.retainedPayloadBytes}`,
-        "# HELP sidekick_observer_pruned_payloads Terminal callback rows whose raw JSON was pruned.",
-        "# TYPE sidekick_observer_pruned_payloads gauge",
-        `sidekick_observer_pruned_payloads ${observer.inbox.prunedPayloads}`,
-        "# HELP sidekick_observer_oldest_pending_age_seconds Age of the oldest callback awaiting verification.",
-        "# TYPE sidekick_observer_oldest_pending_age_seconds gauge",
-        `sidekick_observer_oldest_pending_age_seconds ${observer.inbox.oldestPendingAt ? Math.max(0, (Date.now() - Date.parse(observer.inbox.oldestPendingAt)) / 1_000) : 0}`,
-        "# HELP sidekick_observer_last_received_timestamp_seconds Last durable callback receipt time.",
-        "# TYPE sidekick_observer_last_received_timestamp_seconds gauge",
-        `sidekick_observer_last_received_timestamp_seconds ${observer.inbox.lastReceivedAt ? Date.parse(observer.inbox.lastReceivedAt) / 1_000 : 0}`,
-        "# HELP sidekick_observer_last_processed_timestamp_seconds Last callback verification attempt time.",
-        "# TYPE sidekick_observer_last_processed_timestamp_seconds gauge",
-        `sidekick_observer_last_processed_timestamp_seconds ${observer.inbox.lastProcessedAt ? Date.parse(observer.inbox.lastProcessedAt) / 1_000 : 0}`,
+      metrics.gauge(
+        "sidekick_observer_enabled",
+        "Whether the private Stacks event listener is configured.",
+        observer.enabled ? 1 : 0,
+      );
+      metrics.gauge(
+        "sidekick_observer_listening",
+        "Whether the private Stacks event listener is accepting callbacks.",
+        observer.listening ? 1 : 0,
+      );
+      metrics.counter(
+        "sidekick_observer_deliveries_total",
+        "Event callback delivery attempts durably recorded.",
+        observer.inbox.deliveryAttempts,
+      );
+      metrics.counter(
+        "sidekick_observer_duplicates_total",
+        "Duplicate event callback delivery attempts.",
+        observer.inbox.duplicates,
+      );
+      metrics.counter(
+        "sidekick_observer_processing_attempts_total",
+        "Durable callback verification attempts.",
+        observer.inbox.processingAttempts,
+      );
+      metrics.gauge(
+        "sidekick_observer_queue_depth",
+        "Observer-claimed callbacks awaiting verification.",
+        observer.inbox.queueDepth,
+      );
+      metrics.gauge(
+        "sidekick_observer_processing",
+        "Observer callbacks currently claimed by the verification worker.",
+        observer.inbox.processing,
+      );
+      metrics.gauge(
+        "sidekick_observer_quarantined",
+        "Event callbacks currently quarantined before projection.",
+        observer.inbox.quarantined,
+      );
+      metrics.gauge(
+        "sidekick_observer_node_verified",
+        "Event callbacks currently retained after node verification.",
+        observer.inbox.nodeVerified,
+      );
+      metrics.gauge(
+        "sidekick_observer_expired",
+        "Event callbacks currently retained as expired triggers.",
+        observer.inbox.expired,
+      );
+      metrics.gauge(
+        "sidekick_observer_retained_payload_bytes",
+        "Raw callback JSON bytes retained for support evidence.",
+        observer.inbox.retainedPayloadBytes,
+      );
+      metrics.gauge(
+        "sidekick_observer_pruned_payloads",
+        "Terminal callback rows whose raw JSON was pruned.",
+        observer.inbox.prunedPayloads,
+      );
+      metrics.gauge(
+        "sidekick_observer_oldest_pending_age_seconds",
+        "Age of the oldest callback awaiting verification.",
+        observer.inbox.oldestPendingAt
+          ? Math.max(0, (Date.now() - Date.parse(observer.inbox.oldestPendingAt)) / 1_000)
+          : 0,
+      );
+      metrics.gauge(
+        "sidekick_observer_last_received_timestamp_seconds",
+        "Last durable callback receipt time.",
+        observer.inbox.lastReceivedAt ? Date.parse(observer.inbox.lastReceivedAt) / 1_000 : 0,
+      );
+      metrics.gauge(
+        "sidekick_observer_last_processed_timestamp_seconds",
+        "Last callback verification attempt time.",
+        observer.inbox.lastProcessedAt ? Date.parse(observer.inbox.lastProcessedAt) / 1_000 : 0,
       );
       if (observer.reconciliation) {
-        metrics.push(
-          "# HELP sidekick_observer_reconciliation_pending Whether observer-triggered domain work is retained for execution.",
-          "# TYPE sidekick_observer_reconciliation_pending gauge",
-          "# HELP sidekick_observer_reconciliation_running Whether observer-triggered domain work is executing.",
-          "# TYPE sidekick_observer_reconciliation_running gauge",
-          "# HELP sidekick_observer_reconciliation_requests_total Observer reconciliation requests, including coalesced prompts.",
-          "# TYPE sidekick_observer_reconciliation_requests_total counter",
-          "# HELP sidekick_observer_reconciliation_successes_total Successful observer-triggered reconciliations.",
-          "# TYPE sidekick_observer_reconciliation_successes_total counter",
-          "# HELP sidekick_observer_reconciliation_failures_total Failed observer-triggered reconciliation attempts.",
-          "# TYPE sidekick_observer_reconciliation_failures_total counter",
-          "# HELP sidekick_observer_reconciliation_consecutive_failures Consecutive observer-triggered reconciliation failures.",
-          "# TYPE sidekick_observer_reconciliation_consecutive_failures gauge",
-          "# HELP sidekick_observer_reconciliation_latency_seconds Callback receipt to successful domain projection latency.",
-          "# TYPE sidekick_observer_reconciliation_latency_seconds histogram",
-          "# HELP sidekick_observer_reconciliation_within_two_seconds_total Successful callback projections completed within two seconds.",
-          "# TYPE sidekick_observer_reconciliation_within_two_seconds_total counter",
+        const domains = (["current", "manager-activity", "rewards", "roster"] as const).flatMap(
+          (domain) => {
+            const status = observer.reconciliation?.domains[domain];
+            return status ? [{ domain, status }] : [];
+          },
         );
-        for (const domain of ["current", "manager-activity", "rewards", "roster"] as const) {
-          const status = observer.reconciliation.domains[domain];
-          if (!status) continue;
-          metrics.push(
-            `sidekick_observer_reconciliation_pending{domain="${domain}"} ${status.pending ? 1 : 0}`,
-            `sidekick_observer_reconciliation_running{domain="${domain}"} ${status.running ? 1 : 0}`,
-            `sidekick_observer_reconciliation_requests_total{domain="${domain}"} ${status.requests}`,
-            `sidekick_observer_reconciliation_successes_total{domain="${domain}"} ${status.successes}`,
-            `sidekick_observer_reconciliation_failures_total{domain="${domain}"} ${status.failuresTotal}`,
-            `sidekick_observer_reconciliation_consecutive_failures{domain="${domain}"} ${status.consecutiveFailures}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="1"} ${status.callbackLatency.buckets.le1}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="2"} ${status.callbackLatency.buckets.le2}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="5"} ${status.callbackLatency.buckets.le5}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="10"} ${status.callbackLatency.buckets.le10}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="30"} ${status.callbackLatency.buckets.le30}`,
-            `sidekick_observer_reconciliation_latency_seconds_bucket{domain="${domain}",le="+Inf"} ${status.callbackLatency.samples}`,
-            `sidekick_observer_reconciliation_latency_seconds_sum{domain="${domain}"} ${status.callbackLatency.sumSeconds}`,
-            `sidekick_observer_reconciliation_latency_seconds_count{domain="${domain}"} ${status.callbackLatency.samples}`,
-            `sidekick_observer_reconciliation_within_two_seconds_total{domain="${domain}"} ${status.callbackLatency.withinTwoSeconds}`,
-          );
-        }
+        metrics.gauge(
+          "sidekick_observer_reconciliation_pending",
+          "Whether observer-triggered domain work is retained for execution.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.pending ? 1 : 0]),
+        );
+        metrics.gauge(
+          "sidekick_observer_reconciliation_running",
+          "Whether observer-triggered domain work is executing.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.running ? 1 : 0]),
+        );
+        metrics.counter(
+          "sidekick_observer_reconciliation_requests_total",
+          "Observer reconciliation requests, including coalesced prompts.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.requests]),
+        );
+        metrics.counter(
+          "sidekick_observer_reconciliation_successes_total",
+          "Successful observer-triggered reconciliations.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.successes]),
+        );
+        metrics.counter(
+          "sidekick_observer_reconciliation_failures_total",
+          "Failed observer-triggered reconciliation attempts.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.failuresTotal]),
+        );
+        metrics.gauge(
+          "sidekick_observer_reconciliation_consecutive_failures",
+          "Consecutive observer-triggered reconciliation failures.",
+          domains.map(({ domain, status }) => [`{domain="${domain}"}`, status.consecutiveFailures]),
+        );
+        metrics.histogram(
+          "sidekick_observer_reconciliation_latency_seconds",
+          "Callback receipt to successful domain projection latency.",
+          domains.flatMap(({ domain, status }) => [
+            [`_bucket{domain="${domain}",le="1"}`, status.callbackLatency.buckets.le1] as const,
+            [`_bucket{domain="${domain}",le="2"}`, status.callbackLatency.buckets.le2] as const,
+            [`_bucket{domain="${domain}",le="5"}`, status.callbackLatency.buckets.le5] as const,
+            [`_bucket{domain="${domain}",le="10"}`, status.callbackLatency.buckets.le10] as const,
+            [`_bucket{domain="${domain}",le="30"}`, status.callbackLatency.buckets.le30] as const,
+            [`_bucket{domain="${domain}",le="+Inf"}`, status.callbackLatency.samples] as const,
+            [`_sum{domain="${domain}"}`, status.callbackLatency.sumSeconds] as const,
+            [`_count{domain="${domain}"}`, status.callbackLatency.samples] as const,
+          ]),
+        );
+        metrics.counter(
+          "sidekick_observer_reconciliation_within_two_seconds_total",
+          "Successful callback projections completed within two seconds.",
+          domains.map(({ domain, status }) => [
+            `{domain="${domain}"}`,
+            status.callbackLatency.withinTwoSeconds,
+          ]),
+        );
       }
       if (observer.gap) {
-        metrics.push(
-          "# HELP sidekick_observer_gap_degraded Whether the local node advanced without a timely observer callback.",
-          "# TYPE sidekick_observer_gap_degraded gauge",
-          `sidekick_observer_gap_degraded ${observer.gap.status === "degraded" ? 1 : 0}`,
-          "# HELP sidekick_observer_gap_checks_total Local node-only observer gap checks.",
-          "# TYPE sidekick_observer_gap_checks_total counter",
-          `sidekick_observer_gap_checks_total ${observer.gap.checksTotal}`,
-          "# HELP sidekick_observer_gap_failures_total Failed observer gap checks caused by node read errors.",
-          "# TYPE sidekick_observer_gap_failures_total counter",
-          `sidekick_observer_gap_failures_total ${observer.gap.failuresTotal}`,
-          "# HELP sidekick_observer_stacks_gap_blocks Difference between the local node and latest node-verified observer Stacks heights.",
-          "# TYPE sidekick_observer_stacks_gap_blocks gauge",
-          `sidekick_observer_stacks_gap_blocks ${observer.gap.stacksGap ?? 0}`,
-          "# HELP sidekick_observer_silence_seconds Seconds since the latest node-verified observer callback or monitor startup.",
-          "# TYPE sidekick_observer_silence_seconds gauge",
-          `sidekick_observer_silence_seconds ${observer.gap.observerSilenceSeconds ?? 0}`,
+        metrics.gauge(
+          "sidekick_observer_gap_degraded",
+          "Whether the local node advanced without a timely observer callback.",
+          observer.gap.status === "degraded" ? 1 : 0,
+        );
+        metrics.counter(
+          "sidekick_observer_gap_checks_total",
+          "Local node-only observer gap checks.",
+          observer.gap.checksTotal,
+        );
+        metrics.counter(
+          "sidekick_observer_gap_failures_total",
+          "Failed observer gap checks caused by node read errors.",
+          observer.gap.failuresTotal,
+        );
+        metrics.gauge(
+          "sidekick_observer_stacks_gap_blocks",
+          "Difference between the local node and latest node-verified observer Stacks heights.",
+          observer.gap.stacksGap ?? 0,
+        );
+        metrics.gauge(
+          "sidekick_observer_silence_seconds",
+          "Seconds since the latest node-verified observer callback or monitor startup.",
+          observer.gap.observerSilenceSeconds ?? 0,
         );
       }
     }
     if (refresh.sourcePositions) {
-      metrics.push(
-        "# HELP sidekick_operator_snapshot_source_stacks_height Stacks height observed in the last successful refresh.",
-        "# TYPE sidekick_operator_snapshot_source_stacks_height gauge",
-        `sidekick_operator_snapshot_source_stacks_height{source="node"} ${refresh.sourcePositions.nodeStacksHeight}`,
-        `sidekick_operator_snapshot_source_stacks_height{source="api"} ${refresh.sourcePositions.apiStacksHeight}`,
-        "# HELP sidekick_operator_snapshot_source_burn_height Bitcoin burn height observed in the last successful refresh.",
-        "# TYPE sidekick_operator_snapshot_source_burn_height gauge",
-        `sidekick_operator_snapshot_source_burn_height{source="node"} ${refresh.sourcePositions.nodeBurnHeight}`,
-        `sidekick_operator_snapshot_source_burn_height{source="api"} ${refresh.sourcePositions.apiBurnHeight}`,
-        `sidekick_operator_snapshot_source_burn_height{source="pox"} ${refresh.sourcePositions.poxBurnHeight}`,
-        "# HELP sidekick_operator_snapshot_pox_reward_cycle PoX reward cycle observed in the last successful refresh.",
-        "# TYPE sidekick_operator_snapshot_pox_reward_cycle gauge",
-        `sidekick_operator_snapshot_pox_reward_cycle ${refresh.sourcePositions.poxRewardCycle}`,
+      metrics.gauge(
+        "sidekick_operator_snapshot_source_stacks_height",
+        "Stacks height observed in the last successful refresh.",
+        [
+          ['{source="node"}', refresh.sourcePositions.nodeStacksHeight],
+          ['{source="api"}', refresh.sourcePositions.apiStacksHeight],
+        ],
+      );
+      metrics.gauge(
+        "sidekick_operator_snapshot_source_burn_height",
+        "Bitcoin burn height observed in the last successful refresh.",
+        [
+          ['{source="node"}', refresh.sourcePositions.nodeBurnHeight],
+          ['{source="api"}', refresh.sourcePositions.apiBurnHeight],
+          ['{source="pox"}', refresh.sourcePositions.poxBurnHeight],
+        ],
+      );
+      metrics.gauge(
+        "sidekick_operator_snapshot_pox_reward_cycle",
+        "PoX reward cycle observed in the last successful refresh.",
+        refresh.sourcePositions.poxRewardCycle,
       );
     }
-    metrics.push("");
-    return metrics.join("\n");
+    return metrics.render();
   });
 
   server.get("/api/v1/status", async (request) => {

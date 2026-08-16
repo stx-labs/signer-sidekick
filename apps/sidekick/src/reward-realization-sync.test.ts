@@ -113,8 +113,7 @@ function store() {
   const putRewardCalculationRealization = vi.fn();
   return {
     value: {
-      getCursor: vi.fn().mockReturnValue(null),
-      putCursor: vi.fn(),
+      chainState: { getCursor: vi.fn().mockReturnValue(null) },
       putRewardCalculationRealizationPage,
       putRewardCalculationRealization,
       getRewardCalculationRealization: vi.fn().mockReturnValue(null),

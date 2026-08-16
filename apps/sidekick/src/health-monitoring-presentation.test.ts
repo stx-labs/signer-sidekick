@@ -43,8 +43,6 @@ function signerMetrics(overrides: Partial<SignerMetricValues> = {}): SignerMetri
     rejectedTotal: 0,
     preCommitsTotal: 0,
     conflictTotal: 0,
-    conflictTotals: {},
-    stateChangeTotals: {},
     nodeRpcLatencyBuckets: {},
     validationLatencyBuckets: {},
     responseLatencyBuckets: {},

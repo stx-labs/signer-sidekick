@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ObserverGapMonitor } from "./observer-gap-monitor.js";
-import type { ObserverInboxStatus } from "./storage/store.js";
+import type { ObserverInboxStatus } from "./storage/observer-inbox-repository.js";
 
 function inbox(): ObserverInboxStatus {
   return {

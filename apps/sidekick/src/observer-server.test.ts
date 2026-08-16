@@ -17,7 +17,7 @@ async function fixture() {
   const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
   opened.push(store);
   const server = createObserverServer({
-    store,
+    store: store.observerInbox,
     maxBodyBytes: 4 * 1_024 * 1_024,
     now: () => new Date("2026-08-13T12:01:00.000Z"),
   });
@@ -106,7 +106,7 @@ describe("observer delivery ingress", () => {
       duplicate: false,
       state: "observer-claimed",
     });
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 1,
       duplicates: 0,
@@ -125,7 +125,7 @@ describe("observer delivery ingress", () => {
       duplicate: true,
       state: "observer-claimed",
     });
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 2,
       duplicates: 1,
@@ -141,7 +141,7 @@ describe("observer delivery ingress", () => {
       duplicate: true,
       state: "quarantined",
     });
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 3,
       duplicates: 2,
@@ -155,7 +155,7 @@ describe("observer delivery ingress", () => {
       payload: { ...payload, block_hash: `0x${"99".repeat(32)}` },
     });
     expect(conflictingClaim.json()).toMatchObject({ duplicate: false, state: "quarantined" });
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 2,
       deliveryAttempts: 4,
       duplicates: 2,
@@ -187,7 +187,7 @@ describe("observer delivery ingress", () => {
     });
     expect(invalid.statusCode).toBe(200);
     expect(invalid.json()).toMatchObject({ state: "quarantined" });
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       queueDepth: 1,
       quarantined: 1,
       lastClaimedBurnBlock: { height: 962_300, blockHash: burnBlockHash },
@@ -208,7 +208,7 @@ describe("observer delivery ingress", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ state: "expired" });
-    expect(store.observerInboxStatus()).toMatchObject({ expired: 1, queueDepth: 0 });
+    expect(store.observerInbox.status()).toMatchObject({ expired: 1, queueDepth: 0 });
     await server.close();
   });
 
@@ -237,11 +237,11 @@ describe("observer delivery ingress", () => {
         })
       ).statusCode,
     ).toBe(415);
-    expect(store.observerInboxStatus().uniqueDeliveries).toBe(0);
+    expect(store.observerInbox.status().uniqueDeliveries).toBe(0);
     await server.close();
 
     const bounded = createObserverServer({
-      store,
+      store: store.observerInbox,
       maxBodyBytes: 1_024,
     });
     expect(
@@ -258,11 +258,11 @@ describe("observer delivery ingress", () => {
   });
 
   it("does not acknowledge when the durable inbox commit fails", async () => {
-    const acceptObserverDelivery = vi.fn(() => {
+    const acceptDelivery = vi.fn(() => {
       throw new Error("database unavailable");
     });
     const server = createObserverServer({
-      store: { acceptObserverDelivery },
+      store: { acceptDelivery },
       maxBodyBytes: 4 * 1_024 * 1_024,
     });
     const response = await server.inject({
@@ -277,7 +277,7 @@ describe("observer delivery ingress", () => {
       },
     });
     expect(response.statusCode).toBe(500);
-    expect(acceptObserverDelivery).toHaveBeenCalledOnce();
+    expect(acceptDelivery).toHaveBeenCalledOnce();
     await server.close();
   });
 
@@ -286,7 +286,7 @@ describe("observer delivery ingress", () => {
     const { store } = result;
     opened.push(store);
     const server = createObserverServer({
-      store,
+      store: store.observerInbox,
       maxBodyBytes: 4 * 1_024 * 1_024,
       inboxLimits: { maximumPendingDeliveries: 1, maximumPendingPayloadBytes: 1_024 * 1_024 },
       now: () => new Date("2026-08-13T12:01:00.000Z"),
@@ -317,7 +317,7 @@ describe("observer delivery ingress", () => {
     });
     expect(full.statusCode).toBe(503);
     expect(full.headers["retry-after"]).toBe("15");
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 2,
       queueDepth: 1,
@@ -329,7 +329,7 @@ describe("observer delivery ingress", () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
     opened.push(store);
     const server = createObserverServer({
-      store,
+      store: store.observerInbox,
       maxBodyBytes: 4 * 1_024 * 1_024,
       inboxLimits: { maximumPendingDeliveries: 10, maximumPendingPayloadBytes: 32 },
       now: () => new Date("2026-08-13T12:01:00.000Z"),
@@ -349,7 +349,7 @@ describe("observer delivery ingress", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.headers["retry-after"]).toBe("15");
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 0,
       deliveryAttempts: 0,
       queueDepth: 0,
@@ -361,7 +361,7 @@ describe("observer delivery ingress", () => {
     const { store, server } = await fixture();
     const oldPayload = '{"old":true}';
     const currentPayload = '{"current":true}';
-    store.acceptObserverDelivery({
+    store.observerInbox.acceptDelivery({
       endpointKind: "attachments",
       contentSha256: "aa".repeat(32),
       rawPayloadJson: oldPayload,
@@ -375,7 +375,7 @@ describe("observer delivery ingress", () => {
       claimedBurnBlockHash: null,
       receivedAt: "2026-08-11T12:00:00.000Z",
     });
-    store.acceptObserverDelivery({
+    store.observerInbox.acceptDelivery({
       endpointKind: "attachments",
       contentSha256: "bb".repeat(32),
       rawPayloadJson: currentPayload,
@@ -390,7 +390,7 @@ describe("observer delivery ingress", () => {
       receivedAt: "2026-08-13T12:00:00.000Z",
     });
 
-    expect(store.observerInboxStatus()).toMatchObject({
+    expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 2,
       expired: 2,
       prunedPayloads: 1,
@@ -404,7 +404,7 @@ describe("observer delivery ingress", () => {
     expect(
       observerRuntimeStatus(
         { enabled: false, host: "127.0.0.1", port: 3700, maxBodyBytes: 4_194_304 },
-        store.observerInboxStatus(),
+        store.observerInbox.status(),
       ),
     ).toMatchObject({ enabled: false, listener: null, inbox: { queueDepth: 0 } });
   });

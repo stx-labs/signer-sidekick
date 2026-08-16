@@ -2,7 +2,7 @@ import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
 import { validateHealthEndpointForSave } from "./health-http.js";
-import { indexedApiCompatible, runOperatorPreflight } from "./preflight.js";
+import { indexedWorkflowsReady, runOperatorPreflight } from "./preflight.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
 import type { SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -196,7 +196,7 @@ export class RuntimeSettingsController {
       api,
     ) => {
       const preflight = await runOperatorPreflight(config, node, api);
-      if (preflight.status === "fail" || !indexedApiCompatible(preflight)) {
+      if (!indexedWorkflowsReady(preflight)) {
         const reason = preflight.checks.find(
           ({ id, status }) =>
             status === "fail" ||
@@ -211,7 +211,7 @@ export class RuntimeSettingsController {
       }
     },
   ) {
-    const stored = store.getRuntimeSettings();
+    const stored = store.runtimeSettings.get();
     this.settings = stored
       ? persistedRuntimeSettingsSchema.parse(withoutLegacySettings(stored.settings))
       : defaults(baseConfig);
@@ -283,7 +283,7 @@ export class RuntimeSettingsController {
       },
       forecast: this.settings.forecast,
       embed: this.settings.embed,
-      audit: this.store.listSettingsAudit(),
+      audit: this.store.runtimeSettings.listAudit(),
     };
   }
 
@@ -379,7 +379,7 @@ export class RuntimeSettingsController {
       );
     }
     requestSignal?.throwIfAborted();
-    const stored = this.store.putRuntimeSettings({
+    const stored = this.store.runtimeSettings.put({
       settings: next,
       apiKeySecret: nextSecret,
       changedFields: fields,

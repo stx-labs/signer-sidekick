@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { NodeInfo, NodeTenureInfo, StacksNodeClient } from "./chain-clients.js";
 import { ObserverInboxProcessor, verifyObserverDelivery } from "./observer-inbox.js";
-import { openSidekickStore, type StoredObserverDelivery } from "./storage/store.js";
+import type { StoredObserverDelivery } from "./storage/observer-inbox-repository.js";
+import { openSidekickStore } from "./storage/store.js";
 
 const firstObservedAt = "2026-08-13T12:00:00.000Z";
 const processedAt = "2026-08-13T12:00:01.000Z";
@@ -182,7 +183,7 @@ describe("observer inbox processor", () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
     let connected = false;
     try {
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "99".repeat(32),
         rawPayloadJson: "{}",
@@ -197,7 +198,7 @@ describe("observer inbox processor", () => {
         receivedAt: firstObservedAt,
       });
       const processor = new ObserverInboxProcessor({
-        store,
+        store: store.observerInbox,
         getNode: () => node(),
         canProcess: () => connected,
         now: () => new Date(processedAt),
@@ -205,7 +206,7 @@ describe("observer inbox processor", () => {
       });
       processor.start();
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 1,
         processing: 0,
         processingAttempts: 0,
@@ -214,7 +215,7 @@ describe("observer inbox processor", () => {
       connected = true;
       processor.notify();
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 0,
         processing: 0,
         nodeVerified: 1,
@@ -230,7 +231,7 @@ describe("observer inbox processor", () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
     const onProcessed = vi.fn();
     try {
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "aa".repeat(32),
         rawPayloadJson: "{}",
@@ -244,11 +245,11 @@ describe("observer inbox processor", () => {
         claimedBurnBlockHash: null,
         receivedAt: firstObservedAt,
       });
-      expect(store.claimNextObserverDelivery(processedAt)).not.toBeNull();
-      expect(store.observerInboxStatus()).toMatchObject({ processing: 1, queueDepth: 0 });
+      expect(store.observerInbox.claimNextDelivery(processedAt)).not.toBeNull();
+      expect(store.observerInbox.status()).toMatchObject({ processing: 1, queueDepth: 0 });
 
       const processor = new ObserverInboxProcessor({
-        store,
+        store: store.observerInbox,
         getNode: () => node(),
         now: () => new Date(processedAt),
         retryIntervalMs: 60_000,
@@ -257,7 +258,7 @@ describe("observer inbox processor", () => {
       });
       expect(processor.start()).toBe(1);
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 0,
         processing: 0,
         nodeVerified: 1,
@@ -285,7 +286,7 @@ describe("observer inbox processor", () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
     const onError = vi.fn();
     try {
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "bb".repeat(32),
         rawPayloadJson: "{}",
@@ -300,7 +301,7 @@ describe("observer inbox processor", () => {
         receivedAt: firstObservedAt,
       });
       const processor = new ObserverInboxProcessor({
-        store,
+        store: store.observerInbox,
         getNode: () =>
           node({
             getInfo: vi.fn(async () => {
@@ -313,7 +314,7 @@ describe("observer inbox processor", () => {
       });
       processor.start();
       await Promise.all([processor.processAvailable(), processor.processAvailable()]);
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 1,
         processing: 0,
         nodeVerified: 0,
@@ -331,7 +332,7 @@ describe("observer inbox processor", () => {
     const onError = vi.fn();
     let nodeAvailable = false;
     try {
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "be".repeat(32),
         rawPayloadJson: "{}",
@@ -345,18 +346,18 @@ describe("observer inbox processor", () => {
         claimedBurnBlockHash: null,
         receivedAt: firstObservedAt,
       });
-      const retryObserverDelivery = vi
+      const retryDelivery = vi
         .fn()
         .mockImplementationOnce(() => {
           throw new Error("transient retry update failure");
         })
-        .mockImplementation((input) => store.retryObserverDelivery(input));
+        .mockImplementation((input) => store.observerInbox.retryDelivery(input));
       const processor = new ObserverInboxProcessor({
         store: {
-          claimNextObserverDelivery: (claimedAt) => store.claimNextObserverDelivery(claimedAt),
-          finishObserverDelivery: (input) => store.finishObserverDelivery(input),
-          recoverObserverDeliveries: (recoveredAt) => store.recoverObserverDeliveries(recoveredAt),
-          retryObserverDelivery,
+          claimNextDelivery: (claimedAt) => store.observerInbox.claimNextDelivery(claimedAt),
+          finishDelivery: (input) => store.observerInbox.finishDelivery(input),
+          recoverDeliveries: (recoveredAt) => store.observerInbox.recoverDeliveries(recoveredAt),
+          retryDelivery,
         },
         getNode: () =>
           nodeAvailable
@@ -372,7 +373,7 @@ describe("observer inbox processor", () => {
       });
       processor.start();
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({ queueDepth: 1, processing: 0 });
+      expect(store.observerInbox.status()).toMatchObject({ queueDepth: 1, processing: 0 });
       expect(onError).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "Observer verification failed and its targeted retry update was recovered",
@@ -382,12 +383,12 @@ describe("observer inbox processor", () => {
       nodeAvailable = true;
       processor.notify();
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 0,
         processing: 0,
         nodeVerified: 1,
       });
-      expect(retryObserverDelivery).toHaveBeenCalledOnce();
+      expect(retryDelivery).toHaveBeenCalledOnce();
       await processor.stop();
     } finally {
       store.close();
@@ -397,7 +398,7 @@ describe("observer inbox processor", () => {
   it("defers a future claim without head-of-line blocking a verifiable callback", async () => {
     const { store } = await openSidekickStore(":memory:", firstObservedAt);
     try {
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "cc".repeat(32),
         rawPayloadJson: '{"future":true}',
@@ -411,7 +412,7 @@ describe("observer inbox processor", () => {
         claimedBurnBlockHash: null,
         receivedAt: firstObservedAt,
       });
-      store.acceptObserverDelivery({
+      store.observerInbox.acceptDelivery({
         endpointKind: "new-block",
         contentSha256: "dd".repeat(32),
         rawPayloadJson: "{}",
@@ -426,7 +427,7 @@ describe("observer inbox processor", () => {
         receivedAt: "2026-08-13T12:00:00.500Z",
       });
       const processor = new ObserverInboxProcessor({
-        store,
+        store: store.observerInbox,
         getNode: () => node(),
         now: () => new Date(processedAt),
         retryIntervalMs: 60_000,
@@ -434,7 +435,7 @@ describe("observer inbox processor", () => {
       });
       processor.start();
       await processor.processAvailable();
-      expect(store.observerInboxStatus()).toMatchObject({
+      expect(store.observerInbox.status()).toMatchObject({
         queueDepth: 1,
         processing: 0,
         nodeVerified: 1,

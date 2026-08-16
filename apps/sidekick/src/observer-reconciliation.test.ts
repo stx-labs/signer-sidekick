@@ -1,7 +1,7 @@
 import { contractPrincipalCV, cvToHex, stringAsciiCV, tupleCV } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import { ObserverReconciliationScheduler } from "./observer-reconciliation.js";
-import type { StoredObserverDelivery } from "./storage/store.js";
+import type { StoredObserverDelivery } from "./storage/observer-inbox-repository.js";
 
 const managerPrincipal = "SP000000000000000000002Q6VF78.signer-manager";
 const pox5ContractId = "SP000000000000000000002Q6VF78.pox-5";

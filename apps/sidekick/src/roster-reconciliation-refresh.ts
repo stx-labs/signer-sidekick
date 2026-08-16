@@ -24,9 +24,7 @@ export interface RosterReconciliationLoopOptions {
   metrics?: RosterReconciliationMetricsTracker;
 }
 
-export interface RosterReconciliationLoop {
-  stop(): void;
-}
+export type RosterReconciliationLoop = BackgroundRefreshLoop;
 
 export interface RosterReconciliationMetricValues {
   attemptsTotal: number;
@@ -105,25 +103,6 @@ export class RosterReconciliationMetricsTracker {
   }
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return value;
-}
-
-function retryDelay(
-  error: unknown,
-  failures: number,
-  failureDelayMs: number,
-  maxBackoffMs: number,
-): number {
-  if (error instanceof RosterReconciliationRetryError && error.retryAfterMs !== null) {
-    return Math.min(maxBackoffMs, Math.max(1_000, error.retryAfterMs));
-  }
-  return Math.min(maxBackoffMs, failureDelayMs * 2 ** Math.max(0, failures - 1));
-}
-
 /**
  * Reconciles the authoritative signer roster independently of browser traffic. Runs never overlap:
  * the next attempt is scheduled only after the current one settles, and the server-level
@@ -134,81 +113,55 @@ export function startRosterReconciliationLoop(
   logger: RosterReconciliationLogger,
   options: RosterReconciliationLoopOptions = {},
 ): RosterReconciliationLoop {
-  const intervalMs = positiveInteger(
+  const intervalMs = positiveRefreshInterval(
     options.intervalMs ?? DEFAULT_ROSTER_RECONCILIATION_INTERVAL_MS,
     "intervalMs",
   );
-  const initialDelayMs = options.initialDelayMs ?? DEFAULT_ROSTER_RECONCILIATION_INITIAL_DELAY_MS;
-  if (!Number.isSafeInteger(initialDelayMs) || initialDelayMs < 0) {
-    throw new Error("initialDelayMs must be a non-negative integer");
-  }
-  const failureDelayMs = positiveInteger(
+  const initialDelayMs = nonNegativeRefreshDelay(
+    options.initialDelayMs ?? DEFAULT_ROSTER_RECONCILIATION_INITIAL_DELAY_MS,
+    "initialDelayMs",
+  );
+  const failureDelayMs = positiveRefreshInterval(
     options.failureDelayMs ?? DEFAULT_ROSTER_RECONCILIATION_FAILURE_DELAY_MS,
     "failureDelayMs",
   );
-  const maxBackoffMs = positiveInteger(
+  const maxBackoffMs = positiveRefreshInterval(
     options.maxBackoffMs ?? DEFAULT_ROSTER_RECONCILIATION_MAX_BACKOFF_MS,
     "maxBackoffMs",
   );
-  const scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
-  const cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
   const metrics = options.metrics;
 
-  let stopped = false;
-  let failures = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const schedule = (delayMs: number) => {
-    metrics?.recordSchedule(delayMs);
-    timer = scheduleTimeout(() => void reconcile(), delayMs);
-    timer.unref?.();
-  };
-
-  const reconcile = async () => {
-    if (stopped) return;
-    metrics?.recordAttempt();
-    try {
-      const result = await service.reconcileRoster();
-      if (stopped) return;
-      const recoveredFailures = failures;
-      failures = 0;
+  return startBackgroundRefreshLoop({
+    run: () => service.reconcileRoster(),
+    logger,
+    intervalMs,
+    initialDelayMs,
+    failureDelayMs,
+    maxBackoffMs,
+    enabledMessage: "Automatic roster reconciliation is enabled",
+    recoveredMessage: "Automatic roster reconciliation recovered",
+    failureMessage: "Automatic roster reconciliation failed; retaining the last verified roster",
+    retryAfterMs: (error) =>
+      error instanceof RosterReconciliationRetryError ? error.retryAfterMs : null,
+    onAttempt: () => metrics?.recordAttempt(),
+    onSuccess: (result) => {
       if (result === "synchronized") {
         metrics?.recordSuccess();
         logger.info({}, "Automatic roster reconciliation completed");
       } else {
         metrics?.recordSkip();
       }
-      if (recoveredFailures > 0) {
-        logger.info(
-          { recoveredAfterFailures: recoveredFailures },
-          "Automatic roster reconciliation recovered",
-        );
-      }
-      schedule(intervalMs);
-    } catch (error) {
-      if (stopped) return;
-      failures += 1;
-      const delayMs = retryDelay(error, failures, failureDelayMs, maxBackoffMs);
-      metrics?.recordFailure(delayMs);
-      logger.warn(
-        {
-          error: error instanceof Error ? error.message : String(error),
-          failures,
-          retryInMs: delayMs,
-        },
-        "Automatic roster reconciliation failed; retaining the last verified roster",
-      );
-      schedule(delayMs);
-    }
-  };
-
-  logger.info({ intervalMs, initialDelayMs }, "Automatic roster reconciliation is enabled");
-  schedule(initialDelayMs);
-
-  return {
-    stop() {
-      stopped = true;
-      if (timer) cancelTimeout(timer);
     },
-  };
+    onFailure: (delayMs) => metrics?.recordFailure(delayMs),
+    onSchedule: (delayMs) => metrics?.recordSchedule(delayMs),
+    setTimeout: options.setTimeout,
+    clearTimeout: options.clearTimeout,
+  });
 }
+
+import {
+  type BackgroundRefreshLoop,
+  nonNegativeRefreshDelay,
+  positiveRefreshInterval,
+  startBackgroundRefreshLoop,
+} from "./background-refresh-loop.js";

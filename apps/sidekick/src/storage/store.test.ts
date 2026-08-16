@@ -51,7 +51,7 @@ async function memoryStore(): Promise<SidekickStore> {
 }
 
 function registerSource(store: SidekickStore, id = sourceId): void {
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: id,
     kind: "api",
     network: "mainnet",
@@ -61,7 +61,7 @@ function registerSource(store: SidekickStore, id = sourceId): void {
 }
 
 function registerNodeSource(store: SidekickStore): void {
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: nodeSourceId,
     kind: "node",
     network: "mainnet",
@@ -145,9 +145,9 @@ afterEach(async () => {
 describe("Sidekick SQLite store", () => {
   it("binds one immutable deployment identity and advances only its proof anchor", async () => {
     const store = await memoryStore();
-    expect(store.getDeploymentIdentity()).toBeNull();
+    expect(store.deploymentIdentity.get()).toBeNull();
 
-    const bound = store.bindDeploymentIdentity({
+    const bound = store.deploymentIdentity.bind({
       network: "mainnet",
       networkId: 1,
       parentNetworkId: 0,
@@ -170,7 +170,7 @@ describe("Sidekick SQLite store", () => {
     });
 
     expect(
-      store.recordDeploymentIdentityVerification({
+      store.deploymentIdentity.recordVerification({
         network: "mainnet",
         networkId: 1,
         parentNetworkId: 0,
@@ -187,7 +187,7 @@ describe("Sidekick SQLite store", () => {
       lastBurnBlockHeight: 960_241,
     });
     expect(() =>
-      store.recordDeploymentIdentityVerification({
+      store.deploymentIdentity.recordVerification({
         network: "mainnet",
         networkId: 1,
         parentNetworkId: 0,
@@ -199,7 +199,7 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toThrow("does not match");
     expect(() =>
-      store.bindDeploymentIdentity({
+      store.deploymentIdentity.bind({
         network: "mainnet",
         networkId: 1,
         parentNetworkId: 0,
@@ -216,7 +216,7 @@ describe("Sidekick SQLite store", () => {
   it("summarizes all legacy network and manager evidence before binding", async () => {
     const store = await memoryStore();
     registerSource(store);
-    store.recordManagerTrustState({
+    store.managerTrust.record({
       managerPrincipal: manager,
       recognitionTier: "unrecognized",
       profileId: null,
@@ -228,7 +228,7 @@ describe("Sidekick SQLite store", () => {
       observedAt,
     });
 
-    expect(store.inspectLegacyDeploymentEvidence()).toEqual({
+    expect(store.deploymentIdentity.inspectLegacyEvidence()).toEqual({
       networks: ["mainnet"],
       networkIds: [],
       managerPrincipals: [manager],
@@ -237,9 +237,9 @@ describe("Sidekick SQLite store", () => {
 
   it("persists local-node authority independently for each manager", async () => {
     const store = await memoryStore();
-    expect(store.getLocalNodeAuthority(manager)).toBeNull();
+    expect(store.deploymentIdentity.getLocalNodeAuthority(manager)).toBeNull();
 
-    const authority = store.putLocalNodeAuthority(manager, {
+    const authority = store.deploymentIdentity.putLocalNodeAuthority(manager, {
       schemaVersion: 1,
       status: "current",
       observedAt,
@@ -248,10 +248,10 @@ describe("Sidekick SQLite store", () => {
       consecutiveCurrentObservations: 2,
       reason: "The local node is current.",
     });
-    expect(authority).toEqual(store.getLocalNodeAuthority(manager));
+    expect(authority).toEqual(store.deploymentIdentity.getLocalNodeAuthority(manager));
 
     expect(
-      store.putLocalNodeAuthority(manager, {
+      store.deploymentIdentity.putLocalNodeAuthority(manager, {
         ...authority,
         status: "catching-up",
         observedAt: later,
@@ -279,12 +279,12 @@ describe("Sidekick SQLite store", () => {
       eligibilityReason: "Not recognized — read-only",
       observedAt: "2026-07-16T12:00:00.000Z",
     };
-    expect(store.recordManagerTrustState(base)).toBeNull();
+    expect(store.managerTrust.record(base)).toBeNull();
     expect(
-      store.recordManagerTrustState({ ...base, observedAt: "2026-07-16T12:01:00.000Z" }),
+      store.managerTrust.record({ ...base, observedAt: "2026-07-16T12:01:00.000Z" }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         recognitionTier: "reference-render",
         profileId: "private-1",
@@ -297,7 +297,7 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toMatchObject({ transition: "gained", previousTier: "unrecognized" });
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         recognitionTier: "reference-render",
         profileId: "private-1",
@@ -310,13 +310,13 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         eligibilityReason: "Installed profile is unavailable",
         observedAt: "2026-07-16T12:04:00.000Z",
       }),
     ).toMatchObject({ transition: "lost", currentTier: "unrecognized" });
-    expect(store.listManagerTrustAudit(base.managerPrincipal)).toMatchObject([
+    expect(store.managerTrust.listAudit(base.managerPrincipal)).toMatchObject([
       {
         transition: "lost",
         previousSourceSha256: "c".repeat(64),
@@ -331,7 +331,7 @@ describe("Sidekick SQLite store", () => {
       },
     ]);
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: "ST000000000000000000002AMW42H.second-manager",
         recognitionTier: "reference-built-in",
@@ -344,7 +344,7 @@ describe("Sidekick SQLite store", () => {
 
     const unapprovedManager = "ST000000000000000000002AMW42H.unapproved-manager";
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: unapprovedManager,
         recognitionTier: "reference-render",
@@ -355,14 +355,14 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: unapprovedManager,
         eligibilityReason: "Installed profile was removed",
         observedAt: "2026-07-16T12:05:00.000Z",
       }),
     ).toMatchObject({ transition: "degraded", previousTier: "reference-render" });
-    expect(store.listManagerTrustAudit(unapprovedManager)).toMatchObject([
+    expect(store.managerTrust.listAudit(unapprovedManager)).toMatchObject([
       {
         transition: "degraded",
         previousTier: "reference-render",
@@ -384,43 +384,43 @@ describe("Sidekick SQLite store", () => {
 
   it("persists redacted runtime settings history", async () => {
     const store = await memoryStore();
-    store.putRuntimeSettings({
+    store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Test pool" },
       apiKeySecret: "must-not-appear-in-settings-json",
       changedFields: ["pool.displayName", "dataSources.apiKey"],
       observedAt,
     });
-    const runtime = store.getRuntimeSettings();
+    const runtime = store.runtimeSettings.get();
     expect(runtime).toMatchObject({ revision: 1, settings: { displayName: "Test pool" } });
     expect(JSON.stringify(runtime?.settings)).not.toContain("must-not-appear");
     expect(runtime?.apiKeySecret).toBe("must-not-appear-in-settings-json");
-    expect(store.listSettingsAudit()).toEqual([
+    expect(store.runtimeSettings.listAudit()).toEqual([
       {
         revision: 1,
         changedFields: ["dataSources.apiKey", "pool.displayName"],
         changedAt: observedAt,
       },
     ]);
-    expect(store.getSettingsAudit(1)).toEqual({
+    expect(store.runtimeSettings.getAudit(1)).toEqual({
       revision: 1,
       changedFields: ["dataSources.apiKey", "pool.displayName"],
       changedAt: observedAt,
     });
-    expect(store.getSettingsAudit(2)).toBeNull();
+    expect(store.runtimeSettings.getAudit(2)).toBeNull();
   });
 
   it("keeps durable cursors isolated by API source identity", async () => {
     const store = await memoryStore();
     const otherSource = createChainSourceId("mainnet", "https://stacks-api.example.com/");
     registerSource(store);
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId: otherSource,
       kind: "api",
       network: "mainnet",
       baseUrl: "https://stacks-api.example.com",
       observedAt,
     });
-    store.putCursor({
+    store.chainState.putCursor({
       sourceId,
       stream: `signer-stakers:${txId}`,
       cursor: "SP000000000000000000002Q6VF78",
@@ -429,11 +429,11 @@ describe("Sidekick SQLite store", () => {
       updatedAt: observedAt,
     });
 
-    expect(store.getCursor(sourceId, `signer-stakers:${txId}`)).toMatchObject({
+    expect(store.chainState.getCursor(sourceId, `signer-stakers:${txId}`)).toMatchObject({
       cursor: "SP000000000000000000002Q6VF78",
       lastBlockHeight: 8_600_000,
     });
-    expect(store.getCursor(otherSource, `signer-stakers:${txId}`)).toBeNull();
+    expect(store.chainState.getCursor(otherSource, `signer-stakers:${txId}`)).toBeNull();
     expect(createChainSourceId("mainnet", "https://api.mainnet.hiro.so/")).toBe(sourceId);
   });
 
@@ -442,7 +442,7 @@ describe("Sidekick SQLite store", () => {
     registerSource(store);
 
     expect(() =>
-      store.upsertChainSource({
+      store.chainState.upsertSource({
         sourceId,
         kind: "api",
         network: "mainnet",
@@ -1478,7 +1478,7 @@ describe("Sidekick SQLite store", () => {
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, observedAt);
-    initial.store.putRuntimeSettings({
+    initial.store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Preserved through forward migrations" },
       apiKeySecret: null,
       changedFields: ["pool.displayName"],
@@ -1494,7 +1494,7 @@ describe("Sidekick SQLite store", () => {
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
     expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
-    expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
+    expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
 
@@ -1694,7 +1694,7 @@ describe("Sidekick SQLite store", () => {
     expect(upgraded.store.walletIntents.listObservations(intentId)).toEqual([
       expect.objectContaining({ id: observationId, outcome: "submitted", evidence }),
     ]);
-    expect(upgraded.store.inspectLegacyDeploymentEvidence()).toMatchObject({
+    expect(upgraded.store.deploymentIdentity.inspectLegacyEvidence()).toMatchObject({
       networks: ["mainnet"],
       networkIds: [1],
       managerPrincipals: [manager],
@@ -1877,7 +1877,7 @@ describe("Sidekick SQLite store", () => {
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, observedAt);
     const principal = "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ.signer-manager";
-    initial.store.recordManagerTrustState({
+    initial.store.managerTrust.record({
       managerPrincipal: principal,
       recognitionTier: "unrecognized",
       profileId: null,
@@ -1888,7 +1888,7 @@ describe("Sidekick SQLite store", () => {
       eligibilityReason: "Not recognized — read-only",
       observedAt,
     });
-    initial.store.recordManagerTrustState({
+    initial.store.managerTrust.record({
       managerPrincipal: principal,
       recognitionTier: "reference-render",
       profileId: "private-render",
@@ -1926,7 +1926,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
-    expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
+    expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
         previousTier: "unrecognized",

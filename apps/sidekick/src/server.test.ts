@@ -103,8 +103,6 @@ function serverHealthSnapshot() {
     rejectedTotal: 0,
     preCommitsTotal: 0,
     conflictTotal: 0,
-    conflictTotals: {},
-    stateChangeTotals: {},
     nodeRpcLatencyBuckets: {},
     validationLatencyBuckets: {},
     responseLatencyBuckets: {},

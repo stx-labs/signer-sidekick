@@ -3,6 +3,7 @@ import {
   type BrowserWalletIntentNetwork,
   browserWalletIntentActionSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { isStacksAddressForNetwork } from "../../shared/principal.js";
 import {
   type BrowserWalletAction,
   type BrowserWalletRecoveryScope,
@@ -55,8 +56,6 @@ export interface PendingBroadcastRecovery {
 const storagePrefix = "signer-sidekick:browser-wallet:pending:v3:";
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const txidPattern = /^0x[0-9a-f]{64}$/;
-const mainnetAddressPattern = /^S[PM][0-9A-Z]{20,50}$/;
-const testnetAddressPattern = /^S[TN][0-9A-Z]{20,50}$/;
 const contractNamePattern = /^[a-zA-Z][a-zA-Z0-9-_]{0,127}$/;
 const actionIds = new Set<BrowserWalletAction>(browserWalletIntentActionSchema.options);
 const recoveryInFlight = new Map<string, Promise<PendingBroadcastRecovery>>();
@@ -78,8 +77,9 @@ function normalizedManagerPrincipal(
   }
   const address = value.slice(0, separator).toUpperCase();
   const contractName = value.slice(separator + 1);
-  const addressPattern = network === "mainnet" ? mainnetAddressPattern : testnetAddressPattern;
-  if (!addressPattern.test(address) || !contractNamePattern.test(contractName)) return null;
+  if (!isStacksAddressForNetwork(address, network) || !contractNamePattern.test(contractName)) {
+    return null;
+  }
   return `${address}.${contractName}`;
 }
 
@@ -179,10 +179,9 @@ function parsePending(value: string | null): ScopedPendingBrowserWalletBroadcast
   const action = record.action as BrowserWalletAction;
   const managerPrincipal = normalizedManagerPrincipal(record.managerPrincipal, network);
   const sender = record.sender.toUpperCase();
-  const addressPattern = network === "mainnet" ? mainnetAddressPattern : testnetAddressPattern;
   if (
     !managerPrincipal ||
-    !addressPattern.test(sender) ||
+    !isStacksAddressForNetwork(sender, network) ||
     !isBrowserWalletProviderSupported(record.providerId, action, network)
   ) {
     return null;

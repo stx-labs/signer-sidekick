@@ -9,10 +9,10 @@ import type {
   StacksNodeClient,
   TransactionSummary,
 } from "./chain-clients.js";
-import { transactionOccurredAt } from "./chain-clients.js";
+import { buildChainEventInput } from "./chain-event-input.js";
 import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
 import type {
-  ChainCursor,
   ChainCursorInput,
   ChainEventInput,
   SidekickStore,
@@ -22,6 +22,7 @@ import type {
   IndexedTransactionObservation,
   LiveLookup,
 } from "./transaction-engine/live-transaction-reader.js";
+import { loadTransactionSummaries } from "./transaction-enrichment.js";
 
 export interface ManagerEventApi {
   getSmartContractLogs(
@@ -44,7 +45,7 @@ export type ManagerEventNodeBlocks = Pick<
 export type ChainEventEvidenceLevel = "node-index-verified" | "canonical-block-correlated";
 
 export interface ManagerEventStore {
-  getCursor(sourceId: string, stream: string): ChainCursor | null;
+  chainState: Pick<ChainStateRepository, "getCursor">;
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null;
   putChainEventPage(events: readonly ChainEventInput[], cursor: ChainCursorInput): void;
   markMissingCanonicalContractEvents(
@@ -100,30 +101,6 @@ function decodeEvent(hex: string): ManagerPrintEvent | null {
   } catch {
     return null;
   }
-}
-
-async function enrichTransactions(
-  api: ManagerEventApi,
-  page: SmartContractLogPage,
-  signal?: AbortSignal,
-): Promise<Map<string, TransactionSummary>> {
-  const transactionIds = [...new Set(page.results.map(({ tx_id }) => tx_id))];
-  const entries: Array<[string, TransactionSummary]> = [];
-  for (let index = 0; index < transactionIds.length; index += 8) {
-    signal?.throwIfAborted();
-    const batch = transactionIds.slice(index, index + 8);
-    const batchEntries = await Promise.all(
-      batch.map(
-        async (txId): Promise<[string, TransactionSummary]> => [
-          txId,
-          await api.getTransaction(txId),
-        ],
-      ),
-    );
-    signal?.throwIfAborted();
-    entries.push(...batchEntries);
-  }
-  return new Map(entries);
 }
 
 export async function verifyIndexedApiTransactionEvidenceWithNode(
@@ -197,7 +174,7 @@ export async function syncManagerEvents(
   // reviewed adapter (or removing one) forces a complete replay instead of reusing projections
   // produced under different semantic assumptions.
   const stream = managerEventStream(options.managerPrincipal, options.eventVocabulary);
-  const checkpoint = options.store.getCursor(options.sourceId, stream);
+  const checkpoint = options.store.chainState.getCursor(options.sourceId, stream);
   let cursor = checkpoint?.cursor ?? null;
   const resumed = cursor !== null;
   const incrementalScan = checkpoint !== null && cursor === null;
@@ -270,7 +247,11 @@ export async function syncManagerEvents(
       });
       break;
     }
-    const transactionById = await enrichTransactions(options.api, page, options.signal);
+    const transactionById = await loadTransactionSummaries(
+      options.api,
+      page.results.map(({ tx_id }) => tx_id),
+      options.signal,
+    );
     options.signal?.throwIfAborted();
     const transactionEvidence = options.nodeTransactions
       ? await verifyIndexedApiTransactionEvidenceWithNode(
@@ -294,17 +275,11 @@ export async function syncManagerEvents(
       } else {
         newEvents += 1;
       }
-      return {
+      return buildChainEventInput({
         chainId: options.chainId,
         txId: event.tx_id,
         eventIndex: event.event_index,
-        blockHeight: transaction.block.height,
-        blockHash: transaction.block.hash,
-        indexBlockHash: transaction.block.index_hash,
-        microblockHash: null,
-        microblockSequence: null,
-        canonical: true,
-        microblockCanonical: true,
+        transaction,
         contractId: event.contract_log.contract_id,
         topic: decoded?.topic ?? event.contract_log.topic,
         rawPayload: {
@@ -318,9 +293,8 @@ export async function syncManagerEvents(
         decodedPayload: decoded ? { transactionStatus: transaction.status, event: decoded } : null,
         evidenceLevel: transactionEvidence?.get(event.tx_id) ?? "indexer-reported",
         sourceId: options.sourceId,
-        occurredAt: transactionOccurredAt(transaction),
         observedAt: options.observedAt,
-      };
+      });
     });
     const firstTransaction = page.results[0]
       ? transactionById.get(page.results[0].tx_id)

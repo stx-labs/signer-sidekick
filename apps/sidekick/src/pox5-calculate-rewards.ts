@@ -319,12 +319,6 @@ export async function readPox5PoolSimulationSnapshot(input: {
   };
 }
 
-export async function readPox5CurrentPoolEstimate(
-  input: Parameters<typeof readPox5PoolSimulationSnapshot>[0],
-): Promise<Pox5CurrentPoolEstimate> {
-  return (await readPox5PoolSimulationSnapshot(input)).currentEstimate;
-}
-
 export function simulatePox5PoolEstimateAtGross(input: {
   snapshot: Pox5PoolSimulationSnapshot;
   grossAccruedRewardsSats: bigint;

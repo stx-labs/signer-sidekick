@@ -33,7 +33,11 @@ import {
 import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
-import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
+import {
+  indexedApiCompatible,
+  indexedWorkflowsReady,
+  type runOperatorPreflight,
+} from "./preflight.js";
 import { rewardRealizationStream, syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
@@ -47,6 +51,7 @@ import {
   SignerStakerAnchorError,
   syncSignerStakers,
 } from "./signer-staker-sync.js";
+import type { ManagerTrustTransition } from "./storage/manager-trust-repository.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -55,26 +60,6 @@ export interface OperatorAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
-  action?:
-    | { kind: "reconcile"; label: string }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "settings" | "pool" | "rewards" | "activity" | "health";
-        settingsSection?:
-          | "attachment"
-          | "sources"
-          | "capabilities"
-          | "observer"
-          | "auth"
-          | "support";
-      }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "settings";
-        managerAction: "register-self";
-      };
 }
 
 export interface OperatorServiceOptions {
@@ -290,8 +275,6 @@ function asSentence(value: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-type ManagerTrustTransition = NonNullable<ReturnType<SidekickStore["recordManagerTrustState"]>>;
-
 function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: string) {
   return store.listSignerStakers(managerPrincipal, true, sourceId).map((staker) => ({
     ...staker,
@@ -336,12 +319,6 @@ export function buildAlerts(snapshot: {
       severity: check.status === "fail" ? "critical" : "warning",
       title: check.status === "fail" ? "Connection Check Failed" : "Connection Needs Attention",
       detail: asSentence(check.message),
-      action: {
-        kind: "navigate",
-        label: "Review sources",
-        target: "settings",
-        settingsSection: "sources",
-      },
     });
   }
   if (!snapshot.manager.attachAllowed) {
@@ -353,12 +330,6 @@ export function buildAlerts(snapshot: {
       severity: "critical",
       title: "Manager Trait Check Failed",
       detail: asSentence(incompatibility),
-      action: {
-        kind: "navigate",
-        label: "Review attachment",
-        target: "settings",
-        settingsSection: "attachment",
-      },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
     alerts.push({
@@ -367,12 +338,6 @@ export function buildAlerts(snapshot: {
       title: "Custom Manager Attached",
       detail:
         "PoX-5 baseline state remains available. Each manager action is enabled only when its deployed byte-exact source matches a reviewed capability fingerprint.",
-      action: {
-        kind: "navigate",
-        label: "Review capabilities",
-        target: "settings",
-        settingsSection: "capabilities",
-      },
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
@@ -390,12 +355,6 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: "Installed Manager Profile Needs Attention",
       detail: `${profileIssueCount} manager profile${profileIssueCount === 1 ? "" : "s"} could not be loaded.`,
-      action: {
-        kind: "navigate",
-        label: "Review profile issues",
-        target: "settings",
-        settingsSection: "capabilities",
-      },
     });
   }
   if (snapshot.trustTransition) {
@@ -413,41 +372,16 @@ export function buildAlerts(snapshot: {
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
         : asSentence(snapshot.trustTransition.reason),
-      ...(gained
-        ? {}
-        : {
-            action: {
-              kind: "navigate" as const,
-              label: "Review manager profiles",
-              target: "settings" as const,
-              settingsSection: "capabilities" as const,
-            },
-          }),
     });
   }
   if (snapshot.readiness?.status === "blocked") {
     const failedCheck = snapshot.readiness.checks.find(({ status }) => status === "fail");
     const blockedReason = failedCheck?.message ?? "A required operator readiness check failed";
-    const signerRepair =
-      failedCheck !== undefined && ["signer-registration", "signer-grant"].includes(failedCheck.id);
     alerts.push({
       id: "readiness:blocked",
       severity: "critical",
       title: "Operator Readiness Is Blocked",
       detail: asSentence(blockedReason),
-      action: signerRepair
-        ? {
-            kind: "navigate",
-            label: "Repair signer authorization",
-            target: "settings",
-            managerAction: "register-self",
-          }
-        : {
-            kind: "navigate",
-            label: "Review attachment",
-            target: "settings",
-            settingsSection: "attachment",
-          },
     });
   }
   // A delegation only affects the next signer set while its enrollment window is open. Once the
@@ -484,7 +418,6 @@ export function buildAlerts(snapshot: {
       detail: belowThreshold
         ? `The pool is below the ${thresholdStx} signer-set threshold in ${belowThresholdCycles.length === 1 ? "reward cycle" : "reward cycles"} ${belowThreshold}.`
         : `Pool checks need attention for ${affectedCycles.length === 1 ? "reward cycle" : "reward cycles"} ${affected}.`,
-      action: { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }
   if (snapshot.rewards?.status === "attention") {
@@ -493,7 +426,6 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: "Reward Roster Is Incomplete",
       detail: "The individual staker roster has not been synced.",
-      action: { kind: "reconcile", label: "Sync now" },
     });
   }
   if (snapshot.activity.pendingWithdrawalTotal > 0) {
@@ -502,7 +434,6 @@ export function buildAlerts(snapshot: {
       severity: "info",
       title: "Bitcoin Withdrawals Await Resolution",
       detail: `${snapshot.activity.pendingWithdrawalTotal} Bitcoin withdrawal ${snapshot.activity.pendingWithdrawalTotal === 1 ? "request remains" : "requests remain"} pending.`,
-      action: { kind: "navigate", label: "Review Bitcoin withdrawals", target: "rewards" },
     });
   }
   return alerts;
@@ -1039,8 +970,7 @@ export class OperatorService {
       const trustTransition = this.recordManagerTrustState(manager, observedAt);
       if (trustTransition) this.pendingTrustTransition = trustTransition;
       if (
-        preflight.status === "fail" ||
-        !indexedApiCompatible(preflight) ||
+        !indexedWorkflowsReady(preflight) ||
         !preflight.pox.pox5ContractId ||
         !manager.attachAllowed
       ) {
@@ -1060,14 +990,14 @@ export class OperatorService {
         );
       }
       const indexedAnchor = await captureChainAnchor(node, api);
-      store.upsertChainSource({
+      store.chainState.upsertSource({
         sourceId,
         kind: "api",
         network: config.network,
         baseUrl: config.apiUrl,
         observedAt,
       });
-      store.upsertChainSource({
+      store.chainState.upsertSource({
         sourceId: nodeSourceId,
         kind: "node",
         network: config.network,
@@ -1221,7 +1151,7 @@ export class OperatorService {
     });
     const trustTransition = this.recordManagerTrustState(manager, observedAt);
     if (trustTransition) this.pendingTrustTransition = trustTransition;
-    if (preflight.status === "fail" || !indexedApiCompatible(preflight) || !manager.attachAllowed) {
+    if (!indexedWorkflowsReady(preflight) || !manager.attachAllowed) {
       throw new OperatorWorkflowError(
         422,
         "manager_activity_sources_incompatible",
@@ -1238,7 +1168,7 @@ export class OperatorService {
       );
     }
     const sourceId = createChainSourceId(config.network, config.apiUrl);
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: config.network,
@@ -1304,8 +1234,7 @@ export class OperatorService {
     const trustTransition = this.recordManagerTrustState(manager, observedAt);
     if (trustTransition) this.pendingTrustTransition = trustTransition;
     if (
-      preflight.status === "fail" ||
-      !indexedApiCompatible(preflight) ||
+      !indexedWorkflowsReady(preflight) ||
       !manager.attachAllowed ||
       !preflight.pox.pox5ContractId
     ) {
@@ -1325,7 +1254,7 @@ export class OperatorService {
       );
     }
     const sourceId = createChainSourceId(config.network, config.apiUrl);
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: config.network,
@@ -1364,9 +1293,9 @@ export class OperatorService {
       reportMissingManager: true,
     });
     const { chainAnchor, preflight, manager, registration, readiness } = operatorSnapshot;
-    const nodeAuthority = store.putLocalNodeAuthority(
+    const nodeAuthority = store.deploymentIdentity.putLocalNodeAuthority(
       managerPrincipal,
-      advanceLocalNodeAuthority(store.getLocalNodeAuthority(managerPrincipal), {
+      advanceLocalNodeAuthority(store.deploymentIdentity.getLocalNodeAuthority(managerPrincipal), {
         observedAt: generatedAt,
         stacksTipHeight: preflight.node.stacksTipHeight,
         isFullySynced: preflight.node.isFullySynced ?? null,
@@ -1375,7 +1304,7 @@ export class OperatorService {
     );
     const pox5ContractId = preflight.pox.pox5ContractId;
     const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
-    const trustAudit = store.listManagerTrustAudit(managerPrincipal);
+    const trustAudit = store.managerTrust.listAudit(managerPrincipal);
     const latestTrustTransition = trustAudit[0] ?? null;
     const pendingTrustTransition = this.pendingTrustTransition;
     this.pendingTrustTransition = null;
@@ -1463,12 +1392,12 @@ export class OperatorService {
       eventVocabulary: managerEventVocabularyFor(manager.capabilities),
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
-    const managerCursor = store.getCursor(
+    const managerCursor = store.chainState.getCursor(
       sourceId,
       managerEventStream(managerPrincipal, managerEventVocabularyFor(manager.capabilities)),
     );
     const rewardCursor = pox5ContractId
-      ? store.getCursor(sourceId, rewardRealizationStream(pox5ContractId))
+      ? store.chainState.getCursor(sourceId, rewardRealizationStream(pox5ContractId))
       : null;
     const completedRosterRun = store.getLatestCompletedSignerStakerRun(sourceId, managerPrincipal);
     const memberCoverage = pox5ContractId
@@ -1488,7 +1417,7 @@ export class OperatorService {
         : memberCoverage.pagesProcessed > 0 || memberCoverage.currentMembers > 0
           ? "reconstructing"
           : "not-started";
-    const monitoringStartedAt = store.getDeploymentIdentity()?.boundAt ?? null;
+    const monitoringStartedAt = store.deploymentIdentity.get()?.boundAt ?? null;
     const historyRecovery = {
       schemaVersion: 1 as const,
       monitoringStartedAt,
@@ -1569,7 +1498,7 @@ export class OperatorService {
     manager: Awaited<ReturnType<typeof inspectDeployedManager>>,
     observedAt: string,
   ): ManagerTrustTransition | null {
-    return this.options.store.recordManagerTrustState({
+    return this.options.store.managerTrust.record({
       managerPrincipal: this.options.managerPrincipal,
       recognitionTier: manager.source.tier,
       profileId: manager.source.profileId,

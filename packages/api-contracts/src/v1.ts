@@ -803,26 +803,6 @@ export interface DashboardAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
-  action?:
-    | { kind: "reconcile"; label: string }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "settings" | "pool" | "rewards" | "activity" | "health";
-        settingsSection?:
-          | "attachment"
-          | "sources"
-          | "capabilities"
-          | "observer"
-          | "auth"
-          | "support";
-      }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "settings";
-        managerAction: "register-self";
-      };
 }
 
 export interface ForecastCycle {

@@ -1,5 +1,5 @@
 import type { StacksNodeClient } from "./chain-clients.js";
-import type { ObserverInboxStatus } from "./storage/store.js";
+import type { ObserverInboxStatus } from "./storage/observer-inbox-repository.js";
 
 export const DEFAULT_OBSERVER_GAP_CHECK_INTERVAL_MS = 15_000;
 

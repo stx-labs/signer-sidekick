@@ -306,7 +306,7 @@ describe("Activity projection", () => {
 
   it("absorbs a verified chain transaction into its wallet operation and resolves the alias", async () => {
     const store = await memoryStore();
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: "mainnet",
@@ -352,7 +352,7 @@ describe("Activity projection", () => {
       sourceId,
       observedAt: "2026-08-14T10:06:00.000Z",
     });
-    store.putCursor({
+    store.chainState.putCursor({
       sourceId,
       stream: managerEventStream(managerPrincipal, "generic-v1"),
       cursor: null,
@@ -376,7 +376,7 @@ describe("Activity projection", () => {
     const listActiveWallets = vi.spyOn(store.walletIntents, "listActiveForActivity");
     const listEngineHistory = vi.spyOn(store.transactionEngine, "listLogicalJobs");
     const listChainHistory = vi.spyOn(store, "listManagerActivityChainEvents");
-    const listSettingsHistory = vi.spyOn(store, "listSettingsAudit");
+    const listSettingsHistory = vi.spyOn(store.runtimeSettings, "listAudit");
     const alias = `chain-tx:1:${txid}`;
     const detail = service.detail(alias);
     expect(detail).toMatchObject({
@@ -398,7 +398,7 @@ describe("Activity projection", () => {
 
   it("shows verified staker actions for this pool without indexing other managers", async () => {
     const store = await memoryStore();
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: "mainnet",
@@ -432,7 +432,7 @@ describe("Activity projection", () => {
       occurredAt: "2026-08-01T09:30:00.000Z",
       observedAt: "2026-08-14T10:06:00.000Z",
     });
-    store.putCursor({
+    store.chainState.putCursor({
       sourceId,
       stream: pox5PoolActivityStream(pox5ContractId, managerPrincipal),
       cursor: null,
@@ -593,9 +593,11 @@ describe("Activity projection", () => {
         listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
         listAttemptsForActivity: () => new Map(),
       },
+      runtimeSettings: {
+        listAudit: () => settingsAudit,
+      },
       listManagerActivityChainEvents: () => [],
-      listSettingsAudit: () => settingsAudit,
-      getCursor: () => null,
+      chainState: { getCursor: () => null },
     } as unknown as SidekickStore;
     const service = new ActivityProjectionService({
       store,

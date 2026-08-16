@@ -135,7 +135,6 @@ function signerMetricValues(samples: readonly PrometheusSample[]): SignerMetricV
     }
     return result;
   };
-  const conflictTotals = labeledTotals("stacks_signer_agreement_state_conflicts", "conflict");
   const validationResponseSamples = samplesNamed(
     samples,
     "stacks_signer_block_validation_responses",
@@ -165,8 +164,6 @@ function signerMetricValues(samples: readonly PrometheusSample[]): SignerMetricV
       conflictSamples.length > 0
         ? conflictSamples.reduce((sum, sample) => sum + sample.value, 0)
         : null,
-    conflictTotals,
-    stateChangeTotals: labeledTotals("stacks_signer_agreement_state_change_reasons", "reason"),
     nodeRpcLatencyBuckets: histogramBuckets(
       "stacks_signer_node_rpc_call_latencies_histogram_bucket",
     ),

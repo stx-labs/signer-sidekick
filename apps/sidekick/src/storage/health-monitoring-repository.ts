@@ -90,14 +90,13 @@ const signerMetricValuesSchema = z
     rejectedTotal: optionalCounterSchema,
     preCommitsTotal: optionalCounterSchema,
     conflictTotal: optionalCounterSchema,
-    conflictTotals: metricTotalsSchema,
-    stateChangeTotals: metricTotalsSchema,
     nodeRpcLatencyBuckets: metricTotalsSchema,
     validationLatencyBuckets: metricTotalsSchema,
     responseLatencyBuckets: metricTotalsSchema,
     capitulationLatencyBuckets: metricTotalsSchema,
   })
-  .strict();
+  // Strip retired metric vectors when reading rows written by older Sidekick builds.
+  .strip();
 
 const healthObservationSchema = z.looseObject({
   observedAt: z.iso.datetime(),

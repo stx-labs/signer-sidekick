@@ -14,7 +14,6 @@ import type { ChainAnchor } from "./chain-anchor.js";
 import {
   type Pox5CalculateRewardsError,
   readPox5CalculateRewardsObservation,
-  readPox5CurrentPoolEstimate,
   readPox5PoolSimulationSnapshot,
   simulatePox5PoolEstimateAtGross,
 } from "./pox5-calculate-rewards.js";
@@ -139,7 +138,7 @@ describe("PoX-5 calculate-rewards observation", () => {
   });
 
   it("reads every pool simulation input from one anchor and returns the contract-rounded current estimate", async () => {
-    const estimate = await readPox5CurrentPoolEstimate({
+    const { currentEstimate: estimate } = await readPox5PoolSimulationSnapshot({
       node: node(),
       pox5ContractId,
       managerPrincipal: sender,

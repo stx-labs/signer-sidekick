@@ -1175,7 +1175,7 @@ export class ActivityProjectionService {
     if (settingsMatch?.[1]) {
       const revision = Number(settingsMatch[1]);
       if (!Number.isSafeInteger(revision) || revision < 1) return null;
-      const audit = this.options.store.getSettingsAudit(revision);
+      const audit = this.options.store.runtimeSettings.getAudit(revision);
       return audit
         ? settingsRecord(audit, coverage("settings-audit", "current", audit.changedAt))
         : null;
@@ -1331,7 +1331,9 @@ export class ActivityProjectionService {
     );
     const chainHistoryTruncated = recentChainEvents.length > maximumAuthorityRecords;
     const chainEvents = recentChainEvents.slice(0, maximumAuthorityRecords);
-    const recentSettingsAudit = this.options.store.listSettingsAudit(maximumAuthorityRecords + 1);
+    const recentSettingsAudit = this.options.store.runtimeSettings.listAudit(
+      maximumAuthorityRecords + 1,
+    );
     const settingsHistoryTruncated = recentSettingsAudit.length > maximumAuthorityRecords;
     const settingsAudit = recentSettingsAudit.slice(0, maximumAuthorityRecords);
 
@@ -1491,11 +1493,11 @@ export class ActivityProjectionService {
     events: readonly StoredActivityChainEvent[],
     historyTruncated = false,
   ): ActivityCoverage {
-    const generic = this.options.store.getCursor(
+    const generic = this.options.store.chainState.getCursor(
       this.options.sourceId(),
       managerEventStream(this.options.managerPrincipal, "generic-v1"),
     );
-    const reference = this.options.store.getCursor(
+    const reference = this.options.store.chainState.getCursor(
       this.options.sourceId(),
       managerEventStream(this.options.managerPrincipal, "reference-manager-v1"),
     );
@@ -1548,7 +1550,7 @@ export class ActivityProjectionService {
         "PoX-5 pool activity is unavailable until the active contract is identified.",
       );
     }
-    const cursor = this.options.store.getCursor(
+    const cursor = this.options.store.chainState.getCursor(
       this.options.sourceId(),
       pox5PoolActivityStream(pox5ContractId, this.options.managerPrincipal),
     );

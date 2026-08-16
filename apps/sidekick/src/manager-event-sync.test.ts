@@ -24,7 +24,7 @@ const openStores: SidekickStore[] = [];
 async function store(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
   openStores.push(store);
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId,
     kind: "api",
     network: "mainnet",
@@ -196,7 +196,10 @@ describe("manager event synchronization", () => {
     ).rejects.toThrow("Local node and indexed API disagree");
     expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
     expect(
-      sidekickStore.getCursor(sourceId, `manager-logs:v3:reference-manager-v1:${manager}`),
+      sidekickStore.chainState.getCursor(
+        sourceId,
+        `manager-logs:v3:reference-manager-v1:${manager}`,
+      ),
     ).toBeNull();
   });
 
@@ -372,7 +375,7 @@ describe("manager event synchronization", () => {
     });
     expect(sidekickStore.listManagerClaims(1, manager).total).toBe(0);
     expect(
-      sidekickStore.getCursor(sourceId, `manager-logs:v3:generic-v1:${manager}`),
+      sidekickStore.chainState.getCursor(sourceId, `manager-logs:v3:generic-v1:${manager}`),
     ).toMatchObject({ cursor: null });
   });
 
@@ -535,7 +538,10 @@ describe("manager event synchronization", () => {
     await expect(synchronization).rejects.toThrow("shutdown requested");
     expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
     expect(
-      sidekickStore.getCursor(sourceId, `manager-logs:v3:reference-manager-v1:${manager}`),
+      sidekickStore.chainState.getCursor(
+        sourceId,
+        `manager-logs:v3:reference-manager-v1:${manager}`,
+      ),
     ).toBeNull();
   });
 });

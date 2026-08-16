@@ -1,5 +1,6 @@
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
 import type {
   ManagerActivityPage,
   StoredManagerAdminUpdate,
@@ -34,10 +35,7 @@ export interface ManagerActivityStore {
     chainId: number,
     contractId: string,
   ): { eventCount: number; latestBlockHeight: number | null };
-  getCursor?(
-    sourceId: string,
-    stream: string,
-  ): { cursor: string | null; updatedAt?: string } | null;
+  chainState?: Pick<ChainStateRepository, "getCursor">;
   listManagerAdminUpdates?(chainId: number, contractId: string): StoredManagerAdminUpdate[];
 }
 
@@ -133,18 +131,18 @@ export function readManagerActivity(
   const { address: deployingAdmin } = parseContractPrincipal(managerPrincipal);
   let eventVocabulary = options.eventVocabulary;
   let fullHistoryCursor: { cursor: string | null; updatedAt?: string } | null = null;
-  if (options.sourceId && store.getCursor) {
+  if (options.sourceId && store.chainState) {
     if (eventVocabulary) {
-      fullHistoryCursor = store.getCursor(
+      fullHistoryCursor = store.chainState.getCursor(
         options.sourceId,
         managerEventStream(managerPrincipal, eventVocabulary),
       );
     } else {
-      const generic = store.getCursor(
+      const generic = store.chainState.getCursor(
         options.sourceId,
         managerEventStream(managerPrincipal, "generic-v1"),
       );
-      const reference = store.getCursor(
+      const reference = store.chainState.getCursor(
         options.sourceId,
         managerEventStream(managerPrincipal, "reference-manager-v1"),
       );

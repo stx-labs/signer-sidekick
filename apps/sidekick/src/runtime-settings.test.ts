@@ -110,7 +110,7 @@ describe("runtime settings", () => {
   it("loads legacy settings after stripping removed fields and drops them on the next save", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-15T12:00:00.000Z");
     stores.push(store);
-    store.putRuntimeSettings({
+    store.runtimeSettings.put({
       settings: {
         schemaVersion: 1,
         pool: {
@@ -190,7 +190,7 @@ describe("runtime settings", () => {
       forecast: current.forecast,
       embed: current.embed,
     });
-    expect(JSON.stringify(store.getRuntimeSettings()?.settings)).not.toMatch(
+    expect(JSON.stringify(store.runtimeSettings.get()?.settings)).not.toMatch(
       /payoutPolicy|automation|alerts|timezone|timeFormat|numberFormat|"type"/,
     );
   });
@@ -271,7 +271,7 @@ describe("runtime settings", () => {
       pool: { displayName: current.pool.displayName },
       audit: [],
     });
-    expect(store.getRuntimeSettings()).toBeNull();
+    expect(store.runtimeSettings.get()).toBeNull();
   });
 
   it("rechecks cancellation after validation before committing settings", async () => {
@@ -323,7 +323,7 @@ describe("runtime settings", () => {
 
     await expect(update).rejects.toBeInstanceOf(InteractiveRequestCancelledError);
     expect(runtime.publicSettings()).toMatchObject({ revision: 0, audit: [] });
-    expect(store.getRuntimeSettings()).toBeNull();
+    expect(store.runtimeSettings.get()).toBeNull();
   });
 
   it("rejects non-HTTP pool links", async () => {

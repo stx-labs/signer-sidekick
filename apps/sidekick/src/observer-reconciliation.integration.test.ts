@@ -106,7 +106,7 @@ describe("observer reconciliation integration", () => {
   it("converges permanent manager activity after a callback-observed reorg", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
     openStores.push(store);
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: "mainnet",
@@ -203,7 +203,7 @@ describe("observer reconciliation integration", () => {
       getNakamotoBlockAtHeight: vi.fn(async () => canonicalIdentity.bytes),
     };
     const processor = new ObserverInboxProcessor({
-      store,
+      store: store.observerInbox,
       getNode: () => node,
       onProcessed: (delivery, outcome) => scheduler.notifyProcessed(delivery, outcome),
       retryIntervalMs: 60_000,
@@ -219,7 +219,7 @@ describe("observer reconciliation integration", () => {
     transactionId = txOne;
     transactionIndexHash = canonicalIdentity.indexBlockHash;
     const firstCallbackBody = callbackBody(canonicalIdentity, transactionId);
-    store.acceptObserverDelivery({
+    store.observerInbox.acceptDelivery({
       endpointKind: "new-block",
       contentSha256: "aa".repeat(32),
       rawPayloadJson: firstCallbackBody,
@@ -242,7 +242,7 @@ describe("observer reconciliation integration", () => {
     transactionId = txTwo;
     transactionIndexHash = canonicalIdentity.indexBlockHash;
     const reorgCallbackBody = callbackBody(canonicalIdentity, transactionId);
-    store.acceptObserverDelivery({
+    store.observerInbox.acceptDelivery({
       endpointKind: "new-block",
       contentSha256: "bb".repeat(32),
       rawPayloadJson: reorgCallbackBody,
