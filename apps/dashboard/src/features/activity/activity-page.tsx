@@ -1,4 +1,11 @@
-import { ArrowClockwise, ArrowLeft, MagnifyingGlass, WarningCircle } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  ArrowLeft,
+  CaretDown,
+  Check,
+  MagnifyingGlass,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import {
   type ActivityCoverage,
   type ActivityDetail,
@@ -46,6 +53,140 @@ import {
 
 const activityRefreshMs = 15_000;
 const activityPageSize = 50;
+
+interface ActivityFilterOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+function ActivityFilterMenu<T extends string>({
+  id,
+  label,
+  value,
+  options,
+  onSelect,
+}: {
+  id: string;
+  label: string;
+  value: T;
+  options: readonly ActivityFilterOption<T>[];
+  onSelect: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const selectedLabel = options[selectedIndex]?.label ?? value;
+
+  const focusOption = (index: number) => {
+    requestAnimationFrame(() => optionRefs.current[index]?.focus());
+  };
+
+  const openAt = (index: number) => {
+    setOpen(true);
+    focusOption(index);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromKeyboard);
+    };
+  }, [open]);
+
+  return (
+    <div className="activity-filter-menu" ref={rootRef}>
+      <span id={`${id}-label`}>{label}</span>
+      <button
+        aria-controls={`${id}-options`}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label={label}
+        className="activity-filter-trigger"
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          openAt(selectedIndex);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          openAt(event.key === "ArrowDown" ? selectedIndex : options.length - 1);
+        }}
+        ref={triggerRef}
+        type="button"
+      >
+        <span>{selectedLabel}</span>
+        <CaretDown aria-hidden="true" />
+      </button>
+      <div
+        aria-labelledby={`${id}-label`}
+        className="activity-filter-options"
+        hidden={!open}
+        id={`${id}-options`}
+        role="listbox"
+      >
+        {options.map((option, index) => (
+          <button
+            aria-selected={option.value === value}
+            className="activity-filter-option"
+            key={option.value}
+            onClick={() => {
+              onSelect(option.value);
+              setOpen(false);
+              triggerRef.current?.focus();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Tab") {
+                setOpen(false);
+                return;
+              }
+              const target =
+                event.key === "ArrowDown"
+                  ? (index + 1) % options.length
+                  : event.key === "ArrowUp"
+                    ? (index - 1 + options.length) % options.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? options.length - 1
+                        : null;
+              if (target === null) return;
+              event.preventDefault();
+              optionRefs.current[target]?.focus();
+            }}
+            ref={(element) => {
+              optionRefs.current[index] = element;
+            }}
+            role="option"
+            tabIndex={option.value === value ? 0 : -1}
+            type="button"
+          >
+            <span>{option.label}</span>
+            {option.value === value ? <Check aria-hidden="true" /> : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function activityRequestSearch(filters: ActivityFilters, cursor: string | null): string {
   const params = new URLSearchParams(activityFilterSearch(filters));
@@ -151,79 +292,53 @@ function ActivityFiltersForm({
         navigate({ ...filters, search: searchDraft });
       }}
     >
-      <label>
-        <span>Status</span>
-        <select
-          className="select"
-          value={filters.status}
-          onChange={(event) =>
-            navigate({
-              ...filters,
-              status: event.target.value as ActivityFilters["status"],
-            })
-          }
-        >
-          {activityStatusFilters.map((value) => (
-            <option key={value} value={value}>
-              {value === "all" ? "All" : value.replaceAll("-", " ")}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Type</span>
-        <select
-          className="select"
-          value={filters.type}
-          onChange={(event) =>
-            navigate({ ...filters, type: event.target.value as ActivityFilters["type"] })
-          }
-        >
-          {activityTypeFilters.map((value) => (
-            <option key={value} value={value}>
-              {value === "all" ? "All" : value.replaceAll("-", " ")}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Domain</span>
-        <select
-          className="select"
-          value={filters.domain}
-          onChange={(event) =>
-            navigate({ ...filters, domain: event.target.value as ActivityFilters["domain"] })
-          }
-        >
-          {activityDomainFilters.map((value) => (
-            <option key={value} value={value}>
-              {value === "all" ? "All" : activityDomainLabel(value)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Time</span>
-        <select
-          className="select"
-          value={filters.time}
-          onChange={(event) =>
-            navigate({ ...filters, time: event.target.value as ActivityFilters["time"] })
-          }
-        >
-          {activityTimeFilters.map((value) => (
-            <option key={value} value={value}>
-              {value === "24h"
-                ? "24 hours"
-                : value === "7d"
-                  ? "7 days"
-                  : value === "30d"
-                    ? "30 days"
-                    : "All"}
-            </option>
-          ))}
-        </select>
-      </label>
+      <ActivityFilterMenu
+        id="activity-status"
+        label="Status"
+        value={filters.status}
+        options={activityStatusFilters.map((value) => ({
+          value,
+          label: value === "all" ? "All" : value.replaceAll("-", " "),
+        }))}
+        onSelect={(status) => navigate({ ...filters, status })}
+      />
+      <ActivityFilterMenu
+        id="activity-type"
+        label="Type"
+        value={filters.type}
+        options={activityTypeFilters.map((value) => ({
+          value,
+          label: value === "all" ? "All" : value.replaceAll("-", " "),
+        }))}
+        onSelect={(type) => navigate({ ...filters, type })}
+      />
+      <ActivityFilterMenu
+        id="activity-domain"
+        label="Domain"
+        value={filters.domain}
+        options={activityDomainFilters.map((value) => ({
+          value,
+          label: value === "all" ? "All" : activityDomainLabel(value),
+        }))}
+        onSelect={(domain) => navigate({ ...filters, domain })}
+      />
+      <ActivityFilterMenu
+        id="activity-time"
+        label="Time"
+        value={filters.time}
+        options={activityTimeFilters.map((value) => ({
+          value,
+          label:
+            value === "24h"
+              ? "24 hours"
+              : value === "7d"
+                ? "7 days"
+                : value === "30d"
+                  ? "30 days"
+                  : "All",
+        }))}
+        onSelect={(time) => navigate({ ...filters, time })}
+      />
       <label className="activity-search">
         <span>Search IDs or principals</span>
         <span className="activity-search-control">

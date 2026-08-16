@@ -1384,14 +1384,33 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
   const buttonLink = page.locator("a.btn").first();
   await expect(buttonLink).toBeVisible();
   await expect(buttonLink).toHaveCSS("text-decoration-line", "none");
-  const activityStatus = page.getByLabel("Status");
-  const selectStyle = await activityStatus.evaluate((element) => {
-    const style = getComputedStyle(element);
-    return { appearance: style.appearance, backgroundImage: style.backgroundImage };
-  });
-  expect(selectStyle.appearance).toBe("none");
-  expect(selectStyle.backgroundImage).not.toBe("none");
+  const activityStatus = page.getByRole("button", { name: "Status" });
+  await expect(activityStatus).toHaveAttribute("aria-haspopup", "listbox");
   await expect(activityStatus).toHaveCSS("height", "36px");
+  await activityStatus.click();
+  const statusOptions = page.getByRole("listbox", { name: "Status" });
+  await expect(statusOptions).toBeVisible();
+  const statusMenuStyle = await statusOptions.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const selected = element.querySelector('[role="option"][aria-selected="true"]');
+    const bounds = element.getBoundingClientRect();
+    const triggerBounds = element.previousElementSibling?.getBoundingClientRect();
+    return {
+      backgroundColor: style.backgroundColor,
+      fontSize: selected ? getComputedStyle(selected).fontSize : null,
+      left: bounds.left,
+      right: bounds.right,
+      triggerWidth: triggerBounds?.width ?? 0,
+      width: bounds.width,
+    };
+  });
+  expect(statusMenuStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(statusMenuStyle.fontSize).toBe("13px");
+  expect(statusMenuStyle.width).toBeGreaterThanOrEqual(statusMenuStyle.triggerWidth - 0.5);
+  expect(statusMenuStyle.left).toBeGreaterThanOrEqual(0);
+  expect(statusMenuStyle.right).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+  await page.getByRole("option", { name: "action required" }).click();
+  await expect(activityStatus).toContainText("action required");
 
   const activityFilters = page.locator("form.activity-filters");
   const filterBarStyle = await activityFilters.evaluate((element) => {
