@@ -107,6 +107,53 @@ function observation(
 }
 
 describe("Signer Health v2 diagnosis", () => {
+  it("describes a healthy signer as operating as expected", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const healthyConfig: SidekickConfig = {
+      ...config,
+      apiUrl: config.hiroReferenceApiUrl ?? config.apiUrl,
+      nodeMetricsUrl: "http://127.0.0.1:9153/metrics",
+      signerMonitoringUrl: "http://127.0.0.1:30001",
+    };
+    const snapshot = buildHealthSnapshot({
+      observations: Array.from({ length: 3 }, (_, index) => {
+        const observedAt = new Date(startedAt + index * 5_000).toISOString();
+        const sample = observation(observedAt, {
+          height: 101 + index,
+          referenceHeight: 101 + index,
+          signerPublicKey: operator.signerKeyHex ?? undefined,
+          signer: signerMetrics({ nodeHeight: 101 + index }),
+        });
+        return {
+          ...sample,
+          nodeMetricsSource: {
+            reachable: true,
+            latencyMs: 2,
+            errorCode: null,
+            checkedAt: observedAt,
+          },
+          nodeMetrics: {
+            stacksTipHeight: 101 + index,
+            burnBlockHeight: 960_000,
+            inboundPeers: 8,
+            outboundPeers: 12,
+            warningTotal: 0,
+            errorTotal: 0,
+          },
+        };
+      }),
+      config: healthyConfig,
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.diagnosis).toMatchObject({
+      status: "healthy",
+      title: "Signer is operating as expected",
+      summary: "The signer and local node are connected and aligned.",
+    });
+  });
+
   it("requires two distinct comparison signals before suspecting a network-wide stall", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const samples = Array.from({ length: 41 }, (_, index) =>

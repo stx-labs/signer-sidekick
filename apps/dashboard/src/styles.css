@@ -2008,6 +2008,10 @@
   border-left-color: var(--status-error);
 }
 
+.health-diagnosis-healthy {
+  border-left-color: var(--status-success);
+}
+
 .health-diagnosis-collecting {
   border-left-color: var(--status-warning);
 }
@@ -2159,7 +2163,7 @@
 }
 
 .health-window-title {
-  margin-top: var(--space-5);
+  margin-top: 0;
 }
 
 .health-advanced summary {

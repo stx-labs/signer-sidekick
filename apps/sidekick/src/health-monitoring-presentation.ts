@@ -1163,9 +1163,8 @@ function diagnosis(
     status: "healthy",
     classification: "healthy",
     confidence: "high",
-    title: "No active signer-health issue",
-    summary:
-      "The configured local node and signer are reachable, aligned, and have no sustained actionable finding.",
+    title: "Signer is operating as expected",
+    summary: "The signer and local node are connected and aligned.",
     evidenceWindow: window,
     activeFindingIds: [],
   };

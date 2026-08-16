@@ -98,6 +98,42 @@ function displaySeconds(value: number | null): string {
   return value === null ? "—" : `${value.toFixed(1)}s`;
 }
 
+function pluralized(count: number, singular: string): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function healthyChainView(snapshot: HealthSnapshot): string {
+  const difference = snapshot.signer.nodeHeightDifference;
+  if (difference === null) return "Not reported";
+  if (difference === 0) return "Aligned";
+  return `${pluralized(Math.abs(difference), "block")} ${difference > 0 ? "ahead" : "behind"}`;
+}
+
+function healthyParticipation(snapshot: HealthSnapshot): string {
+  const recent = snapshot.signer.last15Minutes;
+  if (recent.collectingBaseline) return "Collecting baseline";
+  if (recent.proposals === null) return "Not reported";
+  if (recent.proposals === 0) return "No opportunities observed";
+  const proposals = pluralized(recent.proposals, "proposal");
+  if (recent.responseGap === 0) return `${proposals} · no response gaps`;
+  if (recent.responseGap === null) return `${proposals} observed`;
+  return `${proposals} · ${pluralized(recent.responseGap, "response gap")}`;
+}
+
+function healthySummary(snapshot: HealthSnapshot): string {
+  const recent = snapshot.signer.last15Minutes;
+  if (recent.collectingBaseline) {
+    return "The signer and local node are connected and aligned. Sidekick is collecting recent participation data.";
+  }
+  if (recent.proposals === 0) {
+    return "The signer and local node are connected and aligned. No signing opportunities were observed in the last 15 minutes.";
+  }
+  if (recent.proposals !== null && recent.responseGap === 0) {
+    return `The signer responded as expected to all ${pluralized(recent.proposals, "observed proposal")} in the last 15 minutes.`;
+  }
+  return "The signer and local node are connected and aligned. Recent signing activity remains within expected health bounds.";
+}
+
 function Metric({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="statline">
@@ -236,6 +272,7 @@ export function SignerHealthPage({
         : comparisonSources.some(({ status }) => status === "healthy")
           ? "partial"
           : "unavailable";
+  const healthyDiagnosis = snapshot.diagnosis.status === "healthy";
   return (
     <>
       <div className="page-head health-head">
@@ -275,25 +312,58 @@ export function SignerHealthPage({
       ) : null}
       <section
         className={`card health-diagnosis health-diagnosis-${snapshot.diagnosis.status}`}
-        aria-label="Current diagnosis"
+        aria-label={healthyDiagnosis ? "Signer operating status" : "Current diagnosis"}
       >
         <div className="health-diagnosis-copy">
           <div className="card-head">
-            <h2>Current diagnosis</h2>
+            <h2>{healthyDiagnosis ? "Signer is operating as expected" : "Current diagnosis"}</h2>
             <StateBadge state={snapshot.diagnosis.status} />
           </div>
-          <strong>{snapshot.diagnosis.title}</strong>
-          <p>{snapshot.diagnosis.summary}</p>
+          {healthyDiagnosis ? (
+            <p>{healthySummary(snapshot)}</p>
+          ) : (
+            <>
+              <strong>{snapshot.diagnosis.title}</strong>
+              <p>{snapshot.diagnosis.summary}</p>
+            </>
+          )}
         </div>
         <dl className="health-diagnosis-evidence">
-          <div>
-            <dt>Likely source</dt>
-            <dd>{classificationLabel(snapshot.diagnosis.classification)}</dd>
-          </div>
-          <div>
-            <dt>Confidence</dt>
-            <dd>{snapshot.diagnosis.confidence}</dd>
-          </div>
+          {healthyDiagnosis ? (
+            <>
+              <div>
+                <dt>Connection</dt>
+                <dd>Node and signer connected</dd>
+              </div>
+              <div>
+                <dt>Chain view</dt>
+                <dd>{healthyChainView(snapshot)}</dd>
+              </div>
+              <div>
+                <dt>Recent signing</dt>
+                <dd>{healthyParticipation(snapshot)}</dd>
+              </div>
+              <div>
+                <dt>Validation p95</dt>
+                <dd>
+                  {snapshot.signer.last15Minutes.validationP95Seconds === null
+                    ? "Not enough samples"
+                    : displaySeconds(snapshot.signer.last15Minutes.validationP95Seconds)}
+                </dd>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <dt>Likely source</dt>
+                <dd>{classificationLabel(snapshot.diagnosis.classification)}</dd>
+              </div>
+              <div>
+                <dt>Confidence</dt>
+                <dd>{snapshot.diagnosis.confidence}</dd>
+              </div>
+            </>
+          )}
           <div>
             <dt>Evidence window</dt>
             <dd>
@@ -307,13 +377,15 @@ export function SignerHealthPage({
                 : ""}
             </dd>
           </div>
-          <div>
-            <dt>Durable evidence</dt>
-            <dd>
-              {snapshot.history.observationCount.toLocaleString("en-US")} samples since{" "}
-              {displayTime(snapshot.history.observedSince)}
-            </dd>
-          </div>
+          {!healthyDiagnosis ? (
+            <div>
+              <dt>Durable evidence</dt>
+              <dd>
+                {snapshot.history.observationCount.toLocaleString("en-US")} samples since{" "}
+                {displayTime(snapshot.history.observedSince)}
+              </dd>
+            </div>
+          ) : null}
         </dl>
       </section>
       {!signerConfigured || !nodeMetricsConfigured ? (
@@ -467,7 +539,7 @@ export function SignerHealthPage({
           <StateBadge state={snapshot.signer.heartbeat.status} />
         </div>
         <div className="grid cols-2 health-detail-grid">
-          <div>
+          <div className="health-signer-details">
             <Metric label="Version">
               <span className="mono">{snapshot.signer.version ?? "—"}</span>
             </Metric>
@@ -513,8 +585,6 @@ export function SignerHealthPage({
               </span>
             </Metric>
             <Metric label="Signer STX balance">{displayStx(snapshot.signer.stxBalanceUstx)}</Metric>
-          </div>
-          <div>
             <Metric label="Manager registration">
               <span className={`badge b-${registered ? "success" : "caution"}`}>
                 {registered === null ? "Unavailable" : registered ? "Confirmed" : "Missing"}
@@ -535,6 +605,8 @@ export function SignerHealthPage({
             <Metric label="Next cycle">
               <ExpectedParticipation expected={nextParticipation} />
             </Metric>
+          </div>
+          <div className="health-signer-window">
             <div className="section-title health-window-title">Last 15 minutes</div>
             <Metric label="Stacks block proposals">
               {snapshot.signer.last15Minutes.collectingBaseline

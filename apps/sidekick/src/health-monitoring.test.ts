@@ -205,7 +205,7 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     const config: SidekickConfig = {
       network: "mainnet",
       nodeRpcUrl: baseUrl,
-      apiUrl: "https://api.mainnet.hiro.so",
+      apiUrl: baseUrl,
       apiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
       forecastHorizonCycles: 6,
@@ -224,6 +224,10 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
 
     const initial = await health.refresh();
     expect(initial.overallStatus).toBe("healthy");
+    expect(initial.diagnosis).toMatchObject({
+      status: "collecting",
+      title: "Collecting signer-health evidence",
+    });
     expect(initial.node).toMatchObject({
       inboundPeers: 8,
       outboundPeers: 12,

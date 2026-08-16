@@ -1176,6 +1176,70 @@ test("summarizes the operation clock and links exact health evidence", async ({ 
   await page.getByRole("link", { name: "Review signer evidence" }).click();
   await expect(page).toHaveURL(/#health\?section=signer$/);
   await expect(page.getByRole("heading", { name: "Signer Health", exact: true })).toBeVisible();
+  const operatingStatus = page.getByLabel("Signer operating status");
+  await expect(
+    operatingStatus.getByRole("heading", { name: "Signer is operating as expected" }),
+  ).toBeVisible();
+  await expect(operatingStatus).toContainText(
+    "The signer responded as expected to all 4 observed proposals in the last 15 minutes.",
+  );
+  await expect(operatingStatus).toContainText("Node and signer connected");
+  await expect(operatingStatus).toContainText("Aligned");
+  await expect(operatingStatus).toContainText("4 proposals · no response gaps");
+  await expect(operatingStatus).toContainText("0.5s");
+  await expect(operatingStatus).not.toContainText("Likely source");
+  await expect(operatingStatus).not.toContainText("Confidence");
+  await expect(operatingStatus).toHaveClass(/health-diagnosis-healthy/);
+  const signerDetails = page.locator(".health-signer-details");
+  const recentSignerTelemetry = page.locator(".health-signer-window");
+  await expect(signerDetails).toContainText("Manager registration");
+  await expect(signerDetails).toContainText("Signer-key grant");
+  await expect(signerDetails).toContainText("Current cycle");
+  await expect(signerDetails).toContainText("Next cycle");
+  await expect(recentSignerTelemetry).toContainText("Last 15 minutes");
+  await expect(recentSignerTelemetry).not.toContainText("Manager registration");
+  await expect(recentSignerTelemetry).not.toContainText("Signer-key grant");
+  await expect(recentSignerTelemetry).not.toContainText("Current cycle");
+  await expect(recentSignerTelemetry).not.toContainText("Next cycle");
+});
+
+test("does not claim signer responses during a healthy quiet window", async ({ page }) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body =
+      request.pathname === "/api/v1/health"
+        ? {
+            ...health,
+            signer: {
+              ...health.signer,
+              last15Minutes: {
+                ...health.signer.last15Minutes,
+                proposals: 0,
+                validationAccepted: 0,
+                accepted: 0,
+                preCommits: 0,
+                validationP95Seconds: null,
+              },
+            },
+          }
+        : responseFor(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "health", "Signer Health");
+  const operatingStatus = page.getByLabel("Signer operating status");
+  await expect(operatingStatus).toContainText(
+    "No signing opportunities were observed in the last 15 minutes.",
+  );
+  await expect(operatingStatus).toContainText("No opportunities observed");
+  await expect(operatingStatus).toContainText("Not enough samples");
+  await expect(operatingStatus).not.toContainText("responded as expected");
 });
 
 test("downloads the server-collected support bundle", async ({ page }) => {

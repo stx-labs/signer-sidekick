@@ -585,10 +585,10 @@ export const health = {
   coverage: { available: 22, total: 22 },
   diagnosis: {
     status: "healthy",
-    title: "Node and signer are operating normally",
+    title: "Signer is operating as expected",
     classification: "healthy",
     confidence: "high",
-    summary: "The configured local node and signer are reachable and aligned.",
+    summary: "The signer and local node are connected and aligned.",
     evidenceWindow: {
       startedAt: "2026-07-15T12:00:00.000Z",
       endedAt: "2026-07-15T12:10:00.000Z",
