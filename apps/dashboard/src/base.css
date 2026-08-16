@@ -691,6 +691,7 @@ a {
   font-family: var(--font-body);
   font-weight: 500;
   letter-spacing: 0.01em;
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1233,6 +1234,28 @@ td .avatar {
   color: var(--text-tertiary);
 }
 .input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+.select {
+  font-family: var(--font-body);
+  font-size: 14px;
+  height: 38px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background-color: var(--surface-fourth);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b8b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  color: var(--text-primary);
+  outline: none;
+  width: 100%;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-weak);
 }

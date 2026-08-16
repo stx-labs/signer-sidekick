@@ -56,9 +56,14 @@ const rewardTerms = {
 
 function RewardTerm({ label, help }: { label: string; help: string }) {
   return (
-    <span className="reward-term" title={help}>
+    <button
+      aria-label={`${label}: ${help}`}
+      className="tooltip-trigger reward-term"
+      data-tooltip={help}
+      type="button"
+    >
       {label}
-    </span>
+    </button>
   );
 }
 

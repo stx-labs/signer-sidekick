@@ -696,12 +696,14 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
 
   await login(page);
   await openSettingsSection(page, "capabilities", "Pool forecast");
-  const readinessCard = page.locator(".engine-readiness-card");
-  await readinessCard.getByRole("link", { name: "Review sources" }).click();
+  const readinessBlock = page.locator(".engine-block", {
+    has: page.getByRole("heading", { name: "Operation readiness" }),
+  });
+  await readinessBlock.getByRole("link", { name: "Review sources" }).click();
   await expect(page).toHaveURL(/#settings\?section=sources$/);
 
   await openSettingsSection(page, "capabilities", "Pool forecast");
-  await readinessCard.getByRole("link", { name: "Review attachment" }).click();
+  await readinessBlock.getByRole("link", { name: "Review attachment" }).click();
   await expect(page).toHaveURL(/#settings\?section=attachment$/);
 });
 
@@ -767,6 +769,7 @@ test("shows active work and durable Activity evidence without horizontal overflo
   page,
 }) => {
   const activityIntentId = "6ed58dac-c42c-4cb5-ad02-ed50671f3d27";
+  const historicalTxid = `0x${"ab".repeat(32)}`;
   let evidenceRefreshRequests = 0;
   await page.route(`**/api/v1/wallet-intents/${activityIntentId}`, async (route) => {
     await route.fulfill({
@@ -788,6 +791,14 @@ test("shows active work and durable Activity evidence without horizontal overflo
     });
   });
   await login(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-activity-id", value),
+      },
+    });
+  });
   await openPage(page, "activity", "Activity");
 
   await expect(page.getByText("Active work", { exact: false })).toBeVisible();
@@ -806,6 +817,18 @@ test("shows active work and durable Activity evidence without horizontal overflo
   await page.locator(".page-head").getByRole("button", { name: "Refresh verification" }).click();
   await expect.poll(() => evidenceRefreshRequests).toBe(1);
   await expect(page.getByText(/Verification checked\. Sidekick queried/)).toBeVisible();
+
+  await page.getByRole("link", { name: "Return to Activity" }).click();
+  await page.getByRole("link", { name: "Staker reward claimed", exact: true }).click();
+  const activityIdCopy = page.locator(`button[data-copy-value="${historicalTxid}"]`).first();
+  await expect(activityIdCopy).toHaveAttribute(
+    "aria-label",
+    `Copy transaction ID: ${historicalTxid}`,
+  );
+  await activityIdCopy.click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("copied-activity-id")))
+    .toBe(historicalTxid);
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
@@ -835,7 +858,7 @@ test("treats HTTP 501 engine and readiness endpoints as unavailable Settings cap
   const engine = page.locator("#transaction-capabilities");
   await expect(
     engine.getByText(
-      "The transaction engine is unavailable. Monitoring and wallet-signed operations remain separate from this policy surface.",
+      "The transaction engine is unavailable. Monitoring and wallet-signed operations are unaffected.",
     ),
   ).toBeVisible();
   consoleErrors.set(page, []);
@@ -866,11 +889,11 @@ test("summarizes empty transaction work in Settings and links to Activity", asyn
 
   await login(page);
   await openSettingsSection(page, "capabilities", "Pool forecast");
-  const counts = page.locator("#transaction-capabilities .engine-job-counts");
-  await expect(counts).toContainText("0active jobs");
-  await expect(counts).toContainText("0awaiting approval");
-  await expect(counts).toContainText("0ambiguous");
-  await expect(counts.getByRole("link", { name: "Review Activity" })).toHaveAttribute(
+  const counts = page.locator("#transaction-capabilities .engine-jobs");
+  await expect(counts).toContainText("0 active");
+  await expect(counts).toContainText("0 awaiting approval");
+  await expect(counts).toContainText("0 ambiguous");
+  await expect(page.getByRole("link", { name: "Review activity" })).toHaveAttribute(
     "href",
     "#activity?type=actions",
   );
@@ -994,7 +1017,7 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect(page.getByText("Forced Observe", { exact: true })).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Disable adapter" }).click();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
   await expect.poll(() => disableRequests).toBe(1);
   await expect(page.getByText("disabled", { exact: true })).toBeVisible();
 
@@ -1241,6 +1264,43 @@ test("explains manager attachment and trust evidence in Settings", async ({ page
   await expect(page.getByText("Installed profile store")).toBeVisible();
   await openSettingsSection(page, "sources", "Data sources");
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
+});
+
+test("uses the recovered operator-control styling and keyboard tooltips", async ({ page }) => {
+  await login(page);
+
+  await openPage(page, "rewards", "Rewards");
+  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards:/ }).first();
+  await rewardTerm.focus();
+  await expect
+    .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
+  if ((page.viewportSize()?.width ?? 0) <= 1080) {
+    await expect
+      .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").position))
+      .toBe("fixed");
+  }
+
+  await openPage(page, "activity", "Activity");
+  const buttonLink = page.locator("a.btn").first();
+  await expect(buttonLink).toBeVisible();
+  await expect(buttonLink).toHaveCSS("text-decoration-line", "none");
+  const activityStatus = page.getByLabel("Status");
+  const selectStyle = await activityStatus.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { appearance: style.appearance, backgroundImage: style.backgroundImage };
+  });
+  expect(selectStyle.appearance).toBe("none");
+  expect(selectStyle.backgroundImage).not.toBe("none");
+
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  const capability = page.getByRole("button", {
+    name: "register-self: Fixture capability is reviewed.",
+  });
+  await capability.focus();
+  await expect
+    .poll(() => capability.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
 });
 
 test("checks deployment requirements and shows exact operator-owned remediation", async ({

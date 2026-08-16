@@ -239,12 +239,22 @@ export function ManagerSettings({
             <div className="manager-capability-list">
               {data.manager.capabilities.actions.map((capability) => (
                 <div className="statline" key={capability.id}>
-                  <span className="k mono">{capability.id}</span>
+                  {capability.reason ? (
+                    <button
+                      aria-label={`${capability.id}: ${capability.reason}`}
+                      className="k mono tooltip-trigger capability-tip"
+                      data-tooltip={capability.reason}
+                      type="button"
+                    >
+                      {capability.id}
+                    </button>
+                  ) : (
+                    <span className="k mono">{capability.id}</span>
+                  )}
                   <span className="v">
                     <Badge state={capability.executionAvailable ? "success" : "neutral"}>
                       {capability.executionAvailable ? "Available" : "Observe only"}
-                    </Badge>{" "}
-                    <span className="muted">{capability.reason}</span>
+                    </Badge>
                   </span>
                 </div>
               ))}

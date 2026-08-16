@@ -533,6 +533,8 @@ function ActivityDetailPage({
   const activeOperation = ["action-required", "in-progress", "needs-attention"].includes(
     item.displayStatus,
   );
+  // A chain activity ID embeds its txid. Copy the txid itself so it can be pasted into an explorer.
+  const chainActivityTxid = /^chain-tx:\d+:(0x[0-9a-f]{64})$/i.exec(item.activityId)?.[1] ?? null;
   const refreshEvidence = async () => {
     setRefreshingEvidence(true);
     setEvidenceRefreshNotice(null);
@@ -614,9 +616,9 @@ function ActivityDetailPage({
           )}
           <StatLine label="Activity ID">
             <CopyableIdentifier
-              value={item.activityId}
+              value={chainActivityTxid ?? item.activityId}
               display={short(item.activityId, 18, 12)}
-              label="Activity ID"
+              label={chainActivityTxid ? "transaction ID" : "Activity ID"}
             />
           </StatLine>
           {item.actorPrincipal ? (
