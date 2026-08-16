@@ -16,7 +16,7 @@ const admin = "SP000000000000000000002Q6VF78";
 const managerPrincipal = `${admin}.signer-manager`;
 
 function renderPanel(
-  createRequest: { action: "deploy-manager" } | { action: "register-self"; actorPrincipal: string },
+  createRequest: { action: "register-self"; actorPrincipal: string },
   chainId = 1,
   network = "mainnet",
 ): string {
@@ -91,13 +91,10 @@ describe("BrowserWalletActionPanel recovery", () => {
   });
 
   it("derives concise signing guidance from the supported providers", () => {
-    const leatherOnly = renderPanel({ action: "deploy-manager" });
-    expect(leatherOnly).toContain("Supported wallet: Leather.");
-
     const multipleWallets = renderPanel({ action: "register-self", actorPrincipal: admin });
     expect(multipleWallets).toContain("Supported wallets: Leather or Xverse.");
 
-    for (const html of [leatherOnly, multipleWallets]) {
+    for (const html of [multipleWallets]) {
       expect(html).not.toContain("Clarity 6");
       expect(html).not.toContain("chain ID");
       expect(html).not.toContain("network key");
@@ -105,7 +102,7 @@ describe("BrowserWalletActionPanel recovery", () => {
   });
 
   it("renders an unsupported-network fallback once", () => {
-    const html = renderPanel({ action: "deploy-manager" }, 0x80000005);
+    const html = renderPanel({ action: "register-self", actorPrincipal: admin }, 0x80000005);
     expect(
       html.match(
         /Browser wallet signing is unavailable for this network\. Use another signing tool\./g,
@@ -129,7 +126,7 @@ describe("BrowserWalletActionPanel recovery", () => {
           network: "mainnet",
           chainId: 1,
           managerPrincipal,
-          action: "deploy-manager",
+          action: "register-self",
           intentId: firstIntentId,
         },
         pending: {
@@ -144,7 +141,7 @@ describe("BrowserWalletActionPanel recovery", () => {
           network: "mainnet",
           chainId: 1,
           managerPrincipal,
-          action: "deploy-manager",
+          action: "register-self",
           intentId: secondIntentId,
         },
         pending: {
@@ -163,7 +160,7 @@ describe("BrowserWalletActionPanel recovery", () => {
     const html = renderToStaticMarkup(
       <BrowserWalletActionPanel
         chainId={1}
-        createRequest={{ action: "deploy-manager" }}
+        createRequest={{ action: "register-self", actorPrincipal: admin }}
         managerPrincipal={managerPrincipal}
         network="mainnet"
         token="test-token"

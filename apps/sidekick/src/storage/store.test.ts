@@ -12,7 +12,6 @@ import {
   openSidekickStore,
   SidekickStore,
 } from "./store.js";
-import { canonicalJsonSha256 } from "./wallet-intent-repository.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const later = "2026-07-14T12:01:00.000Z";
@@ -152,7 +151,6 @@ describe("Sidekick SQLite store", () => {
       networkId: 1,
       parentNetworkId: 0,
       managerPrincipal: manager,
-      bindingSource: "new",
       verifiedAt: observedAt,
       stacksTipHeight: 8_600_000,
       burnBlockHeight: 960_240,
@@ -164,7 +162,6 @@ describe("Sidekick SQLite store", () => {
       networkId: 1,
       parentNetworkId: 0,
       managerPrincipal: manager,
-      bindingSource: "new",
       boundAt: observedAt,
       lastVerifiedAt: observedAt,
     });
@@ -204,35 +201,12 @@ describe("Sidekick SQLite store", () => {
         networkId: 1,
         parentNetworkId: 0,
         managerPrincipal: manager,
-        bindingSource: "new",
         verifiedAt: later,
         stacksTipHeight: 8_600_010,
         burnBlockHeight: 960_241,
         pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
       }),
     ).toThrow("already bound");
-  });
-
-  it("summarizes all legacy network and manager evidence before binding", async () => {
-    const store = await memoryStore();
-    registerSource(store);
-    store.managerTrust.record({
-      managerPrincipal: manager,
-      recognitionTier: "unrecognized",
-      profileId: null,
-      profileOrigin: null,
-      sourceSha256: null,
-      canonicalSourceSha256: null,
-      automationEligible: false,
-      eligibilityReason: "Observe only",
-      observedAt,
-    });
-
-    expect(store.deploymentIdentity.inspectLegacyEvidence()).toEqual({
-      networks: ["mainnet"],
-      networkIds: [],
-      managerPrincipals: [manager],
-    });
   });
 
   it("persists local-node authority independently for each manager", async () => {
@@ -1602,103 +1576,6 @@ describe("Sidekick SQLite store", () => {
       completed_at: null,
     });
     inspection.close();
-  });
-
-  it("preserves an active V1 wallet intent and observation from migration 16", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v16-wallet-upgrade-"));
-    temporaryDirectories.push(directory);
-    const path = join(directory, "sidekick.sqlite");
-    const version16 = createDatabaseThroughMigration(path, 16);
-    const intentId = "10000000-0000-4000-8000-000000000016";
-    const observationId = "20000000-0000-4000-8000-000000000016";
-    const factsSha256 = "44".repeat(32);
-    const manifest = {
-      schemaVersion: 1,
-      id: intentId,
-      action: "deploy-manager" as const,
-      network: "mainnet" as const,
-      chainId: 1,
-      requiredSender: stakerOne,
-      createdAt: observedAt,
-      expiresAt: "2026-07-14T13:00:00.000Z",
-      transaction: {
-        method: "stx_deployContract" as const,
-        params: {
-          name: "signer-manager",
-          clarityCode: "(define-public (ping) (ok true))",
-          clarityVersion: 6 as const,
-          network: "mainnet" as const,
-          address: stakerOne,
-          sponsored: false as const,
-          postConditionMode: "deny" as const,
-          postConditions: [] as [],
-        },
-      },
-      review: {
-        title: "Deploy signer manager",
-        summary: "Deploy the reviewed manager source.",
-        expectedPostState: "The exact manager source is canonical.",
-      },
-      seal: { factsSha256 },
-    };
-    const manifestSha256 = canonicalJsonSha256(manifest);
-    version16.walletIntents.create({
-      id: intentId,
-      action: "deploy-manager",
-      scope: manager,
-      factsSha256,
-      manifestSha256,
-      manifest,
-      requiredSender: stakerOne,
-      network: "mainnet",
-      chainId: 1,
-      createdAt: observedAt,
-      expiresAt: manifest.expiresAt,
-    });
-    version16.walletIntents.submit({ id: intentId, txid: txId, submittedAt: later });
-    const evidence = {
-      schemaVersion: 1,
-      verification: {
-        outcome: "submitted",
-        observedAt: later,
-        canonical: null,
-        blockHeight: null,
-        indexBlockHash: null,
-        detail: "Wallet transaction recorded",
-      },
-      decoded: null,
-    };
-    version16.walletIntents.appendObservation({
-      id: observationId,
-      intentId,
-      outcome: "submitted",
-      canonical: null,
-      blockHeight: null,
-      indexBlockHash: null,
-      evidence,
-      observedAt: later,
-    });
-    version16.close();
-
-    const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
-    openStores.push(upgraded.store);
-    expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(33);
-    expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
-      id: intentId,
-      state: "submitted",
-      txid: txId,
-      manifestSha256,
-      manifest,
-    });
-    expect(upgraded.store.walletIntents.listObservations(intentId)).toEqual([
-      expect.objectContaining({ id: observationId, outcome: "submitted", evidence }),
-    ]);
-    expect(upgraded.store.deploymentIdentity.inspectLegacyEvidence()).toMatchObject({
-      networks: ["mainnet"],
-      networkIds: [1],
-      managerPrincipals: [manager],
-    });
   });
 
   it("upgrades migration 14 nonce history without losing attempts or foreign keys", async () => {

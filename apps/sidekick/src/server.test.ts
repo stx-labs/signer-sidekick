@@ -976,7 +976,7 @@ describe("local API", () => {
           method: "POST",
           url: "/api/v1/wallet-intents",
           headers,
-          payload: { action: "deploy-manager", transaction: "arbitrary" },
+          payload: { action: "unknown-operation", transaction: "arbitrary" },
         })
       ).statusCode,
     ).toBe(400);

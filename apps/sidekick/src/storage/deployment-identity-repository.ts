@@ -17,7 +17,6 @@ export interface StoredDeploymentIdentity {
   networkId: number;
   parentNetworkId: number | null;
   managerPrincipal: string;
-  bindingSource: "new" | "legacy-evidence";
   boundAt: string;
   lastVerifiedAt: string;
   lastStacksTipHeight: number;
@@ -25,25 +24,18 @@ export interface StoredDeploymentIdentity {
   lastPox5ContractId: string;
 }
 
-export interface LegacyDeploymentEvidence {
-  networks: SidekickNetwork[];
-  networkIds: number[];
-  managerPrincipals: string[];
-}
-
 export interface DeploymentIdentityBinding {
   network: SidekickNetwork;
   networkId: number;
   parentNetworkId: number | null;
   managerPrincipal: string;
-  bindingSource: "new" | "legacy-evidence";
   verifiedAt: string;
   stacksTipHeight: number;
   burnBlockHeight: number;
   pox5ContractId: string;
 }
 
-export type DeploymentIdentityVerification = Omit<DeploymentIdentityBinding, "bindingSource">;
+export type DeploymentIdentityVerification = DeploymentIdentityBinding;
 
 export class DeploymentIdentityRepository {
   constructor(private readonly db: DatabaseSync) {}
@@ -52,7 +44,7 @@ export class DeploymentIdentityRepository {
     const row = this.db
       .prepare(
         `SELECT schema_version, network, network_id, parent_network_id, manager_principal,
-          binding_source, bound_at, last_verified_at, last_stacks_tip_height,
+          bound_at, last_verified_at, last_stacks_tip_height,
           last_burn_block_height, last_pox5_contract_id
          FROM deployment_identity WHERE singleton_id = 1`,
       )
@@ -63,7 +55,6 @@ export class DeploymentIdentityRepository {
           network_id: number;
           parent_network_id: number | null;
           manager_principal: string;
-          binding_source: string;
           bound_at: string;
           last_verified_at: string;
           last_stacks_tip_height: number;
@@ -78,7 +69,6 @@ export class DeploymentIdentityRepository {
       networkId: networkIdSchema.parse(row.network_id),
       parentNetworkId: networkIdSchema.nullable().parse(row.parent_network_id),
       managerPrincipal: principalSchema.parse(row.manager_principal),
-      bindingSource: z.enum(["new", "legacy-evidence"]).parse(row.binding_source),
       boundAt: z.iso.datetime().parse(row.bound_at),
       lastVerifiedAt: z.iso.datetime().parse(row.last_verified_at),
       lastStacksTipHeight: z.number().int().nonnegative().parse(row.last_stacks_tip_height),
@@ -155,74 +145,12 @@ export class DeploymentIdentityRepository {
     return stored;
   }
 
-  inspectLegacyEvidence(): LegacyDeploymentEvidence {
-    const networks = this.db
-      .prepare(
-        `SELECT network FROM chain_sources
-         UNION SELECT network FROM browser_wallet_intents
-         ORDER BY network`,
-      )
-      .all()
-      .map((row) => networkSchema.parse((row as { network: unknown }).network));
-    const networkIds = this.db
-      .prepare(
-        `SELECT chain_id AS network_id FROM chain_events
-         UNION SELECT chain_id AS network_id FROM manager_activity_events
-         UNION SELECT chain_id AS network_id FROM browser_wallet_intents
-         ORDER BY network_id`,
-      )
-      .all()
-      .map((row) => networkIdSchema.parse((row as { network_id: unknown }).network_id));
-    const managerPrincipals = this.db
-      .prepare(
-        `SELECT manager_principal FROM ingestion_runs
-         UNION SELECT manager_principal FROM stakers
-         UNION SELECT manager_principal FROM stake_positions
-         UNION SELECT manager_principal FROM cycle_memberships
-         UNION SELECT manager_principal FROM staker_position_observations
-         UNION SELECT manager_principal FROM pool_cycle_snapshots
-         UNION SELECT manager_principal FROM reward_cycle_snapshots
-         UNION SELECT manager_principal FROM staker_reward_cycle_snapshots
-         UNION SELECT manager_principal FROM manager_activity_events
-         UNION SELECT manager_principal FROM manager_trust_state
-         UNION SELECT manager_principal FROM manager_trust_audit
-         UNION SELECT manager_principal FROM transaction_jobs
-         UNION SELECT json_extract(state_json, '$.managerPrincipal') AS manager_principal
-           FROM onboarding_state
-           WHERE json_type(state_json, '$.managerPrincipal') = 'text'
-         ORDER BY manager_principal`,
-      )
-      .all()
-      .map((row) =>
-        z
-          .string()
-          .min(1)
-          .parse((row as { manager_principal: unknown }).manager_principal),
-      );
-    const walletIntentManagers = this.db
-      .prepare("SELECT DISTINCT scope FROM browser_wallet_intents ORDER BY scope")
-      .all()
-      .map((row) =>
-        z
-          .string()
-          .min(1)
-          .parse((row as { scope: unknown }).scope),
-      )
-      .filter((scope) => scope.includes(".") && validatePrincipal(scope));
-    return {
-      networks,
-      networkIds,
-      managerPrincipals: [...new Set([...managerPrincipals, ...walletIntentManagers])].sort(),
-    };
-  }
-
   bind(input: DeploymentIdentityBinding): StoredDeploymentIdentity {
     if (this.get()) throw new Error("Deployment identity is already bound");
     const network = networkSchema.parse(input.network);
     const networkId = networkIdSchema.parse(input.networkId);
     const parentNetworkId = networkIdSchema.nullable().parse(input.parentNetworkId);
     const managerPrincipal = principalSchema.parse(input.managerPrincipal);
-    const bindingSource = z.enum(["new", "legacy-evidence"]).parse(input.bindingSource);
     const verifiedAt = z.iso.datetime().parse(input.verifiedAt);
     const stacksTipHeight = z.number().int().nonnegative().parse(input.stacksTipHeight);
     const burnBlockHeight = z.number().int().nonnegative().parse(input.burnBlockHeight);
@@ -240,7 +168,7 @@ export class DeploymentIdentityRepository {
         networkId,
         parentNetworkId,
         managerPrincipal,
-        bindingSource,
+        "new",
         verifiedAt,
         verifiedAt,
         stacksTipHeight,

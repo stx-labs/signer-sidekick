@@ -16,10 +16,7 @@ import {
   InteractiveRequestDeadlineError,
   withInteractiveRequestDeadline,
 } from "./request-context.js";
-import type {
-  LegacyDeploymentEvidence,
-  StoredDeploymentIdentity,
-} from "./storage/deployment-identity-repository.js";
+import type { StoredDeploymentIdentity } from "./storage/deployment-identity-repository.js";
 import type { SidekickStore } from "./storage/store.js";
 
 type ConnectionCheck = ConnectionAssessment["checks"][number];
@@ -53,34 +50,6 @@ function setCheck(
 ): void {
   const index = checks.findIndex((check) => check.id === id);
   checks[index] = { id, status, message };
-}
-
-function hasLegacyEvidence(evidence: LegacyDeploymentEvidence): boolean {
-  return (
-    evidence.networks.length > 0 ||
-    evidence.networkIds.length > 0 ||
-    evidence.managerPrincipals.length > 0
-  );
-}
-
-function legacyEvidenceMismatch(
-  evidence: LegacyDeploymentEvidence,
-  configured: { network: SidekickConfig["network"]; networkId: number; managerPrincipal: string },
-): string | null {
-  const networksMatch = evidence.networks.every((network) => network === configured.network);
-  const networkIdsMatch = evidence.networkIds.every(
-    (networkId) => networkId === configured.networkId,
-  );
-  const managersMatch = evidence.managerPrincipals.every(
-    (managerPrincipal) => managerPrincipal === configured.managerPrincipal,
-  );
-  if (networksMatch && networkIdsMatch && managersMatch) return null;
-  return [
-    "Legacy database evidence does not unambiguously match the configured deployment.",
-    `Stored networks: ${evidence.networks.join(", ") || "none"}.`,
-    `Stored network IDs: ${evidence.networkIds.join(", ") || "none"}.`,
-    `Stored managers: ${evidence.managerPrincipals.join(", ") || "none"}.`,
-  ].join(" ");
 }
 
 function boundIdentityMismatch(
@@ -266,15 +235,7 @@ export class ConnectionAssessmentService {
     const checkedAt = this.options.now?.() ?? new Date().toISOString();
     const checks = emptyChecks();
     let identity = this.options.store.deploymentIdentity.get();
-    const legacyEvidence = identity
-      ? null
-      : this.options.store.deploymentIdentity.inspectLegacyEvidence();
-    const identityMismatch = identity
-      ? boundIdentityMismatch(identity, configured)
-      : legacyEvidenceMismatch(
-          legacyEvidence ?? { networks: [], networkIds: [], managerPrincipals: [] },
-          configured,
-        );
+    const identityMismatch = identity ? boundIdentityMismatch(identity, configured) : null;
     if (identityMismatch) {
       setCheck(checks, "deployment-identity", "fail", identityMismatch);
       return assessment({
@@ -296,11 +257,7 @@ export class ConnectionAssessmentService {
       "pass",
       identity
         ? "Database deployment identity matches the configured network and manager."
-        : hasLegacyEvidence(
-              legacyEvidence ?? { networks: [], networkIds: [], managerPrincipals: [] },
-            )
-          ? "Legacy database evidence agrees with the configured deployment and may be bound after the public connection proves it."
-          : "Database is unbound and may be bound after the first successful connection.",
+        : "Database is unbound and may be bound after the first successful connection.",
     );
 
     let nodeInfo: Awaited<ReturnType<StacksNodeClient["getInfo"]>>;
@@ -538,11 +495,6 @@ export class ConnectionAssessmentService {
           networkId: nodeInfo.network_id,
           parentNetworkId: nodeInfo.parent_network_id ?? null,
           managerPrincipal: this.options.managerPrincipal,
-          bindingSource: hasLegacyEvidence(
-            legacyEvidence ?? { networks: [], networkIds: [], managerPrincipals: [] },
-          )
-            ? "legacy-evidence"
-            : "new",
           verifiedAt: checkedAt,
           stacksTipHeight: nodeInfo.stacks_tip_height,
           burnBlockHeight: nodeInfo.burn_block_height,

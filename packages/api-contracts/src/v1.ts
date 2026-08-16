@@ -23,7 +23,6 @@ export const deploymentIdentityBindingSchema = z
     networkId: networkIdSchema,
     parentNetworkId: networkIdSchema.nullable(),
     managerPrincipal: connectionPrincipalSchema,
-    bindingSource: z.enum(["new", "legacy-evidence"]),
     boundAt: z.iso.datetime(),
     lastVerifiedAt: z.iso.datetime(),
     lastStacksTipHeight: z.number().int().nonnegative(),
@@ -237,39 +236,47 @@ export const historyRecoveryCoverageSchema = z
   .strict();
 export type HistoryRecoveryCoverage = z.infer<typeof historyRecoveryCoverageSchema>;
 
-const runtimeSettingsShape = z.object({
-  schemaVersion: z.literal(1),
-  revision: z.number().int().nonnegative(),
-  updatedAt: z.string().nullable(),
-  pool: z.looseObject({
-    displayName: z.string(),
-    websiteUrl: z.string(),
-    supportContact: z.string(),
-    leatherUrl: z.string(),
-  }),
-  display: z.object({
-    defaultTheme: z.enum(["light", "dark", "system"]),
-  }),
-  dataSources: z.looseObject({
-    nodeRpcUrl: z.string(),
-    apiUrl: z.string(),
-    apiKeyHeader: z.string(),
-    apiKeyConfigured: z.boolean(),
-    apiKeySource: z.enum(["environment", "database", "none"]),
-    nodeMetricsUrl: z.string(),
-    signerMonitoringUrl: z.string(),
-    hiroReferenceApiUrl: z.string(),
-  }),
-  forecast: z.looseObject({ horizonCycles: z.number().int().nonnegative() }),
-  embed: z.object({ publicApiUrl: z.string() }),
-  audit: z.array(
-    z.looseObject({
-      revision: z.number().int().nonnegative(),
-      changedFields: z.array(z.string()),
-      changedAt: z.string(),
+const runtimeSettingsShape = z
+  .object({
+    schemaVersion: z.literal(1),
+    revision: z.number().int().nonnegative(),
+    updatedAt: z.string().nullable(),
+    pool: z
+      .object({
+        displayName: z.string(),
+        websiteUrl: z.string(),
+        supportContact: z.string(),
+        leatherUrl: z.string(),
+      })
+      .strict(),
+    display: z.object({
+      defaultTheme: z.enum(["light", "dark", "system"]),
     }),
-  ),
-});
+    dataSources: z
+      .object({
+        nodeRpcUrl: z.string(),
+        apiUrl: z.string(),
+        apiKeyHeader: z.string(),
+        apiKeyConfigured: z.boolean(),
+        apiKeySource: z.enum(["environment", "database", "none"]),
+        nodeMetricsUrl: z.string(),
+        signerMonitoringUrl: z.string(),
+        hiroReferenceApiUrl: z.string(),
+      })
+      .strict(),
+    forecast: z.object({ horizonCycles: z.number().int().nonnegative() }).strict(),
+    embed: z.object({ publicApiUrl: z.string() }),
+    audit: z.array(
+      z
+        .object({
+          revision: z.number().int().nonnegative(),
+          changedFields: z.array(z.string()),
+          changedAt: z.string(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 export const runtimeSettingsSchema = runtimeSettingsShape;
 export type RuntimeSettings = z.infer<typeof runtimeSettingsSchema>;
@@ -363,7 +370,7 @@ export const healthRollupSchema = z
     rejected: z.number().int().nonnegative().nullable(),
     disagreements: z.number().int().nonnegative().nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
-    validationP95Seconds: z.number().nonnegative().nullable().default(null),
+    validationP95Seconds: z.number().nonnegative().nullable(),
   })
   .strict();
 
@@ -494,9 +501,7 @@ export const healthSnapshotSchema = z.looseObject({
       rejected: z.number().nullable(),
       rejectionPercent: z.number().nullable(),
       responseP95Seconds: z.number().nullable(),
-      // Retained health snapshots from before validation latency was exposed
-      // should remain readable after an upgrade.
-      validationP95Seconds: z.number().nullable().default(null),
+      validationP95Seconds: z.number().nullable(),
       disagreements: z.number().nullable(),
       collectingBaseline: z.boolean(),
     }),
@@ -505,7 +510,6 @@ export const healthSnapshotSchema = z.looseObject({
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 
 export type BrowserWalletIntentAction =
-  | "deploy-manager"
   | "register-self"
   | "add-admin"
   | "remove-admin"
@@ -515,14 +519,9 @@ export type BrowserWalletIntentAction =
   | "claim-rewards"
   | "claim-staker-rewards"
   | "calculate-rewards";
-export type RecurringWalletIntentAction = Exclude<BrowserWalletIntentAction, "deploy-manager">;
 export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
-export type OnboardingBrowserWalletIntentCreateRequest =
-  | { action: "deploy-manager" }
-  | { action: "register-self" };
 export type BrowserWalletIntentCreateRequest =
-  | { action: "deploy-manager" }
   | { action: "register-self"; actorPrincipal: string }
   | { action: "add-admin" | "remove-admin"; actorPrincipal: string; adminPrincipal: string }
   | { action: "update-fees"; actorPrincipal: string; feeBips: string }
@@ -542,13 +541,7 @@ export type BrowserWalletIntentCreateRequest =
       rewardCycle: string;
       bondIndex: string | null;
     };
-export type BrowserWalletIntentRequest =
-  | OnboardingBrowserWalletIntentCreateRequest
-  | BrowserWalletIntentCreateRequest;
-export type RecurringBrowserWalletIntentCreateRequest = Exclude<
-  BrowserWalletIntentCreateRequest,
-  { action: "deploy-manager" }
->;
+export type BrowserWalletIntentRequest = BrowserWalletIntentCreateRequest;
 
 export interface SignerGrantSession {
   preparation: null | {
@@ -586,44 +579,30 @@ export type BrowserWalletIntentStatus =
   | "failed"
   | "reobserve";
 
-export type BrowserWalletTransaction =
-  | {
-      method: "stx_deployContract";
-      params: {
-        name: string;
-        clarityCode: string;
-        clarityVersion: 6;
-        network: BrowserWalletConnectNetwork;
-        address: string;
-        sponsored: false;
-        postConditionMode: "deny";
-        postConditions: [];
-      };
-    }
-  | {
-      method: "stx_callContract";
-      params: {
-        contract: string;
-        functionName:
-          | "register-self"
-          | "update-admin"
-          | "update-fees"
-          | "withdraw-fees"
-          | "sweep-fee-refunds"
-          | "claim-rewards"
-          | "claim-staker-rewards"
-          | "calculate-rewards";
-        functionArgs: string[];
-        network: BrowserWalletConnectNetwork;
-        address: string;
-        sponsored: false;
-        postConditionMode: "deny";
-        postConditions: string[];
-      };
-    };
+export type BrowserWalletTransaction = {
+  method: "stx_callContract";
+  params: {
+    contract: string;
+    functionName:
+      | "register-self"
+      | "update-admin"
+      | "update-fees"
+      | "withdraw-fees"
+      | "sweep-fee-refunds"
+      | "claim-rewards"
+      | "claim-staker-rewards"
+      | "calculate-rewards";
+    functionArgs: string[];
+    network: BrowserWalletConnectNetwork;
+    address: string;
+    sponsored: false;
+    postConditionMode: "deny";
+    postConditions: string[];
+  };
+};
 
 export interface BrowserWalletIntent {
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   id: string;
   action: BrowserWalletIntentAction;
   network: BrowserWalletIntentNetwork;
@@ -632,7 +611,7 @@ export interface BrowserWalletIntent {
   createdAt: string;
   expiresAt: string;
   transaction: BrowserWalletTransaction;
-  request?: BrowserWalletIntentRequest | undefined;
+  request: BrowserWalletIntentRequest;
   /** Immutable operation-specific completion binding. */
   binding?:
     | {
@@ -1654,7 +1633,6 @@ export const signerGrantSessionResponseSchema = z
 export type SignerGrantSessionResponse = z.infer<typeof signerGrantSessionResponseSchema>;
 
 export const browserWalletIntentActionSchema = z.enum([
-  "deploy-manager",
   "register-self",
   "add-admin",
   "remove-admin",
@@ -1665,18 +1643,7 @@ export const browserWalletIntentActionSchema = z.enum([
   "claim-staker-rewards",
   "calculate-rewards",
 ]);
-export const recurringWalletIntentActionSchema = z.enum([
-  "register-self",
-  "add-admin",
-  "remove-admin",
-  "update-fees",
-  "withdraw-fees",
-  "sweep-fee-refunds",
-  "claim-rewards",
-  "claim-staker-rewards",
-  "calculate-rewards",
-]);
-export const operatorOperationCodeSchema = recurringWalletIntentActionSchema;
+export const operatorOperationCodeSchema = browserWalletIntentActionSchema;
 export type OperatorOperationCode = z.infer<typeof operatorOperationCodeSchema>;
 
 const contextualActionLabelSchema = z.string().min(1).max(120);
@@ -2184,8 +2151,7 @@ export const overviewSignerHealthSummarySchema = z
     acceptedLastHour: z.number().int().nonnegative().nullable(),
     rejectedLastHour: z.number().int().nonnegative().nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
-    // Overview payloads retained across a Sidekick upgrade predate this field.
-    validationP95Seconds: z.number().nonnegative().nullable().default(null),
+    validationP95Seconds: z.number().nonnegative().nullable(),
     detail: z.string().min(1).max(1_000),
     evidence: z.array(overviewEvidenceSchema).min(1),
     detailsAction: signerHealthDetailsActionSchema,
@@ -2459,12 +2425,7 @@ const walletActorPrincipalInputSchema = z
   .max(64)
   .refine((value) => !value.includes("."), "Expected a standard principal");
 
-export const onboardingBrowserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("deploy-manager") }).strict(),
-  z.object({ action: z.literal("register-self") }).strict(),
-]);
 export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("deploy-manager") }).strict(),
   z
     .object({
       action: z.literal("register-self"),
@@ -2536,14 +2497,6 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     })
     .strict(),
 ]);
-export const recurringBrowserWalletIntentCreateRequestSchema =
-  browserWalletIntentCreateRequestSchema
-    .refine(
-      (value): value is RecurringBrowserWalletIntentCreateRequest =>
-        value.action !== "deploy-manager",
-      "Manager deployment is not a recurring Sidekick operation",
-    )
-    .transform((value) => value as RecurringBrowserWalletIntentCreateRequest);
 
 /**
  * What settling a cycle costs, shown before the operator signs anything. The outstanding claim
@@ -2636,18 +2589,6 @@ const browserWalletAssetPostConditionParamsSchema = browserWalletCommonParamsSch
 });
 
 export const browserWalletTransactionSchema = z.union([
-  z
-    .object({
-      method: z.literal("stx_deployContract"),
-      params: browserWalletNoPostConditionsParamsSchema
-        .extend({
-          name: z.string().min(1),
-          clarityCode: z.string().min(1),
-          clarityVersion: z.literal(6),
-        })
-        .strict(),
-    })
-    .strict(),
   z
     .object({
       method: z.literal("stx_callContract"),
@@ -2749,7 +2690,7 @@ export const browserWalletTransactionSchema = z.union([
 
 export const browserWalletIntentSchema = z
   .object({
-    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    schemaVersion: z.literal(2),
     id: z.uuid(),
     action: browserWalletIntentActionSchema,
     network: browserWalletIntentNetworkSchema,
@@ -2758,12 +2699,7 @@ export const browserWalletIntentSchema = z
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     transaction: browserWalletTransactionSchema,
-    request: z
-      .union([
-        onboardingBrowserWalletIntentCreateRequestSchema,
-        browserWalletIntentCreateRequestSchema,
-      ])
-      .optional(),
+    request: browserWalletIntentCreateRequestSchema,
     binding: z
       .object({
         kind: z.literal("calculate-rewards"),
@@ -2846,46 +2782,29 @@ export const browserWalletIntentSchema = z
         message: "Wallet intent network and chain binding do not match",
       });
     }
-    if (value.schemaVersion === 1) {
-      if (
-        value.network !== "mainnet" ||
-        !["deploy-manager", "register-self"].includes(value.action)
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["schemaVersion"],
-          message: "Schema version 1 supports mainnet setup actions only",
-        });
-      }
-    } else {
-      if (value.review.fields.length === 0) {
-        context.addIssue({
-          code: "custom",
-          path: ["review", "fields"],
-          message: "Schema version 2 requires immutable review fields",
-        });
-      }
-      if (!value.request || value.request.action !== value.action) {
-        context.addIssue({
-          code: "custom",
-          path: ["request"],
-          message: "Schema version 2 requires the immutable action request",
-        });
-      }
-      if (
-        (value.action === "calculate-rewards") !==
-        (value.binding?.kind === "calculate-rewards")
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["binding"],
-          message: "Reward-calculation intents require their immutable completion binding",
-        });
-      }
+    if (value.review.fields.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["review", "fields"],
+        message: "Wallet intents require immutable review fields",
+      });
+    }
+    if (value.request.action !== value.action) {
+      context.addIssue({
+        code: "custom",
+        path: ["request"],
+        message: "Wallet intents require the immutable action request",
+      });
+    }
+    if ((value.action === "calculate-rewards") !== (value.binding?.kind === "calculate-rewards")) {
+      context.addIssue({
+        code: "custom",
+        path: ["binding"],
+        message: "Reward-calculation intents require their immutable completion binding",
+      });
     }
     const transaction = value.transaction;
     const actionMatches =
-      (value.action === "deploy-manager" && transaction.method === "stx_deployContract") ||
       (value.action === "register-self" &&
         transaction.method === "stx_callContract" &&
         transaction.params.functionName === "register-self") ||

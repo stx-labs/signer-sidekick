@@ -7,7 +7,6 @@ import {
   addressFromVersionHash,
   addressToString,
   ClarityType,
-  ClarityVersion,
   cvToHex,
   deserializeTransaction,
   PayloadType,
@@ -73,28 +72,21 @@ export interface VerifiedWalletTransaction {
   anchorMode: "any";
   postConditionMode: "deny";
   postConditionCount: number;
-  payload:
-    | {
-        kind: "deploy-contract";
-        contractName: string;
-        clarityVersion: 6;
-        sourceSha256: string;
-      }
-    | {
-        kind: "call-contract";
-        contract: string;
-        functionName:
-          | "register-self"
-          | "update-admin"
-          | "update-fees"
-          | "withdraw-fees"
-          | "sweep-fee-refunds"
-          | "claim-staker-rewards"
-          | "claim-rewards"
-          | "calculate-rewards";
-        argumentsSha256: string;
-        signerKeyHex: string | null;
-      };
+  payload: {
+    kind: "call-contract";
+    contract: string;
+    functionName:
+      | "register-self"
+      | "update-admin"
+      | "update-fees"
+      | "withdraw-fees"
+      | "sweep-fee-refunds"
+      | "claim-staker-rewards"
+      | "claim-rewards"
+      | "calculate-rewards";
+    argumentsSha256: string;
+    signerKeyHex: string | null;
+  };
 }
 
 export class WalletTransactionMismatchError extends Error {
@@ -196,35 +188,6 @@ export function verifyWalletTransactionHex(input: {
   );
   if (sender !== input.requiredSender || input.request.params.address !== input.requiredSender) {
     fail("origin sender");
-  }
-
-  if (input.request.method === "stx_deployContract") {
-    if (transaction.payload.payloadType !== PayloadType.VersionedSmartContract) {
-      fail("deployment payload type");
-    }
-    if (transaction.payload.clarityVersion !== ClarityVersion.Clarity6) fail("Clarity version");
-    if (transaction.payload.contractName.content !== input.request.params.name) {
-      fail("contract name");
-    }
-    if (transaction.payload.codeBody.content !== input.request.params.clarityCode) {
-      fail("contract source");
-    }
-    return {
-      txid: expectedTxid as `0x${string}`,
-      sender,
-      chainId: transaction.chainId,
-      transactionVersion: transaction.transactionVersion,
-      sponsored: false,
-      anchorMode: "any",
-      postConditionMode: "deny",
-      postConditionCount: postConditions.length,
-      payload: {
-        kind: "deploy-contract",
-        contractName: transaction.payload.contractName.content,
-        clarityVersion: 6,
-        sourceSha256: sha256(transaction.payload.codeBody.content),
-      },
-    };
   }
 
   if (transaction.payload.payloadType !== PayloadType.ContractCall) fail("contract-call payload");

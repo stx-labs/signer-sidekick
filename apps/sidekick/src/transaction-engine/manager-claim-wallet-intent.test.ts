@@ -499,7 +499,7 @@ describe("manager-claim browser-wallet binding", () => {
   it.each([
     { network: "devnet" as const, chainId: 0x8000_0000 },
     { network: "regtest" as const, chainId: 0x8000_0000 },
-  ])("propagates $network through the onboarding wallet manifest", async ({ network, chainId }) => {
+  ])("propagates $network through the operator wallet manifest", async ({ network, chainId }) => {
     const { store, input, result } = await plannedPrivate(chainId);
     readOperatorAnchorSnapshotMock.mockResolvedValue(
       privateOperatorAnchorSnapshot(input, network, chainId),

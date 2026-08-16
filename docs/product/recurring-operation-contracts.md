@@ -1,16 +1,15 @@
-# Recurring operation contracts
+# Operator action contracts
 
-Status: Implemented product contract. This document defines the day-2 wallet operations retained
-after removal of Initial Setup. The executable routing table is
+Status: Implemented product contract. This document defines Sidekick's wallet-signed operator
+actions. The executable routing table is
 `apps/sidekick/src/wallet-operation-contracts.ts`; reviewed manager capability evidence remains the
 gate for constructing new transactions.
 
 ## Lifecycle boundary
 
-`deploy-manager` is setup-only and is not accepted by the recurring-operation API or action
-workspace. Its schema remains only where old database and support evidence must still be readable.
-The following actions are recurring operator work: signer-key registration/rotation, manager
-administration, manager reward collection, staker settlement, and fee/refund withdrawal.
+Sidekick starts with a deployed signer-manager. Its action surface covers signer-key
+registration/rotation, manager administration, manager reward collection, staker settlement, and
+fee/refund withdrawal. Manager deployment and first-time staking belong to the external setup path.
 
 Capability review is a **new-work gate**. Sidekick checks it while preparing a transaction and again
 while an unsigned prepared intent remains active. Once a transaction is submitted, Sidekick keeps
@@ -40,6 +39,5 @@ Operation readiness is not setup progress. It has four independent layers:
 3. **Signer registration** — the manager is registered with a signer key and its grant is valid.
 4. **Execution engine** — the adapter needed for a particular operation is available.
 
-The readiness API accepts its legacy schema for old support artifacts and emits the new manager and
-signer checks. Per-action capability availability remains on the manager snapshot because a manager
-may support one recurring action and not another.
+The readiness API reports manager and signer checks. Per-action capability availability remains on
+the manager snapshot because a manager may support one operator action and not another.

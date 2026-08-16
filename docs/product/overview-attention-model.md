@@ -369,15 +369,14 @@ an Activity group and always carries its canonical `activityId`.
 available domain projections with independent evidence states. The dashboard boundary schema is
 strict and versioned.
 
-The legacy `/api/v1/status`, `DashboardAlert`, `OperatorAlert`, and alert-count projection remain
-compatibility debt while a few non-Overview surfaces still consume them. The obsolete alert-action
-payload has been removed. Remove the remaining projection once those routes use independent page
-contracts; no new Overview behavior may depend on that parallel attention system. Non-Overview
-pages must not wait on an Overview response before rendering.
+The shared `/api/v1/status`, `DashboardAlert`, `OperatorAlert`, and alert-count projection still
+serve a few non-Overview surfaces. They are not an Overview input or a second attention model. Remove
+that projection once those routes use independent page contracts; no new behavior may depend on it.
+Non-Overview pages must not wait on an Overview response before rendering.
 
 ## Responsive and accessibility contract
 
-- Mobile renders monitoring identity, cycle timing, network/node/signer health, Attention, In
+- Mobile renders protocol and cycle timing, network/node/signer health, Attention, In
   progress, then Pool and Rewards in that order.
 - Attention rows are full-width stacked content with no horizontal scrolling.
 - Tier and evidence state are always text; color/icons are supplemental.
@@ -389,10 +388,10 @@ pages must not wait on an Overview response before rendering.
   15-second poll when their `attentionId` and meaningful content are unchanged.
 - Truncated principals, keys, and transaction IDs retain copy controls and accessible full values.
 
-## Remaining work
+## Current invariants
 
-Signer Health now owns the calibrated thresholds, confidence, retention, and typed findings that
-Overview consumes. Overview still must not infer `advancing`, `behind`, or network-wide health from
+Signer Health owns the calibrated thresholds, confidence, retention, and typed findings that
+Overview consumes. Overview must not infer `advancing`, `behind`, or network-wide health from
 raw tips. A display-only reference advancement fact uses Signer Health's 90-second evidence window:
 a proved tip change inside that window may render `advancing`; absence of such proof renders
 `collecting` or `insufficient-evidence`, never an unhealthy-network finding.
@@ -403,6 +402,9 @@ Stacks blocks, provided the node is advancing and the reviewed wallet action has
 A stalled chain or stale witness produces evidence-specific `needs-attention` instead. Unattended
 Assist remains separately gated and cannot become eligible before 30 minutes and 120 blocks.
 
-External notification channels, paging thresholds, acknowledgements, and deduplication remain out
-of this page contract. They may consume durable finding episodes later without changing Overview
-semantics. The legacy status/alert projection cleanup described above also remains.
+## Optional extensions
+
+External notification channels, paging thresholds, acknowledgements, and deduplication are outside
+this page contract. They may consume durable finding episodes without changing Overview semantics.
+The shared status/alert projection cleanup described above is internal cleanup, not a second
+operator-attention model.

@@ -1,11 +1,9 @@
 import {
   bufferCV,
-  ClarityVersion,
   contractPrincipalCV,
   cvToHex,
   getAddressFromPrivateKey,
   makeContractCall,
-  makeContractDeploy,
   Pc,
   PostConditionMode,
   postConditionToHex,
@@ -13,16 +11,12 @@ import {
   uintCV,
 } from "@stacks/transactions";
 import { describe, expect, it } from "vitest";
-import {
-  verifyWalletTransactionHex,
-  WalletTransactionMismatchError,
-} from "./wallet-transaction-verification.js";
+import { verifyWalletTransactionHex } from "./wallet-transaction-verification.js";
 
 const senderKey = "1".padStart(64, "0");
 const sender = getAddressFromPrivateKey(senderKey, "mainnet");
-const source = "(define-public (ping) (ok true))";
 
-function encoded(tx: Awaited<ReturnType<typeof makeContractDeploy>>) {
+function encoded(tx: Awaited<ReturnType<typeof makeContractCall>>) {
   return {
     expectedTxid: `0x${tx.txid()}`,
     transactionHex: Buffer.from(tx.serializeBytes()).toString("hex"),
@@ -30,77 +24,6 @@ function encoded(tx: Awaited<ReturnType<typeof makeContractDeploy>>) {
 }
 
 describe("browser-wallet transaction verification", () => {
-  it("accepts only the exact Clarity 6 deployment prepared by Sidekick", async () => {
-    const tx = await makeContractDeploy({
-      contractName: "signer-manager",
-      codeBody: source,
-      clarityVersion: ClarityVersion.Clarity6,
-      senderKey,
-      network: "mainnet",
-      fee: 1_000,
-      nonce: 7,
-      sponsored: false,
-      postConditionMode: PostConditionMode.Deny,
-      postConditions: [],
-    });
-    const verified = verifyWalletTransactionHex({
-      ...encoded(tx),
-      requiredSender: sender,
-      request: {
-        method: "stx_deployContract",
-        params: {
-          name: "signer-manager",
-          clarityCode: source,
-          clarityVersion: 6,
-          network: "mainnet",
-          address: sender,
-          sponsored: false,
-          postConditionMode: "deny",
-          postConditions: [],
-        },
-      },
-    });
-
-    expect(verified).toMatchObject({
-      sender,
-      chainId: 1,
-      sponsored: false,
-      postConditionMode: "deny",
-      payload: { kind: "deploy-contract", contractName: "signer-manager", clarityVersion: 6 },
-    });
-  });
-
-  it("rejects a wallet deployment that ignores the requested Clarity version", async () => {
-    const tx = await makeContractDeploy({
-      contractName: "signer-manager",
-      codeBody: source,
-      clarityVersion: ClarityVersion.Clarity3,
-      senderKey,
-      network: "mainnet",
-      fee: 1_000,
-    });
-
-    expect(() =>
-      verifyWalletTransactionHex({
-        ...encoded(tx),
-        requiredSender: sender,
-        request: {
-          method: "stx_deployContract",
-          params: {
-            name: "signer-manager",
-            clarityCode: source,
-            clarityVersion: 6,
-            network: "mainnet",
-            address: sender,
-            sponsored: false,
-            postConditionMode: "deny",
-            postConditions: [],
-          },
-        },
-      }),
-    ).toThrowError(WalletTransactionMismatchError);
-  });
-
   it("accepts the exact register-self call and rejects altered arguments", async () => {
     const manager = `${sender}.signer-manager`;
     const args = [
@@ -165,21 +88,28 @@ describe("browser-wallet transaction verification", () => {
   });
 
   it("rejects a different sender or permissive post-condition mode", async () => {
-    const tx = await makeContractDeploy({
+    const args = [
+      contractPrincipalCV(sender, "signer-manager"),
+      bufferCV(Uint8Array.from({ length: 33 }, () => 2)),
+      uintCV(7),
+      bufferCV(Uint8Array.from({ length: 65 }, () => 3)),
+    ];
+    const tx = await makeContractCall({
+      contractAddress: sender,
       contractName: "signer-manager",
-      codeBody: source,
-      clarityVersion: ClarityVersion.Clarity6,
+      functionName: "register-self",
+      functionArgs: args,
       senderKey,
       network: "mainnet",
       fee: 1_000,
       postConditionMode: PostConditionMode.Allow,
     });
     const request = {
-      method: "stx_deployContract" as const,
+      method: "stx_callContract" as const,
       params: {
-        name: "signer-manager",
-        clarityCode: source,
-        clarityVersion: 6 as const,
+        contract: `${sender}.signer-manager`,
+        functionName: "register-self" as const,
+        functionArgs: args.map(cvToHex),
         network: "mainnet" as const,
         address: sender,
         sponsored: false as const,
@@ -192,10 +122,11 @@ describe("browser-wallet transaction verification", () => {
       verifyWalletTransactionHex({ ...encoded(tx), requiredSender: sender, request }),
     ).toThrow("post-condition mode");
 
-    const denyTx = await makeContractDeploy({
+    const denyTx = await makeContractCall({
+      contractAddress: sender,
       contractName: "signer-manager",
-      codeBody: source,
-      clarityVersion: ClarityVersion.Clarity6,
+      functionName: "register-self",
+      functionArgs: args,
       senderKey,
       network: "mainnet",
       fee: 1_000,

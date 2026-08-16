@@ -102,9 +102,7 @@ export function automaticVerificationRefreshError(cause: unknown): string {
 }
 
 function requestTarget(intent: BrowserWalletIntent): string {
-  return intent.transaction.method === "stx_deployContract"
-    ? intent.transaction.params.name
-    : `${intent.transaction.params.contract}::${intent.transaction.params.functionName}`;
+  return `${intent.transaction.params.contract}::${intent.transaction.params.functionName}`;
 }
 
 function recoveryRecordKey(pending: PendingBrowserWalletBroadcast): string {
@@ -617,11 +615,6 @@ export function BrowserWalletActionPanel({
                 <span>
                   Target <strong className="mono">{requestTarget(intent)}</strong>
                 </span>
-                {intent.transaction.method === "stx_deployContract" ? (
-                  <span>
-                    Clarity <strong>{intent.transaction.params.clarityVersion}</strong>
-                  </span>
-                ) : null}
                 <span>
                   Expires <strong>{new Date(intent.expiresAt).toLocaleString()}</strong>
                 </span>
@@ -690,28 +683,21 @@ export function BrowserWalletActionPanel({
                       ))}
                     </ol>
                   ) : null}
-                  {intent.transaction.method === "stx_deployContract" ? (
-                    <div>
-                      <strong>Contract source</strong>
-                      <pre className="code">{intent.transaction.params.clarityCode}</pre>
-                    </div>
-                  ) : (
-                    <div>
-                      <strong>Serialized arguments</strong>
-                      <ol>
-                        {intent.transaction.params.functionArgs.map((argument, index) => (
-                          <li key={argument}>
-                            <strong>Argument {index + 1}</strong>{" "}
-                            <CopyableIdentifier
-                              value={argument}
-                              label={`serialized argument ${index + 1}`}
-                              className="mono"
-                            />
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
+                  <div>
+                    <strong>Serialized arguments</strong>
+                    <ol>
+                      {intent.transaction.params.functionArgs.map((argument, index) => (
+                        <li key={argument}>
+                          <strong>Argument {index + 1}</strong>{" "}
+                          <CopyableIdentifier
+                            value={argument}
+                            label={`serialized argument ${index + 1}`}
+                            className="mono"
+                          />
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                 </div>
               </details>
             </div>

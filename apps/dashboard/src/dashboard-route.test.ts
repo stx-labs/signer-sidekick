@@ -121,7 +121,7 @@ describe("dashboard routes", () => {
         bondIndex: null,
       },
     });
-    expect(parseDashboardHash("#action/deploy-manager")).toMatchObject({
+    expect(parseDashboardHash("#action/unknown-operation")).toMatchObject({
       page: "overview",
       operation: null,
     });

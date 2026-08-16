@@ -2,14 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ClarityValue } from "@stacks/transactions";
 import {
   bufferCV,
-  ClarityVersion,
   contractPrincipalCV,
   cvToHex,
   falseCV,
   getAddressFromPrivateKey,
   hexToCV,
   makeContractCall,
-  makeContractDeploy,
   noneCV,
   Pc,
   PostConditionMode,
@@ -281,7 +279,7 @@ function validRegistrationFreshState(
 async function proveRecurringManagerAction(input: {
   request: Exclude<
     BrowserWalletIntentCreateRequest,
-    { action: "deploy-manager" | "register-self" | "claim-rewards" | "calculate-rewards" }
+    { action: "register-self" | "claim-rewards" | "calculate-rewards" }
   >;
   node: Record<string, unknown>;
   setCanonicalPoststate: () => void;
@@ -648,11 +646,7 @@ async function calculateRewardsWalletHarness() {
   };
 }
 
-async function createLegacySubmittedRegistration(input: {
-  store: SidekickStore;
-  signerKeyHex: string;
-  schemaVersion?: 1 | 2;
-}) {
+async function createSubmittedRegistration(input: { store: SidekickStore; signerKeyHex: string }) {
   const functionArgs = [
     contractPrincipalCV(requiredSender, "signer-manager"),
     bufferCV(Buffer.from(input.signerKeyHex, "hex")),
@@ -679,8 +673,8 @@ async function createLegacySubmittedRegistration(input: {
     signerKeyHex: input.signerKeyHex,
     functionArgs: functionArgs.map(cvToHex),
   });
-  const legacyManifest = {
-    schemaVersion: 1 as const,
+  const manifest = {
+    schemaVersion: 2 as const,
     id,
     action: "register-self" as const,
     network: "mainnet" as const,
@@ -705,21 +699,11 @@ async function createLegacySubmittedRegistration(input: {
       title: "Register manager",
       summary: "Register the sealed signer key",
       expectedPostState: "The exact signer key is registered",
+      fields: [{ label: "Manager", value: managerPrincipal }],
     },
+    request: { action: "register-self" as const, actorPrincipal: requiredSender },
     seal: { factsSha256 },
   };
-  const manifest =
-    input.schemaVersion === 2
-      ? {
-          ...legacyManifest,
-          schemaVersion: 2 as const,
-          request: { action: "register-self" as const },
-          review: {
-            ...legacyManifest.review,
-            fields: [{ label: "Manager", value: managerPrincipal }],
-          },
-        }
-      : legacyManifest;
   input.store.walletIntents.create({
     id,
     action: "register-self",
@@ -734,79 +718,6 @@ async function createLegacySubmittedRegistration(input: {
     expiresAt: manifest.expiresAt,
   });
   input.store.walletIntents.submit({ id, txid, submittedAt: "2026-07-19T12:02:00.000Z" });
-  return {
-    id,
-    txid,
-    transactionHex: Buffer.from(transaction.serializeBytes()).toString("hex"),
-  };
-}
-
-async function createLegacyV2SubmittedDeployment(store: SidekickStore) {
-  const transaction = await makeContractDeploy({
-    contractName: "signer-manager",
-    codeBody: source,
-    clarityVersion: ClarityVersion.Clarity6,
-    senderKey,
-    network: "mainnet",
-    fee: 1_000,
-    nonce: 7,
-    sponsored: false,
-    postConditionMode: PostConditionMode.Deny,
-    postConditions: [],
-  });
-  const id = randomUUID();
-  const txid = `0x${transaction.txid()}` as `0x${string}`;
-  const factsSha256 = canonicalJsonSha256({
-    schemaVersion: 2,
-    action: "deploy-manager",
-    managerPrincipal,
-    sourceSha256,
-  });
-  const manifest = {
-    schemaVersion: 2 as const,
-    id,
-    action: "deploy-manager" as const,
-    request: { action: "deploy-manager" as const },
-    network: "mainnet" as const,
-    chainId: 1,
-    requiredSender,
-    createdAt: "2026-07-19T12:01:00.000Z",
-    expiresAt: "2026-07-19T12:16:00.000Z",
-    transaction: {
-      method: "stx_deployContract" as const,
-      params: {
-        name: "signer-manager",
-        clarityCode: source,
-        clarityVersion: 6 as const,
-        network: "mainnet" as const,
-        address: requiredSender,
-        sponsored: false as const,
-        postConditionMode: "deny" as const,
-        postConditions: [] as string[],
-      },
-    },
-    review: {
-      title: "Deploy manager",
-      summary: "Deploy exact source",
-      expectedPostState: "Exact source is canonical",
-      fields: [{ label: "Manager", value: managerPrincipal }],
-    },
-    seal: { factsSha256 },
-  };
-  store.walletIntents.create({
-    id,
-    action: "deploy-manager",
-    scope: managerPrincipal,
-    factsSha256,
-    manifest,
-    manifestSha256: canonicalJsonSha256(manifest),
-    requiredSender,
-    network: "mainnet",
-    chainId: 1,
-    createdAt: manifest.createdAt,
-    expiresAt: manifest.expiresAt,
-  });
-  store.walletIntents.submit({ id, txid, submittedAt: "2026-07-19T12:02:00.000Z" });
   return {
     id,
     txid,
@@ -2042,17 +1953,14 @@ describe("manager wallet action preparation", () => {
     });
   });
 
-  it.each([
-    1, 2,
-  ] as const)("reconciles a submitted V%s setup registration against its sealed signer key", async (schemaVersion) => {
+  it("reconciles a submitted registration against its sealed signer key", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
     const sealedSignerKey = `02${"11".repeat(32)}`;
     const laterSignerKey = `03${"22".repeat(32)}`;
-    const fixture = await createLegacySubmittedRegistration({
+    const fixture = await createSubmittedRegistration({
       store,
       signerKeyHex: sealedSignerKey,
-      schemaVersion,
     });
     const registeredSnapshot = (signerKeyHex: string) => {
       const snapshot = trustedManagerSnapshot({ signerKeyHex });
@@ -2104,75 +2012,6 @@ describe("manager wallet action preparation", () => {
     await expect(wallet.refresh(fixture.id, "2026-07-19T12:04:00.000Z")).resolves.toMatchObject({
       status: "reobserve",
       verification: { outcome: "canonical-success", canonical: true },
-    });
-  });
-
-  it("reconciles a submitted V2 setup deployment through historical API evidence", async () => {
-    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
-    stores.push(store);
-    const fixture = await createLegacyV2SubmittedDeployment(store);
-    readOperatorAnchorSnapshotMock.mockResolvedValue(trustedManagerSnapshot({}));
-    const node = {
-      getInfo: vi.fn(async () => ({ network_id: 1 })),
-      getTenureInfo: vi.fn(async () => ({
-        tip_block_id: `0x${"99".repeat(32)}`,
-        tip_height: blockHeight + 100,
-        reward_cycle: 141,
-      })),
-      getNakamotoBlockById: vi.fn(async () => Uint8Array.of(1, 2, 3)),
-      getNakamotoBlockAtHeight: vi.fn(async () => Uint8Array.of(1, 2, 3)),
-    };
-    const api = {
-      getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
-      getTransactionDetails: vi.fn(async () => ({
-        tx_id: fixture.txid,
-        tx_status: "success" as const,
-        sender_address: requiredSender,
-        tx_type: "smart_contract",
-        contract_call: null,
-        smart_contract: {
-          contract_id: managerPrincipal,
-          source_code: source,
-          clarity_version: null,
-        },
-        post_conditions: [],
-        sponsored: false,
-        anchor_mode: "any" as const,
-        post_condition_mode: "deny" as const,
-        canonical: true,
-        block_hash: blockHash,
-        block_height: blockHeight,
-      })),
-      getBlock: vi.fn(async () => ({
-        canonical: true,
-        height: blockHeight,
-        hash: blockHash,
-        index_block_hash: indexBlockHash,
-      })),
-    };
-    const wallet = new WalletIntentService({
-      store,
-      runtimeSettings: {
-        clients: () => ({
-          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
-          node,
-          api,
-        }),
-      } as unknown as RuntimeSettingsController,
-      readState: deploymentFreshState,
-      canRepairSignerRegistration,
-      readerFactory: () => ({
-        lookupIndexedTransaction: async () => ({ status: "not-found" as const, httpStatus: 404 }),
-        lookupUnconfirmedTransaction: async () => ({
-          status: "not-found" as const,
-          httpStatus: 404,
-        }),
-      }),
-    });
-
-    await expect(wallet.refresh(fixture.id, "2026-07-19T12:03:00.000Z")).resolves.toMatchObject({
-      status: "complete",
-      verification: { outcome: "complete", canonical: true },
     });
   });
 

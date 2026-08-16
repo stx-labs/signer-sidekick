@@ -51,10 +51,6 @@ export interface BrowserWalletDependencies {
   connectWallet(options: ConnectOptions & { network: string }): Promise<ConnectResponse>;
   selectedProviderId(): MaybePromise<string | null | undefined>;
   selectedProvider(): MaybePromise<StacksProvider | null | undefined>;
-  deploy(
-    options: ConnectOptions,
-    params: MethodParams<"stx_deployContract">,
-  ): Promise<TransactionResponse>;
   call(
     options: ConnectOptions,
     params: MethodParams<"stx_callContract">,
@@ -73,8 +69,6 @@ const defaultDependencies: BrowserWalletDependencies = {
   connectWallet: async (options) => (await loadConnect()).connect(options),
   selectedProviderId: async () => (await loadConnect()).getSelectedProviderId(),
   selectedProvider: async () => (await loadConnect()).getSelectedProvider(),
-  deploy: async (options, params) =>
-    (await loadConnect()).request(options, "stx_deployContract", params),
   call: async (options, params) =>
     (await loadConnect()).request(options, "stx_callContract", params),
 };
@@ -248,11 +242,7 @@ function normalizedContractPrincipal(value: string): string | null {
 }
 
 export function browserWalletManagerPrincipal(intent: BrowserWalletIntent): string {
-  const candidate =
-    intent.transaction.method === "stx_deployContract"
-      ? `${intent.requiredSender}.${intent.transaction.params.name}`
-      : intent.transaction.params.contract;
-  const principal = normalizedContractPrincipal(candidate);
+  const principal = normalizedContractPrincipal(intent.transaction.params.contract);
   if (!principal) {
     throw new BrowserWalletError(
       "invalid-intent",
@@ -285,16 +275,9 @@ export async function browserWalletManifestSha256(intent: BrowserWalletIntent): 
     createdAt: intent.createdAt,
     expiresAt: intent.expiresAt,
     transaction: intent.transaction,
-    ...(intent.schemaVersion === 2 ? { request: intent.request } : {}),
+    request: intent.request,
     ...(intent.binding ? { binding: intent.binding } : {}),
-    review:
-      intent.schemaVersion === 1
-        ? {
-            title: intent.review.title,
-            summary: intent.review.summary,
-            expectedPostState: intent.review.expectedPostState,
-          }
-        : intent.review,
+    review: intent.review,
     seal: { factsSha256: intent.seal.factsSha256 },
   };
   const bytes = new TextEncoder().encode(canonicalJson(manifest));
@@ -333,7 +316,7 @@ function walletNetworkBinding(intent: BrowserWalletIntent): WalletNetworkBinding
   );
 }
 
-const ACTION_FUNCTIONS: Readonly<Record<Exclude<BrowserWalletAction, "deploy-manager">, string>> = {
+const ACTION_FUNCTIONS: Readonly<Record<BrowserWalletAction, string>> = {
   "register-self": "register-self",
   "add-admin": "update-admin",
   "remove-admin": "update-admin",
@@ -367,11 +350,8 @@ async function assertSealedRequest(intent: BrowserWalletIntent): Promise<WalletN
     params.postConditionMode !== "deny" ||
     !Array.isArray(postConditions) ||
     (requiresAssetPostconditions ? postConditions.length !== 1 : postConditions.length !== 0) ||
-    (intent.schemaVersion === 1 &&
-      (network.sidekickNetwork !== "mainnet" ||
-        (action !== "deploy-manager" && action !== "register-self"))) ||
-    (intent.schemaVersion === 2 &&
-      (intent.request?.action !== action || !Array.isArray(intent.review.fields)))
+    intent.request.action !== action ||
+    !Array.isArray(intent.review.fields)
   ) {
     throw new BrowserWalletError(
       "invalid-intent",
@@ -384,17 +364,7 @@ async function assertSealedRequest(intent: BrowserWalletIntent): Promise<WalletN
       "The prepared wallet request failed its integrity check. Prepare it again.",
     );
   }
-  if (action === "deploy-manager") {
-    if (
-      intent.transaction.method !== "stx_deployContract" ||
-      intent.transaction.params.clarityVersion !== 6
-    ) {
-      throw new BrowserWalletError(
-        "invalid-intent",
-        "The prepared wallet request does not match the requested operation. Prepare it again.",
-      );
-    }
-  } else if (
+  if (
     intent.transaction.method !== "stx_callContract" ||
     String(intent.transaction.params.functionName) !== ACTION_FUNCTIONS[action]
   ) {
@@ -539,16 +509,10 @@ export async function executeBrowserWalletIntent(
       provider,
     };
     requestInvoked = true;
-    const response =
-      current.transaction.method === "stx_deployContract"
-        ? await dependencies.deploy(
-            requestOptions,
-            current.transaction.params as MethodParams<"stx_deployContract">,
-          )
-        : await dependencies.call(
-            requestOptions,
-            current.transaction.params as MethodParams<"stx_callContract">,
-          );
+    const response = await dependencies.call(
+      requestOptions,
+      current.transaction.params as MethodParams<"stx_callContract">,
+    );
     const txid = normalizedTxid(response.txid);
     return {
       txid,

@@ -6,7 +6,6 @@ const deploymentIdentity = {
   networkId: 0x80000005,
   parentNetworkId: 0x80000000,
   managerPrincipal,
-  bindingSource: "new",
   boundAt: "2026-08-13T12:00:00.000Z",
   lastVerifiedAt: "2026-08-13T12:00:00.000Z",
   lastStacksTipHeight: 14_200,
@@ -752,6 +751,7 @@ export const health = {
       rejected: 1,
       rejectionPercent: 8.3,
       responseP95Seconds: 1,
+      validationP95Seconds: 0.5,
       disagreements: 0,
       collectingBaseline: false,
     },
@@ -1033,6 +1033,7 @@ export const overview = {
     acceptedLastHour: 12,
     rejectedLastHour: 0,
     responseP95Seconds: 0.8,
+    validationP95Seconds: 0.5,
     detail: "Signer monitoring is healthy and aligned with the node.",
     evidence: [{ ...overviewEvidence, source: "signer" }],
     detailsAction: {

@@ -116,10 +116,9 @@ products. The Overview answers “what needs attention now?”; other pages expl
 - Assist execution mode (release-gated; ownership and incident response decided before it ships).
 - A non-reference executable capability adapter, which requires the adapter approver plus the
   source-fingerprint review process.
-- Removal of the remaining setup-era compatibility internals after the legacy database and support-
-  artifact boundary is fixed, including dormant onboarding schemas, `deploy-manager` history types,
-  the unmounted Manager page, and manager-generation helpers.
-- Removal of the legacy `/api/v1/status` alert projection after every remaining consumer has an
+- Squashing the pre-release SQLite migration history into the first release schema after live
+  testing is complete. Forward migrations preserve the active development database until then.
+- Removal of the shared `/api/v1/status` alert projection after every remaining consumer has an
   independent page contract.
 - Continued calibration of the closed Signer Health rule catalog against real incidents. This may
   tune thresholds but does not reopen the evidence-authority or external-reference decisions.

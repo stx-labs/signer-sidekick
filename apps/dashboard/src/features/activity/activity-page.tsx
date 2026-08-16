@@ -13,10 +13,10 @@ import {
   type ActivityResponse,
   activityDetailSchema,
   activityResponseSchema,
+  browserWalletIntentActionSchema,
   browserWalletIntentResponseSchema,
   type DashboardSnapshot,
   operatorOperationCodeSchema,
-  recurringWalletIntentActionSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
@@ -640,7 +640,7 @@ function ActivityDetailPage({
   const walletIntentId = item.activityId.startsWith("wallet-intent:")
     ? item.activityId.slice("wallet-intent:".length)
     : null;
-  const walletAction = recurringWalletIntentActionSchema.safeParse(item.code);
+  const walletAction = browserWalletIntentActionSchema.safeParse(item.code);
   const engineJobId = item.activityId.startsWith("engine-job:")
     ? item.activityId.slice("engine-job:".length)
     : null;

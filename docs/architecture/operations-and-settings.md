@@ -44,10 +44,12 @@ baseline features; optional semantics and Assist require a reviewed adapter.
 
 ## Durable reconciliation
 
-Current operator state refreshes on demand and while the browser is active. Manager events and
-staking roster data are reconciled into SQLite independently of an open browser, with durable
-cursors, canonical anchors, idempotent replay, reorg handling, and bounded retry backoff. A delayed
-reference API is reported separately and does not block node-backed operations.
+The server refreshes current operator state every 30 seconds even when no browser is open. Manager
+events request focused refreshes, while staking roster and historical data use slower periodic
+anti-entropy loops. All reconciliation is single-flight and persists durable cursors, canonical
+anchors, idempotent replay, reorg handling, and bounded retry backoff in SQLite. A delayed reference
+API is reported separately and does not block node-backed operations. See
+[ADR 0008](decisions/0008-chain-evidence-and-reconciliation.md).
 
 A separate private callback listener is the low-latency input from the configured Stacks node. It
 commits bounded event-dispatcher payloads to a durable inbox before acknowledging them, records
@@ -67,9 +69,8 @@ and reorg. Independently indexed manager events become permanent only after the 
 index confirms their exact canonical Stacks height and index-block hash.
 
 A transaction absent from both indexed and pending node state may be explicitly superseded after a
-15-minute grace period. Replacement always creates a new sealed intent. Existing deployment-era
-database rows and API response shapes remain readable during upgrades, but no first-time setup
-route or public enrollment artifact is generated.
+15-minute grace period. Replacement always creates a new sealed intent. Sidekick has no first-time
+contract deployment, staking, or public enrollment route.
 
 ## Runtime settings
 

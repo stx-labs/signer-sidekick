@@ -17,7 +17,7 @@ import {
   recoverSpecificPendingBrowserWalletBroadcast,
 } from "./browser-wallet-recovery.js";
 
-const action = "deploy-manager" as const;
+const action = "register-self" as const;
 const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
 const admin = "SP000000000000000000002Q6VF78";
 const managerPrincipal = `${admin}.signer-manager`;
@@ -75,11 +75,11 @@ function intent(
     createdAt: "2026-07-19T00:00:00.000Z",
     expiresAt: "2026-07-19T00:15:00.000Z",
     transaction: {
-      method: "stx_deployContract",
+      method: "stx_callContract",
       params: {
-        name: "signer-manager",
-        clarityCode: "(define-public (ping) (ok true))",
-        clarityVersion: 6,
+        contract: managerPrincipal,
+        functionName: "register-self",
+        functionArgs: ["0x00", "0x00", "0x00", "0x00"],
         network: "mainnet",
         address: admin,
         sponsored: false,
@@ -87,11 +87,11 @@ function intent(
         postConditions: [],
       },
     },
-    request: { action },
+    request: { action, actorPrincipal: admin },
     review: {
-      title: "Deploy manager",
-      summary: "Deploy the manager",
-      expectedPostState: "Manager deployed",
+      title: "Register signer",
+      summary: "Register the signer",
+      expectedPostState: "Signer registered",
       fields: [{ label: "Manager", value: managerPrincipal }],
     },
     seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
@@ -125,7 +125,7 @@ describe("browser wallet broadcast recovery", () => {
     const walletResult = await requestWallet();
     expect(persistPendingBrowserWalletBroadcast(scope, walletResult, [storage])).toBe(true);
     expect([...storage.values.keys()][0]).toBe(
-      `signer-sidekick:browser-wallet:pending:v3:mainnet:00000001:${managerPrincipal}:deploy-manager:${intentId}`,
+      `signer-sidekick:browser-wallet:pending:v3:mainnet:00000001:${managerPrincipal}:register-self:${intentId}`,
     );
     await expect(firstRecord(walletResult.intentId, walletResult.txid)).rejects.toThrow(
       "Sidekick is unavailable",
@@ -165,7 +165,7 @@ describe("browser wallet broadcast recovery", () => {
       ),
     ).toBeNull();
     expect(
-      loadPendingBrowserWalletBroadcast({ ...scope, action: "register-self" }, [storage]),
+      loadPendingBrowserWalletBroadcast({ ...scope, action: "add-admin" }, [storage]),
     ).toBeNull();
     expect(
       loadPendingBrowserWalletBroadcast(
@@ -197,7 +197,6 @@ describe("browser wallet broadcast recovery", () => {
   });
 
   it.each([
-    "deploy-manager",
     "withdraw-fees",
     "sweep-fee-refunds",
     "claim-rewards",

@@ -10,7 +10,8 @@ PoX-5 operation; it is not a wallet, generic contract caller, or workflow engine
 - **Assist** may sign and broadcast only the code-backed
   `reference-manager-claim-rewards` adapter after fresh, exact operator approval.
 - Signer and manager-admin keys never enter Sidekick. Assist may hold one dedicated, low-balance
-  gas-payer key for that fixed adapter only. See [ADR 0003](decisions/0003-local-auth-and-keys.md).
+  gas-payer key for that fixed adapter only. See
+  [ADR 0003](decisions/0003-operator-auth-and-custody.md).
 
 ## Chain authority and admission
 

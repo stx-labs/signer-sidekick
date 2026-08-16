@@ -172,7 +172,7 @@ test("keeps retained operator evidence visible during a temporary local-node out
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 });
 
-test("loads the independent operator Overview without the legacy status endpoint", async ({
+test("loads the independent operator Overview without the shared status endpoint", async ({
   page,
 }) => {
   let statusRequests = 0;

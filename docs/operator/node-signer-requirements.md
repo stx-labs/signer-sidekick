@@ -9,7 +9,7 @@ These are the Sidekick-specific additions to an existing Stacks node and signer.
 | Capability | Requirement | Effect |
 | --- | --- | --- |
 | Node RPC | Required | Current chain, PoX-5, manager, and operation state |
-| Node transaction index | Required for complete history | Canonical manager and reward transaction verification |
+| Node transaction index | Required | Canonical manager and reward transaction verification |
 | Node Prometheus | Recommended | Node progress, peers, errors, and latency |
 | Signer monitoring | Recommended | Signer identity, heartbeat, proposals, and validation |
 | Sidekick event observer | Recommended | Event-driven refresh instead of polling alone |

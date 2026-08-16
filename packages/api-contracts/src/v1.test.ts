@@ -11,15 +11,12 @@ import {
   dashboardSnapshotSchema,
   deploymentRequirementsSchema,
   healthFindingSchema,
-  healthRollupSchema,
-  onboardingBrowserWalletIntentCreateRequestSchema,
   overviewPageSchema,
   reconciliationOperationSchema,
   reconciliationSummarySchema,
   rewardCalculationRealizationSchema,
   rewardsActivityResponseSchema,
   rewardsPageResponseSchema,
-  runtimeSettingsSchema,
   signerGrantSessionResponseSchema,
   syncResponseSchema,
   walletIntentAnchorMismatchErrorSchema,
@@ -110,26 +107,6 @@ describe("Signer Health v2 contracts", () => {
       false,
     );
     expect(healthFindingSchema.safeParse({ ...finding, observations: [] }).success).toBe(false);
-  });
-
-  it("defaults validation p95 for rollups written before validation alerting", () => {
-    expect(
-      healthRollupSchema.parse({
-        windowStartedAt: observedAt,
-        windowEndedAt: observedAt,
-        sampleCount: 1,
-        nodeRpcAvailabilityPercent: 100,
-        signerAvailabilityPercent: 100,
-        nodeStacksHeightStart: 100,
-        nodeStacksHeightEnd: 100,
-        nodeAdvanceCount: 0,
-        proposals: 0,
-        accepted: 0,
-        rejected: 0,
-        disagreements: 0,
-        responseP95Seconds: 1,
-      }),
-    ).toMatchObject({ validationP95Seconds: null });
   });
 });
 
@@ -299,14 +276,6 @@ describe("Overview V1 contracts", () => {
     expect(parsed.data.schemaVersion).toBe(1);
   });
 
-  it("defaults validation p95 for retained Overview payloads", () => {
-    const fixture = overviewFixture();
-    const { validationP95Seconds: _legacyMissingField, ...legacySigner } = fixture.signer;
-    expect(
-      overviewPageSchema.parse({ ...fixture, signer: legacySigner }).signer.validationP95Seconds,
-    ).toBeNull();
-  });
-
   it("keeps reward estimate provenance, confidence, and fee availability coherent", () => {
     const fixture = overviewFixture();
     expect(
@@ -367,13 +336,13 @@ describe("Overview V1 contracts", () => {
     ).toBe(false);
   });
 
-  it("rejects setup-only operations and arbitrary or mismatched navigation targets", () => {
+  it("rejects arbitrary or mismatched navigation targets", () => {
     expect(
       contextualActionSchema.safeParse({
         kind: "launch-operation",
-        operation: "deploy-manager",
+        operation: "unknown-operation",
         context: { kind: "none" },
-        label: "Deploy manager",
+        label: "Unknown operation",
       }).success,
     ).toBe(false);
     expect(
@@ -756,50 +725,6 @@ describe("reconciliation contracts", () => {
   });
 });
 
-describe("V1 runtime settings contract", () => {
-  it("strips retired settings from legacy-shaped responses", () => {
-    const parsed = runtimeSettingsSchema.parse({
-      schemaVersion: 1,
-      revision: 2,
-      updatedAt: "2026-07-17T12:00:00.000Z",
-      pool: {
-        displayName: "Pool",
-        websiteUrl: "",
-        supportContact: "",
-        leatherUrl: "https://earn.leather.io",
-      },
-      display: {
-        timezone: "UTC",
-        timeFormat: "relative",
-        numberFormat: "1,234.5678",
-        defaultTheme: "system",
-      },
-      dataSources: {
-        nodeRpcUrl: "http://127.0.0.1:20443",
-        apiUrl: "https://api.mainnet.hiro.so",
-        apiKeyHeader: "x-api-key",
-        apiKeyConfigured: false,
-        apiKeySource: "none",
-        nodeMetricsUrl: "",
-        signerMonitoringUrl: "",
-        hiroReferenceApiUrl: "",
-      },
-      forecast: { horizonCycles: 12 },
-      embed: { type: "live", publicApiUrl: "https://pool.example.com" },
-      payoutPolicy: { maxTransactionFeeUstx: "100000" },
-      automation: { mode: "observe", gasPayerPrincipal: "" },
-      alerts: { webhookUrl: "", criticalOnly: false },
-      audit: [],
-    });
-
-    expect(parsed.display).toEqual({ defaultTheme: "system" });
-    expect(parsed.embed).toEqual({ publicApiUrl: "https://pool.example.com" });
-    expect(parsed).not.toHaveProperty("payoutPolicy");
-    expect(parsed).not.toHaveProperty("automation");
-    expect(parsed).not.toHaveProperty("alerts");
-  });
-});
-
 describe("browser-wallet intent contracts", () => {
   const actor = "ST000000000000000000002AMW42H";
 
@@ -843,17 +768,7 @@ describe("browser-wallet intent contracts", () => {
     };
   }
 
-  it("keeps setup aliases separate from actor-bound manager actions", () => {
-    expect(
-      onboardingBrowserWalletIntentCreateRequestSchema.safeParse({ action: "register-self" })
-        .success,
-    ).toBe(true);
-    expect(
-      onboardingBrowserWalletIntentCreateRequestSchema.safeParse({
-        action: "register-self",
-        actorPrincipal: actor,
-      }).success,
-    ).toBe(false);
+  it("requires an explicit actor for signer registration", () => {
     expect(
       browserWalletIntentCreateRequestSchema.safeParse({ action: "register-self" }).success,
     ).toBe(false);
@@ -1098,54 +1013,6 @@ describe("browser-wallet intent contracts", () => {
             functionName: "update-admin",
             functionArgs: ["0x051a0000000000000000000000000000000000000000", "0x03"],
           },
-        },
-      }).success,
-    ).toBe(false);
-  });
-
-  it("keeps schema version 1 mainnet-only", () => {
-    const intent = {
-      schemaVersion: 1,
-      id: "10000000-0000-4000-8000-000000000003",
-      action: "deploy-manager",
-      network: "mainnet",
-      chainId: 1,
-      requiredSender: actor,
-      createdAt: "2026-07-19T12:00:00.000Z",
-      expiresAt: "2026-07-19T12:15:00.000Z",
-      transaction: {
-        method: "stx_deployContract",
-        params: {
-          name: "signer-manager",
-          clarityCode: "(ok true)",
-          clarityVersion: 6,
-          network: "mainnet",
-          address: actor,
-          sponsored: false,
-          postConditionMode: "deny",
-          postConditions: [],
-        },
-      },
-      review: {
-        title: "Deploy manager",
-        summary: "Deploy the sealed manager source",
-        expectedPostState: "The manager is deployed",
-        fields: [],
-      },
-      seal: { factsSha256: "a".repeat(64), manifestSha256: "b".repeat(64) },
-      status: "prepared",
-      txid: null,
-      verification: null,
-    };
-    expect(browserWalletIntentSchema.safeParse(intent).success).toBe(true);
-    expect(
-      browserWalletIntentSchema.safeParse({
-        ...intent,
-        network: "devnet",
-        chainId: 256,
-        transaction: {
-          ...intent.transaction,
-          params: { ...intent.transaction.params, network: "devnet" },
         },
       }).success,
     ).toBe(false);

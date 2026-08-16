@@ -99,7 +99,7 @@ earned fees, payout address, withdrawal liabilities, and withdrawal-request owne
 
 ### Legacy reference difference
 
-The three legacy Xverse deployments use the same broad claim flow but return only earned amount from
+The three earlier Xverse deployments use the same broad claim flow but return only earned amount from
 `claim-staker-rewards`. The newer reference behavior returns both earned amount and an optional
 withdrawal request identifier. Sidekick must not decode the old and new functions as the same
 capability solely because their names match.

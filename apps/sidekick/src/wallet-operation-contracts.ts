@@ -1,7 +1,7 @@
 import type {
+  BrowserWalletIntentAction,
   BrowserWalletTransaction,
   ManagerActionCapabilityId,
-  RecurringWalletIntentAction,
 } from "@stx-labs/signer-sidekick-api-contracts";
 
 export type WalletOperationAuthority =
@@ -10,7 +10,7 @@ export type WalletOperationAuthority =
   | "permissionless";
 
 export interface WalletOperationContract {
-  action: RecurringWalletIntentAction;
+  action: BrowserWalletIntentAction;
   lifecycle: "recurring";
   /** Manager capability, or null for a protocol-global operation. */
   capability: ManagerActionCapabilityId | null;
@@ -22,7 +22,7 @@ export interface WalletOperationContract {
 /**
  * The executable contract shared by wallet preparation, action availability, and tests.
  * Descriptive inputs and postconditions live beside each adapter; this registry keeps routing and
- * authority from silently drifting while onboarding is removed around the recurring operations.
+ * authority from silently drifting across operator actions.
  */
 export const WALLET_OPERATION_CONTRACTS = {
   "register-self": {
@@ -97,22 +97,22 @@ export const WALLET_OPERATION_CONTRACTS = {
     functionName: "calculate-rewards",
     completionEvidence: "canonical-post-state",
   },
-} as const satisfies Record<RecurringWalletIntentAction, WalletOperationContract>;
+} as const satisfies Record<BrowserWalletIntentAction, WalletOperationContract>;
 
 export function walletOperationContract(
-  action: RecurringWalletIntentAction,
+  action: BrowserWalletIntentAction,
 ): WalletOperationContract {
   return WALLET_OPERATION_CONTRACTS[action];
 }
 
 export function managerCapabilityForWalletAction(
-  action: RecurringWalletIntentAction,
+  action: BrowserWalletIntentAction,
 ): ManagerActionCapabilityId | null {
   return walletOperationContract(action).capability;
 }
 
 export function walletIntentTransactionMatchesAction(
-  action: RecurringWalletIntentAction,
+  action: BrowserWalletIntentAction,
   transaction: BrowserWalletTransaction,
 ): boolean {
   const contract = walletOperationContract(action);

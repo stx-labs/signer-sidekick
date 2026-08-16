@@ -17,15 +17,13 @@ import {
 import {
   type BrowserWalletIntent,
   type BrowserWalletIntentAction,
+  type BrowserWalletIntentCreateRequest,
   type BrowserWalletIntentNetwork,
   type BrowserWalletIntentStatus,
   type BrowserWalletTransaction,
+  browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
-  onboardingBrowserWalletIntentCreateRequestSchema,
-  type RecurringBrowserWalletIntentCreateRequest,
-  type RecurringWalletIntentAction,
-  recurringBrowserWalletIntentCreateRequestSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
@@ -109,110 +107,7 @@ const historicalScopeBlockers = new Set([
   "unavailable",
 ]);
 
-const storedManifestV1Schema = z
-  .object({
-    schemaVersion: z.literal(1),
-    id: z.uuid(),
-    action: z.enum(["deploy-manager", "register-self"]),
-    network: z.literal("mainnet"),
-    chainId: z.literal(mainnetChainId),
-    requiredSender: z.string().min(1),
-    createdAt: z.iso.datetime(),
-    expiresAt: z.iso.datetime(),
-    transaction: browserWalletTransactionSchema,
-    review: z
-      .object({
-        title: z.string().min(1),
-        summary: z.string().min(1),
-        expectedPostState: z.string().min(1),
-      })
-      .strict(),
-    seal: z.object({ factsSha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (
-      (value.action === "deploy-manager" && value.transaction.method !== "stx_deployContract") ||
-      (value.action === "register-self" && value.transaction.method !== "stx_callContract")
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["transaction", "method"],
-        message: "Wallet intent action and transaction method do not match",
-      });
-    }
-  });
-
-const walletIntentRequestSchema = recurringBrowserWalletIntentCreateRequestSchema;
-
-/**
- * Append-only reader for setup intents written before Sidekick stopped owning day-zero manager
- * deployment. These records remain useful transaction evidence, but this schema is deliberately
- * not used by the current preparation API.
- */
-const storedSetupManifestV2Schema = z
-  .object({
-    schemaVersion: z.literal(2),
-    id: z.uuid(),
-    action: z.enum(["deploy-manager", "register-self"]),
-    request: onboardingBrowserWalletIntentCreateRequestSchema,
-    network: z.enum(["mainnet", "pox5-testnet", "devnet", "regtest"]),
-    chainId: z.number().int().nonnegative().max(0xffff_ffff),
-    requiredSender: z.string().min(1),
-    createdAt: z.iso.datetime(),
-    expiresAt: z.iso.datetime(),
-    transaction: browserWalletTransactionSchema,
-    review: z
-      .object({
-        title: z.string().min(1),
-        summary: z.string().min(1),
-        expectedPostState: z.string().min(1),
-        fields: z
-          .array(z.object({ label: z.string().min(1), value: z.string().min(1) }).strict())
-          .min(1)
-          .max(16),
-      })
-      .strict(),
-    seal: z.object({ factsSha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.request.action !== value.action) {
-      context.addIssue({
-        code: "custom",
-        path: ["request"],
-        message: "Wallet intent request and action do not match",
-      });
-    }
-    const expectedChainId =
-      value.network === "mainnet"
-        ? mainnetChainId
-        : value.network === "pox5-testnet"
-          ? pox5TestnetChainId
-          : null;
-    if (
-      (expectedChainId !== null && value.chainId !== expectedChainId) ||
-      value.transaction.params.network !== value.network
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["network"],
-        message: "Wallet intent network binding does not match",
-      });
-    }
-    if (
-      (value.action === "deploy-manager" && value.transaction.method !== "stx_deployContract") ||
-      (value.action === "register-self" &&
-        (value.transaction.method !== "stx_callContract" ||
-          value.transaction.params.functionName !== "register-self"))
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["transaction"],
-        message: "Wallet intent action and transaction do not match",
-      });
-    }
-  });
+const walletIntentRequestSchema = browserWalletIntentCreateRequestSchema;
 
 function walletNetworkChecksPass(snapshot: OperatorAnchorSnapshot, chainId: number): boolean {
   const nodeNetwork = snapshot.preflight.checks.find((check) => check.id === "node-network");
@@ -226,7 +121,7 @@ function walletNetworkChecksPass(snapshot: OperatorAnchorSnapshot, chainId: numb
 
 type WalletRuntimeClients = ReturnType<RuntimeSettingsController["clients"]>;
 
-const storedManifestV2Schema = z
+const storedManifestSchema = z
   .object({
     schemaVersion: z.literal(2),
     id: z.uuid(),
@@ -312,11 +207,6 @@ const storedManifestV2Schema = z
     }
   });
 
-const storedManifestSchema = z.union([
-  storedManifestV1Schema,
-  storedSetupManifestV2Schema,
-  storedManifestV2Schema,
-]);
 type StoredManifest = z.infer<typeof storedManifestSchema>;
 
 const publicVerificationSchema = z
@@ -374,7 +264,7 @@ interface AuthoritativeIntentFacts {
 }
 
 interface EquivalentIntentFacts {
-  action: RecurringWalletIntentAction;
+  action: BrowserWalletIntentAction;
   scope: string;
   factsSha256: string;
 }
@@ -448,7 +338,7 @@ export class WalletIntentService {
   ) {}
 
   async prepare(
-    requestInput: RecurringBrowserWalletIntentCreateRequest,
+    requestInput: BrowserWalletIntentCreateRequest,
     observedAt = new Date().toISOString(),
     ignoredSupersededId?: string,
   ): Promise<BrowserWalletIntent> {
@@ -543,7 +433,7 @@ export class WalletIntentService {
       if (this.authoritativeSha256(current) !== authoritativeSha256) continue;
       const currentFactsSha256 = canonicalJsonSha256(current.facts);
       const id = randomUUID();
-      const manifest = storedManifestV2Schema.parse({
+      const manifest = storedManifestSchema.parse({
         schemaVersion: 2,
         id,
         action,
@@ -579,7 +469,7 @@ export class WalletIntentService {
     }
     throw new WalletIntentError(
       "wallet_intent_conflict",
-      "Setup state changed while preparing the transaction. Review the latest state and try again",
+      "Operation state changed while preparing the transaction. Review the latest state and try again",
     );
   }
 
@@ -631,7 +521,7 @@ export class WalletIntentService {
         initial = this.retireFailedIntent(initial, observedAt);
       }
     }
-    if (initial.state === "prepared" && initial.action !== "deploy-manager") {
+    if (initial.state === "prepared") {
       const blocker = await this.reconcileHistoricalScope(
         initial.action,
         initial.scope,
@@ -650,7 +540,7 @@ export class WalletIntentService {
         });
         return this.publicIntent(superseded);
       }
-    } else if (initial.state !== "superseded" && initial.action !== "deploy-manager") {
+    } else if (initial.state !== "superseded") {
       const completed = await this.reconcileSuperseded(
         {
           action: initial.action,
@@ -698,16 +588,16 @@ export class WalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "Setup state changed. Prepare a new transaction",
+          detail: "Operation state changed. Prepare a new transaction",
         });
         return this.publicIntent(superseded);
       }
       const factsSha256 = canonicalJsonSha256(authoritative.facts);
-      const manifestBinding = "binding" in manifest ? manifest.binding : null;
+      const manifestBinding = manifest.binding ?? null;
       if (
         authoritative.scope !== stored.scope ||
         authoritative.requiredSender !== stored.requiredSender ||
-        (manifest.schemaVersion === 2 && factsSha256 !== stored.factsSha256) ||
+        factsSha256 !== stored.factsSha256 ||
         canonicalJsonSha256(authoritative.transaction) !==
           canonicalJsonSha256(manifest.transaction) ||
         canonicalJsonSha256(authoritative.binding ?? null) !== canonicalJsonSha256(manifestBinding)
@@ -719,7 +609,7 @@ export class WalletIntentService {
           canonical: null,
           blockHeight: null,
           indexBlockHash: null,
-          detail: "Setup state changed before signing. Prepare a new transaction",
+          detail: "Operation state changed before signing. Prepare a new transaction",
         });
         return this.publicIntent(superseded);
       }
@@ -839,31 +729,13 @@ export class WalletIntentService {
   }
 
   private parsePrepareRequest(
-    input: RecurringBrowserWalletIntentCreateRequest,
-  ): RecurringBrowserWalletIntentCreateRequest {
+    input: BrowserWalletIntentCreateRequest,
+  ): BrowserWalletIntentCreateRequest {
     return walletIntentRequestSchema.parse(input);
   }
 
-  private requestFromManifest(manifest: StoredManifest): RecurringBrowserWalletIntentCreateRequest {
-    if (manifest.schemaVersion === 2) {
-      if (manifest.request.action === "deploy-manager") {
-        throw new WalletIntentError(
-          "wallet_intent_invalid",
-          "Legacy setup transactions cannot be prepared again; start the recurring operation again",
-        );
-      }
-      if (manifest.request.action === "register-self" && !("actorPrincipal" in manifest.request)) {
-        return { action: "register-self", actorPrincipal: manifest.requiredSender };
-      }
-      return walletIntentRequestSchema.parse(manifest.request);
-    }
-    if (manifest.action === "register-self") {
-      return { action: "register-self", actorPrincipal: manifest.requiredSender };
-    }
-    throw new WalletIntentError(
-      "wallet_intent_invalid",
-      "Legacy setup transactions cannot be prepared again; start the recurring operation again",
-    );
+  private requestFromManifest(manifest: StoredManifest): BrowserWalletIntentCreateRequest {
+    return walletIntentRequestSchema.parse(manifest.request);
   }
 
   private readState(): WalletIntentRuntimeState {
@@ -872,13 +744,13 @@ export class WalletIntentService {
     } catch {
       throw new WalletIntentError(
         "wallet_intent_invalid",
-        "Manager operation state is unavailable. Refresh the Manager page and try again",
+        "Manager operation state is unavailable. Refresh and try again",
       );
     }
   }
 
   private runtimeStateSha256(
-    action: RecurringWalletIntentAction,
+    action: BrowserWalletIntentAction,
     state: WalletIntentRuntimeState,
   ): string {
     return canonicalJsonSha256({
@@ -919,7 +791,7 @@ export class WalletIntentService {
     snapshot: OperatorAnchorSnapshot,
     managerPrincipal: string,
     network: WalletTransactionNetworkBinding,
-    action: RecurringWalletIntentAction,
+    action: BrowserWalletIntentAction,
   ): void {
     this.assertStoredLocalNodeAuthority(managerPrincipal);
     const capabilityId = managerCapabilityForWalletAction(action);
@@ -988,7 +860,7 @@ export class WalletIntentService {
   }
 
   private async authoritativeFacts(
-    request: RecurringBrowserWalletIntentCreateRequest,
+    request: BrowserWalletIntentCreateRequest,
   ): Promise<AuthoritativeIntentFacts> {
     const action = request.action;
     const { config, node, api } = this.options.runtimeSettings.clients();
@@ -1844,20 +1716,92 @@ export class WalletIntentService {
           : this.toConfirmed(stored, observedAt);
       let complete = false;
       let customAssetSemanticsUnattested = false;
-      if (manifest.action === "deploy-manager") {
-        if (manifest.transaction.method !== "stx_deployContract") {
+      if (manifest.transaction.method !== "stx_callContract") {
+        throw new WalletIntentError(
+          "wallet_intent_invalid",
+          "Contract-call intent contains the wrong transaction method",
+        );
+      }
+      if (decoded.payload.kind !== "call-contract") {
+        throw new WalletIntentError(
+          "wallet_intent_invalid",
+          "Contract-call verification contains the wrong decoded payload",
+        );
+      }
+      const managerPrincipal = manifest.transaction.params.contract;
+      const request = this.requestFromManifest(manifest);
+      if (manifest.action === "calculate-rewards") {
+        if (!manifest.binding || manifest.binding.pox5ContractId !== managerPrincipal) {
           throw new WalletIntentError(
             "wallet_intent_invalid",
-            "Deployment intent contains the wrong transaction method",
+            "Reward-calculation intent is missing its exact PoX-5 completion binding",
           );
         }
-        if (decoded.payload.kind !== "deploy-contract") {
+        const observedComputeHeight = decodeUInt(
+          await node.callReadOnly(
+            managerPrincipal,
+            "get-last-reward-compute-height",
+            manifest.requiredSender,
+            [],
+            { tip: indexed.indexBlockHash },
+          ),
+          "get-last-reward-compute-height",
+        );
+        complete =
+          observedComputeHeight === BigInt(manifest.binding.expectedLastRewardComputeBurnHeight);
+      } else if (manifest.action === "claim-rewards") {
+        if (!("jobId" in request) || !("actorPrincipal" in request)) {
           throw new WalletIntentError(
             "wallet_intent_invalid",
-            "Deployment verification contains the wrong decoded payload",
+            "Manager-claim intent is missing its exact job binding",
           );
         }
-        const managerPrincipal = `${manifest.requiredSender}.${manifest.transaction.params.name}`;
+        const walletNetwork = this.walletNetwork(config);
+        const bound = readBoundManagerClaimWalletIntent({
+          repository: this.options.store.transactionEngine,
+          jobId: request.jobId,
+          actorPrincipal: request.actorPrincipal,
+          network: {
+            name: walletNetwork.network,
+            kind: config.network === "mainnet" ? "mainnet" : "testnet",
+            chainId: walletNetwork.chainId,
+          },
+          managerPrincipal,
+        });
+        if (
+          bound.scope !== stored.scope ||
+          bound.requiredSender !== stored.requiredSender ||
+          canonicalJsonSha256(bound.facts) !== stored.factsSha256 ||
+          canonicalJsonSha256(bound.transaction) !== canonicalJsonSha256(manifest.transaction)
+        ) {
+          throw new WalletIntentError(
+            "wallet_transaction_mismatch",
+            "Canonical manager claim does not bind the stored engine job",
+          );
+        }
+        const jobStatus = managerClaimWalletJobStatus({
+          repository: this.options.store.transactionEngine,
+          binding: bound.facts.job,
+        });
+        if (jobStatus === "superseded") {
+          next =
+            next.state === "superseded" ? next : this.transition(next, "superseded", observedAt);
+          this.recordObservation(
+            next,
+            {
+              outcome: "superseded",
+              observedAt,
+              canonical: true,
+              blockHeight,
+              indexBlockHash: indexed.indexBlockHash,
+              detail: "Transaction confirmed, but its claim job was superseded. Refresh Operations",
+            },
+            decoded,
+          );
+          return this.publicIntent(next);
+        }
+        complete = jobStatus === "complete";
+      } else if (manifest.action === "register-self") {
         const snapshot = await readOperatorAnchorSnapshot({
           config,
           node,
@@ -1866,182 +1810,80 @@ export class WalletIntentService {
           managerVerification: this.options.managerVerification,
           reportMissingManager: true,
         });
+        complete = Boolean(
+          decoded.payload.signerKeyHex &&
+            snapshot.registration?.registered &&
+            snapshot.registration.signerKeyGrantValid &&
+            snapshot.registration.signerKeyHex === decoded.payload.signerKeyHex,
+        );
+      } else if (manifest.action === "add-admin" || manifest.action === "remove-admin") {
+        if (!("adminPrincipal" in request)) {
+          throw new WalletIntentError(
+            "wallet_intent_invalid",
+            "Admin intent is missing its target principal",
+          );
+        }
         complete =
-          snapshot.manager.attachAllowed &&
-          snapshot.manager.source.sha256 === textSha256(manifest.transaction.params.clarityCode);
+          decodeBoolean(
+            await node.callReadOnly(managerPrincipal, "is-admin", manifest.requiredSender, [
+              encodePrincipalHex(request.adminPrincipal),
+            ]),
+            "is-admin",
+          ) ===
+          (manifest.action === "add-admin");
+      } else if (manifest.action === "update-fees") {
+        if (!("feeBips" in request)) {
+          throw new WalletIntentError(
+            "wallet_intent_invalid",
+            "Fee intent is missing its target rate",
+          );
+        }
+        complete =
+          decodeUInt(await node.getDataVar(managerPrincipal, "fees-bips"), "fees-bips") ===
+          BigInt(request.feeBips);
+      } else if (manifest.action === "claim-staker-rewards") {
+        if (!("stakerPrincipal" in request) || !("rewardCycle" in request)) {
+          throw new WalletIntentError(
+            "wallet_intent_invalid",
+            "Staker-claim intent is missing its settlement tuple",
+          );
+        }
+        // Canonical post-state: `claim-staker-rewards-for-signer` zeroes the staker's unclaimed
+        // balance for the bucket, so the tuple reads back as settled regardless of which payout
+        // route ran. This also confirms a completion that some other caller produced, since the
+        // call is permissionless.
+        const settled = decodeEarnedStakerRewards(
+          await node.callReadOnly(
+            managerPrincipal,
+            "get-earned-staker-rewards",
+            manifest.requiredSender,
+            [
+              encodePrincipalHex(request.stakerPrincipal),
+              encodeUIntHex(BigInt(request.rewardCycle)),
+              encodeOptionalUIntHex(request.bondIndex === null ? null : BigInt(request.bondIndex)),
+            ],
+          ),
+        );
+        complete = settled.earned === 0n;
       } else {
-        if (manifest.transaction.method !== "stx_callContract") {
-          throw new WalletIntentError(
-            "wallet_intent_invalid",
-            "Contract-call intent contains the wrong transaction method",
-          );
-        }
-        if (decoded.payload.kind !== "call-contract") {
-          throw new WalletIntentError(
-            "wallet_intent_invalid",
-            "Contract-call verification contains the wrong decoded payload",
-          );
-        }
-        const managerPrincipal = manifest.transaction.params.contract;
-        const request = this.requestFromManifest(manifest);
-        if (manifest.action === "calculate-rewards") {
-          if (!manifest.binding || manifest.binding.pox5ContractId !== managerPrincipal) {
-            throw new WalletIntentError(
-              "wallet_intent_invalid",
-              "Reward-calculation intent is missing its exact PoX-5 completion binding",
-            );
-          }
-          const observedComputeHeight = decodeUInt(
-            await node.callReadOnly(
-              managerPrincipal,
-              "get-last-reward-compute-height",
-              manifest.requiredSender,
-              [],
-              { tip: indexed.indexBlockHash },
-            ),
-            "get-last-reward-compute-height",
-          );
-          complete =
-            observedComputeHeight === BigInt(manifest.binding.expectedLastRewardComputeBurnHeight);
-        } else if (manifest.action === "claim-rewards") {
-          if (!("jobId" in request) || !("actorPrincipal" in request)) {
-            throw new WalletIntentError(
-              "wallet_intent_invalid",
-              "Manager-claim intent is missing its exact job binding",
-            );
-          }
-          const walletNetwork = this.walletNetwork(config);
-          const bound = readBoundManagerClaimWalletIntent({
-            repository: this.options.store.transactionEngine,
-            jobId: request.jobId,
-            actorPrincipal: request.actorPrincipal,
-            network: {
-              name: walletNetwork.network,
-              kind: config.network === "mainnet" ? "mainnet" : "testnet",
-              chainId: walletNetwork.chainId,
-            },
-            managerPrincipal,
-          });
-          if (
-            bound.scope !== stored.scope ||
-            bound.requiredSender !== stored.requiredSender ||
-            canonicalJsonSha256(bound.facts) !== stored.factsSha256 ||
-            canonicalJsonSha256(bound.transaction) !== canonicalJsonSha256(manifest.transaction)
-          ) {
-            throw new WalletIntentError(
-              "wallet_transaction_mismatch",
-              "Canonical manager claim does not bind the stored engine job",
-            );
-          }
-          const jobStatus = managerClaimWalletJobStatus({
-            repository: this.options.store.transactionEngine,
-            binding: bound.facts.job,
-          });
-          if (jobStatus === "superseded") {
-            next =
-              next.state === "superseded" ? next : this.transition(next, "superseded", observedAt);
-            this.recordObservation(
-              next,
-              {
-                outcome: "superseded",
-                observedAt,
-                canonical: true,
-                blockHeight,
-                indexBlockHash: indexed.indexBlockHash,
-                detail:
-                  "Transaction confirmed, but its claim job was superseded. Refresh Operations",
-              },
-              decoded,
-            );
-            return this.publicIntent(next);
-          }
-          complete = jobStatus === "complete";
-        } else if (manifest.action === "register-self") {
-          const snapshot = await readOperatorAnchorSnapshot({
-            config,
-            node,
-            api,
-            managerPrincipal,
-            managerVerification: this.options.managerVerification,
-            reportMissingManager: true,
-          });
-          complete = Boolean(
-            decoded.payload.signerKeyHex &&
-              snapshot.registration?.registered &&
-              snapshot.registration.signerKeyGrantValid &&
-              snapshot.registration.signerKeyHex === decoded.payload.signerKeyHex,
-          );
-        } else if (manifest.action === "add-admin" || manifest.action === "remove-admin") {
-          if (!("adminPrincipal" in request)) {
-            throw new WalletIntentError(
-              "wallet_intent_invalid",
-              "Admin intent is missing its target principal",
-            );
-          }
-          complete =
-            decodeBoolean(
-              await node.callReadOnly(managerPrincipal, "is-admin", manifest.requiredSender, [
-                encodePrincipalHex(request.adminPrincipal),
-              ]),
-              "is-admin",
-            ) ===
-            (manifest.action === "add-admin");
-        } else if (manifest.action === "update-fees") {
-          if (!("feeBips" in request)) {
-            throw new WalletIntentError(
-              "wallet_intent_invalid",
-              "Fee intent is missing its target rate",
-            );
-          }
-          complete =
-            decodeUInt(await node.getDataVar(managerPrincipal, "fees-bips"), "fees-bips") ===
-            BigInt(request.feeBips);
-        } else if (manifest.action === "claim-staker-rewards") {
-          if (!("stakerPrincipal" in request) || !("rewardCycle" in request)) {
-            throw new WalletIntentError(
-              "wallet_intent_invalid",
-              "Staker-claim intent is missing its settlement tuple",
-            );
-          }
-          // Canonical post-state: `claim-staker-rewards-for-signer` zeroes the staker's unclaimed
-          // balance for the bucket, so the tuple reads back as settled regardless of which payout
-          // route ran. This also confirms a completion that some other caller produced, since the
-          // call is permissionless.
-          const settled = decodeEarnedStakerRewards(
-            await node.callReadOnly(
-              managerPrincipal,
-              "get-earned-staker-rewards",
-              manifest.requiredSender,
-              [
-                encodePrincipalHex(request.stakerPrincipal),
-                encodeUIntHex(BigInt(request.rewardCycle)),
-                encodeOptionalUIntHex(
-                  request.bondIndex === null ? null : BigInt(request.bondIndex),
-                ),
-              ],
-            ),
-          );
-          complete = settled.earned === 0n;
-        } else {
-          const snapshot = await readOperatorAnchorSnapshot({
-            config,
-            node,
-            api,
-            managerPrincipal,
-            managerVerification: this.options.managerVerification,
-            reportMissingManager: true,
-          });
-          const verifiedReferenceManager =
-            (snapshot.manager.source.tier === "reference-built-in" &&
-              snapshot.manager.provenance.status === "built-in") ||
-            (snapshot.manager.source.tier === "reference-render" &&
-              snapshot.manager.provenance.status === "verified");
-          // The exact-equality sBTC postcondition binds the manager, amount, and asset. Only a
-          // verified reference source gives Sidekick enough semantic assurance to claim that the
-          // recipient argument produced the expected poststate.
-          customAssetSemanticsUnattested = Boolean(verifiedByApi) || !verifiedReferenceManager;
-          complete = !verifiedByApi && decoded.postConditionCount === 1 && verifiedReferenceManager;
-        }
+        const snapshot = await readOperatorAnchorSnapshot({
+          config,
+          node,
+          api,
+          managerPrincipal,
+          managerVerification: this.options.managerVerification,
+          reportMissingManager: true,
+        });
+        const verifiedReferenceManager =
+          (snapshot.manager.source.tier === "reference-built-in" &&
+            snapshot.manager.provenance.status === "built-in") ||
+          (snapshot.manager.source.tier === "reference-render" &&
+            snapshot.manager.provenance.status === "verified");
+        // The exact-equality sBTC postcondition binds the manager, amount, and asset. Only a
+        // verified reference source gives Sidekick enough semantic assurance to claim that the
+        // recipient argument produced the expected poststate.
+        customAssetSemanticsUnattested = Boolean(verifiedByApi) || !verifiedReferenceManager;
+        complete = !verifiedByApi && decoded.postConditionCount === 1 && verifiedReferenceManager;
       }
       if (complete && !["complete", "superseded"].includes(next.state))
         next = this.transition(next, "complete", observedAt);
@@ -2188,40 +2030,6 @@ export class WalletIntentService {
     if (details.sponsored) return fail("sponsored authorization");
     if (details.anchor_mode !== "any") return fail("anchor mode");
     if (details.post_condition_mode !== "deny") return fail("post-condition mode");
-    if (manifest.transaction.method === "stx_deployContract") {
-      const deployment = details.smart_contract;
-      const expected = manifest.transaction.params;
-      if (
-        details.tx_type !== "smart_contract" ||
-        !deployment ||
-        deployment.contract_id !== `${manifest.requiredSender}.${expected.name}` ||
-        textSha256(deployment.source_code) !== textSha256(expected.clarityCode) ||
-        (deployment.clarity_version !== null &&
-          deployment.clarity_version !== expected.clarityVersion) ||
-        details.post_conditions.length !== expected.postConditions.length
-      ) {
-        return fail("contract deployment");
-      }
-      return {
-        txid: details.tx_id,
-        sender: details.sender_address,
-        chainId: manifest.chainId,
-        transactionVersion: createWalletTransactionNetworkBinding(
-          manifest.network,
-          manifest.chainId,
-        ).transactionVersion,
-        sponsored: false,
-        anchorMode: "any",
-        postConditionMode: "deny",
-        postConditionCount: details.post_conditions.length,
-        payload: {
-          kind: "deploy-contract",
-          contractName: expected.name,
-          clarityVersion: expected.clarityVersion,
-          sourceSha256: textSha256(expected.clarityCode),
-        },
-      };
-    }
     const call = details.contract_call;
     const expected = manifest.transaction.params;
     if (
@@ -2348,7 +2156,7 @@ export class WalletIntentService {
   }
 
   private async reconcileHistoricalScope(
-    action: RecurringWalletIntentAction,
+    action: BrowserWalletIntentAction,
     scope: string,
     _factsSha256: string,
     observedAt: string,

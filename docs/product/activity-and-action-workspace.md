@@ -450,16 +450,16 @@ the action workspace reloads and verifies every value before preparing an intent
 context union defines the only query parameters the route builder may serialize.
 
 `open-settings` is the only route to a Settings subsection, so Settings does not have a second
-stringly target through `open-domain`. `OperatorOperationCode` excludes `deploy-manager` at compile
-time and reserves `calculate-rewards` for the reviewed reward-calculation adapter.
+stringly target through `open-domain`. `OperatorOperationCode` is the complete operator-action set
+and reserves `calculate-rewards` for the reviewed reward-calculation adapter.
 `register-self` deliberately remains a recurring day-2 signer-key repair/rotation operation. It is
 available only when Sidekick can prove established expected participation through current/next
 signer-set membership or a prior valid registration/finding episode, or when an explicit reviewed
 key-rotation flow supplies equivalent evidence. A merely deployed manager, configured signer URL,
 or absent registration is not enough. Without that evidence, Sidekick links to external first-time
-setup or capability evidence and does not prepare `register-self`. The runtime API schema must reject
-`deploy-manager` and every unknown or removed setup-only operation code so deleted setup actions
-cannot be revived by stored data or a malformed response.
+setup or capability evidence and does not prepare `register-self`. The runtime API schema rejects
+every operation outside the closed action set, so stored data or a malformed response cannot create
+an unsupported action.
 
 Notices have one primary action and at most one secondary Details link. If an operation cannot be
 prepared because its capability is unsupported, the notice links directly to the manager
@@ -572,7 +572,7 @@ interface ActivityDetail {
 }
 ```
 
-`GET /api/v1/activity` uses this versioned response; no parallel legacy endpoint is
+`GET /api/v1/activity` uses this versioned response; no parallel compatibility endpoint is
 maintained. `GET /api/v1/activity/<activity-id>` returns the
 detail contract above plus its ordered typed timeline and complete redacted evidence. When the
 requested ID has been absorbed, `requestedActivityId` preserves what the caller used,

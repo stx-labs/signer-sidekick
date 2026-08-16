@@ -140,7 +140,6 @@ describe("first-run connection assessment", () => {
       managerPrincipal: manager,
       network: "mainnet",
       networkId: 1,
-      bindingSource: "new",
       lastVerifiedAt: checkedAt,
     });
   });
@@ -284,7 +283,6 @@ describe("first-run connection assessment", () => {
       networkId: 1,
       parentNetworkId: 0,
       managerPrincipal: manager,
-      bindingSource: "new",
       verifiedAt: checkedAt,
       stacksTipHeight: nodeInfo.stacks_tip_height,
       burnBlockHeight: nodeInfo.burn_block_height,
@@ -307,46 +305,6 @@ describe("first-run connection assessment", () => {
       },
     });
     expect(getInfo).not.toHaveBeenCalled();
-  });
-
-  it("rejects ambiguous legacy evidence but auto-binds matching evidence after proof", async () => {
-    const conflicting = await memoryStore();
-    conflicting.managerTrust.record({
-      managerPrincipal: otherManager,
-      recognitionTier: "unrecognized",
-      profileId: null,
-      profileOrigin: null,
-      sourceSha256: null,
-      canonicalSourceSha256: null,
-      automationEligible: false,
-      eligibilityReason: "Observe only",
-      observedAt: checkedAt,
-    });
-    expect((await service({ store: conflicting }).check()).outcomeCode).toBe(
-      "deployment-identity-mismatch",
-    );
-
-    const matching = await memoryStore();
-    matching.chainState.upsertSource({
-      sourceId: "node:mainnet:legacy",
-      kind: "node",
-      network: "mainnet",
-      baseUrl: "http://127.0.0.1:20443",
-      observedAt: checkedAt,
-    });
-    matching.managerTrust.record({
-      managerPrincipal: manager,
-      recognitionTier: "unrecognized",
-      profileId: null,
-      profileOrigin: null,
-      sourceSha256: null,
-      canonicalSourceSha256: null,
-      automationEligible: false,
-      eligibilityReason: "Observe only",
-      observedAt: checkedAt,
-    });
-    expect((await service({ store: matching }).check()).status).toBe("connected");
-    expect(matching.deploymentIdentity.get()?.bindingSource).toBe("legacy-evidence");
   });
 
   it("coalesces simultaneous forced rechecks without starting any synchronization", async () => {

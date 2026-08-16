@@ -22,21 +22,17 @@ const indexBlockHash = `0x${"33".repeat(32)}`;
 const stores: SidekickStore[] = [];
 const directories: string[] = [];
 
-const deploymentManifest = {
-  schemaVersion: 1,
-  action: "deploy-manager",
-  request: {
-    name: "signer-manager",
-    clarityVersion: 6,
-    postConditionMode: "deny",
-  },
+const registrationManifest = {
+  schemaVersion: 2,
+  action: "register-self",
+  request: { action: "register-self", actorPrincipal: requiredSender },
 };
 
 function intentInput(overrides: Partial<CreateWalletIntentInput> = {}): CreateWalletIntentInput {
-  const manifest = overrides.manifest ?? deploymentManifest;
+  const manifest = overrides.manifest ?? registrationManifest;
   return {
-    action: "deploy-manager",
-    scope: "fresh:SP000000000000000000002Q6VF78.signer-manager",
+    action: "register-self",
+    scope: manager,
     factsSha256: "aa".repeat(32),
     manifestSha256: canonicalJsonSha256(manifest),
     manifest,
@@ -209,8 +205,8 @@ describe("WalletIntentRepository", () => {
     expect(reopened.backupPath).toBeNull();
     expect(reopened.store.walletIntents.get(created.intent.id)).toMatchObject({
       id: created.intent.id,
-      action: "deploy-manager",
-      manifest: deploymentManifest,
+      action: "register-self",
+      manifest: registrationManifest,
       state: "prepared",
     });
     expect(reopened.store.walletIntents.listObservations(created.intent.id)).toMatchObject([
@@ -613,20 +609,20 @@ describe("WalletIntentRepository", () => {
     const admin = "SP000000000000000000002Q6VF78";
     expect(
       canonicalJsonSha256({
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: "4e011bf7-f291-42c4-a35b-ab299a87ff8c",
-        action: "deploy-manager",
+        action: "register-self",
         network: "mainnet",
         chainId: 1,
         requiredSender: admin,
         createdAt: "2026-07-18T18:00:00.000Z",
         expiresAt: "2099-07-18T19:00:00.000Z",
         transaction: {
-          method: "stx_deployContract",
+          method: "stx_callContract",
           params: {
-            name: "signer-manager",
-            clarityCode: "(define-public (ping) (ok true))",
-            clarityVersion: 6,
+            contract: `${admin}.signer-manager`,
+            functionName: "register-self",
+            functionArgs: ["0x0516", "0x0200000021", "0x01000000000000002a", "0x0200000041"],
             network: "mainnet",
             address: admin,
             sponsored: false,
@@ -634,14 +630,16 @@ describe("WalletIntentRepository", () => {
             postConditions: [],
           },
         },
+        request: { action: "register-self", actorPrincipal: admin },
         review: {
-          title: "Deploy signer manager",
-          summary: "Deploy the reviewed manager source.",
-          expectedPostState: "The exact manager source is confirmed.",
+          title: "Register signer",
+          summary: "Register the authorized signer key.",
+          expectedPostState: "The signer key is registered.",
+          fields: [{ label: "Manager", value: `${admin}.signer-manager` }],
         },
         seal: { factsSha256: "11".repeat(32) },
       }),
-    ).toBe("6bc23d72aa8bdbe4fd9ed92892bc860008536bc987f1dbec43e0f57f60bed1b0");
+    ).toBe("95423326f098c61ddc29b9bfde170be27ce7b3a516320bbce9d90f44d99e5186");
   });
 
   it("enforces immutable bindings and append-only observations in SQLite", async () => {

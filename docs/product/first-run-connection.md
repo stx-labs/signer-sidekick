@@ -6,10 +6,10 @@
 
 ## Purpose
 
-Removing Initial Setup must not replace it with another wizard. A new Sidekick deployment performs
-a short, read-only connection assessment against one already-deployed signer manager, then opens
-the ordinary operator experience. Sidekick never records setup steps, asks the operator to complete
-a checklist, deploys a contract, registers a signer, stakes STX, or imports a setup artifact.
+A new Sidekick deployment performs a short, read-only connection assessment against one
+already-deployed signer manager, then opens the ordinary operator experience. Sidekick never records
+setup steps, asks the operator to complete a checklist, deploys a contract, registers a signer,
+stakes STX, or imports a setup artifact.
 
 The assessment answers one narrow question:
 
@@ -271,31 +271,27 @@ a restart loop. Readiness reports a stable deployment-identity mismatch code and
 until the configuration/database pairing is corrected.
 
 To operate a different manager, use a new empty database path. To restore, use a database whose
-stored identity matches the configured deployment. A migration for a legacy unbound database may
+stored identity matches the configured deployment. An unbound database with existing records may
 bind it automatically only when all existing manager-scoped and network-scoped evidence agrees
 unambiguously with the configured identity; otherwise it must enter the same diagnostic safe mode.
 
-## Implementation and acceptance contract
+## Current implementation and acceptance invariants
 
-- Provide an authenticated, bounded connection-assessment response independently of the
-  comprehensive operator snapshot. A forced Recheck must be coalesced and must not start roster or
-  history synchronization.
-- Replace the setup-era `sidekick attach <manager>` CLI with a read-only connection-check command
-  that uses the same required `SIDEKICK_MANAGER_PRINCIPAL` and network configuration as `serve`.
-  It must exit nonzero only for a blocked/unavailable connection, not for missing registration,
-  ineligibility, optional-source gaps, or unavailable manager actions.
-- Preserve the last proved connection result during a temporary local-node read failure, mark it
-  stale with its timestamp, and block evidence-sensitive actions; never represent stale evidence
-  as a new successful assessment.
-- Route to the connection page only while the connection dimension is blocked or has never
-  succeeded. Registration, eligibility, API, telemetry, and capability problems route to the
+- The authenticated connection assessment is bounded and independent of the comprehensive operator
+  snapshot. A forced Recheck is coalesced and does not start roster or history synchronization.
+- `sidekick connection check` uses the same required `SIDEKICK_MANAGER_PRINCIPAL` and network
+  configuration as `serve`. It exits nonzero only for a blocked or unavailable connection, not for
+  missing registration, ineligibility, optional-source gaps, or unavailable manager actions.
+- A temporary local-node read failure retains the last proved connection result with a stale
+  timestamp and blocks evidence-sensitive actions; stale evidence is never a new successful result.
+- The connection page is the entry route only while the connection dimension is blocked or has
+  never succeeded. Registration, eligibility, API, telemetry, and capability problems use the
   ordinary operator pages with focused alerts.
-- Include connection state, deployment-identity state, source coverage, exact failure evidence,
-  and timestamps in the support snapshot without secrets.
-- Test new/empty, legacy-unbound, matching-bound, and mismatched-bound databases.
-- Test the stable result-code matrix for unreachable node, missing contract, wrong network, trait
-  mismatch, and deployment-identity mismatch, plus the non-gating cases of missing
-  registration/grant, absent signer telemetry, API outage/lag, and a trait-only custom manager.
-- Test that a new deployment reaches either the focused recovery page or Overview without waiting
-  for indexed data, roster sync, rewards, or signer telemetry.
-- Test the exact distinction between Recheck and restart-required configuration changes.
+- The support snapshot includes connection state, deployment identity, source coverage, exact
+  failure evidence, and timestamps without secrets.
+- Acceptance tests cover empty, identity-unbound, matching, and mismatched databases; unreachable
+  nodes; missing contracts; wrong networks; trait mismatch; and deployment-identity mismatch. They
+  also cover non-gating registration, grant, telemetry, API, and manager-capability gaps.
+- A new deployment reaches either the focused recovery page or Overview without waiting for indexed
+  data, roster sync, rewards, or signer telemetry.
+- Recheckable live evidence and restart-required configuration are distinct UI and API states.

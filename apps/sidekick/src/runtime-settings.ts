@@ -101,35 +101,6 @@ export interface PublicRuntimeSettings {
   audit: Array<{ revision: number; changedFields: string[]; changedAt: string }>;
 }
 
-function withoutLegacySettings(input: unknown): unknown {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  const {
-    payoutPolicy: _payoutPolicy,
-    automation: _automation,
-    alerts: _alerts,
-    ...settings
-  } = input as Record<string, unknown>;
-  const display = settings.display;
-  const embed = settings.embed;
-  return {
-    ...settings,
-    ...(display && typeof display === "object" && !Array.isArray(display)
-      ? {
-          display: {
-            defaultTheme: (display as Record<string, unknown>).defaultTheme,
-          },
-        }
-      : {}),
-    ...(embed && typeof embed === "object" && !Array.isArray(embed)
-      ? {
-          embed: {
-            publicApiUrl: (embed as Record<string, unknown>).publicApiUrl,
-          },
-        }
-      : {}),
-  };
-}
-
 function publicApiDefault(config: SidekickConfig): string {
   if (config.network === "mainnet") return "https://api.mainnet.hiro.so";
   if (config.network === "testnet") return "https://api.testnet-pox5.hiro.so";
@@ -213,7 +184,7 @@ export class RuntimeSettingsController {
   ) {
     const stored = store.runtimeSettings.get();
     this.settings = stored
-      ? persistedRuntimeSettingsSchema.parse(withoutLegacySettings(stored.settings))
+      ? persistedRuntimeSettingsSchema.parse(stored.settings)
       : defaults(baseConfig);
     this.apiKeySecret = stored?.apiKeySecret ?? null;
     this.revision = stored?.revision ?? 0;

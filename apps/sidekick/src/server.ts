@@ -6,6 +6,7 @@ import {
   type ActivityDetail,
   type ActivityResponse,
   type ApiError,
+  browserWalletIntentCreateRequestSchema,
   browserWalletIntentSubmissionRequestSchema,
   type ConnectionAssessment,
   type DashboardAlert,
@@ -39,7 +40,6 @@ import {
   type ReconciliationOperation,
   type ReconciliationSummary,
   reconciliationSummarySchema,
-  recurringBrowserWalletIntentCreateRequestSchema,
   signerGrantVerifyRequestSchema,
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
@@ -2253,7 +2253,7 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.post("/api/v1/wallet-intents", async (request, reply) => {
     const wallet = requireFeature(options.wallet, "wallet_intent_unavailable");
-    const parsed = recurringBrowserWalletIntentCreateRequestSchema.safeParse(request.body);
+    const parsed = browserWalletIntentCreateRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_wallet_intent_action");
     try {
       return {

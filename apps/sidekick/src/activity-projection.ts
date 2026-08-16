@@ -468,7 +468,6 @@ function historyCoverage(
 }
 
 const walletActionPresentation = {
-  "deploy-manager": { domain: "manager", title: "Legacy manager deployment" },
   "register-self": { domain: "signer", title: "Signer registration" },
   "add-admin": { domain: "manager", title: "Add manager admin" },
   "remove-admin": { domain: "manager", title: "Remove manager admin" },
@@ -516,13 +515,7 @@ function walletIntentSummary(
   const primaryAction =
     readOnly || !isActive(state.displayStatus)
       ? null
-      : intent.action === "deploy-manager"
-        ? {
-            kind: "open-settings" as const,
-            section: "support" as const,
-            label: "Review legacy setup intent",
-          }
-        : { kind: "resume-activity" as const, activityId, label: "Resume operation" };
+      : { kind: "resume-activity" as const, activityId, label: "Resume operation" };
   const summary = walletIntentSummaryText(intent, lastObservation);
   const timeline: ActivityTimelineEntry[] = includeTimeline
     ? [

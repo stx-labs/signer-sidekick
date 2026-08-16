@@ -4,7 +4,6 @@ import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals
 import { z } from "zod";
 
 const walletIntentActions = [
-  "deploy-manager",
   "register-self",
   "add-admin",
   "remove-admin",

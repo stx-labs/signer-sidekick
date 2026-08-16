@@ -29,46 +29,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function deployIntent(overrides: Partial<BrowserWalletIntent> = {}): BrowserWalletIntent {
+function registerIntent(overrides: Partial<BrowserWalletIntent> = {}): BrowserWalletIntent {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: "4e011bf7-f291-42c4-a35b-ab299a87ff8c",
-    action: "deploy-manager",
+    action: "register-self",
     network: "mainnet",
     chainId: 1,
     requiredSender: admin,
     createdAt: "2026-07-18T18:00:00.000Z",
     expiresAt: "2099-07-18T19:00:00.000Z",
-    transaction: {
-      method: "stx_deployContract",
-      params: {
-        name: "signer-manager",
-        clarityCode: "(define-public (ping) (ok true))",
-        clarityVersion: 6,
-        network: "mainnet",
-        address: admin,
-        sponsored: false,
-        postConditionMode: "deny",
-        postConditions: [],
-      },
-    },
-    review: {
-      title: "Deploy signer manager",
-      summary: "Deploy the reviewed manager source.",
-      expectedPostState: "The exact manager source is confirmed.",
-    },
-    seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
-    status: "prepared",
-    txid: null,
-    verification: null,
-    ...overrides,
-  } as BrowserWalletIntent;
-}
-
-function registerIntent(): BrowserWalletIntent {
-  return {
-    ...deployIntent(),
-    action: "register-self",
     transaction: {
       method: "stx_callContract",
       params: {
@@ -82,17 +52,25 @@ function registerIntent(): BrowserWalletIntent {
         postConditions: [],
       },
     },
-  } as BrowserWalletIntent;
+    request: { action: "register-self", actorPrincipal: admin },
+    review: {
+      title: "Register signer",
+      summary: "Register the authorized signer key.",
+      expectedPostState: "The signer key is registered.",
+      fields: [{ label: "Manager", value: `${admin}.signer-manager` }],
+    },
+    seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
+    status: "prepared",
+    txid: null,
+    verification: null,
+    ...overrides,
+  };
 }
 
 // Reward actions are driven from the rewards page, not the manager-action switcher.
 type ManagerAction = Exclude<
   BrowserWalletIntent["action"],
-  | "deploy-manager"
-  | "register-self"
-  | "claim-rewards"
-  | "claim-staker-rewards"
-  | "calculate-rewards"
+  "register-self" | "claim-rewards" | "claim-staker-rewards" | "calculate-rewards"
 >;
 
 function managerActionIntent(
@@ -131,7 +109,7 @@ function managerActionIntent(
   } as const;
   const needsAssetPostcondition = action === "withdraw-fees" || action === "sweep-fee-refunds";
   return {
-    ...deployIntent(),
+    ...registerIntent(),
     schemaVersion: 2,
     action,
     request: requests[action],
@@ -202,7 +180,7 @@ function pox5Intent(action: ManagerAction = "update-fees"): BrowserWalletIntent 
 
 function claimIntent(): BrowserWalletIntent {
   return {
-    ...deployIntent(),
+    ...registerIntent(),
     schemaVersion: 2,
     action: "claim-rewards",
     request: {
@@ -250,12 +228,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function dependencies({
   providerId = LEATHER_PROVIDER_ID,
   address = admin,
-  deployResult = { txid, transaction: "raw-signed-deploy" },
   callResult = { txid, transaction: "raw-signed-call" },
 }: {
   providerId?: string | null;
   address?: string;
-  deployResult?: { txid?: string; transaction?: string };
   callResult?: { txid?: string; transaction?: string };
 } = {}): BrowserWalletDependencies {
   return {
@@ -264,7 +240,6 @@ function dependencies({
     }),
     selectedProviderId: vi.fn().mockReturnValue(providerId),
     selectedProvider: vi.fn().mockReturnValue(provider),
-    deploy: vi.fn().mockResolvedValue(deployResult),
     call: vi.fn().mockResolvedValue(callResult),
   };
 }
@@ -295,12 +270,12 @@ describe("browser wallet execution", () => {
     "failed",
     "superseded",
   ] as const)("allows a new review after a recorded %s transaction", (status) => {
-    expect(canPrepareBrowserWalletIntent(deployIntent({ status, txid }), false)).toBe(true);
+    expect(canPrepareBrowserWalletIntent(registerIntent({ status, txid }), false)).toBe(true);
   });
 
   it("blocks a new review while a local wallet broadcast still needs recording", () => {
     expect(canPrepareBrowserWalletIntent(null, true)).toBe(false);
-    expect(canPrepareBrowserWalletIntent(deployIntent({ status: "failed", txid }), true)).toBe(
+    expect(canPrepareBrowserWalletIntent(registerIntent({ status: "failed", txid }), true)).toBe(
       false,
     );
   });
@@ -313,17 +288,17 @@ describe("browser wallet execution", () => {
     "complete",
     "reobserve",
   ] as const)("does not prepare over a %s intent", (status) => {
-    expect(canPrepareBrowserWalletIntent(deployIntent({ status }), false)).toBe(false);
+    expect(canPrepareBrowserWalletIntent(registerIntent({ status }), false)).toBe(false);
   });
 
   it("matches the backend canonical manifest hash vector", async () => {
-    await expect(browserWalletManifestSha256(deployIntent())).resolves.toBe(
-      "6bc23d72aa8bdbe4fd9ed92892bc860008536bc987f1dbec43e0f57f60bed1b0",
+    await expect(browserWalletManifestSha256(registerIntent())).resolves.toBe(
+      "95423326f098c61ddc29b9bfde170be27ce7b3a516320bbce9d90f44d99e5186",
     );
   });
 
   it("matches native SHA-256 when crypto.subtle is unavailable", async () => {
-    const intent = deployIntent();
+    const intent = registerIntent();
     const nativeDigest = await browserWalletManifestSha256(intent);
     const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
     vi.stubGlobal("crypto", { getRandomValues });
@@ -333,7 +308,7 @@ describe("browser wallet execution", () => {
   });
 
   it("executes a sealed request when crypto.subtle is unavailable", async () => {
-    const intent = await sealed(deployIntent());
+    const intent = await sealed(registerIntent());
     const deps = dependencies();
     const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
     vi.stubGlobal("crypto", { getRandomValues });
@@ -341,28 +316,13 @@ describe("browser wallet execution", () => {
     await expect(
       executeBrowserWalletIntent(intent, deps, new Date("2026-07-18T18:30:00.000Z")),
     ).resolves.toEqual({ txid, sender: admin, providerId: LEATHER_PROVIDER_ID });
-    expect(deps.deploy).toHaveBeenCalledOnce();
+    expect(deps.call).toHaveBeenCalledOnce();
   });
 
-  it("reconstructs the exact historical V1 manifest after public review defaults", async () => {
-    const intent = deployIntent({
-      review: {
-        title: "Deploy signer manager",
-        summary: "Deploy the reviewed manager source.",
-        expectedPostState: "The exact manager source is confirmed.",
-        fields: [],
-      },
-    });
-
-    await expect(browserWalletManifestSha256(intent)).resolves.toBe(
-      "6bc23d72aa8bdbe4fd9ed92892bc860008536bc987f1dbec43e0f57f60bed1b0",
-    );
-  });
-
-  it("passes the sealed Clarity 6 deployment unchanged to Leather", async () => {
-    const intent = await sealed(deployIntent());
+  it("passes the sealed contract call unchanged to Leather", async () => {
+    const intent = await sealed(registerIntent());
     const deps = dependencies({
-      deployResult: { txid: "AB".repeat(32), transaction: "raw-signed-deploy" },
+      callResult: { txid: "AB".repeat(32), transaction: "raw-signed-call" },
     });
 
     await expect(
@@ -371,19 +331,19 @@ describe("browser wallet execution", () => {
 
     expect(deps.connectWallet).toHaveBeenCalledWith(
       expect.objectContaining({
-        approvedProviderIds: [LEATHER_PROVIDER_ID],
+        approvedProviderIds: [LEATHER_PROVIDER_ID, XVERSE_PROVIDER_ID],
         enableLocalStorage: false,
         forceWalletSelect: true,
         network: "mainnet",
       }),
     );
     expect(vi.mocked(deps.connectWallet).mock.calls[0]?.[0]).not.toHaveProperty("walletConnect");
-    expect(deps.deploy).toHaveBeenCalledWith(
+    expect(deps.call).toHaveBeenCalledWith(
       expect.objectContaining({ provider }),
       intent.transaction.params,
     );
     expect(JSON.stringify(await executeBrowserWalletIntent(intent, deps))).not.toContain(
-      "raw-signed-deploy",
+      "raw-signed-call",
     );
   });
 
@@ -427,24 +387,18 @@ describe("browser wallet execution", () => {
   });
 
   it.each([
-    "deploy-manager",
     "withdraw-fees",
     "sweep-fee-refunds",
     "claim-rewards",
   ] as const)("blocks Xverse from %s before the transaction request", async (action) => {
     const intent = await sealed(
-      action === "deploy-manager"
-        ? deployIntent()
-        : action === "claim-rewards"
-          ? claimIntent()
-          : managerActionIntent(action),
+      action === "claim-rewards" ? claimIntent() : managerActionIntent(action),
     );
     const deps = dependencies({ providerId: XVERSE_PROVIDER_ID });
 
     await expect(executeBrowserWalletIntent(intent, deps)).rejects.toMatchObject({
       code: "unsupported-wallet",
     });
-    expect(deps.deploy).not.toHaveBeenCalled();
     expect(deps.call).not.toHaveBeenCalled();
   });
 
@@ -582,23 +536,22 @@ describe("browser wallet execution", () => {
     const deps = dependencies({ address: "SP1111111111111111111111111111111111" });
 
     await expect(
-      executeBrowserWalletIntent(await sealed(deployIntent()), deps),
+      executeBrowserWalletIntent(await sealed(registerIntent()), deps),
     ).rejects.toMatchObject({
       code: "address-mismatch",
     });
-    expect(deps.deploy).not.toHaveBeenCalled();
     expect(deps.call).not.toHaveBeenCalled();
   });
 
-  it("rejects a policy-valid request whose sealed source was changed in the browser", async () => {
-    const intent = await sealed(deployIntent());
+  it("rejects a policy-valid request whose sealed arguments changed in the browser", async () => {
+    const intent = await sealed(registerIntent());
     const changed = {
       ...intent,
       transaction: {
         ...intent.transaction,
         params: {
           ...intent.transaction.params,
-          clarityCode: "(define-public (changed) (ok true))",
+          functionArgs: ["0x00"],
         },
       },
     } as BrowserWalletIntent;
@@ -607,7 +560,7 @@ describe("browser wallet execution", () => {
     await expect(executeBrowserWalletIntent(changed, deps)).rejects.toMatchObject({
       code: "invalid-intent",
     });
-    expect(deps.deploy).not.toHaveBeenCalled();
+    expect(deps.call).not.toHaveBeenCalled();
   });
 
   it("binds the version 2 action request into the manifest seal", async () => {
@@ -627,11 +580,15 @@ describe("browser wallet execution", () => {
   it("rejects expired and changed intents before requesting the wallet", async () => {
     const expiredDeps = dependencies();
     await expect(
-      executeBrowserWalletIntent(deployIntent(), expiredDeps, new Date("2099-07-18T19:00:00.000Z")),
+      executeBrowserWalletIntent(
+        registerIntent(),
+        expiredDeps,
+        new Date("2099-07-18T19:00:00.000Z"),
+      ),
     ).rejects.toMatchObject({ code: "expired-intent" });
     expect(expiredDeps.connectWallet).not.toHaveBeenCalled();
 
-    const changed = deployIntent({
+    const changed = registerIntent({
       requiredSender: "SP1111111111111111111111111111111111",
     });
     await expect(executeBrowserWalletIntent(changed, dependencies())).rejects.toMatchObject({
@@ -641,8 +598,8 @@ describe("browser wallet execution", () => {
 
   it("warns that broadcast status is ambiguous when the wallet omits the txid", async () => {
     const failure = await executeBrowserWalletIntent(
-      await sealed(deployIntent()),
-      dependencies({ deployResult: { transaction: "raw-signed-only" } }),
+      await sealed(registerIntent()),
+      dependencies({ callResult: { transaction: "raw-signed-only" } }),
     ).catch((error) => error);
 
     expect(failure).toMatchObject({ code: "missing-txid" });
@@ -653,16 +610,16 @@ describe("browser wallet execution", () => {
 
   it("treats every failure after invoking the transaction request as ambiguous", async () => {
     const deps = dependencies();
-    vi.mocked(deps.deploy).mockRejectedValue({
+    vi.mocked(deps.call).mockRejectedValue({
       code: 4001,
       message: "secret provider diagnostic",
       transaction: "raw-signed-transaction",
     });
 
-    const failure = await executeBrowserWalletIntent(await sealed(deployIntent()), deps).catch(
+    const failure = await executeBrowserWalletIntent(await sealed(registerIntent()), deps).catch(
       (error) => error,
     );
-    expect(deps.deploy).toHaveBeenCalledOnce();
+    expect(deps.call).toHaveBeenCalledOnce();
     expect(failure).toMatchObject({ code: "request-failed" });
     expect(String(failure)).toContain("Broadcast status may be ambiguous");
     expect(String(failure)).toContain("Check wallet activity and a Stacks explorer");
@@ -671,18 +628,18 @@ describe("browser wallet execution", () => {
   });
 
   it("rechecks expiry after wallet selection and before requesting a signature", async () => {
-    const intent = await sealed(deployIntent({ expiresAt: "2026-07-18T18:31:00.000Z" }));
+    const intent = await sealed(registerIntent({ expiresAt: "2026-07-18T18:31:00.000Z" }));
     const deps = dependencies();
     deps.now = () => new Date("2026-07-18T18:31:00.000Z");
 
     await expect(
       executeBrowserWalletIntent(intent, deps, new Date("2026-07-18T18:30:00.000Z")),
     ).rejects.toMatchObject({ code: "expired-intent" });
-    expect(deps.deploy).not.toHaveBeenCalled();
+    expect(deps.call).not.toHaveBeenCalled();
   });
 
   it("does not request a wallet when server revalidation no longer returns prepared", async () => {
-    const intent = await sealed(deployIntent());
+    const intent = await sealed(registerIntent());
     const refreshIntent = vi.fn().mockResolvedValue({ ...intent, status: "superseded" });
     const requestWallet = vi.fn();
 
@@ -754,13 +711,8 @@ describe("browser wallet execution", () => {
     expect(requestWallet).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { action: "deployment", makeIntent: deployIntent },
-    { action: "registration", makeIntent: registerIntent },
-  ])("revalidates after deferred wallet selection and blocks a superseded $action", async ({
-    makeIntent,
-  }) => {
-    const intent = await sealed(makeIntent());
+  it("revalidates after deferred wallet selection and blocks a superseded registration", async () => {
+    const intent = await sealed(registerIntent());
     const selection = deferred<Awaited<ReturnType<BrowserWalletDependencies["connectWallet"]>>>();
     const deps = dependencies();
     vi.mocked(deps.connectWallet).mockReturnValue(selection.promise);
@@ -790,7 +742,6 @@ describe("browser wallet execution", () => {
 
     await prevented;
     expect(refreshIntent).toHaveBeenCalledTimes(2);
-    expect(deps.deploy).not.toHaveBeenCalled();
     expect(deps.call).not.toHaveBeenCalled();
   });
 
@@ -817,7 +768,7 @@ describe("browser wallet execution", () => {
       }),
     },
   ])("blocks a prepared second revalidation with a changed $change", async ({ update }) => {
-    const intent = await sealed(deployIntent());
+    const intent = await sealed(registerIntent());
     const deps = dependencies();
     const refreshIntent = vi
       .fn()
@@ -833,12 +784,11 @@ describe("browser wallet execution", () => {
       ),
     ).rejects.toMatchObject({ code: "invalid-intent" });
     expect(refreshIntent).toHaveBeenCalledTimes(2);
-    expect(deps.deploy).not.toHaveBeenCalled();
     expect(deps.call).not.toHaveBeenCalled();
   });
 
   it("returns provider capabilities for each supported network binding", () => {
-    expect(browserWalletSupport("deploy-manager", "testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
+    expect(browserWalletSupport("register-self", "testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
       available: true,
       providerIds: [LEATHER_PROVIDER_ID],
       unavailableReason: null,
@@ -863,7 +813,7 @@ describe("browser wallet execution", () => {
       providerIds: [LEATHER_PROVIDER_ID, XVERSE_PROVIDER_ID],
       unavailableReason: null,
     });
-    expect(browserWalletSupport("deploy-manager", "mainnet", MAINNET_CHAIN_ID)).toEqual({
+    expect(browserWalletSupport("claim-rewards", "mainnet", MAINNET_CHAIN_ID)).toEqual({
       available: true,
       providerIds: [LEATHER_PROVIDER_ID],
       unavailableReason: null,
@@ -886,7 +836,7 @@ describe("browser wallet execution", () => {
       message: "secret provider diagnostic",
       transaction: "raw-signed-transaction",
     });
-    const failure = await executeBrowserWalletIntent(await sealed(deployIntent()), deps).catch(
+    const failure = await executeBrowserWalletIntent(await sealed(registerIntent()), deps).catch(
       (error) => error,
     );
     expect(failure).toBeInstanceOf(BrowserWalletError);
