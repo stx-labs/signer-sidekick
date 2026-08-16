@@ -1499,7 +1499,7 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await expect(accrualCard).toBeVisible();
   await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
   await expect(accrualCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks");
+  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
   await expect(projectedCard.getByText("0.05 sBTC", { exact: true })).toBeVisible();
   await expect(projectedCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
   await expect(projectedCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();

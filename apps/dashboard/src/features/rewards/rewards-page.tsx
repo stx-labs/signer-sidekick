@@ -1,6 +1,8 @@
 import { Coins, Percent } from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
+  type HealthSnapshot,
+  healthSnapshotSchema,
   type RewardCalculationRealization,
   type RewardCycleSummary,
   rewardHistoryResponseSchema,
@@ -21,7 +23,7 @@ import {
   type TableSort,
 } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
-import { number, sbtc, short } from "../../shared/format.js";
+import { compactDuration, number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
@@ -184,6 +186,7 @@ export function Rewards({
   const operatorFeeForecast = rewardOutlook?.operatorFeeForecast ?? null;
   const operatorFeeEstimate = rewardOutlook?.operatorFeeEstimate ?? null;
   const rewardCalibration = rewardOutlook?.calibration ?? null;
+  const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
   const lastRewardComputeBurnHeight =
     rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
     rewards?.global.lastRewardComputeBurnHeight ??
@@ -256,6 +259,10 @@ export function Rewards({
   const activityRefreshKey = `${data.generatedAt}:${activityRetry}:${claimSort.key}:${claimSort.direction}:${withdrawalSort.key}:${withdrawalSort.direction}`;
   const historyRefreshKey = `${data.generatedAt}:${historyRetry}:${historySort.key}:${historySort.direction}`;
   const withdrawals = activity.withdrawals;
+  const nextCalculationEstimate =
+    calculation?.next?.state === "scheduled" && burnBlockTiming
+      ? compactDuration(calculation.next.blocksRemaining * burnBlockTiming.averageSeconds)
+      : null;
   const buckets = useMemo(() => {
     const values = [...(rewards?.buckets ?? [])];
     return values.sort((left, right) => {
@@ -393,6 +400,19 @@ export function Rewards({
       });
     return () => controller.abort();
   }, [cycleHistoryPage, historyRefreshKey, historySort, token]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiJson(token, "/api/v1/health", healthSnapshotSchema, {
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (!controller.signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBurnBlockTiming(null);
+      });
+    return () => controller.abort();
+  }, [token]);
   return (
     <>
       <PageHead
@@ -455,7 +475,7 @@ export function Rewards({
             {calculation?.next
               ? calculation.next.state === "due"
                 ? `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}; calculation is eligible now.`
-                : `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}, in ${number(String(calculation.next.blocksRemaining))} Bitcoin blocks.`
+                : `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}, in ${number(String(calculation.next.blocksRemaining))} Bitcoin blocks${nextCalculationEstimate ? ` · about ${nextCalculationEstimate}` : ""}.`
               : "A valid anchored PoX-5 checkpoint is required."}
           </p>
           <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>

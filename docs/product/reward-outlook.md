@@ -106,6 +106,9 @@ states the exact omission reason when fee semantics or inputs are unavailable.
 
 The node must still be advancing and every action witness must be current. A stalled chain or stale
 witness produces an evidence-specific `needs-attention` result without offering a transaction.
+Alongside the exact Bitcoin-block countdown, Rewards shows an approximate relative time derived from
+the recent observed Bitcoin-block average. It omits the time estimate when that timing evidence is
+unavailable.
 Future unattended Assist remains independently release-gated and cannot become eligible before 30
 minutes and 120 canonical Stacks blocks.
 
