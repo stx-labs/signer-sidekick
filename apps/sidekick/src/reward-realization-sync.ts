@@ -10,7 +10,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { z } from "zod";
 import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
-import { deriveRewardCalculationTarget } from "./chain-anchor.js";
+import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   createChainAnchor,
   type NodeInfo,
@@ -60,7 +60,10 @@ interface RewardRealizationApi {
 
 interface RewardRealizationNode extends Pick<RewardStatusNode, "callReadOnly"> {
   getInfo(options?: { signal?: AbortSignal }): Promise<NodeInfo>;
-  getPoxInfo(options?: { tip?: string; signal?: AbortSignal }): Promise<PoxInfo>;
+  getPoxInfo(options?: {
+    tip?: ChainAnchor["indexBlockHash"];
+    signal?: AbortSignal;
+  }): Promise<PoxInfo>;
 }
 
 interface RewardRealizationNodeTransactions {

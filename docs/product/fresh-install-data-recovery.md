@@ -76,6 +76,9 @@ future explicit archival export may broaden that scope without changing the firs
 
 ## Scheduling and backpressure
 
+- Configure a keyed indexed API before the first backfill. For the default mainnet Hiro source,
+  create a free key at [Hiro Platform](https://platform.hiro.so) and set `STACKS_API_KEY` before
+  starting Sidekick. Unauthenticated access may be rate-limited during existing-pool recovery.
 - Live observer verification and current-state reconciliation always outrank historical work.
 - Backfill is bounded, resumable, idempotent, and restart-safe.
 - Each pass has page, transaction, and wall-clock budgets and honors source-provided retry delays.

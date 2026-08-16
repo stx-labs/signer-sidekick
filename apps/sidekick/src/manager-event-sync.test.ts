@@ -203,9 +203,20 @@ describe("manager event synchronization", () => {
     ).toBeNull();
   });
 
-  it("uses a stable local canonical-block proof when an old transaction is absent from the index", async () => {
+  it("pins a historical proof to the captured local tip while new blocks arrive", async () => {
     const sidekickStore = await store();
     const blocks = nodeBlocks();
+    blocks.getTenureInfo
+      .mockResolvedValueOnce({
+        tip_block_id: `0x${"99".repeat(32)}`,
+        tip_height: 8_700_000,
+        reward_cycle: 141,
+      })
+      .mockResolvedValueOnce({
+        tip_block_id: `0x${"aa".repeat(32)}`,
+        tip_height: 8_700_001,
+        reward_cycle: 141,
+      });
 
     await expect(
       syncManagerEvents({
@@ -235,6 +246,7 @@ describe("manager event synchronization", () => {
     expect(blocks.getNakamotoBlockAtHeight).toHaveBeenCalledWith(8_600_000, {
       tip: `0x${"99".repeat(32)}`,
     });
+    expect(blocks.getTenureInfo).toHaveBeenCalledTimes(1);
     expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
   });
 

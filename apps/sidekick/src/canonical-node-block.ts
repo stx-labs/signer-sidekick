@@ -1,17 +1,10 @@
 import type { ChainAnchor } from "./chain-anchor.js";
-import type { NodeTenureInfo, StacksNodeClient } from "./chain-clients.js";
+import type { StacksNodeClient } from "./chain-clients.js";
 
 type CanonicalBlockNode = Pick<
   StacksNodeClient,
   "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
 >;
-
-function sameTip(left: NodeTenureInfo, right: NodeTenureInfo): boolean {
-  return (
-    left.tip_height === right.tip_height &&
-    left.tip_block_id.toLowerCase() === right.tip_block_id.toLowerCase()
-  );
-}
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && Buffer.compare(left, right) === 0;
@@ -22,7 +15,9 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
  *
  * This is the node-first fallback for historical transactions that predate the node's current
  * transaction index. The indexed API may identify the transaction's block, but the local node
- * independently selects the canonical bytes at that height from a stable current tip.
+ * independently selects the canonical bytes at that height from an explicitly captured local tip.
+ * New Stacks blocks may arrive while the two block reads are in flight; the `tip` query keeps the
+ * proof anchored without mistaking normal tip advancement for a reorg.
  */
 export async function proveCanonicalNodeBlock(
   node: CanonicalBlockNode,
@@ -45,10 +40,6 @@ export async function proveCanonicalNodeBlock(
       ...(input.signal ? { signal: input.signal } : {}),
     }),
   ]);
-  const after = await node.getTenureInfo(requestOptions);
-  if (!sameTip(before, after)) {
-    throw new Error("Local node tip changed during the historical block proof");
-  }
   if (!sameBytes(identified, canonical)) {
     throw new Error("Indexed transaction block is not canonical according to the local node");
   }

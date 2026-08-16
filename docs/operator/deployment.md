@@ -45,9 +45,12 @@ openssl rand -base64 32 | tr -d '\n' | pbcopy  # macOS
 
 Store the generated token in a password manager, then paste it into `.env`; avoid printing it in
 terminal history or logs. Set the node URL and manager principal. Mainnet uses the Hiro API by
-default. Set `STACKS_API_KEY` for a Hiro plan or another keyed provider; public Hiro access can be
-rate-limited. For a self-hosted API, set `STACKS_API_URL` instead. Configure the already-deployed
-manager principal.
+default. Before the first start, create a free key at [Hiro Platform](https://platform.hiro.so) and
+set `STACKS_API_KEY` in `.env`. This is strongly recommended when attaching Sidekick to an existing
+pool: reconstructing current-member and manager history produces a concentrated burst of indexed
+API reads, and unauthenticated public Hiro access can be rate-limited before that backfill finishes.
+For a self-hosted API, set `STACKS_API_URL` instead. Configure the already-deployed manager
+principal.
 
 The configured Stacks node is authoritative for current operational state. The API supplies indexed
 roster, event, and history capabilities. API lag or an API outage is shown as indexed-data
@@ -89,6 +92,18 @@ bridge traffic. Choose the simplest endpoint that fits the deployment:
 | Sidekick host | Use `http://host.docker.internal:20443` or a host address reachable from the container. |
 | Remote host | Use its private RPC URL and restrict ingress to the Sidekick host. |
 | Linux host networking | Use `compose.host-network.yaml`, set `STACKS_NODE_RPC_URL=http://127.0.0.1:20443`, and keep the Sidekick listener on loopback. |
+
+For a split-host deployment, verify these directional paths before first start. Loopback examples
+elsewhere in this guide apply only when the relevant processes share a network namespace.
+
+| Direction | Port or protocol | Importance |
+| --- | --- | --- |
+| Sidekick to Stacks node RPC | TCP 20443 | Required |
+| Sidekick to indexed Stacks API | HTTPS | Required for roster and history synchronization; a keyed Hiro account is strongly recommended |
+| Sidekick to node Prometheus | TCP 9153 | Recommended for local-node diagnosis |
+| Sidekick to signer monitoring | TCP 30001 | Recommended for signer diagnosis |
+| Stacks node to Sidekick event listener | TCP 3700 | Recommended for prompt event-driven updates; restrict ingress to the node |
+| Operator browser or private proxy to Sidekick | TCP 3998 | Required for the dashboard; use TLS on untrusted networks |
 
 For Linux host networking, use the supplied Compose-v2 overlay for every command. It removes the
 base port publishing and adapts the container health probe to the configured listener:

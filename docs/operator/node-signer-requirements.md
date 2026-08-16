@@ -37,6 +37,19 @@ running, open **Settings → Deployment check**. That page runs the same bounded
 automatically and supplies exact remediation for every incomplete item. **Refresh checks** forces a
 new observation. The result is also included in the support bundle.
 
+Before the first roster or history synchronization, create a free API key at
+[Hiro Platform](https://platform.hiro.so) and set `STACKS_API_KEY`, especially when attaching a
+fresh Sidekick database to an existing pool. Current-member backfill is bounded and resumable, but
+it still performs enough indexed requests that unauthenticated public access can be rate-limited.
+Sidekick honors the reported retry delay and resumes automatically; a key prevents avoidable delay.
+
+For split-host deployments, allow only the required private paths: Sidekick to node RPC on `20443`,
+Sidekick to node metrics on `9153` and signer monitoring on `30001` when enabled, and the Stacks node
+to Sidekick's event listener on `3700`. The operator UI on `3998` should remain private or sit behind
+an authenticating TLS proxy. `127.0.0.1` is valid only when the two endpoints share a network
+namespace; otherwise use a private address or shared-container service name and enforce the same
+directionality with firewall or network ACL rules.
+
 ## Stacks node
 
 ### RPC and transaction index

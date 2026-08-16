@@ -1151,6 +1151,30 @@ describe("Stacks node client", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("supports a cancellable current-tip PoX read without requiring a tip value", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          current_burnchain_block_height: 960_240,
+          reward_cycle_id: 141,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await client.getPoxInfo({ signal: controller.signal });
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:20443/v2/pox", {
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   it("reads a bounded header ancestry pinned to an exact node tip", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

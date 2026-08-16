@@ -652,8 +652,8 @@ function sanitizedEndpoint(url: string): string {
   return `${parsed.origin}${parsed.pathname}`;
 }
 
-function readTip(options?: ChainReadOptions): string | null {
-  if (!options) return null;
+function readTip(options?: { tip?: ChainAnchor["indexBlockHash"] }): string | null {
+  if (!options?.tip) return null;
   return chainAnchorSchema.shape.indexBlockHash.parse(options.tip).slice(2);
 }
 
@@ -923,11 +923,14 @@ export class StacksNodeClient {
     );
   }
 
-  getPoxInfo(options?: ChainReadOptions): Promise<PoxInfo> {
+  getPoxInfo(
+    options: { tip?: ChainAnchor["indexBlockHash"]; signal?: AbortSignal } = {},
+  ): Promise<PoxInfo> {
     return fetchJson(
       this.fetchImpl,
       appendQuery(`${this.baseUrl}/v2/pox`, { tip: readTip(options) }),
       poxInfoSchema,
+      options.signal ? { signal: options.signal } : {},
     );
   }
 
