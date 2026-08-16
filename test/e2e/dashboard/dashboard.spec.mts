@@ -189,6 +189,44 @@ test("loads the independent operator Overview without the legacy status endpoint
   await expect.poll(() => statusRequests).toBe(0);
 });
 
+test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
+  const expectNoConcatenatedStrongSpanPairs = async () => {
+    const violations = await page
+      .locator(".callout .body > span, .overview-loading span")
+      .evaluateAll((spans) =>
+        spans.flatMap((span) => {
+          const previous = span.previousSibling;
+          if (!(previous instanceof HTMLElement) || previous.tagName !== "STRONG") return [];
+          return [`${previous.textContent ?? ""}${span.textContent ?? ""}`];
+        }),
+      );
+    expect(violations).toEqual([]);
+  };
+  const clearOverview = structuredClone(overview);
+  clearOverview.attention = [];
+  await page.route("**/api/v1/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(clearOverview),
+    });
+  });
+
+  await login(page);
+
+  await expect(page.locator(".overview-clear-state .body")).toHaveText(
+    /No action is required right now\. Current evidence was checked/,
+  );
+  await expectNoConcatenatedStrongSpanPairs();
+
+  await openPage(page, "activity", "Activity");
+  await expectNoConcatenatedStrongSpanPairs();
+  await openPage(page, "health", "Signer Health");
+  await expectNoConcatenatedStrongSpanPairs();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expectNoConcatenatedStrongSpanPairs();
+});
+
 test("keeps healthy Overview domains visible when one domain is unavailable", async ({ page }) => {
   const partial = structuredClone(overview);
   partial.node = {
@@ -346,6 +384,67 @@ test("provides viewport-contained touch navigation on smaller screens", async ({
   await poolLink.click();
   await expect(page.getByRole("heading", { name: "Pool positions", exact: true })).toBeVisible();
   await expect(navigation).toBeHidden();
+});
+
+test("styles the mobile Settings picker and preserves reward section spacing", async ({ page }) => {
+  const rewardsWithBond = structuredClone(snapshot);
+  rewardsWithBond.rewards.buckets.push({
+    bondIndex: "0",
+    managerSharesSats: "0",
+    signerEarnedBeforeManagerClaimSats: "0",
+    rewardsPerToken: "0",
+    feeSnapshotBips: "100",
+    participating: false,
+  });
+  await page.route("**/api/v1/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(rewardsWithBond),
+    });
+  });
+  await login(page);
+  await openPage(page, "settings", "Settings");
+
+  const settingsPicker = page.getByRole("button", { name: /Settings section/ });
+  const viewport = page.viewportSize();
+  if (viewport && viewport.width <= 640) {
+    await expect(settingsPicker).toBeVisible();
+    await settingsPicker.click();
+    const menu = page.locator("#settings-section-menu");
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole("button", { name: "Deployment" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    const menuBox = await menu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(menuBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((menuBox?.x ?? 0) + (menuBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(settingsPicker).toBeFocused();
+    await settingsPicker.click();
+    await menu.getByRole("button", { name: "Data sources" }).click();
+    await expect(page.getByRole("heading", { name: "Data sources", exact: true })).toBeVisible();
+    await expect(menu).toBeHidden();
+    await expect(settingsPicker).toBeFocused();
+  } else {
+    await expect(settingsPicker).toBeHidden();
+  }
+
+  await openPage(page, "rewards", "Rewards");
+  const rewardBuckets = page.locator("section.reward-buckets");
+  const rewardLedger = page.locator(".reward-ledger");
+  await expect(rewardBuckets).toBeVisible();
+  await expect(rewardLedger).toBeVisible();
+  const bucketsBox = await rewardBuckets.boundingBox();
+  const ledgerBox = await rewardLedger.boundingBox();
+  expect(bucketsBox).not.toBeNull();
+  expect(ledgerBox).not.toBeNull();
+  expect(
+    (ledgerBox?.y ?? 0) - ((bucketsBox?.y ?? 0) + (bucketsBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(15);
 });
 
 function discardExpectedHttpConsoleError(page: Page, status: number) {

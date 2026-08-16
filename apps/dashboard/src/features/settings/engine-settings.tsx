@@ -190,7 +190,7 @@ export function EngineSettings({ token }: { token: string }) {
           <div className="engine-mode">
             <Eye />
             <div>
-              <strong>{stateLabel(status.mode)}</strong>
+              <strong>{stateLabel(status.mode)}</strong>{" "}
               <span className="muted">{MODE_DESCRIPTION[status.mode]}</span>
             </div>
             {status.forcedObserve.active ? <Badge state="error">Forced Observe</Badge> : null}
@@ -229,7 +229,7 @@ export function EngineSettings({ token }: { token: string }) {
               {status.adapters.map((adapter) => (
                 <div className="engine-operation" key={adapter.adapter.id}>
                   <div className="engine-operation-name">
-                    <strong>{adapter.label}</strong>
+                    <strong>{adapter.label}</strong>{" "}
                     <span className="mono">
                       {adapter.adapter.id} · rev {adapter.adapter.revision}
                     </span>

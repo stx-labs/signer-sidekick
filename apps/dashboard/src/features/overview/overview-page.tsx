@@ -328,8 +328,7 @@ export function Overview({
       <div className="overview-loading" aria-live="polite" role="status">
         <ArrowClockwise className="spin" />
         <div>
-          <strong>Loading Overview</strong>
-          <span>Other pages remain independently available.</span>
+          <strong>Loading Overview</strong> <span>Other pages remain independently available.</span>
         </div>
       </div>
     );
@@ -341,7 +340,7 @@ export function Overview({
         <div className="callout callout-critical" role="alert">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Could not load Overview</strong>
+            <strong>Could not load Overview</strong>{" "}
             <span>{operatorErrorSentence(error ?? "Overview is unavailable")}</span>
             <div className="actions">
               <button
@@ -395,7 +394,7 @@ export function Overview({
         <div className="callout callout-info content-notice" role="status">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Could not refresh Overview</strong>
+            <strong>Could not refresh Overview</strong>{" "}
             <span>{operatorErrorSentence(error)} Showing the last successful projection.</span>
           </div>
         </div>
@@ -404,7 +403,7 @@ export function Overview({
         <div className="callout callout-caution content-notice" role="status">
           <WarningCircle className="ic" />
           <div className="body">
-            <strong>Local node unavailable · actions paused</strong>
+            <strong>Local node unavailable · actions paused</strong>{" "}
             <span>Retained domain evidence remains visible while Sidekick rechecks the node.</span>
           </div>
         </div>
@@ -509,7 +508,7 @@ export function Overview({
           <div className="callout callout-neutral overview-clear-state">
             <CheckCircle className="ic" />
             <div className="body">
-              <strong>No action is required right now.</strong>
+              <strong>No action is required right now.</strong>{" "}
               <span>
                 Current evidence was checked {compactDuration(checkedAgeSeconds)} ago. Scheduled
                 work remains on Pool and Rewards until it becomes actionable.
@@ -560,8 +559,7 @@ export function Overview({
               <article className="card overview-progress" key={item.activityId}>
                 <Pulse />
                 <div>
-                  <strong>{item.title}</strong>
-                  <span>{statusLabel(item.stage)}</span>
+                  <strong>{item.title}</strong> <span>{statusLabel(item.stage)}</span>
                   <EvidenceLine evidence={item.evidence} />
                 </div>
                 <ContextualActionControl

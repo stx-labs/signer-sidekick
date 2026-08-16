@@ -1,6 +1,7 @@
 .pipeline-wrap,
 .forecast-card,
 .reward-outlook,
+.reward-buckets,
 .reward-ledger,
 .settings-grid {
   margin-bottom: var(--space-4);
@@ -1058,6 +1059,7 @@
 }
 
 .settings-mobile-picker {
+  position: relative;
   display: none;
 }
 
@@ -1955,6 +1957,23 @@
   font-family: var(--font-mono);
   font-size: 10px;
   text-align: center;
+}
+
+.settings-mobile-picker :where(.mobile-page-menu-trigger) {
+  background: var(--surface-fourth);
+}
+
+.settings-mobile-picker :where(.mobile-page-menu-popover) {
+  width: 100%;
+}
+
+.settings-mobile-picker-popover :where(.mobile-page-menu-item) {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-body);
+  text-align: left;
+  cursor: pointer;
 }
 
 .health-head .actions,

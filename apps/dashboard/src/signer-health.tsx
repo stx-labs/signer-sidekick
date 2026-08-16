@@ -320,7 +320,7 @@ export function SignerHealthPage({
         <div className="callout callout-neutral health-setup-note">
           <GearSix className="ic" />
           <div className="body">
-            <strong>More health signals are available.</strong>
+            <strong>More health signals are available.</strong>{" "}
             <span>
               Configure {!nodeMetricsConfigured ? "node metrics" : ""}
               {!nodeMetricsConfigured && !signerConfigured ? " and " : ""}
@@ -349,7 +349,7 @@ export function SignerHealthPage({
                 <WarningCircle className="ic" />
                 <div className="body">
                   <div className="health-finding-title">
-                    <strong>{finding.title}</strong>
+                    <strong>{finding.title}</strong>{" "}
                     <span className="badge b-neutral">{finding.confidence} confidence</span>
                   </div>
                   <span>{finding.detail}</span>
@@ -618,7 +618,7 @@ export function SignerHealthPage({
                       : "active"}
                 </span>
                 <div>
-                  <strong>{episode.title}</strong>
+                  <strong>{episode.title}</strong>{" "}
                   <span className="mono muted">
                     Opened {displayTime(episode.firstObservedAt)} · last seen{" "}
                     {displayTime(episode.lastObservedAt)} · {episode.occurrences} observations

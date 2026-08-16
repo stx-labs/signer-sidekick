@@ -76,8 +76,7 @@ export function ConnectionPage({
               <li className={`connection-check connection-check-${check.status}`} key={check.id}>
                 {check.status === "pass" ? <CheckCircle /> : <WarningCircle />}
                 <div>
-                  <strong>{check.id.replaceAll("-", " ")}</strong>
-                  <span>{check.message}</span>
+                  <strong>{check.id.replaceAll("-", " ")}</strong> <span>{check.message}</span>
                 </div>
               </li>
             ))}
@@ -92,7 +91,7 @@ export function ConnectionPage({
         {assessment?.stale && stored ? (
           <div className="callout callout-caution">
             <div className="body">
-              <strong>Last proved connection retained</strong>
+              <strong>Last proved connection retained</strong>{" "}
               <span>
                 Verified {new Date(stored.lastVerifiedAt).toLocaleString()} at Stacks block
                 {` ${stored.lastStacksTipHeight.toLocaleString()}`} and Bitcoin block

@@ -1,5 +1,6 @@
 import {
   ArrowSquareOut,
+  CaretDown,
   Check,
   DownloadSimple,
   Key,
@@ -42,6 +43,79 @@ function settingsTabForSection(section: SettingsSection | null): SettingsTab {
   if (section === "capabilities") return "operations";
   if (section === "auth" || section === "support") return "support-security";
   return "deployment";
+}
+
+function SettingsMobilePicker({
+  activeTab,
+  onSelect,
+}: {
+  activeTab: SettingsTab;
+  onSelect: (tab: SettingsTab) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const activeLabel = settingsTabs.find(([id]) => id === activeTab)?.[1] ?? "Choose section";
+
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromKeyboard);
+    };
+  }, [open]);
+
+  return (
+    <div className="settings-mobile-picker" ref={rootRef}>
+      <span id="settings-section-label">Settings section</span>
+      <button
+        aria-controls="settings-section-menu"
+        aria-expanded={open}
+        aria-labelledby="settings-section-label settings-section-current"
+        className="mobile-page-menu-trigger"
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+        type="button"
+      >
+        <span className="mobile-page-menu-current" id="settings-section-current">
+          <span>{activeLabel}</span>
+        </span>
+        <CaretDown className="mobile-page-menu-chevron" />
+      </button>
+      <nav
+        aria-label="Settings sections"
+        className="mobile-page-menu-popover settings-mobile-picker-popover"
+        hidden={!open}
+        id="settings-section-menu"
+      >
+        {settingsTabs.map(([id, label]) => (
+          <button
+            aria-current={activeTab === id ? "page" : undefined}
+            className={`mobile-page-menu-item ${activeTab === id ? "active" : ""}`}
+            key={id}
+            onClick={() => {
+              onSelect(id);
+              setOpen(false);
+              triggerRef.current?.focus();
+            }}
+            type="button"
+          >
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
 }
 
 export function SettingsPage({
@@ -334,20 +408,7 @@ export function SettingsPage({
           <div className="body">Settings saved.</div>
         </div>
       ) : null}
-      <label className="settings-mobile-picker">
-        <span>Settings section</span>
-        <select
-          className="input"
-          value={activeTab}
-          onChange={(event) => setActiveTab(event.target.value as SettingsTab)}
-        >
-          {settingsTabs.map(([id, label]) => (
-            <option key={id} value={id}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SettingsMobilePicker activeTab={activeTab} onSelect={setActiveTab} />
       <div className="settings-grid">
         <nav className="set-nav" aria-label="Settings sections">
           {settingsTabs.map(([id, label]) => (
@@ -745,10 +806,10 @@ export function SettingsPage({
                           {data.manager.automationEligible
                             ? "Assist available."
                             : "Assist unavailable."}
-                        </strong>
-                        {!data.manager.automationEligible ? (
-                          <> {data.manager.automationEligibilityReason}</>
-                        ) : null}
+                        </strong>{" "}
+                        {!data.manager.automationEligible
+                          ? data.manager.automationEligibilityReason
+                          : null}
                       </div>
                     </div>
                     {data.manager.installedProfiles.issues.map((issue) => (

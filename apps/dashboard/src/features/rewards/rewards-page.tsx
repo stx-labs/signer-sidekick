@@ -605,7 +605,7 @@ export function Rewards({
       ) : null}
       <StakerSettlementPanel calculationPending={calculation?.state === "pending"} token={token} />
       {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
-        <section className="card" aria-labelledby="reward-buckets">
+        <section className="card reward-buckets" aria-labelledby="reward-buckets">
           <h2 id="reward-buckets">Reward buckets</h2>
           <p className="tertiary">
             PoX-5 keys rewards by bond period. A manager claim names every participating bucket in

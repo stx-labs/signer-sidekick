@@ -663,8 +663,7 @@ function ActivityDetailPage({
           </div>
           {item.coverage.map((source) => (
             <div className="activity-coverage-source" key={source.source}>
-              <strong>{source.source.replaceAll("-", " ")}</strong>
-              <span>{source.status}</span>
+              <strong>{source.source.replaceAll("-", " ")}</strong> <span>{source.status}</span>
               {source.observedAt ? (
                 <time dateTime={source.observedAt}>{activityTimestamp(source.observedAt)}</time>
               ) : null}

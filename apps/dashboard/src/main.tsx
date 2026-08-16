@@ -873,7 +873,7 @@ function App() {
           >
             <div className="freshness-primary">
               <span className="dot" aria-hidden="true" />
-              <strong className="freshness-state">{freshnessStatusLabel}</strong>
+              <strong className="freshness-state">{freshnessStatusLabel}</strong>{" "}
               <span className="freshness-detail mono">{freshnessDetailLabel}</span>
             </div>
             {showFreshnessRefresh || showHiroRateLimitAction ? (
@@ -926,7 +926,7 @@ function App() {
             <div className="callout callout-caution app-status-banner" role="status">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Showing retained operator data</strong>
+                <strong>Showing retained operator data</strong>{" "}
                 <span>
                   Sidekick cannot currently reach the configured local node. Read-only evidence
                   remains available, but operations requiring current chain evidence are paused.
@@ -942,7 +942,7 @@ function App() {
             >
               <ArrowClockwise className="ic spin" />
               <div className="body">
-                <strong>Syncing chain data</strong>
+                <strong>Syncing chain data</strong>{" "}
                 <span>
                   {syncOperation.progress.message} · step
                   {` ${syncOperation.progress.completedSteps + 1} of ${syncOperation.progress.totalSteps}`}
@@ -961,7 +961,7 @@ function App() {
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Chain data sync failed</strong>
+                <strong>Chain data sync failed</strong>{" "}
                 <span>{syncOperationError(syncOperation)}</span>
                 <div className="actions">
                   <button
@@ -980,8 +980,7 @@ function App() {
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Chain data sync needs attention</strong>
-                <span>{syncError}</span>
+                <strong>Chain data sync needs attention</strong> <span>{syncError}</span>
                 <div className="actions">
                   <button
                     type="button"
@@ -999,7 +998,7 @@ function App() {
             <div className="callout callout-critical app-status-banner error-banner">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>
+                <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>{" "}
                 <span>{statusError}</span>
                 {statusRateLimit ? <span>{rateLimitGuidance(statusRateLimit)}</span> : null}
                 {data ? (
