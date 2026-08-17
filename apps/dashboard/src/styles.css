@@ -1112,6 +1112,22 @@
   font-weight: var(--fw-medium);
 }
 
+.connection-assessment {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-tertiary);
+}
+
+.connection-assessment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.connection-assessment-head p {
+  margin: var(--space-1) 0 0;
+}
+
 .connection-list {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1237,6 +1253,15 @@
 
   .connection-editor {
     padding: var(--space-3);
+  }
+
+  .connection-assessment-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .connection-assessment-head .btn {
+    width: 100%;
   }
 
   .settings-section-actions {

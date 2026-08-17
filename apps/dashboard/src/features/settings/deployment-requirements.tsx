@@ -70,10 +70,12 @@ function RequirementCard({ check }: { check: DeploymentRequirement }) {
 }
 
 export function DeploymentRequirementsPanel({
+  onRequirements,
   readOnly,
   refreshRevision,
   token,
 }: {
+  onRequirements?: (requirements: DeploymentRequirements) => void;
   readOnly: boolean;
   refreshRevision: number;
   token: string;
@@ -101,7 +103,10 @@ export function DeploymentRequirementsPanel({
             timeoutMs: 30_000,
           },
         );
-        if (controller.current === nextController) setRequirements(result);
+        if (controller.current === nextController) {
+          setRequirements(result);
+          onRequirements?.(result);
+        }
       } catch (cause) {
         if (nextController.signal.aborted || controller.current !== nextController) return;
         setError(
@@ -118,7 +123,7 @@ export function DeploymentRequirementsPanel({
         }
       }
     },
-    [token],
+    [onRequirements, token],
   );
 
   useEffect(() => {
@@ -126,60 +131,33 @@ export function DeploymentRequirementsPanel({
     return () => controller.current?.abort();
   }, [load, refreshRevision]);
 
-  const incomplete = requirements?.checks.filter(({ status }) => status !== "pass").length ?? 0;
-  const incompleteChecks = requirements?.checks.filter(({ status }) => status !== "pass") ?? [];
-  const passingChecks = requirements?.checks.filter(({ status }) => status === "pass") ?? [];
+  const connectionCheckIds = new Set(["node-rpc", "node-metrics", "signer-monitoring"]);
+  const runtimeChecks = requirements?.checks.filter(({ id }) => !connectionCheckIds.has(id)) ?? [];
+  const incompleteChecks = runtimeChecks.filter(({ status }) => status !== "pass");
+  const passingChecks = runtimeChecks.filter(({ status }) => status === "pass");
   return (
-    <section className="card-standout set-section deployment-requirements" id="requirements">
-      <div className="card-head">
+    <div className="connection-assessment" id="requirements">
+      <div className="connection-assessment-head">
         <div>
-          <span className="eyebrow">Read-only deployment assessment</span>
-          <h2>Node &amp; signer requirements</h2>
+          <strong>Runtime requirements</strong>
+          <p className="help">
+            {requirements
+              ? `Last checked ${new Date(requirements.checkedAt).toLocaleString()}`
+              : "Transaction indexing and event delivery"}
+          </p>
         </div>
-        <div className="settings-inline-actions">
-          {requirements ? (
-            <StatusBadge
-              status={
-                requirements.status === "ready"
-                  ? "Ready"
-                  : requirements.status === "blocked"
-                    ? "Blocked"
-                    : "Attention"
-              }
-            />
-          ) : null}
-          <button
-            className="btn btn-secondary sm"
-            disabled={loading || readOnly}
-            onClick={() => void load(true)}
-            type="button"
-          >
-            <ArrowClockwise /> {loading ? "Checking" : "Refresh checks"}
-          </button>
-        </div>
+        <button
+          className="btn btn-secondary sm"
+          disabled={loading || readOnly}
+          onClick={() => void load(true)}
+          type="button"
+        >
+          <ArrowClockwise /> {loading ? "Checking" : "Refresh checks"}
+        </button>
       </div>
-      <p className="muted">
-        Sidekick tests the live endpoints and required Stacks Core features. It reports exact
-        remediation, but never edits configuration or restarts the node or signer.
-      </p>
       <ErrorCallout error={error} />
       {requirements ? (
         <>
-          <div
-            className={`callout ${requirements.requiredReady ? "callout-info" : "callout-caution"}`}
-            role="status"
-          >
-            <div className="body">
-              <strong>
-                {requirements.requiredReady
-                  ? "Required features are ready."
-                  : "A required feature needs attention."}
-              </strong>{" "}
-              {incomplete === 0
-                ? "Recommended monitoring and observer checks are also ready."
-                : `${incomplete} ${incomplete === 1 ? "check needs" : "checks need"} review.`}
-            </div>
-          </div>
           {incompleteChecks.length ? (
             <div className="deployment-requirement-list">
               {incompleteChecks.map((check) => (
@@ -190,7 +168,8 @@ export function DeploymentRequirementsPanel({
           {passingChecks.length ? (
             <details className="deployment-passing-checks">
               <summary>
-                {passingChecks.length} successful {passingChecks.length === 1 ? "check" : "checks"}
+                {passingChecks.length} runtime{" "}
+                {passingChecks.length === 1 ? "requirement" : "requirements"} ready
               </summary>
               <div className="deployment-requirement-list">
                 {passingChecks.map((check) => (
@@ -199,15 +178,10 @@ export function DeploymentRequirementsPanel({
               </div>
             </details>
           ) : null}
-          <p className="help">
-            Last checked {new Date(requirements.checkedAt).toLocaleString()}. Required failures
-            block only the features that need them; recommended checks improve diagnosis and
-            event-driven freshness.
-          </p>
         </>
       ) : loading ? (
-        <div className="loading-state">Checking deployment requirements</div>
+        <div className="loading-state">Checking runtime requirements</div>
       ) : null}
-    </section>
+    </div>
   );
 }

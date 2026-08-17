@@ -8,6 +8,8 @@ import {
 } from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
+  type DeploymentRequirement,
+  type DeploymentRequirements,
   healthSourceTestResponseSchema,
   type RuntimeSettings,
   runtimeSettingsSchema,
@@ -38,6 +40,26 @@ type ConnectionEditor =
   | "indexed-api"
   | "hiro-reference";
 type SettingsSaveSection = "dataSources" | "forecast";
+type SourceTestResult = {
+  state: "testing" | "connected" | "failed";
+  detail: string;
+};
+
+function requirementStatus(check: DeploymentRequirement | undefined, configured: boolean): string {
+  if (!configured) return "Not configured";
+  if (!check) return "Configured";
+  if (check.status === "pass") return "Connected";
+  if (check.status === "unavailable") return "Unavailable";
+  if (check.status === "not-configured") return "Not configured";
+  return "Attention";
+}
+
+function testedSourceStatus(test: SourceTestResult | undefined, fallback: string): string {
+  if (!test) return fallback;
+  if (test.state === "connected") return "Connected";
+  if (test.state === "testing") return "Checking";
+  return "Unavailable";
+}
 
 function credentialSourceLabel(
   source: "environment" | "database" | "indexed-api" | "none",
@@ -148,14 +170,27 @@ export function SettingsPage({
   const [supportDownloadBusy, setSupportDownloadBusy] = useState(false);
   const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
   const [deploymentCheckRevision, setDeploymentCheckRevision] = useState(0);
-  const [sourceTest, setSourceTest] = useState<{
-    kind: HealthSourceKind;
-    state: "testing" | "connected" | "failed";
-    detail: string;
-  } | null>(null);
+  const [deploymentRequirements, setDeploymentRequirements] =
+    useState<DeploymentRequirements | null>(null);
+  const [sourceTests, setSourceTests] = useState<
+    Partial<Record<HealthSourceKind, SourceTestResult>>
+  >({});
   const [editingSource, setEditingSource] = useState<ConnectionEditor | null>(null);
   const settingsLoadController = useRef<AbortController | null>(null);
-  const sourceTestController = useRef<AbortController | null>(null);
+  const sourceTestController = useRef<{
+    controller: AbortController;
+    kind: HealthSourceKind;
+  } | null>(null);
+  const recordDeploymentRequirements = useCallback((requirements: DeploymentRequirements) => {
+    setDeploymentRequirements(requirements);
+    setSourceTests((current) => {
+      if (!current["node-metrics"] && !current["signer-monitoring"]) return current;
+      const next = { ...current };
+      delete next["node-metrics"];
+      delete next["signer-monitoring"];
+      return next;
+    });
+  }, []);
 
   const loadSettings = useCallback(async () => {
     settingsLoadController.current?.abort();
@@ -196,7 +231,7 @@ export function SettingsPage({
   useEffect(
     () => () => {
       settingsLoadController.current?.abort();
-      sourceTestController.current?.abort();
+      sourceTestController.current?.controller.abort();
     },
     [],
   );
@@ -216,9 +251,11 @@ export function SettingsPage({
 
   const saveSection = async (section: SettingsSaveSection) => {
     if (!settings || !persistedSettings) return;
-    sourceTestController.current?.abort();
-    sourceTestController.current = null;
-    setSourceTest(null);
+    if (section === "dataSources") {
+      sourceTestController.current?.controller.abort();
+      sourceTestController.current = null;
+      setSourceTests({});
+    }
     setSavingSection(section);
     setSavedSection(null);
     setSectionError(null);
@@ -323,18 +360,20 @@ export function SettingsPage({
     );
   }
   const update = <K extends keyof RuntimeSettings>(section: K, value: RuntimeSettings[K]) => {
-    sourceTestController.current?.abort();
-    sourceTestController.current = null;
+    if (section === "dataSources") {
+      sourceTestController.current?.controller.abort();
+      sourceTestController.current = null;
+      setSourceTests({});
+    }
     setSavedSection(null);
     setSectionError(null);
-    setSourceTest(null);
     if (section === "dataSources") setDataSourcesDirty(true);
     if (section === "forecast") setForecastDirty(true);
     setSettings({ ...settings, [section]: value });
   };
   const discardDataSourceChanges = () => {
     if (!persistedSettings) return;
-    sourceTestController.current?.abort();
+    sourceTestController.current?.controller.abort();
     sourceTestController.current = null;
     setSettings({ ...settings, dataSources: persistedSettings.dataSources });
     setApiKey("");
@@ -346,13 +385,25 @@ export function SettingsPage({
     setDataSourcesDirty(false);
     setSavedSection(null);
     setSectionError(null);
-    setSourceTest(null);
+    setSourceTests({});
   };
   const testHealthSource = async (kind: HealthSourceKind, url?: string) => {
-    sourceTestController.current?.abort();
+    const previousTest = sourceTestController.current;
+    previousTest?.controller.abort();
+    if (previousTest) {
+      setSourceTests((current) => {
+        if (current[previousTest.kind]?.state !== "testing") return current;
+        const next = { ...current };
+        delete next[previousTest.kind];
+        return next;
+      });
+    }
     const controller = new AbortController();
-    sourceTestController.current = controller;
-    setSourceTest({ kind, state: "testing", detail: "Connecting…" });
+    sourceTestController.current = { controller, kind };
+    setSourceTests((current) => ({
+      ...current,
+      [kind]: { state: "testing", detail: "Connecting…" },
+    }));
     try {
       const result = await apiJson(
         token,
@@ -364,25 +415,31 @@ export function SettingsPage({
           signal: controller.signal,
         },
       );
-      if (sourceTestController.current !== controller) return;
-      setSourceTest({
-        kind,
-        state: "connected",
-        detail: `Connected · ${result.signals} recognized signals`,
-      });
+      if (sourceTestController.current?.controller !== controller) return;
+      setSourceTests((current) => ({
+        ...current,
+        [kind]: {
+          state: "connected",
+          detail: `Connected · ${result.signals} recognized signals`,
+        },
+      }));
     } catch (cause) {
-      if (controller.signal.aborted || sourceTestController.current !== controller) return;
-      setSourceTest({
-        kind,
-        state: "failed",
-        detail: operatorActionError(
-          cause,
-          `Could not connect to ${healthSourceLabels[kind]}`,
-          "Check the URL, then retry; this test does not save settings",
-        ),
-      });
+      if (controller.signal.aborted || sourceTestController.current?.controller !== controller)
+        return;
+      setSourceTests((current) => ({
+        ...current,
+        [kind]: {
+          state: "failed",
+          detail: operatorActionError(
+            cause,
+            `Could not connect to ${healthSourceLabels[kind]}`,
+            "Check the URL, then retry; this test does not save settings",
+          ),
+        },
+      }));
     } finally {
-      if (sourceTestController.current === controller) sourceTestController.current = null;
+      if (sourceTestController.current?.controller === controller)
+        sourceTestController.current = null;
     }
   };
   const downloadSupportBundle = async () => {
@@ -402,6 +459,46 @@ export function SettingsPage({
       setSupportDownloadBusy(false);
     }
   };
+  const requirementById = new Map(
+    deploymentRequirements?.checks.map((check) => [check.id, check]) ?? [],
+  );
+  const nodeStatus = requirementById.has("node-rpc")
+    ? requirementStatus(requirementById.get("node-rpc"), true)
+    : !data
+      ? "Unavailable"
+      : data.preflight.status === "fail"
+        ? "Attention"
+        : "Connected";
+  const nodeMetricsConfigured = Boolean(settings.dataSources.nodeMetricsUrl);
+  const nodeMetricsStatus = testedSourceStatus(
+    sourceTests["node-metrics"],
+    requirementStatus(requirementById.get("node-metrics"), nodeMetricsConfigured),
+  );
+  const signerMonitoringConfigured = Boolean(settings.dataSources.signerMonitoringUrl);
+  const signerMonitoringStatus = testedSourceStatus(
+    sourceTests["signer-monitoring"],
+    requirementStatus(requirementById.get("signer-monitoring"), signerMonitoringConfigured),
+  );
+  const indexedApiStatus = testedSourceStatus(
+    sourceTests["indexed-api"],
+    !data || data.preflight.api.available === false ? "Unavailable" : "Connected",
+  );
+  const referenceApiConfigured = Boolean(settings.dataSources.hiroReferenceApiUrl);
+  const referenceApiStatus = testedSourceStatus(
+    sourceTests["hiro-reference"],
+    referenceApiConfigured ? "Configured" : "Not configured",
+  );
+  const connectionsStatus = deploymentRequirements
+    ? deploymentRequirements.status === "ready"
+      ? "Connected"
+      : "Attention"
+    : !data
+      ? "Unavailable"
+      : data.preflight.status === "pass"
+        ? "Connected"
+        : data.preflight.status === "warn"
+          ? "Attention"
+          : "Unavailable";
 
   return (
     <div className="settings-page">
@@ -435,29 +532,22 @@ export function SettingsPage({
             <h2 id="deployment-settings-title">Deployment</h2>
             <p>Connections, requirements, and attachment for this running Sidekick instance.</p>
           </div>
-          <DeploymentRequirementsPanel
-            readOnly={readOnly}
-            refreshRevision={deploymentCheckRevision}
-            token={token}
-          />
           <section className="card-standout set-section connections-panel" id="connections">
             <div className="card-head">
               <div>
                 <h2>Connections</h2>
-                <p className="muted">Endpoints and credentials used by this deployment.</p>
+                <p className="muted">
+                  Endpoints, credentials, and required runtime features used by this deployment.
+                </p>
               </div>
-              <StatusBadge
-                status={
-                  !data
-                    ? "Unavailable"
-                    : data.preflight.status === "pass"
-                      ? "Connected"
-                      : data.preflight.status === "warn"
-                        ? "Attention"
-                        : "Unavailable"
-                }
-              />
+              <StatusBadge status={connectionsStatus} />
             </div>
+            <DeploymentRequirementsPanel
+              onRequirements={recordDeploymentRequirements}
+              readOnly={readOnly}
+              refreshRevision={deploymentCheckRevision}
+              token={token}
+            />
             {data ? (
               <details className="connection-compatibility">
                 <summary>
@@ -504,13 +594,7 @@ export function SettingsPage({
                 editing={editingSource === "node-rpc"}
                 label="Stacks node"
                 onEdit={() => setEditingSource(editingSource === "node-rpc" ? null : "node-rpc")}
-                status={
-                  !data
-                    ? "Unavailable"
-                    : data.preflight.status === "fail"
-                      ? "Attention"
-                      : "Connected"
-                }
+                status={nodeStatus}
                 value={settings.dataSources.nodeRpcUrl}
               >
                 <Field label="Stacks node RPC URL" help="Stacks node used by Sidekick.">
@@ -536,7 +620,7 @@ export function SettingsPage({
                 onEdit={() =>
                   setEditingSource(editingSource === "node-metrics" ? null : "node-metrics")
                 }
-                status={settings.dataSources.nodeMetricsUrl ? "Configured" : "Not configured"}
+                status={nodeMetricsStatus}
                 value={settings.dataSources.nodeMetricsUrl || "Not configured"}
               >
                 <Field
@@ -560,7 +644,8 @@ export function SettingsPage({
                       type="button"
                       className="btn btn-tertiary"
                       disabled={
-                        !settings.dataSources.nodeMetricsUrl || sourceTest?.state === "testing"
+                        !settings.dataSources.nodeMetricsUrl ||
+                        sourceTests["node-metrics"]?.state === "testing"
                       }
                       onClick={() =>
                         void testHealthSource("node-metrics", settings.dataSources.nodeMetricsUrl)
@@ -569,9 +654,13 @@ export function SettingsPage({
                       Test
                     </button>
                   </div>
-                  {sourceTest?.kind === "node-metrics" ? (
-                    <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
-                      {sourceTest.detail}
+                  {sourceTests["node-metrics"] ? (
+                    <span
+                      className={
+                        sourceTests["node-metrics"]?.state === "failed" ? "field-error" : "muted"
+                      }
+                    >
+                      {sourceTests["node-metrics"]?.detail}
                     </span>
                   ) : null}
                 </Field>
@@ -587,7 +676,7 @@ export function SettingsPage({
                     editingSource === "signer-monitoring" ? null : "signer-monitoring",
                   )
                 }
-                status={settings.dataSources.signerMonitoringUrl ? "Configured" : "Not configured"}
+                status={signerMonitoringStatus}
                 value={settings.dataSources.signerMonitoringUrl || "Not configured"}
               >
                 <Field label="Signer monitoring URL" help="Recommended signer monitoring endpoint.">
@@ -608,7 +697,8 @@ export function SettingsPage({
                       type="button"
                       className="btn btn-tertiary"
                       disabled={
-                        !settings.dataSources.signerMonitoringUrl || sourceTest?.state === "testing"
+                        !settings.dataSources.signerMonitoringUrl ||
+                        sourceTests["signer-monitoring"]?.state === "testing"
                       }
                       onClick={() =>
                         void testHealthSource(
@@ -620,9 +710,15 @@ export function SettingsPage({
                       Test
                     </button>
                   </div>
-                  {sourceTest?.kind === "signer-monitoring" ? (
-                    <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
-                      {sourceTest.detail}
+                  {sourceTests["signer-monitoring"] ? (
+                    <span
+                      className={
+                        sourceTests["signer-monitoring"]?.state === "failed"
+                          ? "field-error"
+                          : "muted"
+                      }
+                    >
+                      {sourceTests["signer-monitoring"]?.detail}
                     </span>
                   ) : null}
                 </Field>
@@ -636,9 +732,7 @@ export function SettingsPage({
                 onEdit={() =>
                   setEditingSource(editingSource === "indexed-api" ? null : "indexed-api")
                 }
-                status={
-                  !data || data.preflight.api.available === false ? "Unavailable" : "Connected"
-                }
+                status={indexedApiStatus}
                 value={settings.dataSources.apiUrl}
               >
                 <p className="credential-status-inline">
@@ -675,7 +769,7 @@ export function SettingsPage({
                       setSectionError(null);
                       setDataSourcesDirty(true);
                       setIndexedApiDirty(true);
-                      setSourceTest(null);
+                      setSourceTests({});
                       setApiKey(value);
                       setApiKeyAction(value ? "replace" : "keep");
                     }}
@@ -685,7 +779,7 @@ export function SettingsPage({
                   <button
                     type="button"
                     className="btn btn-tertiary"
-                    disabled={indexedApiDirty || sourceTest?.state === "testing"}
+                    disabled={indexedApiDirty || sourceTests["indexed-api"]?.state === "testing"}
                     onClick={() => void testHealthSource("indexed-api")}
                   >
                     Test saved connection
@@ -701,7 +795,7 @@ export function SettingsPage({
                         setDataSourcesDirty(true);
                         setSavedSection(null);
                         setSectionError(null);
-                        setSourceTest(null);
+                        setSourceTests({});
                       }}
                     >
                       Remove saved key
@@ -711,9 +805,13 @@ export function SettingsPage({
                 {indexedApiDirty ? (
                   <p className="help">Save connections before testing this API.</p>
                 ) : null}
-                {sourceTest?.kind === "indexed-api" ? (
-                  <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
-                    {sourceTest.detail}
+                {sourceTests["indexed-api"] ? (
+                  <span
+                    className={
+                      sourceTests["indexed-api"]?.state === "failed" ? "field-error" : "muted"
+                    }
+                  >
+                    {sourceTests["indexed-api"]?.detail}
                   </span>
                 ) : null}
                 <details className="wallet-operation-advanced api-source-advanced">
@@ -742,7 +840,7 @@ export function SettingsPage({
                 onEdit={() =>
                   setEditingSource(editingSource === "hiro-reference" ? null : "hiro-reference")
                 }
-                status={settings.dataSources.hiroReferenceApiUrl ? "Configured" : "Not configured"}
+                status={referenceApiStatus}
                 value={settings.dataSources.hiroReferenceApiUrl || "Not configured"}
               >
                 <p className="credential-status-inline">
@@ -784,7 +882,7 @@ export function SettingsPage({
                       setSectionError(null);
                       setDataSourcesDirty(true);
                       setReferenceApiDirty(true);
-                      setSourceTest(null);
+                      setSourceTests({});
                       setReferenceApiKey(value);
                       setReferenceApiKeyAction(value ? "replace" : "keep");
                     }}
@@ -797,7 +895,7 @@ export function SettingsPage({
                     disabled={
                       !settings.dataSources.hiroReferenceApiUrl ||
                       referenceApiDirty ||
-                      sourceTest?.state === "testing"
+                      sourceTests["hiro-reference"]?.state === "testing"
                     }
                     onClick={() => void testHealthSource("hiro-reference")}
                   >
@@ -814,7 +912,7 @@ export function SettingsPage({
                         setDataSourcesDirty(true);
                         setSavedSection(null);
                         setSectionError(null);
-                        setSourceTest(null);
+                        setSourceTests({});
                       }}
                     >
                       Remove saved key
@@ -824,9 +922,13 @@ export function SettingsPage({
                 {referenceApiDirty ? (
                   <p className="help">Save connections before testing this API.</p>
                 ) : null}
-                {sourceTest?.kind === "hiro-reference" ? (
-                  <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
-                    {sourceTest.detail}
+                {sourceTests["hiro-reference"] ? (
+                  <span
+                    className={
+                      sourceTests["hiro-reference"]?.state === "failed" ? "field-error" : "muted"
+                    }
+                  >
+                    {sourceTests["hiro-reference"]?.detail}
                   </span>
                 ) : null}
                 <details className="wallet-operation-advanced api-source-advanced">

@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   connection,
+  deploymentRequirements,
   health,
   healthFinding,
   operationReadiness,
@@ -1567,8 +1568,9 @@ test("checks deployment requirements and shows exact operator-owned remediation"
   await login(page);
   await openPage(page, "settings", "Settings");
 
-  await expect(page.getByRole("heading", { name: "Node & signer requirements" })).toBeVisible();
-  await expect(page.getByText("A required feature needs attention.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Node & signer requirements" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Refresh checks" })).toBeVisible();
   const transactionIndex = page.locator(".deployment-requirement", {
     hasText: "Node transaction index",
   });
@@ -1577,6 +1579,82 @@ test("checks deployment requirements and shows exact operator-owned remediation"
   await expect(transactionIndex.locator("pre")).toContainText("txindex = true");
   await expect(transactionIndex).toContainText("Restart after changing configuration: stacks-node");
   await expect(transactionIndex).toBeInViewport();
+});
+
+test("shows successful live checks as connected in every connection summary", async ({ page }) => {
+  const readyRequirements = {
+    ...deploymentRequirements,
+    status: "ready",
+    requiredReady: true,
+    checks: [
+      ...deploymentRequirements.checks.map((check) => ({
+        ...check,
+        status: "pass",
+        summary: `${check.title} is ready.`,
+        remediation: null,
+      })),
+      {
+        id: "node-metrics",
+        component: "node",
+        importance: "recommended",
+        status: "pass",
+        title: "Node metrics",
+        summary: "Sidekick recognized the node metrics endpoint.",
+        observed: "3 recognized signals",
+        remediation: null,
+      },
+      {
+        id: "signer-monitoring",
+        component: "signer",
+        importance: "recommended",
+        status: "pass",
+        title: "Signer monitoring",
+        summary: "Sidekick recognized the signer monitoring endpoint.",
+        observed: "16 recognized signals",
+        remediation: null,
+      },
+      {
+        id: "sidekick-event-observer",
+        component: "sidekick",
+        importance: "recommended",
+        status: "pass",
+        title: "Stacks event observer",
+        summary: "Verified callbacks are current.",
+        observed: "Observer gap: 0 blocks",
+        remediation: null,
+      },
+    ],
+  };
+  await page.route("**/api/v1/deployment-requirements*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(readyRequirements),
+    });
+  });
+  await page.route("**/api/v1/health/test-source", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "connected", signals: 4 }),
+    });
+  });
+
+  await login(page);
+  await openSettingsSection(page, "sources", "Connections");
+
+  for (const label of ["Stacks node", "Node monitoring", "Signer monitoring"]) {
+    const row = page.locator(".connection-row", {
+      has: page.getByRole("heading", { name: label, exact: true }),
+    });
+    await expect(row.locator(".badge")).toHaveText("Connected");
+  }
+
+  const comparison = await editConnection(page, "Network comparison API");
+  await expect(comparison.locator(".badge")).toHaveText("Configured");
+  await comparison.getByRole("button", { name: "Test saved connection" }).click();
+  await expect(comparison.locator(".badge")).toHaveText("Connected");
+  await expect(comparison.getByText("Connected · 4 recognized signals")).toBeVisible();
 });
 
 test("starts an admin-history sync from Settings", async ({ page }) => {
