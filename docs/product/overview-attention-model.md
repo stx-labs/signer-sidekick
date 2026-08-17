@@ -131,9 +131,14 @@ forecast chart or staker table.
 
 #### Rewards
 
-- exact global rewards accrued;
-- estimated pool reward and operator fee with confidence; and
-- calculation/claim coverage and age.
+- projected network-wide rewards, pool gross, operator fee, and staker net for the next allocation;
+- forecast confidence and target reward cycle; and
+- reward evidence coverage and age.
+
+Every monetary value in the summary uses the same horizon. When a checkpoint forecast exists, the
+card must not mix in current accrual, claim counts, or calculation state. If no forecast is
+available, it may instead show the contract-exact if-calculated-now estimate, with that different
+horizon explicit in every label.
 
 The card links to the relevant Rewards section. It does not show the full pipeline, bucket list, or
 historical distributions.

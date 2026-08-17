@@ -2302,7 +2302,7 @@ export const overviewRewardsSummarySchema = z
   .object({
     status: z.enum(["ready", "needs-attention", "unavailable", "insufficient-evidence"]),
     rewardCycleId: z.number().int().nonnegative().nullable(),
-    globalAccruedSats: z
+    estimatedNetworkRewardSats: z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
@@ -2310,7 +2310,7 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
-    operatorFeeSats: z
+    estimatedOperatorFeeSats: z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
@@ -2326,13 +2326,18 @@ export const overviewRewardsSummarySchema = z
       .nullable(),
     estimateKind: z.enum(["checkpoint-forecast", "if-calculated-now", "unavailable"]),
     confidence: z.enum(["contract-exact", "low", "developing", "calibrated", "unavailable"]),
-    calculationState: z.enum(["pending", "completed", "ahead", "unknown"]).nullable(),
-    actionableClaims: z.number().int().nonnegative().nullable(),
     evidence: z.array(overviewEvidenceSchema).min(1),
     detailsAction: rewardsDetailsActionSchema,
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.estimatedNetworkRewardSats === null) !== (value.estimatedPoolRewardSats === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["estimatedNetworkRewardSats"],
+        message: "Network and pool reward estimates must describe the same horizon",
+      });
+    }
     if (value.estimatedPoolRewardSats === null) {
       if (value.estimateKind !== "unavailable" || value.confidence !== "unavailable") {
         context.addIssue({
@@ -2367,17 +2372,20 @@ export const overviewRewardsSummarySchema = z
         message: "A checkpoint forecast must expose its calibration confidence",
       });
     }
-    if ((value.operatorFeeSats === null) === (value.operatorFeeUnavailableReason === null)) {
+    if (
+      (value.estimatedOperatorFeeSats === null) ===
+      (value.operatorFeeUnavailableReason === null)
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["operatorFeeSats"],
+        path: ["estimatedOperatorFeeSats"],
         message: "An operator fee must have either a value or an unavailability reason",
       });
     }
-    if (value.operatorFeeSats !== null && value.estimateKind === "unavailable") {
+    if (value.estimatedOperatorFeeSats !== null && value.estimateKind === "unavailable") {
       context.addIssue({
         code: "custom",
-        path: ["operatorFeeSats"],
+        path: ["estimatedOperatorFeeSats"],
         message: "An operator fee estimate requires an available pool estimate",
       });
     }

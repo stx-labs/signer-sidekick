@@ -773,14 +773,12 @@ describe("Overview projection", () => {
 
     expect(result.rewards).toMatchObject({
       status: "ready",
-      globalAccruedSats: "2500",
+      estimatedNetworkRewardSats: "3000",
       estimatedPoolRewardSats: "600",
       estimateKind: "checkpoint-forecast",
       confidence: "developing",
-      operatorFeeSats: null,
+      estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reviewed-fee-capability-unavailable",
-      calculationState: "completed",
-      actionableClaims: null,
     });
 
     outlook.operatorFeeForecast = {
@@ -796,7 +794,7 @@ describe("Overview projection", () => {
     expect(
       projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards,
     ).toMatchObject({
-      operatorFeeSats: "28",
+      estimatedOperatorFeeSats: "28",
       operatorFeeUnavailableReason: null,
     });
 
@@ -808,10 +806,11 @@ describe("Overview projection", () => {
     expect(
       projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards,
     ).toMatchObject({
+      estimatedNetworkRewardSats: "2500",
       estimatedPoolRewardSats: "500",
       estimateKind: "if-calculated-now",
       confidence: "contract-exact",
-      operatorFeeSats: null,
+      estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reviewed-fee-capability-unavailable",
     });
 
@@ -834,7 +833,7 @@ describe("Overview projection", () => {
       estimatedPoolRewardSats: "500",
       estimateKind: "if-calculated-now",
       confidence: "contract-exact",
-      operatorFeeSats: "25",
+      estimatedOperatorFeeSats: "25",
       operatorFeeUnavailableReason: null,
     });
     expect(() => overviewPageSchema.parse(currentEstimate)).not.toThrow();

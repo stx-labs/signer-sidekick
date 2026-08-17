@@ -251,14 +251,12 @@ describe("Overview V1 contracts", () => {
       rewards: {
         status: "ready" as const,
         rewardCycleId: 141,
-        globalAccruedSats: "200000",
+        estimatedNetworkRewardSats: "200000",
         estimatedPoolRewardSats: "150000",
-        operatorFeeSats: "7500",
+        estimatedOperatorFeeSats: "7500",
         operatorFeeUnavailableReason: null,
         estimateKind: "checkpoint-forecast" as const,
         confidence: "calibrated" as const,
-        calculationState: "completed" as const,
-        actionableClaims: 2,
         evidence: [evidence],
         detailsAction: {
           kind: "open-domain" as const,
@@ -286,7 +284,7 @@ describe("Overview V1 contracts", () => {
           estimatedPoolRewardSats: "120000",
           estimateKind: "if-calculated-now",
           confidence: "contract-exact",
-          operatorFeeSats: null,
+          estimatedOperatorFeeSats: null,
           operatorFeeUnavailableReason: "forecast-unavailable",
         },
       }).success,
@@ -329,7 +327,16 @@ describe("Overview V1 contracts", () => {
         ...fixture,
         rewards: {
           ...fixture.rewards,
-          operatorFeeSats: null,
+          estimatedNetworkRewardSats: null,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: {
+          ...fixture.rewards,
+          estimatedOperatorFeeSats: null,
           operatorFeeUnavailableReason: null,
         },
       }).success,

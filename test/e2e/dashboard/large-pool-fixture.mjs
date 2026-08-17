@@ -1128,14 +1128,12 @@ export const overview = {
   rewards: {
     status: "ready",
     rewardCycleId: 140,
-    globalAccruedSats: "200000",
+    estimatedNetworkRewardSats: "200000",
     estimatedPoolRewardSats: "150000",
-    operatorFeeSats: "7500",
+    estimatedOperatorFeeSats: "7500",
     operatorFeeUnavailableReason: null,
     estimateKind: "checkpoint-forecast",
     confidence: "calibrated",
-    calculationState: "completed",
-    actionableClaims: 2,
     evidence: [overviewEvidence],
     detailsAction: {
       kind: "open-domain",
