@@ -4,7 +4,7 @@ import {
   type DeploymentRequirements,
   deploymentRequirementsSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import type { SidekickConfig } from "./config.js";
+import { type ApiCredential, hiroReferenceApiCredential, type SidekickConfig } from "./config.js";
 import { testHealthSource } from "./health-monitoring-sources.js";
 import type { ObserverRuntimeStatus } from "./observer-server.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
@@ -13,7 +13,7 @@ const docsUrl =
   "https://github.com/stx-labs/signer-sidekick/blob/main/docs/operator/node-signer-requirements.md";
 const transactionIndexProbeTxid = `0x${"00".repeat(32)}`;
 
-type HealthSourceKind = "node-metrics" | "signer-monitoring";
+type HealthSourceKind = "node-metrics" | "signer-monitoring" | "hiro-reference";
 
 export interface DeploymentRequirementsServiceOptions {
   getConfig(): SidekickConfig;
@@ -22,10 +22,80 @@ export interface DeploymentRequirementsServiceOptions {
   testSource?: (
     kind: HealthSourceKind,
     url: string,
+    credential?: ApiCredential,
   ) => Promise<{ status: "connected"; signals: number }>;
   probeTransactionIndex?: (nodeRpcUrl: string) => Promise<"enabled" | "disabled" | "unavailable">;
   now?: () => Date;
   cacheMs?: number;
+}
+
+async function referenceApiCheck(
+  config: SidekickConfig,
+  testSource: NonNullable<DeploymentRequirementsServiceOptions["testSource"]>,
+): Promise<DeploymentRequirement> {
+  const url = config.hiroReferenceApiUrl;
+  if (!url) {
+    return {
+      id: "hiro-reference",
+      component: "sidekick",
+      importance: "recommended",
+      status: "not-configured",
+      title: "Network comparison API",
+      summary:
+        "No external comparison API is configured. Sidekick can monitor local services, but has less evidence for distinguishing a local problem from a network-wide one.",
+      observed: null,
+      remediation: remediation({
+        steps: [
+          "Set Network comparison API in Sidekick Settings to a Stacks API endpoint for this network, then rerun the connection checks.",
+        ],
+      }),
+    };
+  }
+  try {
+    const result = await testSource("hiro-reference", url, hiroReferenceApiCredential(config));
+    if (result.signals === 0) {
+      return {
+        id: "hiro-reference",
+        component: "sidekick",
+        importance: "recommended",
+        status: "attention",
+        title: "Network comparison API",
+        summary:
+          "The endpoint responded, but Sidekick did not recognize the chain status needed for network comparison.",
+        observed: url,
+        remediation: remediation({
+          steps: [
+            "Confirm the URL targets a Stacks indexed API for the configured network, then rerun the connection checks.",
+          ],
+        }),
+      };
+    }
+    return {
+      id: "hiro-reference",
+      component: "sidekick",
+      importance: "recommended",
+      status: "pass",
+      title: "Network comparison API",
+      summary: "Sidekick reached the external comparison API and verified its chain status.",
+      observed: url,
+      remediation: null,
+    };
+  } catch (error) {
+    return {
+      id: "hiro-reference",
+      component: "sidekick",
+      importance: "recommended",
+      status: "unavailable",
+      title: "Network comparison API",
+      summary: `The endpoint is configured but its bounded health check failed: ${error instanceof Error ? error.message : "unexpected response"}`,
+      observed: url,
+      remediation: remediation({
+        steps: [
+          "Confirm the Network comparison API URL and its source-specific API key in Settings, then rerun the connection checks.",
+        ],
+      }),
+    };
+  }
 }
 
 function remediation(input: {
@@ -386,6 +456,9 @@ export class DeploymentRequirementsService {
       config.nodeRpcUrl,
       config.nodeMetricsUrl ?? null,
       config.signerMonitoringUrl ?? null,
+      config.hiroReferenceApiUrl ?? null,
+      config.hiroReferenceApiKeyHeader,
+      Boolean(hiroReferenceApiCredential(config)),
       connection?.status ?? null,
       connection?.checkedAt ?? null,
       observer.enabled,
@@ -452,6 +525,7 @@ export class DeploymentRequirementsService {
         restartService: "stacks-signer",
         testSource,
       }),
+      referenceApiCheck(config, testSource),
       Promise.resolve(observerCheck(observer, connection)),
     ]);
     const requiredReady = checks

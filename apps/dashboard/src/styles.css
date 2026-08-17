@@ -2235,6 +2235,10 @@
   background: var(--status-warning);
 }
 
+.health-evidence-unavailable {
+  background: var(--text-tertiary);
+}
+
 .health-primary-grid,
 .health-signer-card {
   margin-bottom: var(--space-5);

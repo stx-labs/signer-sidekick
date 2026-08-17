@@ -15,6 +15,7 @@ docker compose exec -T sidekick rm "/data/$backup"
 docker compose pull
 docker compose up -d
 curl --fail http://127.0.0.1:3998/health/ready
+curl --fail http://127.0.0.1:3998/health/operational
 ```
 
 The database may contain API credentials. Store backups accordingly.

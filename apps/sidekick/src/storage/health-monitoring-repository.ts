@@ -12,6 +12,7 @@ import type { HealthObservation } from "../health-monitoring-types.js";
 export const HEALTH_RAW_RETENTION_HOURS = 72 as const;
 export const HEALTH_ROLLUP_RETENTION_DAYS = 90 as const;
 export const HEALTH_ROLLUP_INTERVAL_MINUTES = 5 as const;
+export const HEALTH_RESOLVED_EPISODE_RETENTION_DAYS = 90 as const;
 export const HEALTH_EPISODE_RECURRENCE_WINDOW_MS = 5 * 60 * 1_000;
 
 export type HealthRollup = HealthSnapshot["history"]["recentRollups"][number];
@@ -33,6 +34,8 @@ const nodeInfoSchema = z
     network_id: z.number().int(),
     burn_block_height: z.number().int().nonnegative(),
     stacks_tip_height: z.number().int().nonnegative(),
+    stacks_tip: z.string().optional(),
+    stacks_tip_consensus_hash: z.string().optional(),
     is_fully_synced: z.boolean().optional(),
   })
   .strict();
@@ -64,6 +67,7 @@ const apiStatusSchema = z
       .object({
         block_height: z.number().int().nonnegative(),
         burn_block_height: z.number().int().nonnegative(),
+        index_block_hash: z.string().optional(),
       })
       .strict(),
   })
@@ -103,6 +107,7 @@ const healthObservationSchema = z.looseObject({
   nodeRpc: sourceObservationSchema,
   nodeInfo: nodeInfoSchema.nullable(),
   nodeHealth: nodeHealthSchema.nullable(),
+  nodeHealthSource: sourceObservationSchema.nullable().optional(),
   nodeMetricsSource: sourceObservationSchema.nullable(),
   nodeMetrics: nodeMetricValuesSchema.nullable(),
   hiroSource: sourceObservationSchema.nullable(),
@@ -138,7 +143,8 @@ const episodeRowSchema = z.object({
 });
 
 function parseObservation(value: string): HealthObservation {
-  return healthObservationSchema.parse(JSON.parse(value)) as HealthObservation;
+  const parsed = healthObservationSchema.parse(JSON.parse(value));
+  return { ...parsed, nodeHealthSource: parsed.nodeHealthSource ?? null } as HealthObservation;
 }
 
 function parseEpisode(row: unknown): HealthFindingEpisode {
@@ -156,6 +162,10 @@ function parseEpisode(row: unknown): HealthFindingEpisode {
 }
 
 export class HealthMonitoringRepository {
+  private skippedObservationRows = 0;
+  private skippedRollupRows = 0;
+  private skippedEpisodeRows = 0;
+
   constructor(private readonly db: DatabaseSync) {}
 
   recordObservation(configFingerprint: string, observation: HealthObservation): void {
@@ -198,7 +208,16 @@ export class HealthMonitoringRepository {
          ORDER BY observed_at ASC`,
       )
       .all(fingerprint, since, limit);
-    return rows.map((row) => parseObservation(observationRowSchema.parse(row).observation_json));
+    this.skippedObservationRows = 0;
+    const observations: HealthObservation[] = [];
+    for (const row of rows) {
+      try {
+        observations.push(parseObservation(observationRowSchema.parse(row).observation_json));
+      } catch {
+        this.skippedObservationRows += 1;
+      }
+    }
+    return observations;
   }
 
   observationSummary(configFingerprint: string): {
@@ -256,9 +275,29 @@ export class HealthMonitoringRepository {
         z.string().min(1).parse(configFingerprint),
         z.number().int().min(1).max(10_000).parse(limit),
       );
-    return rows.map((row) =>
-      healthRollupSchema.parse(JSON.parse(rollupRowSchema.parse(row).rollup_json)),
-    );
+    this.skippedRollupRows = 0;
+    const rollups: HealthRollup[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(rollupRowSchema.parse(row).rollup_json) as unknown;
+        const normalized =
+          parsed &&
+          typeof parsed === "object" &&
+          "signerAvailabilityPercent" in parsed &&
+          !("signerInfoAvailabilityPercent" in parsed)
+            ? (() => {
+                const { signerAvailabilityPercent, ...rest } = parsed as Record<string, unknown> & {
+                  signerAvailabilityPercent: unknown;
+                };
+                return { ...rest, signerInfoAvailabilityPercent: signerAvailabilityPercent };
+              })()
+            : parsed;
+        rollups.push(healthRollupSchema.parse(normalized));
+      } catch {
+        this.skippedRollupRows += 1;
+      }
+    }
+    return rollups;
   }
 
   reconcileFindingEpisodes(
@@ -290,6 +329,9 @@ export class HealthMonitoringRepository {
             Date.parse(at) - Date.parse(existing.resolved_at) <=
               HEALTH_EPISODE_RECURRENCE_WINDOW_MS,
         );
+        const retainedWithoutNewEvidence =
+          existing?.status === "active" && findingInput.lastObservedAt !== at;
+        if (retainedWithoutNewEvidence) continue;
         const episodeId =
           existing && (existing.status === "active" || reopenRecent)
             ? existing.episode_id
@@ -351,7 +393,13 @@ export class HealthMonitoringRepository {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    return this.listFindingEpisodes(fingerprint, 50);
+    const recent = this.listFindingEpisodes(fingerprint, 50);
+    const active = this.listActiveFindingEpisodes(fingerprint);
+    const activeEpisodeIds = new Set(active.map(({ episodeId }) => episodeId));
+    return [
+      ...active.sort((left, right) => right.firstObservedAt.localeCompare(left.firstObservedAt)),
+      ...recent.filter(({ episodeId }) => !activeEpisodeIds.has(episodeId)),
+    ].slice(0, 50);
   }
 
   resolveActiveFindingEpisodes(configFingerprint: string, resolvedAt: string): number {
@@ -383,14 +431,59 @@ export class HealthMonitoringRepository {
         z.string().min(1).parse(configFingerprint),
         z.number().int().min(1).max(1_000).parse(limit),
       );
-    return rows.map(parseEpisode);
+    this.skippedEpisodeRows = 0;
+    const episodes: HealthFindingEpisode[] = [];
+    for (const row of rows) {
+      try {
+        episodes.push(parseEpisode(row));
+      } catch {
+        this.skippedEpisodeRows += 1;
+      }
+    }
+    return episodes;
   }
 
-  prune(observedAt: string): { observations: number; rollups: number } {
+  listActiveFindingEpisodes(configFingerprint: string): HealthFindingEpisode[] {
+    const rows = this.db
+      .prepare(
+        `SELECT episode_id, status, finding_json, opened_at, last_observed_at,
+           resolved_at, occurrences
+         FROM health_finding_episodes
+         WHERE config_fingerprint = ? AND status = 'active'
+         ORDER BY opened_at DESC, episode_id DESC`,
+      )
+      .all(z.string().min(1).parse(configFingerprint));
+    const episodes: HealthFindingEpisode[] = [];
+    for (const row of rows) {
+      try {
+        episodes.push(parseEpisode(row));
+      } catch {
+        this.skippedEpisodeRows += 1;
+      }
+    }
+    return episodes;
+  }
+
+  dataQualitySummary(): {
+    skippedObservationRows: number;
+    skippedRollupRows: number;
+    skippedEpisodeRows: number;
+  } {
+    return {
+      skippedObservationRows: this.skippedObservationRows,
+      skippedRollupRows: this.skippedRollupRows,
+      skippedEpisodeRows: this.skippedEpisodeRows,
+    };
+  }
+
+  prune(observedAt: string): { observations: number; rollups: number; episodes: number } {
     const at = Date.parse(z.iso.datetime().parse(observedAt));
     const rawCutoff = new Date(at - HEALTH_RAW_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
     const rollupCutoff = new Date(
       at - HEALTH_ROLLUP_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+    ).toISOString();
+    const episodeCutoff = new Date(
+      at - HEALTH_RESOLVED_EPISODE_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
     ).toISOString();
     const observations = this.db
       .prepare("DELETE FROM health_observations WHERE observed_at < ?")
@@ -398,6 +491,13 @@ export class HealthMonitoringRepository {
     const rollups = this.db
       .prepare("DELETE FROM health_rollups WHERE window_started_at < ?")
       .run(rollupCutoff);
-    return { observations: Number(observations.changes), rollups: Number(rollups.changes) };
+    const episodes = this.db
+      .prepare("DELETE FROM health_finding_episodes WHERE status = 'resolved' AND resolved_at < ?")
+      .run(episodeCutoff);
+    return {
+      observations: Number(observations.changes),
+      rollups: Number(rollups.changes),
+      episodes: Number(episodes.changes),
+    };
   }
 }

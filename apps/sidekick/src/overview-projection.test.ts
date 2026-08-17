@@ -996,6 +996,32 @@ describe("Overview projection", () => {
     });
   });
 
+  it("does not label a synchronized node as behind when block validation is slow", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health({
+        findings: [
+          healthFinding({
+            id: "signer-validation-latency-elevated",
+            severity: "warning",
+            title: "Local node block validation is slow",
+            detail: "The local node reported an elevated successful-validation p95.",
+            source: "node",
+            classification: "likely-local-node",
+          }),
+        ],
+      }),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.node).toMatchObject({
+      status: "needs-attention",
+      peerHeightDifference: 0,
+      detail: "The local node reported an elevated successful-validation p95.",
+    });
+  });
+
   it("keeps an ambiguous signer finding in the signer domain", () => {
     const result = projectOverview({
       snapshot: snapshot(),

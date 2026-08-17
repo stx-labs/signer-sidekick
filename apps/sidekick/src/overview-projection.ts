@@ -754,25 +754,36 @@ function nodeSummary(
       detailsAction: healthAction("node", "Review node health"),
     };
   }
-  const unavailable = health.node.rpc.status === "unavailable";
-  const nodeFinding = health.findings.find(({ source }) => source === "node");
-  const behind = nodeFinding !== undefined;
-  const aligned = !unavailable && !behind && health.node.rpc.status === "healthy";
+  const nodeFindings = health.findings.filter(({ source }) => source === "node");
+  const unavailable = nodeFindings.some(({ id }) => id === HEALTH_RULES.nodeRpcUnavailable.id);
+  const behindFinding = nodeFindings.find(({ id }) => id === HEALTH_RULES.nodeBehindNetwork.id);
+  const nodeFinding = behindFinding ?? nodeFindings[0];
+  const behind = behindFinding !== undefined;
+  const needsAttention = nodeFinding !== undefined && !behind;
+  const aligned =
+    !unavailable &&
+    !behind &&
+    !needsAttention &&
+    health.node.rpc.status === "healthy" &&
+    (health.node.peerHealth?.status === "healthy" || health.node.peerHealth === undefined) &&
+    health.node.peerHeightDifference === 0;
   return {
     status: unavailable
       ? "unavailable"
       : behind
         ? "behind"
-        : aligned
-          ? "aligned"
-          : "insufficient-evidence",
+        : needsAttention
+          ? "needs-attention"
+          : aligned
+            ? "aligned"
+            : "insufficient-evidence",
     stacksTipHeight: health.node.stacksTipHeight,
     burnBlockHeight: health.node.burnBlockHeight,
     peerHeightDifference: health.node.peerHeightDifference ?? null,
     lastAdvancedAt: health.node.lastTipAdvanceAt,
     detail: unavailable
       ? "The configured local node RPC is unavailable."
-      : behind
+      : nodeFinding
         ? nodeFinding.detail
         : aligned
           ? "The local node is reachable and aligned with its observed peers."
@@ -802,11 +813,12 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
   }
   const source = health.signer.infoSource;
   const notConfigured = source.status === "not-configured";
-  const unavailable =
-    source.status === "unavailable" ||
-    health.signer.heartbeat.status === "unavailable" ||
-    health.signer.metrics.status === "unavailable";
   const signerFinding = health.findings.find(({ source }) => source === "signer");
+  const unavailable = health.findings.some(
+    ({ id }) =>
+      id === HEALTH_RULES.signerMonitoringUnavailable.id ||
+      id === HEALTH_RULES.signerMetricsUnavailable.id,
+  );
   const collecting = health.signer.lastHour.collectingBaseline;
   return {
     status: notConfigured
@@ -1020,8 +1032,8 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
           finding.id === HEALTH_RULES.nodeRpcUnavailable.id
             ? [
                 "snapshot:delayed",
-                "node:node-behind-network",
-                "signer:signer-node-heartbeat-failed",
+                `node:${HEALTH_RULES.nodeBehindNetwork.id}`,
+                `signer:${HEALTH_RULES.signerNodeHeartbeatFailed.id}`,
               ]
             : [],
         item: attentionItem({

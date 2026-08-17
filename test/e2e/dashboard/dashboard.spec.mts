@@ -1623,6 +1623,16 @@ test("shows successful live checks as connected in every connection summary", as
         observed: "Observer gap: 0 blocks",
         remediation: null,
       },
+      {
+        id: "hiro-reference",
+        component: "sidekick",
+        importance: "recommended",
+        status: "pass",
+        title: "Network comparison API",
+        summary: "Sidekick verified the external comparison API.",
+        observed: "https://api.testnet-pox5.hiro.so",
+        remediation: null,
+      },
     ],
   };
   await page.route("**/api/v1/deployment-requirements*", async (route) => {
@@ -1651,7 +1661,7 @@ test("shows successful live checks as connected in every connection summary", as
   }
 
   const comparison = await editConnection(page, "Network comparison API");
-  await expect(comparison.locator(".badge")).toHaveText("Configured");
+  await expect(comparison.locator(".badge")).toHaveText("Connected");
   await comparison.getByRole("button", { name: "Test saved connection" }).click();
   await expect(comparison.locator(".badge")).toHaveText("Connected");
   await expect(comparison.getByText("Connected · 4 recognized signals")).toBeVisible();

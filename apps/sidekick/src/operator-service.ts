@@ -444,6 +444,7 @@ export class OperatorService {
     expiresAt: number;
     value: Awaited<ReturnType<OperatorService["load"]>>;
   } | null = null;
+  private lastKnownHealthContext: HealthOperatorContext | null = null;
   private loading: Promise<Awaited<ReturnType<OperatorService["load"]>>> | null = null;
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
@@ -489,13 +490,19 @@ export class OperatorService {
 
   /** Cached chain-authoritative identity and participation facts for Signer Health correlation. */
   healthMonitoringContext(): HealthOperatorContext | null {
-    const snapshot = this.cached?.value;
-    if (!snapshot) return null;
+    return this.lastKnownHealthContext;
+  }
+
+  private healthContextFromSnapshot(
+    snapshot: Awaited<ReturnType<OperatorService["load"]>>,
+  ): HealthOperatorContext | null {
+    if (!snapshot.preflight?.cycle || !snapshot.generatedAt || !snapshot.network) return null;
     const currentCycle = snapshot.preflight.cycle.currentId;
     const nextCycle = snapshot.preflight.cycle.nextId;
     const current = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === currentCycle);
     const next = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === nextCycle);
     return {
+      observedAt: snapshot.generatedAt,
       network: snapshot.network,
       managerPrincipal: snapshot.managerPrincipal,
       currentRewardCycle: currentCycle,
@@ -531,6 +538,8 @@ export class OperatorService {
     this.loading = this.load()
       .then((value) => {
         const loadedAt = this.currentTime();
+        this.lastKnownHealthContext =
+          this.healthContextFromSnapshot(value) ?? this.lastKnownHealthContext;
         this.cached = {
           // The dashboard polls every 15 seconds. Keep a successful observation fresh through the
           // next poll so normal status traffic does not create an upstream refresh per page view.

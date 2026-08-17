@@ -23,7 +23,7 @@ does not stop collection.
 
 | Source | Role | Authority |
 | --- | --- | --- |
-| Stacks node `/v2/info` and `/v3/health` | chain tip, network, sync, connected-peer height view | authoritative for local operating state |
+| Stacks node `/v2/info` and optional `/v3/health` | chain tip, canonical hash, network, sync, connected-peer height view | authoritative for local operating state; a release without `/v3/health` has limited peer evidence |
 | Stacks node Prometheus | peers and node warning/error counters | local supporting evidence |
 | Signer `/info`, `/heartbeat`, `/metrics` | identity, node view, cycle, proposals, validation, responses, latency, agreement | authoritative for what this signer and its node report through signer monitoring |
 | Anchored operator snapshot | manager, registration, signer key/grant, current and next participation | node-proved operator context |
@@ -61,12 +61,15 @@ The current thresholds are deliberately closed and operator-readable:
 | `node-behind-network` | Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
 | `node-tip-stalled-locally` | Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
 | `network-tip-stalled` | Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
+| `local-canonical-tip-changed` | Possible local reorg | one consecutive successful-node height regression or same-height hash change; informational |
+| `canonical-tip-disagreement` | Canonical hash disagreement | 3 independent reference checks spanning at least 60 seconds at the same Stacks height |
 | `reference-api-behind-local-node` / `configured-api-behind-local-node` | Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
 | `signer-identity-mismatch` / `signer-network-mismatch` / `signer-reward-cycle-mismatch` | Signer configuration mismatch | 3 samples spanning at least 10 seconds against node-proved context |
 | `signer-node-view-behind` | Signer node view behind local node | at least 3 Stacks blocks across 3 signer-height updates spanning at least 2 minutes; 2 healthy updates resolve it |
 | `signer-proposal-response-gap` | Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
+| `expected-signer-silent` | Expected signer receives no proposals | signer is expected in the current set, metrics remain available, the proposal counter is static for 10 minutes, and the local node advances at least 12 times |
 | `signer-rejection-rate-elevated` | Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes; cause remains unattributed |
-| `signer-validation-latency-elevated` | Elevated node validation latency | at least 20 successful validations and node-reported p95 above 5 seconds in 15 minutes |
+| `signer-validation-latency-elevated` | Elevated node validation latency | at least 20 timed histogram observations and node-reported p95 above 5 seconds in 15 minutes |
 | `signer-agreement-conflicts-elevated` | Agreement conflicts | at least 3 conflicts in 15 minutes; cause remains unattributed |
 
 Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
@@ -86,11 +89,14 @@ successful validation responses.
 
 ## Durable history
 
-The SQLite store keeps raw observations for 72 hours and five-minute rollups for 90 days. A finding
+The SQLite store keeps raw observations for 72 hours and five-minute rollups and resolved episodes
+for 90 days. A finding
 opens one episode; repeated samples update that episode and recovery resolves it without deleting
-history. A Sidekick restart hydrates the recent diagnostic window, preserves active episode IDs,
-and continues counter baselines. Changing the monitored configuration resolves the old
-configuration's active episodes and starts a separate evidence stream.
+history. Missing evidence retains an active episode without increasing its occurrence count. A
+Sidekick restart hydrates the recent diagnostic window, preserves active episode IDs, continues
+counter baselines, and delays resolution during a 15-minute warm-up. Malformed historical rows are
+skipped and counted rather than stopping monitoring. Changing the monitored configuration resolves
+the old configuration's active episodes and starts a separate evidence stream.
 
 The API returns up to 288 recent rollups and 50 recent episodes. Rollups contain source
 availability, tip progression, proposal/response/rejection/conflict changes, response p95 for
@@ -103,6 +109,12 @@ All health routes require the existing operator credential:
 - `GET /api/v1/health` returns the latest server-owned v2 snapshot and collects once if empty.
 - `POST /api/v1/health/refresh` forces one bounded collection.
 - `POST /api/v1/health/test-source` validates and tests a candidate source URL.
+
+Process probes are separate from authenticated operator health data: `/health/live` reports process
+liveness, `/health/ready` reports that Sidekick and its database can serve requests, and
+`/health/operational` verifies the current node/manager connection and node-health evidence. A node
+outage must not make `/health/ready` fail because Sidekick remains the diagnostic surface during
+that outage.
 
 The five-second collector starts with the Sidekick control plane and remains server-owned even when
 the manager connection is not yet operational or no browser is open. Manager readiness gates
@@ -123,7 +135,8 @@ the node-proved operator state, connection/observer/automation evidence, and a c
 for an optional `stacksup-or-operator-infrastructure-support-bundle`. The companion artifact should
 cover host saturation, process/container lifecycle, service logs, disk/filesystem health, and host
 networking for the same window. Sidekick deliberately does not collect unrestricted logs, control
-the host, or include private keys.
+the host, or include private keys. Bundle generation is read-only: it cannot collect a new health
+sample, resolve an episode, or change incident history.
 
 ## Endpoint safety
 
@@ -131,4 +144,5 @@ Health endpoints are operator-configured but treated as untrusted input. HTTP(S)
 credentials, query strings, fragments, redirects, oversized responses, and cloud-metadata or
 invalid address ranges are rejected. DNS is resolved for each request and the connection is pinned
 to the checked address. Private, loopback, Docker, and tailnet addresses remain available for local
-deployments under the same rebinding protections.
+deployments under the same rebinding protections. A configured reverse-proxy base path is preserved
+when Sidekick appends `/v2/info`, `/v3/health`, `/info`, `/heartbeat`, or `/metrics`.

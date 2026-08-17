@@ -965,13 +965,15 @@ export async function executeCliCommand({
             getOperatorContext: () => service.healthMonitoringContext(),
             getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
           });
+          const operatorSnapshot = await service.supportSnapshot(true);
+          const healthSnapshot = health.storedSnapshot();
           const bundle = await createOperatorSupportBundle({
             application: operatorSupportApplication(env),
             connection: () => connectionResult,
             deploymentRequirements: () => deploymentRequirements.check(true),
             runtimeSettings: () => runtimeSettings.publicSettings(),
-            operator: async () => service.supportSnapshot(true),
-            health: async () => health.refresh(),
+            operator: async () => operatorSnapshot,
+            health: async () => healthSnapshot,
             engine: async () => engine.api.status(),
             recentOperations: async () => engine.api.listJobs({ cursor: null, limit: 50 }),
             database: () => store.databaseStatus(),

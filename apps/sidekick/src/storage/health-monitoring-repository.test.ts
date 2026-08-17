@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HealthFinding, HealthObservation } from "../health-monitoring-types.js";
 import { openSidekickStore, type SidekickStore } from "./store.js";
@@ -83,6 +84,27 @@ describe("HealthMonitoringRepository", () => {
     expect(store.healthMonitoring.listObservations("config-a")).toEqual([]);
   });
 
+  it("skips a malformed historical row without bricking later health reads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sidekick-health-corrupt-"));
+    directories.push(directory);
+    const databasePath = join(directory, "sidekick.db");
+    const initial = await openSidekickStore(databasePath, "2026-08-14T12:00:00.000Z");
+    initial.store.close();
+    const db = new DatabaseSync(databasePath);
+    db.prepare(
+      `INSERT INTO health_observations (config_fingerprint, observed_at, observation_json)
+       VALUES (?, ?, ?)`,
+    ).run("config-a", "2026-08-14T12:00:00.000Z", '{"broken":true}');
+    db.close();
+
+    const { store } = await openSidekickStore(databasePath);
+    stores.push(store);
+    expect(store.healthMonitoring.listObservations("config-a")).toEqual([]);
+    expect(store.healthMonitoring.dataQualitySummary()).toMatchObject({
+      skippedObservationRows: 1,
+    });
+  });
+
   it("persists observations and rollups across restart while isolating configurations", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sidekick-health-history-"));
     directories.push(directory);
@@ -110,7 +132,7 @@ describe("HealthMonitoringRepository", () => {
         windowEndedAt: "2026-08-14T12:00:05.000Z",
         sampleCount: 2,
         nodeRpcAvailabilityPercent: 100,
-        signerAvailabilityPercent: null,
+        signerInfoAvailabilityPercent: null,
         nodeStacksHeightStart: 100,
         nodeStacksHeightEnd: 101,
         nodeAdvanceCount: 1,
@@ -196,6 +218,31 @@ describe("HealthMonitoringRepository", () => {
     expect(repository.listFindingEpisodes("config-b")).toEqual([]);
   });
 
+  it("keeps an active episode open without inventing a new observation", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-14T12:00:00.000Z");
+    stores.push(store);
+    const repository = store.healthMonitoring;
+    const observedAt = "2026-08-14T12:00:00.000Z";
+    const opened = repository.reconcileFindingEpisodes(
+      "config-a",
+      [finding(observedAt)],
+      observedAt,
+    )[0];
+    if (!opened) throw new Error("expected active finding episode");
+
+    const retained = repository.reconcileFindingEpisodes(
+      "config-a",
+      [finding(observedAt)],
+      "2026-08-14T12:01:00.000Z",
+    )[0];
+    expect(retained).toMatchObject({
+      episodeId: opened.episodeId,
+      status: "active",
+      occurrences: 1,
+      lastObservedAt: observedAt,
+    });
+  });
+
   it("prunes raw evidence after 72 hours and rollups after 90 days", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-14T12:00:00.000Z");
     stores.push(store);
@@ -214,7 +261,7 @@ describe("HealthMonitoringRepository", () => {
         windowEndedAt: "2026-05-01T00:05:00.000Z",
         sampleCount: 1,
         nodeRpcAvailabilityPercent: 100,
-        signerAvailabilityPercent: null,
+        signerInfoAvailabilityPercent: null,
         nodeStacksHeightStart: 1,
         nodeStacksHeightEnd: 1,
         nodeAdvanceCount: 0,
@@ -231,6 +278,7 @@ describe("HealthMonitoringRepository", () => {
     expect(store.healthMonitoring.prune("2026-08-14T12:00:00.000Z")).toEqual({
       observations: 1,
       rollups: 1,
+      episodes: 0,
     });
     expect(store.healthMonitoring.listObservations("config-a")).toHaveLength(1);
     expect(store.healthMonitoring.listRecentRollups("config-a")).toEqual([]);

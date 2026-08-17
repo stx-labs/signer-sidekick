@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SidekickConfig } from "./config.js";
-import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
+import { buildHealthRollup, buildHealthSnapshot } from "./health-monitoring-presentation.js";
 import type {
   HealthObservation,
   HealthOperatorContext,
@@ -82,6 +82,7 @@ function observation(
             max_stacks_height_of_neighbors: height,
             node_stacks_tip_height: height,
           },
+    nodeHealthSource: options.peerAligned === undefined ? null : source,
     nodeMetricsSource: null,
     nodeMetrics: null,
     hiroSource: source,
@@ -229,7 +230,7 @@ describe("Signer Health v2 diagnosis", () => {
 
     expect(snapshot.node.lastTipAdvanceAt).toBeNull();
     expect(snapshot.hiro.lastTipAdvanceAt).toBeNull();
-    expect(snapshot.hiro.advancementStatus).toBe("insufficient-evidence");
+    expect(snapshot.hiro.advancementStatus).toBe("stalled");
     expect(snapshot.findings).toContainEqual(
       expect.objectContaining({
         id: "network-tip-stalled",
@@ -646,5 +647,295 @@ describe("Signer Health v2 diagnosis", () => {
     });
 
     expect(snapshot.signer.last15Minutes.responseP95Seconds).toBeCloseTo(3.22, 1);
+  });
+
+  it("flags an expected signer that remains silent while the local chain advances", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const observations = Array.from({ length: 121 }, (_, index) =>
+      observation(new Date(startedAt + index * 5_000).toISOString(), {
+        height: 1_000 + Math.floor(index / 10),
+        referenceHeight: 1_000 + Math.floor(index / 10),
+        signerPublicKey: operator.signerKeyHex ?? undefined,
+        signer: signerMetrics({
+          nodeHeight: 1_000 + Math.floor(index / 10),
+          proposalsTotal: 50,
+        }),
+      }),
+    );
+    const snapshot = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.findings).toContainEqual(
+      expect.objectContaining({
+        id: "expected-signer-silent",
+        severity: "critical",
+        classification: "likely-local-signer",
+      }),
+    );
+  });
+
+  it("records local canonical changes and sustained same-height source disagreement", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const withHashes = (index: number, blockByte: string) => {
+      const sample = observation(new Date(startedAt + index * 30_000).toISOString(), {
+        height: 500,
+        referenceHeight: 500,
+      });
+      if (!sample.nodeInfo || !sample.hiro) throw new Error("fixture is incomplete");
+      sample.nodeInfo.stacks_tip = `0x${blockByte.repeat(32)}`;
+      sample.nodeInfo.stacks_tip_consensus_hash = "22".repeat(20);
+      sample.hiro.chain_tip.index_block_hash = `0x${"ff".repeat(32)}`;
+      return sample;
+    };
+    const snapshot = buildHealthSnapshot({
+      observations: [withHashes(0, "11"), withHashes(1, "33"), withHashes(2, "33")],
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.findings.map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["local-canonical-tip-changed", "canonical-tip-disagreement"]),
+    );
+  });
+
+  it("keeps node-only health in stable limited coverage after baseline collection", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const snapshot = buildHealthSnapshot({
+      observations: Array.from({ length: 3 }, (_, index) =>
+        observation(new Date(startedAt + index * 5_000).toISOString(), {
+          height: 100 + index,
+          referenceHeight: 100 + index,
+          peerAligned: true,
+        }),
+      ),
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.overallStatus).toBe("partial");
+    expect(snapshot.diagnosis).toMatchObject({
+      status: "partial",
+      title: "Signer-health coverage is limited",
+    });
+  });
+
+  it("retains an active identity incident while anchored operator evidence is unavailable", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const observations = Array.from({ length: 3 }, (_, index) =>
+      observation(new Date(startedAt + index * 5_000).toISOString(), {
+        signerPublicKey: `03${"22".repeat(32)}`,
+        signer: signerMetrics(),
+      }),
+    );
+    const active = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    }).findings.find(({ id }) => id === "signer-identity-mismatch");
+    if (!active) throw new Error("identity fixture did not open a finding");
+    const retained = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator: null,
+      history: {
+        observedSince: observations[0]?.observedAt ?? null,
+        observationCount: observations.length,
+        recentRollups: [],
+        recentEpisodes: [
+          {
+            ...active,
+            episodeId: "8e1af5f0-b5db-45aa-a579-0755e19e93af",
+            status: "active",
+            resolvedAt: null,
+            occurrences: 3,
+          },
+        ],
+      },
+    });
+
+    expect(retained.findings).toContainEqual(
+      expect.objectContaining({
+        id: "signer-identity-mismatch",
+        episodeId: "8e1af5f0-b5db-45aa-a579-0755e19e93af",
+      }),
+    );
+  });
+
+  it("covers the local-stall and distinct configured-API lag paths", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const samples = Array.from({ length: 20 }, (_, index) => {
+      const sample = observation(new Date(startedAt + index * 5_000).toISOString(), {
+        height: 200,
+        referenceHeight: 200 + index,
+      });
+      sample.configuredApiSource = {
+        reachable: true,
+        latencyMs: 2,
+        errorCode: null,
+        checkedAt: sample.observedAt,
+      };
+      sample.configuredApi = {
+        status: "ready",
+        chain_tip: { block_height: 190, burn_block_height: 960_000 },
+      };
+      return sample;
+    });
+    const localStall = buildHealthSnapshot({
+      observations: samples,
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(localStall.findings.map(({ id }) => id)).toContain("node-tip-stalled-locally");
+
+    const advancing = samples.map((sample, index) => ({
+      ...sample,
+      nodeInfo: sample.nodeInfo ? { ...sample.nodeInfo, stacks_tip_height: 200 + index } : null,
+      hiro: sample.hiro
+        ? {
+            ...sample.hiro,
+            chain_tip: { ...sample.hiro.chain_tip, block_height: 200 + index },
+          }
+        : null,
+    }));
+    const configuredLag = buildHealthSnapshot({
+      observations: advancing,
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(configuredLag.findings.map(({ id }) => id)).toContain(
+      "configured-api-behind-local-node",
+    );
+  });
+
+  it("covers signer network, reward-cycle, and sustained monitoring failures", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const mismatched = Array.from({ length: 3 }, (_, index) => {
+      const sample = observation(new Date(startedAt + index * 5_000).toISOString(), {
+        signerPublicKey: operator.signerKeyHex ?? undefined,
+        signer: signerMetrics({ rewardCycle: 140 }),
+      });
+      if (sample.signerInfo) sample.signerInfo.network = "testnet";
+      return sample;
+    });
+    const mismatch = buildHealthSnapshot({
+      observations: mismatched,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(mismatch.findings.map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["signer-network-mismatch", "signer-reward-cycle-mismatch"]),
+    );
+
+    const unavailable = mismatched.map((sample) => ({
+      ...sample,
+      signerInfo: null,
+      signerInfoSource: {
+        reachable: false,
+        latencyMs: null,
+        errorCode: "connection-failed",
+        checkedAt: sample.observedAt,
+      },
+      signerMetrics: null,
+      signerMetricsSource: {
+        reachable: false,
+        latencyMs: null,
+        errorCode: "connection-failed",
+        checkedAt: sample.observedAt,
+      },
+      signerHeartbeat: {
+        reachable: false,
+        latencyMs: null,
+        errorCode: "connection-failed",
+        checkedAt: sample.observedAt,
+      },
+    }));
+    const outage = buildHealthSnapshot({
+      observations: unavailable,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(outage.findings.map(({ id }) => id)).toContain("signer-monitoring-unavailable");
+    expect(outage.findings.map(({ id }) => id)).not.toContain("signer-metrics-unavailable");
+    expect(outage.findings.map(({ id }) => id)).not.toContain("signer-node-heartbeat-failed");
+  });
+
+  it("uses a sustained node-RPC finding for unavailable status", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const samples = Array.from({ length: 3 }, (_, index) => {
+      const sample = observation(new Date(startedAt + index * 5_000).toISOString());
+      return {
+        ...sample,
+        nodeRpc: {
+          reachable: false,
+          latencyMs: null,
+          errorCode: "connection-failed",
+          checkedAt: sample.observedAt,
+        },
+        nodeInfo: null,
+      };
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: samples,
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(snapshot.overallStatus).toBe("unavailable");
+    expect(snapshot.findings.map(({ id }) => id)).toContain("node-rpc-unavailable");
+  });
+
+  it("chooses the highest severity before applying classification precedence", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const observations = Array.from({ length: 3 }, (_, index) => {
+      const sample = observation(new Date(startedAt + index * 5_000).toISOString(), {
+        signerPublicKey: `03${"22".repeat(32)}`,
+        signer: signerMetrics(),
+      });
+      if (!sample.nodeInfo) return sample;
+      sample.nodeInfo.stacks_tip = `0x${(index === 0 ? "11" : "33").repeat(32)}`;
+      sample.nodeInfo.stacks_tip_consensus_hash = "22".repeat(20);
+      return sample;
+    });
+    const snapshot = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(snapshot.diagnosis).toMatchObject({
+      classification: "likely-local-signer",
+      title: "Signer identity does not match its on-chain registration",
+    });
+  });
+
+  it("builds rollups from info availability and Stacks-only advances", () => {
+    const first = observation("2026-08-14T12:00:00.000Z", {
+      height: 100,
+      signerPublicKey: operator.signerKeyHex ?? undefined,
+      signer: signerMetrics(),
+    });
+    const second = observation("2026-08-14T12:05:00.000Z", {
+      height: 101,
+      signerPublicKey: operator.signerKeyHex ?? undefined,
+      signer: signerMetrics(),
+    });
+    if (second.nodeInfo) second.nodeInfo.burn_block_height += 10;
+
+    expect(buildHealthRollup([first, second])).toMatchObject({
+      nodeAdvanceCount: 1,
+      signerInfoAvailabilityPercent: 100,
+    });
   });
 });

@@ -1,4 +1,5 @@
 import type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
+import { stacksTipIndexBlockHash } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import {
   HEALTH_RULE_THRESHOLDS,
@@ -6,11 +7,13 @@ import {
   HEALTH_WINDOWS,
   type HealthRuleDefinition,
 } from "./health-monitoring-rules.js";
+import { recognizedNodeSignals, recognizedSignerSignals } from "./health-monitoring-sources.js";
 import {
   counterIncrease,
   healthSourceState,
   histogramP95,
   histogramP95For,
+  histogramStatsFor,
   lastConfiguredApiTipAdvanceAt,
   lastHiroTipAdvanceAt,
   lastTipAdvanceAt,
@@ -44,6 +47,9 @@ interface HealthHistoryInput {
   observationCount: number;
   recentRollups: HealthRollup[];
   recentEpisodes: HealthFindingEpisode[];
+  skippedObservationRows?: number;
+  skippedRollupRows?: number;
+  skippedEpisodeRows?: number;
 }
 
 function sameOrigin(left: string, right: string): boolean {
@@ -113,6 +119,30 @@ function signerHeightUpdates(observations: readonly HealthObservation[]): Health
     previousHeight = height;
   }
   return updates;
+}
+
+function nodeAdvanceCount(observations: readonly HealthObservation[]): number {
+  let count = 0;
+  let previous: number | null = null;
+  for (const observation of observations) {
+    const current = observation.nodeInfo?.stacks_tip_height ?? null;
+    if (current !== null && previous !== null && current > previous) count += 1;
+    if (current !== null) previous = current;
+  }
+  return count;
+}
+
+function distinctChecks(
+  observations: readonly HealthObservation[],
+  checkedAt: (observation: HealthObservation) => string | null,
+): HealthObservation[] {
+  const seen = new Set<string>();
+  return observations.filter((observation) => {
+    const key = checkedAt(observation);
+    if (key === null || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function evidenceWindow(
@@ -189,6 +219,10 @@ function signerWindow(
     (sample) => sample.signerMetrics?.rejectedTotal ?? null,
   );
   const responses = accepted !== null && rejected !== null ? accepted + rejected : null;
+  const validationLatency = histogramStatsFor(
+    observations,
+    (observation) => observation.signerMetrics?.validationLatencyBuckets ?? {},
+  );
   // This is a conservative lower bound: compare proposals old enough to have been answered with all
   // responses in the window. Aggregate counters cannot correlate a response to a specific proposal,
   // but allowing every response to account for an older proposal prevents normal in-flight work from
@@ -218,7 +252,8 @@ function signerWindow(
         ? (rejected / responses) * 100
         : null,
     responseP95Seconds: histogramP95(observations),
-    validationP95Seconds: histogramWindow(observations, "validationLatencyBuckets"),
+    validationP95Seconds: validationLatency.p95,
+    validationLatencySamples: validationLatency.count,
     nodeRpcP95Seconds: histogramWindow(observations, "nodeRpcLatencyBuckets"),
     capitulationP95Seconds: histogramWindow(observations, "capitulationLatencyBuckets"),
     disagreements: counterIncrease(
@@ -237,7 +272,7 @@ function sourceAdvanceStatus(
   lastAdvanceAt: string | null,
   stagnationStartedAt: string | null,
   latestObservedAt: string,
-): "advancing" | "collecting" | "insufficient-evidence" {
+): "advancing" | "stalled" | "collecting" | "insufficient-evidence" {
   const evidenceStartedAt = lastAdvanceAt ?? stagnationStartedAt;
   if (evidenceStartedAt === null) return "collecting";
   const current =
@@ -246,7 +281,7 @@ function sourceAdvanceStatus(
       ? lastAdvanceAt === null
         ? "collecting"
         : "advancing"
-      : "insufficient-evidence";
+      : "stalled";
   return current;
 }
 
@@ -258,6 +293,7 @@ function evaluateHealthFindings(input: {
   signerInfo: HealthSourceState;
   signerHeartbeat: HealthSourceState;
   signerMetrics: HealthSourceState;
+  nodePeerHealth: HealthSourceState;
   hiro: HealthSourceState;
   configuredApi: HealthSourceState;
   nodeLastAdvanceAt: string | null;
@@ -276,6 +312,7 @@ function evaluateHealthFindings(input: {
     signerInfo,
     signerHeartbeat,
     signerMetrics,
+    nodePeerHealth,
     hiro,
     configuredApi,
     nodeLastAdvanceAt,
@@ -303,6 +340,8 @@ function evaluateHealthFindings(input: {
     rejectionRate,
     validationLatency,
     agreementConflicts,
+    signerSilence,
+    canonicalTipDisagreement,
   } = HEALTH_RULE_THRESHOLDS;
 
   // Availability rules: these answer whether Sidekick still has the local first-person evidence
@@ -379,7 +418,8 @@ function evaluateHealthFindings(input: {
 
   const heartbeatFailures = consecutiveMatching(
     observations,
-    ({ signerHeartbeat }) => signerHeartbeat?.reachable === false,
+    ({ signerHeartbeat }) =>
+      signerHeartbeat?.reachable === false && signerHeartbeat.errorCode === "unexpected-content",
   );
   if (
     signerHeartbeat.consecutiveFailures >= localEndpointFailure.minimumSamples &&
@@ -456,13 +496,17 @@ function evaluateHealthFindings(input: {
     observations,
     (observation) =>
       observation.nodeInfo?.is_fully_synced === false ||
-      (observation.nodeHealth?.difference_from_max_peer ?? 0) >= nodeBehindPeers.lagBlocks,
+      (observation.nodeHealth !== null &&
+        observation.nodeHealth.difference_from_max_peer >= nodeBehindPeers.lagBlocks),
   );
   if (sustained(behindSamples, nodeBehindPeers.minimumSamples, nodeBehindPeers.minimumWindowMs)) {
     findings.push(
       finding({
         rule: HEALTH_RULES.nodeBehindNetwork,
-        title: "Stacks node is behind its observed peers",
+        title:
+          latest.nodeInfo?.is_fully_synced === false
+            ? "Stacks node is not fully synchronized"
+            : "Stacks node is behind its observed peers",
         detail:
           latest.nodeInfo?.is_fully_synced === false
             ? "The local node persistently reports that it is not fully synchronized."
@@ -471,16 +515,32 @@ function evaluateHealthFindings(input: {
         classification: "likely-local-node",
         confidence: "high",
         observations: behindSamples,
-        evidence: [
-          {
-            code: "node-peer-height-gap",
-            source: "node-peers",
-            status: "supporting",
-            observedAt: latest.observedAt,
-            value: String(latest.nodeHealth?.difference_from_max_peer ?? 0),
-            detail: "The node's peer-health endpoint reports a sustained canonical height gap.",
-          },
-        ],
+        evidence:
+          latest.nodeInfo?.is_fully_synced === false
+            ? [
+                {
+                  code: "node-not-fully-synced",
+                  source: "local-node",
+                  status: "supporting",
+                  observedAt: latest.nodeRpc.checkedAt,
+                  value: "false",
+                  detail: "The local node persistently reports is_fully_synced=false.",
+                },
+              ]
+            : [
+                {
+                  code: "node-peer-height-gap",
+                  source: "node-peers",
+                  status: "supporting",
+                  observedAt: nodePeerHealth.checkedAt,
+                  value:
+                    latest.nodeHealth === null
+                      ? null
+                      : String(latest.nodeHealth.difference_from_max_peer),
+                  detail:
+                    "The node's peer-health endpoint reports a sustained canonical height gap.",
+                },
+              ],
       }),
     );
   }
@@ -524,7 +584,7 @@ function evaluateHealthFindings(input: {
             status: "supporting",
             observedAt: nodeStagnationStartedAt,
             value: `${Math.round(nodeStallAge / 1_000)}s`,
-            detail: "No local Stacks or Bitcoin tip advance was observed inside the stall window.",
+            detail: "No local Stacks tip advance was observed inside the stall window.",
           },
           ...(peersAhead
             ? [
@@ -544,7 +604,7 @@ function evaluateHealthFindings(input: {
                   code: "reference-api-advancing",
                   source: "reference-api" as const,
                   status: "supporting" as const,
-                  observedAt: hiroLastAdvanceAt,
+                  observedAt: hiroLastAdvanceAt ?? null,
                   value: latest.hiro ? String(latest.hiro.chain_tip.block_height) : null,
                   detail: "The independent reference API advanced during the local stall.",
                 },
@@ -556,7 +616,7 @@ function evaluateHealthFindings(input: {
                   code: "configured-api-advancing",
                   source: "configured-api" as const,
                   status: "supporting" as const,
-                  observedAt: configuredApiLastAdvanceAt,
+                  observedAt: configuredApiLastAdvanceAt ?? null,
                   value: latest.configuredApi
                     ? String(latest.configuredApi.chain_tip.block_height)
                     : null,
@@ -653,6 +713,98 @@ function evaluateHealthFindings(input: {
                 },
               ]
             : []),
+        ],
+      }),
+    );
+  }
+
+  const recentNodeObservations = recent15m.filter(({ nodeInfo }) => nodeInfo !== null);
+  let localCanonicalChange: [HealthObservation, HealthObservation] | null = null;
+  for (let index = 1; index < recentNodeObservations.length; index += 1) {
+    const previous = recentNodeObservations[index - 1];
+    const current = recentNodeObservations[index];
+    if (!previous?.nodeInfo || !current?.nodeInfo) continue;
+    const previousHash = stacksTipIndexBlockHash(previous.nodeInfo);
+    const currentHash = stacksTipIndexBlockHash(current.nodeInfo);
+    if (
+      current.nodeInfo.stacks_tip_height < previous.nodeInfo.stacks_tip_height ||
+      (current.nodeInfo.stacks_tip_height === previous.nodeInfo.stacks_tip_height &&
+        previousHash !== undefined &&
+        currentHash !== undefined &&
+        previousHash !== currentHash)
+    ) {
+      localCanonicalChange = [previous, current];
+    }
+  }
+  if (localCanonicalChange) {
+    const [previous, current] = localCanonicalChange;
+    findings.push(
+      finding({
+        rule: HEALTH_RULES.localCanonicalTipChanged,
+        title: "Local canonical Stacks tip changed",
+        detail:
+          "The local node reported a height regression or a different canonical hash at the same height. This can be normal during a reorg, but is retained for incident correlation.",
+        source: "node",
+        classification: "source-disagreement",
+        confidence: "high",
+        observations: [previous, current],
+        evidence: [
+          {
+            code: "local-canonical-tip-transition",
+            source: "local-node",
+            status: "supporting",
+            observedAt: current.observedAt,
+            value: `${previous.nodeInfo?.stacks_tip_height}:${stacksTipIndexBlockHash(previous.nodeInfo ?? {}) ?? "unknown"} -> ${current.nodeInfo?.stacks_tip_height}:${stacksTipIndexBlockHash(current.nodeInfo ?? {}) ?? "unknown"}`,
+            detail: "Consecutive successful node observations changed canonical position.",
+          },
+        ],
+      }),
+    );
+  }
+
+  const referenceChecks = distinctChecks(observations, (observation) => {
+    const hiroAt = observation.hiroSource?.checkedAt;
+    const configuredAt = observation.configuredApiSource?.checkedAt;
+    return hiroAt && configuredAt ? `${hiroAt}:${configuredAt}` : (hiroAt ?? configuredAt ?? null);
+  });
+  const canonicalMismatchSamples = consecutiveMatching(referenceChecks, (observation) => {
+    if (!observation.nodeInfo) return false;
+    const localHash = stacksTipIndexBlockHash(observation.nodeInfo);
+    if (!localHash) return false;
+    return [observation.hiro, observation.configuredApi].some(
+      (source) =>
+        source !== null &&
+        source.chain_tip.block_height === observation.nodeInfo?.stacks_tip_height &&
+        source.chain_tip.index_block_hash !== undefined &&
+        source.chain_tip.index_block_hash.toLowerCase() !== localHash.toLowerCase(),
+    );
+  });
+  if (
+    sustained(
+      canonicalMismatchSamples,
+      canonicalTipDisagreement.minimumSamples,
+      canonicalTipDisagreement.minimumWindowMs,
+    )
+  ) {
+    findings.push(
+      finding({
+        rule: HEALTH_RULES.canonicalTipDisagreement,
+        title: "Chain sources disagree on the canonical Stacks tip",
+        detail:
+          "The local node and an indexed comparison source repeatedly reported different hashes at the same Stacks height.",
+        source: "network",
+        classification: "source-disagreement",
+        confidence: "high",
+        observations: canonicalMismatchSamples,
+        evidence: [
+          {
+            code: "same-height-index-hash-mismatch",
+            source: "local-node",
+            status: "supporting",
+            observedAt: latest.nodeRpc.checkedAt,
+            value: stacksTipIndexBlockHash(latest.nodeInfo ?? {}) ?? null,
+            detail: "The local canonical index-block hash differs from a comparison source.",
+          },
         ],
       }),
     );
@@ -816,6 +968,7 @@ function evaluateHealthFindings(input: {
       ({ signerMetrics }) =>
         operator !== null &&
         signerMetrics?.rewardCycle !== null &&
+        signerMetrics?.rewardCycle !== undefined &&
         signerMetrics?.rewardCycle !== operator.currentRewardCycle,
     );
     if (
@@ -911,9 +1064,13 @@ function evaluateHealthFindings(input: {
               code: "signer-node-height-gap",
               source: "signer-monitoring",
               status: "supporting",
-              observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
+              observedAt:
+                signerLagSamples.at(-1)?.signerMetricsSource?.checkedAt ??
+                signerLagSamples.at(-1)?.observedAt ??
+                latest.observedAt,
               value: String(
-                (latest.nodeInfo?.stacks_tip_height ?? 0) - (latest.signerMetrics?.nodeHeight ?? 0),
+                (signerLagSamples.at(-1)?.nodeInfo?.stacks_tip_height ?? 0) -
+                  (signerLagSamples.at(-1)?.signerMetrics?.nodeHeight ?? 0),
               ),
               detail: "Signer monitoring remains behind the authoritative local node height.",
             },
@@ -931,6 +1088,61 @@ function evaluateHealthFindings(input: {
   //
   // signer15m.responseGap is a conservative lower bound after the settle window, so it will not
   // read normal in-flight responses as a gap.
+  const proposalCounterAvailable = recent15m.every(
+    ({ signerMetrics }) =>
+      signerMetrics?.proposalsTotal !== null && signerMetrics?.proposalsTotal !== undefined,
+  );
+  if (
+    operator?.expectedCurrentParticipation === true &&
+    signerMetrics.status === "healthy" &&
+    proposalCounterAvailable &&
+    recent15m.length >= 2 &&
+    Date.parse(recent15m.at(-1)?.observedAt ?? "") -
+      Date.parse(recent15m.at(0)?.observedAt ?? "") >=
+      signerSilence.minimumWindowMs &&
+    nodeAdvanceCount(recent15m) >= signerSilence.minimumNodeAdvances &&
+    counterIncrease(recent15m, (sample) => sample.signerMetrics?.proposalsTotal ?? null) === 0
+  ) {
+    findings.push(
+      finding({
+        rule: HEALTH_RULES.expectedSignerSilent,
+        title: "Expected signer is not receiving proposals",
+        detail:
+          "This signer is in the active signer set, but its proposal counter did not advance while the local chain continued advancing.",
+        source: "signer",
+        classification: "likely-local-signer",
+        confidence: "high",
+        observations: recent15m,
+        evidence: [
+          {
+            code: "expected-signer-no-proposals",
+            source: "on-chain",
+            status: "supporting",
+            observedAt: operator.observedAt ?? latest.observedAt,
+            value: "expected-current-participation",
+            detail: "Anchored operator state places this signer in the active reward-cycle set.",
+          },
+          {
+            code: "signer-proposal-counter-static",
+            source: "signer-monitoring",
+            status: "supporting",
+            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
+            value: "0",
+            detail: "The signer proposal counter did not increase during the evidence window.",
+          },
+          {
+            code: "local-chain-advanced",
+            source: "local-node",
+            status: "supporting",
+            observedAt: latest.nodeRpc.checkedAt,
+            value: String(nodeAdvanceCount(recent15m)),
+            detail: "The local node advanced repeatedly during the same evidence window.",
+          },
+        ],
+      }),
+    );
+  }
+
   if (
     signer15m.proposals !== null &&
     signer15m.proposals >= proposalResponseGap.minimumProposals &&
@@ -993,8 +1205,7 @@ function evaluateHealthFindings(input: {
   }
 
   if (
-    signer15m.validationAccepted !== null &&
-    signer15m.validationAccepted >= validationLatency.minimumAcceptedValidations &&
+    signer15m.validationLatencySamples >= validationLatency.minimumAcceptedValidations &&
     (signer15m.validationP95Seconds ?? 0) > validationLatency.p95Seconds
   ) {
     const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > validationLatency.p95Seconds;
@@ -1002,7 +1213,7 @@ function evaluateHealthFindings(input: {
       finding({
         rule: HEALTH_RULES.signerValidationLatencyElevated,
         title: "Local node block validation is slow",
-        detail: `The local Stacks node reported a recent successful-validation p95 of ${formatSeconds(signer15m.validationP95Seconds)} across ${signer15m.validationAccepted} validations.`,
+        detail: `The local Stacks node reported a recent successful-validation p95 of ${formatSeconds(signer15m.validationP95Seconds)} across ${signer15m.validationLatencySamples} timed validations.`,
         source: "node",
         classification: "likely-local-node",
         confidence: nodeRpcSlow ? "high" : "medium",
@@ -1020,12 +1231,20 @@ function evaluateHealthFindings(input: {
           {
             code: "signer-node-rpc-p95",
             source: "signer-monitoring",
-            status: nodeRpcSlow ? "supporting" : "contradicting",
+            status:
+              signer15m.nodeRpcP95Seconds === null
+                ? "unavailable"
+                : nodeRpcSlow
+                  ? "supporting"
+                  : "contradicting",
             observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
             value: formatSeconds(signer15m.nodeRpcP95Seconds),
-            detail: nodeRpcSlow
-              ? "General signer-to-node RPC latency is also elevated, strengthening the local-node diagnosis."
-              : "General signer-to-node RPC latency is not elevated; the finding is limited to node-reported block validation.",
+            detail:
+              signer15m.nodeRpcP95Seconds === null
+                ? "General signer-to-node RPC latency was not available in this evidence window."
+                : nodeRpcSlow
+                  ? "General signer-to-node RPC latency is also elevated, strengthening the local-node diagnosis."
+                  : "General signer-to-node RPC latency is not elevated; the finding is limited to node-reported block validation.",
           },
         ],
       }),
@@ -1080,7 +1299,7 @@ export function buildHealthRollup(observations: readonly HealthObservation[]): H
     sampleCount: observations.length,
     nodeRpcAvailabilityPercent:
       (observations.filter(({ nodeRpc }) => nodeRpc.reachable).length / observations.length) * 100,
-    signerAvailabilityPercent: signerConfigured
+    signerInfoAvailabilityPercent: signerConfigured
       ? (observations.filter(({ signerInfoSource }) => signerInfoSource?.reachable === true)
           .length /
           observations.length) *
@@ -1115,11 +1334,19 @@ function diagnosis(
     "source-disagreement",
     "insufficient-evidence",
   ] as const;
+  const severityRank = { critical: 3, warning: 2, info: 1 } as const;
+  const maximumSeverity = findings.reduce(
+    (maximum, finding) => Math.max(maximum, severityRank[finding.severity]),
+    0,
+  );
+  const strongestFindings = findings.filter(
+    (finding) => severityRank[finding.severity] === maximumSeverity,
+  );
   const current = priority.find((classification) =>
-    findings.some((finding) => finding.classification === classification),
+    strongestFindings.some((finding) => finding.classification === classification),
   );
   if (findings.length > 0 && current) {
-    const strongest = findings.find(({ classification }) => classification === current);
+    const strongest = strongestFindings.find(({ classification }) => classification === current);
     const actionable = findings.some(({ severity }) => severity !== "info");
     return {
       status: actionable ? "needs-attention" : "monitoring",
@@ -1146,15 +1373,25 @@ function diagnosis(
       activeFindingIds: [],
     };
   }
-  if (observations.length < 3 || partial) {
+  if (observations.length < 3) {
     return {
       status: "collecting",
       classification: "insufficient-evidence",
       confidence: observations.length < 3 ? "low" : "medium",
-      title: partial ? "Some health evidence is incomplete" : "Collecting signer-health evidence",
-      summary: partial
-        ? "Core local health is available; optional signer or comparison evidence is incomplete."
-        : "Sidekick is collecting the initial signer-health evidence window.",
+      title: "Collecting signer-health evidence",
+      summary: "Sidekick is collecting the initial signer-health evidence window.",
+      evidenceWindow: window,
+      activeFindingIds: [],
+    };
+  }
+  if (partial) {
+    return {
+      status: "partial",
+      classification: "insufficient-evidence",
+      confidence: "medium",
+      title: "Signer-health coverage is limited",
+      summary:
+        "Core local-node evidence is available, but signer monitoring or another configured source is incomplete.",
       evidenceWindow: window,
       activeFindingIds: [],
     };
@@ -1176,12 +1413,14 @@ export function buildHealthSnapshot({
   burnBlockTiming,
   operator,
   history,
+  retainActiveEpisodes = false,
 }: {
   observations: readonly HealthObservation[];
   config: SidekickConfig;
   burnBlockTiming: BurnBlockTiming | null;
   operator?: HealthOperatorContext | null;
   history?: HealthHistoryInput;
+  retainActiveEpisodes?: boolean;
 }): HealthSnapshot {
   const latest = observations.at(-1);
   const latestAt = latest?.observedAt ?? new Date().toISOString();
@@ -1193,6 +1432,7 @@ export function buildHealthSnapshot({
     "nodeMetricsSource",
     Boolean(config.nodeMetricsUrl),
   );
+  const nodePeerHealthState = healthSourceState(observations, "nodeHealthSource", true);
   const hiroState = healthSourceState(
     observations,
     "hiroSource",
@@ -1264,14 +1504,21 @@ export function buildHealthSnapshot({
   );
   const signer15m = signerWindow(last15Minutes);
   const signer1h = signerWindow(lastHour);
+  const operatorContext =
+    operator &&
+    (operator.observedAt === undefined ||
+      Date.parse(latestAt) - Date.parse(operator.observedAt) <= 2 * 60_000)
+      ? operator
+      : null;
   const provisionalFindings = evaluateHealthFindings({
     observations,
     config,
-    operator: operator ?? null,
+    operator: operatorContext,
     nodeRpc,
     signerInfo: signerInfoState,
     signerHeartbeat: signerHeartbeatState,
     signerMetrics: signerMetricsState,
+    nodePeerHealth: nodePeerHealthState,
     hiro: hiroState,
     configuredApi: configuredApiState,
     nodeLastAdvanceAt: nodeLastTipAdvanceAt,
@@ -1287,7 +1534,55 @@ export function buildHealthSnapshot({
       .filter(({ status }) => status === "active")
       .map((episode) => [episode.id, episode]),
   );
-  const findings: HealthFinding[] = provisionalFindings.map((value) => {
+  const indeterminateIds = new Set<string>();
+  if (!latest?.nodeInfo) {
+    for (const rule of [
+      HEALTH_RULES.nodeBehindNetwork,
+      HEALTH_RULES.nodeTipStalledLocally,
+      HEALTH_RULES.networkTipStalled,
+      HEALTH_RULES.signerNodeViewBehind,
+      HEALTH_RULES.localCanonicalTipChanged,
+      HEALTH_RULES.canonicalTipDisagreement,
+    ])
+      indeterminateIds.add(rule.id);
+  }
+  if (!latest?.nodeHealth) indeterminateIds.add(HEALTH_RULES.nodeBehindNetwork.id);
+  if (!latest?.hiro) indeterminateIds.add(HEALTH_RULES.referenceApiBehindLocalNode.id);
+  if (configuredApiDistinct && !latest?.configuredApi)
+    indeterminateIds.add(HEALTH_RULES.configuredApiBehindLocalNode.id);
+  if (!latest?.signerInfo) {
+    indeterminateIds.add(HEALTH_RULES.signerIdentityMismatch.id);
+    indeterminateIds.add(HEALTH_RULES.signerNetworkMismatch.id);
+  }
+  if (!latest?.signerMetrics) {
+    for (const rule of [
+      HEALTH_RULES.signerRewardCycleMismatch,
+      HEALTH_RULES.signerNodeViewBehind,
+      HEALTH_RULES.signerProposalResponseGap,
+      HEALTH_RULES.expectedSignerSilent,
+      HEALTH_RULES.signerRejectionRateElevated,
+      HEALTH_RULES.signerValidationLatencyElevated,
+      HEALTH_RULES.signerAgreementConflictsElevated,
+    ])
+      indeterminateIds.add(rule.id);
+  }
+  if (!operatorContext) {
+    indeterminateIds.add(HEALTH_RULES.signerIdentityMismatch.id);
+    indeterminateIds.add(HEALTH_RULES.signerRewardCycleMismatch.id);
+    indeterminateIds.add(HEALTH_RULES.expectedSignerSilent.id);
+  }
+  const retainedFindings = (history?.recentEpisodes ?? [])
+    .filter(
+      (episode) =>
+        episode.status === "active" &&
+        (retainActiveEpisodes || indeterminateIds.has(episode.id)) &&
+        !provisionalFindings.some(({ id }) => id === episode.id),
+    )
+    .map(
+      ({ status: _status, resolvedAt: _resolvedAt, occurrences: _occurrences, ...finding }) =>
+        finding,
+    );
+  const findings: HealthFinding[] = [...provisionalFindings, ...retainedFindings].map((value) => {
     const episode = episodeByFinding.get(value.id);
     return {
       ...value,
@@ -1317,10 +1612,14 @@ export function buildHealthSnapshot({
     signerValues?.nodeHeight ?? null,
     signerValues?.rewardCycle ?? null,
     signerValues?.proposalsTotal ?? null,
-    signerValues?.validationAcceptedTotal !== null || signerValues?.validationRejectedTotal !== null
+    signerValues !== null &&
+    (signerValues.validationAcceptedTotal !== null || signerValues.validationRejectedTotal !== null)
       ? true
       : null,
-    signerValues?.acceptedTotal !== null || signerValues?.rejectedTotal !== null ? true : null,
+    signerValues !== null &&
+    (signerValues.acceptedTotal !== null || signerValues.rejectedTotal !== null)
+      ? true
+      : null,
     Object.keys(signerValues?.responseLatencyBuckets ?? {}).length > 0 ? true : null,
     signerValues?.conflictTotal ?? null,
   ];
@@ -1334,18 +1633,29 @@ export function buildHealthSnapshot({
     signerInfoState,
     signerHeartbeatState,
     signerMetricsState,
-  ].some((source) => source.configured && source.status === "unavailable");
-  const partial = !config.nodeMetricsUrl || !config.signerMonitoringUrl || configuredFailure;
-  const overallStatus =
-    nodeRpc.consecutiveFailures >= HEALTH_RULE_THRESHOLDS.localEndpointFailure.minimumSamples
-      ? "unavailable"
-      : findings.some(({ severity }) => severity !== "info")
-        ? "needs-attention"
-        : findings.length > 0
-          ? "monitoring"
-          : partial
-            ? "partial"
-            : "healthy";
+  ].some(
+    (source) =>
+      source.configured &&
+      source.status === "unavailable" &&
+      source.consecutiveFailures >= HEALTH_RULE_THRESHOLDS.localEndpointFailure.minimumSamples,
+  );
+  const emptyMetrics =
+    (nodeMetricsState.status === "healthy" &&
+      nodeValues !== null &&
+      recognizedNodeSignals(nodeValues) === 0) ||
+    (signerMetricsState.status === "healthy" &&
+      signerValues !== null &&
+      recognizedSignerSignals(signerValues) === 0);
+  const partial = !config.signerMonitoringUrl || configuredFailure || emptyMetrics;
+  const overallStatus = findings.some(({ id }) => id === HEALTH_RULES.nodeRpcUnavailable.id)
+    ? "unavailable"
+    : findings.some(({ severity }) => severity !== "info")
+      ? "needs-attention"
+      : findings.length > 0
+        ? "monitoring"
+        : partial
+          ? "partial"
+          : "healthy";
   const fallbackRollup = buildHealthRollup(last15Minutes);
   const recentRollups = history?.recentRollups ?? (fallbackRollup ? [fallbackRollup] : []);
   const observationSummary = history ?? {
@@ -1353,6 +1663,9 @@ export function buildHealthSnapshot({
     observationCount: observations.length,
     recentRollups,
     recentEpisodes: [],
+    skippedObservationRows: 0,
+    skippedRollupRows: 0,
+    skippedEpisodeRows: 0,
   };
 
   return {
@@ -1371,11 +1684,15 @@ export function buildHealthSnapshot({
       observationCount: observationSummary.observationCount,
       recentRollups: observationSummary.recentRollups.slice(0, 288),
       recentEpisodes: observationSummary.recentEpisodes.slice(0, 50),
+      skippedObservationRows: observationSummary.skippedObservationRows ?? 0,
+      skippedRollupRows: observationSummary.skippedRollupRows ?? 0,
+      skippedEpisodeRows: observationSummary.skippedEpisodeRows ?? 0,
     },
-    operator: operator ?? null,
+    operator: operatorContext,
     burnBlockTiming,
     node: {
       rpc: nodeRpc,
+      peerHealth: nodePeerHealthState,
       metrics: nodeMetricsState,
       version: nodeInfo?.server_version ?? null,
       networkId: nodeInfo?.network_id ?? null,
@@ -1383,6 +1700,7 @@ export function buildHealthSnapshot({
       burnBlockHeight: nodeInfo?.burn_block_height ?? nodeValues?.burnBlockHeight ?? null,
       isFullySynced: nodeInfo?.is_fully_synced ?? null,
       peerHeightDifference: nodeHealth?.difference_from_max_peer ?? null,
+      tipIndexBlockHash: nodeInfo ? (stacksTipIndexBlockHash(nodeInfo) ?? null) : null,
       lastTipAdvanceAt: nodeLastTipAdvanceAt,
       inboundPeers: nodeValues?.inboundPeers ?? null,
       outboundPeers: nodeValues?.outboundPeers ?? null,
@@ -1395,6 +1713,7 @@ export function buildHealthSnapshot({
       source: hiroState,
       stacksTipHeight: hiro?.chain_tip.block_height ?? null,
       burnBlockHeight: hiro?.chain_tip.burn_block_height ?? null,
+      indexBlockHash: hiro?.chain_tip.index_block_hash ?? null,
       localStacksDifference:
         nodeInfo && hiro ? nodeInfo.stacks_tip_height - hiro.chain_tip.block_height : null,
       localBurnDifference:
@@ -1411,6 +1730,7 @@ export function buildHealthSnapshot({
       source: configuredApiState,
       stacksTipHeight: configuredApi?.chain_tip.block_height ?? null,
       burnBlockHeight: configuredApi?.chain_tip.burn_block_height ?? null,
+      indexBlockHash: configuredApi?.chain_tip.index_block_hash ?? null,
       localStacksDifference:
         nodeInfo && configuredApi
           ? nodeInfo.stacks_tip_height - configuredApi.chain_tip.block_height
@@ -1451,9 +1771,8 @@ export function buildHealthSnapshot({
       rewardCycleMatchesNode:
         signerValues?.rewardCycle !== null &&
         signerValues?.rewardCycle !== undefined &&
-        operator !== null &&
-        operator !== undefined
-          ? signerValues.rewardCycle === operator.currentRewardCycle
+        operatorContext !== null
+          ? signerValues.rewardCycle === operatorContext.currentRewardCycle
           : null,
       last15Minutes: signer15m,
       lastHour: {

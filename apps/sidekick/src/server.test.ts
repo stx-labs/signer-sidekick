@@ -446,6 +446,7 @@ describe("local API", () => {
     const retainedHealth = serverHealthSnapshot();
     const health = {
       current: vi.fn().mockResolvedValue(retainedHealth),
+      storedSnapshot: vi.fn().mockResolvedValue(retainedHealth),
       refresh: vi.fn().mockResolvedValue(retainedHealth),
       testSource: vi.fn(),
     };
@@ -511,15 +512,20 @@ describe("local API", () => {
     expect(support.json()).toMatchObject({
       sections: { nodeAndSignerHealth: { status: "ok", data: retainedHealth } },
     });
+    expect(health.storedSnapshot).toHaveBeenCalledOnce();
+    expect(health.current).toHaveBeenCalledOnce();
 
     const settings = await server.inject({ method: "GET", url: "/api/v1/settings", headers });
     expect(settings.statusCode).toBe(200);
     expect(settings.json()).toEqual({ schemaVersion: 1 });
 
     const ready = await server.inject({ method: "GET", url: "/health/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({
-      status: "not-ready",
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({ status: "ready" });
+    const operational = await server.inject({ method: "GET", url: "/health/operational" });
+    expect(operational.statusCode).toBe(503);
+    expect(operational.json()).toMatchObject({
+      status: "not-operational",
       code: "manager-not-deployed",
     });
 
@@ -1638,7 +1644,7 @@ describe("local API", () => {
 
     const response = await server.inject({ method: "GET", url: "/health/ready" });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ status: "ready", freshness: "stale" });
+    expect(response.json()).toMatchObject({ status: "ready" });
   });
 
   it("runs reconciliation asynchronously with process-local single-flight progress", async () => {

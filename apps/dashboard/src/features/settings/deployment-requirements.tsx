@@ -131,7 +131,12 @@ export function DeploymentRequirementsPanel({
     return () => controller.current?.abort();
   }, [load, refreshRevision]);
 
-  const connectionCheckIds = new Set(["node-rpc", "node-metrics", "signer-monitoring"]);
+  const connectionCheckIds = new Set([
+    "node-rpc",
+    "node-metrics",
+    "signer-monitoring",
+    "hiro-reference",
+  ]);
   const runtimeChecks = requirements?.checks.filter(({ id }) => !connectionCheckIds.has(id)) ?? [];
   const incompleteChecks = runtimeChecks.filter(({ status }) => status !== "pass");
   const passingChecks = runtimeChecks.filter(({ status }) => status === "pass");

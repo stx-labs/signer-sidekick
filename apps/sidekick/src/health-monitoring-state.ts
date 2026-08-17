@@ -81,7 +81,11 @@ export function healthSourceState(
     .find((observation) => observation[key]?.reachable);
   return {
     configured: true,
-    status: source?.reachable ? "healthy" : "unavailable",
+    status: source?.reachable
+      ? "healthy"
+      : source?.errorCode === "unsupported"
+        ? "unsupported"
+        : "unavailable",
     checkedAt: source?.checkedAt ?? latest?.observedAt ?? null,
     lastSuccessAt: lastSuccess?.[key]?.checkedAt ?? lastSuccess?.observedAt ?? null,
     latencyMs: source?.latencyMs ?? null,
@@ -109,22 +113,22 @@ export function counterIncrease<T>(
   return transitions > 0 ? increase : null;
 }
 
-export function histogramP95For(
+export function histogramStatsFor(
   observations: readonly HealthObservation[],
   select: (observation: HealthObservation) => Record<string, number>,
-): number | null {
+): { p95: number | null; count: number } {
   const latestBuckets = [...observations]
     .reverse()
     .map(select)
     .find((buckets) => buckets["+Inf"] !== undefined);
-  if (!latestBuckets) return null;
+  if (!latestBuckets) return { p95: null, count: 0 };
 
   const bounds = Object.keys(latestBuckets)
     .filter((bound) => bound !== "+Inf")
     .map(Number)
     .filter(Number.isFinite)
     .sort((left, right) => left - right);
-  if (bounds.length === 0 || new Set(bounds).size !== bounds.length) return null;
+  if (bounds.length === 0 || new Set(bounds).size !== bounds.length) return { p95: null, count: 0 };
 
   interface HistogramSnapshot {
     counts: number[];
@@ -187,7 +191,7 @@ export function histogramP95For(
     previous = current;
   }
 
-  if (totalIncrease < 1) return null;
+  if (totalIncrease < 1) return { p95: null, count: 0 };
   const target = totalIncrease * 0.95;
 
   // Linearly interpolate within the crossing bucket (Prometheus histogram_quantile), so a p95 that
@@ -198,14 +202,24 @@ export function histogramP95For(
     const count = increase[index] ?? 0;
     if (count >= target) {
       const span = count - lowerCount;
-      if (span <= 0) return upperBound;
-      return lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span);
+      if (span <= 0) return { p95: upperBound, count: totalIncrease };
+      return {
+        p95: lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span),
+        count: totalIncrease,
+      };
     }
     lowerBound = upperBound;
     lowerCount = count;
   }
   // The 95th percentile sits above the largest finite bucket; report it as a conservative floor.
-  return bounds.at(-1) ?? null;
+  return { p95: bounds.at(-1) ?? null, count: totalIncrease };
+}
+
+export function histogramP95For(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): number | null {
+  return histogramStatsFor(observations, select).p95;
 }
 
 export function histogramP95(observations: readonly HealthObservation[]): number | null {
@@ -217,7 +231,6 @@ export function histogramP95(observations: readonly HealthObservation[]): number
 
 interface TipPosition {
   stacks: number;
-  burn: number;
 }
 
 function lastAdvanceAt(
@@ -229,11 +242,7 @@ function lastAdvanceAt(
   let lastAdvance: string | null = null;
   for (const observation of observations) {
     const current = position(observation);
-    if (
-      previous &&
-      current &&
-      (current.stacks !== previous.stacks || current.burn !== previous.burn)
-    ) {
+    if (previous && current && current.stacks > previous.stacks) {
       lastAdvance = occurredAt(observation);
     }
     previous = current;
@@ -246,7 +255,6 @@ export function lastTipAdvanceAt(observations: readonly HealthObservation[]): st
     observation.nodeInfo
       ? {
           stacks: observation.nodeInfo.stacks_tip_height,
-          burn: observation.nodeInfo.burn_block_height,
         }
       : null,
   );
@@ -257,7 +265,6 @@ export function lastHiroTipAdvanceAt(observations: readonly HealthObservation[])
     observation.hiro
       ? {
           stacks: observation.hiro.chain_tip.block_height,
-          burn: observation.hiro.chain_tip.burn_block_height,
         }
       : null,
   );
@@ -272,7 +279,6 @@ export function lastConfiguredApiTipAdvanceAt(
       observation.configuredApi
         ? {
             stacks: observation.configuredApi.chain_tip.block_height,
-            burn: observation.configuredApi.chain_tip.burn_block_height,
           }
         : null,
     (observation) => observation.configuredApiSource?.checkedAt ?? observation.observedAt,

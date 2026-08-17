@@ -21,6 +21,8 @@ export interface NodeInfo {
   network_id: number;
   burn_block_height: number;
   stacks_tip_height: number;
+  stacks_tip?: `0x${string}` | undefined;
+  stacks_tip_consensus_hash?: string | undefined;
   is_fully_synced?: boolean | undefined;
 }
 
@@ -36,6 +38,7 @@ export interface HiroStatus {
   chain_tip: {
     block_height: number;
     burn_block_height: number;
+    index_block_hash?: string | undefined;
   };
 }
 
@@ -77,6 +80,7 @@ export interface HealthObservation {
   nodeRpc: SourceObservation;
   nodeInfo: NodeInfo | null;
   nodeHealth: NodeHealth | null;
+  nodeHealthSource: SourceObservation | null;
   nodeMetricsSource: SourceObservation | null;
   nodeMetrics: NodeMetricValues | null;
   hiroSource: SourceObservation | null;
@@ -93,6 +97,7 @@ export interface HealthObservation {
 export type HealthSourceKey =
   | "nodeRpc"
   | "nodeMetricsSource"
+  | "nodeHealthSource"
   | "hiroSource"
   | "configuredApiSource"
   | "signerInfoSource"
@@ -100,6 +105,7 @@ export type HealthSourceKey =
   | "signerMetricsSource";
 
 export interface HealthOperatorContext {
+  observedAt?: string;
   network: string;
   managerPrincipal: string;
   currentRewardCycle: number;

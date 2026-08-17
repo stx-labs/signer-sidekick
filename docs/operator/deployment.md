@@ -40,9 +40,12 @@ docker compose pull
 docker compose run --rm --no-deps sidekick connection check
 docker compose up -d
 curl --fail http://127.0.0.1:3998/health/ready
+curl --fail http://127.0.0.1:3998/health/operational
 ```
 
 `connection check` fails when RPC, network, manager identity, or transaction indexing is invalid.
+`/health/ready` confirms Sidekick and its database can serve requests; `/health/operational` also
+checks the current node, manager connection, and health evidence.
 The dashboard's **Settings → Deployment check** tests the same requirements and optional telemetry.
 
 ## Network paths

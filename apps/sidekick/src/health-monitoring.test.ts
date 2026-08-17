@@ -2,8 +2,11 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SidekickConfig } from "./config.js";
 import { calculateBurnBlockTiming, HealthMonitoringService } from "./health-monitoring.js";
-import { collectHealthObservation } from "./health-monitoring-sources.js";
-import type { HealthOperatorContext } from "./health-monitoring-types.js";
+import {
+  collectHealthObservation,
+  healthConfigurationFingerprint,
+} from "./health-monitoring-sources.js";
+import type { HealthFinding, HealthOperatorContext } from "./health-monitoring-types.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -19,6 +22,86 @@ afterEach(async () => {
 });
 
 describe("HealthMonitoringService", () => {
+  it("keeps an active incident open while evidence warms after a long restart gap", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/v2/info") {
+        response.end(JSON.stringify({ network_id: 1, burn_block_height: 1, stacks_tip_height: 1 }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end("missing");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const config: SidekickConfig = {
+      network: "devnet",
+      nodeRpcUrl: `http://127.0.0.1:${address.port}`,
+      apiUrl: "http://127.0.0.1:3999",
+      apiKeyHeader: "x-api-key",
+      maxApiBurnBlockLag: 12,
+      forecastHorizonCycles: 6,
+      stakerPageLimit: 200,
+      eventPageLimit: 100,
+      databasePath: ":memory:",
+    };
+    const openedAt = "2026-08-15T09:00:00.000Z";
+    const now = Date.parse("2026-08-15T12:00:00.000Z");
+    const { store } = await openSidekickStore(":memory:", openedAt);
+    stores.push(store);
+    const finding: HealthFinding = {
+      id: "node-rpc-unavailable",
+      episodeId: null,
+      severity: "critical",
+      title: "Local Stacks node is unavailable",
+      detail: "The configured local node could not be reached.",
+      source: "node",
+      classification: "likely-local-node",
+      confidence: "high",
+      firstObservedAt: openedAt,
+      lastObservedAt: openedAt,
+      evidenceWindow: {
+        startedAt: openedAt,
+        endedAt: openedAt,
+        sampleCount: 3,
+        distinctSources: 1,
+      },
+      evidence: [
+        {
+          code: "node-rpc-unavailable",
+          source: "local-node",
+          status: "supporting",
+          observedAt: openedAt,
+          value: null,
+          detail: "The local node RPC check failed.",
+        },
+      ],
+    };
+    const fingerprint = healthConfigurationFingerprint(config);
+    const [episode] = store.healthMonitoring.reconcileFindingEpisodes(
+      fingerprint,
+      [finding],
+      openedAt,
+    );
+    if (!episode) throw new Error("expected active finding episode");
+
+    const health = new HealthMonitoringService({
+      getConfig: () => config,
+      store,
+      now: () => new Date(now),
+    });
+    const snapshot = await health.refresh();
+
+    expect(snapshot.findings).toContainEqual(
+      expect.objectContaining({ id: finding.id, episodeId: episode.episodeId }),
+    );
+    expect(
+      snapshot.history.recentEpisodes.find(({ episodeId }) => episodeId === episode.episodeId),
+    ).toMatchObject({ status: "active", occurrences: 1, lastObservedAt: openedAt });
+  });
+
   it("uses a 24-hour burn-block sample and falls back to 12 hours", () => {
     const latestTime = 1_784_000_000;
     const blocks = Array.from({ length: 151 }, (_, index) => ({
@@ -154,6 +237,69 @@ stacks_signer_block_responses_sent{response_type="accepted"} 12
     expect(observedApiKeys).toEqual(["bound-secret", "bound-secret"]);
   });
 
+  it("preserves reverse-proxy base paths and reports unsupported peer health", async () => {
+    const requested: string[] = [];
+    const server = createServer((request, response) => {
+      requested.push(request.url ?? "");
+      if (request.url === "/stacks/v2/info") {
+        response.end(
+          JSON.stringify({
+            network_id: 1,
+            burn_block_height: 960_000,
+            stacks_tip_height: 100,
+            is_fully_synced: true,
+          }),
+        );
+        return;
+      }
+      if (request.url === "/stacks/v3/health") {
+        response.statusCode = 404;
+        response.end("unsupported");
+        return;
+      }
+      if (request.url === "/api/extended") {
+        response.end(
+          JSON.stringify({
+            status: "ready",
+            chain_tip: { block_height: 100, burn_block_height: 960_000 },
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end("missing");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const observation = await collectHealthObservation(
+      {
+        network: "mainnet",
+        nodeRpcUrl: `${baseUrl}/stacks`,
+        apiUrl: `${baseUrl}/api`,
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        stakerPageLimit: 200,
+        eventPageLimit: 100,
+        databasePath: ":memory:",
+        hiroReferenceApiUrl: `${baseUrl}/api`,
+      },
+      "2026-08-15T12:00:00.000Z",
+    );
+
+    expect(requested).toEqual(
+      expect.arrayContaining(["/stacks/v2/info", "/stacks/v3/health", "/api/extended"]),
+    );
+    expect(observation.nodeRpc.reachable).toBe(true);
+    expect(observation.nodeHealthSource).toMatchObject({
+      reachable: false,
+      errorCode: "unsupported",
+    });
+  });
+
   it("combines live node, Hiro, and signer signals with reset-safe rolling values", async () => {
     let accepted = 10;
     let rejected = 2;
@@ -219,7 +365,7 @@ stacks_node_errors_emitted_total 1
         return;
       }
       if (request.url === "/heartbeat") {
-        response.statusCode = heartbeatHealthy ? 200 : 500;
+        response.statusCode = 200;
         response.end(heartbeatHealthy ? "OK" : "Failed");
         return;
       }

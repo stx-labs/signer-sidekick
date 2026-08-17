@@ -286,7 +286,7 @@ export type RuntimeSettings = z.infer<typeof runtimeSettingsSchema>;
 
 const sourceStateSchema = z.looseObject({
   configured: z.boolean(),
-  status: z.enum(["healthy", "unavailable", "not-configured"]),
+  status: z.enum(["healthy", "unavailable", "not-configured", "unsupported"]),
   checkedAt: z.iso.datetime().nullable(),
   lastSuccessAt: z.iso.datetime().nullable(),
   latencyMs: z.number().nonnegative().nullable(),
@@ -364,7 +364,7 @@ export const healthRollupSchema = z
     windowEndedAt: z.iso.datetime(),
     sampleCount: z.number().int().positive(),
     nodeRpcAvailabilityPercent: z.number().min(0).max(100),
-    signerAvailabilityPercent: z.number().min(0).max(100).nullable(),
+    signerInfoAvailabilityPercent: z.number().min(0).max(100).nullable(),
     nodeStacksHeightStart: z.number().int().nonnegative().nullable(),
     nodeStacksHeightEnd: z.number().int().nonnegative().nullable(),
     nodeAdvanceCount: z.number().int().nonnegative(),
@@ -391,6 +391,7 @@ const signerWindowSchema = z
     rejectionPercent: z.number().min(0).max(100).nullable(),
     responseP95Seconds: z.number().nonnegative().nullable(),
     validationP95Seconds: z.number().nonnegative().nullable(),
+    validationLatencySamples: z.number().int().nonnegative(),
     nodeRpcP95Seconds: z.number().nonnegative().nullable(),
     capitulationP95Seconds: z.number().nonnegative().nullable(),
     disagreements: z.number().int().nonnegative().nullable(),
@@ -414,7 +415,14 @@ export const healthSnapshotSchema = z.looseObject({
     .nullable(),
   diagnosis: z
     .object({
-      status: z.enum(["healthy", "monitoring", "needs-attention", "collecting", "unavailable"]),
+      status: z.enum([
+        "healthy",
+        "monitoring",
+        "needs-attention",
+        "collecting",
+        "partial",
+        "unavailable",
+      ]),
       classification: healthClassificationSchema,
       confidence: z.enum(["high", "medium", "low"]),
       title: z.string().min(1).max(200),
@@ -434,10 +442,14 @@ export const healthSnapshotSchema = z.looseObject({
       observationCount: z.number().int().nonnegative(),
       recentRollups: z.array(healthRollupSchema).max(288),
       recentEpisodes: z.array(healthFindingEpisodeSchema).max(50),
+      skippedObservationRows: z.number().int().nonnegative(),
+      skippedRollupRows: z.number().int().nonnegative(),
+      skippedEpisodeRows: z.number().int().nonnegative(),
     })
     .strict(),
   operator: z
     .object({
+      observedAt: z.iso.datetime().optional(),
       network: z.string(),
       managerPrincipal: z.string(),
       currentRewardCycle: z.number().int().nonnegative(),
@@ -451,6 +463,7 @@ export const healthSnapshotSchema = z.looseObject({
     .nullable(),
   node: z.looseObject({
     rpc: sourceStateSchema,
+    peerHealth: sourceStateSchema,
     metrics: sourceStateSchema,
     version: z.string().nullable(),
     networkId: z.number().nullable(),
@@ -458,6 +471,7 @@ export const healthSnapshotSchema = z.looseObject({
     burnBlockHeight: z.number().nullable(),
     isFullySynced: z.boolean().nullable().optional(),
     peerHeightDifference: z.number().nullable().optional(),
+    tipIndexBlockHash: z.string().nullable(),
     lastTipAdvanceAt: z.string().nullable(),
     inboundPeers: z.number().nullable(),
     outboundPeers: z.number().nullable(),
@@ -467,20 +481,24 @@ export const healthSnapshotSchema = z.looseObject({
     source: sourceStateSchema,
     stacksTipHeight: z.number().nullable(),
     burnBlockHeight: z.number().nullable(),
+    indexBlockHash: z.string().nullable(),
     localStacksDifference: z.number().nullable(),
     localBurnDifference: z.number().nullable(),
     lastTipAdvanceAt: z.iso.datetime().nullable().optional(),
-    advancementStatus: z.enum(["advancing", "collecting", "insufficient-evidence"]).optional(),
+    advancementStatus: z
+      .enum(["advancing", "stalled", "collecting", "insufficient-evidence"])
+      .optional(),
   }),
   configuredApi: z.looseObject({
     distinctFromReference: z.boolean(),
     source: sourceStateSchema,
     stacksTipHeight: z.number().nullable(),
     burnBlockHeight: z.number().nullable(),
+    indexBlockHash: z.string().nullable(),
     localStacksDifference: z.number().nullable(),
     localBurnDifference: z.number().nullable(),
     lastTipAdvanceAt: z.iso.datetime().nullable(),
-    advancementStatus: z.enum(["advancing", "collecting", "insufficient-evidence"]),
+    advancementStatus: z.enum(["advancing", "stalled", "collecting", "insufficient-evidence"]),
   }),
   signer: z.looseObject({
     infoSource: sourceStateSchema,
@@ -2136,7 +2154,13 @@ export type OverviewNetworkHealthSummary = z.infer<typeof overviewNetworkHealthS
 
 export const overviewNodeHealthSummarySchema = z
   .object({
-    status: z.enum(["aligned", "behind", "unavailable", "insufficient-evidence"]),
+    status: z.enum([
+      "aligned",
+      "behind",
+      "needs-attention",
+      "unavailable",
+      "insufficient-evidence",
+    ]),
     stacksTipHeight: z.number().int().nonnegative().nullable(),
     burnBlockHeight: z.number().int().nonnegative().nullable(),
     peerHeightDifference: z.number().int().nullable(),

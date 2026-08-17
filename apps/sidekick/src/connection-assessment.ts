@@ -107,6 +107,7 @@ export interface ConnectionAssessmentOptions {
   store: Pick<SidekickStore, "deploymentIdentity">;
   now?: () => string;
   assessmentDeadlineMs?: number;
+  cacheTtlMs?: number;
   inspectManager?: (tip: `0x${string}` | undefined) => Promise<ConnectionManagerInspection>;
 }
 
@@ -174,7 +175,13 @@ export class ConnectionAssessmentService {
 
   async check(force = false): Promise<ConnectionAssessment> {
     if (this.inFlight) return await this.inFlight;
-    if (!force && this.lastAssessment) return this.lastAssessment;
+    const now = Date.parse(this.options.now?.() ?? new Date().toISOString());
+    if (
+      !force &&
+      this.lastAssessment &&
+      now - Date.parse(this.lastAssessment.checkedAt) < (this.options.cacheTtlMs ?? 30_000)
+    )
+      return this.lastAssessment;
     const pending = withInteractiveRequestDeadline(
       this.options.assessmentDeadlineMs ?? 12_000,
       async () => await this.assess(),

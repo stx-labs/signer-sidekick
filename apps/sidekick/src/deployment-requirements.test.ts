@@ -3,7 +3,7 @@ import type {
   DeploymentRequirements,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { describe, expect, it, vi } from "vitest";
-import type { SidekickConfig } from "./config.js";
+import type { ApiCredential, SidekickConfig } from "./config.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
 import type { ObserverRuntimeStatus } from "./observer-server.js";
 
@@ -19,6 +19,8 @@ const config: SidekickConfig = {
   databasePath: ":memory:",
   nodeMetricsUrl: "http://127.0.0.1:9153/metrics",
   signerMonitoringUrl: "http://127.0.0.1:30001",
+  hiroReferenceApiUrl: "https://api.mainnet.hiro.so",
+  hiroReferenceApiKeyHeader: "x-api-key",
 };
 
 const connected: ConnectionAssessment = {
@@ -104,8 +106,9 @@ function service(
     observer?: ObserverRuntimeStatus;
     transactionIndex?: "enabled" | "disabled" | "unavailable";
     testSource?: (
-      kind: "node-metrics" | "signer-monitoring",
+      kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
       url: string,
+      credential?: ApiCredential,
     ) => Promise<{
       status: "connected";
       signals: number;
@@ -133,7 +136,7 @@ describe("deployment requirements", () => {
     const result = await service().check(true);
 
     expect(result).toMatchObject({ status: "ready", requiredReady: true });
-    expect(result.checks).toHaveLength(5);
+    expect(result.checks).toHaveLength(6);
     expect(result.checks.every(({ status }) => status === "pass")).toBe(true);
     expect(check(result, "node-transaction-index").observed).toContain("enabled-endpoint");
   });
@@ -181,6 +184,24 @@ describe("deployment requirements", () => {
       observed: config.nodeMetricsUrl,
     });
     expect(check(result, "signer-monitoring").summary).toContain("connection refused");
+  });
+
+  it("tests the network comparison API with its origin-bound credential", async () => {
+    const testSource = vi.fn(async () => ({ status: "connected" as const, signals: 2 }));
+    const result = await service({
+      config: {
+        ...config,
+        hiroReferenceApiKey: "reference-secret",
+        hiroReferenceApiKeyOrigin: "https://api.mainnet.hiro.so",
+      },
+      testSource,
+    }).check(true);
+
+    expect(check(result, "hiro-reference")).toMatchObject({ status: "pass" });
+    expect(testSource).toHaveBeenCalledWith("hiro-reference", "https://api.mainnet.hiro.so", {
+      headerName: "x-api-key",
+      value: "reference-secret",
+    });
   });
 
   it("does not accept a generic metrics endpoint with no recognized signals", async () => {

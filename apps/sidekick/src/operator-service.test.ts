@@ -494,6 +494,63 @@ describe("operator service", () => {
     });
   });
 
+  it("retains the last chain-authoritative health context across cache invalidation", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 0,
+    });
+    const generatedAt = "2026-07-19T18:00:00.000Z";
+    const snapshot = {
+      generatedAt,
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      preflight: { cycle: { currentId: 141, nextId: 142 } },
+      registration: {
+        registered: true,
+        signerKeyHex: `02${"11".repeat(32)}`,
+        signerKeyGrantValid: true,
+      },
+      forecast: {
+        cycles: [
+          { cycleId: 141, contract: { inSignerSet: true } },
+          { cycleId: 142, contract: { inSignerSet: false } },
+        ],
+      },
+    };
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot)
+      .mockRejectedValueOnce(new Error("upstream unavailable"));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await expect(service.snapshot()).resolves.toBe(snapshot);
+    const retained = service.healthMonitoringContext();
+    expect(retained).toMatchObject({
+      observedAt: generatedAt,
+      currentRewardCycle: 141,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: false,
+    });
+
+    await expect(service.snapshot(true)).resolves.toBe(snapshot);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(service.healthMonitoringContext()).toEqual(retained);
+  });
+
   it("serves a stale snapshot immediately while one background refresh is in progress", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);

@@ -24,11 +24,14 @@ export class HealthSourceError extends Error {
       | "http-error"
       | "unexpected-content",
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { status?: number },
   ) {
     super(message, options);
     this.name = "HealthSourceError";
+    this.status = options?.status ?? null;
   }
+
+  readonly status: number | null;
 }
 
 export interface HealthHttpResponse {
@@ -242,7 +245,9 @@ export async function fetchHealthSource(
                   : status === 429
                     ? "rate-limited"
                     : "http-error";
-            finishError(new HealthSourceError(code, `Health endpoint returned HTTP ${status}`));
+            finishError(
+              new HealthSourceError(code, `Health endpoint returned HTTP ${status}`, { status }),
+            );
             return;
           }
           settled = true;

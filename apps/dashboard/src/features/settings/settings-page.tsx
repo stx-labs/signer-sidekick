@@ -184,10 +184,12 @@ export function SettingsPage({
   const recordDeploymentRequirements = useCallback((requirements: DeploymentRequirements) => {
     setDeploymentRequirements(requirements);
     setSourceTests((current) => {
-      if (!current["node-metrics"] && !current["signer-monitoring"]) return current;
+      if (!current["node-metrics"] && !current["signer-monitoring"] && !current["hiro-reference"])
+        return current;
       const next = { ...current };
       delete next["node-metrics"];
       delete next["signer-monitoring"];
+      delete next["hiro-reference"];
       return next;
     });
   }, []);
@@ -486,7 +488,7 @@ export function SettingsPage({
   const referenceApiConfigured = Boolean(settings.dataSources.hiroReferenceApiUrl);
   const referenceApiStatus = testedSourceStatus(
     sourceTests["hiro-reference"],
-    referenceApiConfigured ? "Configured" : "Not configured",
+    requirementStatus(requirementById.get("hiro-reference"), referenceApiConfigured),
   );
   const connectionsStatus = deploymentRequirements
     ? deploymentRequirements.status === "ready"

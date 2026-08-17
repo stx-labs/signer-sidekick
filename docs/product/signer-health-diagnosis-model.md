@@ -61,6 +61,7 @@ External references answer narrow comparison questions:
 - Is the local node materially behind the peers it can see?
 - Do multiple distinct signals agree that chain progression has stopped?
 - Is a public indexer itself stale while the local node remains healthy?
+- Do independent sources name different canonical hashes at the same Stacks height?
 
 Sidekick does not collect external signer-cohort data merely because it is available. The current
 diagnosis does not require the Hiro Signer Metrics API. If future incident evidence shows that a
@@ -133,8 +134,9 @@ When a 30-second reference sample is reused in intervening five-second observati
 ### 2. Normalize and retain
 
 Upstream bodies are converted to bounded typed values. Failures become bounded error codes rather
-than raw responses. The store retains raw observations for 72 hours and five-minute rollups for 90
-days.
+than raw responses. One malformed historical row is skipped and reported as a data-quality count;
+it cannot stop the collector. The store retains raw observations for 72 hours and five-minute
+rollups and resolved episodes for 90 days.
 
 Signer counters are cumulative, so Sidekick calculates increases across the relevant window and
 handles counter resets as a new epoch. Histogram percentiles are calculated from bucket increases,
@@ -155,6 +157,11 @@ Signer participation findings are interpreted alongside the anchored operator sn
 
 Sidekick does not infer operator registration or eligibility from an indexed API when the local node
 can prove it.
+
+The last successful anchored operator context is retained separately from dashboard caches for two
+minutes. Routine roster or activity reconciliation therefore cannot erase identity or participation
+expectations. Once that context is too old, dependent rules become indeterminate; they do not treat
+missing evidence as recovery.
 
 ### 4. Apply sustained rules
 
@@ -196,7 +203,8 @@ diagnostic inference, not an absolute root-cause determination.
 
 ### 6. Select the primary diagnosis
 
-Several findings may be active at once. The primary diagnosis uses this precedence:
+Several findings may be active at once. Sidekick first keeps only the highest active severity for
+primary-diagnosis selection, then uses this precedence within that severity:
 
 1. `likely-local-node`
 2. `likely-local-signer`
@@ -204,15 +212,17 @@ Several findings may be active at once. The primary diagnosis uses this preceden
 4. `source-disagreement`
 5. `insufficient-evidence`
 
-This prevents downstream symptoms from hiding an actionable local root cause. The complete finding
-list remains visible, including supporting and contradicting evidence.
+This prevents an informational local-node observation from hiding a critical signer failure while
+still preferring an actionable local root cause among findings of equal severity. The complete
+finding list remains visible, including supporting, contradicting, and unavailable evidence.
 
 ### 7. Preserve recovery evidence
 
 The first qualifying observation opens a durable finding episode. Repeated observations update the
-same episode. Recovery resolves it without deleting the record. A Sidekick restart hydrates recent
-observations, active episode identifiers, and counter baselines so an ongoing incident does not
-silently restart its clock.
+same episode. Only fresh contradictory or recovered evidence resolves it; a missing source retains
+the episode without inventing another occurrence. A Sidekick restart hydrates recent observations,
+active episode identifiers, and counter baselines and holds resolution during a 15-minute warm-up.
+Support-bundle export reads stored evidence and never collects or reconciles health state.
 
 ## Decision examples
 
@@ -224,6 +234,9 @@ silently restart its clock.
 | Local node and at least two distinct peer/reference signals remain stalled for 180 seconds | `suspected-network-wide` | Multiple signals support a broader progression problem, while the wording preserves uncertainty |
 | Signer heartbeat fails for 10 seconds across 3 checks | `likely-local-signer` | The signer itself reports that it cannot reach its node |
 | Signer receives proposals but accumulates at least 3 missing responses | `likely-local-signer` | First-person signer counters show an actionable local participation gap |
+| Signer is expected in the current set, the local node advances at least 12 times over 10 minutes, and the proposal counter does not move | `likely-local-signer` | Anchored expectation plus first-person silence identifies a local participation failure |
+| Local node height regresses or its canonical hash changes at the same height | `source-disagreement` | Sidekick records a possible reorg for correlation without treating it as an outage |
+| Local node and an indexed source repeatedly name different hashes at the same height | `source-disagreement` | Sustained canonical disagreement is stronger than an ordinary indexing-height delay |
 | Signer has a high rejection rate but node and chain progression remain normal | `source-disagreement` | Rejections alone do not distinguish local validation from a bad proposal or chain-view disagreement |
 | Signer monitoring is unconfigured or the initial baseline is incomplete | `insufficient-evidence` | Sidekick cannot make a stronger signer claim without the missing evidence |
 

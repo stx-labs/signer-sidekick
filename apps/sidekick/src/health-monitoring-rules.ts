@@ -48,6 +48,14 @@ export const HEALTH_RULE_THRESHOLDS = {
     minimumWindowMs: 2 * 60_000,
     recoveryUpdates: 2,
   },
+  signerSilence: {
+    minimumWindowMs: 10 * 60_000,
+    minimumNodeAdvances: 12,
+  },
+  canonicalTipDisagreement: {
+    minimumSamples: 3,
+    minimumWindowMs: 60_000,
+  },
   proposalResponseGap: {
     windowMs: HEALTH_WINDOWS.recentSignerMs,
     settleMs: 30_000,
@@ -162,6 +170,22 @@ export const HEALTH_RULES = {
       "Corroborated non-progression can keep an operator from misdiagnosing a local fault.",
     falsePositiveGuard: "Require the local stall plus at least two distinct peer or API signals.",
   }),
+  localCanonicalTipChanged: defineRule({
+    id: "local-canonical-tip-changed",
+    category: "local-chain",
+    defaultSeverity: "info",
+    thresholds: { minimumSamples: 1 },
+    rationale: "A height regression or same-height hash change is useful reorg evidence.",
+    falsePositiveGuard: "Only compare consecutive successful local-node observations.",
+  }),
+  canonicalTipDisagreement: defineRule({
+    id: "canonical-tip-disagreement",
+    category: "comparison",
+    defaultSeverity: "warning",
+    thresholds: HEALTH_RULE_THRESHOLDS.canonicalTipDisagreement,
+    rationale: "Sustained same-height hash disagreement can reveal a fork or stale chain source.",
+    falsePositiveGuard: "Require repeated disagreement at the same height for at least a minute.",
+  }),
   referenceApiBehindLocalNode: defineRule({
     id: "reference-api-behind-local-node",
     category: "comparison",
@@ -223,6 +247,16 @@ export const HEALTH_RULES = {
     rationale: "First-person counters can show proposals that the signer did not answer.",
     falsePositiveGuard:
       "Use a conservative lower bound and exclude proposals still inside the settle window.",
+  }),
+  expectedSignerSilent: defineRule({
+    id: "expected-signer-silent",
+    category: "signer-participation",
+    defaultSeverity: "critical",
+    thresholds: HEALTH_RULE_THRESHOLDS.signerSilence,
+    rationale:
+      "A signer expected in the active set must observe proposals while the chain advances.",
+    falsePositiveGuard:
+      "Require anchored participation, healthy first-person metrics, ten minutes, and many local node advances.",
   }),
   signerRejectionRateElevated: defineRule({
     id: "signer-rejection-rate-elevated",

@@ -17,6 +17,7 @@ type SourceStatus =
   | "partial"
   | "collecting"
   | "unavailable"
+  | "unsupported"
   | "not-configured";
 
 interface Eligibility {

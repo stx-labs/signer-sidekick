@@ -12,6 +12,7 @@ import type {
   HealthObservation,
   HealthSnapshot,
 } from "./health-monitoring-types.js";
+import type { HealthMonitoringRepository } from "./storage/health-monitoring-repository.js";
 
 export { calculateBurnBlockTiming } from "./health-monitoring-state.js";
 export type {
@@ -26,6 +27,7 @@ export type {
 const burnBlockTimingRefreshMs = 5 * 60 * 1_000;
 const defaultPollIntervalMs = 5_000;
 const defaultReferencePollIntervalMs = 30_000;
+const restartResolutionWarmupMs = 15 * 60_000;
 
 export class HealthMonitoringService {
   private observations: HealthObservation[] = [];
@@ -35,6 +37,7 @@ export class HealthMonitoringService {
   private burnBlockTimingAttemptedAt = 0;
   private referenceAttemptedAt = 0;
   private configFingerprint: string | null = null;
+  private resolutionHoldUntil = 0;
 
   constructor(private readonly options: HealthMonitoringOptions) {}
 
@@ -54,6 +57,12 @@ export class HealthMonitoringService {
   async current(): Promise<HealthSnapshot> {
     if (this.observations.length === 0) this.hydrate();
     return this.observations.length > 0 ? this.buildSnapshot() : this.refresh();
+  }
+
+  /** Build a support/read-only snapshot from persisted evidence without collecting or reconciling. */
+  storedSnapshot(): HealthSnapshot {
+    if (this.observations.length === 0) this.hydrate();
+    return this.buildSnapshot();
   }
 
   async refresh(): Promise<HealthSnapshot> {
@@ -93,6 +102,17 @@ export class HealthMonitoringService {
         since,
         limit: 5_000,
       }) ?? [];
+    const latestAt = Date.parse(this.observations.at(-1)?.observedAt ?? "");
+    const now = (this.options.now ?? (() => new Date()))().getTime();
+    const activeEpisodes =
+      this.options.store?.healthMonitoring.listActiveFindingEpisodes(fingerprint) ?? [];
+    if (
+      activeEpisodes.length > 0 &&
+      (!Number.isFinite(latestAt) ||
+        now - latestAt > (this.options.pollIntervalMs ?? defaultPollIntervalMs) * 3)
+    ) {
+      this.resolutionHoldUntil = now + restartResolutionWarmupMs;
+    }
   }
 
   private async collect(): Promise<HealthSnapshot> {
@@ -108,19 +128,30 @@ export class HealthMonitoringService {
       this.burnBlockTiming = null;
       this.burnBlockTimingAttemptedAt = 0;
       this.referenceAttemptedAt = 0;
+      this.resolutionHoldUntil = 0;
     }
     this.configFingerprint = configFingerprint;
     if (this.observations.length === 0) this.hydrate();
 
-    const observedAt = (this.options.now ?? (() => new Date()))().toISOString();
-    const observedAtMs = Date.parse(observedAt);
+    const clockAtMs = (this.options.now ?? (() => new Date()))().getTime();
+    const previousObservedAtMs = Date.parse(this.observations.at(-1)?.observedAt ?? "");
+    const observedAtMs = Math.max(
+      clockAtMs,
+      Number.isFinite(previousObservedAtMs) ? previousObservedAtMs + 1 : clockAtMs,
+    );
+    const observedAt = new Date(observedAtMs).toISOString();
     const shouldRefreshBurnTiming =
       Boolean(this.options.getBurnBlocks) &&
       observedAtMs - this.burnBlockTimingAttemptedAt >= burnBlockTimingRefreshMs;
     if (shouldRefreshBurnTiming) this.burnBlockTimingAttemptedAt = observedAtMs;
-    const shouldRefreshReferences =
-      observedAtMs - this.referenceAttemptedAt >=
-      (this.options.referencePollIntervalMs ?? defaultReferencePollIntervalMs);
+    const latestObservation = this.observations.at(-1);
+    const referencesRateLimited =
+      latestObservation?.hiroSource?.errorCode === "rate-limited" ||
+      latestObservation?.configuredApiSource?.errorCode === "rate-limited";
+    const referenceIntervalMs = referencesRateLimited
+      ? Math.max(60_000, this.options.referencePollIntervalMs ?? defaultReferencePollIntervalMs)
+      : (this.options.referencePollIntervalMs ?? defaultReferencePollIntervalMs);
+    const shouldRefreshReferences = observedAtMs - this.referenceAttemptedAt >= referenceIntervalMs;
     if (shouldRefreshReferences) this.referenceAttemptedAt = observedAtMs;
 
     const [observation, burnBlocks] = await Promise.all([
@@ -151,17 +182,22 @@ export class HealthMonitoringService {
       this.options.store?.healthMonitoring.upsertRollup(configFingerprint, rollup, observedAt);
     }
     this.options.store?.healthMonitoring.prune(observedAt);
-    const preliminary = this.buildSnapshot();
+    const retainDuringWarmup = observedAtMs < this.resolutionHoldUntil;
+    const preliminary = this.buildSnapshot(undefined, retainDuringWarmup);
+    const findings = retainDuringWarmup
+      ? this.retainActiveFindings(preliminary.findings)
+      : preliminary.findings;
     const episodes = this.options.store?.healthMonitoring.reconcileFindingEpisodes(
       configFingerprint,
-      preliminary.findings,
+      findings,
       observedAt,
     );
-    return this.buildSnapshot(episodes);
+    return this.buildSnapshot(episodes, retainDuringWarmup);
   }
 
   private buildSnapshot(
     reconciledEpisodes?: HealthSnapshot["history"]["recentEpisodes"],
+    retainActiveEpisodes = false,
   ): HealthSnapshot {
     const fingerprint =
       this.configFingerprint ?? healthConfigurationFingerprint(this.options.getConfig());
@@ -170,17 +206,56 @@ export class HealthMonitoringService {
       observationCount: this.observations.length,
       observedSince: this.observations.at(0)?.observedAt ?? null,
     };
+    const recentEpisodes = reconciledEpisodes ?? this.recentEpisodes(repository, fingerprint);
+    const recentRollups = repository?.listRecentRollups(fingerprint, 288) ?? [];
+    const dataQuality = repository?.dataQualitySummary() ?? {
+      skippedObservationRows: 0,
+      skippedRollupRows: 0,
+      skippedEpisodeRows: 0,
+    };
     return buildHealthSnapshot({
       observations: this.observations,
       config: this.options.getConfig(),
       burnBlockTiming: this.burnBlockTiming,
       operator: this.options.getOperatorContext?.() ?? null,
+      retainActiveEpisodes,
       history: {
         ...summary,
-        recentRollups: repository?.listRecentRollups(fingerprint, 288) ?? [],
-        recentEpisodes:
-          reconciledEpisodes ?? repository?.listFindingEpisodes(fingerprint, 50) ?? [],
+        recentRollups,
+        recentEpisodes,
+        ...dataQuality,
       },
     });
+  }
+
+  private recentEpisodes(
+    repository: HealthMonitoringRepository | undefined,
+    fingerprint: string,
+  ): HealthSnapshot["history"]["recentEpisodes"] {
+    if (!repository) return [];
+    const recent = repository.listFindingEpisodes(fingerprint, 50);
+    const active = repository.listActiveFindingEpisodes(fingerprint);
+    const activeIds = new Set(active.map(({ episodeId }) => episodeId));
+    return [
+      ...active.sort((left, right) => right.firstObservedAt.localeCompare(left.firstObservedAt)),
+      ...recent.filter(({ episodeId }) => !activeIds.has(episodeId)),
+    ].slice(0, 50);
+  }
+
+  private retainActiveFindings(findings: HealthSnapshot["findings"]): HealthSnapshot["findings"] {
+    const fingerprint =
+      this.configFingerprint ?? healthConfigurationFingerprint(this.options.getConfig());
+    const active =
+      this.options.store?.healthMonitoring.listActiveFindingEpisodes(fingerprint) ?? [];
+    const present = new Set(findings.map(({ id }) => id));
+    return [
+      ...findings,
+      ...active
+        .filter(({ id }) => !present.has(id))
+        .map(
+          ({ status: _status, resolvedAt: _resolvedAt, occurrences: _occurrences, ...finding }) =>
+            finding,
+        ),
+    ];
   }
 }

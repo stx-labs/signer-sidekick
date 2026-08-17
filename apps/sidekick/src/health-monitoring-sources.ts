@@ -28,6 +28,16 @@ const nodeInfoSchema: z.ZodType<NodeInfo> = z.object({
   network_id: z.number().int(),
   burn_block_height: z.number().int().nonnegative(),
   stacks_tip_height: z.number().int().nonnegative(),
+  stacks_tip: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+    .transform((value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}`)
+    .optional(),
+  stacks_tip_consensus_hash: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{40}$/i)
+    .transform((value) => value.replace(/^0x/i, "").toLowerCase())
+    .optional(),
   is_fully_synced: z.boolean().optional(),
 });
 
@@ -43,6 +53,7 @@ const hiroStatusSchema: z.ZodType<HiroStatus> = z.object({
   chain_tip: z.object({
     block_height: z.number().int().nonnegative(),
     burn_block_height: z.number().int().nonnegative(),
+    index_block_hash: z.string().min(1).optional(),
   }),
 });
 
@@ -56,7 +67,10 @@ const signerInfoSchema: z.ZodType<SignerInfo> = z.object({
 const hiroStatusPath = "/extended";
 
 function endpoint(base: string, path: string): string {
-  return new URL(path, base.endsWith("/") ? base : `${base}/`).toString();
+  const url = new URL(base);
+  const basePath = url.pathname.replace(/\/$/, "");
+  url.pathname = `${basePath}/${path.replace(/^\//, "")}`;
+  return url.toString();
 }
 
 function sourceFailure(error: unknown, checkedAt: string): SourceObservation {
@@ -187,11 +201,11 @@ function signerMetricValues(samples: readonly PrometheusSample[]): SignerMetricV
   };
 }
 
-function recognizedNodeSignals(values: NodeMetricValues): number {
+export function recognizedNodeSignals(values: NodeMetricValues): number {
   return Object.values(values).filter((value) => value !== null).length;
 }
 
-function recognizedSignerSignals(values: SignerMetricValues): number {
+export function recognizedSignerSignals(values: SignerMetricValues): number {
   return [
     values.nodeHeight,
     values.rewardCycle,
@@ -236,14 +250,20 @@ export async function testHealthSource(
     await readJson(endpoint(url, hiroStatusPath), hiroStatusSchema, checkedAt, credential);
     return { status: "connected", signals: 2 };
   }
-  const [, , metrics] = await Promise.all([
+  const [, heartbeat, metrics] = await Promise.all([
     readJson(endpoint(url, "/info"), signerInfoSchema, checkedAt),
     fetchHealthSource(endpoint(url, "/heartbeat")),
     readMetrics(endpoint(url, "/metrics"), checkedAt),
   ]);
+  if (heartbeat.body.trim() !== "OK") {
+    throw new HealthSourceError(
+      "unexpected-content",
+      "Signer heartbeat did not report a healthy node connection",
+    );
+  }
   return {
     status: "connected",
-    signals: 5 + recognizedSignerSignals(signerMetricValues(metrics.samples)),
+    signals: recognizedSignerSignals(signerMetricValues(metrics.samples)),
   };
 }
 
@@ -274,10 +294,15 @@ export async function collectHealthObservation(
         value: null,
       }),
     ),
-    readJson(endpoint(config.nodeRpcUrl, "/v3/health"), nodeHealthSchema, observedAt).catch(() => ({
-      source: null,
-      value: null,
-    })),
+    readJson(endpoint(config.nodeRpcUrl, "/v3/health"), nodeHealthSchema, observedAt).catch(
+      (error) => ({
+        source:
+          error instanceof HealthSourceError && error.status === 404
+            ? { ...sourceFailure(error, observedAt), errorCode: "unsupported" }
+            : sourceFailure(error, observedAt),
+        value: null,
+      }),
+    ),
     config.nodeMetricsUrl
       ? readMetrics(config.nodeMetricsUrl, observedAt).catch((error) => ({
           source: sourceFailure(error, observedAt),
@@ -340,6 +365,7 @@ export async function collectHealthObservation(
     nodeRpc: nodeRpc.source,
     nodeInfo: nodeRpc.value,
     nodeHealth: nodeHealth.value,
+    nodeHealthSource: nodeHealth.source,
     nodeMetricsSource: nodeMetrics?.source ?? null,
     nodeMetrics: nodeMetrics?.samples ? nodeMetricValues(nodeMetrics.samples) : null,
     hiroSource: hiro?.source ?? null,

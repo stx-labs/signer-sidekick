@@ -381,6 +381,7 @@ export interface ServerOptions {
   health?: {
     current(): Promise<HealthSnapshot>;
     refresh(): Promise<HealthSnapshot>;
+    storedSnapshot?(): HealthSnapshot;
     testSource(
       kind: "node-metrics" | "signer-monitoring" | "indexed-api" | "hiro-reference",
       url?: string,
@@ -1390,35 +1391,39 @@ export function createServer(options: ServerOptions = {}) {
     );
     return reply.header("cache-control", "no-store").send(result);
   });
-  server.get("/health/ready", async (request, reply) => {
-    if (options.connection) {
-      const connection = await interactive(request, async () => await options.connection?.check());
-      if (!connection) return reply.code(503).send({ status: "not-ready" });
-      if (connection.status !== "connected") {
+  server.get("/health/ready", async (_request, reply) => {
+    if (!options.service) return reply.code(503).send({ status: "not-ready" });
+    return reply.code(200).send({ status: "ready" });
+  });
+  server.get("/health/operational", async (request, reply) => {
+    if (!options.service) return reply.code(503).send({ status: "not-operational" });
+    try {
+      const connection = options.connection
+        ? await interactive(request, async () => await options.connection?.check())
+        : null;
+      if (connection && connection.status !== "connected") {
         return reply.code(503).send({
-          status: "not-ready",
+          status: "not-operational",
           code: connection.outcomeCode,
           checkedAt: connection.checkedAt,
-          stale: connection.stale,
         });
       }
-    }
-    if (!options.service) return reply.code(503).send({ status: "not-ready" });
-    const service = options.service;
-    try {
+      const service = options.service;
       const snapshot = await interactive(request, () =>
         service.summary ? service.summary() : service.snapshot(),
       );
       const preflight = snapshot.preflight as { status?: string } | undefined;
-      const ready = preflight?.status !== "fail";
-      return reply.code(ready ? 200 : 503).send({
-        status: ready ? "ready" : "not-ready",
+      const health = options.health ? await options.health.current().catch(() => null) : null;
+      const operational = preflight?.status !== "fail" && health?.overallStatus !== "unavailable";
+      return reply.code(operational ? 200 : 503).send({
+        status: operational ? "operational" : "not-operational",
         generatedAt: snapshot.generatedAt,
         freshness: snapshot.freshness?.status ?? "current",
+        healthStatus: health?.overallStatus ?? null,
       });
     } catch (error) {
-      request.log.warn({ err: error }, "readiness snapshot failed");
-      return reply.code(503).send({ status: "not-ready" });
+      request.log.warn({ err: error }, "operational health check failed");
+      return reply.code(503).send({ status: "not-operational" });
     }
   });
   server.get("/metrics", async (_request, reply) => {
@@ -1905,6 +1910,7 @@ export function createServer(options: ServerOptions = {}) {
     const connectionCurrent =
       options.connection === undefined || options.connection.current()?.status === "connected";
     const application = options.supportApplication?.() ?? operatorSupportApplication();
+    const healthService = options.health;
     const bundle = await createOperatorSupportBundle({
       application,
       ...(options.connection ? { connection: async () => await options.connection?.check() } : {}),
@@ -1922,10 +1928,9 @@ export function createServer(options: ServerOptions = {}) {
                   : service.snapshot(connectionCurrent),
           }
         : {}),
-      ...(options.health
+      ...(healthService
         ? {
-            health: async () =>
-              connectionCurrent ? options.health?.refresh() : options.health?.current(),
+            health: async () => healthService.storedSnapshot?.() ?? (await healthService.current()),
           }
         : {}),
       ...(options.engine && operational
