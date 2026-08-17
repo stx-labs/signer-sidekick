@@ -366,6 +366,7 @@ export function Overview({
   );
   const pool = data.pool;
   const rewards = data.rewards;
+  const usesRewardForecast = rewards.estimateKind === "checkpoint-forecast";
   const forecastConfidence =
     rewards.confidence === "contract-exact"
       ? "Contract-exact now"
@@ -664,40 +665,67 @@ export function Overview({
           </div>
           <dl>
             <div>
-              <dt title="Total sBTC accumulated by PoX-5 for the next network calculation, shared across eligible signers and pools.">
-                Network-wide rewards
+              <dt
+                title={
+                  usesRewardForecast
+                    ? "Projected total sBTC at the next network calculation, shared across eligible signers and pools."
+                    : "Total sBTC accumulated by PoX-5 so far, shared across eligible signers and pools."
+                }
+              >
+                {usesRewardForecast
+                  ? "Projected network-wide rewards"
+                  : "Network-wide rewards accrued"}
               </dt>
               <dd>
-                {rewards.globalAccruedSats === null
+                {rewards.estimatedNetworkRewardSats === null
                   ? "Unavailable"
-                  : `${sbtc(rewards.globalAccruedSats)} sBTC`}
+                  : `${sbtc(rewards.estimatedNetworkRewardSats)} sBTC`}
               </dd>
             </div>
             <div>
-              <dt title="Estimated portion earned by this pool operator, using per-staker and per-bucket integer rounding.">
-                Operator fee estimate
+              <dt
+                title={
+                  usesRewardForecast
+                    ? "Projected portion earned by this pool operator at the next allocation, using per-staker and per-bucket integer rounding."
+                    : "Estimated portion earned by this pool operator if rewards were calculated now, using per-staker and per-bucket integer rounding."
+                }
+              >
+                {usesRewardForecast ? "Projected operator fee" : "Operator fee if calculated now"}
               </dt>
               <dd>
-                {rewards.operatorFeeSats === null
+                {rewards.estimatedOperatorFeeSats === null
                   ? feeUnavailableLabel(rewards.operatorFeeUnavailableReason)
-                  : `${sbtc(rewards.operatorFeeSats)} sBTC`}
+                  : `${sbtc(rewards.estimatedOperatorFeeSats)} sBTC`}
               </dd>
             </div>
             <div>
-              <dt title="Estimated amount remaining for this pool's stakers after operator fees.">
-                Net for your stakers
+              <dt
+                title={
+                  usesRewardForecast
+                    ? "Projected amount remaining for this pool's stakers after operator fees at the next allocation."
+                    : "Estimated amount remaining for this pool's stakers after operator fees if rewards were calculated now."
+                }
+              >
+                {usesRewardForecast
+                  ? "Projected net for your stakers"
+                  : "Staker net if calculated now"}
               </dt>
               <dd>
-                {rewardNetSats(rewards.estimatedPoolRewardSats, rewards.operatorFeeSats) === null
+                {rewardNetSats(
+                  rewards.estimatedPoolRewardSats,
+                  rewards.estimatedOperatorFeeSats,
+                ) === null
                   ? "Unavailable"
-                  : `${sbtc(rewardNetSats(rewards.estimatedPoolRewardSats, rewards.operatorFeeSats) ?? "0")} sBTC`}
+                  : `${sbtc(rewardNetSats(rewards.estimatedPoolRewardSats, rewards.estimatedOperatorFeeSats) ?? "0")} sBTC`}
               </dd>
             </div>
           </dl>
-          <p className="overview-domain-note">
-            {number(rewards.actionableClaims)} stakers ready for payout · Reward calculation:{" "}
-            {statusLabel(rewards.calculationState ?? "unavailable")}
-          </p>
+          {rewards.rewardCycleId === null ? null : (
+            <p className="overview-domain-note">
+              {usesRewardForecast ? "Projected for" : "Estimate for"} reward cycle{" "}
+              {rewards.rewardCycleId}
+            </p>
+          )}
           <EvidenceLine evidence={rewards.evidence} />
           <ContextualActionControl
             action={rewards.detailsAction}

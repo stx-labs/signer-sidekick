@@ -574,14 +574,12 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
     return {
       status: "unavailable",
       rewardCycleId: null,
-      globalAccruedSats: null,
+      estimatedNetworkRewardSats: null,
       estimatedPoolRewardSats: null,
-      operatorFeeSats: null,
+      estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reward-outlook-unavailable",
       estimateKind: "unavailable",
       confidence: "unavailable",
-      calculationState: null,
-      actionableClaims: null,
       evidence: [snapshotEvidence(snapshot)],
       detailsAction: rewardsAction("outlook", "Open reward history"),
     };
@@ -616,10 +614,10 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       : "unavailable",
     rewardCycleId:
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
-    globalAccruedSats:
-      outlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null,
+    estimatedNetworkRewardSats:
+      forecast?.globalSats.point ?? (currentEstimate ? outlook?.accrued.globalSats : null) ?? null,
     estimatedPoolRewardSats: forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null,
-    operatorFeeSats: usesForecast
+    estimatedOperatorFeeSats: usesForecast
       ? (operatorFeeForecast?.sats.point ?? null)
       : (operatorFeeEstimate?.sats ?? null),
     operatorFeeUnavailableReason: usesForecast
@@ -639,8 +637,6 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
     // The anchored current-share result is contract-exact at its source state, while checkpoint
     // forecasts preserve the calibration confidence established by the rewards domain.
     confidence: forecast?.confidence ?? (currentEstimate ? "contract-exact" : "unavailable"),
-    calculationState: outlook?.calculation.state ?? rewards?.calculation.state ?? null,
-    actionableClaims: rewards?.totals.actionableClaims ?? null,
     evidence: [rewardEvidence],
     detailsAction: rewardsAction("outlook", "Open rewards"),
   };

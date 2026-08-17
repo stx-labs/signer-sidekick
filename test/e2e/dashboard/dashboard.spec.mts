@@ -194,6 +194,13 @@ test("loads the independent operator Overview without the shared status endpoint
   await expect(page.getByText("Reward claim is awaiting approval")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Local node" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+  const rewardsSummary = page.locator("#overview-rewards");
+  await expect(rewardsSummary.getByText("Projected network-wide rewards")).toBeVisible();
+  await expect(rewardsSummary.getByText("Projected operator fee")).toBeVisible();
+  await expect(rewardsSummary.getByText("Projected net for your stakers")).toBeVisible();
+  await expect(rewardsSummary.getByText("Projected for reward cycle 140")).toBeVisible();
+  await expect(rewardsSummary).not.toContainText("stakers ready for payout");
+  await expect(rewardsSummary).not.toContainText("Reward calculation:");
   await expect.poll(() => statusRequests).toBe(0);
 });
 
