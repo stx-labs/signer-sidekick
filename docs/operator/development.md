@@ -40,8 +40,9 @@ The deterministic contract harness is documented in
 ## Transaction engine development
 
 The transaction engine starts in Observe when no engine variables are set. This exercises live
-observation, durable blockers, API mapping, and the Operations UI without loading a signer or
-reaching a broadcaster. Exact plans also require the public gas-payer identity and reviewed
+observation, durable blockers, API mapping, Settings capability controls, and Activity/action
+workspaces without loading a signer or reaching a broadcaster. Exact plans also require the public
+gas-payer identity and reviewed
 attestation/trust files described in the deployment guide; the private gas key remains unnecessary
 in Observe.
 
@@ -51,7 +52,8 @@ Implementation boundaries:
 - durable jobs, admission, signing, submission, observation, and recovery live under
   `apps/sidekick/src/transaction-engine`;
 - strict browser-facing schemas live in `packages/api-contracts`;
-- approvals and emergency controls live in `apps/dashboard/src/features/operations`.
+- exact-job approvals live in the shared action workspace; engine policy and emergency controls
+  live under dashboard Settings.
 
 Run the full checks before changing an adapter or authority boundary. A focused backend pass is also
 useful while iterating:
@@ -93,7 +95,11 @@ pnpm e2e:devnet:test
 `up` reports its bootstrap phase. It waits for the local chain to activate PoX-5 before it starts
 Sidekick; use `status` to follow that phase rather than starting a second run. Only one harness can
 use the fixed local ports at a time. Use `pnpm e2e:devnet:reset` after an interrupted run. The
-version locks under `test/e2e/devnet` define the released artifacts.
+`active-pool` scenario also routes a real stacks-node callback through Sidekick, requires its
+canonical block anchor to become node-verified, and waits for the affected current-state and
+manager-activity projections to reconcile. The harness enables Core's transaction index on the
+released node before the scenario because local transaction inclusion is the independent witness
+for indexed manager events. The version locks under `test/e2e/devnet` define the released artifacts.
 
 ## Local dashboard
 

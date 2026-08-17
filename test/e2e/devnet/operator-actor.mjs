@@ -5,9 +5,11 @@ import {
   ClarityVersion,
   fetchNonce,
   getAddressFromPrivateKey,
+  hexToCV,
   makeContractCall,
   makeContractDeploy,
   PostConditionMode,
+  privateKeyToPublic,
 } from "@stacks/transactions";
 
 export const DEVNET_ACCOUNTS = Object.freeze({
@@ -222,6 +224,59 @@ export function createOperatorActor(options = {}) {
     return await submit(transaction);
   }
 
+  async function browserWalletRequest(method, parameters = {}) {
+    const account = DEVNET_ACCOUNTS.deployer;
+    if (method === "getAddresses" || method === "stx_getAddresses") {
+      return {
+        addresses: [
+          {
+            symbol: "STX",
+            address: account.address,
+            publicKey: privateKeyToPublic(account.privateKey),
+          },
+        ],
+      };
+    }
+    if (method !== "stx_callContract") {
+      throw new Error(`Controlled Devnet wallet does not implement ${method}`);
+    }
+    const functionArgs = Array.isArray(parameters.functionArgs) ? parameters.functionArgs : [];
+    const postConditions = Array.isArray(parameters.postConditions)
+      ? parameters.postConditions
+      : [];
+    if (
+      parameters.address !== account.address ||
+      parameters.network !== "devnet" ||
+      parameters.contract !== DEVNET_MANAGER_PRINCIPAL ||
+      parameters.functionName !== "update-fees" ||
+      parameters.sponsored !== false ||
+      parameters.postConditionMode !== "deny" ||
+      functionArgs.length !== 1 ||
+      typeof functionArgs[0] !== "string" ||
+      postConditions.length !== 0
+    ) {
+      throw new Error(
+        `Controlled Devnet wallet rejected an unexpected request: ${JSON.stringify(parameters)}`,
+      );
+    }
+    const nonce = await fetchNonce({ address: account.address, network });
+    const transaction = await makeContractCall({
+      contractAddress: splitContract(DEVNET_MANAGER_PRINCIPAL).address,
+      contractName: splitContract(DEVNET_MANAGER_PRINCIPAL).name,
+      functionName: parameters.functionName,
+      functionArgs: functionArgs.map(hexToCV),
+      senderKey: account.privateKey,
+      fee,
+      nonce,
+      sponsored: false,
+      postConditionMode: PostConditionMode.Deny,
+      postConditions: [],
+      network,
+    });
+    const confirmed = await submit(transaction);
+    return { txid: confirmed.txid };
+  }
+
   async function stake(
     account,
     { managerPrincipal = DEVNET_MANAGER_PRINCIPAL, amountUstx = 60_000_000_000n, cycles = 2 } = {},
@@ -297,6 +352,7 @@ export function createOperatorActor(options = {}) {
 
   return {
     apiStatus,
+    browserWalletRequest,
     deployContract,
     deployManager,
     mineBurnBlock,

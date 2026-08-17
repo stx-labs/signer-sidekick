@@ -12,10 +12,15 @@ import {
   type StacksNodeClient,
 } from "../chain-clients.js";
 import type { SidekickConfig } from "../config.js";
+import { managerActionCapability } from "../manager-capabilities.js";
 import type { ManagerVerificationContext } from "../manager-verification.js";
+import {
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "../operator-anchor-snapshot.js";
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
-import { readSetupSnapshot, type SetupSnapshot } from "../setup-snapshot.js";
 import { createChainSourceId, type SidekickStore } from "../storage/store.js";
+import { copyValidDate, parseCanonicalInstant } from "../time.js";
 import type { TransactionAdmissionInput } from "./admission.js";
 import { RepositoryTransactionEngineApiService } from "./api-service.js";
 import {
@@ -63,7 +68,7 @@ export interface TransactionEngineRuntimeContext {
 }
 
 export interface TransactionEngineObservationHookInput {
-  setup: SetupSnapshot;
+  setup: OperatorAnchorSnapshot;
   rewards: StxRewardStatus | null;
   sourceId: string;
   observedAt: string;
@@ -126,11 +131,11 @@ const recoverableJobStates = [
 const defaultMaintenanceIntervalMs = 15_000;
 
 function exactNow(clock: () => Date): Date {
-  const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  const now = copyValidDate(clock());
+  if (!now) {
     throw new Error("Transaction engine clock returned an invalid instant");
   }
-  return new Date(now.getTime());
+  return now;
 }
 
 function runtimeFailureReason(error: unknown): string {
@@ -392,8 +397,8 @@ export class SidekickTransactionEngineRuntime {
       );
       if (proof.status === "proven") samePassConfirmedJobIds.push(result.jobId);
     }
-    const observedAt = new Date(input.observedAt);
-    if (!Number.isFinite(observedAt.getTime()) || observedAt.toISOString() !== input.observedAt) {
+    const observedAt = parseCanonicalInstant(input.observedAt);
+    if (!observedAt) {
       throw new Error("Transaction engine observation time is invalid");
     }
     const attestation = await this.#composition.loadAttestation(observedAt);
@@ -443,11 +448,8 @@ export class SidekickTransactionEngineRuntime {
         if (fresh.sourceId !== expectedSourceId) {
           throw new Error("Transaction engine approval source changed before revalidation");
         }
-        const observedAt = new Date(fresh.observedAt);
-        if (
-          !Number.isFinite(observedAt.getTime()) ||
-          observedAt.toISOString() !== fresh.observedAt
-        ) {
+        const observedAt = parseCanonicalInstant(fresh.observedAt);
+        if (!observedAt) {
           throw new Error("Transaction engine approval observation time is invalid");
         }
         const attestation = await this.#composition.loadAttestation(observedAt);
@@ -739,7 +741,7 @@ export async function createSidekickTransactionEngineRuntime(
       buildAdmission,
       readFreshObservation: async (context) => {
         const observedAt = exactNow(clock).toISOString();
-        const setup = await readSetupSnapshot({
+        const setup = await readOperatorAnchorSnapshot({
           config: context.config,
           node: context.node,
           api: context.api,
@@ -748,9 +750,16 @@ export async function createSidekickTransactionEngineRuntime(
           reportMissingManager: true,
         });
         const pox5ContractId = setup.preflight.pox.pox5ContractId;
-        const rewardCalculation = deriveRewardCalculationTarget(setup.chainAnchor);
+        const rewardCalculation = deriveRewardCalculationTarget(
+          setup.chainAnchor,
+          setup.preflight.pox.firstRewardCycleId,
+        );
         const rewards =
-          setup.manager.attachAllowed && pox5ContractId && rewardCalculation.status === "ready"
+          setup.manager.attachAllowed &&
+          pox5ContractId &&
+          managerActionCapability(setup.manager.capabilities, "reference-reward-claims")
+            .executionAvailable &&
+          rewardCalculation.status === "ready"
             ? await readStxRewardStatus({
                 store: options.store,
                 node: context.node,
@@ -762,6 +771,7 @@ export async function createSidekickTransactionEngineRuntime(
                 burnBlockHeight: setup.chainAnchor.burnBlockHeight,
                 stacksTipHeight: setup.chainAnchor.stacksBlockHeight,
                 chainAnchor: setup.chainAnchor,
+                firstRewardCycleId: setup.preflight.pox.firstRewardCycleId,
               })
             : null;
         return {

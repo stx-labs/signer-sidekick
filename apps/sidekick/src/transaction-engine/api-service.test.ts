@@ -237,6 +237,18 @@ describe("repository transaction-engine API service", () => {
       items: [{ jobId: first.job.jobId, state: "superseded" }],
     });
 
+    await expect(
+      api.listJobs({
+        cursor: null,
+        limit: 100,
+        states: ["prepared", "preflighted", "awaiting_approval", "blocked", "ambiguous"],
+      }),
+    ).resolves.toMatchObject({
+      total: 1,
+      nextCursor: null,
+      items: [{ jobId: awaiting.jobId, state: "awaiting_approval" }],
+    });
+
     const detail = await api.getJob(awaiting.jobId);
     expect(detail).toMatchObject({
       jobId: awaiting.jobId,

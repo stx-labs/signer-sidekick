@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type ClarityValue,
   decodeClarityHex,
@@ -23,7 +24,51 @@ const nodeInfoSchema = z.object({
       (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
     )
     .optional(),
+  stacks_tip_consensus_hash: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{40}$/i)
+    .transform((value) => value.replace(/^0x/i, "").toLowerCase())
+    .optional(),
+  is_fully_synced: z.boolean().optional(),
 });
+
+const nodeHealthSchema = z.object({
+  difference_from_max_peer: z.number().int().nonnegative(),
+  max_stacks_height_of_neighbors: z.number().int().nonnegative(),
+  max_stacks_neighbor_address: z.string(),
+  node_stacks_tip_height: z.number().int().nonnegative(),
+});
+
+const nodeTenureInfoSchema = z.object({
+  tip_block_id: z
+    .string()
+    .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+    .transform(
+      (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
+    ),
+  tip_height: z.number().int().nonnegative(),
+  reward_cycle: z.number().int().nonnegative(),
+});
+
+const nodeHeaderSchema = z
+  .object({
+    consensus_hash: z
+      .string()
+      .regex(/^(?:0x)?[0-9a-f]{40}$/i)
+      .transform((value) => value.replace(/^0x/i, "").toLowerCase()),
+    header: z
+      .string()
+      .regex(/^(?:[0-9a-f]{2})+$/i)
+      .transform((value) => value.toLowerCase()),
+    parent_block_id: z
+      .string()
+      .regex(/^(?:0x)?[0-9a-f]{64}$/i)
+      .transform(
+        (value): `0x${string}` => `0x${value.replace(/^0x/i, "").toLowerCase()}` as `0x${string}`,
+      ),
+  })
+  .strict();
+const nodeHeadersSchema = z.array(nodeHeaderSchema).max(2_100);
 
 const contractPrincipalSchema = z.string().refine((value) => {
   try {
@@ -44,6 +89,7 @@ const safeUstxNumberSchema = z
   .refine(Number.isSafeInteger, "uSTX value exceeds JavaScript's safe integer range");
 
 const poxInfoSchema = z.object({
+  first_burnchain_block_height: z.number().int().nonnegative().optional(),
   current_burnchain_block_height: z.number().int().nonnegative(),
   reward_cycle_id: z.number().int().nonnegative(),
   reward_cycle_length: z.number().int().positive(),
@@ -86,6 +132,14 @@ const contractSourceSchema = z.object({
 });
 
 const contractInterfaceSchema = z.object({
+  clarity_version: z
+    .string()
+    .regex(/^Clarity[1-9][0-9]*$/)
+    .optional(),
+  epoch: z
+    .string()
+    .regex(/^Epoch[0-9]+(?:_[0-9]+)*$/)
+    .optional(),
   functions: z.array(
     z.object({
       name: z.string(),
@@ -203,6 +257,82 @@ const transactionSummarySchema = z.object({
   }),
 });
 
+const historyCursorSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[0-9:]+$/);
+const principalTransactionPageSchema = z
+  .object({
+    total: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(50),
+    cursor: z
+      .object({
+        next: historyCursorSchema.nullable(),
+        previous: historyCursorSchema.nullable(),
+        current: historyCursorSchema.nullable(),
+      })
+      .strict(),
+    results: z
+      .array(
+        z
+          .object({
+            transaction: transactionSummarySchema.extend({
+              type: z.string(),
+              contract_call: z
+                .object({
+                  contract_id: contractPrincipalSchema,
+                  function_name: z.string().regex(clarityFunctionNamePattern),
+                })
+                .nullable()
+                .optional()
+                .default(null),
+            }),
+          })
+          .strip(),
+      )
+      .max(50),
+  })
+  .strict();
+
+const historicalTransactionEventSchema = z
+  .object({
+    event_index: z.number().int().nonnegative().safe(),
+    type: z.string().min(1),
+    contract_log: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        topic: z.string(),
+        value: z.object({ hex: z.string(), repr: z.string() }).strict(),
+      })
+      .optional(),
+  })
+  .strip()
+  .superRefine((value, context) => {
+    if (value.type === "contract_log" && !value.contract_log) {
+      context.addIssue({
+        code: "custom",
+        path: ["contract_log"],
+        message: "A contract-log event must include its contract log",
+      });
+    }
+  });
+
+const transactionEventPageSchema = z
+  .object({
+    total: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(100),
+    cursor: z
+      .object({
+        next: historyCursorSchema.nullable(),
+        previous: historyCursorSchema.nullable(),
+        current: historyCursorSchema.nullable(),
+      })
+      .strict(),
+    results: z.array(historicalTransactionEventSchema).max(100),
+  })
+  .strict();
+
 // `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
 // endpoint supplies the signed transaction's public call details needed for the narrow fallback
 // used when a node explicitly has transaction indexing disabled.
@@ -218,7 +348,19 @@ const transactionDetailSchema = z
         function_name: z.string().regex(clarityFunctionNamePattern),
         function_args: z.array(z.object({ hex: z.string().regex(clarityHexPattern) }).strip()),
       })
-      .nullable(),
+      .nullable()
+      .optional()
+      .default(null),
+    smart_contract: z
+      .object({
+        contract_id: contractPrincipalSchema,
+        source_code: z.string(),
+        // The indexed API currently returns null for some historical deployments.
+        clarity_version: z.number().int().nonnegative().safe().nullable().optional().default(null),
+      })
+      .nullable()
+      .optional()
+      .default(null),
     post_conditions: z.array(z.unknown()),
     sponsored: z.boolean(),
     anchor_mode: z.enum(["any", "on_chain_only", "off_chain_only"]),
@@ -287,7 +429,10 @@ const mempoolPageSchema = z
   .strict();
 
 export type NodeInfo = z.infer<typeof nodeInfoSchema>;
+export type NodeHealth = z.infer<typeof nodeHealthSchema>;
+export type NodeTenureInfo = z.infer<typeof nodeTenureInfoSchema>;
 export type PoxInfo = z.infer<typeof poxInfoSchema>;
+export type NodeHeader = z.infer<typeof nodeHeaderSchema>;
 export type ApiStatus = z.infer<typeof apiStatusSchema>;
 export type BurnBlockPage = z.infer<typeof burnBlockPageSchema>;
 export type ContractSource = z.infer<typeof contractSourceSchema>;
@@ -295,8 +440,33 @@ export type ContractInterface = z.infer<typeof contractInterfaceSchema>;
 export type SignerStakersPage = z.infer<typeof signerStakersPageSchema>;
 export type SmartContractLogPage = z.infer<typeof smartContractLogPageSchema>;
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
+
+/** Return the canonical Stacks block time for an indexed transaction as an ISO instant. */
+export function transactionOccurredAt(transaction: TransactionSummary): string {
+  const occurredAt = new Date(transaction.block.time * 1_000);
+  if (!Number.isFinite(occurredAt.getTime())) {
+    throw new Error(`Transaction ${transaction.tx_id} has an invalid Stacks block time`);
+  }
+  return occurredAt.toISOString();
+}
+export type PrincipalTransactionPage = z.infer<typeof principalTransactionPageSchema>;
+export type TransactionEventPage = z.infer<typeof transactionEventPageSchema>;
 export type TransactionDetail = z.infer<typeof transactionDetailSchema>;
 export type StacksBlockSummary = z.infer<typeof stacksBlockSummarySchema>;
+
+export function stacksTipIndexBlockHash(
+  info: Pick<NodeInfo, "stacks_tip" | "stacks_tip_consensus_hash">,
+): `0x${string}` | undefined {
+  if (!info.stacks_tip || !info.stacks_tip_consensus_hash) return undefined;
+  // Stacks Core addresses chainstate by StacksBlockId, the SHA-512/256 digest of the block-header
+  // hash followed by its consensus hash. /v2/info exposes those two inputs separately; stacks_tip
+  // alone is not a valid historical ?tip= value under Nakamoto.
+  const digest = createHash("sha512-256")
+    .update(Buffer.from(info.stacks_tip.slice(2), "hex"))
+    .update(Buffer.from(info.stacks_tip_consensus_hash, "hex"))
+    .digest("hex");
+  return `0x${digest}`;
+}
 
 export interface GasPayerMempoolActivityOptions {
   /** Rows requested per API page. The current v3 contract permits at most 50. */
@@ -387,13 +557,8 @@ function canonicalMempoolSnapshot(transactions: readonly MempoolTransaction[]): 
 
 export interface ChainReadOptions {
   tip: ChainAnchor["indexBlockHash"];
+  signal?: AbortSignal;
 }
-
-/**
- * A node can receive the next Bitcoin block before the indexed API has processed it, while both
- * still report the same Stacks tip. Accept only that one-block indexing lead as a shared anchor.
- */
-export const MAX_SHARED_ANCHOR_BURN_LAG = 1;
 
 type Fetch = typeof fetch;
 
@@ -487,8 +652,8 @@ function sanitizedEndpoint(url: string): string {
   return `${parsed.origin}${parsed.pathname}`;
 }
 
-function readTip(options?: ChainReadOptions): string | null {
-  if (!options) return null;
+function readTip(options?: { tip?: ChainAnchor["indexBlockHash"] }): string | null {
+  if (!options?.tip) return null;
   return chainAnchorSchema.shape.indexBlockHash.parse(options.tip).slice(2);
 }
 
@@ -538,12 +703,85 @@ async function cancelResponse(response: Response): Promise<void> {
   }
 }
 
+async function readBoundedResponse(
+  response: Response,
+  endpoint: string,
+  maximumBytes: number,
+  description: string,
+  cancellationSignal?: AbortSignal,
+): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > maximumBytes) {
+    await cancelResponse(response);
+    throw new UpstreamSchemaError(`${endpoint} returned an oversized ${description}`);
+  }
+  if (!response.body) return new Uint8Array();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      cancellationSignal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new UpstreamSchemaError(`${endpoint} returned an oversized ${description}`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+const MAX_JSON_RESPONSE_BYTES = 8 * 1_024 * 1_024;
+
 async function fetchJson<T>(
   fetchImpl: Fetch,
   url: string,
   schema: z.ZodType<T>,
   request: RequestInit = {},
 ): Promise<T> {
+  const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
+  cancellationSignal?.throwIfAborted();
+  try {
+    const bytes = await readBoundedResponse(
+      response,
+      endpoint,
+      MAX_JSON_RESPONSE_BYTES,
+      "JSON response",
+      cancellationSignal,
+    );
+    return schema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+  } catch (error) {
+    cancellationSignal?.throwIfAborted();
+    if (error instanceof UpstreamSchemaError) throw error;
+    throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
+      cause: error,
+    });
+  }
+}
+
+async function fetchResponse(
+  fetchImpl: Fetch,
+  url: string,
+  request: RequestInit = {},
+): Promise<{
+  response: Response;
+  cancellationSignal: AbortSignal | undefined;
+  endpoint: string;
+}> {
   const endpoint = sanitizedEndpoint(url);
   const maxAttempts = 4;
   const interactiveSignal = currentInteractiveRequestSignal();
@@ -604,17 +842,32 @@ async function fetchJson<T>(
       throw new UpstreamHttpError(`${endpoint} returned HTTP ${response.status}`, response.status);
     }
 
-    cancellationSignal?.throwIfAborted();
-    try {
-      return schema.parse(await response.json());
-    } catch (error) {
-      cancellationSignal?.throwIfAborted();
-      throw new UpstreamSchemaError(`${endpoint} returned an unexpected response shape`, {
-        cause: error,
-      });
-    }
+    return { response, cancellationSignal, endpoint };
   }
   throw new UpstreamUnavailableError(`${endpoint} was unavailable`);
+}
+
+const MAX_NAKAMOTO_BLOCK_BYTES = 2 * 1_024 * 1_024;
+
+async function fetchBoundedBytes(
+  fetchImpl: Fetch,
+  url: string,
+  request: RequestInit = {},
+): Promise<Uint8Array> {
+  const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
+  cancellationSignal?.throwIfAborted();
+  const bytes = await readBoundedResponse(
+    response,
+    endpoint,
+    MAX_NAKAMOTO_BLOCK_BYTES,
+    "Nakamoto block",
+    cancellationSignal,
+  );
+  cancellationSignal?.throwIfAborted();
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_NAKAMOTO_BLOCK_BYTES) {
+    throw new UpstreamSchemaError(`${endpoint} returned an invalid Nakamoto block size`);
+  }
+  return bytes;
 }
 
 export class StacksNodeClient {
@@ -623,15 +876,61 @@ export class StacksNodeClient {
     private readonly fetchImpl: Fetch = fetch,
   ) {}
 
-  getInfo(): Promise<NodeInfo> {
-    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema);
+  getInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
-  getPoxInfo(options?: ChainReadOptions): Promise<PoxInfo> {
+  getHealth(): Promise<NodeHealth> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/health`, nodeHealthSchema);
+  }
+
+  getTenureInfo(options: { signal?: AbortSignal } = {}): Promise<NodeTenureInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v3/tenures/info`, nodeTenureInfoSchema, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  getHeaders(count: number, options?: ChainReadOptions): Promise<NodeHeader[]> {
+    const parsedCount = z.number().int().min(1).max(2_100).parse(count);
+    return fetchJson(
+      this.fetchImpl,
+      appendQuery(`${this.baseUrl}/v2/headers/${parsedCount}`, { tip: readTip(options) }),
+      nodeHeadersSchema,
+      options?.signal ? { signal: options.signal } : {},
+    );
+  }
+
+  getNakamotoBlockById(
+    blockId: ChainAnchor["indexBlockHash"],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Uint8Array> {
+    const parsedBlockId = canonicalHex.parse(blockId).slice(2);
+    return fetchBoundedBytes(this.fetchImpl, `${this.baseUrl}/v3/blocks/${parsedBlockId}`, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  getNakamotoBlockAtHeight(height: number, options: ChainReadOptions): Promise<Uint8Array> {
+    const parsedHeight = z.number().int().nonnegative().safe().parse(height);
+    return fetchBoundedBytes(
+      this.fetchImpl,
+      appendQuery(`${this.baseUrl}/v3/blocks/height/${parsedHeight}`, {
+        tip: readTip(options),
+      }),
+      options.signal ? { signal: options.signal } : {},
+    );
+  }
+
+  getPoxInfo(
+    options: { tip?: ChainAnchor["indexBlockHash"]; signal?: AbortSignal } = {},
+  ): Promise<PoxInfo> {
     return fetchJson(
       this.fetchImpl,
       appendQuery(`${this.baseUrl}/v2/pox`, { tip: readTip(options) }),
       poxInfoSchema,
+      options.signal ? { signal: options.signal } : {},
     );
   }
 
@@ -755,22 +1054,18 @@ export class StacksApiClient {
     this.headers = apiKey ? { [apiKeyHeader]: apiKey } : undefined;
   }
 
-  getNodeInfo(): Promise<NodeInfo> {
-    return fetchJson(
-      this.fetchImpl,
-      `${this.baseUrl}/v2/info`,
-      nodeInfoSchema,
-      this.headers ? { headers: this.headers } : {},
-    );
+  getNodeInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(this.headers ? { headers: this.headers } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
-  getStatus(): Promise<ApiStatus> {
-    return fetchJson(
-      this.fetchImpl,
-      `${this.baseUrl}/extended/v1/status`,
-      apiStatusSchema,
-      this.headers ? { headers: this.headers } : {},
-    );
+  getStatus(options: { signal?: AbortSignal } = {}): Promise<ApiStatus> {
+    return fetchJson(this.fetchImpl, `${this.baseUrl}/extended/v1/status`, apiStatusSchema, {
+      ...(this.headers ? { headers: this.headers } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
   }
 
   async getBurnBlocks(limit = 200): Promise<BurnBlockPage> {
@@ -862,6 +1157,42 @@ export class StacksApiClient {
       this.fetchImpl,
       `${this.baseUrl}/extended/v3/transactions/${parsedTxId}`,
       transactionSummarySchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getPrincipalTransactions(
+    principal: string,
+    cursor: string | null = null,
+    limit = 50,
+  ): Promise<PrincipalTransactionPage> {
+    if (!validatePrincipal(principal)) throw new Error("Invalid principal");
+    if (cursor !== null) historyCursorSchema.parse(cursor);
+    const parsedLimit = z.number().int().min(1).max(50).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit) });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/principals/${encodeURIComponent(principal)}/transactions?${query}`,
+      principalTransactionPageSchema,
+      this.headers ? { headers: this.headers } : {},
+    );
+  }
+
+  getTransactionEvents(
+    txId: string,
+    cursor: string | null = null,
+    limit = 100,
+  ): Promise<TransactionEventPage> {
+    const parsedTxId = canonicalHex.parse(txId);
+    if (cursor !== null) historyCursorSchema.parse(cursor);
+    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
+    const query = new URLSearchParams({ limit: String(parsedLimit) });
+    if (cursor !== null) query.set("cursor", cursor);
+    return fetchJson(
+      this.fetchImpl,
+      `${this.baseUrl}/extended/v3/transactions/${parsedTxId}/events?${query}`,
+      transactionEventPageSchema,
       this.headers ? { headers: this.headers } : {},
     );
   }
@@ -1168,14 +1499,13 @@ export function createChainAnchor(
   const apiTip = apiStatus.chain_tip;
   const nodeBurnLag = nodeInfo.burn_block_height - apiTip.burn_block_height;
   // The API tip is the shared anchor: it is fenced before and after this read, while the node
-  // proves it can execute PoX queries at that exact index block hash. A node may lead the API by
-  // one Bitcoin block while both retain the same Stacks tip, but anything further is stale.
+  // proves it can execute PoX queries at that exact index block hash. An older API anchor remains
+  // safe for indexed reads for as long as the local node can still execute at that exact tip.
   // PoX reports the node's live burn tip even when the chainstate query is tip-pinned, so derive
   // the anchor's cycle facts from the API burn height below instead of comparing it to the API.
   if (
     nodeInfo.stacks_tip_height < apiTip.block_height ||
     nodeBurnLag < 0 ||
-    nodeBurnLag > MAX_SHARED_ANCHOR_BURN_LAG ||
     poxInfo.current_burnchain_block_height !== nodeInfo.burn_block_height
   ) {
     throw new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -1232,60 +1562,65 @@ export function createChainAnchor(
   });
 }
 
-export async function captureChainAnchor(
-  node: StacksNodeClient,
-  api: StacksApiClient,
+export function createNodeChainAnchor(
+  nodeInfo: NodeInfo,
+  tenureInfo: NodeTenureInfo,
+  poxInfo: PoxInfo,
+): ChainAnchor {
+  if (
+    nodeInfo.stacks_tip_height !== tenureInfo.tip_height ||
+    nodeInfo.burn_block_height !== poxInfo.current_burnchain_block_height
+  ) {
+    throw new ChainAnchorError("Node and PoX tips do not describe one chain position", {
+      retryable: true,
+    });
+  }
+  const anchor = createChainAnchor(
+    nodeInfo,
+    {
+      server_version: "local-stacks-node",
+      status: "ready",
+      chain_tip: {
+        block_height: tenureInfo.tip_height,
+        block_hash: tenureInfo.tip_block_id,
+        index_block_hash: tenureInfo.tip_block_id,
+        burn_block_height: nodeInfo.burn_block_height,
+      },
+    },
+    poxInfo,
+  );
+  if (anchor.rewardCycle !== tenureInfo.reward_cycle) {
+    throw new ChainAnchorError("Node tenure and PoX reward-cycle facts disagree", {
+      retryable: true,
+    });
+  }
+  return anchor;
+}
+
+function sameNodeTip(
+  leftInfo: NodeInfo,
+  leftTenure: NodeTenureInfo,
+  rightInfo: NodeInfo,
+  rightTenure: NodeTenureInfo,
+): boolean {
+  return (
+    leftInfo.stacks_tip_height === rightInfo.stacks_tip_height &&
+    leftInfo.burn_block_height === rightInfo.burn_block_height &&
+    leftTenure.tip_height === rightTenure.tip_height &&
+    leftTenure.tip_block_id === rightTenure.tip_block_id &&
+    leftTenure.reward_cycle === rightTenure.reward_cycle
+  );
+}
+
+async function retryChainAnchorCapture(
+  capture: () => Promise<ChainAnchor>,
+  failureMessage: string,
 ): Promise<ChainAnchor> {
   const maxAttempts = 3;
   let lastError: ChainAnchorError | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const before = await api.getStatus();
-      const nodeInfo = await node.getInfo();
-      const sharedStatus = await sharedApiStatus(before, nodeInfo, api);
-      let poxInfo: PoxInfo;
-      try {
-        // Successfully executing the query at the API's stable index block hash is the node's
-        // proof that this older position is available locally. This is what makes a node-ahead,
-        // API-lagging anchor safe without pretending the two live tips are identical.
-        poxInfo = await node.getPoxInfo({ tip: sharedStatus.chain_tip.index_block_hash });
-      } catch (error) {
-        if (error instanceof UpstreamHttpError && error.status === 404) {
-          throw new ChainAnchorError("The shared API anchor is not yet readable from the node", {
-            retryable: true,
-            tips: {
-              node: {
-                stacksTipHeight: nodeInfo.stacks_tip_height,
-                burnBlockHeight: nodeInfo.burn_block_height,
-              },
-              api: {
-                stacksTipHeight: sharedStatus.chain_tip.block_height,
-                burnBlockHeight: sharedStatus.chain_tip.burn_block_height,
-              },
-              poxBurnBlockHeight: nodeInfo.burn_block_height,
-            },
-          });
-        }
-        throw error;
-      }
-      const after = await api.getStatus();
-      if (!sameApiTip(before, after)) {
-        throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
-          retryable: true,
-          tips: {
-            node: {
-              stacksTipHeight: nodeInfo.stacks_tip_height,
-              burnBlockHeight: nodeInfo.burn_block_height,
-            },
-            api: {
-              stacksTipHeight: after.chain_tip.block_height,
-              burnBlockHeight: after.chain_tip.burn_block_height,
-            },
-            poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
-          },
-        });
-      }
-      return createChainAnchor(nodeInfo, sharedStatus, poxInfo);
+      return await capture();
     } catch (error) {
       if (!(error instanceof ChainAnchorError) || !error.retryable || attempt === maxAttempts) {
         throw error;
@@ -1293,5 +1628,74 @@ export async function captureChainAnchor(
       lastError = error;
     }
   }
-  throw lastError ?? new ChainAnchorError("Unable to capture a stable shared chain anchor");
+  throw lastError ?? new ChainAnchorError(failureMessage);
+}
+
+/** Capture the local node's current canonical position without consulting an external indexer. */
+export async function captureNodeChainAnchor(node: StacksNodeClient): Promise<ChainAnchor> {
+  return retryChainAnchorCapture(async () => {
+    const [beforeInfo, beforeTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+    const poxInfo = await node.getPoxInfo({ tip: beforeTenure.tip_block_id });
+    const [afterInfo, afterTenure] = await Promise.all([node.getInfo(), node.getTenureInfo()]);
+    if (!sameNodeTip(beforeInfo, beforeTenure, afterInfo, afterTenure)) {
+      throw new ChainAnchorError("Node tip moved while the anchor was being captured", {
+        retryable: true,
+      });
+    }
+    return createNodeChainAnchor(beforeInfo, beforeTenure, poxInfo);
+  }, "Unable to capture a stable local node anchor");
+}
+
+export async function captureChainAnchor(
+  node: StacksNodeClient,
+  api: StacksApiClient,
+): Promise<ChainAnchor> {
+  return retryChainAnchorCapture(async () => {
+    const before = await api.getStatus();
+    const nodeInfo = await node.getInfo();
+    const sharedStatus = await sharedApiStatus(before, nodeInfo, api);
+    let poxInfo: PoxInfo;
+    try {
+      // Successfully executing the query at the API's stable index block hash is the node's
+      // proof that this older position is available locally. This is what makes a node-ahead,
+      // API-lagging anchor safe without pretending the two live tips are identical.
+      poxInfo = await node.getPoxInfo({ tip: sharedStatus.chain_tip.index_block_hash });
+    } catch (error) {
+      if (error instanceof UpstreamHttpError && error.status === 404) {
+        throw new ChainAnchorError("The shared API anchor is not yet readable from the node", {
+          retryable: true,
+          tips: {
+            node: {
+              stacksTipHeight: nodeInfo.stacks_tip_height,
+              burnBlockHeight: nodeInfo.burn_block_height,
+            },
+            api: {
+              stacksTipHeight: sharedStatus.chain_tip.block_height,
+              burnBlockHeight: sharedStatus.chain_tip.burn_block_height,
+            },
+            poxBurnBlockHeight: nodeInfo.burn_block_height,
+          },
+        });
+      }
+      throw error;
+    }
+    const after = await api.getStatus();
+    if (!sameApiTip(before, after)) {
+      throw new ChainAnchorError("Chain tip moved while the anchor was being captured", {
+        retryable: true,
+        tips: {
+          node: {
+            stacksTipHeight: nodeInfo.stacks_tip_height,
+            burnBlockHeight: nodeInfo.burn_block_height,
+          },
+          api: {
+            stacksTipHeight: after.chain_tip.block_height,
+            burnBlockHeight: after.chain_tip.burn_block_height,
+          },
+          poxBurnBlockHeight: poxInfo.current_burnchain_block_height,
+        },
+      });
+    }
+    return createChainAnchor(nodeInfo, sharedStatus, poxInfo);
+  }, "Unable to capture a stable shared chain anchor");
 }

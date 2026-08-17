@@ -1,45 +1,31 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, rm, stat } from "node:fs/promises";
+import { access, chmod, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import type { Pox5CalculateRewardsEvent } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
-import type { SidekickNetwork } from "../config.js";
+import type { Pox5CurrentPoolEstimate } from "../pox5-calculate-rewards.js";
+import {
+  REWARD_FORECAST_MODEL_REVISION,
+  type RewardForecastEvaluation,
+  rewardForecastEvaluationSchema,
+} from "../reward-calibration.js";
+import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
+import {
+  type ChainCursorInput,
+  ChainStateRepository,
+  chainCursorInputSchema,
+} from "./chain-state-repository.js";
+import { DeploymentIdentityRepository } from "./deployment-identity-repository.js";
+import { HealthMonitoringRepository } from "./health-monitoring-repository.js";
+import { ManagerTrustRepository } from "./manager-trust-repository.js";
 import { type Migration, migrations } from "./migrations.js";
+import { ObserverInboxRepository } from "./observer-inbox-repository.js";
+import { RuntimeSettingsRepository } from "./runtime-settings-repository.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
-
-const sourceInputSchema = z
-  .object({
-    sourceId: z.string().min(1),
-    kind: z.enum(["api", "node"]),
-    network: z.enum(["mainnet", "testnet", "devnet", "regtest"]),
-    baseUrl: z.url(),
-    observedAt: z.iso.datetime(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const url = new URL(value.baseUrl);
-    if (url.username || url.password || url.search || url.hash) {
-      context.addIssue({
-        code: "custom",
-        message: "Chain source URL must not contain credentials, query parameters, or a fragment",
-        path: ["baseUrl"],
-      });
-    }
-  });
-
-const cursorInputSchema = z
-  .object({
-    sourceId: z.string().min(1),
-    stream: z.string().min(1),
-    cursor: z.string().nullable(),
-    lastBlockHeight: z.number().int().nonnegative().nullable(),
-    lastIndexBlockHash: z.string().nullable(),
-    updatedAt: z.iso.datetime(),
-  })
-  .strict();
 
 const hashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 const eventInputSchema = z
@@ -59,7 +45,12 @@ const eventInputSchema = z
     rawPayload: z.unknown(),
     decodedSchemaVersion: z.number().int().positive().nullable(),
     decodedPayload: z.unknown().nullable(),
+    evidenceLevel: z
+      .enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"])
+      .optional()
+      .default("indexer-reported"),
     sourceId: z.string().min(1),
+    occurredAt: z.iso.datetime().nullable().optional().default(null),
     observedAt: z.iso.datetime(),
   })
   .strict()
@@ -67,15 +58,6 @@ const eventInputSchema = z
     (value) => (value.decodedSchemaVersion === null) === (value.decodedPayload === null),
     "decodedSchemaVersion and decodedPayload must either both be present or both be null",
   );
-
-const cursorRowSchema = z.object({
-  source_id: z.string(),
-  stream: z.string(),
-  cursor: z.string().nullable(),
-  last_block_height: z.number().int().nonnegative().nullable(),
-  last_index_block_hash: z.string().nullable(),
-  updated_at: z.string(),
-});
 
 const eventRowSchema = z.object({
   chain_id: z.number().int().nonnegative(),
@@ -93,7 +75,9 @@ const eventRowSchema = z.object({
   raw_payload_json: z.string(),
   decoded_schema_version: z.number().int().positive().nullable(),
   decoded_payload_json: z.string().nullable(),
+  evidence_level: z.enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"]),
   source_id: z.string(),
+  occurred_at: z.string().nullable(),
   first_seen_at: z.string(),
   updated_at: z.string(),
 });
@@ -470,6 +454,7 @@ const rewardCycleSnapshotInputSchema = z
       .object({
         lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
         lastComputedRewardCycle: unsignedIntegerTextSchema.nullable(),
+        globalAccruedRewardsSats: unsignedIntegerTextSchema.optional().default("0"),
         rewardsPerToken: unsignedIntegerTextSchema,
         signerEarnedBeforeManagerClaimSats: unsignedIntegerTextSchema,
         signerEarnedAcrossBucketsSats: unsignedIntegerTextSchema,
@@ -541,6 +526,445 @@ const rewardCycleSnapshotInputSchema = z
     }
   });
 
+const rewardPoolEstimateSchema = z
+  .object({
+    kind: z.literal("if-calculated-now"),
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    grossSats: unsignedIntegerTextSchema,
+    stxSats: unsignedIntegerTextSchema,
+    bondSats: unsignedIntegerTextSchema,
+    inputs: z
+      .object({
+        globalStxSharesUstx: unsignedIntegerTextSchema,
+        managerStxSharesUstx: unsignedIntegerTextSchema,
+        activeBonds: z.array(
+          z
+            .object({
+              bondIndex: unsignedIntegerTextSchema,
+              targetRateBips: unsignedIntegerTextSchema,
+              globalSharesSats: unsignedIntegerTextSchema,
+              managerSharesSats: unsignedIntegerTextSchema,
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    assumptions: z.array(
+      z.enum([
+        "current-global-accrual",
+        "current-cycle-shares",
+        "current-active-bond-set",
+        "contract-integer-rounding",
+      ]),
+    ),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (BigInt(value.stxSats) + BigInt(value.bondSats) !== BigInt(value.grossSats)) {
+      context.addIssue({
+        code: "custom",
+        path: ["grossSats"],
+        message: "grossSats must equal the STX and bond pool estimates",
+      });
+    }
+  });
+
+const rewardPoolEstimateUnavailableReasonSchema = z.enum([
+  "chain-anchor-unavailable",
+  "calculation-target-unavailable",
+  "incomplete-active-bond-state",
+  "anchored-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
+const rewardSatsRangeSchema = z
+  .object({
+    low: unsignedIntegerTextSchema,
+    point: unsignedIntegerTextSchema,
+    high: unsignedIntegerTextSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (BigInt(value.low) > BigInt(value.point) || BigInt(value.point) > BigInt(value.high)) {
+      context.addIssue({
+        code: "custom",
+        path: ["point"],
+        message: "reward range must be ordered low, point, high",
+      });
+    }
+  });
+
+const rewardForecastSchema = z
+  .object({
+    kind: z.literal("checkpoint-run-rate"),
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    globalSats: rewardSatsRangeSchema,
+    poolSats: rewardSatsRangeSchema,
+    sample: z
+      .object({
+        observations: z.number().int().min(3),
+        firstObservedBurnHeight: z.number().int().nonnegative(),
+        lastObservedBurnHeight: z.number().int().nonnegative(),
+        sampleBlocks: z.number().int().min(6),
+        elapsedBlocks: z.number().int().positive(),
+        remainingBlocks: z.number().int().nonnegative(),
+      })
+      .strict(),
+    confidence: z.enum(["low", "developing", "calibrated"]),
+    assumptions: z.tuple([
+      z.enum(["zero-accrual-after-last-calculation", "observed-accrual-sample-window"]),
+      z.literal("linear-global-accrual-run-rate"),
+      z.literal("current-cycle-shares"),
+      z.literal("current-active-bond-set"),
+      z.literal("unchanged-reserve-before-calculation"),
+      z.literal("contract-integer-rounding"),
+    ]),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.sample.sampleBlocks !==
+      value.sample.lastObservedBurnHeight - value.sample.firstObservedBurnHeight
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sample", "sampleBlocks"],
+        message: "sampleBlocks must match the observed burn-height window",
+      });
+    }
+  });
+
+const rewardForecastUnavailableReasonSchema = z.enum([
+  "chain-anchor-unavailable",
+  "calculation-target-unavailable",
+  "current-pool-estimate-unavailable",
+  "insufficient-samples",
+  "non-monotonic-accrual",
+  "forecast-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
+const rewardOutlookObservationInputSchema = z
+  .object({
+    managerPrincipal: principalSchema,
+    pox5ContractId: principalSchema,
+    observedAt: z.iso.datetime(),
+    chainAnchor: chainAnchorSchema,
+    globalAccruedRewardsSats: unsignedIntegerTextSchema,
+    calculationState: z.enum(["pending", "completed", "ahead", "unknown"]),
+    lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+    poolEstimate: rewardPoolEstimateSchema.nullable(),
+    poolEstimateUnavailableReason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
+    forecast: rewardForecastSchema.nullable(),
+    forecastModelRevision: z.number().int().positive().nullable().default(null),
+    forecastUnavailableReason: rewardForecastUnavailableReasonSchema.nullable(),
+    nextCalculation: z
+      .object({
+        state: z.enum(["due", "scheduled"]),
+        targetRewardCycle: z.number().int().nonnegative(),
+        targetCheckpoint: z.enum(["first-half", "second-half"]),
+        calculationBurnHeight: z.number().int().nonnegative(),
+        eligibleBurnHeight: z.number().int().nonnegative(),
+        blocksRemaining: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.poolEstimate === null) === (value.poolEstimateUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "pool estimate and unavailable reason must be mutually exclusive",
+      });
+    }
+    if ((value.forecast === null) === (value.forecastUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecast"],
+        message: "forecast and unavailable reason must be mutually exclusive",
+      });
+    }
+    if ((value.forecast === null) !== (value.forecastModelRevision === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecastModelRevision"],
+        message: "forecast model revision must be present exactly when a forecast is present",
+      });
+    }
+    const next = value.nextCalculation;
+    if (!next) return;
+    if (
+      value.poolEstimate &&
+      (value.poolEstimate.targetRewardCycle !== next.targetRewardCycle ||
+        value.poolEstimate.targetCheckpoint !== next.targetCheckpoint ||
+        value.poolEstimate.calculationBurnHeight !== next.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "pool estimate target must match the next calculation",
+      });
+    }
+    if (
+      value.forecast &&
+      (value.forecast.targetRewardCycle !== next.targetRewardCycle ||
+        value.forecast.targetCheckpoint !== next.targetCheckpoint ||
+        value.forecast.calculationBurnHeight !== next.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["forecast"],
+        message: "forecast target must match the next calculation",
+      });
+    }
+    if (next.eligibleBurnHeight !== next.calculationBurnHeight + 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "eligibleBurnHeight"],
+        message: "eligibleBurnHeight must immediately follow calculationBurnHeight",
+      });
+    }
+    const expectedBlocks = Math.max(0, next.eligibleBurnHeight - value.chainAnchor.burnBlockHeight);
+    if (next.blocksRemaining !== expectedBlocks) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "blocksRemaining"],
+        message: "blocksRemaining must be derived from the observation anchor",
+      });
+    }
+    const expectedState = expectedBlocks === 0 ? "due" : "scheduled";
+    if (next.state !== expectedState) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCalculation", "state"],
+        message: `next calculation must be ${expectedState} at the observation anchor`,
+      });
+    }
+    if (value.forecast) {
+      const lastComputeHeight = Number(value.lastRewardComputeBurnHeight);
+      const firstCalculation = lastComputeHeight === 0;
+      const observedWindow = value.forecast.assumptions[0] === "observed-accrual-sample-window";
+      if (!Number.isSafeInteger(lastComputeHeight) || firstCalculation !== observedWindow) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "assumptions", 0],
+          message: "forecast sampling basis must match the calculation history",
+        });
+      }
+      const expectedElapsedBlocks = observedWindow
+        ? value.forecast.sample.sampleBlocks
+        : value.chainAnchor.burnBlockHeight - lastComputeHeight;
+      if (value.forecast.sample.elapsedBlocks !== expectedElapsedBlocks) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "elapsedBlocks"],
+          message: observedWindow
+            ? "elapsedBlocks must match the observed sample window before the first calculation"
+            : "elapsedBlocks must be measured from the last completed calculation",
+        });
+      }
+      if (value.forecast.sample.lastObservedBurnHeight !== value.chainAnchor.burnBlockHeight) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "lastObservedBurnHeight"],
+          message: "forecast sample must end at the observation anchor",
+        });
+      }
+      const forecastRemaining = Math.max(
+        0,
+        value.forecast.calculationBurnHeight - value.chainAnchor.burnBlockHeight,
+      );
+      if (value.forecast.sample.remainingBlocks !== forecastRemaining) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "sample", "remainingBlocks"],
+          message: "forecast remainingBlocks must be derived from the observation anchor",
+        });
+      }
+      if (BigInt(value.forecast.globalSats.low) < BigInt(value.globalAccruedRewardsSats)) {
+        context.addIssue({
+          code: "custom",
+          path: ["forecast", "globalSats", "low"],
+          message: "forecast cannot fall below already accrued global rewards",
+        });
+      }
+    }
+  });
+
+const rewardOutlookObservationRowSchema = z.object({
+  manager_principal: principalSchema,
+  pox5_contract_id: principalSchema,
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_stacks_tip_height: z.number().int().nonnegative(),
+  observed_index_block_hash: hashSchema,
+  chain_anchor_json: z.string(),
+  global_accrued_rewards_sats: unsignedIntegerTextSchema,
+  calculation_state: z.enum(["pending", "completed", "ahead", "unknown"]),
+  last_reward_compute_burn_height: unsignedIntegerTextSchema,
+  next_target_reward_cycle: z.number().int().nonnegative().nullable(),
+  next_target_checkpoint: z.enum(["first-half", "second-half"]).nullable(),
+  next_calculation_burn_height: z.number().int().nonnegative().nullable(),
+  next_eligible_burn_height: z.number().int().nonnegative().nullable(),
+  next_blocks_remaining: z.number().int().nonnegative().nullable(),
+  next_state: z.enum(["due", "scheduled"]).nullable(),
+  pool_estimate_json: z.string().nullable(),
+  pool_estimate_unavailable_reason: rewardPoolEstimateUnavailableReasonSchema.nullable(),
+  forecast_json: z.string().nullable(),
+  forecast_model_revision: z.number().int().positive().nullable(),
+  forecast_unavailable_reason: rewardForecastUnavailableReasonSchema.nullable(),
+  observed_at: z.iso.datetime(),
+});
+
+const pox5CalculateRewardsEventSchema = z
+  .object({
+    kind: z.literal("calculate-rewards"),
+    topic: z.literal("calculate-rewards"),
+    bondPeriods: z.array(unsignedIntegerTextSchema).max(6),
+    calculationBurnHeight: unsignedIntegerTextSchema,
+    grossAccruedRewardsSats: unsignedIntegerTextSchema,
+    totalBondRewardsSats: unsignedIntegerTextSchema,
+    reserveDepositSats: unsignedIntegerTextSchema,
+    reserveBalanceSats: unsignedIntegerTextSchema,
+    rewardCycle: unsignedIntegerTextSchema,
+    totalStxStakerRewardsSats: unsignedIntegerTextSchema,
+    cycleStakedUstx: unsignedIntegerTextSchema,
+    accruedRewardsPerUstx: unsignedIntegerTextSchema,
+    cumulativeRewardsPerUstx: unsignedIntegerTextSchema,
+  })
+  .strict();
+
+const rewardCalculationPoolUnavailableReasonSchema = z.enum([
+  "historical-anchor-unavailable",
+  "same-block-state-ambiguous",
+  "anchored-inputs-unavailable",
+  "contract-simulation-failed",
+]);
+
+const rewardCalculationRealizationInputSchema = z
+  .object({
+    chainId: z.number().int().nonnegative().safe(),
+    txId: hashSchema,
+    eventIndex: z.number().int().nonnegative(),
+    sourceId: z.string().min(1),
+    managerPrincipal: principalSchema,
+    pox5ContractId: principalSchema,
+    canonical: z.boolean(),
+    evidenceLevel: z.enum([
+      "node-index-verified",
+      "canonical-block-correlated",
+      "indexer-reported",
+    ]),
+    blockHeight: z.number().int().nonnegative().safe(),
+    indexBlockHash: hashSchema,
+    burnBlockHeight: z.number().int().nonnegative().safe(),
+    targetRewardCycle: z.number().int().nonnegative().safe(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative().safe(),
+    event: pox5CalculateRewardsEventSchema,
+    poolEstimate: rewardPoolEstimateSchema.nullable(),
+    poolEstimateUnavailableReason: rewardCalculationPoolUnavailableReasonSchema.nullable(),
+    modelRevision: z.number().int().positive(),
+    evaluation: rewardForecastEvaluationSchema.nullable(),
+    observedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.poolEstimate === null) === (value.poolEstimateUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "realized pool estimate and unavailable reason must be mutually exclusive",
+      });
+    }
+    if (
+      value.event.calculationBurnHeight !== String(value.calculationBurnHeight) ||
+      value.event.rewardCycle !== String(value.targetRewardCycle)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event"],
+        message: "event reward target must match realization columns",
+      });
+    }
+    if (
+      value.poolEstimate &&
+      (value.poolEstimate.targetRewardCycle !== value.targetRewardCycle ||
+        value.poolEstimate.targetCheckpoint !== value.targetCheckpoint ||
+        value.poolEstimate.calculationBurnHeight !== value.calculationBurnHeight)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["poolEstimate"],
+        message: "realized pool estimate target must match the calculation event",
+      });
+    }
+    if (
+      value.evaluation &&
+      (value.evaluation.modelRevision !== value.modelRevision ||
+        value.evaluation.targetRewardCycle !== value.targetRewardCycle ||
+        value.evaluation.targetCheckpoint !== value.targetCheckpoint ||
+        value.evaluation.calculationBurnHeight !== value.calculationBurnHeight ||
+        value.evaluation.actualPoolSats !== value.poolEstimate?.grossSats)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["evaluation"],
+        message: "forecast evaluation must match the realized calculation",
+      });
+    }
+  });
+
+const rewardCalculationRealizationRowSchema = z.object({
+  chain_id: z.number().int().nonnegative(),
+  tx_id: hashSchema,
+  event_index: z.number().int().nonnegative(),
+  source_id: z.string().min(1),
+  manager_principal: principalSchema,
+  pox5_contract_id: principalSchema,
+  canonical: z.union([z.literal(0), z.literal(1)]),
+  evidence_level: z.enum(["node-index-verified", "canonical-block-correlated", "indexer-reported"]),
+  block_height: z.number().int().nonnegative(),
+  index_block_hash: hashSchema,
+  burn_block_height: z.number().int().nonnegative(),
+  target_reward_cycle: z.number().int().nonnegative(),
+  target_checkpoint: z.enum(["first-half", "second-half"]),
+  calculation_burn_height: z.number().int().nonnegative(),
+  event_json: z.string(),
+  pool_estimate_json: z.string().nullable(),
+  pool_estimate_unavailable_reason: rewardCalculationPoolUnavailableReasonSchema.nullable(),
+  model_revision: z.number().int().positive(),
+  evaluation_json: z.string().nullable(),
+  observed_at: z.iso.datetime(),
+  updated_at: z.iso.datetime(),
+});
+
+const rewardForecastObservationRowSchema = z.object({
+  observed_burn_block_height: z.number().int().nonnegative(),
+  observed_at: z.iso.datetime(),
+  global_accrued_rewards_sats: unsignedIntegerTextSchema,
+  last_reward_compute_burn_height: unsignedIntegerTextSchema,
+  next_target_reward_cycle: z.number().int().nonnegative(),
+  next_target_checkpoint: z.enum(["first-half", "second-half"]),
+  next_calculation_burn_height: z.number().int().nonnegative(),
+});
+
+const rewardForecastSampleQuerySchema = z
+  .object({
+    lastRewardComputeBurnHeight: unsignedIntegerTextSchema,
+    targetRewardCycle: z.number().int().nonnegative(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative(),
+    throughBurnBlockHeight: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(2_500).default(500),
+  })
+  .strict();
+
 const rewardCycleSummaryRowSchema = z.object({
   manager_principal: z.string(),
   reward_cycle: z.number().int().nonnegative(),
@@ -560,20 +984,52 @@ const rewardCycleSummaryRowSchema = z.object({
   observed_at: z.string(),
 });
 
-export type ChainSourceInput = z.infer<typeof sourceInputSchema>;
-export type ChainCursorInput = z.infer<typeof cursorInputSchema>;
-export type ChainEventInput = z.infer<typeof eventInputSchema>;
+export type ChainEventInput = z.input<typeof eventInputSchema>;
+export type { ChainCursor, ChainCursorInput, ChainSourceInput } from "./chain-state-repository.js";
+export { createChainSourceId, createNodeSourceId } from "./chain-state-repository.js";
 
-export interface ChainCursor {
-  sourceId: string;
-  stream: string;
-  cursor: string | null;
-  lastBlockHeight: number | null;
-  lastIndexBlockHash: string | null;
+export interface StoredChainEvent extends Omit<z.output<typeof eventInputSchema>, "observedAt"> {
+  firstSeenAt: string;
   updatedAt: string;
 }
 
-export interface StoredChainEvent extends Omit<ChainEventInput, "observedAt"> {
+export interface CurrentMemberHistoryRecovery {
+  sourceId: string;
+  managerPrincipal: string;
+  pox5ContractId: string;
+  stakerPrincipal: string;
+  status: "pending" | "complete";
+  cursor: string | null;
+  pagesProcessed: number;
+  transactionsInspected: number;
+  relevantEvents: number;
+  discoveredAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface CurrentMemberHistoryCoverage {
+  currentMembers: number;
+  membersComplete: number;
+  pagesProcessed: number;
+  transactionsInspected: number;
+  relevantEvents: number;
+  updatedAt: string | null;
+}
+
+export interface StoredActivityChainEvent {
+  chainId: number;
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  indexBlockHash: string;
+  canonical: boolean;
+  evidenceLevel: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
+  contractId: string;
+  topic: string | null;
+  decodedSchemaVersion: number | null;
+  decodedPayload: unknown;
+  occurredAt: string | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -584,6 +1040,10 @@ export type SignerStakerPageInput = z.infer<typeof signerStakerPageInputSchema>;
 export type SignerStakerApiCandidate = z.infer<typeof signerStakerApiCandidateSchema>;
 export type PoolCycleSnapshotInput = z.infer<typeof poolCycleSnapshotInputSchema>;
 export type RewardCycleSnapshotInput = z.infer<typeof rewardCycleSnapshotInputSchema>;
+export type RewardOutlookObservationInput = z.infer<typeof rewardOutlookObservationInputSchema>;
+export type RewardCalculationRealizationInput = z.infer<
+  typeof rewardCalculationRealizationInputSchema
+>;
 
 export interface SignerStakerRun {
   runId: string;
@@ -710,19 +1170,60 @@ export interface StoredRewardCycleSummary {
   observedAt: string;
 }
 
-export interface StoredRuntimeSettings {
-  settings: unknown;
-  apiKeySecret: string | null;
-  revision: number;
+export interface StoredRewardOutlookObservation {
+  managerPrincipal: string;
+  pox5ContractId: string;
+  chainAnchor: ChainAnchor;
+  globalAccruedRewardsSats: string;
+  calculationState: "pending" | "completed" | "ahead" | "unknown";
+  lastRewardComputeBurnHeight: string;
+  poolEstimate: z.infer<typeof rewardPoolEstimateSchema> | null;
+  poolEstimateUnavailableReason: z.infer<typeof rewardPoolEstimateUnavailableReasonSchema> | null;
+  forecast: z.infer<typeof rewardForecastSchema> | null;
+  forecastModelRevision: number | null;
+  forecastUnavailableReason: z.infer<typeof rewardForecastUnavailableReasonSchema> | null;
+  nextCalculation: null | {
+    state: "due" | "scheduled";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    eligibleBurnHeight: number;
+    blocksRemaining: number;
+  };
+  observedAt: string;
+}
+
+export interface StoredRewardCalculationRealization {
+  chainId: number;
+  txId: string;
+  eventIndex: number;
+  sourceId: string;
+  managerPrincipal: string;
+  pox5ContractId: string;
+  canonical: boolean;
+  evidenceLevel: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
+  blockHeight: number;
+  indexBlockHash: string;
+  burnBlockHeight: number;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  event: Pox5CalculateRewardsEvent;
+  poolEstimate: Pox5CurrentPoolEstimate | null;
+  poolEstimateUnavailableReason: z.infer<
+    typeof rewardCalculationPoolUnavailableReasonSchema
+  > | null;
+  modelRevision: number;
+  evaluation: RewardForecastEvaluation | null;
+  observedAt: string;
   updatedAt: string;
 }
 
-export interface StoredOnboardingState {
-  path: "attach" | "fresh";
-  currentStep: string;
-  status: "in-progress" | "blocked" | "complete";
-  state: unknown;
-  updatedAt: string;
+export interface RewardCalculationEligibilityObservation {
+  observedAt: string;
+  stacksBlockHeight: number;
+  burnBlockHeight: number;
+  indexBlockHash: string;
 }
 
 export interface StoredManagerClaim {
@@ -784,8 +1285,86 @@ function toStoredChainEvent(row: unknown): StoredChainEvent {
     decodedPayload: value.decoded_payload_json
       ? (JSON.parse(value.decoded_payload_json) as unknown)
       : null,
+    evidenceLevel: value.evidence_level,
     sourceId: value.source_id,
+    occurredAt: value.occurred_at === null ? null : z.iso.datetime().parse(value.occurred_at),
     firstSeenAt: value.first_seen_at,
+    updatedAt: value.updated_at,
+  };
+}
+
+function toStoredRewardOutlookObservation(row: unknown): StoredRewardOutlookObservation {
+  const value = rewardOutlookObservationRowSchema.parse(row);
+  const chainAnchor = chainAnchorSchema.parse(JSON.parse(value.chain_anchor_json));
+  if (
+    chainAnchor.burnBlockHeight !== value.observed_burn_block_height ||
+    chainAnchor.stacksBlockHeight !== value.observed_stacks_tip_height ||
+    chainAnchor.indexBlockHash !== value.observed_index_block_hash
+  ) {
+    throw new Error("Stored reward outlook anchor columns do not match chain_anchor_json");
+  }
+  const hasNext = value.next_target_reward_cycle !== null;
+  return {
+    managerPrincipal: value.manager_principal,
+    pox5ContractId: value.pox5_contract_id,
+    chainAnchor,
+    globalAccruedRewardsSats: value.global_accrued_rewards_sats,
+    calculationState: value.calculation_state,
+    lastRewardComputeBurnHeight: value.last_reward_compute_burn_height,
+    poolEstimate:
+      value.pool_estimate_json === null
+        ? null
+        : rewardPoolEstimateSchema.parse(JSON.parse(value.pool_estimate_json)),
+    poolEstimateUnavailableReason: value.pool_estimate_unavailable_reason,
+    forecast:
+      value.forecast_json === null
+        ? null
+        : rewardForecastSchema.parse(JSON.parse(value.forecast_json)),
+    forecastModelRevision: value.forecast_model_revision,
+    forecastUnavailableReason: value.forecast_unavailable_reason,
+    nextCalculation: hasNext
+      ? {
+          state: value.next_state as "due" | "scheduled",
+          targetRewardCycle: value.next_target_reward_cycle as number,
+          targetCheckpoint: value.next_target_checkpoint as "first-half" | "second-half",
+          calculationBurnHeight: value.next_calculation_burn_height as number,
+          eligibleBurnHeight: value.next_eligible_burn_height as number,
+          blocksRemaining: value.next_blocks_remaining as number,
+        }
+      : null,
+    observedAt: value.observed_at,
+  };
+}
+
+function toStoredRewardCalculationRealization(row: unknown): StoredRewardCalculationRealization {
+  const value = rewardCalculationRealizationRowSchema.parse(row);
+  return {
+    chainId: value.chain_id,
+    txId: value.tx_id,
+    eventIndex: value.event_index,
+    sourceId: value.source_id,
+    managerPrincipal: value.manager_principal,
+    pox5ContractId: value.pox5_contract_id,
+    canonical: value.canonical === 1,
+    evidenceLevel: value.evidence_level,
+    blockHeight: value.block_height,
+    indexBlockHash: value.index_block_hash,
+    burnBlockHeight: value.burn_block_height,
+    targetRewardCycle: value.target_reward_cycle,
+    targetCheckpoint: value.target_checkpoint,
+    calculationBurnHeight: value.calculation_burn_height,
+    event: pox5CalculateRewardsEventSchema.parse(JSON.parse(value.event_json)),
+    poolEstimate:
+      value.pool_estimate_json === null
+        ? null
+        : rewardPoolEstimateSchema.parse(JSON.parse(value.pool_estimate_json)),
+    poolEstimateUnavailableReason: value.pool_estimate_unavailable_reason,
+    modelRevision: value.model_revision,
+    evaluation:
+      value.evaluation_json === null
+        ? null
+        : rewardForecastEvaluationSchema.parse(JSON.parse(value.evaluation_json)),
+    observedAt: value.observed_at,
     updatedAt: value.updated_at,
   };
 }
@@ -887,6 +1466,14 @@ export interface OpenSidekickStoreResult {
   backupPath: string | null;
 }
 
+async function chmodIfPresent(path: string, mode: number): Promise<void> {
+  try {
+    await chmod(path, mode);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 export interface DatabaseBackupResult {
   sourcePath: string;
   destinationPath: string;
@@ -911,11 +1498,12 @@ export async function backupSidekickDatabase(
     .catch(() => false);
   if (destinationExists) throw new Error(`Backup destination already exists: ${destination}`);
 
-  await mkdir(dirname(destination), { recursive: true });
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(source, { allowExtension: false, readOnly: true, timeout: 5_000 });
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     await backup(db, destination);
+    await chmod(destination, 0o600);
   } catch (error) {
     await rm(destination, { force: true });
     throw error;
@@ -954,13 +1542,14 @@ export async function openSidekickStore(
   const databasePath = isMemory ? path : resolve(path);
   let existingSize = 0;
   if (!isMemory) {
-    await mkdir(dirname(databasePath), { recursive: true });
+    await mkdir(dirname(databasePath), { recursive: true, mode: 0o700 });
     existingSize = await stat(databasePath)
       .then((value) => value.size)
       .catch(() => 0);
   }
   const db = new DatabaseSync(databasePath, { allowExtension: false, timeout: 5_000 });
   try {
+    if (!isMemory) await chmod(databasePath, 0o600);
     db.exec("PRAGMA foreign_keys = ON");
     db.exec("PRAGMA busy_timeout = 5000");
     if (isMemory) {
@@ -983,25 +1572,21 @@ export async function openSidekickStore(
       const timestamp = now.replaceAll(":", "-");
       backupPath = `${databasePath}.v${before}.backup-${timestamp}`;
       await backup(db, backupPath);
+      await chmod(backupPath, 0o600);
     }
     applyMigrations(db, now);
+    if (!isMemory) {
+      await Promise.all([
+        chmodIfPresent(databasePath, 0o600),
+        chmodIfPresent(`${databasePath}-wal`, 0o600),
+        chmodIfPresent(`${databasePath}-shm`, 0o600),
+      ]);
+    }
     return { store: new SidekickStore(db), backupPath };
   } catch (error) {
     db.close();
     throw error;
   }
-}
-
-export function createChainSourceId(network: SidekickNetwork, baseUrl: string): string {
-  const normalized = new URL(baseUrl).toString().replace(/\/$/, "");
-  const digest = createHash("sha256").update(`${network}\n${normalized}`).digest("hex");
-  return `api:${network}:${digest}`;
-}
-
-export function createNodeSourceId(network: SidekickNetwork, baseUrl: string): string {
-  const normalized = new URL(baseUrl).toString().replace(/\/$/, "");
-  const digest = createHash("sha256").update(`${network}\n${normalized}`).digest("hex");
-  return `node:${network}:${digest}`;
 }
 
 const signerStakersStream = "signer-stakers";
@@ -1068,10 +1653,22 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 export class SidekickStore {
   readonly transactionEngine: TransactionEngineRepository;
   readonly walletIntents: WalletIntentRepository;
+  readonly healthMonitoring: HealthMonitoringRepository;
+  readonly observerInbox: ObserverInboxRepository;
+  readonly deploymentIdentity: DeploymentIdentityRepository;
+  readonly runtimeSettings: RuntimeSettingsRepository;
+  readonly managerTrust: ManagerTrustRepository;
+  readonly chainState: ChainStateRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.transactionEngine = new TransactionEngineRepository(db);
     this.walletIntents = new WalletIntentRepository(db);
+    this.healthMonitoring = new HealthMonitoringRepository(db);
+    this.observerInbox = new ObserverInboxRepository(db);
+    this.deploymentIdentity = new DeploymentIdentityRepository(db);
+    this.runtimeSettings = new RuntimeSettingsRepository(db);
+    this.managerTrust = new ManagerTrustRepository(db);
+    this.chainState = new ChainStateRepository(db);
   }
 
   close(): void {
@@ -1105,540 +1702,6 @@ export class SidekickStore {
     };
   }
 
-  getRuntimeSettings(): StoredRuntimeSettings | null {
-    const row = this.db
-      .prepare(
-        `SELECT settings_json, api_key_secret, revision, updated_at
-         FROM runtime_settings WHERE singleton_id = 1`,
-      )
-      .get() as
-      | {
-          settings_json: string;
-          api_key_secret: string | null;
-          revision: number;
-          updated_at: string;
-        }
-      | undefined;
-    if (!row) return null;
-    return {
-      settings: JSON.parse(row.settings_json) as unknown,
-      apiKeySecret: row.api_key_secret,
-      revision: z.number().int().positive().parse(row.revision),
-      updatedAt: z.iso.datetime().parse(row.updated_at),
-    };
-  }
-
-  putRuntimeSettings(input: {
-    settings: unknown;
-    apiKeySecret: string | null;
-    changedFields: string[];
-    observedAt: string;
-  }): StoredRuntimeSettings {
-    const observedAt = z.iso.datetime().parse(input.observedAt);
-    const changedFields = z.array(z.string().min(1)).min(1).parse(input.changedFields);
-    const settingsJson = serializeJson(input.settings, "runtime settings");
-    const changedFieldsJson = serializeJson([...new Set(changedFields)].sort(), "changed fields");
-    const existing = this.getRuntimeSettings();
-    const revision = (existing?.revision ?? 0) + 1;
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.db
-        .prepare(
-          `INSERT INTO runtime_settings (
-            singleton_id, settings_json, api_key_secret, revision, updated_at
-          ) VALUES (1, ?, ?, ?, ?)
-          ON CONFLICT (singleton_id) DO UPDATE SET
-            settings_json = excluded.settings_json,
-            api_key_secret = excluded.api_key_secret,
-            revision = excluded.revision,
-            updated_at = excluded.updated_at`,
-        )
-        .run(settingsJson, input.apiKeySecret, revision, observedAt);
-      this.db
-        .prepare(
-          `INSERT INTO settings_audit (
-            audit_id, revision, changed_fields_json, changed_at
-          ) VALUES (?, ?, ?, ?)`,
-        )
-        .run(randomUUID(), revision, changedFieldsJson, observedAt);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-    return {
-      settings: JSON.parse(settingsJson) as unknown,
-      apiKeySecret: input.apiKeySecret,
-      revision,
-      updatedAt: observedAt,
-    };
-  }
-
-  listSettingsAudit(limit = 20): Array<{
-    revision: number;
-    changedFields: string[];
-    changedAt: string;
-  }> {
-    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
-    const rows = this.db
-      .prepare(
-        `SELECT revision, changed_fields_json, changed_at
-         FROM settings_audit ORDER BY changed_at DESC, audit_id DESC LIMIT ?`,
-      )
-      .all(parsedLimit) as Array<{
-      revision: number;
-      changed_fields_json: string;
-      changed_at: string;
-    }>;
-    return rows.map((row) => ({
-      revision: z.number().int().positive().parse(row.revision),
-      changedFields: z.array(z.string()).parse(JSON.parse(row.changed_fields_json)),
-      changedAt: z.iso.datetime().parse(row.changed_at),
-    }));
-  }
-
-  recordManagerTrustState(input: {
-    managerPrincipal: string;
-    recognitionTier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";
-    profileId: string | null;
-    profileOrigin: "built-in" | "operator-installed" | null;
-    sourceSha256: string | null;
-    canonicalSourceSha256: string | null;
-    automationEligible: boolean;
-    eligibilityReason: string;
-    observedAt: string;
-  }): {
-    transition: "gained" | "lost" | "degraded";
-    previousTier: string;
-    currentTier: string;
-    reason: string;
-    changedAt: string;
-  } | null {
-    const managerPrincipal = z.string().min(1).parse(input.managerPrincipal);
-    const recognitionTier = z
-      .enum(["reference-built-in", "reference-render", "custom-observe", "unrecognized"])
-      .parse(input.recognitionTier);
-    const profileId = z.string().min(1).nullable().parse(input.profileId);
-    const profileOrigin = z
-      .enum(["built-in", "operator-installed"])
-      .nullable()
-      .parse(input.profileOrigin);
-    const sourceSha256 = z
-      .string()
-      .regex(/^[0-9a-f]{64}$/)
-      .nullable()
-      .parse(input.sourceSha256);
-    const canonicalSourceSha256 = z
-      .string()
-      .regex(/^[0-9a-f]{64}$/)
-      .nullable()
-      .parse(input.canonicalSourceSha256);
-    const automationEligible = z.boolean().parse(input.automationEligible);
-    const eligibilityReason = z.string().min(1).parse(input.eligibilityReason);
-    const observedAt = z.iso.datetime().parse(input.observedAt);
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const previous = this.db
-        .prepare(
-          `SELECT recognition_tier, profile_id, source_sha256, canonical_source_sha256,
-                automation_eligible
-         FROM manager_trust_state WHERE manager_principal = ?`,
-        )
-        .get(managerPrincipal) as
-        | {
-            recognition_tier: string;
-            profile_id: string | null;
-            source_sha256: string | null;
-            canonical_source_sha256: string | null;
-            automation_eligible: number;
-          }
-        | undefined;
-      const tierRank = {
-        "reference-built-in": 3,
-        "reference-render": 3,
-        "custom-observe": 1,
-        unrecognized: 0,
-      } as const;
-      const previousTier = previous
-        ? z
-            .enum(["reference-built-in", "reference-render", "custom-observe", "unrecognized"])
-            .parse(previous.recognition_tier)
-        : null;
-      const transition = !previous
-        ? automationEligible
-          ? "gained"
-          : null
-        : Boolean(previous.automation_eligible) !== automationEligible
-          ? automationEligible
-            ? "gained"
-            : "lost"
-          : previousTier && tierRank[recognitionTier] < tierRank[previousTier]
-            ? "degraded"
-            : null;
-      this.db
-        .prepare(
-          `INSERT INTO manager_trust_state (
-            manager_principal, recognition_tier, profile_id, profile_origin,
-            source_sha256, canonical_source_sha256, automation_eligible,
-            eligibility_reason, observed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (manager_principal) DO UPDATE SET
-            recognition_tier = excluded.recognition_tier,
-            profile_id = excluded.profile_id,
-            profile_origin = excluded.profile_origin,
-            source_sha256 = excluded.source_sha256,
-            canonical_source_sha256 = excluded.canonical_source_sha256,
-            automation_eligible = excluded.automation_eligible,
-            eligibility_reason = excluded.eligibility_reason,
-            observed_at = excluded.observed_at`,
-        )
-        .run(
-          managerPrincipal,
-          recognitionTier,
-          profileId,
-          profileOrigin,
-          sourceSha256,
-          canonicalSourceSha256,
-          automationEligible ? 1 : 0,
-          eligibilityReason,
-          observedAt,
-        );
-      if (transition) {
-        this.db
-          .prepare(
-            `INSERT INTO manager_trust_audit (
-              event_id, manager_principal, transition, previous_tier, current_tier,
-              previous_profile_id, current_profile_id,
-              previous_source_sha256, current_source_sha256,
-              previous_canonical_source_sha256, current_canonical_source_sha256,
-              reason, changed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            randomUUID(),
-            managerPrincipal,
-            transition,
-            previous?.recognition_tier ?? "unobserved",
-            recognitionTier,
-            previous?.profile_id ?? null,
-            profileId,
-            previous?.source_sha256 ?? null,
-            sourceSha256,
-            previous?.canonical_source_sha256 ?? null,
-            canonicalSourceSha256,
-            eligibilityReason,
-            observedAt,
-          );
-      }
-      this.db.exec("COMMIT");
-      return transition
-        ? {
-            transition,
-            previousTier: previous?.recognition_tier ?? "unobserved",
-            currentTier: recognitionTier,
-            reason: eligibilityReason,
-            changedAt: observedAt,
-          }
-        : null;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  listManagerTrustAudit(
-    managerPrincipal: string,
-    limit = 20,
-  ): Array<{
-    transition: "gained" | "lost" | "degraded";
-    previousTier: string;
-    currentTier: string;
-    previousProfileId: string | null;
-    currentProfileId: string | null;
-    previousSourceSha256: string | null;
-    currentSourceSha256: string | null;
-    previousCanonicalSourceSha256: string | null;
-    currentCanonicalSourceSha256: string | null;
-    reason: string;
-    changedAt: string;
-  }> {
-    const principal = z.string().min(1).parse(managerPrincipal);
-    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
-    const rows = this.db
-      .prepare(
-        `SELECT transition, previous_tier, current_tier, previous_profile_id,
-                current_profile_id, previous_source_sha256, current_source_sha256,
-                previous_canonical_source_sha256, current_canonical_source_sha256,
-                reason, changed_at
-         FROM manager_trust_audit
-         WHERE manager_principal = ?
-         ORDER BY changed_at DESC, event_id DESC LIMIT ?`,
-      )
-      .all(principal, parsedLimit) as Array<{
-      transition: "gained" | "lost" | "degraded";
-      previous_tier: string;
-      current_tier: string;
-      previous_profile_id: string | null;
-      current_profile_id: string | null;
-      previous_source_sha256: string | null;
-      current_source_sha256: string | null;
-      previous_canonical_source_sha256: string | null;
-      current_canonical_source_sha256: string | null;
-      reason: string;
-      changed_at: string;
-    }>;
-    return rows.map((row) => ({
-      transition: z.enum(["gained", "lost", "degraded"]).parse(row.transition),
-      previousTier: z.string().parse(row.previous_tier),
-      currentTier: z.string().parse(row.current_tier),
-      previousProfileId: z.string().nullable().parse(row.previous_profile_id),
-      currentProfileId: z.string().nullable().parse(row.current_profile_id),
-      previousSourceSha256: z.string().nullable().parse(row.previous_source_sha256),
-      currentSourceSha256: z.string().nullable().parse(row.current_source_sha256),
-      previousCanonicalSourceSha256: z
-        .string()
-        .nullable()
-        .parse(row.previous_canonical_source_sha256),
-      currentCanonicalSourceSha256: z
-        .string()
-        .nullable()
-        .parse(row.current_canonical_source_sha256),
-      reason: z.string().min(1).parse(row.reason),
-      changedAt: z.iso.datetime().parse(row.changed_at),
-    }));
-  }
-
-  getOnboardingState(): StoredOnboardingState | null {
-    const row = this.db
-      .prepare(
-        `SELECT path, current_step, status, state_json, updated_at
-         FROM onboarding_state WHERE singleton_id = 1`,
-      )
-      .get() as
-      | {
-          path: "attach" | "fresh";
-          current_step: string;
-          status: "in-progress" | "blocked" | "complete";
-          state_json: string;
-          updated_at: string;
-        }
-      | undefined;
-    if (!row) return null;
-    return {
-      path: z.enum(["attach", "fresh"]).parse(row.path),
-      currentStep: z.string().min(1).parse(row.current_step),
-      status: z.enum(["in-progress", "blocked", "complete"]).parse(row.status),
-      state: JSON.parse(row.state_json) as unknown,
-      updatedAt: z.iso.datetime().parse(row.updated_at),
-    };
-  }
-
-  putOnboardingState(
-    input: Omit<StoredOnboardingState, "updatedAt"> & {
-      updatedAt: string;
-      auditAction?: string;
-    },
-  ): void {
-    const path = z.enum(["attach", "fresh"]).parse(input.path);
-    const currentStep = z.string().min(1).parse(input.currentStep);
-    const status = z.enum(["in-progress", "blocked", "complete"]).parse(input.status);
-    const updatedAt = z.iso.datetime().parse(input.updatedAt);
-    const auditAction = input.auditAction
-      ? z.string().trim().min(1).max(100).parse(input.auditAction)
-      : null;
-    const stateJson = serializeJson(input.state, "onboarding state");
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.db
-        .prepare(
-          `INSERT INTO onboarding_state (
-            singleton_id, path, current_step, status, state_json, updated_at
-          ) VALUES (1, ?, ?, ?, ?, ?)
-          ON CONFLICT (singleton_id) DO UPDATE SET
-            path = excluded.path,
-            current_step = excluded.current_step,
-            status = excluded.status,
-            state_json = excluded.state_json,
-            updated_at = excluded.updated_at`,
-        )
-        .run(path, currentStep, status, stateJson, updatedAt);
-      if (auditAction) {
-        this.db
-          .prepare(
-            `INSERT INTO onboarding_audit (
-              event_id, action, path, current_step, status, changed_at
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
-          )
-          .run(randomUUID(), auditAction, path, currentStep, status, updatedAt);
-      }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  listOnboardingAudit(limit = 20): Array<{
-    action: string;
-    path: "attach" | "fresh";
-    currentStep: string;
-    status: "in-progress" | "blocked" | "complete";
-    changedAt: string;
-  }> {
-    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
-    const rows = this.db
-      .prepare(
-        `SELECT action, path, current_step, status, changed_at
-         FROM onboarding_audit ORDER BY changed_at DESC, event_id DESC LIMIT ?`,
-      )
-      .all(parsedLimit) as Array<{
-      action: string;
-      path: "attach" | "fresh";
-      current_step: string;
-      status: "in-progress" | "blocked" | "complete";
-      changed_at: string;
-    }>;
-    return rows.map((row) => ({
-      action: z.string().min(1).parse(row.action),
-      path: z.enum(["attach", "fresh"]).parse(row.path),
-      currentStep: z.string().min(1).parse(row.current_step),
-      status: z.enum(["in-progress", "blocked", "complete"]).parse(row.status),
-      changedAt: z.iso.datetime().parse(row.changed_at),
-    }));
-  }
-
-  getOnboardingWizardPreference(): {
-    dismissedAt: string | null;
-    updatedAt: string;
-  } | null {
-    const row = this.db
-      .prepare(
-        `SELECT dismissed_at, updated_at
-         FROM onboarding_wizard_preference WHERE singleton_id = 1`,
-      )
-      .get() as { dismissed_at: string | null; updated_at: string } | undefined;
-    if (!row) return null;
-    return {
-      dismissedAt: z.iso.datetime().nullable().parse(row.dismissed_at),
-      updatedAt: z.iso.datetime().parse(row.updated_at),
-    };
-  }
-
-  setOnboardingWizardDismissed(dismissed: boolean, changedAt: string): void {
-    const parsedDismissed = z.boolean().parse(dismissed);
-    const parsedChangedAt = z.iso.datetime().parse(changedAt);
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.db
-        .prepare(
-          `INSERT INTO onboarding_wizard_preference (singleton_id, dismissed_at, updated_at)
-           VALUES (1, ?, ?)
-           ON CONFLICT (singleton_id) DO UPDATE SET
-             dismissed_at = excluded.dismissed_at,
-             updated_at = excluded.updated_at`,
-        )
-        .run(parsedDismissed ? parsedChangedAt : null, parsedChangedAt);
-      this.db
-        .prepare(
-          `INSERT INTO onboarding_wizard_audit (event_id, action, changed_at)
-           VALUES (?, ?, ?)`,
-        )
-        .run(randomUUID(), parsedDismissed ? "dismissed" : "resumed", parsedChangedAt);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  listOnboardingWizardAudit(limit = 20): Array<{
-    action: "dismissed" | "resumed";
-    changedAt: string;
-  }> {
-    const parsedLimit = z.number().int().min(1).max(100).parse(limit);
-    const rows = this.db
-      .prepare(
-        `SELECT action, changed_at
-         FROM onboarding_wizard_audit ORDER BY changed_at DESC, event_id DESC LIMIT ?`,
-      )
-      .all(parsedLimit) as Array<{
-      action: "dismissed" | "resumed";
-      changed_at: string;
-    }>;
-    return rows.map((row) => ({
-      action: z.enum(["dismissed", "resumed"]).parse(row.action),
-      changedAt: z.iso.datetime().parse(row.changed_at),
-    }));
-  }
-
-  upsertChainSource(input: ChainSourceInput): void {
-    const value = sourceInputSchema.parse(input);
-    const result = this.db
-      .prepare(
-        `INSERT INTO chain_sources (
-          source_id, kind, network, base_url, created_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (source_id) DO UPDATE SET
-          last_seen_at = excluded.last_seen_at
-        WHERE chain_sources.kind = excluded.kind
-          AND chain_sources.network = excluded.network
-          AND chain_sources.base_url = excluded.base_url`,
-      )
-      .run(
-        value.sourceId,
-        value.kind,
-        value.network,
-        value.baseUrl,
-        value.observedAt,
-        value.observedAt,
-      );
-    if (Number(result.changes) !== 1) {
-      throw new Error(`Chain source ${value.sourceId} is already bound to different metadata`);
-    }
-  }
-
-  putCursor(input: ChainCursorInput): void {
-    const value = cursorInputSchema.parse(input);
-    this.db
-      .prepare(
-        `INSERT INTO chain_cursors (
-          source_id, stream, cursor, last_block_height, last_index_block_hash, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (source_id, stream) DO UPDATE SET
-          cursor = excluded.cursor,
-          last_block_height = excluded.last_block_height,
-          last_index_block_hash = excluded.last_index_block_hash,
-          updated_at = excluded.updated_at`,
-      )
-      .run(
-        value.sourceId,
-        value.stream,
-        value.cursor,
-        value.lastBlockHeight,
-        value.lastIndexBlockHash,
-        value.updatedAt,
-      );
-  }
-
-  getCursor(sourceId: string, stream: string): ChainCursor | null {
-    const row = this.db
-      .prepare(
-        `SELECT source_id, stream, cursor, last_block_height, last_index_block_hash, updated_at
-         FROM chain_cursors WHERE source_id = ? AND stream = ?`,
-      )
-      .get(sourceId, stream);
-    if (!row) return null;
-    const value = cursorRowSchema.parse(row);
-    return {
-      sourceId: value.source_id,
-      stream: value.stream,
-      cursor: value.cursor,
-      lastBlockHeight: value.last_block_height,
-      lastIndexBlockHash: value.last_index_block_hash,
-      updatedAt: value.updated_at,
-    };
-  }
-
   putChainEvent(input: ChainEventInput): void {
     const value = eventInputSchema.parse(input);
     const rawPayloadJson = serializeJson(value.rawPayload, "rawPayload");
@@ -1652,8 +1715,8 @@ export class SidekickStore {
           chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, source_id, first_seen_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          decoded_payload_json, evidence_level, source_id, occurred_at, first_seen_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (chain_id, tx_id, event_index) DO UPDATE SET
           block_height = excluded.block_height,
           block_hash = excluded.block_hash,
@@ -1667,7 +1730,17 @@ export class SidekickStore {
           raw_payload_json = excluded.raw_payload_json,
           decoded_schema_version = excluded.decoded_schema_version,
           decoded_payload_json = excluded.decoded_payload_json,
+          evidence_level = CASE
+            WHEN chain_events.evidence_level = 'node-index-verified'
+              THEN chain_events.evidence_level
+            WHEN excluded.evidence_level = 'node-index-verified'
+              THEN excluded.evidence_level
+            WHEN chain_events.evidence_level = 'canonical-block-correlated'
+              THEN chain_events.evidence_level
+            ELSE excluded.evidence_level
+          END,
           source_id = excluded.source_id,
+          occurred_at = COALESCE(excluded.occurred_at, chain_events.occurred_at),
           updated_at = excluded.updated_at`,
         )
         .run(
@@ -1686,7 +1759,9 @@ export class SidekickStore {
           rawPayloadJson,
           value.decodedSchemaVersion,
           decodedPayloadJson,
+          value.evidenceLevel,
           value.sourceId,
+          value.occurredAt,
           value.observedAt,
           value.observedAt,
         );
@@ -1701,6 +1776,15 @@ export class SidekickStore {
 
   private putManagerActivityProjection(value: ChainEventInput): void {
     if (!value.contractId) return;
+    // A replay may intentionally downgrade an event from a reviewed vocabulary to generic raw
+    // storage. Remove any prior semantic projection before deciding whether the new observation
+    // is eligible to recreate it.
+    this.db
+      .prepare(
+        `DELETE FROM manager_activity_events
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
+      )
+      .run(value.chainId, value.txId, value.eventIndex);
     const parsed = managerActivityEnvelopeSchema.safeParse(value.decodedPayload);
     if (!parsed.success) return;
     const event = parsed.data.event;
@@ -1751,30 +1835,16 @@ export class SidekickStore {
 
   putChainEventPage(events: readonly ChainEventInput[], cursor: ChainCursorInput): void {
     eventInputSchema.array().parse(events);
-    cursorInputSchema.parse(cursor);
+    chainCursorInputSchema.parse(cursor);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const event of events) this.putChainEvent(event);
-      this.putCursor(cursor);
+      this.chainState.putCursor(cursor);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-  }
-
-  hasChainEventsForContract(chainId: number, contractId: string): boolean {
-    const parsedChainId = z.number().int().nonnegative().parse(chainId);
-    const parsedContractId = principalSchema.parse(contractId);
-    return Boolean(
-      this.db
-        .prepare(
-          `SELECT 1 FROM chain_events
-           WHERE chain_id = ? AND contract_id = ? AND canonical = 1
-           LIMIT 1`,
-        )
-        .get(parsedChainId, parsedContractId),
-    );
   }
 
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null {
@@ -1783,12 +1853,347 @@ export class SidekickStore {
         `SELECT chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
           microblock_hash, microblock_sequence, canonical, microblock_canonical,
           contract_id, topic, raw_payload_json, decoded_schema_version,
-          decoded_payload_json, source_id, first_seen_at, updated_at
+          decoded_payload_json, evidence_level, source_id, occurred_at, first_seen_at, updated_at
          FROM chain_events WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
       )
       .get(chainId, txId, eventIndex);
     if (!row) return null;
     return toStoredChainEvent(row);
+  }
+
+  ensureCurrentMemberHistoryRecovery(input: {
+    sourceId: string;
+    managerPrincipal: string;
+    pox5ContractId: string;
+    stakerPrincipals: readonly string[];
+    observedAt: string;
+  }): number {
+    const sourceId = z.string().min(1).parse(input.sourceId);
+    const managerPrincipal = principalSchema.parse(input.managerPrincipal);
+    const pox5ContractId = principalSchema.parse(input.pox5ContractId);
+    const stakerPrincipals = [
+      ...new Set(input.stakerPrincipals.map((value) => principalSchema.parse(value))),
+    ];
+    const observedAt = z.iso.datetime().parse(input.observedAt);
+    const insert = this.db.prepare(
+      `INSERT INTO current_member_history_recovery (
+        source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+        pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+        completed_at
+      ) VALUES (?, ?, ?, ?, 'pending', NULL, 0, 0, 0, ?, ?, NULL)
+      ON CONFLICT(source_id, manager_principal, pox5_contract_id, staker_principal) DO NOTHING`,
+    );
+    let inserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const stakerPrincipal of stakerPrincipals) {
+        inserted += Number(
+          insert.run(
+            sourceId,
+            managerPrincipal,
+            pox5ContractId,
+            stakerPrincipal,
+            observedAt,
+            observedAt,
+          ).changes,
+        );
+      }
+      this.db.exec("COMMIT");
+      return inserted;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  nextCurrentMemberHistoryRecovery(
+    sourceId: string,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): CurrentMemberHistoryRecovery | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.source_id, r.manager_principal, r.pox5_contract_id, r.staker_principal,
+          r.status, r.cursor, r.pages_processed, r.transactions_inspected, r.relevant_events,
+          r.discovered_at, r.updated_at, r.completed_at
+         FROM current_member_history_recovery r
+         JOIN stakers s
+           ON s.manager_principal = r.manager_principal
+          AND s.staker_principal = r.staker_principal
+          AND s.source_id = r.source_id
+         WHERE r.source_id = ? AND r.manager_principal = ? AND r.pox5_contract_id = ?
+           AND r.status = 'pending' AND s.active = 1
+         ORDER BY r.pages_processed, r.updated_at, r.staker_principal
+         LIMIT 1`,
+      )
+      .get(
+        z.string().min(1).parse(sourceId),
+        principalSchema.parse(managerPrincipal),
+        principalSchema.parse(pox5ContractId),
+      );
+    if (!row) return null;
+    const value = z
+      .object({
+        source_id: z.string(),
+        manager_principal: principalSchema,
+        pox5_contract_id: principalSchema,
+        staker_principal: principalSchema,
+        status: z.enum(["pending", "complete"]),
+        cursor: z.string().nullable(),
+        pages_processed: z.number().int().nonnegative(),
+        transactions_inspected: z.number().int().nonnegative(),
+        relevant_events: z.number().int().nonnegative(),
+        discovered_at: z.string(),
+        updated_at: z.string(),
+        completed_at: z.string().nullable(),
+      })
+      .parse(row);
+    return {
+      sourceId: value.source_id,
+      managerPrincipal: value.manager_principal,
+      pox5ContractId: value.pox5_contract_id,
+      stakerPrincipal: value.staker_principal,
+      status: value.status,
+      cursor: value.cursor,
+      pagesProcessed: value.pages_processed,
+      transactionsInspected: value.transactions_inspected,
+      relevantEvents: value.relevant_events,
+      discoveredAt: value.discovered_at,
+      updatedAt: value.updated_at,
+      completedAt: value.completed_at,
+    };
+  }
+
+  currentMemberHistoryCoverage(
+    sourceId: string,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): CurrentMemberHistoryCoverage {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS current_members,
+          COALESCE(SUM(CASE WHEN r.status = 'complete' THEN 1 ELSE 0 END), 0)
+            AS members_complete,
+          COALESCE(SUM(r.pages_processed), 0) AS pages_processed,
+          COALESCE(SUM(r.transactions_inspected), 0) AS transactions_inspected,
+          COALESCE(SUM(r.relevant_events), 0) AS relevant_events,
+          MAX(r.updated_at) AS updated_at
+         FROM stakers s
+         LEFT JOIN current_member_history_recovery r
+           ON r.source_id = s.source_id
+          AND r.manager_principal = s.manager_principal
+          AND r.staker_principal = s.staker_principal
+          AND r.pox5_contract_id = ?
+         WHERE s.source_id = ? AND s.manager_principal = ? AND s.active = 1`,
+      )
+      .get(
+        principalSchema.parse(pox5ContractId),
+        z.string().min(1).parse(sourceId),
+        principalSchema.parse(managerPrincipal),
+      ) as Record<string, unknown>;
+    return {
+      currentMembers: z.number().int().nonnegative().parse(row.current_members),
+      membersComplete: z.number().int().nonnegative().parse(row.members_complete),
+      pagesProcessed: z.number().int().nonnegative().parse(row.pages_processed),
+      transactionsInspected: z.number().int().nonnegative().parse(row.transactions_inspected),
+      relevantEvents: z.number().int().nonnegative().parse(row.relevant_events),
+      updatedAt: z.string().nullable().parse(row.updated_at),
+    };
+  }
+
+  recordCurrentMemberHistoryRecoveryPage(input: {
+    sourceId: string;
+    managerPrincipal: string;
+    pox5ContractId: string;
+    stakerPrincipal: string;
+    nextCursor: string | null;
+    transactionsInspected: number;
+    relevantEvents: number;
+    observedAt: string;
+  }): CurrentMemberHistoryRecovery {
+    const observedAt = z.iso.datetime().parse(input.observedAt);
+    const result = this.db
+      .prepare(
+        `UPDATE current_member_history_recovery SET
+          status = CASE WHEN ? IS NULL THEN 'complete' ELSE 'pending' END,
+          cursor = ?, pages_processed = pages_processed + 1,
+          transactions_inspected = transactions_inspected + ?,
+          relevant_events = relevant_events + ?, updated_at = ?,
+          completed_at = CASE WHEN ? IS NULL THEN ? ELSE NULL END
+         WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+           AND staker_principal = ? AND status = 'pending'`,
+      )
+      .run(
+        input.nextCursor,
+        input.nextCursor,
+        z.number().int().nonnegative().parse(input.transactionsInspected),
+        z.number().int().nonnegative().parse(input.relevantEvents),
+        observedAt,
+        input.nextCursor,
+        observedAt,
+        z.string().min(1).parse(input.sourceId),
+        principalSchema.parse(input.managerPrincipal),
+        principalSchema.parse(input.pox5ContractId),
+        principalSchema.parse(input.stakerPrincipal),
+      );
+    if (result.changes !== 1) throw new Error("Current-member history recovery is not pending");
+    const value = this.db
+      .prepare(
+        `SELECT source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+          pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+          completed_at
+         FROM current_member_history_recovery
+         WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+           AND staker_principal = ?`,
+      )
+      .get(
+        input.sourceId,
+        input.managerPrincipal,
+        input.pox5ContractId,
+        input.stakerPrincipal,
+      ) as Record<string, unknown>;
+    return {
+      sourceId: z.string().parse(value.source_id),
+      managerPrincipal: principalSchema.parse(value.manager_principal),
+      pox5ContractId: principalSchema.parse(value.pox5_contract_id),
+      stakerPrincipal: principalSchema.parse(value.staker_principal),
+      status: z.enum(["pending", "complete"]).parse(value.status),
+      cursor: z.string().nullable().parse(value.cursor),
+      pagesProcessed: z.number().int().nonnegative().parse(value.pages_processed),
+      transactionsInspected: z.number().int().nonnegative().parse(value.transactions_inspected),
+      relevantEvents: z.number().int().nonnegative().parse(value.relevant_events),
+      discoveredAt: z.string().parse(value.discovered_at),
+      updatedAt: z.string().parse(value.updated_at),
+      completedAt: z.string().nullable().parse(value.completed_at),
+    };
+  }
+
+  listManagerActivityChainEvents(
+    chainId: number,
+    managerPrincipal: string,
+    limit = 10_001,
+    relatedContractIds: readonly string[] = [],
+  ): StoredActivityChainEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const contracts = [
+      ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
+    ];
+    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           evidence_level,
+           contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
+           first_seen_at, updated_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")})
+         ORDER BY COALESCE(occurred_at, first_seen_at) DESC, tx_id ASC, event_index ASC LIMIT ?`,
+      )
+      .all(parsedChainId, ...contracts, parsedLimit) as Array<{
+      chain_id: number;
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      index_block_hash: string;
+      canonical: 0 | 1;
+      evidence_level: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
+      contract_id: string;
+      topic: string | null;
+      decoded_schema_version: number | null;
+      decoded_payload_json: string | null;
+      occurred_at: string | null;
+      first_seen_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      chainId: z.number().int().nonnegative().parse(row.chain_id),
+      txId: hashSchema.parse(row.tx_id),
+      eventIndex: z.number().int().nonnegative().parse(row.event_index),
+      blockHeight: z.number().int().nonnegative().parse(row.block_height),
+      indexBlockHash: hashSchema.parse(row.index_block_hash),
+      canonical: row.canonical === 1,
+      evidenceLevel: row.evidence_level,
+      contractId: principalSchema.parse(row.contract_id),
+      topic: z.string().min(1).max(500).nullable().parse(row.topic),
+      decodedSchemaVersion: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .parse(row.decoded_schema_version),
+      decodedPayload:
+        row.decoded_payload_json === null
+          ? null
+          : (JSON.parse(row.decoded_payload_json) as unknown),
+      occurredAt: row.occurred_at === null ? null : z.iso.datetime().parse(row.occurred_at),
+      firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    }));
+  }
+
+  listManagerActivityChainEventsForTxid(
+    chainId: number,
+    managerPrincipal: string,
+    txId: string,
+    relatedContractIds: readonly string[] = [],
+  ): StoredActivityChainEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const contracts = [
+      ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
+    ];
+    const parsedTxId = hashSchema.parse(txId);
+    const rows = this.db
+      .prepare(
+        `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
+           evidence_level,
+           contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
+           first_seen_at, updated_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id = ?
+         ORDER BY event_index ASC`,
+      )
+      .all(parsedChainId, ...contracts, parsedTxId) as Array<{
+      chain_id: number;
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      index_block_hash: string;
+      canonical: 0 | 1;
+      evidence_level: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
+      contract_id: string;
+      topic: string | null;
+      decoded_schema_version: number | null;
+      decoded_payload_json: string | null;
+      occurred_at: string | null;
+      first_seen_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      chainId: z.number().int().nonnegative().parse(row.chain_id),
+      txId: hashSchema.parse(row.tx_id),
+      eventIndex: z.number().int().nonnegative().parse(row.event_index),
+      blockHeight: z.number().int().nonnegative().parse(row.block_height),
+      indexBlockHash: hashSchema.parse(row.index_block_hash),
+      canonical: row.canonical === 1,
+      evidenceLevel: row.evidence_level,
+      contractId: principalSchema.parse(row.contract_id),
+      topic: z.string().min(1).max(500).nullable().parse(row.topic),
+      decodedSchemaVersion: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .parse(row.decoded_schema_version),
+      decodedPayload:
+        row.decoded_payload_json === null
+          ? null
+          : (JSON.parse(row.decoded_payload_json) as unknown),
+      occurredAt: row.occurred_at === null ? null : z.iso.datetime().parse(row.occurred_at),
+      firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
+      updatedAt: z.iso.datetime().parse(row.updated_at),
+    }));
   }
 
   listManagerClaims(
@@ -3135,6 +3540,427 @@ export class SidekickStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  putRewardOutlookObservation(input: RewardOutlookObservationInput): void {
+    const value = rewardOutlookObservationInputSchema.parse(input);
+    const next = value.nextCalculation;
+    this.db
+      .prepare(
+        `INSERT INTO reward_outlook_observations (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          observed_stacks_tip_height, observed_index_block_hash, chain_anchor_json,
+          global_accrued_rewards_sats, calculation_state, last_reward_compute_burn_height,
+          next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
+          next_eligible_burn_height, next_blocks_remaining, next_state,
+          pool_estimate_json, pool_estimate_unavailable_reason,
+          forecast_json, forecast_model_revision, forecast_unavailable_reason, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          last_reward_compute_burn_height
+        )
+        DO UPDATE SET
+          observed_stacks_tip_height = excluded.observed_stacks_tip_height,
+          observed_index_block_hash = excluded.observed_index_block_hash,
+          chain_anchor_json = excluded.chain_anchor_json,
+          global_accrued_rewards_sats = excluded.global_accrued_rewards_sats,
+          calculation_state = excluded.calculation_state,
+          last_reward_compute_burn_height = excluded.last_reward_compute_burn_height,
+          next_target_reward_cycle = excluded.next_target_reward_cycle,
+          next_target_checkpoint = excluded.next_target_checkpoint,
+          next_calculation_burn_height = excluded.next_calculation_burn_height,
+          next_eligible_burn_height = excluded.next_eligible_burn_height,
+          next_blocks_remaining = excluded.next_blocks_remaining,
+          next_state = excluded.next_state,
+          pool_estimate_json = excluded.pool_estimate_json,
+          pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
+          forecast_json = excluded.forecast_json,
+          forecast_model_revision = excluded.forecast_model_revision,
+          forecast_unavailable_reason = excluded.forecast_unavailable_reason,
+          observed_at = excluded.observed_at
+        WHERE excluded.observed_at >= reward_outlook_observations.observed_at`,
+      )
+      .run(
+        value.managerPrincipal,
+        value.pox5ContractId,
+        value.chainAnchor.burnBlockHeight,
+        value.chainAnchor.stacksBlockHeight,
+        value.chainAnchor.indexBlockHash,
+        JSON.stringify(value.chainAnchor),
+        value.globalAccruedRewardsSats,
+        value.calculationState,
+        value.lastRewardComputeBurnHeight,
+        next?.targetRewardCycle ?? null,
+        next?.targetCheckpoint ?? null,
+        next?.calculationBurnHeight ?? null,
+        next?.eligibleBurnHeight ?? null,
+        next?.blocksRemaining ?? null,
+        next?.state ?? null,
+        value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
+        value.poolEstimateUnavailableReason,
+        value.forecast === null ? null : JSON.stringify(value.forecast),
+        value.forecastModelRevision,
+        value.forecastUnavailableReason,
+        value.observedAt,
+      );
+  }
+
+  putRewardCalculationRealization(input: RewardCalculationRealizationInput): void {
+    const value = rewardCalculationRealizationInputSchema.parse(input);
+    this.db
+      .prepare(
+        `INSERT INTO reward_calculation_realizations (
+          chain_id, tx_id, event_index, source_id, manager_principal, pox5_contract_id,
+          canonical, evidence_level, block_height, index_block_hash, burn_block_height,
+          target_reward_cycle, target_checkpoint, calculation_burn_height, event_json,
+          pool_estimate_json, pool_estimate_unavailable_reason, model_revision,
+          evaluation_json, observed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (chain_id, tx_id, event_index)
+        DO UPDATE SET
+          source_id = excluded.source_id,
+          manager_principal = excluded.manager_principal,
+          pox5_contract_id = excluded.pox5_contract_id,
+          canonical = excluded.canonical,
+          evidence_level = CASE
+            WHEN reward_calculation_realizations.evidence_level = 'node-index-verified'
+              THEN reward_calculation_realizations.evidence_level
+            WHEN excluded.evidence_level = 'node-index-verified'
+              THEN excluded.evidence_level
+            WHEN reward_calculation_realizations.evidence_level = 'canonical-block-correlated'
+              THEN reward_calculation_realizations.evidence_level
+            ELSE excluded.evidence_level
+          END,
+          block_height = excluded.block_height,
+          index_block_hash = excluded.index_block_hash,
+          burn_block_height = excluded.burn_block_height,
+          target_reward_cycle = excluded.target_reward_cycle,
+          target_checkpoint = excluded.target_checkpoint,
+          calculation_burn_height = excluded.calculation_burn_height,
+          event_json = excluded.event_json,
+          pool_estimate_json = excluded.pool_estimate_json,
+          pool_estimate_unavailable_reason = excluded.pool_estimate_unavailable_reason,
+          model_revision = excluded.model_revision,
+          evaluation_json = excluded.evaluation_json,
+          updated_at = excluded.updated_at
+        WHERE excluded.updated_at >= reward_calculation_realizations.updated_at`,
+      )
+      .run(
+        value.chainId,
+        value.txId,
+        value.eventIndex,
+        value.sourceId,
+        value.managerPrincipal,
+        value.pox5ContractId,
+        value.canonical ? 1 : 0,
+        value.evidenceLevel,
+        value.blockHeight,
+        value.indexBlockHash,
+        value.burnBlockHeight,
+        value.targetRewardCycle,
+        value.targetCheckpoint,
+        value.calculationBurnHeight,
+        JSON.stringify(value.event),
+        value.poolEstimate === null ? null : JSON.stringify(value.poolEstimate),
+        value.poolEstimateUnavailableReason,
+        value.modelRevision,
+        value.evaluation === null ? null : JSON.stringify(value.evaluation),
+        value.observedAt,
+        value.observedAt,
+      );
+  }
+
+  putRewardCalculationRealizationPage(
+    realizations: readonly RewardCalculationRealizationInput[],
+    cursor: ChainCursorInput,
+  ): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const realization of realizations) this.putRewardCalculationRealization(realization);
+      this.chainState.putCursor(cursor);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getRewardCalculationRealization(
+    chainId: number,
+    txId: string,
+    eventIndex: number,
+  ): StoredRewardCalculationRealization | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM reward_calculation_realizations
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ?`,
+      )
+      .get(
+        z.number().int().nonnegative().safe().parse(chainId),
+        hashSchema.parse(txId),
+        z.number().int().nonnegative().parse(eventIndex),
+      );
+    return row ? toStoredRewardCalculationRealization(row) : null;
+  }
+
+  listRewardCalculationRealizations(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    options: { limit?: number; canonicalOnly?: boolean } = {},
+  ): StoredRewardCalculationRealization[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .parse(options.limit ?? 50);
+    const canonicalOnly = options.canonicalOnly ?? true;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM reward_calculation_realizations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND (? = 0 OR canonical = 1)
+         ORDER BY calculation_burn_height DESC, block_height DESC, event_index DESC
+         LIMIT ?`,
+      )
+      .all(manager, contract, canonicalOnly ? 1 : 0, limit);
+    return rows.map(toStoredRewardCalculationRealization);
+  }
+
+  getRewardEvaluationForecast(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    target: {
+      rewardCycle: number;
+      checkpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      modelRevision?: number;
+    },
+  ): StoredRewardOutlookObservation | null {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const rewardCycle = z.number().int().nonnegative().safe().parse(target.rewardCycle);
+    const checkpoint = z.enum(["first-half", "second-half"]).parse(target.checkpoint);
+    const calculationBurnHeight = z
+      .number()
+      .int()
+      .nonnegative()
+      .safe()
+      .parse(target.calculationBurnHeight);
+    const modelRevision = z
+      .number()
+      .int()
+      .positive()
+      .parse(target.modelRevision ?? REWARD_FORECAST_MODEL_REVISION);
+    const row = this.db
+      .prepare(
+        `SELECT * FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND next_target_reward_cycle = ? AND next_target_checkpoint = ?
+           AND next_calculation_burn_height = ? AND forecast_json IS NOT NULL
+           AND forecast_model_revision = ?
+           AND observed_burn_block_height BETWEEN ? AND ?
+         ORDER BY observed_burn_block_height DESC, observed_at DESC
+         LIMIT 1`,
+      )
+      .get(
+        manager,
+        contract,
+        rewardCycle,
+        checkpoint,
+        calculationBurnHeight,
+        modelRevision,
+        Math.max(0, calculationBurnHeight - 156),
+        Math.max(0, calculationBurnHeight - 144),
+      );
+    return row ? toStoredRewardOutlookObservation(row) : null;
+  }
+
+  rewardRealizationScanFloor(managerPrincipal: string, pox5ContractId: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT MIN(next_calculation_burn_height) AS floor
+         FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+           AND forecast_json IS NOT NULL`,
+      )
+      .get(principalSchema.parse(managerPrincipal), principalSchema.parse(pox5ContractId)) as {
+      floor: number | null;
+    };
+    return z.number().int().nonnegative().safe().nullable().parse(row.floor);
+  }
+
+  getRewardCalculationEligibilityObservation(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    target: {
+      rewardCycle: number;
+      checkpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+    },
+  ): RewardCalculationEligibilityObservation | null {
+    const row = z
+      .object({
+        observed_at: z.iso.datetime(),
+        observed_stacks_tip_height: z.number().int().nonnegative().safe(),
+        observed_burn_block_height: z.number().int().nonnegative().safe(),
+        observed_index_block_hash: hashSchema,
+      })
+      .nullable()
+      .parse(
+        this.db
+          .prepare(
+            `SELECT observed_at, observed_stacks_tip_height, observed_burn_block_height,
+                    observed_index_block_hash
+             FROM reward_outlook_observations
+             WHERE manager_principal = ? AND pox5_contract_id = ?
+               AND next_state = 'due' AND next_target_reward_cycle = ?
+               AND next_target_checkpoint = ? AND next_calculation_burn_height = ?
+             ORDER BY observed_stacks_tip_height ASC, observed_at ASC
+             LIMIT 1`,
+          )
+          .get(
+            principalSchema.parse(managerPrincipal),
+            principalSchema.parse(pox5ContractId),
+            z.number().int().nonnegative().safe().parse(target.rewardCycle),
+            z.enum(["first-half", "second-half"]).parse(target.checkpoint),
+            z.number().int().nonnegative().safe().parse(target.calculationBurnHeight),
+          ) ?? null,
+      );
+    return row
+      ? {
+          observedAt: row.observed_at,
+          stacksBlockHeight: row.observed_stacks_tip_height,
+          burnBlockHeight: row.observed_burn_block_height,
+          indexBlockHash: row.observed_index_block_hash,
+        }
+      : null;
+  }
+
+  markRewardRealizationNoncanonical(input: {
+    chainId: number;
+    txId: string;
+    eventIndex: number;
+    updatedAt: string;
+  }): boolean {
+    const chainId = z.number().int().nonnegative().safe().parse(input.chainId);
+    const txId = hashSchema.parse(input.txId);
+    const eventIndex = z.number().int().nonnegative().parse(input.eventIndex);
+    const updatedAt = z.iso.datetime().parse(input.updatedAt);
+    const result = this.db
+      .prepare(
+        `UPDATE reward_calculation_realizations
+         SET canonical = 0, updated_at = ?
+         WHERE chain_id = ? AND tx_id = ? AND event_index = ? AND canonical = 1`,
+      )
+      .run(updatedAt, chainId, txId, eventIndex);
+    return Number(result.changes) === 1;
+  }
+
+  listRewardOutlookObservations(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    options: { limit?: number; offset?: number; direction?: "asc" | "desc" } = {},
+  ): ManagerActivityPage<StoredRewardOutlookObservation> {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(2_500)
+      .parse(options.limit ?? 500);
+    const offset = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(options.offset ?? 0);
+    const direction = options.direction === "asc" ? "ASC" : "DESC";
+    const totalRow = this.db
+      .prepare(
+        `SELECT count(*) AS count FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?`,
+      )
+      .get(manager, contract) as { count: number };
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM reward_outlook_observations
+         WHERE manager_principal = ? AND pox5_contract_id = ?
+         ORDER BY observed_burn_block_height ${direction}, observed_at ${direction}
+         LIMIT ? OFFSET ?`,
+      )
+      .all(manager, contract, limit, offset);
+    return {
+      items: rows.map(toStoredRewardOutlookObservation),
+      total: z.number().int().nonnegative().parse(totalRow.count),
+      offset,
+      limit,
+    };
+  }
+
+  listRewardForecastSamples(
+    managerPrincipal: string,
+    pox5ContractId: string,
+    query: {
+      lastRewardComputeBurnHeight: string;
+      targetRewardCycle: number;
+      targetCheckpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      throughBurnBlockHeight: number;
+      limit?: number;
+    },
+  ): RewardForecastObservation[] {
+    const manager = principalSchema.parse(managerPrincipal);
+    const contract = principalSchema.parse(pox5ContractId);
+    const value = rewardForecastSampleQuerySchema.parse(query);
+    const rows = this.db
+      .prepare(
+        `SELECT
+           observed_burn_block_height,
+           observed_at,
+           global_accrued_rewards_sats,
+           last_reward_compute_burn_height,
+           next_target_reward_cycle,
+           next_target_checkpoint,
+           next_calculation_burn_height
+         FROM reward_outlook_observations
+         WHERE manager_principal = ?
+           AND pox5_contract_id = ?
+           AND last_reward_compute_burn_height = ?
+           AND next_target_reward_cycle = ?
+           AND next_target_checkpoint = ?
+           AND next_calculation_burn_height = ?
+           AND observed_burn_block_height <= ?
+         ORDER BY observed_burn_block_height DESC, observed_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        manager,
+        contract,
+        value.lastRewardComputeBurnHeight,
+        value.targetRewardCycle,
+        value.targetCheckpoint,
+        value.calculationBurnHeight,
+        value.throughBurnBlockHeight,
+        value.limit,
+      );
+    return rows.map((row) => {
+      const sample = rewardForecastObservationRowSchema.parse(row);
+      return {
+        observedBurnBlockHeight: sample.observed_burn_block_height,
+        observedAt: sample.observed_at,
+        globalAccruedRewardsSats: sample.global_accrued_rewards_sats,
+        lastRewardComputeBurnHeight: sample.last_reward_compute_burn_height,
+        nextCalculation: {
+          targetRewardCycle: sample.next_target_reward_cycle,
+          targetCheckpoint: sample.next_target_checkpoint,
+          calculationBurnHeight: sample.next_calculation_burn_height,
+        },
+      };
+    });
   }
 
   listRewardCycleSummaries(

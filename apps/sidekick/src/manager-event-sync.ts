@@ -3,14 +3,26 @@ import {
   decodeManagerPrintEvent,
   type ManagerPrintEvent,
 } from "@stx-labs/signer-sidekick-protocol/manager-events";
-import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
+import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
 import type {
-  ChainCursor,
+  SmartContractLogPage,
+  StacksNodeClient,
+  TransactionSummary,
+} from "./chain-clients.js";
+import { buildChainEventInput } from "./chain-event-input.js";
+import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
+import type {
   ChainCursorInput,
   ChainEventInput,
   SidekickStore,
   StoredChainEvent,
 } from "./storage/store.js";
+import type {
+  IndexedTransactionObservation,
+  LiveLookup,
+} from "./transaction-engine/live-transaction-reader.js";
+import { loadTransactionSummaries } from "./transaction-enrichment.js";
 
 export interface ManagerEventApi {
   getSmartContractLogs(
@@ -21,10 +33,20 @@ export interface ManagerEventApi {
   getTransaction(txId: string): Promise<TransactionSummary>;
 }
 
+export interface ManagerEventNodeTransactions {
+  lookupIndexedTransaction(txId: string): Promise<LiveLookup<IndexedTransactionObservation>>;
+}
+
+export type ManagerEventNodeBlocks = Pick<
+  StacksNodeClient,
+  "getTenureInfo" | "getNakamotoBlockById" | "getNakamotoBlockAtHeight"
+>;
+
+export type ChainEventEvidenceLevel = "node-index-verified" | "canonical-block-correlated";
+
 export interface ManagerEventStore {
-  getCursor(sourceId: string, stream: string): ChainCursor | null;
+  chainState: Pick<ChainStateRepository, "getCursor">;
   getChainEvent(chainId: number, txId: string, eventIndex: number): StoredChainEvent | null;
-  hasChainEventsForContract(chainId: number, contractId: string): boolean;
   putChainEventPage(events: readonly ChainEventInput[], cursor: ChainCursorInput): void;
   markMissingCanonicalContractEvents(
     chainId: number,
@@ -42,6 +64,14 @@ export interface SyncManagerEventsOptions {
   sourceId: string;
   chainId: number;
   managerPrincipal: string;
+  eventVocabulary: ManagerEventVocabulary;
+  /**
+   * Independent local-node inclusion witness for every API-sourced transaction on a new page.
+   * Callback bodies are never accepted as this witness.
+   */
+  nodeTransactions?: ManagerEventNodeTransactions;
+  /** Local canonical-block witness used when an older transaction is absent from the tx index. */
+  nodeBlocks?: ManagerEventNodeBlocks;
   observedAt: string;
   pageLimit?: number;
   signal?: AbortSignal;
@@ -61,6 +91,7 @@ export interface SyncManagerEventsResult {
   replayedEvents: number;
   decodeFailures: number;
   reorgedEvents: number;
+  nodeVerifiedTransactions: number;
   stoppedAtKnownOverlap: boolean;
 }
 
@@ -72,28 +103,61 @@ function decodeEvent(hex: string): ManagerPrintEvent | null {
   }
 }
 
-async function enrichTransactions(
-  api: ManagerEventApi,
-  page: SmartContractLogPage,
+export async function verifyIndexedApiTransactionEvidenceWithNode(
+  node: ManagerEventNodeTransactions,
+  nodeBlocks: ManagerEventNodeBlocks | undefined,
+  transactions: ReadonlyMap<string, TransactionSummary>,
+  activityLabel: string,
   signal?: AbortSignal,
-): Promise<Map<string, TransactionSummary>> {
-  const transactionIds = [...new Set(page.results.map(({ tx_id }) => tx_id))];
-  const entries: Array<[string, TransactionSummary]> = [];
-  for (let index = 0; index < transactionIds.length; index += 8) {
+): Promise<ReadonlyMap<string, ChainEventEvidenceLevel>> {
+  const entries = [...transactions.entries()];
+  const evidence = new Map<string, ChainEventEvidenceLevel>();
+  for (let index = 0; index < entries.length; index += 8) {
     signal?.throwIfAborted();
-    const batch = transactionIds.slice(index, index + 8);
-    const batchEntries = await Promise.all(
-      batch.map(
-        async (txId): Promise<[string, TransactionSummary]> => [
-          txId,
-          await api.getTransaction(txId),
-        ],
-      ),
+    const batch = entries.slice(index, index + 8);
+    await Promise.all(
+      batch.map(async ([txId, transaction]) => {
+        const observation = await node.lookupIndexedTransaction(txId);
+        if (observation.status === "not-found" && nodeBlocks) {
+          await proveCanonicalNodeBlock(nodeBlocks, {
+            blockHeight: transaction.block.height,
+            indexBlockHash: transaction.block.index_hash,
+            ...(signal ? { signal } : {}),
+          });
+          evidence.set(txId, "canonical-block-correlated");
+          return;
+        }
+        if (observation.status !== "observed") {
+          const reason =
+            observation.status === "not-found"
+              ? "not-found"
+              : `${observation.status}:${observation.reason}`;
+          throw new Error(
+            `Local node could not verify ${activityLabel} transaction ${txId}: ${reason}`,
+          );
+        }
+        const local = observation.value;
+        if (!local.isCanonical) {
+          throw new Error(
+            `Local node reports ${activityLabel} transaction ${txId} as non-canonical`,
+          );
+        }
+        if (local.indexBlockHash.toLowerCase() !== transaction.block.index_hash.toLowerCase()) {
+          throw new Error(
+            `Local node and indexed API disagree on ${activityLabel} transaction ${txId}`,
+          );
+        }
+        if (local.blockHeight === null || local.blockHeight !== BigInt(transaction.block.height)) {
+          throw new Error(
+            `Local node and indexed API disagree on ${activityLabel} transaction ${txId}`,
+          );
+        }
+        evidence.set(txId, "node-index-verified");
+      }),
     );
     signal?.throwIfAborted();
-    entries.push(...batchEntries);
   }
-  return new Map(entries);
+  return evidence;
 }
 
 export async function syncManagerEvents(
@@ -106,10 +170,11 @@ export async function syncManagerEvents(
   if (!Number.isSafeInteger(options.chainId) || options.chainId < 0) {
     throw new Error("chainId must be a non-negative safe integer");
   }
-  // v2 adds the transaction index needed to reconstruct the current administrator set. A fresh
-  // full pass upgrades existing event rows before they are used for that display.
-  const stream = `manager-logs:v2:${options.managerPrincipal}`;
-  const checkpoint = options.store.getCursor(options.sourceId, stream);
+  // v3 scopes the cursor to the reviewed decoding vocabulary. Moving from generic storage to a
+  // reviewed adapter (or removing one) forces a complete replay instead of reusing projections
+  // produced under different semantic assumptions.
+  const stream = managerEventStream(options.managerPrincipal, options.eventVocabulary);
+  const checkpoint = options.store.chainState.getCursor(options.sourceId, stream);
   let cursor = checkpoint?.cursor ?? null;
   const resumed = cursor !== null;
   const incrementalScan = checkpoint !== null && cursor === null;
@@ -120,6 +185,7 @@ export async function syncManagerEvents(
   let replayedEvents = 0;
   let decodeFailures = 0;
   let reorgedEvents = 0;
+  let nodeVerifiedTransactions = 0;
   let stoppedAtKnownOverlap = false;
   const scannedEventIds = new Set<string>();
   let scannedBoundaryBlockHeight: number | null = null;
@@ -181,29 +247,39 @@ export async function syncManagerEvents(
       });
       break;
     }
-    const transactionById = await enrichTransactions(options.api, page, options.signal);
+    const transactionById = await loadTransactionSummaries(
+      options.api,
+      page.results.map(({ tx_id }) => tx_id),
+      options.signal,
+    );
+    options.signal?.throwIfAborted();
+    const transactionEvidence = options.nodeTransactions
+      ? await verifyIndexedApiTransactionEvidenceWithNode(
+          options.nodeTransactions,
+          options.nodeBlocks,
+          transactionById,
+          "manager",
+          options.signal,
+        )
+      : null;
+    nodeVerifiedTransactions += transactionEvidence?.size ?? 0;
     options.signal?.throwIfAborted();
     const storedEvents: ChainEventInput[] = page.results.map((event, index) => {
       const transaction = transactionById.get(event.tx_id);
       if (!transaction) throw new Error(`Missing transaction enrichment for ${event.tx_id}`);
-      const decoded = decodeEvent(event.contract_log.value.hex);
-      if (!decoded) decodeFailures += 1;
+      const decodeReferenceEvent = options.eventVocabulary === "reference-manager-v1";
+      const decoded = decodeReferenceEvent ? decodeEvent(event.contract_log.value.hex) : null;
+      if (decodeReferenceEvent && !decoded) decodeFailures += 1;
       if (knownEvents[index]) {
         replayedEvents += 1;
       } else {
         newEvents += 1;
       }
-      return {
+      return buildChainEventInput({
         chainId: options.chainId,
         txId: event.tx_id,
         eventIndex: event.event_index,
-        blockHeight: transaction.block.height,
-        blockHash: transaction.block.hash,
-        indexBlockHash: transaction.block.index_hash,
-        microblockHash: null,
-        microblockSequence: null,
-        canonical: true,
-        microblockCanonical: true,
+        transaction,
         contractId: event.contract_log.contract_id,
         topic: decoded?.topic ?? event.contract_log.topic,
         rawPayload: {
@@ -215,9 +291,10 @@ export async function syncManagerEvents(
         },
         decodedSchemaVersion: decoded ? 1 : null,
         decodedPayload: decoded ? { transactionStatus: transaction.status, event: decoded } : null,
+        evidenceLevel: transactionEvidence?.get(event.tx_id) ?? "indexer-reported",
         sourceId: options.sourceId,
         observedAt: options.observedAt,
-      };
+      });
     });
     const firstTransaction = page.results[0]
       ? transactionById.get(page.results[0].tx_id)
@@ -281,6 +358,7 @@ export async function syncManagerEvents(
     replayedEvents,
     decodeFailures,
     reorgedEvents,
+    nodeVerifiedTransactions,
     stoppedAtKnownOverlap,
   };
 }

@@ -1,16 +1,19 @@
 import { Coins, Percent } from "@phosphor-icons/react";
 import {
-  activityResponseSchema,
   type DashboardSnapshot,
+  type HealthSnapshot,
+  healthSnapshotSchema,
+  type RewardCalculationRealization,
   type RewardCycleSummary,
   rewardHistoryResponseSchema,
+  rewardsActivityResponseSchema,
   rewardsPageResponseSchema,
   stakerClaimsResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { dashboardHash } from "../../dashboard-route.js";
+import { actionHash, type DomainSection } from "../../dashboard-route.js";
 import {
   Badge,
   PageHead,
@@ -19,12 +22,12 @@ import {
   StatLine,
   type TableSort,
 } from "../../shared/dashboard-ui.js";
-import { number, sbtc, short } from "../../shared/format.js";
+import { useDomainSection } from "../../shared/domain-section.js";
+import { compactDuration, number, sbtc, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { PipelineStage } from "../../shared/pipeline-stage.js";
-import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
-import { BrowserWalletActionPanel } from "../setup/browser-wallet-action.js";
+import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;
 type BucketSort = "bucket" | "shares" | "earned" | "fee" | "included";
@@ -42,6 +45,76 @@ type RewardHistorySort =
 type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "status";
 type ClaimSort = "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
 type WithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
+
+const rewardTerms = {
+  network:
+    "Total sBTC accumulated by PoX-5 for the next network calculation, shared across eligible signers and pools.",
+  pool: "Estimated amount allocated to this signer-manager before operator fees.",
+  fee: "Estimated portion earned by this pool operator, using per-staker and per-bucket integer rounding.",
+  net: "Estimated amount remaining for this pool's stakers after operator fees.",
+  payout:
+    "Stakers whose settled reward bucket can be paid after the manager claim, fee, and dust checks.",
+} as const;
+
+function RewardTerm({ label, help }: { label: string; help: string }) {
+  return (
+    <button
+      aria-label={`${label}: ${help}`}
+      className="tooltip-trigger reward-term"
+      data-tooltip={help}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+function subtractSats(gross: string | null, fee: string | null): string | null {
+  if (gross === null || fee === null) return null;
+  return (BigInt(gross) - BigInt(fee)).toString();
+}
+
+function poolEstimateUnavailableDetail(
+  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["poolEstimateUnavailableReason"],
+): string {
+  switch (reason) {
+    case "chain-anchor-unavailable":
+      return "A stable local-node anchor is required.";
+    case "calculation-target-unavailable":
+      return "PoX-5 does not expose a valid next calculation target at this anchor.";
+    case "incomplete-active-bond-state":
+      return "The complete active bond set could not be proven at this anchor.";
+    case "anchored-inputs-unavailable":
+      return "One or more anchored share inputs could not be read from the local node.";
+    case "contract-simulation-failed":
+      return "The observed inputs could not produce a valid PoX-5 integer calculation.";
+    case null:
+      return "The current pool estimate is unavailable.";
+  }
+}
+
+function rewardForecastUnavailableDetail(
+  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["forecastUnavailableReason"],
+): string {
+  switch (reason) {
+    case "chain-anchor-unavailable":
+      return "A stable local-node anchor is required.";
+    case "calculation-target-unavailable":
+      return "PoX-5 does not expose a valid next calculation target at this anchor.";
+    case "current-pool-estimate-unavailable":
+      return "The current anchored pool inputs are incomplete.";
+    case "insufficient-samples":
+      return "Sidekick is collecting enough observed accrual history to project the next allocation. The first PoX-5 calculation requires at least 24 Bitcoin blocks of observations.";
+    case "non-monotonic-accrual":
+      return "The cumulative reward balance changed unexpectedly inside this interval.";
+    case "forecast-inputs-unavailable":
+      return "The durable observation window could not be read safely.";
+    case "contract-simulation-failed":
+      return "A projected bound could not produce a valid PoX-5 integer calculation.";
+    case null:
+      return "The checkpoint forecast is unavailable.";
+  }
+}
 
 function compareSortValues(
   left: bigint | number | string | boolean | null,
@@ -89,16 +162,57 @@ function RequestState({
 export function Rewards({
   data,
   operatorStateStale,
+  section,
   token,
 }: {
   data: Snapshot;
   operatorStateStale: boolean;
+  section: DomainSection | null;
   token: string;
 }) {
+  useDomainSection("rewards", section);
   const rewards = data.rewards;
+  const rewardOutlook = data.rewardOutlook ?? null;
+  const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
+  const calculationGrace = calculation?.next?.grace ?? null;
+  const calculationActionAvailable =
+    calculationGrace?.state === "action-required" && !operatorStateStale;
+  const calculationNeedsAttention =
+    calculationGrace?.state === "action-required" && operatorStateStale;
+  const globalAccruedSats =
+    rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
+  const poolEstimate = rewardOutlook?.poolEstimate ?? null;
+  const rewardForecast = rewardOutlook?.forecast ?? null;
+  const operatorFeeForecast = rewardOutlook?.operatorFeeForecast ?? null;
+  const operatorFeeEstimate = rewardOutlook?.operatorFeeEstimate ?? null;
+  const rewardCalibration = rewardOutlook?.calibration ?? null;
+  const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
+  const lastRewardComputeBurnHeight =
+    rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
+    rewards?.global.lastRewardComputeBurnHeight ??
+    null;
   const [rewardsFreshness, setRewardsFreshness] = useState(data.freshness ?? null);
-  const actionAvailability = managerActionAvailability(data, operatorStateStale);
-  const managerActionsAvailable = actionAvailability.available;
+  const rewardClaimsAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("claim-rewards"),
+    operatorStateStale,
+  );
+  const updateFeesAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("update-fees"),
+    operatorStateStale,
+  );
+  const withdrawFeesAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("withdraw-fees"),
+    operatorStateStale,
+  );
+  const sweepFeeRefundsAvailability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("sweep-fee-refunds"),
+    operatorStateStale,
+  );
+  const managerActionsAvailable = rewardClaimsAvailability.available;
   const [activity, setActivity] = useState(data.activity);
   const [stakerPage, setStakerPage] = useState(0);
   const [bucketSort, setBucketSort] = useState<TableSort<BucketSort>>({
@@ -131,6 +245,7 @@ export function Rewards({
   const cycleHistoryPageSize = 10;
   const [rewardStakers, setRewardStakers] = useState(rewards?.stakers ?? []);
   const [rewardStakerTotal, setRewardStakerTotal] = useState(rewards?.totals.stakers ?? 0);
+  const [rewardRealizations, setRewardRealizations] = useState<RewardCalculationRealization[]>([]);
   const [stakersLoading, setStakersLoading] = useState(true);
   const [stakersError, setStakersError] = useState<string | null>(null);
   const [stakersRetry, setStakersRetry] = useState(0);
@@ -144,6 +259,10 @@ export function Rewards({
   const activityRefreshKey = `${data.generatedAt}:${activityRetry}:${claimSort.key}:${claimSort.direction}:${withdrawalSort.key}:${withdrawalSort.direction}`;
   const historyRefreshKey = `${data.generatedAt}:${historyRetry}:${historySort.key}:${historySort.direction}`;
   const withdrawals = activity.withdrawals;
+  const nextCalculationEstimate =
+    calculation?.next?.state === "scheduled" && burnBlockTiming
+      ? compactDuration(calculation.next.blocksRemaining * burnBlockTiming.averageSeconds)
+      : null;
   const buckets = useMemo(() => {
     const values = [...(rewards?.buckets ?? [])];
     return values.sort((left, right) => {
@@ -184,6 +303,7 @@ export function Rewards({
         const total = result.rewards?.totals.stakers ?? 0;
         const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
         setRewardsFreshness(result.freshness ?? null);
+        setRewardRealizations(result.rewardRealizations ?? []);
         setRewardStakerTotal(total);
         if (stakerPage > lastPage) {
           correctingPage = true;
@@ -219,7 +339,7 @@ export function Rewards({
     if (claimCycle) query.set("rewardCycle", claimCycle);
     setActivityLoading(true);
     setActivityError(null);
-    void apiJson(token, `/api/v1/activity?${query}`, activityResponseSchema, {
+    void apiJson(token, `/api/v1/rewards/activity?${query}`, rewardsActivityResponseSchema, {
       signal: controller.signal,
     })
       .then((result) => {
@@ -280,6 +400,19 @@ export function Rewards({
       });
     return () => controller.abort();
   }, [cycleHistoryPage, historyRefreshKey, historySort, token]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiJson(token, "/api/v1/health", healthSnapshotSchema, {
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (!controller.signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBurnBlockTiming(null);
+      });
+    return () => controller.abort();
+  }, [token]);
   return (
     <>
       <PageHead
@@ -291,22 +424,137 @@ export function Rewards({
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
+      <div className="grid cols-2 reward-outlook domain-section-anchor" id="rewards-outlook">
+        <section className="card">
+          <div className="card-head">
+            <h2>Accrued so far</h2>
+            <Badge state={poolEstimate ? "info" : "neutral"}>
+              {poolEstimate ? "Current estimate" : "Unavailable"}
+            </Badge>
+          </div>
+          <p className="card-sub">Estimated allocation if the network calculation ran now.</p>
+          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
+            <span className="btc-value src src-chain">
+              {globalAccruedSats === null ? "Unavailable" : `${sbtc(globalAccruedSats)} sBTC`}
+            </span>
+          </StatLine>
+          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
+            {poolEstimate ? `${sbtc(poolEstimate.grossSats)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
+            {operatorFeeEstimate ? `${sbtc(operatorFeeEstimate.sats)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
+            {poolEstimate && operatorFeeEstimate
+              ? `${sbtc(subtractSats(poolEstimate.grossSats, operatorFeeEstimate.sats) ?? "0")} sBTC`
+              : "Unavailable"}
+          </StatLine>
+          {poolEstimate ? (
+            <StatLine label="Pool allocation — STX / Bitcoin bonds">
+              <span className="mono">
+                {sbtc(poolEstimate.stxSats)} / {sbtc(poolEstimate.bondSats)} sBTC
+              </span>
+            </StatLine>
+          ) : null}
+          <p className="tertiary balance-note">
+            {poolEstimate
+              ? "Contract-exact for the current accrued rewards, pool shares, and active Bitcoin bonds."
+              : poolEstimateUnavailableDetail(
+                  rewardOutlook?.poolEstimateUnavailableReason ?? "anchored-inputs-unavailable",
+                )}
+          </p>
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <h2>Projected next allocation</h2>
+            <Badge state={rewardForecast ? "info" : "neutral"}>
+              {rewardForecast ? `${rewardForecast.confidence} confidence` : "Collecting data"}
+            </Badge>
+          </div>
+          <p className="card-sub">
+            {calculation?.next
+              ? calculation.next.state === "due"
+                ? `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}; calculation is eligible now.`
+                : `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}, in ${number(String(calculation.next.blocksRemaining))} Bitcoin blocks${nextCalculationEstimate ? ` · about ${nextCalculationEstimate}` : ""}.`
+              : "A valid anchored PoX-5 checkpoint is required."}
+          </p>
+          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
+            {rewardForecast ? `${sbtc(rewardForecast.globalSats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
+            {rewardForecast ? `${sbtc(rewardForecast.poolSats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
+            {operatorFeeForecast ? `${sbtc(operatorFeeForecast.sats.point)} sBTC` : "Unavailable"}
+          </StatLine>
+          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
+            {rewardForecast && operatorFeeForecast
+              ? `${sbtc(subtractSats(rewardForecast.poolSats.point, operatorFeeForecast.sats.point) ?? "0")} sBTC`
+              : "Unavailable"}
+          </StatLine>
+          {rewardForecast ? (
+            <>
+              <StatLine label="Pool projection range">
+                <span className="mono">
+                  {sbtc(rewardForecast.poolSats.low)}–{sbtc(rewardForecast.poolSats.high)} sBTC
+                </span>
+              </StatLine>
+              <p className="tertiary balance-note">
+                {rewardForecast.confidence === "calibrated"
+                  ? "Calibrated"
+                  : rewardForecast.confidence === "developing"
+                    ? "Developing"
+                    : "Low"}{" "}
+                confidence from {rewardForecast.sample.observations} observations across{" "}
+                {rewardForecast.sample.sampleBlocks} Bitcoin blocks. The range replays observed
+                global accrual rates through exact PoX-5 arithmetic using current shares.
+              </p>
+              {operatorFeeForecast ? (
+                <p className="tertiary balance-note">
+                  Operator fees apply the reviewed manager’s per-staker, per-bucket integer rounding
+                  across {operatorFeeForecast.inputs.stakers} stakers.
+                  {operatorFeeForecast.assumptions.includes("configured-fee-until-claim")
+                    ? " At least one cycle fee snapshot does not exist yet, so that bucket explicitly assumes the currently configured fee until the first manager claim pins it."
+                    : " Every bucket uses its authoritative cycle fee snapshot."}
+                </p>
+              ) : (
+                <p className="tertiary balance-note">
+                  Operator fee forecast omitted:{" "}
+                  {rewardOutlook?.operatorFeeForecastUnavailableReason ??
+                    "reviewed fee semantics are unavailable"}
+                  .
+                </p>
+              )}
+              <p className="tertiary balance-note">
+                Model revision {rewardCalibration?.modelRevision ?? 1} is{" "}
+                {rewardCalibration?.status ?? "collecting"} with{" "}
+                {rewardCalibration?.eligibleRealizations ?? 0} of{" "}
+                {rewardCalibration?.requirements.realizations ?? 6} eligible realized calculations.
+              </p>
+            </>
+          ) : (
+            <p className="tertiary balance-note">
+              {rewardForecastUnavailableDetail(
+                rewardOutlook?.forecastUnavailableReason ?? "forecast-inputs-unavailable",
+              )}
+            </p>
+          )}
+        </section>
+      </div>
       <div className="card-standout pipeline-wrap">
         <div className="pipeline">
           <PipelineStage
-            done={
-              rewards?.calculation.state === "completed" || rewards?.calculation.state === "ahead"
-            }
+            done={calculation?.state === "completed" || calculation?.state === "ahead"}
             title="Global calculated"
             value={
-              rewards?.calculation.state === "pending"
+              calculation?.state === "pending"
                 ? "Not run yet"
-                : BigInt(rewards?.global.lastRewardComputeBurnHeight ?? 0) === 0n
+                : BigInt(lastRewardComputeBurnHeight ?? 0) === 0n
                   ? "Waiting"
-                  : `Bitcoin block #${number(rewards?.global.lastRewardComputeBurnHeight)}`
+                  : `Bitcoin block #${number(lastRewardComputeBurnHeight)}`
             }
             detail={
-              rewards?.calculation.state === "pending"
+              calculation?.state === "pending"
                 ? "nobody has called calculate-rewards"
                 : "last reward calculation"
             }
@@ -325,7 +573,7 @@ export function Rewards({
             done={(rewards?.totals.actionableClaims ?? 0) === 0}
             title="Stakers paid"
             value={`${activity.claimTotal} recorded`}
-            detail={`${rewards?.totals.actionableClaims ?? 0} actionable`}
+            detail={`${rewards?.totals.actionableClaims ?? 0} ready for payout`}
           />
           <PipelineStage
             done={activity.pendingWithdrawalTotal === 0}
@@ -335,25 +583,49 @@ export function Rewards({
           />
         </div>
       </div>
-      {rewards?.calculation.state === "pending" ? (
-        <p className="tertiary balance-note" role="status">
-          <strong>Waiting on the global reward calculation.</strong> PoX-5 credits nothing for cycle{" "}
-          {rewards.calculation.targetRewardCycle ?? "—"} until someone calls the permissionless{" "}
-          <code>calculate-rewards</code> at Bitcoin block #
-          {number(String(rewards.calculation.expectedLastRewardComputeBurnHeight ?? 0))}. Sidekick
-          observes that call; it does not make it.
-        </p>
+      {calculation?.state === "pending" ? (
+        <div
+          className={`callout ${calculationGrace?.state === "action-required" ? "callout-caution" : "callout-neutral"} balance-note`}
+          role="status"
+        >
+          <div className="body">
+            <strong>
+              {calculationActionAvailable
+                ? "Global reward calculation needs an operator."
+                : calculationNeedsAttention
+                  ? "Reward calculation needs current chain evidence."
+                  : "Awaiting permissionless reward calculation."}
+            </strong>{" "}
+            PoX-5 credits nothing for cycle {calculation.targetRewardCycle ?? "—"} until someone
+            calls <code>calculate-rewards</code> after Bitcoin block #
+            {number(String(calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
+            {calculationGrace ? (
+              <span className="tertiary">
+                {" "}
+                Observed for {calculationGrace.elapsedMinutes} minutes and{" "}
+                {calculationGrace.canonicalStacksBlocks} canonical Stacks blocks.
+              </span>
+            ) : null}
+            {calculationNeedsAttention ? (
+              <span className="tertiary">
+                {" "}
+                Sidekick will not offer a transaction until the local snapshot and action witnesses
+                are current.
+              </span>
+            ) : null}
+            {calculationActionAvailable ? (
+              <div className="actions">
+                <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
+                  Review calculation
+                </a>
+              </div>
+            ) : null}
+          </div>
+        </div>
       ) : null}
-      <StakerSettlementPanel
-        chainId={data.preflight.node.networkId}
-        calculationPending={rewards?.calculation.state === "pending"}
-        managerPrincipal={data.managerPrincipal}
-        network={data.network}
-        onSettled={() => setStakersRetry((value) => value + 1)}
-        token={token}
-      />
+      <StakerSettlementPanel calculationPending={calculation?.state === "pending"} token={token} />
       {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
-        <section className="card" aria-labelledby="reward-buckets">
+        <section className="card reward-buckets" aria-labelledby="reward-buckets">
           <h2 id="reward-buckets">Reward buckets</h2>
           <p className="tertiary">
             PoX-5 keys rewards by bond period. A manager claim names every participating bucket in
@@ -426,16 +698,16 @@ export function Rewards({
       ) : null}
       {!managerActionsAvailable ? (
         <p className="tertiary balance-note" role="status">
-          <strong>Guided manager actions are unavailable.</strong> {actionAvailability.reason}
+          <strong>Guided reward claims are unavailable.</strong> {rewardClaimsAvailability.reason}
         </p>
       ) : null}
-      {actionAvailability.warning ? (
+      {rewardClaimsAvailability.warning ? (
         <p className="tertiary balance-note" role="status">
-          <strong>Unverified manager source.</strong> {actionAvailability.warning}
+          <strong>Unverified manager source.</strong> {rewardClaimsAvailability.warning}
         </p>
       ) : null}
       <div className="grid cols-2 reward-ledger">
-        <div className="card">
+        <div className="card domain-section-anchor" id="rewards-fees">
           <div className="card-head">
             <h2>Reward ledger</h2>
           </div>
@@ -465,9 +737,10 @@ export function Rewards({
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!managerActionsAvailable}
+              disabled={!updateFeesAvailability.available}
+              title={updateFeesAvailability.available ? undefined : updateFeesAvailability.reason}
               onClick={() => {
-                location.hash = dashboardHash("manager", "update-fees");
+                location.hash = actionHash("update-fees");
               }}
             >
               <Percent /> Update manager fee
@@ -495,10 +768,14 @@ export function Rewards({
               type="button"
               className="btn btn-secondary"
               disabled={
-                !managerActionsAvailable || BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
+                !withdrawFeesAvailability.available ||
+                BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
+              }
+              title={
+                withdrawFeesAvailability.available ? undefined : withdrawFeesAvailability.reason
               }
               onClick={() => {
-                location.hash = dashboardHash("manager", "withdraw-fees");
+                location.hash = actionHash("withdraw-fees");
               }}
             >
               <Coins /> Withdraw earned fees
@@ -506,9 +783,14 @@ export function Rewards({
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!managerActionsAvailable}
+              disabled={!sweepFeeRefundsAvailability.available}
+              title={
+                sweepFeeRefundsAvailability.available
+                  ? undefined
+                  : sweepFeeRefundsAvailability.reason
+              }
               onClick={() => {
-                location.hash = dashboardHash("manager", "sweep-fee-refunds");
+                location.hash = actionHash("sweep-fee-refunds");
               }}
             >
               Sweep fee refunds
@@ -516,7 +798,73 @@ export function Rewards({
           </div>
         </div>
       </div>
-      <div className="section-title">Reward cycle ledger</div>
+      <div className="section-title">Realized calculations &amp; model accuracy</div>
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Cycle</th>
+              <th>Checkpoint</th>
+              <th className="right">Pool allocation</th>
+              <th className="right">Point error</th>
+              <th>Range result</th>
+              <th>Transaction</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rewardRealizations.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="tertiary">
+                  No node-verified reward calculations have closed a recorded forecast yet.
+                </td>
+              </tr>
+            ) : (
+              rewardRealizations.map((realization) => (
+                <tr key={`${realization.txId}:${realization.eventIndex}`}>
+                  <td className="mono">{realization.targetRewardCycle}</td>
+                  <td>
+                    {realization.targetCheckpoint === "first-half" ? "First half" : "Second half"}
+                  </td>
+                  <td className="right mono">
+                    {realization.poolSats === null
+                      ? "Unavailable"
+                      : `${sbtc(realization.poolSats)} sBTC`}
+                  </td>
+                  <td className="right mono">
+                    {realization.evaluation?.pointErrorBips === null || !realization.evaluation
+                      ? "—"
+                      : `${(Number(realization.evaluation.pointErrorBips) / 100).toFixed(1)}%`}
+                  </td>
+                  <td>
+                    {realization.evaluation ? (
+                      <Badge
+                        state={realization.evaluation.rangeContainsActual ? "success" : "caution"}
+                      >
+                        {realization.evaluation.rangeContainsActual
+                          ? "Inside range"
+                          : "Outside range"}
+                      </Badge>
+                    ) : (
+                      <Badge state="neutral">Not evaluated</Badge>
+                    )}
+                  </td>
+                  <td>
+                    <CopyableIdentifier
+                      value={realization.txId}
+                      display={short(realization.txId, 8, 5)}
+                      label="reward calculation transaction"
+                      className="mono"
+                    />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="section-title domain-section-anchor" id="rewards-history">
+        Reward cycle ledger
+      </div>
       <RequestState
         label="reward cycle history"
         loading={historyLoading}
@@ -610,7 +958,7 @@ export function Rewards({
                   <SortableHeader
                     align="right"
                     column="actionable"
-                    label="Actionable"
+                    label="Ready for payout"
                     setSort={(sort) => {
                       setHistorySort(sort);
                       setCycleHistoryPage(0);
@@ -669,7 +1017,9 @@ export function Rewards({
           </>
         ) : null}
       </div>
-      <div className="section-title">Per-staker claims</div>
+      <div className="section-title domain-section-anchor" id="rewards-claims">
+        Per-staker claims
+      </div>
       <RequestState
         label="per-staker rewards"
         loading={stakersLoading}
@@ -916,7 +1266,9 @@ export function Rewards({
           </>
         ) : null}
       </div>
-      <div className="section-title">Bitcoin withdrawal queue</div>
+      <div className="section-title domain-section-anchor" id="rewards-withdrawals">
+        Bitcoin withdrawal queue
+      </div>
       {activityLoading || activityError ? (
         <p className={activityError ? "field-error" : "muted"} role="status">
           {activityLoading
@@ -1036,7 +1388,6 @@ export function Rewards({
  * because it reads per staker per bucket and must not ride the operator snapshot.
  */
 type StakerClaimsResponse = ReturnType<typeof stakerClaimsResponseSchema.parse>;
-type StakerClaimCandidate = StakerClaimsResponse["candidates"][number];
 
 /** Every reason mirrors a guard the wallet-intent preparation applies before building a call. */
 function blockedLabel(reason: string | null): string {
@@ -1047,25 +1398,12 @@ function blockedLabel(reason: string | null): string {
 }
 
 function StakerSettlementPanel({
-  chainId,
   calculationPending,
-  managerPrincipal,
-  network,
-  onSettled,
   token,
 }: {
-  chainId: number;
   calculationPending: boolean;
-  managerPrincipal: string;
-  network: string;
-  onSettled: () => void;
   token: string;
 }) {
-  const [selected, setSelected] = useState<StakerClaimCandidate | null>(null);
-  const [actorPrincipal, setActorPrincipal] = useState("");
-  // The signing account. `claim-staker-rewards` is permissionless and pays the staker named in its
-  // arguments, so this only identifies who submits and pays the fee.
-  const actorValid = standardManagerActionPrincipal(actorPrincipal.trim(), network);
   const [pages, setPages] = useState<StakerClaimsResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1179,7 +1517,14 @@ function StakerSettlementPanel({
                             <button
                               type="button"
                               className="btn btn-secondary sm"
-                              onClick={() => setSelected(candidate)}
+                              onClick={() => {
+                                location.hash = actionHash("claim-staker-rewards", {
+                                  kind: "staker-reward",
+                                  stakerPrincipal: candidate.stakerPrincipal,
+                                  rewardCycle: String(latest?.rewardCycle ?? 0),
+                                  bondIndex: candidate.bondIndex,
+                                });
+                              }}
                             >
                               Settle
                             </button>
@@ -1199,60 +1544,6 @@ function StakerSettlementPanel({
                 </div>
               )}
             </>
-          ) : null}
-          {selected ? (
-            <div className="card-standout">
-              <h3>
-                Settle {short(selected.stakerPrincipal, 8, 5)} ·{" "}
-                {selected.bondIndex === null ? "STX-only" : `bond ${selected.bondIndex}`}
-              </h3>
-              <p className="tertiary">
-                One transaction settles this tuple. The call pays the staker named in its arguments,
-                not the signer, and the postcondition pins the manager's exact sBTC outflow.
-              </p>
-              <label htmlFor="staker-claim-actor">Signing account</label>
-              <input
-                id="staker-claim-actor"
-                value={actorPrincipal}
-                onChange={(event) => setActorPrincipal(event.target.value)}
-                placeholder="SP..."
-                className="mono"
-              />
-              {actorPrincipal.trim() !== "" && !actorValid ? (
-                <span className="tertiary">
-                  Enter a valid Stacks account principal for this network.
-                </span>
-              ) : null}
-              {actorValid ? (
-                <BrowserWalletActionPanel
-                  key={`${selected.stakerPrincipal}:${selected.bondIndex ?? "stx"}`}
-                  chainId={chainId}
-                  createRequest={{
-                    action: "claim-staker-rewards",
-                    actorPrincipal: actorPrincipal.trim(),
-                    stakerPrincipal: selected.stakerPrincipal,
-                    rewardCycle: String(latest?.rewardCycle ?? 0),
-                    bondIndex: selected.bondIndex,
-                  }}
-                  intentApiBase="/api/v1/wallet-intents"
-                  managerPrincipal={managerPrincipal}
-                  network={network}
-                  onVerified={() => {
-                    setSelected(null);
-                    setPages([]);
-                    onSettled();
-                  }}
-                  token={token}
-                />
-              ) : null}
-              <button
-                type="button"
-                className="btn btn-tertiary sm"
-                onClick={() => setSelected(null)}
-              >
-                Cancel
-              </button>
-            </div>
           ) : null}
           <RequestState
             label="settlement plan"

@@ -18,6 +18,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
+import { parseCanonicalInstant } from "../time.js";
 import {
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
@@ -306,10 +307,9 @@ async function assertCurrentEligibility(input: {
   observation: ManagerClaimWalletAuthoritativeObservation;
 }): Promise<void> {
   const job = exactJob(input.repository, input.jobId);
-  const observedAt = Date.parse(input.observation.observedAt);
+  const observedAt = parseCanonicalInstant(input.observation.observedAt);
   if (
-    !Number.isFinite(observedAt) ||
-    new Date(observedAt).toISOString() !== input.observation.observedAt ||
+    !observedAt ||
     input.observation.job.jobId !== job.jobId ||
     input.observation.job.operationScopeKey !== job.operationScopeKey ||
     input.observation.job.intentSha256 !== job.intentSha256 ||
@@ -326,7 +326,7 @@ async function assertCurrentEligibility(input: {
     accepted === null ||
     accepted.acceptedState.revision !== job.attestation.revision ||
     accepted.acceptedState.payloadSha256 !== job.attestation.payloadSha256 ||
-    Date.parse(accepted.document.payload.expiresAt) <= observedAt
+    Date.parse(accepted.document.payload.expiresAt) <= observedAt.getTime()
   ) {
     unavailable("This claim job's compatibility attestation expired or changed. Sync chain data");
   }
@@ -375,11 +375,12 @@ function resolveManagerClaimWalletIntent(input: {
     );
   }
   if (
-    (job.state === "preflighted" &&
+    input.requirePrepared &&
+    ((job.state === "preflighted" &&
       input.repository.getActiveLogicalJobForScope(job.operationScopeKey)?.jobId !== job.jobId) ||
-    input.repository.getLatestApproval(job.jobId) !== null ||
-    input.repository.getNonceReservationForJob(job.jobId) !== null ||
-    input.repository.listAttempts(job.jobId).length !== 0
+      input.repository.getLatestApproval(job.jobId) !== null ||
+      input.repository.getNonceReservationForJob(job.jobId) !== null ||
+      input.repository.listAttempts(job.jobId).length !== 0)
   ) {
     unavailable("This claim job already has Assist or transaction activity. Refresh Operations");
   }
@@ -568,6 +569,40 @@ export function readManagerClaimWalletIntent(
   input: Omit<Parameters<typeof resolveManagerClaimWalletIntent>[0], "requirePrepared">,
 ): ManagerClaimWalletIntentFacts {
   return resolveManagerClaimWalletIntent({ ...input, requirePrepared: false });
+}
+
+/**
+ * Reconstruct an already-submitted claim from its immutable job identity. Capability and source
+ * review are new-work gates; they must not make canonical observation disappear after broadcast.
+ * Current network routing is still supplied and verified by the wallet-intent service.
+ */
+export function readBoundManagerClaimWalletIntent(input: {
+  repository: ClaimWalletRepository;
+  jobId: string;
+  actorPrincipal: string;
+  network: ManagerClaimWalletLiveIdentity["network"];
+  managerPrincipal: string;
+}): ManagerClaimWalletIntentFacts {
+  const job = exactJob(input.repository, input.jobId);
+  const intent = parseManagerClaimIntentRecord(job.intent);
+  if (job.managerPrincipal !== input.managerPrincipal) {
+    invalid("The submitted claim no longer matches its stored manager binding");
+  }
+  return resolveManagerClaimWalletIntent({
+    repository: input.repository,
+    jobId: input.jobId,
+    actorPrincipal: input.actorPrincipal,
+    live: {
+      requestedMode: "observe",
+      network: input.network,
+      manager: {
+        principal: job.managerPrincipal,
+        profileId: intent.managerProfile.id,
+        sourceSha256: intent.managerProfile.expectedSourceSha256,
+      },
+    },
+    requirePrepared: false,
+  });
 }
 
 /** Classify only the already-bound engine job; this function never plans or mutates work. */

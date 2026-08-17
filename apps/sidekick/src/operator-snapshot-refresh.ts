@@ -1,6 +1,12 @@
+import {
+  type BackgroundRefreshLoop,
+  nonNegativeRefreshDelay,
+  positiveRefreshInterval,
+  startBackgroundRefreshLoop,
+} from "./background-refresh-loop.js";
 import { RateLimitedError } from "./chain-clients.js";
 
-export const DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS = 30_000;
 export const DEFAULT_SNAPSHOT_REFRESH_FAILURE_DELAY_MS = 30_000;
 export const DEFAULT_SNAPSHOT_REFRESH_MAX_BACKOFF_MS = 5 * 60_000;
 
@@ -23,9 +29,7 @@ export interface SnapshotRefreshLoopOptions {
   metrics?: SnapshotRefreshMetricsTracker;
 }
 
-export interface SnapshotRefreshLoop {
-  stop(): void;
-}
+export type SnapshotRefreshLoop = BackgroundRefreshLoop;
 
 export interface SnapshotRefreshMetricValues {
   attemptsTotal: number;
@@ -149,25 +153,6 @@ export class SnapshotRefreshMetricsTracker {
   }
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return value;
-}
-
-function retryDelay(
-  error: unknown,
-  failures: number,
-  failureDelayMs: number,
-  maxBackoffMs: number,
-): number {
-  if (error instanceof RateLimitedError && error.retryAfterMs !== null) {
-    return Math.min(maxBackoffMs, Math.max(1_000, error.retryAfterMs));
-  }
-  return Math.min(maxBackoffMs, failureDelayMs * 2 ** Math.max(0, failures - 1));
-}
-
 /**
  * Keeps the in-memory operator snapshot warm when nobody has the dashboard open. Refreshes never
  * overlap: a following run is scheduled only after the previous one settles, and OperatorService
@@ -178,77 +163,37 @@ export function startSnapshotRefreshLoop(
   logger: SnapshotRefreshLogger,
   options: SnapshotRefreshLoopOptions = {},
 ): SnapshotRefreshLoop {
-  const intervalMs = positiveInteger(
+  const intervalMs = positiveRefreshInterval(
     options.intervalMs ?? DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
     "intervalMs",
   );
-  const failureDelayMs = positiveInteger(
+  const failureDelayMs = positiveRefreshInterval(
     options.failureDelayMs ?? DEFAULT_SNAPSHOT_REFRESH_FAILURE_DELAY_MS,
     "failureDelayMs",
   );
-  const maxBackoffMs = positiveInteger(
+  const maxBackoffMs = positiveRefreshInterval(
     options.maxBackoffMs ?? DEFAULT_SNAPSHOT_REFRESH_MAX_BACKOFF_MS,
     "maxBackoffMs",
   );
-  const initialDelayMs = options.initialDelayMs ?? 0;
-  if (!Number.isSafeInteger(initialDelayMs) || initialDelayMs < 0) {
-    throw new Error("initialDelayMs must be a non-negative integer");
-  }
-  const scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
-  const cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
+  const initialDelayMs = nonNegativeRefreshDelay(options.initialDelayMs ?? 0, "initialDelayMs");
   const metrics = options.metrics;
-
-  let stopped = false;
-  let failures = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const schedule = (delayMs: number) => {
-    timer = scheduleTimeout(() => {
-      void refresh();
-    }, delayMs);
-    timer.unref?.();
-  };
-
-  const refresh = async () => {
-    if (stopped) return;
-    metrics?.recordAttempt();
-    try {
-      const snapshot = await service.refreshSnapshot();
-      if (stopped) return;
-      metrics?.recordSuccess(snapshot);
-      const recoveredFailures = failures;
-      failures = 0;
-      if (recoveredFailures > 0) {
-        logger.info(
-          { recoveredAfterFailures: recoveredFailures },
-          "Background operator snapshot refresh recovered",
-        );
-      }
-      schedule(intervalMs);
-    } catch (error) {
-      if (stopped) return;
-      failures += 1;
-      const delayMs = retryDelay(error, failures, failureDelayMs, maxBackoffMs);
-      metrics?.recordFailure(delayMs);
-      logger.warn(
-        {
-          error: error instanceof Error ? error.message : String(error),
-          failures,
-          retryInMs: delayMs,
-        },
-        "Background operator snapshot refresh failed; retaining the last known snapshot",
-      );
-      schedule(delayMs);
-    }
-  };
-
-  logger.info({ intervalMs, initialDelayMs }, "Background operator snapshot refresh is enabled");
-  schedule(initialDelayMs);
-
-  return {
-    stop() {
-      stopped = true;
-      if (timer) cancelTimeout(timer);
-    },
-  };
+  return startBackgroundRefreshLoop({
+    run: () => service.refreshSnapshot(),
+    logger,
+    intervalMs,
+    initialDelayMs,
+    failureDelayMs,
+    maxBackoffMs,
+    enabledMessage: "Background operator snapshot refresh is enabled",
+    recoveredMessage: "Background operator snapshot refresh recovered",
+    failureMessage:
+      "Background operator snapshot refresh failed; retaining the last known snapshot",
+    retryAfterMs: (error) =>
+      error instanceof RateLimitedError && error.retryAfterMs !== null ? error.retryAfterMs : null,
+    onAttempt: () => metrics?.recordAttempt(),
+    onSuccess: (snapshot) => metrics?.recordSuccess(snapshot),
+    onFailure: (delayMs) => metrics?.recordFailure(delayMs),
+    setTimeout: options.setTimeout,
+    clearTimeout: options.clearTimeout,
+  });
 }

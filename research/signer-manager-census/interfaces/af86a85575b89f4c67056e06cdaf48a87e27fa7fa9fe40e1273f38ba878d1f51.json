@@ -1,0 +1,1146 @@
+{
+  "maps": [
+    {
+      "key": "uint128",
+      "name": "last-claim-dist-cycle",
+      "value": "uint128"
+    },
+    {
+      "key": "principal",
+      "name": "og-stakers",
+      "value": "bool"
+    },
+    {
+      "key": {
+        "tuple": [
+          {
+            "name": "reward-cycle",
+            "type": "uint128"
+          },
+          {
+            "name": "staker",
+            "type": "principal"
+          },
+          {
+            "name": "tranche",
+            "type": "uint128"
+          }
+        ]
+      },
+      "name": "stx-paid",
+      "value": "uint128"
+    },
+    {
+      "key": {
+        "tuple": [
+          {
+            "name": "reward-cycle",
+            "type": "uint128"
+          },
+          {
+            "name": "tranche",
+            "type": "uint128"
+          }
+        ]
+      },
+      "name": "stx-pot",
+      "value": "uint128"
+    },
+    {
+      "key": "uint128",
+      "name": "tranche-count",
+      "value": "uint128"
+    },
+    {
+      "key": {
+        "tuple": [
+          {
+            "name": "reward-cycle",
+            "type": "uint128"
+          },
+          {
+            "name": "tranche",
+            "type": "uint128"
+          }
+        ]
+      },
+      "name": "tranche-paid",
+      "value": "uint128"
+    },
+    {
+      "key": {
+        "tuple": [
+          {
+            "name": "reward-cycle",
+            "type": "uint128"
+          },
+          {
+            "name": "tranche",
+            "type": "uint128"
+          }
+        ]
+      },
+      "name": "tranche-paid-shares",
+      "value": "uint128"
+    }
+  ],
+  "epoch": "Epoch40",
+  "functions": [
+    {
+      "args": [],
+      "name": "assert-admin",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "amount",
+          "type": "uint128"
+        },
+        {
+          "name": "recipient",
+          "type": "principal"
+        }
+      ],
+      "name": "do-withdraw-fees",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "acc",
+          "type": {
+            "tuple": [
+              {
+                "name": "fee",
+                "type": "uint128"
+              },
+              {
+                "name": "fees",
+                "type": "uint128"
+              },
+              {
+                "name": "pot",
+                "type": "uint128"
+              },
+              {
+                "name": "reward-cycle",
+                "type": "uint128"
+              },
+              {
+                "name": "total",
+                "type": "uint128"
+              },
+              {
+                "name": "total-shares",
+                "type": "uint128"
+              },
+              {
+                "name": "tranche",
+                "type": "uint128"
+              }
+            ]
+          }
+        }
+      ],
+      "name": "pay-one",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "tuple": [
+            {
+              "name": "fee",
+              "type": "uint128"
+            },
+            {
+              "name": "fees",
+              "type": "uint128"
+            },
+            {
+              "name": "pot",
+              "type": "uint128"
+            },
+            {
+              "name": "reward-cycle",
+              "type": "uint128"
+            },
+            {
+              "name": "total",
+              "type": "uint128"
+            },
+            {
+              "name": "total-shares",
+              "type": "uint128"
+            },
+            {
+              "name": "tranche",
+              "type": "uint128"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "acc",
+          "type": {
+            "tuple": [
+              {
+                "name": "bond-index",
+                "type": {
+                  "optional": "uint128"
+                }
+              },
+              {
+                "name": "failed",
+                "type": "bool"
+              },
+              {
+                "name": "reward-cycle",
+                "type": "uint128"
+              },
+              {
+                "name": "total",
+                "type": "uint128"
+              }
+            ]
+          }
+        }
+      ],
+      "name": "settle-one",
+      "access": "private",
+      "outputs": {
+        "type": {
+          "tuple": [
+            {
+              "name": "bond-index",
+              "type": {
+                "optional": "uint128"
+              }
+            },
+            {
+              "name": "failed",
+              "type": "bool"
+            },
+            {
+              "name": "reward-cycle",
+              "type": "uint128"
+            },
+            {
+              "name": "total",
+              "type": "uint128"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "cancel-fee-bips",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "confirm-fee-bips",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "stakers",
+          "type": {
+            "list": {
+              "type": "principal",
+              "length": 100
+            }
+          }
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "pay-stx-stakers",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "none"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "bond-periods",
+          "type": {
+            "list": {
+              "type": "uint128",
+              "length": 6
+            }
+          }
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "pox-claim-rewards",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": {
+              "tuple": [
+                {
+                  "name": "bond-rewards",
+                  "type": {
+                    "list": {
+                      "type": {
+                        "tuple": [
+                          {
+                            "name": "bond-index",
+                            "type": "uint128"
+                          },
+                          {
+                            "name": "earned",
+                            "type": "uint128"
+                          },
+                          {
+                            "name": "rewards-per-token",
+                            "type": "uint128"
+                          }
+                        ]
+                      },
+                      "length": 6
+                    }
+                  }
+                },
+                {
+                  "name": "bond-totals",
+                  "type": "uint128"
+                },
+                {
+                  "name": "stx-rewards",
+                  "type": {
+                    "tuple": [
+                      {
+                        "name": "earned",
+                        "type": "uint128"
+                      },
+                      {
+                        "name": "rewards-per-token",
+                        "type": "uint128"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "total-rewards",
+                  "type": "uint128"
+                }
+              ]
+            },
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "stakers",
+          "type": {
+            "list": {
+              "type": "principal",
+              "length": 100
+            }
+          }
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "pox-settle-stakers",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "new-fee",
+          "type": "uint128"
+        }
+      ],
+      "name": "propose-fee-bips",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "signer-manager",
+          "type": "trait_reference"
+        },
+        {
+          "name": "signer-key",
+          "type": {
+            "buffer": {
+              "length": 33
+            }
+          }
+        },
+        {
+          "name": "auth-id",
+          "type": "uint128"
+        },
+        {
+          "name": "signer-sig",
+          "type": {
+            "buffer": {
+              "length": 65
+            }
+          }
+        }
+      ],
+      "name": "register-self",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": {
+              "tuple": [
+                {
+                  "name": "signer",
+                  "type": "principal"
+                },
+                {
+                  "name": "signer-key",
+                  "type": {
+                    "buffer": {
+                      "length": 33
+                    }
+                  }
+                }
+              ]
+            },
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "new-admin",
+          "type": "principal"
+        }
+      ],
+      "name": "set-admin",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "og",
+          "type": "bool"
+        }
+      ],
+      "name": "set-og",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "p",
+          "type": "bool"
+        }
+      ],
+      "name": "set-paused",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "sweep-tranche-dust",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "first-index",
+          "type": "uint128"
+        },
+        {
+          "name": "num-indexes",
+          "type": "uint128"
+        },
+        {
+          "name": "amount-ustx",
+          "type": "uint128"
+        },
+        {
+          "name": "amount-sats",
+          "type": "uint128"
+        },
+        {
+          "name": "is-bond",
+          "type": "bool"
+        },
+        {
+          "name": "signer-calldata",
+          "type": {
+            "optional": {
+              "buffer": {
+                "length": 500
+              }
+            }
+          }
+        }
+      ],
+      "name": "validate-stake!",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "bool",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "recipient",
+          "type": "principal"
+        }
+      ],
+      "name": "withdraw-all-fees",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "amount",
+          "type": "uint128"
+        },
+        {
+          "name": "recipient",
+          "type": "principal"
+        }
+      ],
+      "name": "withdraw-fees",
+      "access": "public",
+      "outputs": {
+        "type": {
+          "response": {
+            "ok": "uint128",
+            "error": "uint128"
+          }
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "get-admin",
+      "access": "read_only",
+      "outputs": {
+        "type": "principal"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-cycle-total-shares",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [],
+      "name": "get-earned-fees",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        }
+      ],
+      "name": "get-effective-fee-bips",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [],
+      "name": "get-fee-bips",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-last-claim-dist-cycle",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "optional": "uint128"
+        }
+      }
+    },
+    {
+      "args": [],
+      "name": "get-pending-fee",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "tuple": [
+            {
+              "name": "executable-at",
+              "type": "uint128"
+            },
+            {
+              "name": "fee",
+              "type": {
+                "optional": "uint128"
+              }
+            },
+            {
+              "name": "proposed-at",
+              "type": "uint128"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        },
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "get-staker-entitlement",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        },
+        {
+          "name": "staker",
+          "type": "principal"
+        }
+      ],
+      "name": "get-stx-owed",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        },
+        {
+          "name": "staker",
+          "type": "principal"
+        }
+      ],
+      "name": "get-stx-paid",
+      "access": "read_only",
+      "outputs": {
+        "type": {
+          "optional": "uint128"
+        }
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-stx-pot",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-tranche-count",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-tranche-paid",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-tranche-paid-shares",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "get-tranche-residue",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "bond-index",
+          "type": {
+            "optional": "uint128"
+          }
+        }
+      ],
+      "name": "get-unclaimed-signer-rewards",
+      "access": "read_only",
+      "outputs": {
+        "type": "uint128"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "staker",
+          "type": "principal"
+        }
+      ],
+      "name": "is-og",
+      "access": "read_only",
+      "outputs": {
+        "type": "bool"
+      }
+    },
+    {
+      "args": [],
+      "name": "is-paused",
+      "access": "read_only",
+      "outputs": {
+        "type": "bool"
+      }
+    },
+    {
+      "args": [
+        {
+          "name": "reward-cycle",
+          "type": "uint128"
+        },
+        {
+          "name": "tranche",
+          "type": "uint128"
+        }
+      ],
+      "name": "is-tranche-fully-paid",
+      "access": "read_only",
+      "outputs": {
+        "type": "bool"
+      }
+    }
+  ],
+  "variables": [
+    {
+      "name": "ERR_COOLDOWN",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_INSUFFICIENT_FEES",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_INVALID_FEE",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NOT_POX5",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NO_DUST",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NO_NEW_REWARDS",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_NO_PENDING_FEE",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_PAUSED",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_SETTLE_FAILED",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_TRANCHE_TOO_SOON",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_TRANCHE_UNPAID",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "ERR_UNAUTHORIZED",
+      "type": {
+        "response": {
+          "ok": "none",
+          "error": "uint128"
+        }
+      },
+      "access": "constant"
+    },
+    {
+      "name": "FEE_COOLDOWN",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "MAX_BIPS",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "MAX_FEE_BIPS",
+      "type": "uint128",
+      "access": "constant"
+    },
+    {
+      "name": "POX5",
+      "type": "principal",
+      "access": "constant"
+    },
+    {
+      "name": "SBTC",
+      "type": "principal",
+      "access": "constant"
+    },
+    {
+      "name": "admin",
+      "type": "principal",
+      "access": "variable"
+    },
+    {
+      "name": "earned-fees",
+      "type": "uint128",
+      "access": "variable"
+    },
+    {
+      "name": "fee-bips",
+      "type": "uint128",
+      "access": "variable"
+    },
+    {
+      "name": "paused",
+      "type": "bool",
+      "access": "variable"
+    },
+    {
+      "name": "pending-fee",
+      "type": {
+        "optional": "uint128"
+      },
+      "access": "variable"
+    },
+    {
+      "name": "pending-fee-height",
+      "type": "uint128",
+      "access": "variable"
+    }
+  ],
+  "clarity_version": "Clarity5",
+  "fungible_tokens": [],
+  "non_fungible_tokens": []
+}

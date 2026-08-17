@@ -62,7 +62,6 @@ export function StatusBadge({ status }: { status: string }) {
     "eligible",
     "activation scheduled",
     "signer active",
-    "setup complete",
   ].includes(normalized)
     ? "b-success"
     : ["blocked", "fail", "unavailable", "grant not verified", "needs attention"].includes(

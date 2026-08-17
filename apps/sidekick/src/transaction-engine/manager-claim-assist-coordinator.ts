@@ -5,6 +5,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { type ChainAnchor, chainAnchorSchema, chainAnchorsEqual } from "../chain-anchor.js";
 import type { GasPayerMempoolActivityResult, TransactionSummary } from "../chain-clients.js";
+import { copyValidDate, parseCanonicalInstant } from "../time.js";
 import {
   type AdmissionBlock,
   evaluateTransactionAdmission,
@@ -215,8 +216,7 @@ function exactInstant(value: Date): string | null {
 }
 
 function parseObservedAt(value: string): string {
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+  if (!parseCanonicalInstant(value)) {
     throw new TypeError("Recovery observedAt must be a canonical ISO instant");
   }
   return value;
@@ -379,8 +379,8 @@ export class ManagerClaimAssistCoordinator {
   }
 
   #now(): Date {
-    const now = this.#clock();
-    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    const now = copyValidDate(this.#clock());
+    if (!now) {
       throw new Error("Assist coordinator clock returned an invalid instant");
     }
     return now;

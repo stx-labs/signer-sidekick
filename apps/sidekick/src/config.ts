@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 
 export const sidekickNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
@@ -54,6 +55,7 @@ export interface SidekickConfig {
   nodeRpcUrl: string;
   apiUrl: string;
   apiKey?: string;
+  apiKeyOrigin?: string;
   apiKeyHeader: string;
   maxApiBurnBlockLag: number;
   forecastHorizonCycles: number;
@@ -66,6 +68,38 @@ export interface SidekickConfig {
   nodeMetricsUrl?: string;
   signerMonitoringUrl?: string;
   hiroReferenceApiUrl?: string;
+  hiroReferenceApiKey?: string;
+  hiroReferenceApiKeyOrigin?: string;
+  hiroReferenceApiKeyHeader: string;
+}
+
+export interface ApiCredential {
+  headerName: string;
+  value: string;
+}
+
+const defaultNetworkIds: Record<SidekickNetwork, number> = {
+  mainnet: 1,
+  testnet: 0x80000005,
+  devnet: 0x80000000,
+  regtest: 0x80000000,
+};
+
+export function configuredNetworkId(
+  config: Pick<SidekickConfig, "network" | "expectedNetworkId">,
+): number {
+  return config.expectedNetworkId ?? defaultNetworkIds[config.network];
+}
+
+export function loadManagerPrincipal(env: NodeJS.ProcessEnv): string {
+  const managerPrincipal = env.SIDEKICK_MANAGER_PRINCIPAL?.trim();
+  if (!managerPrincipal) throw new Error("SIDEKICK_MANAGER_PRINCIPAL is required");
+  try {
+    parseContractPrincipal(managerPrincipal);
+  } catch {
+    throw new Error("SIDEKICK_MANAGER_PRINCIPAL must be a valid contract principal");
+  }
+  return managerPrincipal;
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -88,6 +122,55 @@ export function parseEndpointUrl(value: string, name: string): string {
     throw new Error(`${name} must not contain query parameters or a fragment`);
   }
   return url.toString().replace(/\/$/, "");
+}
+
+const apiKeyHeaderSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9-]{1,100}$/)
+  .refine(
+    (value) =>
+      !["connection", "content-length", "host", "transfer-encoding", "upgrade"].includes(
+        value.toLowerCase(),
+      ),
+    "API key header cannot override HTTP transport headers",
+  );
+
+export function parseApiKeyHeader(value: string, name: string): string {
+  try {
+    return apiKeyHeaderSchema.parse(value);
+  } catch (error) {
+    throw new Error(`${name} is invalid`, { cause: error });
+  }
+}
+
+export function indexedApiCredential(config: SidekickConfig): ApiCredential | undefined {
+  return config.apiKey &&
+    config.apiKeyOrigin &&
+    new URL(config.apiUrl).origin === config.apiKeyOrigin
+    ? { headerName: config.apiKeyHeader, value: config.apiKey }
+    : undefined;
+}
+
+export function hiroReferenceApiCredential(config: SidekickConfig): ApiCredential | undefined {
+  if (
+    config.hiroReferenceApiKey &&
+    config.hiroReferenceApiKeyOrigin &&
+    config.hiroReferenceApiUrl &&
+    new URL(config.hiroReferenceApiUrl).origin === config.hiroReferenceApiKeyOrigin
+  ) {
+    return {
+      headerName: config.hiroReferenceApiKeyHeader,
+      value: config.hiroReferenceApiKey,
+    };
+  }
+  if (
+    config.hiroReferenceApiUrl &&
+    new URL(config.apiUrl).origin === new URL(config.hiroReferenceApiUrl).origin
+  ) {
+    return indexedApiCredential(config);
+  }
+  return undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
@@ -139,8 +222,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
     network,
     nodeRpcUrl: parseEndpointUrl(nodeRpcUrl, "STACKS_NODE_RPC_URL"),
     apiUrl: parseEndpointUrl(apiUrl, "STACKS_API_URL"),
-    ...(env.STACKS_API_KEY ? { apiKey: env.STACKS_API_KEY } : {}),
-    apiKeyHeader: env.STACKS_API_KEY_HEADER ?? "x-api-key",
+    ...(env.STACKS_API_KEY
+      ? { apiKey: env.STACKS_API_KEY, apiKeyOrigin: new URL(apiUrl).origin }
+      : {}),
+    apiKeyHeader: parseApiKeyHeader(
+      env.STACKS_API_KEY_HEADER ?? "x-api-key",
+      "STACKS_API_KEY_HEADER",
+    ),
     maxApiBurnBlockLag,
     forecastHorizonCycles,
     stakerPageLimit,
@@ -188,12 +276,40 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
           ),
         }
       : {}),
+    ...(env.HIRO_REFERENCE_API_KEY
+      ? {
+          hiroReferenceApiKey: env.HIRO_REFERENCE_API_KEY,
+          hiroReferenceApiKeyOrigin: new URL(
+            env.HIRO_REFERENCE_API_URL?.trim() ||
+              networkDefaults[network]?.hiroReferenceApiUrl ||
+              apiUrl,
+          ).origin,
+        }
+      : {}),
+    hiroReferenceApiKeyHeader: parseApiKeyHeader(
+      env.HIRO_REFERENCE_API_KEY_HEADER ?? "x-api-key",
+      "HIRO_REFERENCE_API_KEY_HEADER",
+    ),
   };
 }
 
-export function redactConfig(config: SidekickConfig): Omit<SidekickConfig, "apiKey"> & {
+export function redactConfig(config: SidekickConfig): Omit<
+  SidekickConfig,
+  "apiKey" | "apiKeyOrigin" | "hiroReferenceApiKey" | "hiroReferenceApiKeyOrigin"
+> & {
   apiKeyConfigured: boolean;
+  hiroReferenceApiKeyConfigured: boolean;
 } {
-  const { apiKey, ...publicConfig } = config;
-  return { ...publicConfig, apiKeyConfigured: Boolean(apiKey) };
+  const {
+    apiKey,
+    apiKeyOrigin: _apiKeyOrigin,
+    hiroReferenceApiKey,
+    hiroReferenceApiKeyOrigin: _hiroReferenceApiKeyOrigin,
+    ...publicConfig
+  } = config;
+  return {
+    ...publicConfig,
+    apiKeyConfigured: Boolean(indexedApiCredential(config)),
+    hiroReferenceApiKeyConfigured: Boolean(hiroReferenceApiCredential(config)),
+  };
 }

@@ -49,6 +49,22 @@ describe("dashboard API client", () => {
     expect(request.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("preserves browser-managed authentication when no bearer token is supplied", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiJson("", "/api/v1/status", readySchema)).resolves.toEqual({
+      status: "ready",
+    });
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(request.headers).has("authorization")).toBe(false);
+  });
+
   it("clears rejected credentials and emits the shared logout event", async () => {
     const removeItem = vi.fn();
     const dispatchEvent = vi.fn();
@@ -226,9 +242,9 @@ describe("dashboard API client", () => {
     );
 
     await expect(
-      apiDownload(token, "/api/v1/onboarding/artifacts/source", {
-        expectedContentTypes: ["text/plain"],
-        fallbackFilename: "manager.clar",
+      apiDownload(token, "/api/v1/support-bundle", {
+        expectedContentTypes: ["application/json"],
+        fallbackFilename: "sidekick-support.json",
       }),
     ).rejects.toMatchObject({ kind: "http", status: 404, code: "artifact_not_found" });
     expect(createElement).not.toHaveBeenCalled();

@@ -12,4 +12,4 @@ setup artifacts, but cannot enable Assist. Assist separately requires a current 
 compatibility attestation that binds reviewed identities to the fixed code-backed adapter.
 
 See [deployment](../docs/operator/deployment.md) and
-[ADR 0007](../docs/architecture/decisions/0007-release-independent-network-compatibility.md).
+[ADR 0007](../docs/architecture/decisions/0007-network-compatibility.md).

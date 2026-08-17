@@ -10,7 +10,8 @@ PoX-5 operation; it is not a wallet, generic contract caller, or workflow engine
 - **Assist** may sign and broadcast only the code-backed
   `reference-manager-claim-rewards` adapter after fresh, exact operator approval.
 - Signer and manager-admin keys never enter Sidekick. Assist may hold one dedicated, low-balance
-  gas-payer key for that fixed adapter only. See [ADR 0003](decisions/0003-local-auth-and-keys.md).
+  gas-payer key for that fixed adapter only. See
+  [ADR 0003](decisions/0003-operator-auth-and-custody.md).
 
 ## Chain authority and admission
 
@@ -19,6 +20,13 @@ cycle and position, phase, and reward-calculation checkpoint. The configured nod
 for actionable contract, account, and PoX state. The Stacks API provides indexed enumeration and
 history; it cannot override node state. SQLite is durable evidence and coordination state, not
 transaction authority.
+
+Sidekick therefore keeps two chain positions separate. Current setup, manager, reward, and wallet
+facts use a stable local-node anchor. Indexed roster, event, history, and canonical-ancestry reads
+use the newest stable API anchor that the node can still read. An API that is behind or unavailable
+degrades only those indexed capabilities. A local node that is behind the API or its observed peers
+fails readiness, while Assist remains fail-closed whenever an API-specific completeness proof is
+unavailable.
 
 An Assist plan and its pre-broadcast recheck must agree on:
 

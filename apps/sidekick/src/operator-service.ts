@@ -1,7 +1,7 @@
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
-import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
+  captureChainAnchor,
   RateLimitedError,
   type RateLimitInfo,
   rateLimitInfo,
@@ -9,31 +9,49 @@ import {
   type StacksNodeClient,
 } from "./chain-clients.js";
 import { redactConfig, type SidekickConfig } from "./config.js";
-import { createPoolEnrollmentDocument } from "./enrollment-info.js";
+import { syncCurrentMemberHistoryPass } from "./current-member-history-sync.js";
+import type { HealthOperatorContext } from "./health-monitoring-types.js";
+import { advanceLocalNodeAuthority } from "./local-node-authority.js";
 import { readManagerActivity } from "./manager-activity.js";
-import { syncManagerEvents } from "./manager-event-sync.js";
+import { managerActionCapability } from "./manager-capabilities.js";
+import { type ManagerEventNodeTransactions, syncManagerEvents } from "./manager-event-sync.js";
+import {
+  type ManagerEventVocabulary,
+  managerEventStream,
+  managerEventVocabularyFor,
+} from "./manager-event-vocabulary.js";
 import {
   type inspectDeployedManager,
   inspectManagerOrReportMissing,
   invalidateManagerVerificationCache,
   type ManagerVerificationContext,
 } from "./manager-verification.js";
-import { createPoolCardArtifact, type PoolCardMode } from "./pool-card.js";
+import {
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "./operator-anchor-snapshot.js";
+import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
-import type { runOperatorPreflight } from "./preflight.js";
+import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
+import {
+  indexedApiCompatible,
+  indexedWorkflowsReady,
+  type runOperatorPreflight,
+} from "./preflight.js";
+import { rewardRealizationStream, syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
+  readRewardOutlook,
   readStxRewardStatus,
   type StxRewardStatus,
 } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
-import type { readPoolSetupStatus } from "./setup-status.js";
 import {
   proveSignerStakerAnchorRemainsCanonical,
   SignerStakerAnchorError,
   syncSignerStakers,
 } from "./signer-staker-sync.js";
+import type { ManagerTrustTransition } from "./storage/manager-trust-repository.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -42,19 +60,6 @@ export interface OperatorAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
-  action?:
-    | { kind: "reconcile"; label: string }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "setup" | "settings" | "pool" | "rewards" | "operations";
-      }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "manager";
-        managerAction: "register-self";
-      };
 }
 
 export interface OperatorServiceOptions {
@@ -68,6 +73,7 @@ export interface OperatorServiceOptions {
   runtimeSettings?: RuntimeSettingsController;
   managerVerification?: ManagerVerificationContext;
   transactionEngineObservation?: TransactionEngineObservationHook;
+  nodeTransactions?: ManagerEventNodeTransactions;
 }
 
 export interface OperatorSynchronizationProgress {
@@ -79,8 +85,13 @@ export interface OperatorSynchronizationProgress {
 
 export interface OperatorSynchronizationOptions {
   signal?: AbortSignal;
+  /** Do not consume an event trigger until the indexed source has reached its verified block. */
+  minimumStacksHeight?: number | null;
   onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
 }
+
+export type ManagerActivitySynchronizationOptions = OperatorSynchronizationOptions;
+export type RewardRealizationSynchronizationOptions = OperatorSynchronizationOptions;
 
 export type SortDirection = "asc" | "desc";
 export type PoolRosterSort =
@@ -186,7 +197,7 @@ export function sortRewardStakers(
 
 export interface TransactionEngineObservationHook {
   observe(input: {
-    setup: SetupSnapshot;
+    setup: OperatorAnchorSnapshot;
     rewards: StxRewardStatus | null;
     sourceId: string;
     observedAt: string;
@@ -243,12 +254,13 @@ export async function resolveRosterProjectionAnchor(options: {
   sourceId: string;
   managerPrincipal: string;
   liveAnchor: ChainAnchor;
+  indexedApiAvailable?: boolean;
 }): Promise<ChainAnchor> {
   const run = options.store.getLatestCompletedSignerStakerRun(
     options.sourceId,
     options.managerPrincipal,
   );
-  if (!run?.chainAnchor) return options.liveAnchor;
+  if (!run?.chainAnchor || options.indexedApiAvailable === false) return options.liveAnchor;
   try {
     await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
     return run.chainAnchor;
@@ -262,8 +274,6 @@ function asSentence(value: string): string {
   const trimmed = value.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
-
-type ManagerTrustTransition = NonNullable<ReturnType<SidekickStore["recordManagerTrustState"]>>;
 
 function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: string) {
   return store.listSignerStakers(managerPrincipal, true, sourceId).map((staker) => ({
@@ -292,7 +302,7 @@ function rosterJson(store: SidekickStore, managerPrincipal: string, sourceId: st
 export function buildAlerts(snapshot: {
   preflight: Awaited<ReturnType<typeof runOperatorPreflight>>;
   manager: Awaited<ReturnType<typeof inspectDeployedManager>>;
-  setup: Awaited<ReturnType<typeof readPoolSetupStatus>> | null;
+  readiness: Awaited<ReturnType<typeof readOperatorReadiness>> | null;
   forecast: Awaited<ReturnType<typeof readPoolForecast>> | null;
   rewards: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
   activity: ReturnType<typeof readManagerActivity>;
@@ -309,7 +319,6 @@ export function buildAlerts(snapshot: {
       severity: check.status === "fail" ? "critical" : "warning",
       title: check.status === "fail" ? "Connection Check Failed" : "Connection Needs Attention",
       detail: asSentence(check.message),
-      action: { kind: "navigate", label: "Open Settings", target: "settings" },
     });
   }
   if (!snapshot.manager.attachAllowed) {
@@ -319,25 +328,24 @@ export function buildAlerts(snapshot: {
     alerts.push({
       id: "manager:unsupported",
       severity: "critical",
-      title: "Manager Cannot Be Attached",
+      title: "Manager Trait Check Failed",
       detail: asSentence(incompatibility),
-      action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   } else if (snapshot.manager.source.tier === "unrecognized") {
     alerts.push({
-      id: "manager:not-recognized-read-only",
-      severity: "warning",
-      title: "Manager Source Not Recognized",
-      detail: `Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable: ${snapshot.manager.automationEligibilityReason}.`,
-      action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+      id: "manager:custom-capabilities",
+      severity: "info",
+      title: "Custom Manager Attached",
+      detail:
+        "PoX-5 baseline state remains available. Each manager action is enabled only when its deployed byte-exact source matches a reviewed capability fingerprint.",
     });
   } else if (snapshot.manager.source.tier === "custom-observe") {
     alerts.push({
-      id: "manager:custom-read-only",
+      id: "manager:custom-capabilities",
       severity: "info",
-      title: "Custom Manager",
+      title: "Custom Manager Attached",
       detail:
-        "Manager transactions can still be prepared for wallet or manual signing. Assist is unavailable.",
+        "PoX-5 baseline state remains available. Executable manager actions require a reviewed capability fingerprint.",
     });
   }
   const profileIssueCount = snapshot.manager.installedProfiles.issues.length;
@@ -347,7 +355,6 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: "Installed Manager Profile Needs Attention",
       detail: `${profileIssueCount} manager profile${profileIssueCount === 1 ? "" : "s"} could not be loaded.`,
-      action: { kind: "navigate", label: "Review profile issues", target: "settings" },
     });
   }
   if (snapshot.trustTransition) {
@@ -365,35 +372,16 @@ export function buildAlerts(snapshot: {
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
         : asSentence(snapshot.trustTransition.reason),
-      ...(gained
-        ? {}
-        : {
-            action: {
-              kind: "navigate" as const,
-              label: "Review manager profiles",
-              target: "settings" as const,
-            },
-          }),
     });
   }
-  if (snapshot.setup?.status === "blocked") {
-    const failedCheck = snapshot.setup.checks.find(({ status }) => status === "fail");
-    const blockedReason = failedCheck?.message ?? "A required manager setup check failed";
-    const signerRepair =
-      failedCheck !== undefined && ["signer-registration", "signer-grant"].includes(failedCheck.id);
+  if (snapshot.readiness?.status === "blocked") {
+    const failedCheck = snapshot.readiness.checks.find(({ status }) => status === "fail");
+    const blockedReason = failedCheck?.message ?? "A required operator readiness check failed";
     alerts.push({
-      id: "setup:blocked",
+      id: "readiness:blocked",
       severity: "critical",
-      title: "Pool Setup Is Blocked",
+      title: "Operator Readiness Is Blocked",
       detail: asSentence(blockedReason),
-      action: signerRepair
-        ? {
-            kind: "navigate",
-            label: "Repair signer authorization",
-            target: "manager",
-            managerAction: "register-self",
-          }
-        : { kind: "navigate", label: "Open Initial Setup", target: "setup" },
     });
   }
   // A delegation only affects the next signer set while its enrollment window is open. Once the
@@ -430,7 +418,6 @@ export function buildAlerts(snapshot: {
       detail: belowThreshold
         ? `The pool is below the ${thresholdStx} signer-set threshold in ${belowThresholdCycles.length === 1 ? "reward cycle" : "reward cycles"} ${belowThreshold}.`
         : `Pool checks need attention for ${affectedCycles.length === 1 ? "reward cycle" : "reward cycles"} ${affected}.`,
-      action: { kind: "navigate", label: "Review pool positions", target: "pool" },
     });
   }
   if (snapshot.rewards?.status === "attention") {
@@ -439,7 +426,6 @@ export function buildAlerts(snapshot: {
       severity: "warning",
       title: "Reward Roster Is Incomplete",
       detail: "The individual staker roster has not been synced.",
-      action: { kind: "reconcile", label: "Sync now" },
     });
   }
   if (snapshot.activity.pendingWithdrawalTotal > 0) {
@@ -448,17 +434,9 @@ export function buildAlerts(snapshot: {
       severity: "info",
       title: "Bitcoin Withdrawals Await Resolution",
       detail: `${snapshot.activity.pendingWithdrawalTotal} Bitcoin withdrawal ${snapshot.activity.pendingWithdrawalTotal === 1 ? "request remains" : "requests remain"} pending.`,
-      action: { kind: "navigate", label: "Review Bitcoin withdrawals", target: "rewards" },
     });
   }
   return alerts;
-}
-
-export function classifySupportContact(
-  value: string,
-): { email: string } | { url: string } | undefined {
-  if (!value) return undefined;
-  return z.email().safeParse(value).success ? { email: value } : { url: value };
 }
 
 export class OperatorService {
@@ -466,9 +444,16 @@ export class OperatorService {
     expiresAt: number;
     value: Awaited<ReturnType<OperatorService["load"]>>;
   } | null = null;
+  private lastKnownHealthContext: HealthOperatorContext | null = null;
   private loading: Promise<Awaited<ReturnType<OperatorService["load"]>>> | null = null;
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
+  > | null = null;
+  private managerActivitySynchronization: Promise<
+    Awaited<ReturnType<OperatorService["runManagerActivitySynchronization"]>>
+  > | null = null;
+  private rewardRealizationSynchronization: Promise<
+    Awaited<ReturnType<OperatorService["runRewardRealizationSynchronization"]>>
   > | null = null;
   private pendingTrustTransition: ManagerTrustTransition | null = null;
   private refreshBlockedUntil = 0;
@@ -480,6 +465,53 @@ export class OperatorService {
 
   async snapshot(force = false) {
     return (await this.snapshotWithFreshness(force)).value;
+  }
+
+  /** Last successful local chain context for deterministic Activity deadline ordering. */
+  activityProjectionContext(): {
+    burnBlockHeight: number;
+    rewardCycleId: number;
+    phase: "reward" | "prepare" | null;
+  } | null {
+    const snapshot = this.cached?.value;
+    if (!snapshot) return null;
+    return {
+      burnBlockHeight: snapshot.preflight.node.burnBlockHeight,
+      rewardCycleId: snapshot.preflight.cycle.currentId,
+      phase:
+        snapshot.chainAnchor?.phase ??
+        (snapshot.preflight.cycle.isPreparePhase === true
+          ? "prepare"
+          : snapshot.preflight.cycle.isPreparePhase === false
+            ? "reward"
+            : null),
+    };
+  }
+
+  /** Cached chain-authoritative identity and participation facts for Signer Health correlation. */
+  healthMonitoringContext(): HealthOperatorContext | null {
+    return this.lastKnownHealthContext;
+  }
+
+  private healthContextFromSnapshot(
+    snapshot: Awaited<ReturnType<OperatorService["load"]>>,
+  ): HealthOperatorContext | null {
+    if (!snapshot.preflight?.cycle || !snapshot.generatedAt || !snapshot.network) return null;
+    const currentCycle = snapshot.preflight.cycle.currentId;
+    const nextCycle = snapshot.preflight.cycle.nextId;
+    const current = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === currentCycle);
+    const next = snapshot.forecast?.cycles.find(({ cycleId }) => cycleId === nextCycle);
+    return {
+      observedAt: snapshot.generatedAt,
+      network: snapshot.network,
+      managerPrincipal: snapshot.managerPrincipal,
+      currentRewardCycle: currentCycle,
+      registered: snapshot.registration?.registered ?? null,
+      signerKeyHex: snapshot.registration?.signerKeyHex ?? null,
+      signerKeyGrantValid: snapshot.registration?.signerKeyGrantValid ?? null,
+      expectedCurrentParticipation: current?.contract.inSignerSet === true,
+      expectedNextParticipation: next?.contract.inSignerSet === true,
+    };
   }
 
   /** Refresh the retained operator snapshot without requiring a browser request. */
@@ -506,8 +538,10 @@ export class OperatorService {
     this.loading = this.load()
       .then((value) => {
         const loadedAt = this.currentTime();
+        this.lastKnownHealthContext =
+          this.healthContextFromSnapshot(value) ?? this.lastKnownHealthContext;
         this.cached = {
-          // The dashboard polls every 30 seconds. Keep a successful observation fresh through the
+          // The dashboard polls every 15 seconds. Keep a successful observation fresh through the
           // next poll so normal status traffic does not create an upstream refresh per page view.
           expiresAt: loadedAt + (this.options.cacheTtlMs ?? 45_000),
           value,
@@ -598,10 +632,44 @@ export class OperatorService {
 
   async synchronize(options: OperatorSynchronizationOptions = {}) {
     if (this.synchronization) return this.synchronization;
-    this.synchronization = this.runSynchronization(options).finally(() => {
+    this.synchronization = (async () => {
+      if (this.managerActivitySynchronization) {
+        await this.managerActivitySynchronization;
+      }
+      return await this.runSynchronization(options);
+    })().finally(() => {
       this.synchronization = null;
     });
     return this.synchronization;
+  }
+
+  /**
+   * Reconcile manager activity without paying for a complete signer-staker roster scan. The
+   * callback scheduler uses this independently from current-state refreshes so an indexed API
+   * delay cannot hold up node-first operator health.
+   */
+  async synchronizeManagerActivity(options: ManagerActivitySynchronizationOptions = {}) {
+    if (this.synchronization) {
+      const synchronized = await this.synchronization;
+      return { observedAt: synchronized.observedAt, events: synchronized.events };
+    }
+    if (this.managerActivitySynchronization) return this.managerActivitySynchronization;
+    this.managerActivitySynchronization = this.runManagerActivitySynchronization(options).finally(
+      () => {
+        this.managerActivitySynchronization = null;
+      },
+    );
+    return this.managerActivitySynchronization;
+  }
+
+  async synchronizeRewardRealizations(options: RewardRealizationSynchronizationOptions = {}) {
+    if (this.rewardRealizationSynchronization) return this.rewardRealizationSynchronization;
+    this.rewardRealizationSynchronization = this.runRewardRealizationSynchronization(
+      options,
+    ).finally(() => {
+      this.rewardRealizationSynchronization = null;
+    });
+    return this.rewardRealizationSynchronization;
   }
 
   async observeManagerTrustState() {
@@ -620,17 +688,9 @@ export class OperatorService {
   }
 
   async summary(force = false) {
-    const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness(force);
-    const servedAt = new Date().toISOString();
+    const snapshot = await this.supportSnapshot(force);
     return {
       ...snapshot,
-      freshness: {
-        status: stale ? ("stale" as const) : ("current" as const),
-        snapshotGeneratedAt: snapshot.generatedAt,
-        servedAt,
-        reason,
-        ...(rateLimit ? { rateLimit } : {}),
-      },
       rosterTotal: snapshot.roster.length,
       rosterStats: {
         deferredUnlocks: snapshot.roster.filter(({ position }) => position?.unlockBurnHeight)
@@ -639,6 +699,33 @@ export class OperatorService {
       roster: [],
       rewards: snapshot.rewards ? { ...snapshot.rewards, stakers: [] } : null,
       activity: { ...snapshot.activity, withdrawals: [] },
+    };
+  }
+
+  /** Full public operator state for a support artifact, including freshness provenance. */
+  async supportSnapshot(force = true) {
+    const { value: snapshot, stale, reason, rateLimit } = await this.snapshotWithFreshness(force);
+    const servedAt = new Date().toISOString();
+    const rewardRealizations = snapshot.rewardOutlook
+      ? this.options.store.listRewardCalculationRealizations(
+          this.options.managerPrincipal,
+          snapshot.rewardOutlook.pox5ContractId,
+          { limit: 50, canonicalOnly: false },
+        )
+      : [];
+    return {
+      ...snapshot,
+      rewardFeedback: {
+        calibration: snapshot.rewardOutlook?.calibration ?? null,
+        realizations: rewardRealizations,
+      },
+      freshness: {
+        status: stale ? ("stale" as const) : ("current" as const),
+        snapshotGeneratedAt: snapshot.generatedAt,
+        servedAt,
+        reason,
+        ...(rateLimit ? { rateLimit } : {}),
+      },
     };
   }
 
@@ -678,10 +765,6 @@ export class OperatorService {
     };
   }
 
-  async poolHistory(options: { offset?: number; limit?: number } = {}) {
-    return this.options.store.listLatestPoolCycleSnapshots(this.options.managerPrincipal, options);
-  }
-
   async rewardsPage(
     options: {
       offset?: number;
@@ -708,6 +791,45 @@ export class OperatorService {
       rewards: snapshot.rewards
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }
         : null,
+      rewardOutlook: snapshot.rewardOutlook ?? null,
+      rewardRealizations: snapshot.rewardOutlook
+        ? this.options.store
+            .listRewardCalculationRealizations(
+              this.options.managerPrincipal,
+              snapshot.rewardOutlook.pox5ContractId,
+              { limit: 12, canonicalOnly: true },
+            )
+            .map((realization) => ({
+              txId: realization.txId,
+              eventIndex: realization.eventIndex,
+              blockHeight: realization.blockHeight,
+              indexBlockHash: realization.indexBlockHash,
+              burnBlockHeight: realization.burnBlockHeight,
+              targetRewardCycle: realization.targetRewardCycle,
+              targetCheckpoint: realization.targetCheckpoint,
+              calculationBurnHeight: realization.calculationBurnHeight,
+              observedAt: realization.observedAt,
+              global: {
+                grossAccruedRewardsSats: realization.event.grossAccruedRewardsSats,
+                totalBondRewardsSats: realization.event.totalBondRewardsSats,
+                totalStxStakerRewardsSats: realization.event.totalStxStakerRewardsSats,
+                reserveDepositSats: realization.event.reserveDepositSats,
+              },
+              poolSats: realization.poolEstimate?.grossSats ?? null,
+              poolEstimateUnavailableReason: realization.poolEstimateUnavailableReason,
+              evaluation: realization.evaluation
+                ? {
+                    modelRevision: realization.evaluation.modelRevision,
+                    forecastObservedBurnHeight: realization.evaluation.forecastObservedBurnHeight,
+                    leadBlocks: realization.evaluation.leadBlocks,
+                    pointErrorSats: realization.evaluation.pointErrorSats,
+                    pointErrorBips: realization.evaluation.pointErrorBips,
+                    rangeContainsActual: realization.evaluation.rangeContainsActual,
+                    rangeWidthBips: realization.evaluation.rangeWidthBips,
+                  }
+                : null,
+            }))
+        : [],
       total: stakers.length,
       offset,
       limit,
@@ -831,39 +953,6 @@ export class OperatorService {
     return result;
   }
 
-  async poolCard(mode: PoolCardMode) {
-    if (!this.options.runtimeSettings) throw new Error("Runtime settings are unavailable");
-    const snapshot = await this.snapshot(true);
-    if (!snapshot.setup) {
-      throw new OperatorWorkflowError(
-        409,
-        "pool_setup_not_complete",
-        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry",
-      );
-    }
-    const settings = this.options.runtimeSettings.publicSettings();
-    const support = classifySupportContact(settings.pool.supportContact);
-    const enrollment = createPoolEnrollmentDocument(
-      {
-        schemaVersion: 1,
-        displayName: settings.pool.displayName,
-        ...(settings.pool.websiteUrl ? { websiteUrl: settings.pool.websiteUrl } : {}),
-        ...(support ? { support } : {}),
-        currentFeeBips: Number(snapshot.rewards?.manager.configuredFeeBips ?? 0),
-        rewardDestinations: { directSbtc: true, bitcoinL1: true },
-        durationPolicy: { minimumCycles: 1, maximumCycles: 96 },
-        officialPlatforms: [
-          { id: "leather", label: "Leather Stacking", url: settings.pool.leatherUrl },
-        ],
-      },
-      snapshot.preflight,
-      snapshot.manager,
-      snapshot.registration,
-      snapshot.setup,
-    );
-    return createPoolCardArtifact(enrollment, mode, settings.embed.publicApiUrl);
-  }
-
   private async runSynchronization(options: OperatorSynchronizationOptions) {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
@@ -872,13 +961,15 @@ export class OperatorService {
     let synchronized: {
       observedAt: string;
       chainId: number;
+      eventVocabulary: ManagerEventVocabulary;
+      pox5ContractId: string;
       stakers: Awaited<ReturnType<typeof syncSignerStakers>>;
     } | null = null;
     const maxAnchorAttempts = 3;
     for (let attempt = 1; attempt <= maxAnchorAttempts; attempt += 1) {
       options.signal?.throwIfAborted();
       const observedAt = new Date().toISOString();
-      const { chainAnchor, preflight, manager } = await readSetupSnapshot({
+      const { preflight, manager } = await readOperatorAnchorSnapshot({
         config,
         node,
         api,
@@ -887,21 +978,35 @@ export class OperatorService {
       });
       const trustTransition = this.recordManagerTrustState(manager, observedAt);
       if (trustTransition) this.pendingTrustTransition = trustTransition;
-      if (preflight.status === "fail" || !preflight.pox.pox5ContractId || !manager.attachAllowed) {
+      if (
+        !indexedWorkflowsReady(preflight) ||
+        !preflight.pox.pox5ContractId ||
+        !manager.attachAllowed
+      ) {
         throw new OperatorWorkflowError(
           422,
           "synchronization_sources_incompatible",
           "Sync is blocked by node, API, PoX-5, or manager compatibility checks. Review preflight and manager verification, then retry",
         );
       }
-      store.upsertChainSource({
+      if (
+        options.minimumStacksHeight !== null &&
+        options.minimumStacksHeight !== undefined &&
+        preflight.api.stacksTipHeight < options.minimumStacksHeight
+      ) {
+        throw new Error(
+          `Roster reconciliation is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
+        );
+      }
+      const indexedAnchor = await captureChainAnchor(node, api);
+      store.chainState.upsertSource({
         sourceId,
         kind: "api",
         network: config.network,
         baseUrl: config.apiUrl,
         observedAt,
       });
-      store.upsertChainSource({
+      store.chainState.upsertSource({
         sourceId: nodeSourceId,
         kind: "node",
         network: config.network,
@@ -918,10 +1023,10 @@ export class OperatorService {
           managerPrincipal,
           pox5ContractId: preflight.pox.pox5ContractId,
           observedAt,
-          burnBlockHeight: chainAnchor.burnBlockHeight,
-          stacksTipHeight: chainAnchor.stacksBlockHeight,
-          currentRewardCycle: chainAnchor.rewardCycle,
-          chainAnchor,
+          burnBlockHeight: indexedAnchor.burnBlockHeight,
+          stacksTipHeight: indexedAnchor.stacksBlockHeight,
+          currentRewardCycle: indexedAnchor.rewardCycle,
+          chainAnchor: indexedAnchor,
           pageLimit: config.stakerPageLimit,
           ...(options.signal ? { signal: options.signal } : {}),
           onProgress: async (progress) => {
@@ -934,7 +1039,13 @@ export class OperatorService {
             });
           },
         });
-        synchronized = { observedAt, chainId: preflight.node.networkId, stakers };
+        synchronized = {
+          observedAt,
+          chainId: preflight.node.networkId,
+          eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+          pox5ContractId: preflight.pox.pox5ContractId,
+          stakers,
+        };
         break;
       } catch (error) {
         if (!(error instanceof SignerStakerAnchorError) || attempt === maxAnchorAttempts) {
@@ -956,6 +1067,9 @@ export class OperatorService {
       sourceId,
       chainId: synchronized.chainId,
       managerPrincipal,
+      eventVocabulary: synchronized.eventVocabulary,
+      ...(this.options.nodeTransactions ? { nodeTransactions: this.options.nodeTransactions } : {}),
+      nodeBlocks: node,
       observedAt: synchronized.observedAt,
       pageLimit: config.eventPageLimit,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -973,8 +1087,205 @@ export class OperatorService {
     if (events.reorgedEvents > 0 && this.options.managerVerification) {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }
+    const poolActivity = this.options.nodeTransactions
+      ? await syncPox5PoolActivity({
+          store,
+          api,
+          nodeTransactions: this.options.nodeTransactions,
+          nodeBlocks: node,
+          sourceId,
+          chainId: synchronized.chainId,
+          managerPrincipal,
+          pox5ContractId: synchronized.pox5ContractId,
+          observedAt: synchronized.observedAt,
+          pageLimit: config.eventPageLimit,
+          ...(options.minimumStacksHeight !== undefined
+            ? { minimumStacksHeight: options.minimumStacksHeight }
+            : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
+      : null;
+    const currentMemberHistory = [];
+    if (this.options.nodeTransactions && synchronized.stakers.authoritative) {
+      const currentStakerPrincipals = store
+        .listSignerStakers(managerPrincipal, true, sourceId)
+        .map(({ stakerPrincipal }) => stakerPrincipal);
+      // One bounded pass advances at most five principal pages. The persisted queue orders by
+      // pages processed, so each current member gets a turn before a long-lived wallet gets a
+      // second page.
+      for (let page = 0; page < 5; page += 1) {
+        options.signal?.throwIfAborted();
+        const result = await syncCurrentMemberHistoryPass({
+          store,
+          api,
+          nodeTransactions: this.options.nodeTransactions,
+          nodeBlocks: node,
+          sourceId,
+          chainId: synchronized.chainId,
+          managerPrincipal,
+          pox5ContractId: synchronized.pox5ContractId,
+          currentStakerPrincipals,
+          observedAt: new Date(Date.parse(synchronized.observedAt) + page).toISOString(),
+          pageLimit: Math.min(50, config.eventPageLimit),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+        currentMemberHistory.push(result);
+        if (result.memberProcessed === null) break;
+      }
+    }
     this.cached = null;
-    return { observedAt: synchronized.observedAt, stakers: synchronized.stakers, events };
+    return {
+      observedAt: synchronized.observedAt,
+      stakers: synchronized.stakers,
+      events,
+      poolActivity,
+      currentMemberHistory,
+    };
+  }
+
+  private async runManagerActivitySynchronization(options: ManagerActivitySynchronizationOptions) {
+    options.signal?.throwIfAborted();
+    if (!this.options.nodeTransactions) {
+      throw new Error("Manager activity reconciliation requires the local node transaction index");
+    }
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
+    const observedAt = new Date().toISOString();
+    const { preflight, manager } = await readOperatorAnchorSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
+    const trustTransition = this.recordManagerTrustState(manager, observedAt);
+    if (trustTransition) this.pendingTrustTransition = trustTransition;
+    if (!indexedWorkflowsReady(preflight) || !manager.attachAllowed) {
+      throw new OperatorWorkflowError(
+        422,
+        "manager_activity_sources_incompatible",
+        "Manager activity sync is blocked by node, API, or manager compatibility checks",
+      );
+    }
+    if (
+      options.minimumStacksHeight !== null &&
+      options.minimumStacksHeight !== undefined &&
+      preflight.api.stacksTipHeight < options.minimumStacksHeight
+    ) {
+      throw new Error(
+        `Manager activity is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
+      );
+    }
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    const events = await syncManagerEvents({
+      store,
+      api,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+      observedAt,
+      pageLimit: config.eventPageLimit,
+      nodeTransactions: this.options.nodeTransactions,
+      nodeBlocks: node,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.onProgress
+        ? {
+            onProgress: async (progress: {
+              completed: number;
+              total: number | null;
+              eventsProcessed: number;
+            }) => {
+              options.signal?.throwIfAborted();
+              await options.onProgress?.({
+                phase: "events",
+                completed: progress.completed,
+                total: progress.total,
+                message: `Synced ${progress.eventsProcessed} manager events`,
+              });
+            },
+          }
+        : {}),
+    });
+    if (events.reorgedEvents > 0 && this.options.managerVerification) {
+      invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
+    }
+    this.cached = null;
+    return { observedAt, events };
+  }
+
+  private async runRewardRealizationSynchronization(
+    options: RewardRealizationSynchronizationOptions,
+  ) {
+    options.signal?.throwIfAborted();
+    if (!this.options.nodeTransactions) {
+      throw new Error(
+        "Reward realization reconciliation requires the local node transaction index",
+      );
+    }
+    const { managerPrincipal, store } = this.options;
+    const { config, node, api } = this.runtimeContext();
+    const observedAt = new Date().toISOString();
+    const { preflight, manager } = await readOperatorAnchorSnapshot({
+      config,
+      node,
+      api,
+      managerPrincipal,
+      managerVerification: this.options.managerVerification,
+    });
+    const trustTransition = this.recordManagerTrustState(manager, observedAt);
+    if (trustTransition) this.pendingTrustTransition = trustTransition;
+    if (
+      !indexedWorkflowsReady(preflight) ||
+      !manager.attachAllowed ||
+      !preflight.pox.pox5ContractId
+    ) {
+      throw new OperatorWorkflowError(
+        422,
+        "reward_realization_sources_incompatible",
+        "Reward realization sync is blocked by node, API, or manager compatibility checks",
+      );
+    }
+    if (
+      options.minimumStacksHeight !== null &&
+      options.minimumStacksHeight !== undefined &&
+      preflight.api.stacksTipHeight < options.minimumStacksHeight
+    ) {
+      throw new Error(
+        `Reward realization sync is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
+      );
+    }
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: config.network,
+      baseUrl: config.apiUrl,
+      observedAt,
+    });
+    const result = await syncRewardRealizations({
+      store,
+      api,
+      node,
+      nodeTransactions: this.options.nodeTransactions,
+      nodeBlocks: node,
+      sourceId,
+      chainId: preflight.node.networkId,
+      managerPrincipal,
+      pox5ContractId: preflight.pox.pox5ContractId,
+      observedAt,
+      pageLimit: config.eventPageLimit,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    this.cached = null;
+    return { observedAt, result };
   }
 
   private async load() {
@@ -982,7 +1293,7 @@ export class OperatorService {
     const { config, node, api } = this.runtimeContext();
     const generatedAt = new Date().toISOString();
     const sourceId = createChainSourceId(config.network, config.apiUrl);
-    const setupSnapshot = await readSetupSnapshot({
+    const operatorSnapshot = await readOperatorAnchorSnapshot({
       config,
       node,
       api,
@@ -990,10 +1301,19 @@ export class OperatorService {
       managerVerification: this.options.managerVerification,
       reportMissingManager: true,
     });
-    const { chainAnchor, preflight, manager, registration, setup } = setupSnapshot;
+    const { chainAnchor, preflight, manager, registration, readiness } = operatorSnapshot;
+    const nodeAuthority = store.deploymentIdentity.putLocalNodeAuthority(
+      managerPrincipal,
+      advanceLocalNodeAuthority(store.deploymentIdentity.getLocalNodeAuthority(managerPrincipal), {
+        observedAt: generatedAt,
+        stacksTipHeight: preflight.node.stacksTipHeight,
+        isFullySynced: preflight.node.isFullySynced ?? null,
+        peerHeightDifference: preflight.node.peerHeightDifference ?? null,
+      }),
+    );
     const pox5ContractId = preflight.pox.pox5ContractId;
     const recordedTrustTransition = this.recordManagerTrustState(manager, generatedAt);
-    const trustAudit = store.listManagerTrustAudit(managerPrincipal);
+    const trustAudit = store.managerTrust.listAudit(managerPrincipal);
     const latestTrustTransition = trustAudit[0] ?? null;
     const pendingTrustTransition = this.pendingTrustTransition;
     this.pendingTrustTransition = null;
@@ -1011,42 +1331,65 @@ export class OperatorService {
       sourceId,
       managerPrincipal,
       liveAnchor: chainAnchor,
+      indexedApiAvailable: indexedApiCompatible(preflight),
     });
-    const rewardCalculation = deriveRewardCalculationTarget(projectionAnchor);
-    const [forecast, rewards] =
+    const rewardCalculation = deriveRewardCalculationTarget(
+      projectionAnchor,
+      preflight.pox.firstRewardCycleId,
+    );
+    const forecast =
       manager.attachAllowed && pox5ContractId
-        ? await Promise.all([
-            readPoolForecast({
-              store,
-              node,
-              sourceId,
-              managerPrincipal,
-              pox5ContractId,
-              currentRewardCycle: projectionAnchor.rewardCycle,
-              horizonCycles: config.forecastHorizonCycles,
-              observedAt: generatedAt,
-              burnBlockHeight: projectionAnchor.burnBlockHeight,
-              stacksTipHeight: projectionAnchor.stacksBlockHeight,
-              chainAnchor: projectionAnchor,
-            }),
-            rewardCalculation.status === "ready"
-              ? readStxRewardStatus({
-                  store,
-                  node,
-                  sourceId,
-                  managerPrincipal,
-                  pox5ContractId,
-                  rewardCycle: rewardCalculation.rewardCycle,
-                  observedAt: generatedAt,
-                  burnBlockHeight: projectionAnchor.burnBlockHeight,
-                  stacksTipHeight: projectionAnchor.stacksBlockHeight,
-                  chainAnchor: projectionAnchor,
-                })
-              : null,
-          ])
-        : [null, null];
+        ? await readPoolForecast({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId,
+            currentRewardCycle: projectionAnchor.rewardCycle,
+            horizonCycles: config.forecastHorizonCycles,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+          })
+        : null;
+    const rewardCapability = managerActionCapability(
+      manager.capabilities,
+      "reference-reward-claims",
+    );
+    const rewardOutlook =
+      manager.attachAllowed && pox5ContractId
+        ? await readRewardOutlook({
+            store,
+            node,
+            managerPrincipal,
+            pox5ContractId,
+            observedAt: generatedAt,
+            chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
+            sourceId,
+            feeCapability: rewardCapability,
+          })
+        : null;
+    const rewards =
+      rewardOutlook && rewardCapability.executionAvailable && rewardCalculation.status === "ready"
+        ? await readStxRewardStatus({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId: rewardOutlook.pox5ContractId,
+            rewardCycle: rewardCalculation.rewardCycle,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
+            rewardOutlook,
+          })
+        : null;
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
-      setup: setupSnapshot,
+      setup: operatorSnapshot,
       rewards,
       sourceId,
       observedAt: generatedAt,
@@ -1055,14 +1398,73 @@ export class OperatorService {
       claimLimit: 4,
       withdrawalLimit: 50,
       sourceId,
+      eventVocabulary: managerEventVocabularyFor(manager.capabilities),
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
+    const managerCursor = store.chainState.getCursor(
+      sourceId,
+      managerEventStream(managerPrincipal, managerEventVocabularyFor(manager.capabilities)),
+    );
+    const rewardCursor = pox5ContractId
+      ? store.chainState.getCursor(sourceId, rewardRealizationStream(pox5ContractId))
+      : null;
+    const completedRosterRun = store.getLatestCompletedSignerStakerRun(sourceId, managerPrincipal);
+    const memberCoverage = pox5ContractId
+      ? store.currentMemberHistoryCoverage(sourceId, managerPrincipal, pox5ContractId)
+      : {
+          currentMembers: 0,
+          membersComplete: 0,
+          pagesProcessed: 0,
+          transactionsInspected: 0,
+          relevantEvents: 0,
+          updatedAt: null,
+        };
+    const currentMemberHistoryStatus = !completedRosterRun?.authoritative
+      ? "not-started"
+      : memberCoverage.currentMembers === memberCoverage.membersComplete
+        ? "complete"
+        : memberCoverage.pagesProcessed > 0 || memberCoverage.currentMembers > 0
+          ? "reconstructing"
+          : "not-started";
+    const monitoringStartedAt = store.deploymentIdentity.get()?.boundAt ?? null;
+    const historyRecovery = {
+      schemaVersion: 1 as const,
+      monitoringStartedAt,
+      managerHistory: {
+        status: managerCursor
+          ? managerCursor.cursor === null
+            ? ("complete" as const)
+            : ("reconstructing" as const)
+          : ("not-started" as const),
+        updatedAt: managerCursor?.updatedAt ?? null,
+        recoveryBoundaryStacksHeight: managerCursor?.lastBlockHeight ?? null,
+      },
+      currentMemberHistory: {
+        status: currentMemberHistoryStatus,
+        ...memberCoverage,
+      },
+      rewardHistory: {
+        status: rewardCursor
+          ? rewardCursor.cursor === null
+            ? ("complete" as const)
+            : ("reconstructing" as const)
+          : ("not-started" as const),
+        updatedAt: rewardCursor?.updatedAt ?? null,
+        recoveryBoundaryStacksHeight: rewardCursor?.lastBlockHeight ?? null,
+      },
+      signerHealthHistory: {
+        status: "monitoring-since-install" as const,
+        monitoringStartedAt,
+      },
+    };
     const partial = {
       preflight,
       manager,
       registration,
-      setup,
+      readiness,
+      setup: readiness,
       forecast,
+      rewardOutlook,
       rewards,
       activity,
       roster,
@@ -1077,7 +1479,11 @@ export class OperatorService {
         ? { runtimeSettings: this.options.runtimeSettings.publicSettings() }
         : {}),
       managerPrincipal,
+      chainAnchor,
+      nodeAuthority,
+      historyRecovery,
       ...partial,
+      readiness,
       trustAudit,
       alerts: buildAlerts(partial),
     };
@@ -1101,7 +1507,7 @@ export class OperatorService {
     manager: Awaited<ReturnType<typeof inspectDeployedManager>>,
     observedAt: string,
   ): ManagerTrustTransition | null {
-    return this.options.store.recordManagerTrustState({
+    return this.options.store.managerTrust.record({
       managerPrincipal: this.options.managerPrincipal,
       recognitionTier: manager.source.tier,
       profileId: manager.source.profileId,

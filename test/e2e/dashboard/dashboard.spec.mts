@@ -1,7 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
+  connection,
+  deploymentRequirements,
   health,
+  healthFinding,
   operationReadiness,
+  overview,
   reconciliationResponse,
   responseFor,
   roster,
@@ -37,6 +41,413 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 }
 
+async function openSettingsSection(
+  page: Page,
+  section: "attachment" | "sources" | "capabilities" | "support",
+  heading: string,
+) {
+  await page.evaluate((settingsSection) => {
+    location.hash = `#settings?section=${settingsSection}`;
+  }, section);
+  await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+}
+
+async function editConnection(page: Page, label: string) {
+  const row = page.locator(".connection-row", {
+    has: page.getByRole("heading", { name: label, exact: true }),
+  });
+  await row.getByRole("button", { name: "Edit" }).click();
+  return row;
+}
+
+test("shows focused recovery when the configured signer manager is not deployed", async ({
+  page,
+}) => {
+  const missing = {
+    ...connection,
+    status: "blocked",
+    outcomeCode: "manager-not-deployed",
+    stale: false,
+    observed: {
+      ...connection.observed,
+      manager: {
+        deployed: false,
+        traitCompatible: false,
+        missingRequirements: ["A contract must exist at the configured principal"],
+        publishHeight: null,
+        clarityVersion: null,
+        epoch: null,
+      },
+    },
+    lastSuccessful: null,
+    deploymentIdentity: { status: "unbound", stored: null, reason: null },
+  };
+  await page.route("**/api/v1/connection*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(missing),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Operator credential").fill(credential);
+  await page.getByRole("button", { name: "Open console" }).click();
+
+  await expect(page.getByRole("heading", { name: "Signer manager not found" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Zero to Signing" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Recheck" })).toBeVisible();
+});
+
+test("keeps diagnostics readable and actions disabled during identity safe mode", async ({
+  page,
+}) => {
+  const mismatch = {
+    ...connection,
+    status: "blocked",
+    outcomeCode: "deployment-identity-mismatch",
+    observed: null,
+    deploymentIdentity: {
+      status: "mismatch",
+      stored: connection.deploymentIdentity.stored,
+      reason: "The configured manager differs from the stored deployment identity.",
+    },
+    checks: connection.checks.map((check) =>
+      check.id === "deployment-identity"
+        ? { ...check, status: "fail", message: "Deployment identity does not match." }
+        : check,
+    ),
+  };
+  await page.route("**/api/v1/connection*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(mismatch),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Operator credential").fill(credential);
+  await page.getByRole("button", { name: "Open console" }).click();
+  await expect(
+    page.getByRole("heading", { name: "This database belongs to another deployment" }),
+  ).toBeVisible();
+
+  await page.getByRole("link", { name: "Review Activity" }).click();
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await expect(
+    page.getByText("Deployment identity mismatch · Read-only diagnostic mode"),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Update manager fee" }).click();
+  await expect(page.getByText(/signing controls stay disabled/)).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
+
+  await openPage(page, "health", "Signer Health");
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeDisabled();
+
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText(/configuration changes and source tests are disabled/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Save / })).toHaveCount(0);
+  await openSettingsSection(page, "support", "Support & maintenance");
+  const supportButtons = page.getByRole("button", { name: "Download support bundle" });
+  await expect(supportButtons).toHaveCount(1);
+  await expect(supportButtons).toBeEnabled();
+});
+
+test("keeps retained operator evidence visible during a temporary local-node outage", async ({
+  page,
+}) => {
+  const unavailable = {
+    ...connection,
+    status: "unavailable",
+    outcomeCode: "node-unreachable",
+    stale: true,
+    checkedAt: "2026-08-13T12:05:00.000Z",
+    observed: null,
+  };
+  await page.route("**/api/v1/connection*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(unavailable),
+    });
+  });
+
+  await login(page);
+
+  await expect(page.getByText("Local node unavailable · actions paused")).toBeVisible();
+  await expect(page.getByText(/Retained domain evidence remains visible/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+});
+
+test("loads the independent operator Overview without the shared status endpoint", async ({
+  page,
+}) => {
+  let statusRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/status") statusRequests += 1;
+  });
+
+  await login(page);
+
+  await expect(page.getByText("Next cycle is below threshold")).toBeVisible();
+  await expect(page.getByText("Reward claim is awaiting approval")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Local node" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+  await expect.poll(() => statusRequests).toBe(0);
+});
+
+test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
+  const expectNoConcatenatedStrongSpanPairs = async () => {
+    const violations = await page
+      .locator(".callout .body > span, .overview-loading span")
+      .evaluateAll((spans) =>
+        spans.flatMap((span) => {
+          const previous = span.previousSibling;
+          if (!(previous instanceof HTMLElement) || previous.tagName !== "STRONG") return [];
+          return [`${previous.textContent ?? ""}${span.textContent ?? ""}`];
+        }),
+      );
+    expect(violations).toEqual([]);
+  };
+  const clearOverview = structuredClone(overview);
+  clearOverview.attention = [];
+  await page.route("**/api/v1/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(clearOverview),
+    });
+  });
+
+  await login(page);
+
+  await expect(page.locator(".overview-clear-state .body")).toHaveText(
+    /No action is required right now\. Current evidence was checked/,
+  );
+  await expectNoConcatenatedStrongSpanPairs();
+
+  await openPage(page, "activity", "Activity");
+  await expectNoConcatenatedStrongSpanPairs();
+  await openPage(page, "health", "Signer Health");
+  await expectNoConcatenatedStrongSpanPairs();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expectNoConcatenatedStrongSpanPairs();
+});
+
+test("keeps healthy Overview domains visible when one domain is unavailable", async ({ page }) => {
+  const partial = structuredClone(overview);
+  partial.node = {
+    ...partial.node,
+    status: "unavailable",
+    stacksTipHeight: null,
+    burnBlockHeight: null,
+    peerHeightDifference: null,
+    lastAdvancedAt: null,
+    detail: "The local node sample is temporarily unavailable.",
+    evidence: [
+      {
+        status: "unavailable",
+        observedAt: null,
+        anchor: null,
+        source: "local-node",
+        reason: "node request timed out",
+      },
+    ],
+  };
+  await page.route("**/api/v1/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(partial),
+    });
+  });
+
+  await login(page);
+
+  await expect(page.getByText("The local node sample is temporarily unavailable.")).toBeVisible();
+  await expect(
+    page.getByText("The independently observed network tip is advancing."),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Signer monitoring is healthy and aligned with the node."),
+  ).toBeVisible();
+  await expect(page.getByText("Projected next allocation", { exact: true })).toBeVisible();
+});
+
+test("retains the last Overview projection when a forced refresh fails", async ({ page }) => {
+  await page.route("**/api/v1/overview*", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.searchParams.get("refresh") === "1") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "overview_refresh_failed", retryable: true }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(overview),
+    });
+  });
+
+  await login(page);
+  await page.getByRole("button", { name: "Refresh current state" }).click();
+
+  await expect(page.getByText("Could not refresh Overview")).toBeVisible();
+  await expect(page.getByText("Next cycle is below threshold")).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+test("expands long attention lists and follows typed section actions", async ({ page }) => {
+  const crowded = structuredClone(overview);
+  crowded.attention = Array.from({ length: 6 }, (_, index) => ({
+    ...structuredClone(overview.attention[0]),
+    attentionId: `fixture:attention:${index + 1}`,
+    title: `Attention item ${index + 1}`,
+    primaryAction: {
+      kind: "open-domain",
+      page: "pool",
+      section: "forecast",
+      label: `Review item ${index + 1}`,
+    },
+  }));
+  await page.route("**/api/v1/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(crowded),
+    });
+  });
+
+  await login(page);
+  await expect(page.getByText("Attention item 6")).toHaveCount(0);
+  const showAll = page.getByRole("button", { name: "Show all 6 items" });
+  await showAll.click();
+  await expect(page.getByText("Attention item 6")).toBeVisible();
+  await expect(page.getByRole("button", { name: "All 6 items shown" })).toBeFocused();
+  await expect(page.getByText("6 of 6 current attention items shown.")).toBeAttached();
+  await page.getByRole("link", { name: "Review item 6" }).click();
+  await expect(page).toHaveURL(/#pool\?section=forecast$/);
+  await expect(page.getByRole("heading", { name: "Pool positions" })).toBeVisible();
+});
+
+test("keeps the operator Overview within the viewport", async ({ page }) => {
+  await login(page);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("opens the dashboard from an authenticated proxy session", async ({ page }) => {
+  await page.route("**/api/v1/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ authenticated: true, method: "trusted-header" }),
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(page.getByLabel("Operator credential")).toHaveCount(0);
+});
+
+test("provides viewport-contained touch navigation on smaller screens", async ({ page }) => {
+  await login(page);
+  const picker = page.getByRole("button", { name: "Dashboard page" });
+  const viewport = page.viewportSize();
+  if (!viewport || viewport.width > 1080) {
+    await expect(picker).toBeHidden();
+    return;
+  }
+
+  await picker.click();
+  const navigation = page.getByRole("navigation", { name: "Dashboard pages" });
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByText("Operate", { exact: true })).toBeVisible();
+  await expect(navigation.getByText("Configure", { exact: true })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Overview" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+
+  const navigationBox = await navigation.boundingBox();
+  expect(navigationBox).not.toBeNull();
+  expect(navigationBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((navigationBox?.x ?? 0) + (navigationBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+  const poolLink = navigation.getByRole("link", { name: "Pool", exact: true });
+  const poolLinkBox = await poolLink.boundingBox();
+  expect(poolLinkBox?.height).toBeGreaterThanOrEqual(44);
+
+  await page.keyboard.press("Escape");
+  await expect(navigation).toBeHidden();
+  await expect(picker).toBeFocused();
+
+  await picker.click();
+  await poolLink.click();
+  await expect(page.getByRole("heading", { name: "Pool positions", exact: true })).toBeVisible();
+  await expect(navigation).toBeHidden();
+});
+
+test("keeps the single-page Settings flow responsive and preserves reward section spacing", async ({
+  page,
+}) => {
+  const rewardsWithBond = structuredClone(snapshot);
+  rewardsWithBond.rewards.buckets.push({
+    bondIndex: "0",
+    managerSharesSats: "0",
+    signerEarnedBeforeManagerClaimSats: "0",
+    rewardsPerToken: "0",
+    feeSnapshotBips: "100",
+    participating: false,
+  });
+  await page.route("**/api/v1/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(rewardsWithBond),
+    });
+  });
+  await login(page);
+  await openPage(page, "settings", "Settings");
+
+  await expect(page.getByRole("button", { name: /Settings section/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Operations", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeVisible();
+  const viewport = page.viewportSize();
+  if (viewport && viewport.width <= 640) {
+    const indexed = await editConnection(page, "Indexed chain API");
+    await expect(indexed.locator(".connection-editor")).toBeVisible();
+    const editorBox = await indexed.locator(".connection-editor").boundingBox();
+    expect(editorBox).not.toBeNull();
+    expect(editorBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((editorBox?.x ?? 0) + (editorBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  }
+
+  await openPage(page, "rewards", "Rewards");
+  const rewardBuckets = page.locator("section.reward-buckets");
+  const rewardLedger = page.locator(".reward-ledger");
+  await expect(rewardBuckets).toBeVisible();
+  await expect(rewardLedger).toBeVisible();
+  const bucketsBox = await rewardBuckets.boundingBox();
+  const ledgerBox = await rewardLedger.boundingBox();
+  expect(bucketsBox).not.toBeNull();
+  expect(ledgerBox).not.toBeNull();
+  expect(
+    (ledgerBox?.y ?? 0) - ((bucketsBox?.y ?? 0) + (bucketsBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(15);
+});
+
 function discardExpectedHttpConsoleError(page: Page, status: number) {
   consoleErrors.set(
     page,
@@ -47,146 +458,12 @@ function discardExpectedHttpConsoleError(page: Page, status: number) {
 }
 
 async function openPage(page: Page, id: string, heading: string) {
-  const picker = page.getByLabel("Dashboard page");
-  if (await picker.isVisible()) await picker.selectOption(id);
-  else await page.locator(`.sidebar a[href="#${id}"]`).click();
+  const picker = page.getByRole("button", { name: "Dashboard page", exact: true });
+  if (await picker.isVisible()) {
+    await picker.click();
+    await page.locator(`.mobile-page-menu a[href="#${id}"]`).click();
+  } else await page.locator(`.sidebar a[href="#${id}"]`).click();
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-}
-
-type FixtureStep = {
-  id: string;
-  status: "complete" | "ready" | "pending" | "attention" | "blocked";
-  title: string;
-  detail: string;
-  command: string | null;
-};
-
-function freshOnboardingResponse({
-  currentStep,
-  steps,
-  preparation = null,
-  verified = null,
-}: {
-  currentStep: string;
-  steps: FixtureStep[];
-  preparation?: null | { command: string; expectedMessageHashHex: string; authId: string };
-  verified?: null | {
-    managerPrincipal: string;
-    authId: string;
-    signerKeyHex: string;
-    signerSignatureHex: string;
-    expectedMessageHashHex: string;
-    registerSelfCall: {
-      contract: string;
-      functionName: string;
-      arguments: string[];
-      signingPrincipal: string;
-    };
-  };
-}) {
-  const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
-  return {
-    onboarding: {
-      path: "fresh",
-      status: "in-progress",
-      currentStep,
-      managerPrincipal: snapshot.managerPrincipal,
-      updatedAt: "2026-07-17T12:00:00.000Z",
-      activationPlan: { status: "ready", steps },
-      freshInput: {
-        adminPrincipal,
-        contractName: "signer-manager",
-        authId: "1",
-        signerConfigPath: "/path/to/Signer.toml",
-      },
-      artifact: {
-        available: true,
-        sourceFile: "signer-manager.clar",
-        manifestFile: "signer-manager.deployment.json",
-        manifest: {
-          operatorReviewRequired: true,
-          warnings: [],
-          network: "testnet",
-          adminPrincipal,
-          artifact: {
-            sourceSha256: snapshot.manager.source.sha256,
-            canonicalSourceSha256: snapshot.manager.source.sha256,
-          },
-          transaction: { contractName: "signer-manager", clarityVersion: 6 },
-        },
-      },
-      signerGrant: { preparation, verified },
-      audit: [],
-      safety: {
-        acceptsManagerAdminKey: false,
-        acceptsSignerPrivateKey: false,
-        signsTransactions: false,
-        broadcastsTransactions: false,
-      },
-    },
-    wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
-  };
-}
-
-function deployWalletIntent({
-  adminPrincipal,
-  source,
-  id = "4e011bf7-f291-42c4-a35b-ab299a87ff8c",
-}: {
-  adminPrincipal: string;
-  source: string;
-  id?: string;
-}) {
-  return {
-    intent: {
-      schemaVersion: 1,
-      id,
-      action: "deploy-manager",
-      network: "mainnet",
-      chainId: 1,
-      requiredSender: adminPrincipal,
-      createdAt: "2026-07-18T18:00:00.000Z",
-      expiresAt: "2099-07-18T19:00:00.000Z",
-      transaction: {
-        method: "stx_deployContract",
-        params: {
-          name: "signer-manager",
-          clarityCode: source,
-          clarityVersion: 6,
-          network: "mainnet",
-          address: adminPrincipal,
-          sponsored: false,
-          postConditionMode: "deny",
-          postConditions: [],
-        },
-      },
-      review: {
-        title: "Deploy the reviewed signer manager",
-        summary: `Deploy ${adminPrincipal}.signer-manager from ${adminPrincipal} using Clarity 6.`,
-        expectedPostState:
-          "The exact reviewed manager source is canonical and trusted by Sidekick.",
-      },
-      seal: { factsSha256: "11".repeat(32), manifestSha256: "22".repeat(32) },
-      status: "prepared",
-      txid: null,
-      verification: null,
-    },
-  };
-}
-
-function walletNetworkSnapshot(
-  network: "mainnet" | "testnet" | "devnet" | "regtest",
-  chainId: number,
-  managerPrincipal: string,
-) {
-  const value = structuredClone(snapshot);
-  value.network = network;
-  value.managerPrincipal = managerPrincipal;
-  value.preflight.node.networkId = chainId;
-  value.preflight.checks = value.preflight.checks.map((check) =>
-    check.id === "node-network" ? { ...check, message: `Node network matches ${network}` } : check,
-  );
-  return value;
 }
 
 function registerWalletIntent(actorPrincipal: string) {
@@ -284,41 +561,6 @@ function updateFeesWalletIntent(
             },
     },
   };
-}
-
-function finalVerificationOnboarding() {
-  const complete = (id: string, title: string): FixtureStep => ({
-    id,
-    title,
-    status: "complete",
-    detail: `${title} complete`,
-    command: null,
-  });
-  return freshOnboardingResponse({
-    currentStep: "verify-setup",
-    steps: [
-      complete("preflight", "Prerequisites"),
-      complete("render-manager", "Manager artifact"),
-      complete("deploy-manager", "Deploy manager"),
-      complete("prepare-signer-grant", "Prepare signer grant"),
-      complete("verify-signer-grant", "Verify signer grant"),
-      complete("register-manager", "Register manager"),
-      {
-        id: "verify-setup",
-        title: "Verify setup",
-        status: "attention",
-        detail: "Manager is not yet eligible",
-        command: `sidekick setup status '${snapshot.managerPrincipal}'`,
-      },
-      {
-        id: "publish-enrollment-info",
-        title: "Publish enrollment information",
-        status: "pending",
-        detail: "Pending activation",
-        command: null,
-      },
-    ],
-  });
 }
 
 function engineFixture() {
@@ -475,47 +717,12 @@ test("keeps Settings and Signer Health usable when initial operator state fails"
 
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByText("Couldn’t load status")).toBeVisible();
-  await expect(page.getByLabel("Display name")).toBeVisible();
+  await openSettingsSection(page, "sources", "Connections");
+  await editConnection(page, "Stacks node");
+  await expect(page.getByLabel("Stacks node RPC URL")).toBeVisible();
 
   await openPage(page, "health", "Signer Health");
   await expect(page.getByRole("heading", { name: "Stacks node" })).toBeVisible();
-  discardExpectedHttpConsoleError(page, 503);
-});
-
-test("keeps setup read-only until saved progress loads", async ({ page }) => {
-  let onboardingAvailable = false;
-  let startRequests = 0;
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    if (request.pathname === "/api/v1/onboarding" && route.request().method() === "GET") {
-      if (!onboardingAvailable) {
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "upstream_temporarily_unavailable", retryable: true }),
-        });
-        return;
-      }
-    }
-    if (request.pathname === "/api/v1/onboarding/start") startRequests += 1;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(responseFor(route.request().url())),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByRole("button", { name: "Retry setup" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toHaveCount(0);
-  expect(startRequests).toBe(0);
-
-  onboardingAvailable = true;
-  await page.getByRole("button", { name: "Retry setup" }).click();
-  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
-  expect(startRequests).toBe(0);
   discardExpectedHttpConsoleError(page, 503);
 });
 
@@ -545,11 +752,20 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeDisabled();
+  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   current = true;
-  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await openSettingsSection(page, "attachment", "Manager attachment");
+  await page.getByRole("button", { name: "Refresh attachment", exact: true }).click();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
 });
 
 test("links readiness blockers to their repair pages", async ({ page }) => {
@@ -561,7 +777,8 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
         status: "attention",
         detail: "One or more node, API, network, lag, or PoX-5 checks need review.",
       },
-      { id: "setup", status: "blocked", detail: "Manager setup is blocked." },
+      { id: "manager", status: "blocked", detail: "Manager attachment is blocked." },
+      { id: "signer", status: "ready", detail: "Signer registration is ready." },
       { id: "engine", status: "ready", detail: "Transaction engine adapters are available." },
     ],
     status: "blocked",
@@ -579,21 +796,23 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
-  const readinessCard = page.locator(".engine-readiness-card");
-  await readinessCard.getByRole("button", { name: "Open Settings" }).click();
-  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  const readinessBlock = page.locator(".engine-block", {
+    has: page.getByRole("heading", { name: "Operation readiness" }),
+  });
+  await readinessBlock.getByRole("link", { name: "Review sources" }).click();
+  await expect(page).toHaveURL(/#settings\?section=sources$/);
 
-  await openPage(page, "operations", "Operations");
-  await readinessCard.getByRole("button", { name: "Open Initial Setup" }).click();
-  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await readinessBlock.getByRole("link", { name: "Review attachment" }).click();
+  await expect(page).toHaveURL(/#settings\?section=attachment$/);
 });
 
 test("returns to login with a clear message when the credential is rejected", async ({ page }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
-    if (request.pathname === "/api/v1/status") {
+    if (request.pathname === "/api/v1/overview") {
       await route.fulfill({
         status: 401,
         contentType: "application/json",
@@ -624,23 +843,20 @@ test("renders every operator screen without leaking the credential", async ({ pa
   const navigationTargets = await page
     .locator(".sidebar nav a.item")
     .evaluateAll((items) => items.map((item) => item.getAttribute("href")));
-  expect(navigationTargets.slice(0, 6)).toEqual([
+  expect(navigationTargets).toEqual([
     "#overview",
-    "#manager",
     "#pool",
     "#rewards",
-    "#operations",
+    "#activity",
     "#health",
+    "#settings",
   ]);
   const screens = [
     ["health", "Signer Health"],
-    ["manager", "Manager"],
     ["pool", "Pool positions"],
     ["rewards", "Rewards"],
-    ["operations", "Operations"],
-    ["setup", "Initial Setup"],
+    ["activity", "Activity"],
     ["settings", "Settings"],
-    ["enrollment", "Public Pool Page"],
   ];
   for (const [id, heading] of screens) await openPage(page, id, heading);
   await expect(page.locator("body")).not.toContainText(credential);
@@ -650,7 +866,78 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe surface", async ({
+test("shows active work and durable Activity evidence without horizontal overflow", async ({
+  page,
+}) => {
+  const activityIntentId = "6ed58dac-c42c-4cb5-ad02-ed50671f3d27";
+  const historicalTxid = `0x${"ab".repeat(32)}`;
+  let evidenceRefreshRequests = 0;
+  await page.route(`**/api/v1/wallet-intents/${activityIntentId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        updateFeesWalletIntent(snapshot.managerPrincipal.split(".")[0] ?? "", "submitted"),
+      ),
+    });
+  });
+  await page.route(`**/api/v1/wallet-intents/${activityIntentId}/refresh`, async (route) => {
+    evidenceRefreshRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        updateFeesWalletIntent(snapshot.managerPrincipal.split(".")[0] ?? "", "submitted"),
+      ),
+    });
+  });
+  await login(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-activity-id", value),
+      },
+    });
+  });
+  await openPage(page, "activity", "Activity");
+
+  await expect(page.getByText("Active work", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Update manager fee" })).toBeVisible();
+  await expect(page.getByText("Staker reward claimed", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("article").filter({ hasText: "Staker reward claimed" }).locator("time"),
+  ).toHaveAttribute("datetime", "2026-08-13T16:00:00.000Z");
+
+  await page.getByRole("link", { name: "Update manager fee" }).click();
+  await expect(page.getByRole("heading", { name: "Operation summary" })).toBeVisible();
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+  await expect(page.getByText("Transaction recorded; verification pending.")).toBeVisible();
+  await expect(page.getByText("Evidence timeline", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Return to Activity" })).toBeVisible();
+  await page.locator(".page-head").getByRole("button", { name: "Refresh verification" }).click();
+  await expect.poll(() => evidenceRefreshRequests).toBe(1);
+  await expect(page.getByText(/Verification checked\. Sidekick queried/)).toBeVisible();
+
+  await page.getByRole("link", { name: "Return to Activity" }).click();
+  await page.getByRole("link", { name: "Staker reward claimed", exact: true }).click();
+  const activityIdCopy = page.locator(`button[data-copy-value="${historicalTxid}"]`).first();
+  await expect(activityIdCopy).toHaveAttribute(
+    "aria-label",
+    `Copy transaction ID: ${historicalTxid}`,
+  );
+  await activityIdCopy.click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("copied-activity-id")))
+    .toBe(historicalTxid);
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("treats HTTP 501 engine and readiness endpoints as unavailable Settings capabilities", async ({
   page,
 }) => {
   await page.unroute("**/api/v1/**");
@@ -668,18 +955,17 @@ test("treats HTTP 501 engine and readiness endpoints as an unavailable Observe s
     });
   });
   await login(page);
-  await openPage(page, "operations", "Operations");
-  const engine = page.getByRole("region", { name: "Transaction engine" });
-  await expect(engine.getByText("Unavailable", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  const engine = page.locator("#transaction-capabilities");
   await expect(
     engine.getByText(
-      "Transaction execution is unavailable. Monitoring, chain data, and alerts remain available.",
+      "The transaction engine is unavailable. Monitoring and wallet-signed operations are unaffected.",
     ),
   ).toBeVisible();
   consoleErrors.set(page, []);
 });
 
-test("uses a compact empty state when the transaction engine has no jobs", async ({ page }) => {
+test("summarizes empty transaction work in Settings and links to Activity", async ({ page }) => {
   const fixture = engineFixture();
   const emptyStatus = {
     ...fixture.status,
@@ -694,9 +980,7 @@ test("uses a compact empty state when the transaction engine has no jobs", async
         ? fixture.readiness
         : request.pathname === "/api/v1/engine"
           ? emptyStatus
-          : request.pathname === "/api/v1/engine/jobs"
-            ? { schemaVersion: 1, items: [], nextCursor: null, total: 0 }
-            : responseFor(route.request().url());
+          : responseFor(route.request().url());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -705,12 +989,15 @@ test("uses a compact empty state when the transaction engine has no jobs", async
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
-  await expect(page.getByRole("heading", { name: "No transaction jobs" })).toBeVisible();
-  await expect(
-    page.getByText("Sidekick will list a job here when a supported operation needs review."),
-  ).toBeVisible();
-  await expect(page.locator(".engine-workspace")).toHaveCount(0);
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  const counts = page.locator("#transaction-capabilities .engine-jobs");
+  await expect(counts).toContainText("0 active");
+  await expect(counts).toContainText("0 awaiting approval");
+  await expect(counts).toContainText("0 ambiguous");
+  await expect(page.getByRole("link", { name: "Review activity" })).toHaveAttribute(
+    "href",
+    "#activity?type=actions",
+  );
 });
 
 test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
@@ -741,12 +1028,12 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
       const requestBody = route.request().postDataJSON();
       expect(requestBody).toEqual({
         decision: "invalidate",
-        reason: "Operator invalidated approval from the dashboard",
+        reason: "Operator invalidated approval from the action workspace",
       });
       const invalidatedApproval = {
         ...fixture.approval,
         invalidatedAt: "2026-07-17T12:05:00.000Z",
-        invalidationReason: "Operator invalidated approval from the dashboard",
+        invalidationReason: "Operator invalidated approval from the action workspace",
         version: 1,
       };
       currentJob = { ...currentJob, approval: invalidatedApproval, stateVersion: 5 };
@@ -803,9 +1090,9 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   });
 
   await login(page);
-  await openPage(page, "operations", "Operations");
-  await expect(page.getByText("assist", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /claim-rewards/ }).click();
+  await page.evaluate((jobId) => {
+    location.hash = `#action/claim-rewards?context=engine-job&jobId=${jobId}`;
+  }, fixture.jobId);
   await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
   await expect(page.getByText("Last reward compute height", { exact: true })).toBeVisible();
   await expect(page.getByText("Maximum asset outflow", { exact: true })).toBeVisible();
@@ -823,13 +1110,15 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect.poll(() => invalidationRequests).toBe(1);
   await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
 
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByText("assist", { exact: true })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Force Observe" }).click();
   await expect.poll(() => forceObserveRequests).toBe(1);
   await expect(page.getByText("Forced Observe", { exact: true })).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Disable adapter" }).click();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
   await expect.poll(() => disableRequests).toBe(1);
   await expect(page.getByText("disabled", { exact: true })).toBeVisible();
 
@@ -839,140 +1128,17 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("summarizes the cycle clock and links health details", async ({ page }) => {
-  await login(page);
-  const cards = page.locator(".cycle-clock > *");
-  await expect(cards).toHaveCount(4);
-  await expect(cards.nth(0)).toContainText("Reward cycle");
-  await expect(cards.nth(1)).toContainText("Bitcoin block height");
-  await expect(cards.nth(2)).toContainText("Next prepare phase");
-  await expect(cards.nth(2)).toContainText("~10d 16h");
-  await expect(cards.nth(2)).toContainText("Bitcoin blocks (#10,780)");
-  await expect(cards.nth(3)).toContainText("Node & Signer Health");
-  await expect(cards.nth(3)).toContainText("Node");
-  await expect(cards.nth(3)).toContainText("Signer");
-  await expect(cards.nth(3).locator(".health-light.green")).toHaveCount(2);
-
-  await cards.nth(3).click();
-  await expect(page.getByRole("heading", { name: "Signer Health", exact: true })).toBeVisible();
-});
-
-test("required actions provide their resolving control and exclude informational notices", async ({
-  page,
-}) => {
-  const rewardsAlert = {
-    id: "rewards:incomplete",
-    severity: "warning",
-    title: "Reward Roster Is Incomplete",
-    detail: "The individual staker roster has not been synced.",
-    action: { kind: "reconcile", label: "Sync now" },
-  };
-  const withdrawalAlert = {
-    id: "withdrawals:pending",
-    severity: "info",
-    title: "Bitcoin Withdrawals Await Resolution",
-    detail: "2 Bitcoin withdrawal requests remain pending.",
-    action: { kind: "navigate", label: "Review Bitcoin withdrawals", target: "rewards" },
-  };
-  const informationalAlert = {
-    id: "manager:custom-read-only",
-    severity: "info",
-    title: "Custom Manager",
-    detail: "Monitoring and browser wallet actions remain available. Assist is unavailable.",
-  };
-  const actionSnapshot = {
-    ...snapshot,
-    alerts: [rewardsAlert, withdrawalAlert, informationalAlert],
-  };
-  let syncRequests = 0;
-  let syncStarted = false;
-
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    let body: unknown;
-    if (request.pathname === "/api/v1/status") {
-      body = actionSnapshot;
-    } else if (request.pathname === "/api/v1/sync") {
-      const started = route.request().method() === "POST";
-      if (started) {
-        syncRequests += 1;
-        syncStarted = true;
-      }
-      body = reconciliationResponse(started ? "running" : syncStarted ? "succeeded" : "idle");
-    } else {
-      body = responseFor(route.request().url());
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  const requiredActions = page.locator(".action-grid");
-  await expect(page.getByText("2 items need attention")).toBeVisible();
-  await expect(requiredActions.getByText("Reward Roster Is Incomplete")).toBeVisible();
-  await expect(requiredActions.getByText("Bitcoin Withdrawals Await Resolution")).toBeVisible();
-  await expect(requiredActions.getByText("Custom Manager", { exact: true })).not.toBeVisible();
-
-  await requiredActions.getByRole("button", { name: "Sync now" }).click();
-  await expect(page.getByText("Syncing chain data")).toBeVisible();
-  await expect(page.getByText("Syncing manager events · step 3 of 4")).toBeVisible();
-  await expect.poll(() => syncRequests).toBe(1);
-
-  await requiredActions.getByRole("button", { name: "Review Bitcoin withdrawals" }).click();
-  await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
-
-  await openPage(page, "operations", "Operations");
-  const informationalRow = page.locator(".alert-row", { hasText: "Custom Manager" });
-  await expect(informationalRow).toBeVisible();
-  await expect(informationalRow.getByRole("button")).toHaveCount(0);
-});
-
-test("routes a proven signer-registration failure to Manager from every alert surface", async ({
-  page,
-}) => {
-  const signerFailure = {
-    ...structuredClone(snapshot),
-    registration: {
-      ...snapshot.registration,
-      registered: false,
-      signerKeyGrantValid: false,
-    },
-    setup: {
-      ...structuredClone(snapshot.setup),
-      status: "blocked",
-      checks: [
-        ...snapshot.setup.checks.filter(({ id }) => id !== "signer-registration"),
-        {
-          id: "signer-registration",
-          status: "fail",
-          message: "Manager does not have a verified PoX-5 signer registration",
-        },
-      ],
-    },
-    alerts: [
-      {
-        id: "setup:blocked",
-        severity: "critical",
-        title: "Pool Setup Is Blocked",
-        detail: "Manager does not have a verified PoX-5 signer registration.",
-        action: {
-          kind: "navigate",
-          label: "Repair signer authorization",
-          target: "manager",
-          managerAction: "register-self",
-        },
-      },
-    ],
-  };
+test("opens one exact engine job in the shared action workspace", async ({ page }) => {
+  const fixture = engineFixture();
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
     const body =
-      request.pathname === "/api/v1/status" ? signerFailure : responseFor(route.request().url());
+      request.pathname === "/api/v1/engine"
+        ? fixture.status
+        : request.pathname === `/api/v1/engine/jobs/${fixture.jobId}`
+          ? fixture.job
+          : responseFor(route.request().url());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -981,47 +1147,83 @@ test("routes a proven signer-registration failure to Manager from every alert su
   });
 
   await login(page);
-  const requiredActions = page.locator(".action-grid");
-  await expect(requiredActions).toContainText(
-    "Manager does not have a verified PoX-5 signer registration.",
+  await page.evaluate((jobId) => {
+    location.hash = `#action/claim-rewards?context=engine-job&jobId=${jobId}`;
+  }, fixture.jobId);
+
+  await expect(page.getByRole("heading", { name: "Claim manager rewards" })).toBeVisible();
+  await expect(page.getByText("WHY THIS ACTION", { exact: true })).toBeVisible();
+  await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
+  await expect(page.getByText(fixture.jobId, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toBeVisible();
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
   );
-  await requiredActions.getByRole("button", { name: "Repair signer authorization" }).click();
-  await expect(page).toHaveURL(/#manager\?action=register-self$/);
-  await expect(page.getByRole("heading", { name: "Register or rotate signer" })).toBeVisible();
-
-  await openPage(page, "operations", "Operations");
-  const operationsAlert = page.locator(".alert-row", { hasText: "Pool Setup Is Blocked" });
-  await operationsAlert.getByRole("button", { name: "Repair signer authorization" }).click();
-  await expect(page).toHaveURL(/#manager\?action=register-self$/);
+  expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("guides first-time operators to setup and remembers dismissal", async ({ page }) => {
+test("summarizes the operation clock and links exact health evidence", async ({ page }) => {
   await login(page);
-  const notice = page.getByRole("region", { name: "Start with Initial Setup" });
-  await expect(notice).toBeVisible();
+  const moments = page.locator(".overview-identity > *");
+  await expect(moments).toHaveCount(3);
+  await expect(moments.nth(0)).toContainText("Reward cycle");
+  await expect(moments.nth(0)).toContainText("#140");
+  await expect(moments.nth(1)).toContainText("Next reward calculation");
+  await expect(moments.nth(1)).toContainText("9 Bitcoin blocks");
+  await expect(moments.nth(2)).toContainText("Next prepare phase");
+  await expect(moments.nth(2)).toContainText("1,000 Bitcoin blocks");
+  await expect(page.getByText("Monitoring", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Stacks / Bitcoin", { exact: true })).toHaveCount(0);
 
-  await notice.getByRole("button", { name: "Open Initial Setup" }).click();
-  await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Attach Existing Contracts" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Deploy New Contracts" })).toBeVisible();
-
-  await openPage(page, "overview", "Overview");
-  await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
-  await expect(notice).not.toBeVisible();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
-  await expect(notice).not.toBeVisible();
+  await page.getByRole("link", { name: "Review signer evidence" }).click();
+  await expect(page).toHaveURL(/#health\?section=signer$/);
+  await expect(page.getByRole("heading", { name: "Signer Health", exact: true })).toBeVisible();
+  const operatingStatus = page.getByLabel("Signer operating status");
+  await expect(
+    operatingStatus.getByRole("heading", { name: "Signer is operating as expected" }),
+  ).toBeVisible();
+  await expect(operatingStatus).toContainText(
+    "The signer responded as expected to all 4 observed proposals in the last 15 minutes.",
+  );
+  await expect(operatingStatus).toContainText("Node and signer connected");
+  await expect(operatingStatus).toContainText("Aligned");
+  await expect(operatingStatus).toContainText("4 proposals · no response gaps");
+  await expect(operatingStatus).toContainText("0.5s");
+  await expect(operatingStatus).not.toContainText("Likely source");
+  await expect(operatingStatus).not.toContainText("Confidence");
+  await expect(operatingStatus).toHaveClass(/health-diagnosis-healthy/);
+  const signerDetails = page.locator(".health-signer-details");
+  const recentSignerTelemetry = page.locator(".health-signer-window");
+  await expect(signerDetails).toContainText("Manager registration");
+  await expect(signerDetails).toContainText("Signer-key grant");
+  await expect(signerDetails).toContainText("Current cycle");
+  await expect(signerDetails).toContainText("Next cycle");
+  await expect(recentSignerTelemetry).toContainText("Last 15 minutes");
+  await expect(recentSignerTelemetry).not.toContainText("Manager registration");
+  await expect(recentSignerTelemetry).not.toContainText("Signer-key grant");
+  await expect(recentSignerTelemetry).not.toContainText("Current cycle");
+  await expect(recentSignerTelemetry).not.toContainText("Next cycle");
 });
 
-test("does not show first-time guidance after onboarding starts", async ({ page }) => {
+test("does not claim signer responses during a healthy quiet window", async ({ page }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
     const body =
-      request.pathname === "/api/v1/onboarding"
+      request.pathname === "/api/v1/health"
         ? {
-            onboarding: { path: "attach" },
-            wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
+            ...health,
+            signer: {
+              ...health.signer,
+              last15Minutes: {
+                ...health.signer.last15Minutes,
+                proposals: 0,
+                validationAccepted: 0,
+                accepted: 0,
+                preCommits: 0,
+                validationP95Seconds: null,
+              },
+            },
           }
         : responseFor(route.request().url());
     await route.fulfill({
@@ -1032,7 +1234,76 @@ test("does not show first-time guidance after onboarding starts", async ({ page 
   });
 
   await login(page);
-  await expect(page.getByRole("region", { name: "Start with Initial Setup" })).not.toBeVisible();
+  await openPage(page, "health", "Signer Health");
+  const operatingStatus = page.getByLabel("Signer operating status");
+  await expect(operatingStatus).toContainText(
+    "No signing opportunities were observed in the last 15 minutes.",
+  );
+  await expect(operatingStatus).toContainText("No opportunities observed");
+  await expect(operatingStatus).toContainText("Not enough samples");
+  await expect(operatingStatus).not.toContainText("responded as expected");
+});
+
+test("downloads the server-collected support bundle", async ({ page }) => {
+  let supportRequests = 0;
+  await page.route("**/api/v1/support-bundle", async (route) => {
+    supportRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {
+        "content-disposition":
+          'attachment; filename="signer-sidekick-support-2026-08-13T12-00-00Z.json"',
+      },
+      body: JSON.stringify({ documentType: "signer-sidekick-operator-support-bundle" }),
+    });
+  });
+
+  await login(page);
+  await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "support", "Support & maintenance");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download support bundle" }).click();
+  const download = await downloadPromise;
+
+  expect(supportRequests).toBe(1);
+  expect(download.suggestedFilename()).toBe("signer-sidekick-support-2026-08-13T12-00-00Z.json");
+});
+
+test("routes a typed Overview action directly to its operation workspace", async ({ page }) => {
+  const signerFailure = structuredClone(overview);
+  signerFailure.attention = [
+    {
+      ...structuredClone(overview.attention[0]),
+      attentionId: "manager:registration-missing",
+      tier: "urgent",
+      domain: "manager",
+      affectedDomains: ["manager", "signer"],
+      code: "signer-registration-missing",
+      title: "Signer registration needs attention",
+      summary: "The signer manager does not have a verified PoX-5 signer registration.",
+      impact: "The signer cannot participate until registration is repaired.",
+      primaryAction: {
+        kind: "launch-operation",
+        operation: "register-self",
+        context: { kind: "none" },
+        label: "Repair signer authorization",
+      },
+    },
+  ];
+  await page.route("**/api/v1/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(signerFailure),
+    });
+  });
+
+  await login(page);
+  await expect(page.getByText("Signer registration needs attention")).toBeVisible();
+  await page.getByRole("link", { name: "Repair signer authorization" }).click();
+  await expect(page).toHaveURL(/#action\/register-self$/);
+  await expect(page.getByRole("heading", { name: "Register or rotate signer" })).toBeVisible();
 });
 
 test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
@@ -1041,7 +1312,56 @@ test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
+  await openSettingsSection(page, "sources", "Connections");
+  await page
+    .locator(".connection-compatibility")
+    .getByText(/Network compatibility/)
+    .click();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
+});
+
+test("edits indexed and comparison API credentials independently", async ({ page }) => {
+  const submissions: Record<string, unknown>[] = [];
+  await page.route("**/api/v1/settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      submissions.push(route.request().postDataJSON() as Record<string, unknown>);
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(snapshot.runtimeSettings),
+    });
+  });
+
+  await login(page);
+  await openSettingsSection(page, "sources", "Connections");
+  await page.getByLabel("Forecast horizon").fill("12");
+  const indexed = await editConnection(page, "Indexed chain API");
+  await expect(indexed.getByText("Provided by the deployment environment")).toBeVisible();
+  await indexed.locator('input[type="password"]').fill("new-indexed-secret");
+  await expect(indexed.getByRole("button", { name: "Test saved connection" })).toBeDisabled();
+
+  const comparison = await editConnection(page, "Network comparison API");
+  await expect(comparison.getByText("Saved in Sidekick")).toBeVisible();
+  await comparison.locator('input[type="password"]').fill("new-reference-secret");
+  await page.getByRole("button", { name: "Save connections" }).click();
+
+  expect(submissions[0]).toMatchObject({
+    dataSources: {
+      apiKeyAction: { action: "replace", value: "new-indexed-secret" },
+      hiroReferenceApiKeyAction: { action: "replace", value: "new-reference-secret" },
+    },
+    forecast: snapshot.runtimeSettings.forecast,
+  });
+  await expect(page.getByLabel("Forecast horizon")).toHaveValue("12");
+  await page.getByRole("button", { name: "Save forecast" }).click();
+  expect(submissions[1]).toMatchObject({
+    dataSources: {
+      apiKeyAction: { action: "keep" },
+      hiroReferenceApiKeyAction: { action: "keep" },
+    },
+    forecast: { horizonCycles: 12 },
+  });
 });
 
 test("keeps sustained health findings on the Signer Health page", async ({ page }) => {
@@ -1053,15 +1373,34 @@ test("keeps sustained health findings on the Signer Health page", async ({ page 
         ? {
             ...health,
             overallStatus: "needs-attention",
+            diagnosis: {
+              ...health.diagnosis,
+              status: "needs-attention",
+              title: "Signer cannot reach its Stacks node",
+              summary: "The signer heartbeat failed three consecutive checks.",
+              classification: "likely-local-signer",
+              activeFindingIds: ["signer-node-heartbeat-failed"],
+            },
             findings: [
-              {
+              healthFinding({
                 id: "signer-node-heartbeat-failed",
                 severity: "critical",
                 title: "Signer cannot reach its Stacks node",
                 detail: "The signer heartbeat failed three consecutive checks.",
                 source: "signer",
-              },
+              }),
             ],
+            history: {
+              ...health.history,
+              recentEpisodes: [
+                {
+                  ...healthFinding({}),
+                  status: "active",
+                  resolvedAt: null,
+                  occurrences: 3,
+                },
+              ],
+            },
           }
         : responseFor(route.request().url());
     await route.fulfill({
@@ -1073,9 +1412,22 @@ test("keeps sustained health findings on the Signer Health page", async ({ page 
 
   await login(page);
   await expect(page.getByText("Signer cannot reach its Stacks node")).not.toBeVisible();
-  await expect(page.getByLabel("Signer health: unavailable")).toBeVisible();
+  await expect(
+    page.locator(".overview-health-card", {
+      has: page.getByRole("heading", { name: "Signer", exact: true }),
+    }),
+  ).toContainText("healthy");
   await openPage(page, "health", "Signer Health");
-  await expect(page.getByText("Signer cannot reach its Stacks node")).toBeVisible();
+  await expect(
+    page.getByLabel("Health findings").getByText("Signer cannot reach its Stacks node"),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Current diagnosis" })).toBeVisible();
+  await expect(page.getByText("This signer", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Incident history" })).toBeVisible();
+  await expect(page.getByText(/3 observations/)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
   await openPage(page, "overview", "Overview");
   await expect(page.getByText("Signer cannot reach its Stacks node")).not.toBeVisible();
 });
@@ -1109,10 +1461,10 @@ test("refreshes signer health without declaring an empty JSON body", async ({ pa
   await expect(page.getByText(/Latest refresh failed/)).not.toBeVisible();
 });
 
-test("explains the manager trust tier on Manager and Settings", async ({ page }) => {
+test("explains manager attachment and trust evidence in Settings", async ({ page }) => {
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Built-in reference", { exact: true })).toBeVisible();
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("Built-in source", { exact: true })).toBeVisible();
   await expect(page.getByText("Built into Sidekick")).toBeVisible();
   const managerRow = page.locator(".statline", { hasText: "Manager principal" });
   const copyBox = await managerRow.locator(".copy-identifier-button").boundingBox();
@@ -1120,13 +1472,202 @@ test("explains the manager trust tier on Manager and Settings", async ({ page })
   expect(copyBox).not.toBeNull();
   expect(valueBox).not.toBeNull();
   expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
-  await openPage(page, "settings", "Settings");
-  await expect(page.getByText("Manager trust")).toBeVisible();
+  await openSettingsSection(page, "support", "Support & maintenance");
+  await expect(page.getByText("Manager trust", { exact: true })).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
+  await openSettingsSection(page, "sources", "Connections");
+  await page
+    .locator(".connection-compatibility")
+    .getByText(/Network compatibility/)
+    .click();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
-test("starts an admin-history sync from Manager", async ({ page }) => {
+test("uses the recovered operator-control styling and keyboard tooltips", async ({ page }) => {
+  await login(page);
+
+  await openPage(page, "rewards", "Rewards");
+  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards:/ }).first();
+  await rewardTerm.focus();
+  await expect
+    .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
+  if ((page.viewportSize()?.width ?? 0) <= 1080) {
+    await expect
+      .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").position))
+      .toBe("fixed");
+  }
+
+  await openPage(page, "activity", "Activity");
+  const buttonLink = page.locator("a.btn").first();
+  await expect(buttonLink).toBeVisible();
+  await expect(buttonLink).toHaveCSS("text-decoration-line", "none");
+  const activityStatus = page.getByRole("button", { name: "Status" });
+  await expect(activityStatus).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(activityStatus).toHaveCSS("height", "36px");
+  await activityStatus.click();
+  const statusOptions = page.getByRole("listbox", { name: "Status" });
+  await expect(statusOptions).toBeVisible();
+  const statusMenuStyle = await statusOptions.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const selected = element.querySelector('[role="option"][aria-selected="true"]');
+    const bounds = element.getBoundingClientRect();
+    const triggerBounds = element.previousElementSibling?.getBoundingClientRect();
+    return {
+      backgroundColor: style.backgroundColor,
+      fontSize: selected ? getComputedStyle(selected).fontSize : null,
+      left: bounds.left,
+      right: bounds.right,
+      triggerWidth: triggerBounds?.width ?? 0,
+      width: bounds.width,
+    };
+  });
+  expect(statusMenuStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(statusMenuStyle.fontSize).toBe("13px");
+  expect(statusMenuStyle.width).toBeGreaterThanOrEqual(statusMenuStyle.triggerWidth - 0.5);
+  expect(statusMenuStyle.left).toBeGreaterThanOrEqual(0);
+  expect(statusMenuStyle.right).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+  await page.getByRole("option", { name: "action required" }).click();
+  await expect(activityStatus).toContainText("action required");
+
+  const activityFilters = page.locator("form.activity-filters");
+  const filterBarStyle = await activityFilters.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const bodyStyle = getComputedStyle(document.body);
+    return {
+      backgroundColor: style.backgroundColor,
+      bodyBackgroundColor: bodyStyle.backgroundColor,
+      borderRadius: Number.parseFloat(style.borderRadius),
+      overflowWidth: element.scrollWidth - element.clientWidth,
+      paddingTop: style.paddingTop,
+    };
+  });
+  expect(filterBarStyle.backgroundColor).not.toBe(filterBarStyle.bodyBackgroundColor);
+  expect(filterBarStyle.borderRadius).toBeGreaterThanOrEqual(10);
+  expect(filterBarStyle.overflowWidth).toBe(0);
+  expect(filterBarStyle.paddingTop).toBe("12px");
+
+  if ((page.viewportSize()?.width ?? 0) > 1080) {
+    const filterBarBox = await activityFilters.boundingBox();
+    expect(filterBarBox?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
+  }
+
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  const capability = page.getByRole("button", {
+    name: "register-self: Fixture capability is reviewed.",
+  });
+  await capability.focus();
+  await expect
+    .poll(() => capability.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
+});
+
+test("checks deployment requirements and shows exact operator-owned remediation", async ({
+  page,
+}) => {
+  await login(page);
+  await openPage(page, "settings", "Settings");
+
+  await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Node & signer requirements" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Refresh checks" })).toBeVisible();
+  const transactionIndex = page.locator(".deployment-requirement", {
+    hasText: "Node transaction index",
+  });
+  await expect(transactionIndex).toContainText("HTTP 501");
+  await transactionIndex.getByText("How to resolve").click();
+  await expect(transactionIndex.locator("pre")).toContainText("txindex = true");
+  await expect(transactionIndex).toContainText("Restart after changing configuration: stacks-node");
+  await expect(transactionIndex).toBeInViewport();
+});
+
+test("shows successful live checks as connected in every connection summary", async ({ page }) => {
+  const readyRequirements = {
+    ...deploymentRequirements,
+    status: "ready",
+    requiredReady: true,
+    checks: [
+      ...deploymentRequirements.checks.map((check) => ({
+        ...check,
+        status: "pass",
+        summary: `${check.title} is ready.`,
+        remediation: null,
+      })),
+      {
+        id: "node-metrics",
+        component: "node",
+        importance: "recommended",
+        status: "pass",
+        title: "Node metrics",
+        summary: "Sidekick recognized the node metrics endpoint.",
+        observed: "3 recognized signals",
+        remediation: null,
+      },
+      {
+        id: "signer-monitoring",
+        component: "signer",
+        importance: "recommended",
+        status: "pass",
+        title: "Signer monitoring",
+        summary: "Sidekick recognized the signer monitoring endpoint.",
+        observed: "16 recognized signals",
+        remediation: null,
+      },
+      {
+        id: "sidekick-event-observer",
+        component: "sidekick",
+        importance: "recommended",
+        status: "pass",
+        title: "Stacks event observer",
+        summary: "Verified callbacks are current.",
+        observed: "Observer gap: 0 blocks",
+        remediation: null,
+      },
+      {
+        id: "hiro-reference",
+        component: "sidekick",
+        importance: "recommended",
+        status: "pass",
+        title: "Network comparison API",
+        summary: "Sidekick verified the external comparison API.",
+        observed: "https://api.testnet-pox5.hiro.so",
+        remediation: null,
+      },
+    ],
+  };
+  await page.route("**/api/v1/deployment-requirements*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(readyRequirements),
+    });
+  });
+  await page.route("**/api/v1/health/test-source", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "connected", signals: 4 }),
+    });
+  });
+
+  await login(page);
+  await openSettingsSection(page, "sources", "Connections");
+
+  for (const label of ["Stacks node", "Node monitoring", "Signer monitoring"]) {
+    const row = page.locator(".connection-row", {
+      has: page.getByRole("heading", { name: label, exact: true }),
+    });
+    await expect(row.locator(".badge")).toHaveText("Connected");
+  }
+
+  const comparison = await editConnection(page, "Network comparison API");
+  await expect(comparison.locator(".badge")).toHaveText("Connected");
+  await comparison.getByRole("button", { name: "Test saved connection" }).click();
+  await expect(comparison.locator(".badge")).toHaveText("Connected");
+  await expect(comparison.getByText("Connected · 4 recognized signals")).toBeVisible();
+});
+
+test("starts an admin-history sync from Settings", async ({ page }) => {
   let syncRequests = 0;
   let syncStarted = false;
   await page.route("**/api/v1/sync", async (route) => {
@@ -1145,7 +1686,7 @@ test("starts an admin-history sync from Manager", async ({ page }) => {
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await page.getByRole("button", { name: "Sync admin history" }).click();
 
   await expect(page.getByText("Syncing chain data")).toBeVisible();
@@ -1156,8 +1697,20 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  const accrualCard = page.getByRole("heading", { name: "Accrued so far" }).locator("../..");
+  const projectedCard = page
+    .getByRole("heading", { name: "Projected next allocation" })
+    .locator("../..");
+  await expect(accrualCard).toBeVisible();
+  await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
+  await expect(accrualCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
+  await expect(projectedCard.getByText("0.05 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
+  await expect(projectedCard.getByText("low confidence", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update manager fee" }).click();
-  await expect(page).toHaveURL(/#manager\?action=update-fees$/);
+  await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await page.getByLabel("Signing manager admin").fill(adminPrincipal);
   await page.getByLabel("New fee (basis points)").fill("250");
@@ -1165,16 +1718,16 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
 
   await openPage(page, "rewards", "Rewards");
   await page.getByRole("button", { name: "Withdraw earned fees" }).click();
-  await expect(page).toHaveURL(/#manager\?action=withdraw-fees$/);
+  await expect(page).toHaveURL(/#action\/withdraw-fees$/);
   await expect(page.getByRole("heading", { name: "Withdraw earned fees" })).toBeVisible();
 
   await openPage(page, "rewards", "Rewards");
   await page.getByRole("button", { name: "Sweep fee refunds" }).click();
-  await expect(page).toHaveURL(/#manager\?action=sweep-fee-refunds$/);
+  await expect(page).toHaveURL(/#action\/sweep-fee-refunds$/);
   await expect(page.getByRole("heading", { name: "Sweep fee-refund dust" })).toBeVisible();
 
   await page.evaluate(() => {
-    location.hash = "#manager?action=remove-admin";
+    location.hash = "#action/remove-admin";
   });
   await expect(page.getByRole("heading", { name: "Remove manager admin" })).toBeVisible();
   await page.getByLabel("Signing manager admin").fill(adminPrincipal);
@@ -1201,6 +1754,29 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
   pendingSnapshot.rewards.calculation = {
     ...pendingSnapshot.rewards.calculation,
     state: "pending",
+  };
+  pendingSnapshot.rewardOutlook.calculation = {
+    ...pendingSnapshot.rewardOutlook.calculation,
+    state: "pending",
+    next: {
+      state: "due",
+      targetRewardCycle: pendingSnapshot.rewardOutlook.calculation.targetRewardCycle,
+      targetCheckpoint: pendingSnapshot.rewardOutlook.calculation.targetCheckpoint,
+      calculationBurnHeight:
+        pendingSnapshot.rewardOutlook.calculation.expectedLastRewardComputeBurnHeight,
+      eligibleBurnHeight:
+        pendingSnapshot.rewardOutlook.calculation.expectedLastRewardComputeBurnHeight + 1,
+      blocksRemaining: 0,
+      grace: {
+        state: "action-required",
+        firstEligibleObservedAt: "2026-08-13T11:50:00.000Z",
+        firstEligibleStacksBlockHeight: 8_749_976,
+        elapsedMinutes: 10,
+        canonicalStacksBlocks: 24,
+        requiredMinutes: 10,
+        requiredCanonicalStacksBlocks: 24,
+      },
+    },
   };
   let settlementReads = 0;
 
@@ -1232,6 +1808,13 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
     page.getByRole("button", { name: "Check what settling this cycle costs" }),
   ).toHaveCount(0);
   expect(settlementReads).toBe(0);
+
+  await page.getByRole("link", { name: "Review calculation" }).click();
+  await expect(page).toHaveURL(/#action\/calculate-rewards$/);
+  await expect(page.getByRole("heading", { name: "Calculate PoX-5 rewards" })).toBeVisible();
+  await expect(page.getByText("PERMISSIONLESS CHECKPOINT")).toBeVisible();
+  await page.getByLabel("Signing account").fill(snapshot.managerPrincipal.split(".")[0] ?? "");
+  await expect(page.getByLabel("Browser wallet")).toBeVisible();
 });
 
 test("does not list every zero-value staker in settlement discovery", async ({ page }) => {
@@ -1314,9 +1897,8 @@ test("explains a temporary chain-source mismatch while preparing a wallet reques
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await page.getByLabel("Signing manager admin").fill(snapshot.managerPrincipal.split(".")[0]);
   await page.getByLabel("New fee (basis points)").fill("250");
@@ -1356,30 +1938,32 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
 }) => {
   const actorPrincipal = snapshot.managerPrincipal.split(".")[0];
   const preparation = {
+    managerPrincipal: snapshot.managerPrincipal,
+    pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
     command: "stacks-signer generate-stacking-signature --config /srv/signer/Signer.toml",
     expectedMessageHashHex: "ab".repeat(32),
     authId: "141",
   };
   const verified = {
     managerPrincipal: snapshot.managerPrincipal,
+    pox5ContractId: preparation.pox5ContractId,
     authId: "141",
     signerKeyHex: `02${"12".repeat(32)}`,
     signerSignatureHex: "34".repeat(65),
     expectedMessageHashHex: preparation.expectedMessageHashHex,
+    signatureValid: true,
     registerSelfCall: {
       contract: snapshot.managerPrincipal,
       functionName: "register-self",
       arguments: ["0x01", "0x02", "0x03", "0x04"],
       signingPrincipal: actorPrincipal,
+      signingAuthority: "external-offline-admin",
     },
   };
-  const grantResponse = (withVerification: boolean) =>
-    freshOnboardingResponse({
-      currentStep: "verify-signer-grant",
-      steps: [],
-      preparation,
-      verified: withVerification ? verified : null,
-    }).onboarding;
+  const grantResponse = (withVerification: boolean) => ({
+    preparation,
+    verified: withVerification ? verified : null,
+  });
   let prepareBody: unknown = null;
   let verifyBody: unknown = null;
   let walletBody: unknown = null;
@@ -1392,10 +1976,10 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
       body = { ...structuredClone(snapshot), network: "testnet" };
     } else if (request.pathname === "/api/v1/manager/signer-grant/prepare") {
       prepareBody = route.request().postDataJSON();
-      body = { onboarding: grantResponse(false) };
+      body = { signerGrant: grantResponse(false) };
     } else if (request.pathname === "/api/v1/manager/signer-grant/verify") {
       verifyBody = route.request().postDataJSON();
-      body = { onboarding: grantResponse(true) };
+      body = { signerGrant: grantResponse(true) };
     } else if (request.pathname === "/api/v1/wallet-intents") {
       walletBody = route.request().postDataJSON();
       body = registerWalletIntent(actorPrincipal);
@@ -1410,8 +1994,8 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await page.getByRole("button", { name: "Review signer rotation" }).click();
+  await openPage(page, "settings", "Settings");
+  await page.getByRole("link", { name: "Review signer registration or rotation" }).click();
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
   await page.getByLabel("Authorization ID").fill("141");
   await page.getByLabel("Signer configuration path").fill("/srv/signer/Signer.toml");
@@ -1433,654 +2017,33 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
   expect(walletBody).toEqual({ action: "register-self", actorPrincipal });
 });
 
-test("keeps desktop settings chrome visible while the form scrolls", async ({ page }) => {
+test("uses one document scroll for desktop Settings", async ({ page }) => {
   test.skip((page.viewportSize()?.width ?? 0) <= 1080, "Desktop settings shell only");
   await login(page);
   await openPage(page, "settings", "Settings");
 
-  const settingsScroll = page.locator(".settings-scroll");
-  const saveButton = page.getByRole("button", { name: "Save changes" });
-  const settingsMenu = page.locator(".set-nav");
-  await expect(settingsScroll).toHaveCSS("overflow-y", "auto");
-  const saveBefore = await saveButton.boundingBox();
-  const menuBefore = await settingsMenu.boundingBox();
-
-  await settingsScroll.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-  await expect
-    .poll(() => settingsScroll.evaluate((element) => element.scrollTop))
-    .toBeGreaterThan(0);
-
-  const saveAfter = await saveButton.boundingBox();
-  const menuAfter = await settingsMenu.boundingBox();
-  expect(saveAfter?.y).toBe(saveBefore?.y);
-  expect(menuAfter?.y).toBe(menuBefore?.y);
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.locator(".settings-scroll")).toHaveCount(0);
+  await expect(page.locator(".set-nav")).toHaveCount(0);
+  await page.getByRole("heading", { name: "Support", exact: true }).scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeInViewport();
 });
 
-test("recommends verified Hiro chainstate seeding for a fresh node", async ({ page }) => {
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Deploy New Contracts" }).click();
-  await expect(page.getByText("Check prerequisites.")).toBeVisible();
-  await expect(page.getByText(/Sidekick prepares the manager deployment/)).toBeVisible();
-  await expect(page.getByRole("textbox", { name: /Manager admin principal/ })).toHaveAttribute(
-    "readonly",
-    "",
-  );
-  await expect(page.getByRole("textbox", { name: /Contract name/ })).toHaveAttribute(
-    "readonly",
-    "",
-  );
-  await expect(page.getByRole("button", { name: "Generate deployment files" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Hiro Archive guide/ })).toHaveAttribute(
-    "href",
-    "https://docs.hiro.so/en/resources/archive/stacks-blockchain",
-  );
-  await expect(page.getByRole("link", { name: /Node setup/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/operate/readme/run-a-node-with-docker",
-  );
-  await expect(page.getByRole("link", { name: /Signer quickstart/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/operate/run-a-signer/signer-quickstart",
-  );
-  await openPage(page, "settings", "Settings");
-  await expect(page.getByText("Network compatibility: matched")).toBeVisible();
-  await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
-  await expect(page.getByRole("link", { name: /Signer configuration/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/reference/node-operations/signer-configuration",
-  );
-});
-
-test("explains how to deploy a generated manager outside Sidekick", async ({ page }) => {
+test("hands first-time signer setup to the maintained external flow", async ({ page }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
     const request = new URL(route.request().url());
     const body =
-      request.pathname === "/api/v1/onboarding"
-        ? freshOnboardingResponse({
-            currentStep: "deploy-manager",
-            steps: [
-              {
-                id: "preflight",
-                status: "complete",
-                title: "Prerequisites",
-                detail: "Node and API are ready.",
-                command: null,
-              },
-              {
-                id: "render-manager",
-                status: "complete",
-                title: "Manager artifact",
-                detail: "Manager artifact prepared.",
-                command: null,
-              },
-              {
-                id: "deploy-manager",
-                status: "ready",
-                title: "Deploy manager",
-                detail: "Deploy the generated manager contract.",
-                command: null,
-              },
-            ],
-          })
-        : responseFor(route.request().url());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByRole("heading", { name: "Manager contract" })).toBeVisible();
-  await expect(page.getByText(/This contract represents your pool/)).toBeVisible();
-  await expect(page.getByText(/starts at 0%; set your pool fee in Manager/)).toBeVisible();
-  await expect(page.getByRole("link", { name: /View reference source/ })).toHaveAttribute(
-    "href",
-    "https://github.com/stacks-network/stacks-core/blob/efc34a07a225c4b950ab9404a1652aa5e14affaf/contrib/core-contract-tests/contracts/signer-manager.clar",
-  );
-  await expect(page.getByRole("link", { name: /Pool operator guide/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/operate/stacking-stx/operate-a-stacking-pool",
-  );
-  await expect(page.getByRole("heading", { name: "Manual deployment" })).toBeVisible();
-  await expect(page.getByText(/manifest records the values you must review/)).toBeVisible();
-  await expect(page.getByText("signer-manager", { exact: true })).toBeVisible();
-  await expect(page.locator(".deployment-target")).toContainText(/Network\s+testnet/);
-  await expect(page.locator(".deployment-target")).toContainText("Clarity 6");
-  await expect(page.getByRole("link", { name: /Explorer Sandbox/ })).toHaveAttribute(
-    "href",
-    "https://explorer.hiro.so/sandbox/deploy",
-  );
-  await expect(page.getByRole("link", { name: /Clarinet deployment guide/ })).toHaveAttribute(
-    "href",
-    "https://docs.stacks.co/clarinet/contract-deployment",
-  );
-  await expect(page.locator("body")).not.toContainText(credential);
-});
-
-test("shows the exact sealed mainnet deployment before browser-wallet signing", async ({
-  page,
-}) => {
-  const adminPrincipal = "SP000000000000000000002Q6VF78";
-  const managerPrincipal = `${adminPrincipal}.signer-manager`;
-  const exactSource = "(define-public (reviewed-ping)\n  (ok true))";
-  const onboardingResponse = freshOnboardingResponse({
-    currentStep: "deploy-manager",
-    steps: [
-      {
-        id: "deploy-manager",
-        status: "ready",
-        title: "Deploy manager",
-        detail: "Deploy the generated manager contract.",
-        command: null,
-      },
-    ],
-  });
-  if (!onboardingResponse.onboarding.artifact.manifest) {
-    throw new Error("Fresh onboarding fixture is missing its manager manifest");
-  }
-  onboardingResponse.onboarding.managerPrincipal = managerPrincipal;
-  onboardingResponse.onboarding.freshInput.adminPrincipal = adminPrincipal;
-  onboardingResponse.onboarding.artifact.manifest.network = "mainnet";
-  onboardingResponse.onboarding.artifact.manifest.adminPrincipal = adminPrincipal;
-  let createRequest: unknown = null;
-  let releaseIntentResponse: (() => void) | null = null;
-  const intentResponseReady = new Promise<void>((resolve) => {
-    releaseIntentResponse = resolve;
-  });
-
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    let body: unknown;
-    if (request.pathname === "/api/v1/status") {
-      body = walletNetworkSnapshot("mainnet", 1, managerPrincipal);
-    } else if (request.pathname === "/api/v1/onboarding") {
-      body = onboardingResponse;
-    } else if (request.pathname === "/api/v1/onboarding/wallet-intents") {
-      createRequest = route.request().postDataJSON();
-      await intentResponseReady;
-      body = deployWalletIntent({ adminPrincipal, source: exactSource });
-    } else {
-      body = responseFor(route.request().url());
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  const walletReview = page.getByRole("region", { name: "Browser wallet" });
-  await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
-  try {
-    await expect(walletReview).toHaveAttribute("aria-busy", "true");
-    await expect(walletReview.getByRole("status")).toHaveText("Preparing transaction review…");
-  } finally {
-    releaseIntentResponse?.();
-  }
-  await expect.poll(() => createRequest).toEqual({ action: "deploy-manager" });
-
-  await walletReview.getByText("Transaction details", { exact: true }).click();
-  await expect(walletReview.getByText("Contract source", { exact: true })).toBeVisible();
-  await expect(walletReview.locator("pre", { hasText: exactSource })).toHaveText(exactSource);
-  await expect(walletReview).toContainText(/Post-condition mode\s+deny/i);
-  await expect(walletReview).toContainText(/Post-conditions\s+(?:none|empty)/i);
-  await expect(walletReview.getByRole("button", { name: "Connect wallet and sign" })).toBeVisible();
-});
-
-test("restores and records a wallet broadcast after reload without signing again", async ({
-  page,
-}) => {
-  const adminPrincipal = "SP000000000000000000002Q6VF78";
-  const exactSource = "(define-public (reviewed-ping) (ok true))";
-  const onboardingResponse = freshOnboardingResponse({
-    currentStep: "deploy-manager",
-    steps: [
-      {
-        id: "deploy-manager",
-        status: "ready",
-        title: "Deploy manager",
-        detail: "Deploy the generated manager contract.",
-        command: null,
-      },
-    ],
-  });
-  if (!onboardingResponse.onboarding.artifact.manifest) {
-    throw new Error("Fresh onboarding fixture is missing its manager manifest");
-  }
-  onboardingResponse.onboarding.managerPrincipal = `${adminPrincipal}.signer-manager`;
-  onboardingResponse.onboarding.freshInput.adminPrincipal = adminPrincipal;
-  onboardingResponse.onboarding.artifact.manifest.network = "mainnet";
-  onboardingResponse.onboarding.artifact.manifest.adminPrincipal = adminPrincipal;
-  const prepared = deployWalletIntent({ adminPrincipal, source: exactSource });
-  const replacement = deployWalletIntent({
-    adminPrincipal,
-    source: exactSource,
-    id: "9f4d2b32-0eed-4e7c-bf92-7217418d8248",
-  });
-  const txid = `0x${"ab".repeat(32)}`;
-  const pending = {
-    intentId: prepared.intent.id,
-    network: "mainnet",
-    chainId: 1,
-    managerPrincipal: `${adminPrincipal}.signer-manager`,
-    action: "deploy-manager",
-    txid,
-    sender: adminPrincipal,
-    providerId: "LeatherProvider",
-  };
-  const pendingKey = `signer-sidekick:browser-wallet:pending:v3:mainnet:00000001:${encodeURIComponent(pending.managerPrincipal)}:deploy-manager:${pending.intentId}`;
-  let submissions = 0;
-  let releaseSubmission: (() => void) | null = null;
-  const submissionReleased = new Promise<void>((resolve) => {
-    releaseSubmission = resolve;
-  });
-
-  await page.addInitScript(
-    ({ key, value }) => {
-      localStorage.setItem(key, JSON.stringify(value));
-    },
-    { key: pendingKey, value: pending },
-  );
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    let body: unknown;
-    if (request.pathname === "/api/v1/status") {
-      body = walletNetworkSnapshot("mainnet", 1, `${adminPrincipal}.signer-manager`);
-    } else if (request.pathname === "/api/v1/onboarding") {
-      body = onboardingResponse;
-    } else if (
-      request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}/submission`
-    ) {
-      submissions += 1;
-      expect(route.request().postDataJSON()).toEqual({ txid });
-      await submissionReleased;
-      body = { intent: { ...prepared.intent, status: "submitted", txid } };
-    } else if (request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}`) {
-      body = { intent: { ...prepared.intent, status: "expired" } };
-    } else if (
-      request.pathname === `/api/v1/onboarding/wallet-intents/${prepared.intent.id}/refresh`
-    ) {
-      body = {
-        intent: {
-          ...prepared.intent,
-          status: "failed",
-          txid,
-          verification: {
-            outcome: "abort",
-            observedAt: "2026-07-18T18:05:00.000Z",
-            canonical: true,
-            blockHeight: 9_001,
-            indexBlockHash: `0x${"ef".repeat(32)}`,
-            detail: "Canonical transaction abort by response",
-          },
-        },
-      };
-    } else if (
-      request.pathname === "/api/v1/onboarding/wallet-intents" &&
-      route.request().method() === "POST"
-    ) {
-      expect(route.request().postDataJSON()).toEqual({ action: "deploy-manager" });
-      body = replacement;
-    } else {
-      body = responseFor(route.request().url());
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  const walletReview = page.getByRole("region", { name: "Browser wallet" });
-  await expect.poll(() => submissions).toBe(1);
-  try {
-    await expect(
-      walletReview.getByRole("button", { name: "Clear saved recovery record" }),
-    ).toHaveCount(0);
-    await expect(
-      walletReview.getByRole("button", { name: "Connect wallet and sign", exact: true }),
-    ).toHaveCount(0);
-  } finally {
-    releaseSubmission?.();
-  }
-  await expect(walletReview).toContainText("Transaction submitted.");
-  await expect(walletReview).toContainText(txid);
-  await expect(
-    walletReview.getByRole("button", { name: "Connect wallet and sign", exact: true }),
-  ).toHaveCount(0);
-  await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), pendingKey)).toBeNull();
-
-  await walletReview.getByRole("button", { name: "Refresh verification" }).click();
-  await expect(
-    walletReview.getByRole("button", { name: "Review a new wallet transaction" }),
-  ).toBeVisible();
-  await walletReview.getByRole("button", { name: "Review a new wallet transaction" }).click();
-  await expect(walletReview.getByRole("button", { name: "Connect wallet and sign" })).toBeVisible();
-  await expect(walletReview).not.toContainText("The wallet reported a broadcast");
-});
-
-test("advances fresh setup after a transient deployment refresh failure", async ({ page }) => {
-  const refreshFailure =
-    "Could not update setup: fresh setup refresh failed. Refresh setup progress before retrying; it may already have updated.";
-  await page.clock.install();
-  const complete = (id: string, title: string): FixtureStep => ({
-    id,
-    title,
-    status: "complete",
-    detail: `${title} complete`,
-    command: null,
-  });
-  const deploymentSteps: FixtureStep[] = [
-    complete("preflight", "Prerequisites"),
-    complete("render-manager", "Manager artifact"),
-    {
-      id: "deploy-manager",
-      status: "ready",
-      title: "Deploy manager",
-      detail: "Waiting for the deployed manager.",
-      command: null,
-    },
-  ];
-  const grantSteps: FixtureStep[] = [
-    complete("preflight", "Prerequisites"),
-    complete("render-manager", "Manager artifact"),
-    complete("deploy-manager", "Deploy manager"),
-    {
-      id: "prepare-signer-grant",
-      status: "ready",
-      title: "Prepare signer grant",
-      detail: "Prepare the live PoX-5 signer grant.",
-      command: null,
-    },
-  ];
-  const deploymentResponse = freshOnboardingResponse({
-    currentStep: "deploy-manager",
-    steps: deploymentSteps,
-  });
-  const grantResponse = freshOnboardingResponse({
-    currentStep: "prepare-signer-grant",
-    steps: grantSteps,
-  });
-  let refreshCalls = 0;
-
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    if (request.pathname === "/api/v1/onboarding") {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(deploymentResponse),
-      });
-      return;
-    }
-    if (request.pathname === "/api/v1/onboarding/fresh/refresh") {
-      refreshCalls += 1;
-      if (refreshCalls === 1) {
-        await route.fulfill({
-          status: 400,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "fresh_setup_refresh_failed" }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          onboarding: grantResponse.onboarding,
-          preflight: snapshot.preflight,
-          setup: snapshot.setup,
-        }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(responseFor(route.request().url())),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await page.getByRole("button", { name: "Verify deployment" }).click();
-  await expect(page.getByText(refreshFailure)).toBeVisible();
-
-  await page.clock.runFor(20_000);
-
-  await expect(page.getByRole("button", { name: "Generate signer command" })).toBeVisible();
-  await expect(page.getByText(refreshFailure)).toHaveCount(0);
-  expect(refreshCalls).toBe(2);
-  expect(consoleErrors.get(page)).toEqual([
-    "Failed to load resource: the server responded with a status of 400 (Bad Request)",
-  ]);
-  consoleErrors.set(page, []);
-});
-
-test("keeps setup commands behind advanced disclosure", async ({ page }) => {
-  const steps: FixtureStep[] = [
-    {
-      id: "preflight",
-      status: "ready",
-      title: "Prerequisites",
-      detail: "Review the connected environment.",
-      command: "sidekick preflight --json",
-    },
-    {
-      id: "render-manager",
-      status: "complete",
-      title: "Manager artifact",
-      detail: "Manager artifact prepared.",
-      command: "sidekick manager render --json",
-    },
-  ];
-  let currentStep = "preflight";
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    const body =
-      request.pathname === "/api/v1/onboarding"
-        ? freshOnboardingResponse({ currentStep, steps })
-        : responseFor(route.request().url());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByText(/Node, API, network, and PoX-5 checks are complete/)).toBeVisible();
-  await expect(page.getByText("sidekick preflight --json")).not.toBeVisible();
-  await page.getByText("CLI equivalent (advanced)").click();
-  await expect(page.getByText("sidekick preflight --json")).toBeVisible();
-
-  currentStep = "render-manager";
-  await page.reload();
-  await expect(
-    page.getByText(/Download the contract source and deployment manifest, then deploy them/),
-  ).toBeVisible();
-  await expect(page.getByText("sidekick manager render --json")).not.toBeVisible();
-});
-
-test("hands manager registration to the external admin wallet", async ({ page }) => {
-  const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
-  const verified = {
-    managerPrincipal: snapshot.managerPrincipal,
-    authId: "42",
-    signerKeyHex: `02${"11".repeat(32)}`,
-    signerSignatureHex: "22".repeat(65),
-    expectedMessageHashHex: "33".repeat(32),
-    registerSelfCall: {
-      contract: snapshot.managerPrincipal,
-      functionName: "register-self",
-      arguments: ["0x0516", "0x0200000021", "0x01000000000000002a", "0x0200000041"],
-      signingPrincipal: adminPrincipal,
-    },
-  };
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    const body =
-      request.pathname === "/api/v1/onboarding"
-        ? freshOnboardingResponse({
-            currentStep: "register-manager",
-            steps: [
-              {
-                id: "register-manager",
-                status: "ready",
-                title: "Register manager",
-                detail: "Register the manager with PoX-5.",
-                command: null,
-              },
-            ],
-            verified,
-          })
-        : responseFor(route.request().url());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(
-    page.locator(".registration-handoff strong", { hasText: "Register the manager with PoX-5." }),
-  ).toBeVisible();
-  await expect(page.getByText(/Sign below or use the manual transaction details/)).toBeVisible();
-  await expect(page.getByLabel("Browser wallet")).toBeVisible();
-  await expect(page.getByText("u42", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Copy signer key/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Check registration" })).toBeVisible();
-  await expect(page.getByText(/0x0516/)).not.toBeVisible();
-  await page.getByText("Encoded transaction arguments (advanced)").click();
-  await expect(page.getByText(/0x0516/)).toBeVisible();
-});
-
-test("summarizes attach checks and explains external repair", async ({ page }) => {
-  const attachResponse = {
-    onboarding: {
-      path: "attach",
-      status: "blocked",
-      currentStep: "verify-signer-grant",
-      managerPrincipal: snapshot.managerPrincipal,
-      updatedAt: "2026-07-17T12:00:00.000Z",
-      activationPlan: {
-        status: "blocked",
-        steps: [
-          {
-            id: "verify-sources",
-            status: "complete",
-            title: "Verify sources",
-            detail: "Manager source recognized.",
-            command: null,
-          },
-          {
-            id: "verify-signer-grant",
-            status: "blocked",
-            title: "Verify signer grant",
-            detail: "Signer grant missing.",
-            command: null,
-          },
-        ],
-      },
-      freshInput: null,
-      artifact: { available: false, sourceFile: null, manifestFile: null, manifest: null },
-      signerGrant: { preparation: null, verified: null },
-      audit: [],
-    },
-    wizard: { dismissed: false, dismissedAt: null, updatedAt: null, audit: [] },
-  };
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const body =
-      new URL(route.request().url()).pathname === "/api/v1/onboarding"
-        ? attachResponse
-        : responseFor(route.request().url());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByRole("button", { name: /Verify existing manager/ })).toHaveCount(1);
-  await expect(page.getByText("Manager attached with operational blockers.")).toBeVisible();
-  await expect(page.getByText(/Signer authorization needs repair/)).toBeVisible();
-  const repair = page.getByRole("button", { name: "Review repair ceremony" });
-  await expect(repair).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
-  await repair.click();
-  await expect(page).toHaveURL(/#manager\?action=register-self$/);
-});
-
-test("guides the signer grant ceremony from command generation through verification", async ({
-  page,
-}) => {
-  const signerCommand =
-    `stacks-signer generate-staking-signature --config '/path/to/Signer.toml' ` +
-    `--signer-manager '${snapshot.managerPrincipal}' --auth-id 1 --json`;
-  let prepared = false;
-  const ceremonyResponse = () =>
-    freshOnboardingResponse({
-      currentStep: prepared ? "verify-signer-grant" : "prepare-signer-grant",
-      steps: [
-        {
-          id: "prepare-signer-grant",
-          status: prepared ? "complete" : "ready",
-          title: "Prepare signer grant",
-          detail: "Prepare the live PoX-5 signer grant.",
-          command: "sidekick signer-grant prepare",
-        },
-        {
-          id: "verify-signer-grant",
-          status: "ready",
-          title: "Verify signer grant",
-          detail: "Verify the public signer output.",
-          command: "sidekick signer-grant verify",
-        },
-      ],
-      preparation: prepared
+      request.pathname === "/api/v1/status"
         ? {
-            command: signerCommand,
-            expectedMessageHashHex: "ab".repeat(32),
-            authId: "1",
+            ...structuredClone(snapshot),
+            manager: {
+              ...structuredClone(snapshot.manager),
+              attachAllowed: false,
+              reasons: ["The configured manager contract is not deployed"],
+            },
           }
-        : null,
-    });
-
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    let body: unknown;
-    if (request.pathname === "/api/v1/onboarding/fresh/grant/prepare") {
-      prepared = true;
-      body = ceremonyResponse();
-    } else if (request.pathname === "/api/v1/onboarding") {
-      body = ceremonyResponse();
-    } else {
-      body = responseFor(route.request().url());
-    }
+        : responseFor(route.request().url());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -2089,163 +2052,14 @@ test("guides the signer grant ceremony from command generation through verificat
   });
 
   await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByText("Authorize this manager with your signer")).toBeVisible();
-  await expect(
-    page.getByText(/Sidekick verifies its output before preparing registration/),
-  ).toBeVisible();
-  await expect(page.locator("body")).not.toContainText("sidekick signer-grant prepare");
-
-  await page.getByRole("button", { name: "Generate signer command" }).click();
-  await expect(page.getByText("Run on the signer host")).toBeVisible();
-  await expect(
-    page.locator("pre", { hasText: "stacks-signer generate-staking-signature" }),
-  ).toHaveText(signerCommand);
-  await expect(page.getByRole("button", { name: /Copy signer command/ })).toBeVisible();
-  await expect(page.getByLabel("JSON output from the signer command")).toHaveAttribute(
-    "placeholder",
-    "Paste the complete JSON object printed by stacks-signer",
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("Connect a running signer manager.")).toBeVisible();
+  await expect(page.getByText(/starts after first-time setup/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Open Zero to Signing/ })).toHaveAttribute(
+    "href",
+    "https://stx.fan/zero_to/signing/",
   );
-  await expect(page.getByText(/Never paste the signer configuration or private key/)).toBeVisible();
   await expect(page.locator("body")).not.toContainText(credential);
-});
-
-test("makes each signer activation state explicit and actionable", async ({ page }) => {
-  const thresholdUstx = "50000000000";
-  const eligibility = (cycleId: number, delegatedUstx: string, inSignerSet: boolean) => ({
-    cycleId,
-    delegatedUstx,
-    thresholdUstx,
-    marginUstx: (BigInt(delegatedUstx) - BigInt(thresholdUstx)).toString(),
-    meetsThreshold: BigInt(delegatedUstx) >= BigInt(thresholdUstx),
-    inSignerSet,
-  });
-  const foundationChecks = [
-    { id: "manager-attachment", status: "pass", message: "Manager compatible" },
-    { id: "manager-artifact", status: "pass", message: "Manager source verified" },
-    { id: "signer-registration", status: "pass", message: "Signer registered" },
-    { id: "signer-grant", status: "pass", message: "Signer grant valid" },
-  ];
-  let setup = {
-    status: "attention",
-    enrollmentWindow: {
-      status: "open",
-      targetCycleId: 140,
-      preparePhaseStartBurnHeight: 10_780,
-      blocksUntilPreparePhase: 1_540,
-    },
-    eligibility: {
-      current: eligibility(139, "0", false),
-      next: eligibility(140, "0", false),
-    },
-    checks: [
-      ...foundationChecks,
-      { id: "next-cycle-eligibility", status: "warn", message: "Stake required" },
-    ],
-  };
-  const onboardingResponse = finalVerificationOnboarding();
-  const preflight = {
-    ...snapshot.preflight,
-    cycle: {
-      ...snapshot.preflight.cycle,
-      currentId: 139,
-      nextId: 140,
-      preparePhaseStartBurnHeight: 10_780,
-      blocksUntilPreparePhase: 1_540,
-      rewardPhaseStartBurnHeight: 10_880,
-      blocksUntilRewardPhase: 1_640,
-      isPreparePhase: false,
-    },
-  };
-
-  await page.unroute("**/api/v1/**");
-  await page.route("**/api/v1/**", async (route) => {
-    const request = new URL(route.request().url());
-    let body: unknown;
-    if (request.pathname === "/api/v1/status") {
-      body = { ...snapshot, preflight, setup };
-    } else if (request.pathname === "/api/v1/onboarding") {
-      body = onboardingResponse;
-    } else if (request.pathname === "/api/v1/onboarding/fresh/refresh") {
-      body = { onboarding: onboardingResponse.onboarding, preflight, setup };
-    } else {
-      body = responseFor(route.request().url());
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-
-  const reloadSetup = async () => {
-    await page.reload();
-    await expect(page.getByRole("heading", { name: "Initial Setup", exact: true })).toBeVisible();
-  };
-
-  await login(page);
-  await openPage(page, "setup", "Initial Setup");
-  await expect(page.getByRole("heading", { name: "Activate your signer" })).toBeVisible();
-  await expect(page.getByText("Initial setup complete")).toBeVisible();
-  await expect(page.getByText("Manager deployed · Signer registered · Grant valid")).toBeVisible();
-  await expect(page.getByText("Stake required", { exact: true })).toBeVisible();
-  await expect(page.getByText("0 STX of 50,000 STX required")).toBeVisible();
-  await expect(page.getByText(/Stake at least 50,000 STX total to this manager/)).toBeVisible();
-  const copyManagerButton = page.getByRole("button", { name: /Copy manager principal/ });
-  await expect(copyManagerButton).toBeVisible();
-  await expect(copyManagerButton).toHaveCSS("flex-basis", "auto");
-  await expect(copyManagerButton).toHaveCSS("white-space", "nowrap");
-  await expect(page.getByRole("button", { name: "Open Public Pool Page" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh after staking" })).toBeVisible();
-  await expect(page.getByText(/sidekick setup status/)).not.toBeVisible();
-
-  setup = {
-    ...setup,
-    status: "ready",
-    eligibility: {
-      current: eligibility(139, "0", false),
-      next: eligibility(140, "55000000000", true),
-    },
-    checks: [
-      ...foundationChecks,
-      { id: "next-cycle-eligibility", status: "pass", message: "Ready" },
-    ],
-  };
-  await reloadSetup();
-  await expect(page.getByText("Activation scheduled", { exact: true })).toBeVisible();
-  await expect(page.getByText(/No action is required.*Bitcoin block 10880/)).toBeVisible();
-
-  setup = {
-    ...setup,
-    eligibility: {
-      current: eligibility(139, "55000000000", true),
-      next: eligibility(140, "55000000000", true),
-    },
-  };
-  await reloadSetup();
-  await expect(page.getByText("Signer active", { exact: true })).toBeVisible();
-  await expect(page.getByText("Signer active for cycle 139")).toBeVisible();
-
-  setup = {
-    ...setup,
-    status: "attention",
-    enrollmentWindow: {
-      ...setup.enrollmentWindow,
-      status: "prepare-phase",
-      blocksUntilPreparePhase: 0,
-    },
-    eligibility: {
-      current: eligibility(139, "0", false),
-      next: eligibility(140, "0", false),
-    },
-    checks: [
-      ...foundationChecks,
-      { id: "next-cycle-eligibility", status: "warn", message: "Enrollment closed" },
-    ],
-  };
-  await reloadSetup();
-  await expect(page.getByText("Enrollment closed", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Target cycle 141 when enrollment reopens/)).toBeVisible();
 });
 
 test("explains operator-installed and unrecognized trust tiers", async ({ page }) => {
@@ -2291,32 +2105,44 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   });
 
   await login(page);
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Unverified manager", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await openPage(page, "settings", "Settings");
+  await expect(page.getByText("Custom source", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
 
   tier = "custom-observe";
   await page.reload();
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Custom manager", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await openSettingsSection(page, "attachment", "Manager attachment");
+  await expect(page.getByText("Recorded custom source", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
 
   tier = "reference-render";
   await page.reload();
-  await openPage(page, "manager", "Manager");
-  await expect(page.getByText("Verified reference", { exact: true })).toBeVisible();
+  await openSettingsSection(page, "attachment", "Manager attachment");
+  await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
+  await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(
-    page.locator(".statline", { hasText: "Assist" }).getByText("Unavailable", { exact: true }),
+    page.getByLabel("Operations").getByText("Assist unavailable.", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /Add admin/ })).toBeEnabled();
+  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+    "aria-disabled",
+    "false",
+  );
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
@@ -2326,12 +2152,12 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
   await expect(page.getByText("Unverified manager source.")).toHaveCount(0);
 
-  await openPage(page, "manager", "Manager");
+  await openPage(page, "settings", "Settings");
   automationEligible = true;
   compatibilityStatus = "inconsistent";
   await page.reload();
   await page.evaluate(() => {
-    location.hash = "#manager?action=update-fees";
+    location.hash = "#action/update-fees";
   });
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
   await expect(page.getByLabel("Signing manager admin")).toBeVisible();
@@ -2343,6 +2169,26 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 test("paginates and searches a pool with hundreds of stakers", async ({ page }) => {
   await login(page);
   await openPage(page, "pool", "Pool positions");
+  const forecast = page.locator(".forecast-card");
+  const forecastSummary = forecast.getByRole("region", { name: "Pool forecast summary" });
+  await expect(forecastSummary).toBeVisible();
+  const forecastChart = forecast.getByRole("img", { name: "Pool total forecast" });
+  await expect(forecastChart).toBeVisible();
+  await expect(forecastSummary.getByText("16,800,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("Cycle 140", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("−200,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("15,800,000 STX", { exact: true })).toBeVisible();
+  await expect(forecastSummary.getByText("−1,000,000 STX · −6%", { exact: true })).toBeVisible();
+  const axisLabels = await forecast.locator(".forecast-axis-label").allTextContents();
+  expect(axisLabels).toHaveLength(3);
+  expect(axisLabels.every((label) => label.endsWith(" STX"))).toBe(true);
+  expect(axisLabels.some((label) => label.includes("%"))).toBe(false);
+  const chartOverflow = await forecastChart.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(chartOverflow).toBeLessThanOrEqual(1);
+  const forecastBox = await forecast.boundingBox();
+  expect(forecastBox?.height).toBeLessThan(340);
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
   const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
   await expect(amountSort).toHaveCount(1);
@@ -2413,7 +2259,7 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
   try {
     await login(page);
     await page.evaluate(() => {
-      location.hash = "#manager?action=update-fees";
+      location.hash = "#action/update-fees";
     });
     await page.getByLabel("Signing manager admin").fill(actorPrincipal);
     await page.getByLabel("New fee (basis points)").fill("250");
@@ -2540,7 +2386,8 @@ test("editing a Settings source invalidates its overlapping connection test", as
 
   try {
     await login(page);
-    await openPage(page, "settings", "Settings");
+    await openSettingsSection(page, "sources", "Connections");
+    await editConnection(page, "Node monitoring");
     const metricsUrl = page.getByLabel("Node metrics URL");
     await metricsUrl.locator("xpath=following-sibling::button").click();
     await expect.poll(() => sourceTestCalls).toBe(1);

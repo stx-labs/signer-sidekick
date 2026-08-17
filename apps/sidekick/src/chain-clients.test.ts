@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ChainAnchorError,
   captureChainAnchor,
+  captureNodeChainAnchor,
   createChainAnchor,
+  createNodeChainAnchor,
   StacksApiClient,
   StacksNodeClient,
   UpstreamHttpError,
@@ -14,6 +16,25 @@ import {
 const indexBlockHash = `0x${"ab".repeat(32)}`;
 
 describe("Stacks API client", () => {
+  it("rejects oversized JSON responses even without a content-length header", async () => {
+    const oversized = new Uint8Array(4 * 1_024 * 1_024 + 1).fill(0x20);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(oversized);
+            controller.enqueue(oversized);
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getNodeInfo()).rejects.toThrow("oversized JSON response");
+  });
+
   it("reads recent burn-block timestamps for empirical timing estimates", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -252,6 +273,111 @@ describe("Stacks API client", () => {
     });
   });
 
+  it("reads cursor-paginated principal transactions for scoped history discovery", async () => {
+    const principal = "SP000000000000000000002Q6VF78";
+    const pox5 = "SP000000000000000000002Q6VF78.pox-5";
+    const txId = `0x${"11".repeat(32)}`;
+    const cursor = "8600000:2147483647:0";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          total: 2,
+          limit: 2,
+          cursor: { current: cursor, previous: null, next: null },
+          results: [
+            {
+              transaction: {
+                tx_id: txId,
+                status: "success",
+                type: "contract_call",
+                contract_call: { contract_id: pox5, function_name: "stake" },
+                block: {
+                  height: 8_600_000,
+                  hash: `0x${"22".repeat(32)}`,
+                  index_hash: `0x${"33".repeat(32)}`,
+                  time: 1_784_000_000,
+                  tx_index: 3,
+                },
+                bitcoin_block: { height: 960_240, time: 1_784_000_000 },
+              },
+              involvement: "sender",
+            },
+            {
+              transaction: {
+                tx_id: `0x${"44".repeat(32)}`,
+                status: "success",
+                type: "token_transfer",
+                block: {
+                  height: 8_599_999,
+                  hash: `0x${"55".repeat(32)}`,
+                  index_hash: `0x${"66".repeat(32)}`,
+                  time: 1_783_999_995,
+                  tx_index: 2,
+                },
+                bitcoin_block: { height: 960_239, time: 1_783_999_995 },
+              },
+              involvement: "sender",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getPrincipalTransactions(principal, cursor, 2)).resolves.toMatchObject({
+      total: 2,
+      results: [
+        { transaction: { tx_id: txId, contract_call: { contract_id: pox5 } } },
+        { transaction: { type: "token_transfer", contract_call: null } },
+      ],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v3/principals/${principal}/transactions?limit=2&cursor=${encodeURIComponent(cursor)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("reads bounded transaction events for scoped history decoding", async () => {
+    const txId = `0x${"11".repeat(32)}`;
+    const pox5 = "SP000000000000000000002Q6VF78.pox-5";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          total: 2,
+          limit: 100,
+          cursor: { current: "0", previous: null, next: null },
+          results: [
+            {
+              event_index: 0,
+              type: "stx_asset",
+            },
+            {
+              event_index: 1,
+              type: "contract_log",
+              contract_log: {
+                contract_id: pox5,
+                topic: "print",
+                value: { hex: "0x03", repr: "true" },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionEvents(txId)).resolves.toMatchObject({
+      total: 2,
+      results: [{ type: "stx_asset" }, { type: "contract_log", event_index: 1 }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://api.example.test/extended/v3/transactions/${txId}/events?limit=100`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("reads public transaction details for the node-index fallback", async () => {
     const txId = `0x${"ab".repeat(32)}`;
     const blockHash = `0x${"cd".repeat(32)}`;
@@ -293,6 +419,45 @@ describe("Stacks API client", () => {
       `https://api.example.test/extended/v1/tx/${txId}`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("reads historical contract deployments when the indexed API omits contract_call", async () => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const blockHash = `0x${"cd".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tx_id: txId,
+          tx_status: "success",
+          sender_address: "SP000000000000000000002Q6VF78",
+          tx_type: "smart_contract",
+          smart_contract: {
+            contract_id: "SP000000000000000000002Q6VF78.signer-manager",
+            source_code: "(define-public (ping) (ok true))",
+            clarity_version: null,
+          },
+          post_conditions: [],
+          sponsored: false,
+          anchor_mode: "any",
+          post_condition_mode: "deny",
+          canonical: true,
+          block_hash: blockHash,
+          block_height: 8_600_000,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionDetails(txId)).resolves.toMatchObject({
+      tx_type: "smart_contract",
+      contract_call: null,
+      smart_contract: {
+        contract_id: "SP000000000000000000002Q6VF78.signer-manager",
+        source_code: "(define-public (ping) (ok true))",
+        clarity_version: null,
+      },
+    });
   });
 
   it("reads a bounded canonical block projection by height", async () => {
@@ -936,7 +1101,7 @@ describe("Stacks node client", () => {
     const responses = [
       pox,
       { source: "(define-public (ping) (ok true))", publish_height: 8_600_000 },
-      { functions: [] },
+      { clarity_version: "Clarity6", epoch: "Epoch2_05", functions: [] },
       { okay: true, result: cvToHex(uintCV(141n)) },
       { data: cvToHex(uintCV(500n)) },
       { data: cvToHex(someCV(uintCV(0n))) },
@@ -953,7 +1118,11 @@ describe("Stacks node client", () => {
 
     await client.getPoxInfo(readOptions);
     await client.getContractSource(manager, readOptions);
-    await client.getContractInterface(manager, readOptions);
+    await expect(client.getContractInterface(manager, readOptions)).resolves.toMatchObject({
+      clarity_version: "Clarity6",
+      epoch: "Epoch2_05",
+      functions: [],
+    });
     await client.callReadOnly(
       "SP000000000000000000002Q6VF78.pox-5",
       "reward-cycle-to-burn-height",
@@ -980,6 +1149,112 @@ describe("Stacks node client", () => {
 
     expect(() => client.getPoxInfo({ tip: "0x12" })).toThrow();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("supports a cancellable current-tip PoX read without requiring a tip value", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          current_burnchain_block_height: 960_240,
+          reward_cycle_id: 141,
+          reward_cycle_length: 2_100,
+          prepare_cycle_length: 100,
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          contract_versions: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await client.getPoxInfo({ signal: controller.signal });
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:20443/v2/pox", {
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("reads a bounded header ancestry pinned to an exact node tip", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            consensus_hash: "AA".repeat(20),
+            header: "01020304",
+            parent_block_id: "BB".repeat(32),
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getHeaders(1, { tip: indexBlockHash })).resolves.toEqual([
+      {
+        consensus_hash: "aa".repeat(20),
+        header: "01020304",
+        parent_block_id: `0x${"bb".repeat(32)}`,
+      },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `http://127.0.0.1:20443/v2/headers/1?tip=${indexBlockHash.slice(2)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(() => client.getHeaders(2_101, { tip: indexBlockHash })).toThrow();
+  });
+
+  it("reads the same bounded Nakamoto block by ID and canonical height", async () => {
+    const block = Uint8Array.of(1, 2, 3, 4);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response(block, { status: 200 }));
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getNakamotoBlockById(indexBlockHash)).resolves.toEqual(block);
+    await expect(
+      client.getNakamotoBlockAtHeight(8_750_000, { tip: indexBlockHash }),
+    ).resolves.toEqual(block);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      `http://127.0.0.1:20443/v3/blocks/${indexBlockHash.slice(2)}`,
+      `http://127.0.0.1:20443/v3/blocks/height/8750000?tip=${indexBlockHash.slice(2)}`,
+    ]);
+  });
+
+  it("rejects empty and oversized Nakamoto block responses", async () => {
+    const oversizedWithoutHeader = new Uint8Array(1_024 * 1_024 + 1).fill(1);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(new Uint8Array(), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 200,
+          headers: { "content-length": String(2 * 1_024 * 1_024 + 1) },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(oversizedWithoutHeader);
+              controller.enqueue(oversizedWithoutHeader);
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    const client = new StacksNodeClient("http://127.0.0.1:20443", fetchImpl);
+
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "invalid Nakamoto block size",
+    );
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "oversized Nakamoto block",
+    );
+    await expect(client.getNakamotoBlockById(indexBlockHash)).rejects.toThrow(
+      "oversized Nakamoto block",
+    );
   });
 
   it.each([
@@ -1097,8 +1372,8 @@ describe("Stacks node client", () => {
     });
   });
 
-  it("rejects an API anchor that trails the node by more than one Bitcoin block", () => {
-    expect(() =>
+  it("accepts a stable API anchor that trails a healthy local node", () => {
+    expect(
       createChainAnchor(
         {
           network_id: 1,
@@ -1134,7 +1409,62 @@ describe("Stacks node client", () => {
           },
         },
       ),
-    ).toThrow(ChainAnchorError);
+    ).toMatchObject({
+      stacksBlockHeight: 8_667_384,
+      burnBlockHeight: 960_262,
+      indexBlockHash,
+    });
+  });
+
+  it("captures the current local node anchor without consulting an indexed API", async () => {
+    const localIndexBlockHash = `0x${"45".repeat(32)}`;
+    const nodeInfo = {
+      network_id: 1,
+      burn_block_height: 960_264,
+      stacks_tip_height: 8_667_390,
+      is_fully_synced: true,
+    };
+    const tenureInfo = {
+      tip_block_id: localIndexBlockHash,
+      tip_height: 8_667_390,
+      reward_cycle: 141,
+    };
+    const poxInfo = {
+      current_burnchain_block_height: 960_264,
+      reward_cycle_id: 141,
+      reward_cycle_length: 2_100,
+      prepare_cycle_length: 100,
+      contract_id: "SP000000000000000000002Q6VF78.pox-5",
+      contract_versions: [],
+      next_cycle: {
+        id: 142,
+        min_threshold_ustx: 1,
+        min_increment_ustx: 1,
+        stacked_ustx: 1,
+        prepare_phase_start_block_height: 961_000,
+        blocks_until_prepare_phase: 736,
+        reward_phase_start_block_height: 961_100,
+        blocks_until_reward_phase: 836,
+      },
+    };
+    expect(createNodeChainAnchor(nodeInfo, tenureInfo, poxInfo)).toMatchObject({
+      stacksBlockHeight: 8_667_390,
+      burnBlockHeight: 960_264,
+      indexBlockHash: localIndexBlockHash,
+      rewardCycle: 141,
+    });
+    const node = {
+      getInfo: vi.fn().mockResolvedValue(nodeInfo),
+      getTenureInfo: vi.fn().mockResolvedValue(tenureInfo),
+      getPoxInfo: vi.fn().mockResolvedValue(poxInfo),
+    } as unknown as StacksNodeClient;
+    await expect(captureNodeChainAnchor(node)).resolves.toMatchObject({
+      indexBlockHash: localIndexBlockHash,
+      burnBlockHeight: 960_264,
+    });
+    expect(node.getPoxInfo).toHaveBeenCalledWith({ tip: localIndexBlockHash });
+    expect(node.getInfo).toHaveBeenCalledTimes(2);
+    expect(node.getTenureInfo).toHaveBeenCalledTimes(2);
   });
 
   it("derives prior-cycle anchor facts when the one-block lead crosses a reward-cycle boundary", () => {
@@ -1517,6 +1847,7 @@ describe("Stacks node client", () => {
         burn_block_height: 202,
         stacks_tip_height: 500,
         stacks_tip: "AB".repeat(32),
+        stacks_tip_consensus_hash: "CD".repeat(20),
       },
       {
         current_burnchain_block_height: 202,
@@ -1543,6 +1874,7 @@ describe("Stacks node client", () => {
       network_id: 256,
       parent_network_id: 3_669_344_250,
       stacks_tip: `0x${"ab".repeat(32)}`,
+      stacks_tip_consensus_hash: "cd".repeat(20),
     });
     await expect(client.getPoxInfo()).resolves.toMatchObject({
       pox_5_sbtc_contract: expect.stringContaining(".sbtc-token"),

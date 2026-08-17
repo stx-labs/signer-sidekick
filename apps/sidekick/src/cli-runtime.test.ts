@@ -64,32 +64,40 @@ describe("CLI dispatch", () => {
         sidekick doctor  Open, migrate, and verify the local SQLite store
         sidekick doctor connectivity  Verify node, API, network, lag, and PoX-5 connectivity
         sidekick database backup <output.sqlite>  Create and integrity-check an online backup
-        sidekick init fresh <admin> <name> <output-dir> <auth-id> [signer-config]
-        sidekick init attach <manager>  Build an activation plan from a running manager
         sidekick preflight  Verify node, API, network, lag, and PoX-5 readiness
-        sidekick attach <manager>  Verify and attach an existing manager in Observe mode
+        sidekick connection check  Verify connection plus node and signer deployment requirements
+        sidekick observer config <host:port>  Render exact private Stacks event-dispatcher settings
         sidekick manager verify <manager>  Verify deployed source and interface compatibility
-        sidekick setup status <manager>  Verify registration and current/next eligibility
-        sidekick setup record <manager> <pool-config.json> [record-metadata.json]
-        sidekick pool enrollment-info <manager> <pool-config.json>
         sidekick pool sync-stakers <manager>  Reconcile API discoveries with PoX-5 node state
         sidekick events sync <manager>  Backfill and update canonical manager events
         sidekick pool status <manager>  Reconcile current and future pool totals
         sidekick rewards status <manager> [cycle]  Read STX reward and payout state
-        sidekick export support-bundle <manager> [pool-config.json] [record-metadata.json]
-        sidekick manager render <admin> <name> <output-dir>
+        sidekick export support-bundle  Collect the comprehensive support artifact
         sidekick manager trust <manager> --output <profile.json> [--observe-only]
         sidekick signer-grant prepare <manager> <auth-id> [signer-config]
         sidekick signer-grant verify <manager> <auth-id> <signer-output.json>
 
       Environment:
         STACKS_NODE_RPC_URL  Required node RPC base URL for connected commands
+        SIDEKICK_MANAGER_PRINCIPAL  Required deployed signer-manager contract principal
         SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
         STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
         STACKS_API_KEY       Optional API key; never included in output
+        STACKS_API_KEY_HEADER  Optional indexed API key header; defaults to x-api-key
+        HIRO_REFERENCE_API_URL  Optional network-comparison API
+        HIRO_REFERENCE_API_KEY  Optional separate comparison API key; never included in output
+        HIRO_REFERENCE_API_KEY_HEADER  Optional comparison API key header; defaults to x-api-key
+        STACKS_NODE_METRICS_URL  Recommended private Stacks Core Prometheus endpoint
+        STACKS_SIGNER_MONITORING_URL  Recommended private signer monitoring base URL
         SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite
+        SIDEKICK_EVENT_HTTP_ENABLED  Optional private event listener toggle; defaults to true
+        SIDEKICK_EVENT_HTTP_HOST  Optional private event listener address; defaults to loopback
+        SIDEKICK_EVENT_HTTP_PORT  Optional private event listener port; defaults to 3700
+        SIDEKICK_EVENT_MAX_BODY_BYTES  Optional callback body limit; defaults to 4194304
         SIDEKICK_FORECAST_HORIZON_CYCLES  Optional forecast horizon; defaults to 6
         SIDEKICK_STATIC_DIRECTORY  Optional compiled dashboard directory override
+        SIDEKICK_AUTH_TRUSTED_HEADER  Optional proxy-injected API-key header
+        SIDEKICK_AUTH_BASIC_USERNAME  Optional HTTP Basic username; API key is the password
         SIDEKICK_CONTRACTS_DIR  Optional path to the pinned contracts directory
         SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR  Optional read-only installed profile directory
       "
@@ -121,7 +129,9 @@ describe("CLI dispatch", () => {
           "eventPageLimit": 100,
           "databasePath": ":memory:",
           "hiroReferenceApiUrl": "https://api.mainnet.hiro.so",
-          "apiKeyConfigured": true
+          "hiroReferenceApiKeyHeader": "x-api-key",
+          "apiKeyConfigured": true,
+          "hiroReferenceApiKeyConfigured": true
         }
       }
       "
@@ -141,6 +151,19 @@ describe("CLI dispatch", () => {
 
     expect(capture.stdout()).toBe("");
     expect(capture.stderr()).toBe("Usage: sidekick database backup <output.sqlite>\n");
+    expect(capture.exitCodes()).toEqual([1]);
+    expect(result).toEqual({ exitCode: 1 });
+  });
+
+  it("requires the node-reachable endpoint before generating observer configuration", async () => {
+    const capture = captureOutput();
+    const result = await dispatchCli(["observer", "config"], executeCliCommand, {
+      env: {},
+      output: capture.output,
+    });
+
+    expect(capture.stdout()).toBe("");
+    expect(capture.stderr()).toBe("Usage: sidekick observer config <node-reachable-host:port>\n");
     expect(capture.exitCodes()).toEqual([1]);
     expect(result).toEqual({ exitCode: 1 });
   });
@@ -245,7 +268,7 @@ describe("CLI lifecycle helpers", () => {
     const node = { kind: "node" };
     const api = { kind: "api" };
     const managerVerification = { kind: "verification" };
-    const readSetupSnapshot = vi.fn(async () => ({
+    const readOperatorAnchorSnapshot = vi.fn(async () => ({
       preflight: { status: "pass" },
       chainAnchor: { rewardCycle: 91 },
     }));
@@ -256,7 +279,7 @@ describe("CLI lifecycle helpers", () => {
         loadConfig: () => config,
         clientsFromConfig: () => ({ node, api }),
         verificationContext: async () => managerVerification,
-        readSetupSnapshot,
+        readOperatorAnchorSnapshot,
       },
       (context) => ({
         network: context.config.network,
@@ -264,7 +287,7 @@ describe("CLI lifecycle helpers", () => {
       }),
     );
 
-    expect(readSetupSnapshot).toHaveBeenCalledWith({
+    expect(readOperatorAnchorSnapshot).toHaveBeenCalledWith({
       config,
       node,
       api,

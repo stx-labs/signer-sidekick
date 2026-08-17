@@ -29,7 +29,10 @@ async function loadFixture() {
 describe("reference manager source recognition", () => {
   it("recognizes an exact artifact without enabling an unapproved profile", async () => {
     const { source, profile } = await loadFixture();
-    const adapter = createReferenceManagerAdapter(profile, source);
+    const adapter = createReferenceManagerAdapter(profile, source, {
+      clarityVersion: "Clarity6",
+      epoch: "Epoch40",
+    });
 
     expect(adapter.recognizeSource(source)).toMatchObject({
       match: "exact",
@@ -79,7 +82,10 @@ describe("reference manager source recognition", () => {
 
   it("recognizes only lexical whitespace and comment changes", async () => {
     const { source, profile } = await loadFixture();
-    const adapter = createReferenceManagerAdapter(profile, source);
+    const adapter = createReferenceManagerAdapter(profile, source, {
+      clarityVersion: "Clarity6",
+      epoch: "Epoch40",
+    });
     const reformatted = `;; local deployment note\n\n${source.replaceAll("\n", "  \n")}`;
 
     expect(adapter.recognizeSource(reformatted)).toMatchObject({
@@ -90,7 +96,10 @@ describe("reference manager source recognition", () => {
 
   it("rejects a behavior-changing source edit", async () => {
     const { source, profile } = await loadFixture();
-    const adapter = createReferenceManagerAdapter(profile, source);
+    const adapter = createReferenceManagerAdapter(profile, source, {
+      clarityVersion: "Clarity6",
+      epoch: "Epoch40",
+    });
     const modified = source.replace(
       "(define-data-var fees-bips uint u0)",
       "(define-data-var fees-bips uint u1)",

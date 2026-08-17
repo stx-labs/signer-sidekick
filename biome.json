@@ -14,6 +14,8 @@
       "!test/e2e/devnet/playwright-report",
       "!test/e2e/devnet/test-results",
       "!contracts/**/*.clar",
+      "!research/signer-manager-census/interfaces",
+      "!research/signer-manager-census/mainnet-*.json",
       "!design",
       "!design/fonts"
     ]

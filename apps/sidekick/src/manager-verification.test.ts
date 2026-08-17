@@ -55,8 +55,30 @@ function compatibleInterface(): ContractInterface {
     "check-pox-addr",
   ];
   return {
+    clarity_version: "Clarity6",
+    epoch: "Epoch40",
     functions: [
-      ...publicFunctions.map((name) => ({ name, access: "public", args: [], outputs: null })),
+      ...publicFunctions.map((name) =>
+        name === "validate-stake!"
+          ? {
+              name,
+              access: "public",
+              args: [
+                { name: "staker", type: "principal" },
+                { name: "first-index", type: "uint128" },
+                { name: "num-indexes", type: "uint128" },
+                { name: "amount-ustx", type: "uint128" },
+                { name: "amount-sats", type: "uint128" },
+                { name: "is-bond", type: "bool" },
+                {
+                  name: "signer-calldata",
+                  type: { optional: { buffer: { length: 500 } } },
+                },
+              ],
+              outputs: { type: { response: { ok: "bool", error: "uint128" } } },
+            }
+          : { name, access: "public", args: [], outputs: null },
+      ),
       ...readOnlyFunctions.map((name) => ({
         name,
         access: "read_only",
@@ -93,6 +115,56 @@ describe("deployed manager verification", () => {
     );
   });
 
+  it("does not unlock execution when reviewed source bytes use different Clarity semantics", async () => {
+    const source = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const contractInterface = compatibleInterface();
+    contractInterface.clarity_version = "Clarity4";
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      contractInterface,
+    );
+
+    expect(report).toMatchObject({
+      attachAllowed: true,
+      capabilities: { sourceReview: { exactReviewed: false } },
+    });
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+    expect(report.capabilities.sourceReview.reason).toContain(
+      "deployed execution semantics Clarity4/Epoch40",
+    );
+  });
+
+  it("fails closed when a reviewed artifact or node omits execution semantics", async () => {
+    const source = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const contractInterface = compatibleInterface();
+    delete contractInterface.clarity_version;
+    delete contractInterface.epoch;
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      contractInterface,
+    );
+
+    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: false });
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+    expect(report.capabilities.sourceReview.reason).toContain(
+      "deployed execution semantics unknown Clarity version/unknown epoch",
+    );
+  });
+
   it("allows technical use of an unknown manager without granting Assist", () => {
     const report = verifyManagerArtifact(
       "mainnet",
@@ -107,26 +179,44 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
-    expect(report.automationEligibilityReason).toBe("Manager source is unverified");
+    expect(report.automationEligibilityReason).toContain(
+      "No reviewed byte-exact capability fingerprint",
+    );
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {
     const profilesDirectory = await mkdtemp(resolve(tmpdir(), "sidekick-network-profile-"));
     temporaryDirectories.push(profilesDirectory);
-    const profile = {
+    const profileTemplate = {
       ...POX5_TESTNET_COMPATIBILITY,
       revision: 2,
       publishedAt: "2026-07-17T00:00:00.000Z",
+      sbtc: {
+        tokenContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token",
+        registryContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-registry",
+      },
       referenceManager: {
         ...POX5_TESTNET_COMPATIBILITY.referenceManager,
         profileId: "operator-private-1-reference-manager",
       },
     };
-    await writeFile(resolve(profilesDirectory, "private-1.json"), JSON.stringify(profile));
     const upstreamSource = await readFile(
       resolve(root, "contracts/reference-manager/upstream/signer-manager.clar"),
       "utf8",
     );
+    const rendered = generateManagerArtifact(
+      upstreamSource,
+      managerArtifactFromNetworkProfile(profileTemplate).profile,
+    );
+    const profile = {
+      ...profileTemplate,
+      referenceManager: {
+        ...profileTemplate.referenceManager,
+        sourceSha256: rendered.metadata.outputSha256,
+        canonicalSha256: rendered.metadata.canonicalOutputSha256,
+      },
+    };
+    await writeFile(resolve(profilesDirectory, "private-1.json"), JSON.stringify(profile));
     const artifact = managerArtifactFromNetworkProfile(profile);
     const generated = generateManagerArtifact(upstreamSource, artifact.profile);
     const context = await createManagerVerificationContext({
@@ -141,7 +231,6 @@ describe("deployed manager verification", () => {
       compatibleInterface(),
       context,
     );
-
     expect(report).toMatchObject({
       source: {
         match: "exact",
@@ -151,11 +240,45 @@ describe("deployed manager verification", () => {
         origin: "operator-installed",
       },
       attachAllowed: true,
-      automationEligible: true,
+      automationEligible: false,
       recommendedMode: "observe",
     });
     expect(report.automationEligibilityReason).toContain(
-      "production approval is not required for Assist on testnet",
+      "Operator-provided network data cannot grant executable manager capabilities",
+    );
+  });
+
+  it("enables the byte-exact built-in PoX-5 testnet reference manager", async () => {
+    const upstreamSource = await readFile(
+      resolve(root, "contracts/reference-manager/upstream/signer-manager.clar"),
+      "utf8",
+    );
+    const artifact = managerArtifactFromNetworkProfile(POX5_TESTNET_COMPATIBILITY);
+    const generated = generateManagerArtifact(upstreamSource, artifact.profile);
+    const context = await createManagerVerificationContext({
+      contractsDirectory: resolve(root, "contracts"),
+      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
+    });
+    const report = verifyManagerArtifact(
+      "testnet",
+      "ST000000000000000000002AMW42H.signer-manager",
+      { source: generated.source, publish_height: 202 },
+      compatibleInterface(),
+      context,
+    );
+    expect(report).toMatchObject({
+      source: {
+        match: "exact",
+        recognized: true,
+        tier: "reference-built-in",
+        profileId: POX5_TESTNET_COMPATIBILITY.referenceManager.profileId,
+      },
+      attachAllowed: true,
+      automationEligible: true,
+    });
+    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: true });
+    expect(report.capabilities.actions.some(({ executionAvailable }) => executionAvailable)).toBe(
+      true,
     );
   });
 
@@ -235,7 +358,7 @@ describe("deployed manager verification", () => {
     expect(report).toMatchObject({ networkMatches: false, attachAllowed: false });
   });
 
-  it("reports required ABI functions that are absent", () => {
+  it("attaches through the trait while reporting a missing reference capability", () => {
     const contractInterface = compatibleInterface();
     contractInterface.functions = contractInterface.functions.filter(
       (entry) => entry.name !== "claim-staker-rewards",
@@ -247,11 +370,43 @@ describe("deployed manager verification", () => {
       contractInterface,
     );
 
-    expect(report.interface).toEqual({
-      compatible: false,
+    expect(report.interface).toMatchObject({
+      compatible: true,
+      missingFunctions: [],
+      clarityVersion: "Clarity6",
+      epoch: "Epoch40",
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(report.attachAllowed).toBe(true);
+    expect(
+      report.capabilities.actions.find(({ id }) => id === "reference-reward-claims"),
+    ).toMatchObject({
+      interfaceAvailable: false,
+      executionAvailable: false,
       missingFunctions: ["claim-staker-rewards"],
     });
-    expect(report.attachAllowed).toBe(false);
+  });
+
+  it("rejects attachment when validate-stake! does not match the trait signature", () => {
+    const contractInterface = compatibleInterface();
+    const trait = contractInterface.functions.find(({ name }) => name === "validate-stake!");
+    if (!trait) throw new Error("Missing validate-stake! fixture");
+    trait.outputs = { type: { response: { ok: "uint128", error: "uint128" } } };
+
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source: "(ok true)", publish_height: 1 },
+      contractInterface,
+    );
+
+    expect(report).toMatchObject({
+      attachAllowed: false,
+      interface: { compatible: false, missingFunctions: ["validate-stake!"] },
+      capabilities: {
+        signerManagerTrait: { compatible: false, reason: expect.stringContaining("response") },
+      },
+    });
   });
 
   it("reports an expected pre-deployment 404 without hiding other node failures", async () => {

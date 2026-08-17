@@ -94,14 +94,14 @@ function page(
 async function store(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
   openStores.push(store);
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId,
     kind: "api",
     network: "mainnet",
     baseUrl: apiUrl,
     observedAt,
   });
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: nodeSourceId,
     kind: "node",
     network: "mainnet",
@@ -410,18 +410,21 @@ describe("signer-staker synchronization", () => {
     });
   });
 
-  it("does not present a cold-start empty API roster as authoritatively complete", async () => {
+  it("accepts a cold-start empty roster after the API anchor is fenced and revalidated", async () => {
     const sidekickStore = await store();
     const api = { getSignerStakers: vi.fn().mockResolvedValue(page([], null, null, 0)) };
     const node = { callReadOnly: vi.fn() };
 
     await expect(syncSignerStakers(options(sidekickStore, api, node))).resolves.toMatchObject({
-      status: "incomplete",
-      authoritative: false,
+      status: "completed",
+      authoritative: true,
       activeStakers: 0,
     });
     expect(node.callReadOnly).not.toHaveBeenCalled();
-    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toBeNull();
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)).toMatchObject({
+      authoritative: true,
+      chainAnchor,
+    });
   });
 
   it("uses exact cycle membership when the latest signer has changed", async () => {
@@ -1007,6 +1010,40 @@ describe("signer-staker synchronization", () => {
     );
   });
 
+  it("keeps a sealed roster canonical across Bitcoin-only advances", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSignerStakers: vi
+        .fn()
+        .mockResolvedValue(page([{ staker: stakerOne, types: ["stx"] }], null, null)),
+      getStatus: vi
+        .fn()
+        // The discovery fence remains exact to the sealed snapshot.
+        .mockResolvedValueOnce(apiStatus())
+        .mockResolvedValueOnce(apiStatus())
+        // Bitcoin advances on either side of the canonical block lookup without a new Stacks tip.
+        .mockResolvedValueOnce(apiStatus({ burn_block_height: chainAnchor.burnBlockHeight + 1 }))
+        .mockResolvedValueOnce(apiStatus({ burn_block_height: chainAnchor.burnBlockHeight + 2 })),
+      // The unchanged canonical Stacks block retains the Bitcoin height that originally anchored
+      // it; it does not inherit the snapshot's newer live burn height.
+      getBlock: vi
+        .fn()
+        .mockResolvedValue(apiBlock({ burn_block_height: chainAnchor.burnBlockHeight - 1 })),
+    };
+
+    await expect(
+      syncSignerStakers(options(sidekickStore, api, nodeReads())),
+    ).resolves.toMatchObject({
+      status: "completed",
+      authoritative: true,
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(4);
+    expect(api.getBlock).toHaveBeenCalledWith(chainAnchor.stacksBlockHeight);
+    expect(sidekickStore.getLatestCompletedSignerStakerRun(sourceId, manager)?.chainAnchor).toEqual(
+      chainAnchor,
+    );
+  });
+
   it("rejects a sealed roster when its pinned anchor became noncanonical", async () => {
     const sidekickStore = await store();
     const api = {
@@ -1269,14 +1306,14 @@ describe("signer-staker synchronization", () => {
     temporaryDirectories.push(directory);
     const databasePath = join(directory, "sidekick.sqlite");
     const first = await openSidekickStore(databasePath, observedAt);
-    first.store.upsertChainSource({
+    first.store.chainState.upsertSource({
       sourceId,
       kind: "api",
       network: "mainnet",
       baseUrl: apiUrl,
       observedAt,
     });
-    first.store.upsertChainSource({
+    first.store.chainState.upsertSource({
       sourceId: nodeSourceId,
       kind: "node",
       network: "mainnet",

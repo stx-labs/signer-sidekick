@@ -195,7 +195,7 @@ function sidekickRuntimeArgs(
     "host.docker.internal:host-gateway",
     "--mount",
     `source=${volume},target=/data`,
-    ...(publish ? ["--publish", "127.0.0.1:3998:3998"] : []),
+    ...(publish ? ["--publish", "127.0.0.1:3998:3998", "--publish", "127.0.0.1:3700:3700"] : []),
     "--env",
     "SIDEKICK_NETWORK=devnet",
     "--env",
@@ -212,6 +212,8 @@ function sidekickRuntimeArgs(
     "SIDEKICK_STAKER_PAGE_LIMIT=1",
     "--env",
     "SIDEKICK_EVENT_PAGE_LIMIT=1",
+    "--env",
+    "SIDEKICK_EVENT_HTTP_HOST=0.0.0.0",
     ...(trustedProfilesDirectory
       ? [
           "--mount",
@@ -265,6 +267,50 @@ async function startSidekick(
 
 async function stopSidekick(container) {
   run("docker", ["rm", "--force", container], { allowedExitCodes: [0, 1] });
+}
+
+async function enableDevnetTransactionIndex() {
+  const configPath = resolve(runtimeDirectory, "clarinet/conf/Stacks.toml");
+  const current = await readFile(configPath, "utf8");
+  let updated = current;
+  if (/^txindex\s*=/m.test(current)) {
+    updated = current.replace(/^txindex\s*=.*$/m, "txindex = true");
+  } else {
+    updated = current.replace(/^\[node\]\s*$/m, "[node]\ntxindex = true");
+  }
+  if (updated === current && !/^txindex\s*=\s*true\s*$/m.test(current)) {
+    throw new Error("Clarinet's generated Stacks node config did not contain a [node] section");
+  }
+  if (updated !== current) await writeFile(configPath, updated);
+
+  const containers = run(
+    "docker",
+    [
+      "ps",
+      "--filter",
+      `label=com.docker.compose.project=${clarinetProject}`,
+      "--filter",
+      "label=com.docker.compose.service=stacks-node",
+      "--format",
+      "{{.ID}}",
+    ],
+    { allowedExitCodes: [0, 1] },
+  )
+    .split("\n")
+    .filter(Boolean);
+  if (containers.length !== 1) {
+    throw new Error(`Expected one released Stacks node container, found ${containers.length}`);
+  }
+  log("Bootstrap: enabling the released node transaction index");
+  run("docker", ["restart", containers[0]]);
+  await Promise.all([
+    waitForHttp("http://127.0.0.1:20443/v2/info", "transaction-indexed stacks-node", 120_000),
+    waitForHttp(
+      "http://127.0.0.1:3999/extended/v1/status",
+      "Stacks API after node restart",
+      120_000,
+    ),
+  ]);
 }
 
 async function up() {
@@ -360,6 +406,7 @@ async function up() {
       waitForHttp("http://127.0.0.1:20443/v2/info", "stacks-node", 300_000),
       waitForHttp("http://127.0.0.1:3999/extended/v1/status", "Stacks API", 300_000),
     ]);
+    await enableDevnetTransactionIndex();
     await setBootstrapPhase(
       state,
       "chain-ready",
@@ -400,47 +447,48 @@ async function up() {
   }
 }
 
-async function freshSetup(state) {
+async function connectExistingManager(state) {
   const actor = createOperatorActor();
-  run("pnpm", ["test:e2e:dashboard:live"], {
-    env: { SIDEKICK_LIVE_PHASE: "fresh-artifact" },
-  });
-  const source = await sidekickFetch(state, "/api/v1/onboarding/artifacts/source");
+  // Day-zero deployment belongs to the external setup harness. Sidekick starts observing once the
+  // manager exists and then owns the recurring operator lifecycle.
+  const source = await readFile(resolve(root, lock.manager.source), "utf8");
   if (sha256(source) !== lock.manager.sha256) {
-    throw new Error(`Sidekick artifact hash mismatch: ${sha256(source)}`);
+    throw new Error(`Pinned manager source hash mismatch: ${sha256(source)}`);
   }
   const deployment = await actor.deployManager(source);
   const grant = generateSignerGrant("1");
-  const grantPath = resolve(runtimeDirectory, "signer-grant.json");
-  await writeFile(grantPath, `${JSON.stringify(grant)}\n`, { mode: 0o600 });
-  state.signerGrantPath = grantPath;
-  await writeState(state);
-  try {
-    run("pnpm", ["test:e2e:dashboard:live"], {
-      env: { SIDEKICK_LIVE_PHASE: "signer-grant" },
-    });
-  } finally {
-    await rm(grantPath, { force: true });
-    delete state.signerGrantPath;
-    await writeState(state);
-  }
   const registration = await actor.registerManager(grant);
-  const refreshed = await sidekickFetch(state, "/api/v1/onboarding/fresh/refresh", {
+  const connection = await sidekickFetch(state, "/api/v1/connection/recheck", {
     method: "POST",
     body: "{}",
   });
-  if (
-    !refreshed.onboarding.activationPlan.steps
-      .find((step) => step.id === "register-manager")
-      ?.status.includes("complete")
-  ) {
-    throw new Error("Sidekick did not observe manager registration through node reads");
+  if (connection.status !== "connected") {
+    throw new Error(
+      `Sidekick connection remained ${connection.status}: ${JSON.stringify(connection)}`,
+    );
   }
+  await waitForHttp("http://127.0.0.1:3700/health/live", "Sidekick private event listener");
+  await proxyControl("observer", "pass");
+  const observed = await waitFor(
+    async () => {
+      const status = await sidekickFetch(state, "/api/v1/status?refresh=1");
+      return status.registration?.registered ? status : null;
+    },
+    "Sidekick to observe the externally completed manager registration",
+    120_000,
+    1_000,
+  );
   return {
     artifactSha256: sha256(source),
     deployTxid: deployment.txid ?? null,
     registerTxid: registration.txid,
     signerKey: grant.signerKey,
+    connection: {
+      status: connection.status,
+      managerPrincipal: connection.configured.managerPrincipal,
+      bindingSource: connection.deploymentIdentity.stored?.bindingSource ?? null,
+    },
+    readiness: observed.readiness?.status ?? observed.setup?.status ?? "unavailable",
   };
 }
 
@@ -449,39 +497,146 @@ async function ensureRewardPhase(actor) {
     async () => {
       const pox = await fetch("http://127.0.0.1:20443/v2/pox").then((response) => response.json());
       const untilPrepare = pox.next_cycle?.blocks_until_prepare_phase;
-      return typeof untilPrepare !== "number" || untilPrepare > 2 ? pox : null;
+      // The active-pool fixture confirms seven transactions serially. Leave enough reward-phase
+      // runway for every staking mutation to anchor before PoX rejects updates in prepare phase.
+      return typeof untilPrepare !== "number" || untilPrepare > 10 ? pox : null;
     },
-    "a PoX reward phase",
+    "a PoX reward phase with at least eleven blocks before prepare",
     180_000,
   );
 }
 
-async function interruptSynchronization(state, pathContains) {
-  await proxyControl("api", "fail-after", { pathContains, passCount: 1, statusCode: 503 });
-  try {
-    const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${state.authToken}`,
-        "content-type": "application/json",
+async function readSynchronizationOperation(state) {
+  const payload = await sidekickFetch(state, "/api/v1/sync");
+  const operation = payload?.operation;
+  if (
+    !operation ||
+    !["idle", "running", "succeeded", "failed"].includes(operation.status) ||
+    !(operation.operationId === null || typeof operation.operationId === "string")
+  ) {
+    throw new Error(
+      `Sidekick returned an invalid synchronization operation: ${JSON.stringify(payload)}`,
+    );
+  }
+  return operation;
+}
+
+async function waitForSynchronizationCompletion(state, operationId, label) {
+  return await waitFor(
+    async () => {
+      const operation = await readSynchronizationOperation(state);
+      if (operation.operationId !== operationId) {
+        throw new Error(
+          `Sidekick replaced synchronization ${operationId} with ${operation.operationId ?? "none"}`,
+        );
+      }
+      return operation.status === "running" ? null : operation;
+    },
+    label,
+    180_000,
+    250,
+  );
+}
+
+async function synchronizeSidekick(state, options = {}) {
+  const expectedStatus = options.expectedStatus ?? "succeeded";
+  const label = options.label ?? "Sidekick synchronization";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitFor(
+      async () => {
+        const operation = await readSynchronizationOperation(state);
+        return operation.status === "running" ? null : operation;
       },
-      body: "{}",
-    });
-    if (response.status < 500) {
-      throw new Error(`Interrupted synchronization returned HTTP ${response.status}`);
+      "any existing Sidekick synchronization to finish",
+      180_000,
+      250,
+    );
+    const accepted = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+    const started = accepted?.operation;
+    if (!started || typeof started.operationId !== "string") {
+      throw new Error(
+        `Sidekick did not accept a synchronization operation: ${JSON.stringify(accepted)}`,
+      );
     }
-    return response.status;
+    if (started.trigger !== "manual") {
+      await waitForSynchronizationCompletion(
+        state,
+        started.operationId,
+        "the competing automatic Sidekick synchronization to finish",
+      );
+      continue;
+    }
+    const completed =
+      started.status === "running"
+        ? await waitForSynchronizationCompletion(state, started.operationId, label)
+        : started;
+    if (completed.status !== expectedStatus) {
+      throw new Error(
+        `${label} ${completed.operationId} finished ${completed.status}, expected ${expectedStatus}: ${JSON.stringify(completed.error)}`,
+      );
+    }
+    return completed;
+  }
+  throw new Error(
+    `${label} could not start because automatic synchronization kept winning the race`,
+  );
+}
+
+function synchronizationReconciliation(operation, label) {
+  const reconciliation = operation.result?.reconciliation;
+  if (!reconciliation) {
+    throw new Error(
+      `${label} ${operation.operationId ?? "unknown"} did not include a reconciliation result`,
+    );
+  }
+  return reconciliation;
+}
+
+async function interruptSynchronization(
+  state,
+  pathContains,
+  { target = "api", passCount = 1 } = {},
+) {
+  await proxyControl(target, "fail-after", { pathContains, passCount, statusCode: 503 });
+  try {
+    const operation = await synchronizeSidekick(state, {
+      expectedStatus: "failed",
+      label: `Interrupted synchronization through ${target} ${pathContains}`,
+    });
+    return {
+      target,
+      pathContains,
+      operationId: operation.operationId,
+      status: operation.status,
+      error: operation.error,
+    };
   } finally {
-    await proxyControl("api", "pass");
+    await proxyControl(target, "pass");
   }
 }
 
 async function activePool(state) {
-  const fresh = await freshSetup(state);
+  const connection = await connectExistingManager(state);
+  const deploymentRequirements = await sidekickFetch(
+    state,
+    "/api/v1/deployment-requirements/refresh",
+    { method: "POST" },
+  );
+  const transactionIndex = deploymentRequirements.checks?.find(
+    ({ id }) => id === "node-transaction-index",
+  );
+  if (!deploymentRequirements.requiredReady || transactionIndex?.status !== "pass") {
+    throw new Error(
+      `Devnet did not prove the required node deployment features: ${JSON.stringify(deploymentRequirements)}`,
+    );
+  }
   const actor = createOperatorActor();
   await ensureRewardPhase(actor);
   const positions = [];
-  positions.push(await actor.updateFees(100));
+  const observerBefore = await readObserverMetrics();
+  const firstPosition = await actor.updateFees(100);
+  positions.push(firstPosition);
+  const observer = await verifyRealObserverCallback(state, firstPosition, observerBefore);
   positions.push(await actor.updateFees(250));
   positions.push(await actor.stake(DEVNET_ACCOUNTS.staker1));
   positions.push(await actor.stake(DEVNET_ACCOUNTS.staker2));
@@ -489,33 +644,49 @@ async function activePool(state) {
   positions.push(await actor.stakeUpdate(DEVNET_ACCOUNTS.staker2));
   positions.push(await actor.unstake(DEVNET_ACCOUNTS.staker3));
 
-  const rosterInterruption = await interruptSynchronization(state, "/extended/v3/staking/signers/");
+  // Let the API enumeration seal its page checkpoint, then fail the first node verification read.
+  // Restart recovery must reuse that sealed, exact-tip-fenced roster instead of rediscovering it.
+  const rosterInterruption = await interruptSynchronization(state, "/get-bond-membership", {
+    target: "node",
+    passCount: 0,
+  });
   await restartSidekick(state);
-  const firstSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (!firstSync.result.stakers.resumed) {
+  const firstSync = await synchronizeSidekick(state, { label: "Roster resume synchronization" });
+  const firstSyncResult = synchronizationReconciliation(firstSync, "Roster resume synchronization");
+  if (!firstSyncResult.stakers.resumed) {
     throw new Error("Roster synchronization did not resume after restart");
   }
-  positions.push(await actor.updateFees(300));
-  positions.push(await actor.updateFees(400));
-  const eventInterruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  let eventInterruption;
+  await proxyControl("observer", "ack");
+  try {
+    positions.push(await actor.updateFees(300));
+    positions.push(await actor.updateFees(400));
+    eventInterruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  } finally {
+    await proxyControl("observer", "pass");
+  }
   await restartSidekick(state);
-  const eventResume = await sidekickFetch(state, "/api/v1/sync", {
-    method: "POST",
-    body: "{}",
+  // Startup anti-entropy owns this restart recovery and runs before the HTTP control plane can
+  // accept a manual sync. The injected failure allowed exactly one event page to commit, so a
+  // successful startup manager-activity run necessarily continued that persisted cursor.
+  const eventResumeMetrics = await waitFor(
+    async () => {
+      const metrics = await readObserverMetrics();
+      return metrics.managerSuccesses > 0 ? metrics : null;
+    },
+    "startup manager-activity reconciliation to resume the event cursor",
+    120_000,
+    250,
+  );
+  const replay = await synchronizeSidekick(state, {
+    label: "Manager event replay synchronization",
   });
-  if (!eventResume.result.events.resumed || eventResume.result.events.newEvents < 1) {
-    throw new Error("Manager event synchronization did not resume after restart");
-  }
-  const replay = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (firstSync.result.stakers.activeStakers < 2) throw new Error("Expected at least two stakers");
-  if (
-    firstSync.result.events.newEvents < 2 ||
-    firstSync.result.events.pagesProcessed < 2 ||
-    firstSync.result.events.decodeFailures !== 0
-  ) {
-    throw new Error("Expected two indexed, decoded, paginated manager print events");
-  }
-  if (replay.result.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
+  const replayResult = synchronizationReconciliation(
+    replay,
+    "Manager event replay synchronization",
+  );
+  if (firstSyncResult.stakers.activeStakers < 2) throw new Error("Expected at least two stakers");
+  if (replayResult.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
 
   const before = await fetch("http://127.0.0.1:20443/v2/pox").then((response) => response.json());
   const after = await actor.waitFor(
@@ -526,55 +697,222 @@ async function activePool(state) {
     "the next PoX reward cycle",
     240_000,
   );
-  const cycleSync = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+  const cycleSync = await synchronizeSidekick(state, { label: "Reward-cycle synchronization" });
+  const cycleSyncResult = synchronizationReconciliation(cycleSync, "Reward-cycle synchronization");
   return {
-    fresh,
+    connection,
+    deploymentRequirements: {
+      status: deploymentRequirements.status,
+      requiredReady: deploymentRequirements.requiredReady,
+      transactionIndex: transactionIndex.status,
+    },
+    observer,
     transactionIds: positions.map((position) => position.txid),
     interruptions: { roster: rosterInterruption, events: eventInterruption },
-    firstSync: firstSync.result,
-    eventResume: eventResume.result,
-    replay: replay.result,
+    firstSync: firstSyncResult,
+    eventResume: {
+      startupAntiEntropy: true,
+      managerSuccesses: eventResumeMetrics.managerSuccesses,
+    },
+    replay: replayResult,
     cycle: { before: before.reward_cycle_id, after: after.reward_cycle_id },
-    cycleSync: cycleSync.result,
+    cycleSync: cycleSyncResult,
+  };
+}
+
+function prometheusMetric(metrics, name, labels = null) {
+  const prefix = labels === null ? name : `${name}{${labels}}`;
+  const line = metrics.split("\n").find((candidate) => candidate.startsWith(`${prefix} `));
+  if (!line) throw new Error(`Sidekick metrics did not include ${prefix}`);
+  const value = Number(line.slice(prefix.length + 1));
+  if (!Number.isFinite(value)) throw new Error(`Sidekick metric ${prefix} was not numeric`);
+  return value;
+}
+
+async function readObserverMetrics() {
+  const response = await fetch("http://127.0.0.1:3998/metrics");
+  if (!response.ok) throw new Error(`Sidekick metrics returned HTTP ${response.status}`);
+  const metrics = await response.text();
+  const domain = (name, label) => prometheusMetric(metrics, name, `domain="${label}"`);
+  return {
+    deliveries: prometheusMetric(metrics, "sidekick_observer_deliveries_total"),
+    verified: prometheusMetric(metrics, "sidekick_observer_node_verified"),
+    quarantined: prometheusMetric(metrics, "sidekick_observer_quarantined"),
+    queueDepth: prometheusMetric(metrics, "sidekick_observer_queue_depth"),
+    currentSuccesses: domain("sidekick_observer_reconciliation_successes_total", "current"),
+    currentLatencySamples: domain(
+      "sidekick_observer_reconciliation_latency_seconds_count",
+      "current",
+    ),
+    currentWithinTwoSeconds: domain(
+      "sidekick_observer_reconciliation_within_two_seconds_total",
+      "current",
+    ),
+    managerSuccesses: domain(
+      "sidekick_observer_reconciliation_successes_total",
+      "manager-activity",
+    ),
+    managerLatencySamples: domain(
+      "sidekick_observer_reconciliation_latency_seconds_count",
+      "manager-activity",
+    ),
+  };
+}
+
+async function verifyRealObserverCallback(state, transaction, before) {
+  const blockHeight = transaction.confirmed.block_height;
+  const blockHash = transaction.confirmed.block_hash;
+  if (
+    !Number.isSafeInteger(blockHeight) ||
+    typeof blockHash !== "string" ||
+    !/^0x[0-9a-f]{64}$/i.test(blockHash)
+  ) {
+    throw new Error(
+      `Confirmed Devnet transaction did not expose its canonical block anchor: ${JSON.stringify(transaction.confirmed)}`,
+    );
+  }
+  const blockResponse = await fetch(`http://127.0.0.1:3999/extended/v2/blocks/${blockHeight}`);
+  if (!blockResponse.ok) {
+    throw new Error(`Stacks API block projection returned HTTP ${blockResponse.status}`);
+  }
+  const block = await blockResponse.json();
+  const rawIndexBlockHash = block.index_block_hash;
+  if (
+    block.canonical !== true ||
+    block.height !== blockHeight ||
+    typeof block.hash !== "string" ||
+    block.hash.toLowerCase() !== blockHash.toLowerCase() ||
+    typeof rawIndexBlockHash !== "string" ||
+    !/^(?:0x)?[0-9a-f]{64}$/i.test(rawIndexBlockHash)
+  ) {
+    throw new Error(
+      `Stacks API did not prove the confirmed transaction's canonical index block: ${JSON.stringify(block)}`,
+    );
+  }
+  const indexBlockHash = `0x${rawIndexBlockHash.replace(/^0x/i, "").toLowerCase()}`;
+  let lastMetrics = before;
+  let metrics;
+  try {
+    metrics = await waitFor(
+      async () => {
+        const current = await readObserverMetrics();
+        lastMetrics = current;
+        return current.deliveries > before.deliveries &&
+          current.verified > before.verified &&
+          current.currentSuccesses > before.currentSuccesses &&
+          current.currentLatencySamples > before.currentLatencySamples &&
+          current.managerSuccesses > before.managerSuccesses &&
+          current.managerLatencySamples > before.managerLatencySamples &&
+          current.queueDepth === 0
+          ? current
+          : null;
+      },
+      "a real stacks-node callback to verify and reconcile",
+      120_000,
+      500,
+    );
+  } catch (error) {
+    const support = await sidekickFetch(state, "/api/v1/support-bundle").catch((supportError) => ({
+      error: supportError instanceof Error ? supportError.message : String(supportError),
+    }));
+    const observer = support.sections?.observer?.data ?? support;
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify({ before, lastMetrics, observer })}`,
+    );
+  }
+  const bundle = await sidekickFetch(state, "/api/v1/support-bundle");
+  const observer = bundle.sections?.observer?.data;
+  const verified = observer?.inbox?.lastVerifiedStacksBlock;
+  if (
+    !observer?.listening ||
+    verified?.height < blockHeight ||
+    (verified.height === blockHeight &&
+      verified.indexBlockHash?.toLowerCase() !== indexBlockHash.toLowerCase())
+  ) {
+    throw new Error(
+      `Sidekick did not retain the real callback's canonical anchor: ${JSON.stringify({ blockHeight, indexBlockHash, observer })}`,
+    );
+  }
+  if (metrics.quarantined > before.quarantined) {
+    throw new Error("The real stacks-node callback was quarantined instead of verified");
+  }
+  return {
+    txid: transaction.txid,
+    blockHeight,
+    indexBlockHash,
+    deliveryDelta: metrics.deliveries - before.deliveries,
+    verifiedDelta: metrics.verified - before.verified,
+    currentLatencySamples: metrics.currentLatencySamples - before.currentLatencySamples,
+    currentWithinTwoSeconds: metrics.currentWithinTwoSeconds - before.currentWithinTwoSeconds,
+    lastCurrentLatencySeconds: observer.reconciliation.domains.current.callbackLatency.lastSeconds,
+    lastManagerActivityLatencySeconds:
+      observer.reconciliation.domains["manager-activity"].callbackLatency.lastSeconds,
   };
 }
 
 async function eventResumeScenario(state) {
   const actor = createOperatorActor();
-  const transactions = [await actor.updateFees(500), await actor.updateFees(600)];
-  const interruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
-  await restartSidekick(state);
-  const resumed = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (!resumed.result.events.resumed || resumed.result.events.newEvents < 1) {
-    throw new Error("Manager event synchronization did not resume after restart");
+  const transactions = [];
+  let interruption;
+  await proxyControl("observer", "ack");
+  try {
+    transactions.push(await actor.updateFees(500), await actor.updateFees(600));
+    interruption = await interruptSynchronization(state, "/extended/v2/smart-contracts/");
+  } finally {
+    await proxyControl("observer", "pass");
   }
-  const replay = await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
-  if (replay.result.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
+  await restartSidekick(state);
+  const resumedMetrics = await waitFor(
+    async () => {
+      const metrics = await readObserverMetrics();
+      return metrics.managerSuccesses > 0 ? metrics : null;
+    },
+    "startup manager-activity reconciliation to resume the standalone event cursor",
+    120_000,
+    250,
+  );
+  const replay = await synchronizeSidekick(state, {
+    label: "Standalone event replay synchronization",
+  });
+  const replayResult = synchronizationReconciliation(
+    replay,
+    "Standalone event replay synchronization",
+  );
+  if (replayResult.events.newEvents !== 0) throw new Error("Event replay inserted duplicates");
   return {
     transactionIds: transactions.map(({ txid }) => txid),
     interruption,
-    resumed: resumed.result.events,
-    replay: replay.result.events,
+    resumed: {
+      startupAntiEntropy: true,
+      managerSuccesses: resumedMetrics.managerSuccesses,
+    },
+    replay: replayResult.events,
   };
 }
 
-async function attachWithCleanDatabase(state) {
+async function connectWithCleanDatabase(state) {
   const originalContainer = state.containerName;
-  const attachContainer = `${originalContainer}-attach`;
-  const attachVolume = `${state.volumeName}-attach`;
+  const connectionContainer = `${originalContainer}-connection`;
+  const connectionVolume = `${state.volumeName}-connection`;
   await stopSidekick(originalContainer);
   try {
-    await startSidekick(state, { container: attachContainer, volume: attachVolume });
-    run("pnpm", ["test:e2e:dashboard:live"], {
-      env: { SIDEKICK_LIVE_PHASE: "attach" },
-    });
-    const attached = await sidekickFetch(state, "/api/v1/onboarding");
-    if (attached.onboarding.status === "blocked")
-      throw new Error("Clean Attach Existing was blocked");
-    return { status: attached.onboarding.status, currentStep: attached.onboarding.currentStep };
+    await startSidekick(state, { container: connectionContainer, volume: connectionVolume });
+    const connection = await sidekickFetch(state, "/api/v1/connection");
+    if (connection.status !== "connected") {
+      throw new Error(`Clean database connection was ${connection.status}`);
+    }
+    const observed = await sidekickFetch(state, "/api/v1/status?refresh=1");
+    return {
+      connectionStatus: connection.status,
+      bindingSource: connection.deploymentIdentity.stored?.bindingSource ?? null,
+      managerTier: observed.manager.source.tier,
+      readiness: observed.readiness?.status ?? observed.setup?.status ?? "unavailable",
+    };
   } finally {
-    await stopSidekick(attachContainer);
-    run("docker", ["volume", "rm", "--force", attachVolume], { allowedExitCodes: [0, 1] });
+    await stopSidekick(connectionContainer);
+    run("docker", ["volume", "rm", "--force", connectionVolume], {
+      allowedExitCodes: [0, 1],
+    });
     await startSidekick(state, { container: originalContainer, volume: state.volumeName });
   }
 }
@@ -1010,15 +1348,15 @@ async function status() {
 
 async function scenario(name) {
   const state = await readState();
-  if (name === "fresh") return await freshSetup(state);
+  if (name === "connect") return await connectExistingManager(state);
   if (name === "active-pool") return await activePool(state);
-  if (name === "attach") return await attachWithCleanDatabase(state);
+  if (name === "clean-connection") return await connectWithCleanDatabase(state);
   if (name === "restart") return await restartSidekick(state);
   if (name === "event-resume") return await eventResumeScenario(state);
   if (name === "trusted-manager-profile") return await installedManagerProfileScenario(state);
   if (name === "failure-injection") return await failureInjection(state);
   throw new Error(
-    `Unknown scenario ${name}; use fresh, active-pool, attach, restart, trusted-manager-profile, or failure-injection`,
+    `Unknown scenario ${name}; use connect, active-pool, clean-connection, restart, trusted-manager-profile, failure-injection, or event-resume`,
   );
 }
 
@@ -1026,18 +1364,15 @@ async function failureInjection(state) {
   const failedSync = async (target, mode, additional = {}) => {
     await proxyControl(target, mode, additional);
     try {
-      const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${state.authToken}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
+      const operation = await synchronizeSidekick(state, {
+        expectedStatus: "failed",
+        label: `Injected ${target} ${mode} failure`,
       });
-      if (response.status < 500) {
-        throw new Error(`Injected ${target} ${mode} failure returned HTTP ${response.status}`);
-      }
-      return response.status;
+      return {
+        operationId: operation.operationId,
+        status: operation.status,
+        error: operation.error,
+      };
     } finally {
       await proxyControl(target, "pass");
     }
@@ -1048,7 +1383,7 @@ async function failureInjection(state) {
   const currentApiStatus = await fetch("http://127.0.0.1:3999/extended/v1/status").then(
     (response) => response.json(),
   );
-  currentApiStatus.chain_tip.burn_block_height -= 2;
+  currentApiStatus.chain_tip.burn_block_height += 2;
   await proxyControl("api", "fixture", {
     pathContains: "/extended/v1/status",
     body: currentApiStatus,
@@ -1056,28 +1391,20 @@ async function failureInjection(state) {
   });
   let indexerLag;
   try {
-    const response = await fetch("http://127.0.0.1:3998/api/v1/sync", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${state.authToken}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
+    const operation = await synchronizeSidekick(state, {
+      expectedStatus: "failed",
+      label: "Injected local-node-behind failure",
     });
-    const payload = await response.json();
-    if (response.status < 500 || payload.error !== "internal_server_error") {
-      throw new Error(
-        `Injected API lag did not fail closed: HTTP ${response.status} ${JSON.stringify(payload)}`,
-      );
-    }
     indexerLag = {
-      status: response.status,
+      operationId: operation.operationId,
+      status: operation.status,
+      error: operation.error,
       failClosed: true,
     };
   } finally {
     await proxyControl("api", "pass");
   }
-  await sidekickFetch(state, "/api/v1/sync", { method: "POST", body: "{}" });
+  await synchronizeSidekick(state, { label: "Failure-injection recovery synchronization" });
   return {
     apiRateLimit,
     apiDisconnect,
@@ -1119,12 +1446,22 @@ async function test() {
     };
     await recordScenario(result, "activePool", async () => await activePool(state));
     await recordScenario(result, "restart", async () => await restartSidekick(state));
-    await recordScenario(result, "attach", async () => await attachWithCleanDatabase(state));
+    await recordScenario(
+      result,
+      "cleanConnection",
+      async () => await connectWithCleanDatabase(state),
+    );
     await recordScenario(result, "liveDashboard", async () => {
       run("pnpm", ["test:e2e:dashboard:live"], {
         env: { SIDEKICK_LIVE_PHASE: "inspect" },
       });
       return { status: "pass" };
+    });
+    await recordScenario(result, "walletAction", async () => {
+      run("pnpm", ["test:e2e:dashboard:live"], {
+        env: { SIDEKICK_LIVE_PHASE: "action" },
+      });
+      return { status: "pass", action: "update-fees" };
     });
 
     const smokeEnvironment = {
@@ -1213,7 +1550,7 @@ if (command === "doctor") {
 Usage:
   pnpm e2e:devnet:doctor
   pnpm e2e:devnet:up [--no-build]
-  pnpm e2e:devnet:scenario fresh|active-pool|attach|restart|trusted-manager-profile|failure-injection|event-resume
+  pnpm e2e:devnet:scenario connect|active-pool|clean-connection|restart|trusted-manager-profile|failure-injection|event-resume
   pnpm e2e:devnet:mine [count]
   pnpm e2e:devnet:status
   pnpm e2e:devnet:reset

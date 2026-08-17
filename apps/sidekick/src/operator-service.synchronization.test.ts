@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "./chain-anchor.js";
-import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import {
+  captureChainAnchor,
+  type StacksApiClient,
+  type StacksNodeClient,
+} from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
+import {
+  type OperatorAnchorSnapshot,
+  readOperatorAnchorSnapshot,
+} from "./operator-anchor-snapshot.js";
 import { OperatorService, resolveRosterProjectionAnchor } from "./operator-service.js";
-import { readSetupSnapshot, type SetupSnapshot } from "./setup-snapshot.js";
 import {
   SignerStakerAnchorError,
   type SyncSignerStakersResult,
@@ -12,7 +19,11 @@ import {
 } from "./signer-staker-sync.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
-vi.mock("./setup-snapshot.js", () => ({ readSetupSnapshot: vi.fn() }));
+vi.mock("./operator-anchor-snapshot.js", () => ({ readOperatorAnchorSnapshot: vi.fn() }));
+vi.mock("./chain-clients.js", async () => {
+  const actual = await vi.importActual<typeof import("./chain-clients.js")>("./chain-clients.js");
+  return { ...actual, captureChainAnchor: vi.fn() };
+});
 vi.mock("./manager-event-sync.js", () => ({ syncManagerEvents: vi.fn() }));
 vi.mock("./signer-staker-sync.js", async () => {
   const actual =
@@ -48,7 +59,7 @@ const stakerResult: SyncSignerStakersResult = {
   discrepanciesObservedThisInvocation: [],
 };
 const eventResult = {
-  stream: `manager-logs:v2:${managerPrincipal}`,
+  stream: `manager-logs:v3:reference-manager-v1:${managerPrincipal}`,
   resumed: false,
   pagesProcessed: 1,
   eventsProcessed: 0,
@@ -73,13 +84,26 @@ function anchor(stacksBlockHeight: number, burnBlockHeight: number): ChainAnchor
   };
 }
 
-function setupSnapshot(chainAnchor: ChainAnchor): SetupSnapshot {
+function setupSnapshot(chainAnchor: ChainAnchor): OperatorAnchorSnapshot {
   return {
     chainAnchor,
     preflight: {
       status: "pass",
       node: { networkId: 0x80000000 },
+      api: {
+        available: true,
+        networkCompatible: true,
+        status: "ready",
+        serverVersion: "stacks-blockchain-api v9.0.0",
+        burnBlockHeight: chainAnchor.burnBlockHeight,
+        stacksTipHeight: chainAnchor.stacksBlockHeight,
+        burnBlockLag: 0,
+        stacksTipLag: 0,
+        position: "equal",
+        error: null,
+      },
       pox: { pox5ContractId },
+      checks: [],
     },
     manager: {
       attachAllowed: true,
@@ -93,7 +117,7 @@ function setupSnapshot(chainAnchor: ChainAnchor): SetupSnapshot {
         canonicalSha256: "b".repeat(64),
       },
     },
-  } as unknown as SetupSnapshot;
+  } as unknown as OperatorAnchorSnapshot;
 }
 
 async function service(): Promise<OperatorService> {
@@ -110,6 +134,7 @@ async function service(): Promise<OperatorService> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(captureChainAnchor).mockResolvedValue(anchor(100, 200));
 });
 
 afterEach(() => {
@@ -117,12 +142,16 @@ afterEach(() => {
 });
 
 describe("OperatorService synchronization anchor retries", () => {
-  it("rereads setup after an anchor error and gives the exact successful anchor to roster sync", async () => {
+  it("uses the shared indexed anchor and recaptures it after an anchor error", async () => {
+    const localAnchor = anchor(110, 205);
     const staleAnchor = anchor(100, 200);
     const stableAnchor = anchor(101, 201);
-    vi.mocked(readSetupSnapshot)
-      .mockResolvedValueOnce(setupSnapshot(staleAnchor))
-      .mockResolvedValueOnce(setupSnapshot(stableAnchor));
+    vi.mocked(readOperatorAnchorSnapshot)
+      .mockResolvedValueOnce(setupSnapshot(localAnchor))
+      .mockResolvedValueOnce(setupSnapshot(localAnchor));
+    vi.mocked(captureChainAnchor)
+      .mockResolvedValueOnce(staleAnchor)
+      .mockResolvedValueOnce(stableAnchor);
     vi.mocked(syncSignerStakers)
       .mockRejectedValueOnce(new SignerStakerAnchorError("tip changed during roster scan"))
       .mockResolvedValueOnce(stakerResult);
@@ -134,7 +163,7 @@ describe("OperatorService synchronization anchor retries", () => {
       events: eventResult,
     });
 
-    expect(readSetupSnapshot).toHaveBeenCalledTimes(2);
+    expect(readOperatorAnchorSnapshot).toHaveBeenCalledTimes(2);
     expect(syncSignerStakers).toHaveBeenCalledTimes(2);
     expect(syncSignerStakers).toHaveBeenNthCalledWith(
       1,
@@ -170,13 +199,13 @@ describe("OperatorService synchronization anchor retries", () => {
 
   it("does not retry or synchronize events after an arbitrary roster-sync failure", async () => {
     const failure = new Error("API response was malformed");
-    vi.mocked(readSetupSnapshot).mockResolvedValue(setupSnapshot(anchor(100, 200)));
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(setupSnapshot(anchor(100, 200)));
     vi.mocked(syncSignerStakers).mockRejectedValue(failure);
     const operator = await service();
 
     await expect(operator.synchronize()).rejects.toBe(failure);
 
-    expect(readSetupSnapshot).toHaveBeenCalledTimes(1);
+    expect(readOperatorAnchorSnapshot).toHaveBeenCalledTimes(1);
     expect(syncSignerStakers).toHaveBeenCalledTimes(1);
     expect(syncManagerEvents).not.toHaveBeenCalled();
   });

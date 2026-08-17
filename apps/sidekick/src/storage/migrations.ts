@@ -1499,4 +1499,653 @@ export const migrations: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 22,
+    name: "durable_deployment_identity",
+    sql: `
+      -- A Sidekick database belongs to exactly one network and signer-manager. The immutable
+      -- binding prevents a configuration change from silently merging unrelated operator history.
+      CREATE TABLE deployment_identity (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
+        network_id INTEGER NOT NULL CHECK (network_id BETWEEN 0 AND 4294967295),
+        parent_network_id INTEGER CHECK (
+          parent_network_id IS NULL OR parent_network_id BETWEEN 0 AND 4294967295
+        ),
+        manager_principal TEXT NOT NULL CHECK (length(manager_principal) BETWEEN 3 AND 500),
+        binding_source TEXT NOT NULL CHECK (binding_source IN ('new', 'legacy-evidence')),
+        bound_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        last_stacks_tip_height INTEGER NOT NULL CHECK (last_stacks_tip_height >= 0),
+        last_burn_block_height INTEGER NOT NULL CHECK (last_burn_block_height >= 0),
+        last_pox5_contract_id TEXT NOT NULL CHECK (length(last_pox5_contract_id) BETWEEN 3 AND 500)
+      ) STRICT;
+
+      CREATE TRIGGER deployment_identity_immutable_binding
+      BEFORE UPDATE ON deployment_identity
+      WHEN NEW.singleton_id IS NOT OLD.singleton_id
+        OR NEW.schema_version IS NOT OLD.schema_version
+        OR NEW.network IS NOT OLD.network
+        OR NEW.network_id IS NOT OLD.network_id
+        OR NEW.parent_network_id IS NOT OLD.parent_network_id
+        OR NEW.manager_principal IS NOT OLD.manager_principal
+        OR NEW.binding_source IS NOT OLD.binding_source
+        OR NEW.bound_at IS NOT OLD.bound_at
+      BEGIN
+        SELECT RAISE(ABORT, 'deployment identity binding is immutable');
+      END;
+
+      CREATE TRIGGER deployment_identity_immutable_delete
+      BEFORE DELETE ON deployment_identity
+      BEGIN
+        SELECT RAISE(ABORT, 'deployment identity is durable');
+      END;
+    `,
+  },
+  {
+    version: 23,
+    name: "observer_delivery_inbox",
+    sql: `
+      -- Event-dispatcher callbacks are untrusted prompts until Sidekick independently verifies
+      -- their chain claims. Persist the exact bounded JSON body before acknowledging delivery so
+      -- node retries cannot be lost across process failure.
+      CREATE TABLE observer_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        endpoint_kind TEXT NOT NULL CHECK (
+          endpoint_kind IN ('new-block', 'new-burn-block', 'attachments')
+        ),
+        content_sha256 TEXT NOT NULL CHECK (
+          length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        raw_payload_json TEXT NOT NULL CHECK (json_valid(raw_payload_json)),
+        payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+        state TEXT NOT NULL CHECK (
+          state IN ('observer-claimed', 'processing', 'node-verified', 'quarantined', 'expired')
+        ),
+        state_reason TEXT,
+        claimed_block_height INTEGER CHECK (
+          claimed_block_height IS NULL OR claimed_block_height >= 0
+        ),
+        claimed_block_hash TEXT,
+        claimed_index_block_hash TEXT,
+        claimed_burn_block_height INTEGER CHECK (
+          claimed_burn_block_height IS NULL OR claimed_burn_block_height >= 0
+        ),
+        claimed_burn_block_hash TEXT,
+        delivery_attempts INTEGER NOT NULL DEFAULT 1 CHECK (delivery_attempts >= 1),
+        processing_attempts INTEGER NOT NULL DEFAULT 0 CHECK (processing_attempts >= 0),
+        first_received_at TEXT NOT NULL,
+        last_received_at TEXT NOT NULL,
+        last_processing_at TEXT,
+        next_attempt_at TEXT NOT NULL,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE (endpoint_kind, content_sha256)
+      ) STRICT;
+
+      CREATE INDEX observer_deliveries_pending
+        ON observer_deliveries (state, next_attempt_at, first_received_at, delivery_id);
+      CREATE INDEX observer_deliveries_claimed_stacks_block
+        ON observer_deliveries (claimed_index_block_hash, claimed_block_height)
+        WHERE claimed_index_block_hash IS NOT NULL;
+      CREATE UNIQUE INDEX observer_deliveries_unique_stacks_block
+        ON observer_deliveries (
+          endpoint_kind, claimed_block_height, claimed_block_hash, claimed_index_block_hash
+        )
+        WHERE endpoint_kind = 'new-block'
+          AND claimed_block_height IS NOT NULL
+          AND claimed_block_hash IS NOT NULL
+          AND claimed_index_block_hash IS NOT NULL;
+      CREATE INDEX observer_deliveries_claimed_burn_block
+        ON observer_deliveries (claimed_burn_block_hash, claimed_burn_block_height)
+        WHERE claimed_burn_block_hash IS NOT NULL;
+      CREATE UNIQUE INDEX observer_deliveries_unique_burn_block
+        ON observer_deliveries (
+          endpoint_kind, claimed_burn_block_height, claimed_burn_block_hash
+        )
+        WHERE endpoint_kind = 'new-burn-block'
+          AND claimed_burn_block_height IS NOT NULL
+          AND claimed_burn_block_hash IS NOT NULL;
+    `,
+  },
+  {
+    version: 24,
+    name: "observer_payload_retention",
+    sql: `
+      -- Preserve delivery identity and verification evidence after bounded raw callback JSON is
+      -- discarded. A pruned row is terminal, so the inbox worker never needs its body again.
+      ALTER TABLE observer_deliveries
+        ADD COLUMN payload_pruned INTEGER NOT NULL DEFAULT 0
+        CHECK (payload_pruned IN (0, 1));
+    `,
+  },
+  {
+    version: 25,
+    name: "browser_wallet_reward_calculation",
+    sql: `
+      -- Widens the durable wallet-intent action check for the reviewed permissionless PoX-5
+      -- reward-calculation adapter. SQLite cannot alter a table CHECK, so preserve every row and
+      -- immutable trigger while rebuilding the parent and observation tables together.
+      DROP INDEX browser_wallet_one_active_scope;
+      DROP INDEX browser_wallet_intents_by_scope;
+      DROP TRIGGER browser_wallet_intent_immutable_binding;
+      DROP TRIGGER browser_wallet_intent_immutable_submission;
+      DROP TRIGGER browser_wallet_observation_immutable_update;
+      DROP TRIGGER browser_wallet_observation_immutable_delete;
+
+      CREATE TABLE browser_wallet_intents_v25 (
+        intent_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN (
+          'deploy-manager', 'register-self', 'add-admin', 'remove-admin',
+          'update-fees', 'withdraw-fees', 'sweep-fee-refunds', 'claim-rewards',
+          'claim-staker-rewards', 'calculate-rewards'
+        )),
+        scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 500),
+        facts_sha256 TEXT NOT NULL CHECK (
+          length(facts_sha256) = 64 AND facts_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_sha256 TEXT NOT NULL CHECK (
+          length(manifest_sha256) = 64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        manifest_json TEXT NOT NULL CHECK (
+          json_valid(manifest_json) AND length(manifest_json) BETWEEN 2 AND 262144
+        ),
+        required_sender TEXT NOT NULL CHECK (length(required_sender) BETWEEN 1 AND 500),
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'devnet', 'regtest')),
+        chain_id INTEGER NOT NULL CHECK (chain_id BETWEEN 0 AND 4294967295),
+        state TEXT NOT NULL CHECK (state IN (
+          'prepared', 'submitted', 'mempool', 'confirmed', 'complete',
+          'expired', 'superseded', 'failed', 'reobserve'
+        )),
+        state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0),
+        txid TEXT UNIQUE CHECK (
+          txid IS NULL OR (
+            length(txid) = 66
+            AND substr(txid, 1, 2) = '0x'
+            AND substr(txid, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        submitted_at TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK (expires_at > created_at),
+        CHECK ((txid IS NULL) = (submitted_at IS NULL)),
+        CHECK (
+          state NOT IN ('submitted', 'mempool', 'confirmed', 'complete', 'reobserve')
+          OR txid IS NOT NULL
+        ),
+        CHECK (state NOT IN ('prepared', 'expired') OR txid IS NULL)
+      ) STRICT;
+
+      INSERT INTO browser_wallet_intents_v25 (
+        intent_id, action, scope, facts_sha256, manifest_sha256, manifest_json,
+        required_sender, network, chain_id, state, state_version, txid,
+        created_at, expires_at, submitted_at, updated_at
+      )
+      SELECT
+        intent_id, action, scope, facts_sha256, manifest_sha256, manifest_json,
+        required_sender, network, chain_id, state, state_version, txid,
+        created_at, expires_at, submitted_at, updated_at
+      FROM browser_wallet_intents;
+
+      CREATE TABLE browser_wallet_intent_observations_v25 (
+        observation_id TEXT PRIMARY KEY,
+        intent_id TEXT NOT NULL REFERENCES browser_wallet_intents_v25(intent_id),
+        outcome TEXT NOT NULL CHECK (
+          length(outcome) BETWEEN 1 AND 100
+          AND outcome NOT GLOB '*[^a-z0-9-]*'
+        ),
+        canonical INTEGER CHECK (canonical IS NULL OR canonical IN (0, 1)),
+        block_height INTEGER CHECK (block_height IS NULL OR block_height >= 0),
+        index_block_hash TEXT CHECK (
+          index_block_hash IS NULL OR (
+            length(index_block_hash) = 66
+            AND substr(index_block_hash, 1, 2) = '0x'
+            AND substr(index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+        evidence_json TEXT NOT NULL CHECK (
+          json_valid(evidence_json) AND length(evidence_json) BETWEEN 2 AND 32768
+        ),
+        observed_at TEXT NOT NULL,
+        CHECK ((block_height IS NULL) = (index_block_hash IS NULL))
+      ) STRICT;
+
+      INSERT INTO browser_wallet_intent_observations_v25 (
+        observation_id, intent_id, outcome, canonical, block_height,
+        index_block_hash, evidence_json, observed_at
+      )
+      SELECT
+        observation_id, intent_id, outcome, canonical, block_height,
+        index_block_hash, evidence_json, observed_at
+      FROM browser_wallet_intent_observations;
+
+      DROP TABLE browser_wallet_intent_observations;
+      DROP TABLE browser_wallet_intents;
+      ALTER TABLE browser_wallet_intents_v25 RENAME TO browser_wallet_intents;
+      ALTER TABLE browser_wallet_intent_observations_v25
+        RENAME TO browser_wallet_intent_observations;
+
+      CREATE UNIQUE INDEX browser_wallet_one_active_scope
+        ON browser_wallet_intents (action, scope)
+        WHERE state IN ('prepared', 'submitted', 'mempool', 'confirmed', 'complete', 'reobserve');
+      CREATE INDEX browser_wallet_intents_by_scope
+        ON browser_wallet_intents (action, scope, created_at DESC, intent_id DESC);
+
+      CREATE TRIGGER browser_wallet_intent_immutable_binding
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN NEW.intent_id IS NOT OLD.intent_id
+        OR NEW.action IS NOT OLD.action
+        OR NEW.scope IS NOT OLD.scope
+        OR NEW.facts_sha256 IS NOT OLD.facts_sha256
+        OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+        OR NEW.manifest_json IS NOT OLD.manifest_json
+        OR NEW.required_sender IS NOT OLD.required_sender
+        OR NEW.network IS NOT OLD.network
+        OR NEW.chain_id IS NOT OLD.chain_id
+        OR NEW.created_at IS NOT OLD.created_at
+        OR NEW.expires_at IS NOT OLD.expires_at
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent binding is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_submission
+      BEFORE UPDATE ON browser_wallet_intents
+      WHEN (OLD.txid IS NOT NULL AND NEW.txid IS NOT OLD.txid)
+        OR (OLD.submitted_at IS NOT NULL AND NEW.submitted_at IS NOT OLD.submitted_at)
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent submission is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_intent_immutable_delete
+      BEFORE DELETE ON browser_wallet_intents
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet intent is durable');
+      END;
+
+      CREATE INDEX browser_wallet_observations_by_intent
+        ON browser_wallet_intent_observations (
+          intent_id, observed_at DESC, observation_id DESC
+        );
+
+      CREATE TRIGGER browser_wallet_observation_immutable_update
+      BEFORE UPDATE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+
+      CREATE TRIGGER browser_wallet_observation_immutable_delete
+      BEFORE DELETE ON browser_wallet_intent_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'browser wallet observation is immutable');
+      END;
+    `,
+  },
+  {
+    version: 26,
+    name: "reward_outlook_observations",
+    sql: `
+      -- The cycle ledger remains the latest manager settlement snapshot. Reward outlook needs a
+      -- separate burn-block series so projections can be derived from exact anchored PoX-5
+      -- accrual observations and later compared with realized calculations.
+      CREATE TABLE reward_outlook_observations (
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        observed_burn_block_height INTEGER NOT NULL CHECK (observed_burn_block_height >= 0),
+        observed_stacks_tip_height INTEGER NOT NULL CHECK (observed_stacks_tip_height >= 0),
+        observed_index_block_hash TEXT NOT NULL CHECK (
+          length(observed_index_block_hash) = 66
+          AND substr(observed_index_block_hash, 1, 2) = '0x'
+          AND substr(observed_index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        chain_anchor_json TEXT NOT NULL CHECK (json_valid(chain_anchor_json)),
+        global_accrued_rewards_sats TEXT NOT NULL CHECK (
+          length(global_accrued_rewards_sats) >= 1
+          AND global_accrued_rewards_sats NOT GLOB '*[^0-9]*'
+        ),
+        calculation_state TEXT NOT NULL CHECK (
+          calculation_state IN ('pending', 'completed', 'ahead', 'unknown')
+        ),
+        last_reward_compute_burn_height TEXT NOT NULL CHECK (
+          length(last_reward_compute_burn_height) >= 1
+          AND last_reward_compute_burn_height NOT GLOB '*[^0-9]*'
+        ),
+        next_target_reward_cycle INTEGER CHECK (
+          next_target_reward_cycle IS NULL OR next_target_reward_cycle >= 0
+        ),
+        next_target_checkpoint TEXT CHECK (
+          next_target_checkpoint IS NULL OR next_target_checkpoint IN ('first-half', 'second-half')
+        ),
+        next_calculation_burn_height INTEGER CHECK (
+          next_calculation_burn_height IS NULL OR next_calculation_burn_height >= 0
+        ),
+        next_eligible_burn_height INTEGER CHECK (
+          next_eligible_burn_height IS NULL OR next_eligible_burn_height >= 0
+        ),
+        next_blocks_remaining INTEGER CHECK (
+          next_blocks_remaining IS NULL OR next_blocks_remaining >= 0
+        ),
+        next_state TEXT CHECK (next_state IS NULL OR next_state IN ('due', 'scheduled')),
+        observed_at TEXT NOT NULL,
+        -- A permissionless calculation can complete in a Stacks block after an earlier sample in
+        -- the same Bitcoin block. Keep both sides of that boundary while coalescing ordinary
+        -- same-burn refreshes for the same last-compute state.
+        PRIMARY KEY (
+          manager_principal, pox5_contract_id, observed_burn_block_height,
+          last_reward_compute_burn_height
+        ),
+        CHECK (
+          (next_target_reward_cycle IS NULL
+            AND next_target_checkpoint IS NULL
+            AND next_calculation_burn_height IS NULL
+            AND next_eligible_burn_height IS NULL
+            AND next_blocks_remaining IS NULL
+            AND next_state IS NULL)
+          OR
+          (next_target_reward_cycle IS NOT NULL
+            AND next_target_checkpoint IS NOT NULL
+            AND next_calculation_burn_height IS NOT NULL
+            AND next_eligible_burn_height IS NOT NULL
+            AND next_blocks_remaining IS NOT NULL
+            AND next_state IS NOT NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX reward_outlook_observations_history
+        ON reward_outlook_observations (
+          manager_principal, pox5_contract_id, observed_burn_block_height DESC,
+          last_reward_compute_burn_height DESC
+        );
+    `,
+  },
+  {
+    version: 27,
+    name: "reward_outlook_pool_estimates",
+    sql: `
+      -- Preserve the contract-exact current-share simulation and its anchored inputs with each
+      -- accrual sample so later checkpoint forecasts can be calibrated against realized results.
+      ALTER TABLE reward_outlook_observations ADD COLUMN pool_estimate_json TEXT
+        CHECK (pool_estimate_json IS NULL OR json_valid(pool_estimate_json));
+      ALTER TABLE reward_outlook_observations ADD COLUMN pool_estimate_unavailable_reason TEXT
+        CHECK (
+          pool_estimate_unavailable_reason IS NULL OR pool_estimate_unavailable_reason IN (
+            'chain-anchor-unavailable', 'calculation-target-unavailable',
+            'incomplete-active-bond-state', 'anchored-inputs-unavailable',
+            'contract-simulation-failed'
+          )
+        );
+    `,
+  },
+  {
+    version: 28,
+    name: "reward_outlook_run_rate_forecasts",
+    sql: `
+      -- Forecasts remain distinct from the exact current-share simulation. Persist the range and
+      -- omission reason at each anchor so later realized calculations can calibrate the model.
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_json TEXT
+        CHECK (forecast_json IS NULL OR json_valid(forecast_json));
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_unavailable_reason TEXT
+        CHECK (
+          forecast_unavailable_reason IS NULL OR forecast_unavailable_reason IN (
+            'chain-anchor-unavailable', 'calculation-target-unavailable',
+            'current-pool-estimate-unavailable', 'insufficient-samples',
+            'non-monotonic-accrual', 'forecast-inputs-unavailable',
+            'contract-simulation-failed'
+          )
+        );
+
+      CREATE INDEX reward_outlook_forecast_samples
+        ON reward_outlook_observations (
+          manager_principal, pox5_contract_id, last_reward_compute_burn_height,
+          next_target_reward_cycle, next_target_checkpoint, next_calculation_burn_height,
+          observed_burn_block_height DESC
+        );
+    `,
+  },
+  {
+    version: 29,
+    name: "reward_calculation_realizations",
+    sql: `
+      -- Model revisions make calibration windows reproducible. Existing forecasts predate the
+      -- first explicit revision and intentionally remain ineligible for calibration.
+      ALTER TABLE reward_outlook_observations ADD COLUMN forecast_model_revision INTEGER
+        CHECK (forecast_model_revision IS NULL OR forecast_model_revision > 0);
+
+      -- One canonical PoX-5 calculate-rewards print closes a forecast. The event is discovered
+      -- through the indexer, its transaction inclusion is independently proven by the local node,
+      -- and manager allocation is replayed from node reads at the transaction's parent anchor.
+      CREATE TABLE reward_calculation_realizations (
+        chain_id INTEGER NOT NULL CHECK (chain_id >= 0),
+        tx_id TEXT NOT NULL CHECK (
+          length(tx_id) = 66
+          AND substr(tx_id, 1, 2) = '0x'
+          AND substr(tx_id, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        event_index INTEGER NOT NULL CHECK (event_index >= 0),
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        canonical INTEGER NOT NULL CHECK (canonical IN (0, 1)),
+        block_height INTEGER NOT NULL CHECK (block_height >= 0),
+        index_block_hash TEXT NOT NULL CHECK (
+          length(index_block_hash) = 66
+          AND substr(index_block_hash, 1, 2) = '0x'
+          AND substr(index_block_hash, 3) NOT GLOB '*[^0-9a-f]*'
+        ),
+        burn_block_height INTEGER NOT NULL CHECK (burn_block_height >= 0),
+        target_reward_cycle INTEGER NOT NULL CHECK (target_reward_cycle >= 0),
+        target_checkpoint TEXT NOT NULL CHECK (
+          target_checkpoint IN ('first-half', 'second-half')
+        ),
+        calculation_burn_height INTEGER NOT NULL CHECK (calculation_burn_height >= 0),
+        event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+        pool_estimate_json TEXT CHECK (pool_estimate_json IS NULL OR json_valid(pool_estimate_json)),
+        pool_estimate_unavailable_reason TEXT CHECK (
+          pool_estimate_unavailable_reason IS NULL OR pool_estimate_unavailable_reason IN (
+            'historical-anchor-unavailable', 'same-block-state-ambiguous',
+            'anchored-inputs-unavailable', 'contract-simulation-failed'
+          )
+        ),
+        model_revision INTEGER NOT NULL CHECK (model_revision > 0),
+        evaluation_json TEXT CHECK (evaluation_json IS NULL OR json_valid(evaluation_json)),
+        observed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (chain_id, tx_id, event_index),
+        CHECK (
+          (pool_estimate_json IS NULL) <> (pool_estimate_unavailable_reason IS NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX reward_calculation_realizations_manager_history
+        ON reward_calculation_realizations (
+          manager_principal, pox5_contract_id, canonical,
+          calculation_burn_height DESC, block_height DESC
+        );
+      CREATE INDEX reward_calculation_realizations_contract_height
+        ON reward_calculation_realizations (
+          pox5_contract_id, canonical, block_height DESC, event_index DESC
+        );
+    `,
+  },
+  {
+    version: 30,
+    name: "durable_signer_health_evidence",
+    sql: `
+      -- Five-second local evidence is retained for short-horizon diagnosis. Five-minute rollups
+      -- preserve longer trends without allowing raw monitoring samples to grow without bound.
+      CREATE TABLE health_observations (
+        config_fingerprint TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        observation_json TEXT NOT NULL CHECK (json_valid(observation_json)),
+        PRIMARY KEY (config_fingerprint, observed_at)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX health_observations_recent
+        ON health_observations (config_fingerprint, observed_at DESC);
+
+      CREATE TABLE health_rollups (
+        config_fingerprint TEXT NOT NULL,
+        window_started_at TEXT NOT NULL,
+        window_ended_at TEXT NOT NULL,
+        rollup_json TEXT NOT NULL CHECK (json_valid(rollup_json)),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (config_fingerprint, window_started_at)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX health_rollups_recent
+        ON health_rollups (config_fingerprint, window_started_at DESC);
+
+      -- Findings are episode-oriented: a sustained condition opens one durable record, subsequent
+      -- observations update its evidence, and recovery resolves it without deleting the history.
+      CREATE TABLE health_finding_episodes (
+        episode_id TEXT PRIMARY KEY,
+        config_fingerprint TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'resolved')),
+        finding_json TEXT NOT NULL CHECK (json_valid(finding_json)),
+        opened_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        resolved_at TEXT,
+        occurrences INTEGER NOT NULL CHECK (occurrences > 0),
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (status = 'active' AND resolved_at IS NULL)
+          OR (status = 'resolved' AND resolved_at IS NOT NULL)
+        )
+      ) STRICT;
+
+      CREATE UNIQUE INDEX health_finding_one_active_episode
+        ON health_finding_episodes (config_fingerprint, finding_id)
+        WHERE status = 'active';
+      CREATE INDEX health_finding_episode_history
+        ON health_finding_episodes (config_fingerprint, opened_at DESC, episode_id DESC);
+    `,
+  },
+  {
+    version: 31,
+    name: "local_node_authority",
+    sql: `
+      -- Current-state projections must not silently become authoritative while a fresh or
+      -- recovering local node is still catching up. Keep the last proven-current height so a
+      -- transient or restarted process cannot erase that safety boundary.
+      CREATE TABLE local_node_authority (
+        manager_principal TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        status TEXT NOT NULL CHECK (status IN ('current', 'catching-up', 'unknown')),
+        observed_at TEXT NOT NULL,
+        stacks_tip_height INTEGER NOT NULL CHECK (stacks_tip_height >= 0),
+        highest_proven_current_stacks_tip_height INTEGER CHECK (
+          highest_proven_current_stacks_tip_height IS NULL
+          OR highest_proven_current_stacks_tip_height >= 0
+        ),
+        consecutive_current_observations INTEGER NOT NULL CHECK (
+          consecutive_current_observations >= 0
+        ),
+        reason TEXT NOT NULL CHECK (length(reason) > 0)
+      ) STRICT, WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 32,
+    name: "current_member_history_recovery",
+    sql: `
+      -- Evidence strength is part of each imported event rather than an inference from whichever
+      -- source happens to be configured later.
+      ALTER TABLE chain_events ADD COLUMN evidence_level TEXT NOT NULL
+        DEFAULT 'indexer-reported'
+        CHECK (evidence_level IN (
+          'node-index-verified', 'canonical-block-correlated', 'indexer-reported'
+        ));
+
+      ALTER TABLE reward_calculation_realizations ADD COLUMN evidence_level TEXT NOT NULL
+        DEFAULT 'indexer-reported'
+        CHECK (evidence_level IN (
+          'node-index-verified', 'canonical-block-correlated', 'indexer-reported'
+        ));
+
+      -- Fresh installs backfill only principals in the authoritative current roster. Progress is
+      -- per member so work remains restart-safe, bounded, and fair across long-lived wallets.
+      CREATE TABLE current_member_history_recovery (
+        source_id TEXT NOT NULL REFERENCES chain_sources(source_id),
+        manager_principal TEXT NOT NULL,
+        pox5_contract_id TEXT NOT NULL,
+        staker_principal TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
+        cursor TEXT,
+        pages_processed INTEGER NOT NULL DEFAULT 0 CHECK (pages_processed >= 0),
+        transactions_inspected INTEGER NOT NULL DEFAULT 0 CHECK (transactions_inspected >= 0),
+        relevant_events INTEGER NOT NULL DEFAULT 0 CHECK (relevant_events >= 0),
+        discovered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, manager_principal, pox5_contract_id, staker_principal),
+        CHECK (
+          (status = 'pending' AND completed_at IS NULL)
+          OR (status = 'complete' AND cursor IS NULL AND completed_at IS NOT NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX current_member_history_recovery_fair_queue
+        ON current_member_history_recovery (
+          source_id, manager_principal, pox5_contract_id, status, updated_at, staker_principal
+        );
+    `,
+  },
+  {
+    version: 33,
+    name: "chain_event_occurrence_time",
+    sql: `
+      -- Discovery time answers when Sidekick learned about an event; occurrence time answers when
+      -- the event actually happened. Keep both so a fresh install does not make historical pool
+      -- activity look new merely because it was just backfilled.
+      ALTER TABLE chain_events ADD COLUMN occurred_at TEXT;
+
+      -- Migration 32 already bounds historical recovery to current pool members. Requeue only
+      -- completed members whose imported events predate occurrence-time capture, allowing the
+      -- ordinary fair anti-entropy loop to enrich them without a global contract-history scan.
+      UPDATE current_member_history_recovery
+      SET status = 'pending', cursor = NULL, pages_processed = 0,
+          transactions_inspected = 0, relevant_events = 0,
+          updated_at = discovered_at, completed_at = NULL
+      WHERE status = 'complete'
+        AND EXISTS (
+          SELECT 1
+          FROM chain_events
+          WHERE chain_events.contract_id = current_member_history_recovery.pox5_contract_id
+            AND chain_events.occurred_at IS NULL
+            AND chain_events.decoded_payload_json IS NOT NULL
+            AND json_extract(
+              chain_events.decoded_payload_json,
+              '$.event.stakerPrincipal'
+            ) = current_member_history_recovery.staker_principal
+        );
+    `,
+  },
+  {
+    version: 34,
+    name: "source_scoped_api_credentials",
+    sql: `
+      -- API credentials belong to a specific outbound source. Keeping them outside the public
+      -- settings document prevents accidental disclosure and lets future sources add credentials
+      -- without adding another secret column to the singleton settings row.
+      CREATE TABLE runtime_api_credentials (
+        source TEXT PRIMARY KEY CHECK (source IN ('indexed-api', 'reference-api')),
+        secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 2000),
+        bound_url TEXT NOT NULL CHECK (length(bound_url) BETWEEN 1 AND 500),
+        updated_at TEXT NOT NULL
+      ) STRICT, WITHOUT ROWID;
+
+      -- Preserve the pre-v34 indexed API credential. The legacy column remains only because
+      -- SQLite cannot drop it without rebuilding the settings table; new writes clear it.
+      INSERT INTO runtime_api_credentials (source, secret, bound_url, updated_at)
+      SELECT 'indexed-api', api_key_secret,
+        json_extract(settings_json, '$.dataSources.apiUrl'), updated_at
+      FROM runtime_settings
+      WHERE singleton_id = 1 AND api_key_secret IS NOT NULL;
+
+      UPDATE runtime_settings SET api_key_secret = NULL WHERE singleton_id = 1;
+    `,
+  },
 ];

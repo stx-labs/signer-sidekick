@@ -1,4 +1,6 @@
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
+import { type ManagerEventVocabulary, managerEventStream } from "./manager-event-vocabulary.js";
+import type { ChainStateRepository } from "./storage/chain-state-repository.js";
 import type {
   ManagerActivityPage,
   StoredManagerAdminUpdate,
@@ -33,7 +35,7 @@ export interface ManagerActivityStore {
     chainId: number,
     contractId: string,
   ): { eventCount: number; latestBlockHeight: number | null };
-  getCursor?(sourceId: string, stream: string): { cursor: string | null } | null;
+  chainState?: Pick<ChainStateRepository, "getCursor">;
   listManagerAdminUpdates?(chainId: number, contractId: string): StoredManagerAdminUpdate[];
 }
 
@@ -88,6 +90,7 @@ export interface ManagerActivityOptions {
   withdrawalDirection?: SortDirection;
   withdrawalState?: "pending" | "settled" | "reclaimed" | null;
   sourceId?: string;
+  eventVocabulary?: ManagerEventVocabulary;
 }
 
 export type SortDirection = "asc" | "desc";
@@ -126,11 +129,43 @@ export function readManagerActivity(
   });
   const adminUpdates = store.listManagerAdminUpdates?.(chainId, managerPrincipal) ?? [];
   const { address: deployingAdmin } = parseContractPrincipal(managerPrincipal);
-  const fullHistoryCursor =
-    options.sourceId && store.getCursor
-      ? store.getCursor(options.sourceId, `manager-logs:v2:${managerPrincipal}`)
-      : null;
-  const adminHistoryCurrent = fullHistoryCursor?.cursor === null;
+  let eventVocabulary = options.eventVocabulary;
+  let fullHistoryCursor: { cursor: string | null; updatedAt?: string } | null = null;
+  if (options.sourceId && store.chainState) {
+    if (eventVocabulary) {
+      fullHistoryCursor = store.chainState.getCursor(
+        options.sourceId,
+        managerEventStream(managerPrincipal, eventVocabulary),
+      );
+    } else {
+      const generic = store.chainState.getCursor(
+        options.sourceId,
+        managerEventStream(managerPrincipal, "generic-v1"),
+      );
+      const reference = store.chainState.getCursor(
+        options.sourceId,
+        managerEventStream(managerPrincipal, "reference-manager-v1"),
+      );
+      if (generic && !reference) {
+        eventVocabulary = "generic-v1";
+        fullHistoryCursor = generic;
+      } else if (reference && !generic) {
+        eventVocabulary = "reference-manager-v1";
+        fullHistoryCursor = reference;
+      } else if (generic && reference) {
+        // Vocabulary changes create a new stream. The most recently synchronized stream is active;
+        // ties fail closed to generic semantics.
+        const referenceIsNewer =
+          reference.updatedAt !== undefined &&
+          generic.updatedAt !== undefined &&
+          reference.updatedAt > generic.updatedAt;
+        eventVocabulary = referenceIsNewer ? "reference-manager-v1" : "generic-v1";
+        fullHistoryCursor = referenceIsNewer ? reference : generic;
+      }
+    }
+  }
+  const adminHistoryCurrent =
+    eventVocabulary === "reference-manager-v1" && fullHistoryCursor?.cursor === null;
   const admins = new Set([deployingAdmin]);
   if (adminHistoryCurrent) {
     for (const update of adminUpdates) {

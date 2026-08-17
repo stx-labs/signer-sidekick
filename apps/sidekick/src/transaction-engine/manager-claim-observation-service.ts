@@ -17,8 +17,8 @@ import {
   deriveRewardCalculationTarget,
   type RewardCalculationCheckpoint,
 } from "../chain-anchor.js";
+import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import type { StxRewardStatus } from "../reward-status.js";
-import type { SetupSnapshot } from "../setup-snapshot.js";
 import type { SignerStakerRun, StoredSignerStaker } from "../storage/store.js";
 import {
   type CanonicalAnchorProof,
@@ -124,7 +124,7 @@ export interface ManagerClaimPublicGasPayer {
 }
 
 export interface ManagerClaimObservationInput {
-  setup: SetupSnapshot;
+  setup: OperatorAnchorSnapshot;
   rewards: StxRewardStatus | null;
   sourceId: string;
   requestedMode: "observe" | "assist";
@@ -340,7 +340,7 @@ function parsedUnsigned(value: string, label: string): bigint | null {
   }
 }
 
-function networkKind(setup: SetupSnapshot): "mainnet" | "testnet" | null {
+function networkKind(setup: OperatorAnchorSnapshot): "mainnet" | "testnet" | null {
   if (setup.preflight.network === "mainnet") return "mainnet";
   if (["testnet", "devnet", "regtest"].includes(setup.preflight.network)) return "testnet";
   return null;
@@ -360,7 +360,10 @@ function rewardCheckpoint(input: ManagerClaimObservationInput): {
 } | null {
   const { rewards, setup } = input;
   if (!rewards) return null;
-  const target = deriveRewardCalculationTarget(setup.chainAnchor);
+  const target = deriveRewardCalculationTarget(
+    setup.chainAnchor,
+    setup.preflight.pox.firstRewardCycleId,
+  );
   if (target.status === "invalid") return null;
   const lastHeight = parsedUnsigned(
     rewards.global.lastRewardComputeBurnHeight,

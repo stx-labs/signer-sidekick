@@ -66,7 +66,11 @@ export type RewardCalculationTarget =
     }
   | {
       status: "invalid";
-      reason: "odd-reward-cycle-length" | "no-previous-reward-cycle" | "invalid-cycle-start";
+      reason:
+        | "odd-reward-cycle-length"
+        | "no-previous-reward-cycle"
+        | "invalid-cycle-start"
+        | "before-first-reward-cycle";
     };
 
 /**
@@ -77,14 +81,31 @@ export type RewardCalculationTarget =
  * second-half calculation also targets C. The calculation checkpoint is therefore distinct from
  * the anchor's current half-cycle label.
  */
-export function deriveRewardCalculationTarget(anchor: ChainAnchor): RewardCalculationTarget {
+export function deriveRewardCalculationTarget(
+  anchor: ChainAnchor,
+  firstRewardCycleId?: number | null,
+): RewardCalculationTarget {
   if (anchor.rewardCycleLength % 2 !== 0) {
     return { status: "invalid", reason: "odd-reward-cycle-length" };
+  }
+  if (
+    firstRewardCycleId !== undefined &&
+    firstRewardCycleId !== null &&
+    (!Number.isSafeInteger(firstRewardCycleId) || firstRewardCycleId < 0)
+  ) {
+    return { status: "invalid", reason: "before-first-reward-cycle" };
   }
 
   const cycleStart = anchor.burnBlockHeight - anchor.cyclePosition;
   if (!Number.isSafeInteger(cycleStart) || cycleStart < 0) {
     return { status: "invalid", reason: "invalid-cycle-start" };
+  }
+  if (
+    firstRewardCycleId !== undefined &&
+    firstRewardCycleId !== null &&
+    anchor.rewardCycle < firstRewardCycleId
+  ) {
+    return { status: "invalid", reason: "before-first-reward-cycle" };
   }
 
   if (anchor.checkpoint === "second-half") {
@@ -94,6 +115,21 @@ export function deriveRewardCalculationTarget(anchor: ChainAnchor): RewardCalcul
       calculationCheckpoint: "first-half",
       expectedLastRewardComputeBurnHeight: cycleStart + anchor.rewardCycleLength / 2 - 1,
     };
+  }
+
+  // At activation, PoX-5's last-compute data var is u0 and there is no prior PoX-5 reward cycle
+  // to distribute. Its first meaningful calculation closes the first half of the first active
+  // cycle. Without this boundary, u0 looks like a missed calculation for the preceding PoX-4
+  // cycle and Sidekick incorrectly offers a zero-share distribution immediately at activation.
+  if (firstRewardCycleId !== undefined && firstRewardCycleId !== null) {
+    if (anchor.rewardCycle === firstRewardCycleId) {
+      return {
+        status: "ready",
+        rewardCycle: anchor.rewardCycle,
+        calculationCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: cycleStart + anchor.rewardCycleLength / 2 - 1,
+      };
+    }
   }
 
   if (anchor.rewardCycle === 0 || cycleStart === 0) {

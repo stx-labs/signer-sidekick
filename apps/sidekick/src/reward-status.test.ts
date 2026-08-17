@@ -9,9 +9,11 @@ import {
 } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "./chain-anchor.js";
+import type { RewardForecastObservation } from "./reward-forecast.js";
 import {
   discoverStakerClaims,
   type RewardStatusStore,
+  readRewardOutlook,
   readStxRewardStatus,
 } from "./reward-status.js";
 import type { SignerStakerRun, StoredCycleMembership } from "./storage/store.js";
@@ -65,6 +67,8 @@ function store(run: SignerStakerRun | null = completedRun): RewardStatusStore {
       .fn()
       .mockReturnValue([membership(stakerOne), membership(stakerTwo)]),
     putRewardCycleSnapshot: vi.fn(),
+    putRewardOutlookObservation: vi.fn(),
+    listRewardForecastSamples: vi.fn().mockReturnValue([]),
   };
 }
 
@@ -103,8 +107,11 @@ function nodeReads(
     bondBuckets?: Record<string, { shares?: bigint; earned?: bigint; rewardsPerToken?: bigint }>;
     stxEarned?: bigint;
     stxShares?: bigint;
+    totalStxShares?: bigint;
     lastRewardComputeHeight?: bigint;
+    globalAccruedRewards?: bigint;
     managerUnclaimedSats?: bigint;
+    failEstimateRead?: boolean;
   } = {},
 ) {
   return vi.fn(
@@ -118,6 +125,11 @@ function nodeReads(
       switch (functionName) {
         case "get-last-reward-compute-height":
           return uintCV(overrides.lastRewardComputeHeight ?? 960_000n);
+        case "get-new-rewards":
+          return uintCV(overrides.globalAccruedRewards ?? 25_000n);
+        case "get-reserve-balance":
+          if (overrides.failEstimateRead) throw new Error("anchored reserve read failed");
+          return uintCV(0n);
         case "burn-height-to-reward-cycle":
           return uintCV(141n);
         case "bond-period-to-reward-cycle":
@@ -142,6 +154,12 @@ function nodeReads(
           return uintCV(
             isStxBucket
               ? (overrides.stxShares ?? 0n)
+              : (overrides.bondBuckets?.[bondKey]?.shares ?? 0n),
+          );
+        case "get-total-shares-staked-for-cycle":
+          return uintCV(
+            isStxBucket
+              ? (overrides.totalStxShares ?? overrides.stxShares ?? 0n)
               : (overrides.bondBuckets?.[bondKey]?.shares ?? 0n),
           );
         case "get-earned-staker-rewards": {
@@ -182,7 +200,326 @@ function l1Preference(maxFee: bigint) {
   );
 }
 
+function outlookHistorySample(
+  burnBlockHeight: number,
+  globalAccruedRewardsSats: string,
+): RewardForecastObservation {
+  return {
+    observedBurnBlockHeight: burnBlockHeight,
+    observedAt: `2026-07-14T12:${String(burnBlockHeight - 960_000).padStart(2, "0")}:00.000Z`,
+    globalAccruedRewardsSats,
+    lastRewardComputeBurnHeight: "959999",
+    nextCalculation: {
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+    },
+  };
+}
+
 describe("STX-only reward status", () => {
+  it("reads and persists exact PoX-5 outlook without a signer-manager adapter", async () => {
+    const projectionStore = store();
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: { callReadOnly: nodeReads({ globalAccruedRewards: 123_456n }) },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      pox5ContractId: pox5,
+      accrued: { globalSats: "123456", source: "pox5-get-new-rewards" },
+      calculation: {
+        state: "ahead",
+        observedLastRewardComputeBurnHeight: "960000",
+      },
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        managerPrincipal: manager,
+        globalAccruedRewardsSats: "123456",
+        chainAnchor,
+      }),
+    );
+  });
+
+  it("schedules the second-half calculation after the first-half calculation completes", async () => {
+    const secondHalfAnchor: ChainAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: 961_200,
+      cyclePosition: 1_200,
+      checkpoint: "second-half",
+    };
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({ lastRewardComputeHeight: 961_049n }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor: secondHalfAnchor,
+    });
+
+    expect(outlook.calculation).toMatchObject({
+      state: "completed",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      next: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 962_099,
+        eligibleBurnHeight: 962_100,
+        blocksRemaining: 900,
+      },
+    });
+  });
+
+  it("does not treat the pre-activation cycle as an overdue first PoX-5 calculation", async () => {
+    const activationAnchor: ChainAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: 962_569,
+      rewardCycle: 141,
+      cyclePosition: 419,
+      checkpoint: "first-half",
+    };
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 0n,
+          globalAccruedRewards: 64_574_704n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 392_447_554_847_960n,
+          stxShares: 3_999_770_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-08-15T12:00:00.000Z",
+      chainAnchor: activationAnchor,
+      firstRewardCycleId: 141,
+    });
+
+    expect(outlook).toMatchObject({
+      calculation: {
+        state: "pending",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: 963_199,
+        next: {
+          state: "scheduled",
+          calculationBurnHeight: 963_199,
+          eligibleBurnHeight: 963_200,
+          blocksRemaining: 631,
+        },
+      },
+      poolEstimate: {
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        inputs: {
+          globalStxSharesUstx: "392447554847960",
+          managerStxSharesUstx: "3999770000000",
+        },
+      },
+    });
+    expect(BigInt(outlook.poolEstimate?.grossSats ?? "0")).toBeGreaterThan(0n);
+  });
+
+  it("exposes the contract-rounded pool reward if current anchored inputs were calculated now", async () => {
+    const outlook = await readRewardOutlook({
+      store: store(),
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 100_000_000_000n,
+          stxShares: 50_000_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      accrued: { globalSats: "25000" },
+      poolEstimateUnavailableReason: null,
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 961_049,
+        grossSats: "10625",
+        stxSats: "10625",
+        bondSats: "0",
+        inputs: {
+          globalStxSharesUstx: "100000000000",
+          managerStxSharesUstx: "50000000000",
+          activeBonds: [],
+        },
+      },
+    });
+  });
+
+  it("keeps exact global accrual available when the anchored estimate cannot be read", async () => {
+    const projectionStore = store();
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          failEstimateRead: true,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:02:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      accrued: { globalSats: "25000" },
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        globalAccruedRewardsSats: "25000",
+        poolEstimate: null,
+        poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+      }),
+    );
+  });
+
+  it("projects a checkpoint range from durable samples and replays each bound through PoX-5", async () => {
+    const projectionStore = store();
+    vi.mocked(projectionStore.listRewardForecastSamples).mockReturnValue([
+      outlookHistorySample(960_010, "1000"),
+      outlookHistorySample(960_020, "2200"),
+    ]);
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly: nodeReads({
+          lastRewardComputeHeight: 959_999n,
+          globalAccruedRewards: 25_000n,
+          firstBondPeriodCycle: 200n,
+          totalStxShares: 100_000_000_000n,
+          stxShares: 50_000_000_000n,
+        }),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:30:00.000Z",
+      chainAnchor,
+    });
+
+    expect(outlook).toMatchObject({
+      forecastUnavailableReason: null,
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 961_049,
+        globalSats: { low: "98545", point: "108922", high: "122080" },
+        poolSats: { low: "41882", point: "46292", high: "51884" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_010,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 230,
+          elapsedBlocks: 241,
+          remainingBlocks: 809,
+        },
+        confidence: "low",
+      },
+    });
+    expect(projectionStore.listRewardForecastSamples).toHaveBeenCalledWith(manager, pox5, {
+      lastRewardComputeBurnHeight: "959999",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+      throughBurnBlockHeight: 960_240,
+      limit: 2_102,
+    });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forecast: expect.objectContaining({
+          poolSats: { low: "41882", point: "46292", high: "51884" },
+        }),
+        forecastUnavailableReason: null,
+      }),
+    );
+  });
+
+  it("projects reviewed operator fees with exact per-staker integer rounding", async () => {
+    const projectionStore = store();
+    vi.mocked(projectionStore.listRewardForecastSamples).mockReturnValue([
+      outlookHistorySample(960_010, "1000"),
+      outlookHistorySample(960_020, "2200"),
+    ]);
+    vi.mocked(projectionStore.listCycleMembershipsForCycle).mockReturnValue([
+      { ...membership(stakerOne), amountUstx: 20_000_000_000n },
+      { ...membership(stakerTwo), amountUstx: 30_000_000_000n },
+    ]);
+    projectionStore.listSignerStakers = vi.fn().mockReturnValue([
+      { stakerPrincipal: stakerOne, bond: null },
+      { stakerPrincipal: stakerTwo, bond: null },
+    ] as never);
+    const callReadOnly = nodeReads({
+      lastRewardComputeHeight: 959_999n,
+      globalAccruedRewards: 25_000n,
+      firstBondPeriodCycle: 200n,
+      totalStxShares: 100_000_000_000n,
+      stxShares: 50_000_000_000n,
+    });
+    const outlook = await readRewardOutlook({
+      store: projectionStore,
+      node: {
+        callReadOnly,
+        getDataVar: vi.fn().mockResolvedValue(uintCV(500)),
+        getMapEntry: vi.fn().mockResolvedValue(noneCV()),
+      },
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt: "2026-07-14T12:30:00.000Z",
+      chainAnchor,
+      sourceId,
+      feeCapability: {
+        executionAvailable: true,
+        adapter: { id: "reference-manager-claim-rewards", revision: 1 },
+        reason: "reviewed test adapter",
+      },
+    });
+
+    expect(outlook).toMatchObject({
+      operatorFeeForecastUnavailableReason: null,
+      operatorFeeForecast: {
+        kind: "reference-manager-exact",
+        inputs: {
+          stakers: 2,
+          buckets: [{ bondIndex: null, feeBips: "500", source: "configured-fee-assumption" }],
+        },
+        assumptions: ["per-staker-per-bucket-integer-rounding", "configured-fee-until-claim"],
+      },
+    });
+    const fees = outlook.operatorFeeForecast?.sats;
+    expect(fees).not.toBeNull();
+    expect(BigInt(fees?.low ?? 0)).toBeLessThanOrEqual(BigInt(fees?.point ?? 0));
+    expect(BigInt(fees?.point ?? 0)).toBeLessThanOrEqual(BigInt(fees?.high ?? 0));
+    expect(BigInt(fees?.point ?? 0)).not.toBe(
+      (BigInt(outlook.forecast?.poolSats.point ?? 0) * 500n) / 10_000n,
+    );
+  });
+
   it("shows per-staker earnings, payout policy, and manager liabilities", async () => {
     const projectionStore = store();
     const callReadOnly = nodeReads({
@@ -200,6 +537,7 @@ describe("STX-only reward status", () => {
       global: {
         lastRewardComputeBurnHeight: "960000",
         lastComputedRewardCycle: "141",
+        globalAccruedRewardsSats: "25000",
         rewardsPerToken: "999",
         signerEarnedBeforeManagerClaimSats: "40000",
       },
@@ -246,6 +584,12 @@ describe("STX-only reward status", () => {
         ]),
       }),
     );
+    const persistedStakers = vi.mocked(projectionStore.putRewardCycleSnapshot).mock.calls[0]?.[0]
+      .stakers;
+    expect(persistedStakers).toHaveLength(2);
+    expect(persistedStakers?.[0]).not.toHaveProperty("claims");
+    expect(persistedStakers?.[1]).not.toHaveProperty("claims");
+    expect(projectionStore.putRewardOutlookObservation).not.toHaveBeenCalled();
   });
 
   it("keeps global and manager state visible when no local roster is available", async () => {
@@ -454,6 +798,12 @@ describe("STX-only reward status", () => {
 
   it("reports a pending global calculation instead of implying stale local data", async () => {
     const projectionStore = store();
+    projectionStore.getRewardCalculationEligibilityObservation = vi.fn().mockReturnValue({
+      observedAt: "2026-07-14T11:50:00.000Z",
+      stacksBlockHeight: 8_599_976,
+      burnBlockHeight: 960_000,
+      indexBlockHash: `0x${"cd".repeat(32)}`,
+    });
     const pending = await readStxRewardStatus(
       options(
         projectionStore,
@@ -471,7 +821,27 @@ describe("STX-only reward status", () => {
       targetCheckpoint: "second-half",
       expectedLastRewardComputeBurnHeight: 959_999,
       observedLastRewardComputeBurnHeight: "959000",
+      next: {
+        state: "due",
+        targetRewardCycle: 140,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 959_999,
+        eligibleBurnHeight: 960_000,
+        blocksRemaining: 0,
+        grace: {
+          state: "action-required",
+          elapsedMinutes: 12,
+          canonicalStacksBlocks: 24,
+        },
+      },
     });
+    expect(projectionStore.putRewardOutlookObservation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        globalAccruedRewardsSats: "25000",
+        calculationState: "pending",
+        chainAnchor,
+      }),
+    );
 
     const completed = await readStxRewardStatus(
       options(
@@ -481,6 +851,23 @@ describe("STX-only reward status", () => {
       ),
     );
     expect(completed.calculation.state).toBe("completed");
+    expect(completed.calculation.next).toEqual({
+      state: "scheduled",
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 961_049,
+      eligibleBurnHeight: 961_050,
+      blocksRemaining: 810,
+      grace: {
+        state: "scheduled",
+        firstEligibleObservedAt: null,
+        firstEligibleStacksBlockHeight: null,
+        elapsedMinutes: 0,
+        canonicalStacksBlocks: 0,
+        requiredMinutes: 10,
+        requiredCanonicalStacksBlocks: 24,
+      },
+    });
   });
 
   it("never labels a claim ready that wallet-intent preparation would refuse", async () => {

@@ -1,4 +1,184 @@
 import { z } from "zod";
+import { type EngineChainAnchor, engineChainAnchorSchema } from "./engine.js";
+
+export const connectionOutcomeCodeSchema = z.enum([
+  "node-unreachable",
+  "node-network-mismatch",
+  "pox5-unavailable",
+  "principal-network-mismatch",
+  "manager-not-deployed",
+  "manager-trait-mismatch",
+  "deployment-identity-mismatch",
+]);
+export type ConnectionOutcomeCode = z.infer<typeof connectionOutcomeCodeSchema>;
+
+const connectionNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
+const connectionPrincipalSchema = z.string().min(3).max(500);
+const networkIdSchema = z.number().int().nonnegative().max(0xffff_ffff);
+
+export const deploymentIdentityBindingSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    network: connectionNetworkSchema,
+    networkId: networkIdSchema,
+    parentNetworkId: networkIdSchema.nullable(),
+    managerPrincipal: connectionPrincipalSchema,
+    boundAt: z.iso.datetime(),
+    lastVerifiedAt: z.iso.datetime(),
+    lastStacksTipHeight: z.number().int().nonnegative(),
+    lastBurnBlockHeight: z.number().int().nonnegative(),
+    lastPox5ContractId: connectionPrincipalSchema,
+  })
+  .strict();
+export type DeploymentIdentityBinding = z.infer<typeof deploymentIdentityBindingSchema>;
+
+export const connectionAssessmentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["connected", "blocked", "unavailable"]),
+    outcomeCode: connectionOutcomeCodeSchema.nullable(),
+    checkedAt: z.iso.datetime(),
+    stale: z.boolean(),
+    configured: z
+      .object({
+        network: connectionNetworkSchema,
+        networkId: networkIdSchema,
+        nodeRpcUrl: z.string().min(1),
+        managerPrincipal: connectionPrincipalSchema,
+      })
+      .strict(),
+    observed: z
+      .object({
+        networkId: networkIdSchema,
+        parentNetworkId: networkIdSchema.nullable(),
+        stacksTipHeight: z.number().int().nonnegative(),
+        burnBlockHeight: z.number().int().nonnegative(),
+        pox5ContractId: connectionPrincipalSchema.nullable(),
+        manager: z
+          .object({
+            deployed: z.boolean(),
+            traitCompatible: z.boolean(),
+            missingRequirements: z.array(z.string().min(1)).max(32),
+            publishHeight: z.number().int().nonnegative().nullable(),
+            clarityVersion: z.string().nullable(),
+            epoch: z.string().nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
+    lastSuccessful: deploymentIdentityBindingSchema.nullable(),
+    deploymentIdentity: z
+      .object({
+        status: z.enum(["unbound", "bound", "mismatch"]),
+        stored: deploymentIdentityBindingSchema.nullable(),
+        reason: z.string().nullable(),
+      })
+      .strict(),
+    checks: z
+      .array(
+        z
+          .object({
+            id: z.enum([
+              "deployment-identity",
+              "node-network",
+              "pox5",
+              "principal-network",
+              "manager-trait",
+            ]),
+            status: z.enum(["pass", "fail", "unavailable", "not-checked"]),
+            message: z.string().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .length(5),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.status === "connected") !== (value.outcomeCode === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomeCode"],
+        message: "Only a connected assessment may omit its outcome code",
+      });
+    }
+    if (value.status === "connected" && value.stale) {
+      context.addIssue({
+        code: "custom",
+        path: ["stale"],
+        message: "A connected assessment must contain current evidence",
+      });
+    }
+  });
+export type ConnectionAssessment = z.infer<typeof connectionAssessmentSchema>;
+
+export const deploymentRequirementSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
+    component: z.enum(["node", "signer", "sidekick"]),
+    importance: z.enum(["required", "recommended"]),
+    status: z.enum(["pass", "attention", "not-configured", "unavailable"]),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(2_000),
+    observed: z.string().max(1_000).nullable(),
+    remediation: z
+      .object({
+        steps: z.array(z.string().min(1).max(1_000)).min(1).max(12),
+        configuration: z
+          .array(
+            z
+              .object({
+                label: z.string().min(1).max(120),
+                format: z.enum(["toml", "dotenv", "command"]),
+                content: z.string().min(1).max(10_000),
+              })
+              .strict(),
+          )
+          .max(8),
+        restartServices: z.array(z.enum(["stacks-node", "stacks-signer", "sidekick"])).max(3),
+        docsUrl: z.url().nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type DeploymentRequirement = z.infer<typeof deploymentRequirementSchema>;
+
+export const deploymentRequirementsSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    checkedAt: z.iso.datetime(),
+    status: z.enum(["ready", "attention", "blocked"]),
+    requiredReady: z.boolean(),
+    checks: z.array(deploymentRequirementSchema).min(1).max(32),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const requiredReady = value.checks
+      .filter(({ importance }) => importance === "required")
+      .every(({ status }) => status === "pass");
+    const expectedStatus = !requiredReady
+      ? "blocked"
+      : value.checks.every(({ status }) => status === "pass")
+        ? "ready"
+        : "attention";
+    if (value.requiredReady !== requiredReady) {
+      context.addIssue({
+        code: "custom",
+        path: ["requiredReady"],
+        message: "requiredReady must reflect every required deployment check",
+      });
+    }
+    if (value.status !== expectedStatus) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "Deployment status must reflect required and recommended checks",
+      });
+    }
+  });
+export type DeploymentRequirements = z.infer<typeof deploymentRequirementsSchema>;
 
 export const rateLimitInfoSchema = z
   .object({
@@ -9,81 +189,289 @@ export const rateLimitInfoSchema = z
   .strict();
 export type RateLimitInfo = z.infer<typeof rateLimitInfoSchema>;
 
-const runtimeSettingsShape = z.object({
-  schemaVersion: z.literal(1),
-  revision: z.number().int().nonnegative(),
-  updatedAt: z.string().nullable(),
-  pool: z.looseObject({
-    displayName: z.string(),
-    websiteUrl: z.string(),
-    supportContact: z.string(),
-    leatherUrl: z.string(),
-  }),
-  display: z.object({
-    defaultTheme: z.enum(["light", "dark", "system"]),
-  }),
-  dataSources: z.looseObject({
-    nodeRpcUrl: z.string(),
-    apiUrl: z.string(),
-    apiKeyHeader: z.string(),
-    apiKeyConfigured: z.boolean(),
-    apiKeySource: z.enum(["environment", "database", "none"]),
-    nodeMetricsUrl: z.string(),
-    signerMonitoringUrl: z.string(),
-    hiroReferenceApiUrl: z.string(),
-  }),
-  forecast: z.looseObject({ horizonCycles: z.number().int().nonnegative() }),
-  embed: z.object({ publicApiUrl: z.string() }),
-  audit: z.array(
-    z.looseObject({
-      revision: z.number().int().nonnegative(),
-      changedFields: z.array(z.string()),
-      changedAt: z.string(),
+export const localNodeAuthoritySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["current", "catching-up", "unknown"]),
+    observedAt: z.iso.datetime(),
+    stacksTipHeight: z.number().int().nonnegative(),
+    highestProvenCurrentStacksTipHeight: z.number().int().nonnegative().nullable(),
+    consecutiveCurrentObservations: z.number().int().nonnegative(),
+    reason: z.string().min(1).max(1_000),
+  })
+  .strict();
+export type LocalNodeAuthority = z.infer<typeof localNodeAuthoritySchema>;
+
+const historyRecoveryDomainSchema = z
+  .object({
+    status: z.enum(["not-started", "reconstructing", "complete"]),
+    updatedAt: z.iso.datetime().nullable(),
+  })
+  .strict();
+
+export const historyRecoveryCoverageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    monitoringStartedAt: z.iso.datetime().nullable(),
+    managerHistory: historyRecoveryDomainSchema.extend({
+      recoveryBoundaryStacksHeight: z.number().int().nonnegative().nullable(),
     }),
-  ),
-});
+    currentMemberHistory: historyRecoveryDomainSchema.extend({
+      currentMembers: z.number().int().nonnegative(),
+      membersComplete: z.number().int().nonnegative(),
+      pagesProcessed: z.number().int().nonnegative(),
+      transactionsInspected: z.number().int().nonnegative(),
+      relevantEvents: z.number().int().nonnegative(),
+    }),
+    rewardHistory: historyRecoveryDomainSchema.extend({
+      recoveryBoundaryStacksHeight: z.number().int().nonnegative().nullable(),
+    }),
+    signerHealthHistory: z
+      .object({
+        status: z.literal("monitoring-since-install"),
+        monitoringStartedAt: z.iso.datetime().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type HistoryRecoveryCoverage = z.infer<typeof historyRecoveryCoverageSchema>;
+
+const runtimeSettingsShape = z
+  .object({
+    schemaVersion: z.literal(2),
+    revision: z.number().int().nonnegative(),
+    updatedAt: z.string().nullable(),
+    pool: z
+      .object({
+        displayName: z.string(),
+        websiteUrl: z.string(),
+        supportContact: z.string(),
+        leatherUrl: z.string(),
+      })
+      .strict(),
+    display: z.object({
+      defaultTheme: z.enum(["light", "dark", "system"]),
+    }),
+    dataSources: z
+      .object({
+        nodeRpcUrl: z.string(),
+        apiUrl: z.string(),
+        apiKeyHeader: z.string(),
+        apiKeyConfigured: z.boolean(),
+        apiKeySource: z.enum(["environment", "database", "none"]),
+        nodeMetricsUrl: z.string(),
+        signerMonitoringUrl: z.string(),
+        hiroReferenceApiUrl: z.string(),
+        hiroReferenceApiKeyHeader: z.string(),
+        hiroReferenceApiKeyConfigured: z.boolean(),
+        hiroReferenceApiKeySource: z.enum(["environment", "database", "indexed-api", "none"]),
+      })
+      .strict(),
+    forecast: z.object({ horizonCycles: z.number().int().nonnegative() }).strict(),
+    embed: z.object({ publicApiUrl: z.string() }),
+    audit: z.array(
+      z
+        .object({
+          revision: z.number().int().nonnegative(),
+          changedFields: z.array(z.string()),
+          changedAt: z.string(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 export const runtimeSettingsSchema = runtimeSettingsShape;
 export type RuntimeSettings = z.infer<typeof runtimeSettingsSchema>;
 
 const sourceStateSchema = z.looseObject({
   configured: z.boolean(),
-  status: z.enum(["healthy", "unavailable", "not-configured"]),
-  checkedAt: z.string().nullable(),
-  lastSuccessAt: z.string().nullable(),
-  latencyMs: z.number().nullable(),
+  status: z.enum(["healthy", "unavailable", "not-configured", "unsupported"]),
+  checkedAt: z.iso.datetime().nullable(),
+  lastSuccessAt: z.iso.datetime().nullable(),
+  latencyMs: z.number().nonnegative().nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
   errorCode: z.string().nullable(),
 });
 
+export const healthClassificationSchema = z.enum([
+  "healthy",
+  "likely-local-node",
+  "likely-local-signer",
+  "source-disagreement",
+  "suspected-network-wide",
+  "insufficient-evidence",
+]);
+export type HealthClassification = z.infer<typeof healthClassificationSchema>;
+
+const healthEvidenceWindowSchema = z
+  .object({
+    startedAt: z.iso.datetime(),
+    endedAt: z.iso.datetime(),
+    sampleCount: z.number().int().nonnegative(),
+    distinctSources: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const healthFindingEvidenceSchema = z
+  .object({
+    code: z.string().min(1).max(120),
+    source: z.enum([
+      "local-node",
+      "node-peers",
+      "signer-monitoring",
+      "configured-api",
+      "reference-api",
+      "on-chain",
+    ]),
+    status: z.enum(["supporting", "contradicting", "unavailable", "collecting"]),
+    observedAt: z.iso.datetime().nullable(),
+    value: z.string().max(500).nullable(),
+    detail: z.string().min(1).max(1_000),
+  })
+  .strict();
+
+export const healthFindingSchema = z
+  .object({
+    id: z.string().min(1).max(120),
+    episodeId: z.string().uuid().nullable(),
+    severity: z.enum(["critical", "warning", "info"]),
+    title: z.string().min(1).max(200),
+    detail: z.string().min(1).max(2_000),
+    source: z.enum(["node", "signer", "network", "source"]),
+    classification: healthClassificationSchema.exclude(["healthy"]),
+    confidence: z.enum(["high", "medium", "low"]),
+    firstObservedAt: z.iso.datetime(),
+    lastObservedAt: z.iso.datetime(),
+    evidenceWindow: healthEvidenceWindowSchema,
+    evidence: z.array(healthFindingEvidenceSchema).min(1).max(20),
+  })
+  .strict();
+
+export const healthFindingEpisodeSchema = healthFindingSchema
+  .omit({ episodeId: true })
+  .extend({
+    episodeId: z.string().uuid(),
+    status: z.enum(["active", "resolved"]),
+    resolvedAt: z.iso.datetime().nullable(),
+    occurrences: z.number().int().positive(),
+  })
+  .strict();
+
+export const healthRollupSchema = z
+  .object({
+    windowStartedAt: z.iso.datetime(),
+    windowEndedAt: z.iso.datetime(),
+    sampleCount: z.number().int().positive(),
+    nodeRpcAvailabilityPercent: z.number().min(0).max(100),
+    signerInfoAvailabilityPercent: z.number().min(0).max(100).nullable(),
+    nodeStacksHeightStart: z.number().int().nonnegative().nullable(),
+    nodeStacksHeightEnd: z.number().int().nonnegative().nullable(),
+    nodeAdvanceCount: z.number().int().nonnegative(),
+    proposals: z.number().int().nonnegative().nullable(),
+    accepted: z.number().int().nonnegative().nullable(),
+    rejected: z.number().int().nonnegative().nullable(),
+    disagreements: z.number().int().nonnegative().nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+    validationP95Seconds: z.number().nonnegative().nullable(),
+  })
+  .strict();
+
+const signerWindowSchema = z
+  .object({
+    startedAt: z.iso.datetime(),
+    endedAt: z.iso.datetime(),
+    sampleCount: z.number().int().nonnegative(),
+    proposals: z.number().int().nonnegative().nullable(),
+    validationAccepted: z.number().int().nonnegative().nullable(),
+    validationRejected: z.number().int().nonnegative().nullable(),
+    accepted: z.number().int().nonnegative().nullable(),
+    rejected: z.number().int().nonnegative().nullable(),
+    responseGap: z.number().int().nonnegative().nullable(),
+    rejectionPercent: z.number().min(0).max(100).nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+    validationP95Seconds: z.number().nonnegative().nullable(),
+    validationLatencySamples: z.number().int().nonnegative(),
+    nodeRpcP95Seconds: z.number().nonnegative().nullable(),
+    capitulationP95Seconds: z.number().nonnegative().nullable(),
+    disagreements: z.number().int().nonnegative().nullable(),
+    preCommits: z.number().int().nonnegative().nullable(),
+    collectingBaseline: z.boolean(),
+  })
+  .strict();
+
 export const healthSnapshotSchema = z.looseObject({
-  generatedAt: z.string(),
-  overallStatus: z.enum(["healthy", "needs-attention", "partial", "unavailable"]),
+  schemaVersion: z.literal(2),
+  generatedAt: z.iso.datetime(),
+  overallStatus: z.enum(["healthy", "monitoring", "needs-attention", "partial", "unavailable"]),
   coverage: z.looseObject({ available: z.number(), total: z.number() }),
   burnBlockTiming: z
     .looseObject({
       averageSeconds: z.number(),
       windowHours: z.union([z.literal(12), z.literal(24)]),
       sampleBlocks: z.number(),
-      sampledAt: z.string(),
+      sampledAt: z.iso.datetime(),
     })
     .nullable(),
-  findings: z.array(
-    z.looseObject({
-      id: z.string(),
-      severity: z.enum(["critical", "warning", "info"]),
-      title: z.string(),
-      detail: z.string(),
-      source: z.enum(["node", "signer"]),
-    }),
-  ),
+  diagnosis: z
+    .object({
+      status: z.enum([
+        "healthy",
+        "monitoring",
+        "needs-attention",
+        "collecting",
+        "partial",
+        "unavailable",
+      ]),
+      classification: healthClassificationSchema,
+      confidence: z.enum(["high", "medium", "low"]),
+      title: z.string().min(1).max(200),
+      summary: z.string().min(1).max(2_000),
+      evidenceWindow: healthEvidenceWindowSchema,
+      activeFindingIds: z.array(z.string().min(1).max(120)),
+    })
+    .strict(),
+  findings: z.array(healthFindingSchema),
+  history: z
+    .object({
+      sampleIntervalSeconds: z.literal(5),
+      rawRetentionHours: z.literal(72),
+      rollupIntervalMinutes: z.literal(5),
+      rollupRetentionDays: z.literal(90),
+      observedSince: z.iso.datetime().nullable(),
+      observationCount: z.number().int().nonnegative(),
+      recentRollups: z.array(healthRollupSchema).max(288),
+      recentEpisodes: z.array(healthFindingEpisodeSchema).max(50),
+      skippedObservationRows: z.number().int().nonnegative(),
+      skippedRollupRows: z.number().int().nonnegative(),
+      skippedEpisodeRows: z.number().int().nonnegative(),
+    })
+    .strict(),
+  operator: z
+    .object({
+      observedAt: z.iso.datetime().optional(),
+      network: z.string(),
+      managerPrincipal: z.string(),
+      currentRewardCycle: z.number().int().nonnegative(),
+      registered: z.boolean().nullable(),
+      signerKeyHex: z.string().nullable(),
+      signerKeyGrantValid: z.boolean().nullable(),
+      expectedCurrentParticipation: z.boolean(),
+      expectedNextParticipation: z.boolean(),
+    })
+    .strict()
+    .nullable(),
   node: z.looseObject({
     rpc: sourceStateSchema,
+    peerHealth: sourceStateSchema,
     metrics: sourceStateSchema,
     version: z.string().nullable(),
     networkId: z.number().nullable(),
     stacksTipHeight: z.number().nullable(),
     burnBlockHeight: z.number().nullable(),
+    isFullySynced: z.boolean().nullable().optional(),
+    peerHeightDifference: z.number().nullable().optional(),
+    tipIndexBlockHash: z.string().nullable(),
     lastTipAdvanceAt: z.string().nullable(),
     inboundPeers: z.number().nullable(),
     outboundPeers: z.number().nullable(),
@@ -93,8 +481,24 @@ export const healthSnapshotSchema = z.looseObject({
     source: sourceStateSchema,
     stacksTipHeight: z.number().nullable(),
     burnBlockHeight: z.number().nullable(),
+    indexBlockHash: z.string().nullable(),
     localStacksDifference: z.number().nullable(),
     localBurnDifference: z.number().nullable(),
+    lastTipAdvanceAt: z.iso.datetime().nullable().optional(),
+    advancementStatus: z
+      .enum(["advancing", "stalled", "collecting", "insufficient-evidence"])
+      .optional(),
+  }),
+  configuredApi: z.looseObject({
+    distinctFromReference: z.boolean(),
+    source: sourceStateSchema,
+    stacksTipHeight: z.number().nullable(),
+    burnBlockHeight: z.number().nullable(),
+    indexBlockHash: z.string().nullable(),
+    localStacksDifference: z.number().nullable(),
+    localBurnDifference: z.number().nullable(),
+    lastTipAdvanceAt: z.iso.datetime().nullable(),
+    advancementStatus: z.enum(["advancing", "stalled", "collecting", "insufficient-evidence"]),
   }),
   signer: z.looseObject({
     infoSource: sourceStateSchema,
@@ -108,12 +512,17 @@ export const healthSnapshotSchema = z.looseObject({
     nodeHeightDifference: z.number().nullable(),
     rewardCycle: z.number().nullable(),
     stxBalanceUstx: z.number().nullable(),
+    identityMatchesRegistration: z.boolean().nullable(),
+    networkMatchesConfiguration: z.boolean().nullable(),
+    rewardCycleMatchesNode: z.boolean().nullable(),
+    last15Minutes: signerWindowSchema,
     lastHour: z.looseObject({
       proposals: z.number().nullable(),
       accepted: z.number().nullable(),
       rejected: z.number().nullable(),
       rejectionPercent: z.number().nullable(),
       responseP95Seconds: z.number().nullable(),
+      validationP95Seconds: z.number().nullable(),
       disagreements: z.number().nullable(),
       collectingBaseline: z.boolean(),
     }),
@@ -121,74 +530,7 @@ export const healthSnapshotSchema = z.looseObject({
 });
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 
-export interface ActivationStep {
-  id: string;
-  status: "complete" | "ready" | "pending" | "attention" | "blocked";
-  title: string;
-  detail: string;
-  command: string | null;
-}
-
-export interface OnboardingState {
-  path: "attach" | "fresh";
-  status: "in-progress" | "blocked" | "complete";
-  currentStep: string;
-  managerPrincipal: string;
-  updatedAt: string;
-  activationPlan: null | { status: string; steps: ActivationStep[] };
-  freshInput: null | {
-    adminPrincipal: string;
-    contractName: string;
-    authId: string;
-    signerConfigPath: string;
-  };
-  artifact: {
-    available: boolean;
-    sourceFile: string | null;
-    manifestFile: string | null;
-    manifest: null | {
-      operatorReviewRequired: true;
-      warnings: string[];
-      network: string;
-      adminPrincipal: string;
-      artifact: { sourceSha256: string; canonicalSourceSha256: string };
-      transaction: { contractName: string; clarityVersion: 6 };
-    };
-  };
-  signerGrant: {
-    preparation: null | { command: string; expectedMessageHashHex: string; authId: string };
-    verified: null | {
-      managerPrincipal: string;
-      authId: string;
-      signerKeyHex: string;
-      signerSignatureHex: string;
-      expectedMessageHashHex: string;
-      registerSelfCall: {
-        contract: string;
-        functionName: string;
-        arguments: string[];
-        signingPrincipal: string;
-      };
-    };
-  };
-  audit: Array<{
-    action: string;
-    path: "attach" | "fresh";
-    currentStep: string;
-    status: string;
-    changedAt: string;
-  }>;
-}
-
-export interface OnboardingWizardState {
-  dismissed: boolean;
-  dismissedAt: string | null;
-  updatedAt: string | null;
-  audit: Array<{ action: "dismissed" | "resumed"; changedAt: string }>;
-}
-
 export type BrowserWalletIntentAction =
-  | "deploy-manager"
   | "register-self"
   | "add-admin"
   | "remove-admin"
@@ -196,14 +538,11 @@ export type BrowserWalletIntentAction =
   | "withdraw-fees"
   | "sweep-fee-refunds"
   | "claim-rewards"
-  | "claim-staker-rewards";
+  | "claim-staker-rewards"
+  | "calculate-rewards";
 export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
-export type OnboardingBrowserWalletIntentCreateRequest =
-  | { action: "deploy-manager" }
-  | { action: "register-self" };
 export type BrowserWalletIntentCreateRequest =
-  | { action: "deploy-manager" }
   | { action: "register-self"; actorPrincipal: string }
   | { action: "add-admin" | "remove-admin"; actorPrincipal: string; adminPrincipal: string }
   | { action: "update-fees"; actorPrincipal: string; feeBips: string }
@@ -215,6 +554,7 @@ export type BrowserWalletIntentCreateRequest =
     }
   | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
   | { action: "claim-rewards"; actorPrincipal: string; jobId: string }
+  | { action: "calculate-rewards"; actorPrincipal: string }
   | {
       action: "claim-staker-rewards";
       actorPrincipal: string;
@@ -222,9 +562,33 @@ export type BrowserWalletIntentCreateRequest =
       rewardCycle: string;
       bondIndex: string | null;
     };
-export type BrowserWalletIntentRequest =
-  | OnboardingBrowserWalletIntentCreateRequest
-  | BrowserWalletIntentCreateRequest;
+export type BrowserWalletIntentRequest = BrowserWalletIntentCreateRequest;
+
+export interface SignerGrantSession {
+  preparation: null | {
+    managerPrincipal: string;
+    pox5ContractId: string;
+    command: string;
+    expectedMessageHashHex: string;
+    authId: string;
+  };
+  verified: null | {
+    managerPrincipal: string;
+    pox5ContractId: string;
+    authId: string;
+    signerKeyHex: string;
+    signerSignatureHex: string;
+    expectedMessageHashHex: string;
+    signatureValid: true;
+    registerSelfCall: {
+      contract: string;
+      functionName: string;
+      arguments: string[];
+      signingPrincipal: string;
+      signingAuthority: "external-offline-admin";
+    };
+  };
+}
 export type BrowserWalletIntentStatus =
   | "prepared"
   | "submitted"
@@ -236,43 +600,30 @@ export type BrowserWalletIntentStatus =
   | "failed"
   | "reobserve";
 
-export type BrowserWalletTransaction =
-  | {
-      method: "stx_deployContract";
-      params: {
-        name: string;
-        clarityCode: string;
-        clarityVersion: 6;
-        network: BrowserWalletConnectNetwork;
-        address: string;
-        sponsored: false;
-        postConditionMode: "deny";
-        postConditions: [];
-      };
-    }
-  | {
-      method: "stx_callContract";
-      params: {
-        contract: string;
-        functionName:
-          | "register-self"
-          | "update-admin"
-          | "update-fees"
-          | "withdraw-fees"
-          | "sweep-fee-refunds"
-          | "claim-rewards"
-          | "claim-staker-rewards";
-        functionArgs: string[];
-        network: BrowserWalletConnectNetwork;
-        address: string;
-        sponsored: false;
-        postConditionMode: "deny";
-        postConditions: string[];
-      };
-    };
+export type BrowserWalletTransaction = {
+  method: "stx_callContract";
+  params: {
+    contract: string;
+    functionName:
+      | "register-self"
+      | "update-admin"
+      | "update-fees"
+      | "withdraw-fees"
+      | "sweep-fee-refunds"
+      | "claim-rewards"
+      | "claim-staker-rewards"
+      | "calculate-rewards";
+    functionArgs: string[];
+    network: BrowserWalletConnectNetwork;
+    address: string;
+    sponsored: false;
+    postConditionMode: "deny";
+    postConditions: string[];
+  };
+};
 
 export interface BrowserWalletIntent {
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   id: string;
   action: BrowserWalletIntentAction;
   network: BrowserWalletIntentNetwork;
@@ -281,7 +632,17 @@ export interface BrowserWalletIntent {
   createdAt: string;
   expiresAt: string;
   transaction: BrowserWalletTransaction;
-  request?: BrowserWalletIntentRequest | undefined;
+  request: BrowserWalletIntentRequest;
+  /** Immutable operation-specific completion binding. */
+  binding?:
+    | {
+        kind: "calculate-rewards";
+        pox5ContractId: string;
+        targetRewardCycle: number;
+        targetCheckpoint: "first-half" | "second-half";
+        expectedLastRewardComputeBurnHeight: number;
+      }
+    | undefined;
   review: {
     title: string;
     summary: string;
@@ -322,9 +683,60 @@ interface Eligibility {
   inSignerSet: boolean;
 }
 
+export type ManagerActionCapabilityId =
+  | "register-self"
+  | "update-admin"
+  | "update-fees"
+  | "withdraw-fees"
+  | "sweep-fee-refunds"
+  | "reference-reward-claims";
+
+export interface ManagerActionCapability {
+  id: ManagerActionCapabilityId;
+  interfaceAvailable: boolean;
+  executionAvailable: boolean;
+  missingFunctions: string[];
+  adapter: null | {
+    id: string;
+    revision: number;
+    reviewedSourceSha256: string;
+  };
+  reason: string;
+}
+
+export interface ManagerCapabilities {
+  signerManagerTrait: {
+    compatible: boolean;
+    reason: string;
+  };
+  observedFunctions: {
+    public: string[];
+    readOnly: string[];
+  };
+  sourceReview: {
+    exactReviewed: boolean;
+    reason: string;
+    clarityVersion?: string | null;
+    epoch?: string | null;
+    interfaceSha256?: string;
+  };
+  eventVocabulary: {
+    id: "reference-manager-v1";
+    normalizationAvailable: boolean;
+    adapter: null | {
+      id: string;
+      revision: number;
+      reviewedSourceSha256: string;
+    };
+    reason: string;
+  };
+  actions: ManagerActionCapability[];
+}
+
 export interface OperatorSnapshot {
   managerPrincipal: string;
   network: string;
+  readiness?: OperatorSnapshot["setup"];
   setup: null | {
     status: "ready" | "attention" | "blocked";
     enrollmentWindow: {
@@ -372,6 +784,7 @@ export interface OperatorSnapshot {
   manager?: {
     automationEligible: boolean;
     automationEligibilityReason: string;
+    capabilities: ManagerCapabilities;
     source: {
       profileId: string | null;
       tier: "reference-built-in" | "reference-render" | "custom-observe" | "unrecognized";
@@ -390,19 +803,6 @@ export interface DashboardAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
-  action?:
-    | { kind: "reconcile"; label: string }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "setup" | "settings" | "pool" | "rewards" | "operations";
-      }
-    | {
-        kind: "navigate";
-        label: string;
-        target: "manager";
-        managerAction: "register-self";
-      };
 }
 
 export interface ForecastCycle {
@@ -461,8 +861,253 @@ export interface RewardCycleSummary {
   actionableClaims: number;
 }
 
+export interface RewardCalculationRealization {
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  indexBlockHash: string;
+  burnBlockHeight: number;
+  targetRewardCycle: number;
+  targetCheckpoint: "first-half" | "second-half";
+  calculationBurnHeight: number;
+  observedAt: string;
+  global: {
+    grossAccruedRewardsSats: string;
+    totalBondRewardsSats: string;
+    totalStxStakerRewardsSats: string;
+    reserveDepositSats: string;
+  };
+  poolSats: string | null;
+  poolEstimateUnavailableReason:
+    | "historical-anchor-unavailable"
+    | "same-block-state-ambiguous"
+    | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
+  evaluation: null | {
+    modelRevision: number;
+    forecastObservedBurnHeight: number;
+    leadBlocks: number;
+    pointErrorSats: string;
+    pointErrorBips: string | null;
+    rangeContainsActual: boolean;
+    rangeWidthBips: string | null;
+  };
+}
+
+const unsignedIntegerTextSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/);
+const stacksHashSchema = z.string().regex(/^0x[0-9a-f]{64}$/i);
+
+export const rewardCalculationRealizationSchema = z
+  .object({
+    txId: stacksHashSchema,
+    eventIndex: z.number().int().nonnegative().safe(),
+    blockHeight: z.number().int().nonnegative().safe(),
+    indexBlockHash: stacksHashSchema,
+    burnBlockHeight: z.number().int().nonnegative().safe(),
+    targetRewardCycle: z.number().int().nonnegative().safe(),
+    targetCheckpoint: z.enum(["first-half", "second-half"]),
+    calculationBurnHeight: z.number().int().nonnegative().safe(),
+    observedAt: z.iso.datetime(),
+    global: z
+      .object({
+        grossAccruedRewardsSats: unsignedIntegerTextSchema,
+        totalBondRewardsSats: unsignedIntegerTextSchema,
+        totalStxStakerRewardsSats: unsignedIntegerTextSchema,
+        reserveDepositSats: unsignedIntegerTextSchema,
+      })
+      .strict(),
+    poolSats: unsignedIntegerTextSchema.nullable(),
+    poolEstimateUnavailableReason: z
+      .enum([
+        "historical-anchor-unavailable",
+        "same-block-state-ambiguous",
+        "anchored-inputs-unavailable",
+        "contract-simulation-failed",
+      ])
+      .nullable(),
+    evaluation: z
+      .object({
+        modelRevision: z.number().int().positive(),
+        forecastObservedBurnHeight: z.number().int().nonnegative().safe(),
+        leadBlocks: z.number().int().safe(),
+        pointErrorSats: unsignedIntegerTextSchema,
+        pointErrorBips: unsignedIntegerTextSchema.nullable(),
+        rangeContainsActual: z.boolean(),
+        rangeWidthBips: unsignedIntegerTextSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict() satisfies z.ZodType<RewardCalculationRealization>;
+
+export interface RewardOutlookStatus {
+  pox5ContractId: string;
+  observedAt: string;
+  chainAnchor: EngineChainAnchor | null;
+  accrued: {
+    globalSats: string;
+    source: "pox5-get-new-rewards";
+  };
+  poolEstimate: null | {
+    kind: "if-calculated-now";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    grossSats: string;
+    stxSats: string;
+    bondSats: string;
+    inputs: {
+      globalStxSharesUstx: string;
+      managerStxSharesUstx: string;
+      activeBonds: Array<{
+        bondIndex: string;
+        targetRateBips: string;
+        globalSharesSats: string;
+        managerSharesSats: string;
+      }>;
+    };
+    assumptions: Array<
+      | "current-global-accrual"
+      | "current-cycle-shares"
+      | "current-active-bond-set"
+      | "contract-integer-rounding"
+    >;
+  };
+  poolEstimateUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "incomplete-active-bond-state"
+    | "anchored-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
+  forecast: null | {
+    kind: "checkpoint-run-rate";
+    targetRewardCycle: number;
+    targetCheckpoint: "first-half" | "second-half";
+    calculationBurnHeight: number;
+    globalSats: { low: string; point: string; high: string };
+    poolSats: { low: string; point: string; high: string };
+    sample: {
+      observations: number;
+      firstObservedBurnHeight: number;
+      lastObservedBurnHeight: number;
+      sampleBlocks: number;
+      elapsedBlocks: number;
+      remainingBlocks: number;
+    };
+    confidence: "low" | "developing" | "calibrated";
+    assumptions: Array<
+      | "zero-accrual-after-last-calculation"
+      | "observed-accrual-sample-window"
+      | "linear-global-accrual-run-rate"
+      | "current-cycle-shares"
+      | "current-active-bond-set"
+      | "unchanged-reserve-before-calculation"
+      | "contract-integer-rounding"
+    >;
+  };
+  forecastUnavailableReason:
+    | "chain-anchor-unavailable"
+    | "calculation-target-unavailable"
+    | "current-pool-estimate-unavailable"
+    | "insufficient-samples"
+    | "non-monotonic-accrual"
+    | "forecast-inputs-unavailable"
+    | "contract-simulation-failed"
+    | null;
+  operatorFeeForecast: null | {
+    kind: "reference-manager-exact";
+    sats: { low: string; point: string; high: string };
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeEstimate?: null | {
+    kind: "reference-manager-exact";
+    sats: string;
+    inputs: {
+      stakers: number;
+      buckets: Array<{
+        bondIndex: string | null;
+        feeBips: string;
+        source: "cycle-snapshot" | "configured-fee-assumption";
+      }>;
+    };
+    assumptions: Array<"per-staker-per-bucket-integer-rounding" | "configured-fee-until-claim">;
+  };
+  operatorFeeEstimateUnavailableReason?:
+    | "reviewed-fee-capability-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
+  operatorFeeForecastUnavailableReason:
+    | "reviewed-fee-capability-unavailable"
+    | "forecast-unavailable"
+    | "authoritative-roster-unavailable"
+    | "per-staker-shares-incomplete"
+    | "anchored-fee-inputs-unavailable"
+    | null;
+  calibration: {
+    modelRevision: number;
+    status: "collecting" | "passing" | "failing";
+    eligibleRealizations: number;
+    rewardCycles: number;
+    nonzeroOutcomes: number;
+    rangeHits: number;
+    medianPointErrorBips: string | null;
+    medianRangeWidthBips: string | null;
+    requirements: {
+      realizations: number;
+      rewardCycles: number;
+      nonzeroOutcomes: number;
+      rangeHits: number;
+      maxMedianPointErrorBips: string;
+      maxMedianRangeWidthBips: string;
+      evaluationLeadBlocks: number;
+      evaluationToleranceBlocks: number;
+    };
+  };
+  calculation: {
+    state: "pending" | "completed" | "ahead" | "unknown";
+    targetRewardCycle: number | null;
+    targetCheckpoint: "first-half" | "second-half" | null;
+    expectedLastRewardComputeBurnHeight: number | null;
+    observedLastRewardComputeBurnHeight: string;
+    next: null | {
+      state: "due" | "scheduled";
+      targetRewardCycle: number;
+      targetCheckpoint: "first-half" | "second-half";
+      calculationBurnHeight: number;
+      eligibleBurnHeight: number;
+      blocksRemaining: number;
+      grace: null | {
+        state: "scheduled" | "awaiting-calculation" | "action-required";
+        firstEligibleObservedAt: string | null;
+        firstEligibleStacksBlockHeight: number | null;
+        elapsedMinutes: number;
+        canonicalStacksBlocks: number;
+        requiredMinutes: 10;
+        requiredCanonicalStacksBlocks: 24;
+      };
+    };
+  };
+}
+
 export interface DashboardSnapshot extends OperatorSnapshot {
+  schemaVersion: 1;
   generatedAt: string;
+  chainAnchor?: EngineChainAnchor;
+  /** Whether cycle-sensitive local-node reads can be treated as present-day authority. */
+  nodeAuthority?: LocalNodeAuthority;
+  historyRecovery?: HistoryRecoveryCoverage;
   freshness?: {
     status: "current" | "stale";
     snapshotGeneratedAt: string;
@@ -480,12 +1125,20 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     node: OperatorSnapshot["preflight"]["node"] & {
       networkId: number;
       stacksTipHeight: number;
+      isFullySynced?: boolean | null;
+      peerHeightDifference?: number | null;
     };
     api: {
+      available?: boolean;
+      networkCompatible?: boolean;
+      status?: string | null;
       serverVersion: string;
       burnBlockHeight: number;
       stacksTipHeight: number;
       burnBlockLag: number;
+      stacksTipLag?: number;
+      position?: "equal" | "behind" | "ahead" | "unavailable";
+      error?: string | null;
     };
     pox: OperatorSnapshot["preflight"]["pox"] & {
       rewardCycleId: number;
@@ -520,12 +1173,16 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     ingestion: null | { activeDiscoveredStakers: number; completedAt: string };
     cycles: ForecastCycle[];
   };
+  /** PoX-5 global reward state, available independently of signer-manager action support. */
+  rewardOutlook?: RewardOutlookStatus | null;
   rewards: null | {
     status: "ready" | "attention";
     rewardCycle: number;
     global: {
       lastRewardComputeBurnHeight: string;
       lastComputedRewardCycle: string | null;
+      /** Exact global PoX-5 rewards accrued since the last calculation. */
+      globalAccruedRewardsSats: string;
       /** The STX-only bucket. `buckets` carries the whole picture. */
       signerEarnedBeforeManagerClaimSats: string;
       signerEarnedAcrossBucketsSats: string;
@@ -540,6 +1197,23 @@ export interface DashboardSnapshot extends OperatorSnapshot {
       targetCheckpoint: "first-half" | "second-half" | null;
       expectedLastRewardComputeBurnHeight: number | null;
       observedLastRewardComputeBurnHeight: string;
+      next: null | {
+        state: "due" | "scheduled";
+        targetRewardCycle: number;
+        targetCheckpoint: "first-half" | "second-half";
+        calculationBurnHeight: number;
+        eligibleBurnHeight: number;
+        blocksRemaining: number;
+        grace: null | {
+          state: "scheduled" | "awaiting-calculation" | "action-required";
+          firstEligibleObservedAt: string | null;
+          firstEligibleStacksBlockHeight: number | null;
+          elapsedMinutes: number;
+          canonicalStacksBlocks: number;
+          requiredMinutes: 10;
+          requiredCanonicalStacksBlocks: 24;
+        };
+      };
     };
     /** The STX bucket first, then every bond period holding shares for this cycle. */
     buckets: Array<{
@@ -608,65 +1282,108 @@ export interface DashboardSnapshot extends OperatorSnapshot {
   alerts: DashboardAlert[];
 }
 
-export interface EnrollmentDocument {
-  pool: { displayName: string; websiteUrl?: string; support?: { email?: string; url?: string } };
-  chain: { network: string; burnBlockHeight: number; rewardCycleId: number };
-  manager: { principal: string; sourceSha256: string };
-  signer: { publicKeyHex: string | null; grantValid: boolean | null };
-  fee: { currentConfiguredBips: number };
-  eligibility: {
-    current: null | { delegatedUstx: string; meetsThreshold: boolean; inSignerSet: boolean };
-  };
-  links: { managerExplorer: string; officialPlatforms: Array<{ label: string; url: string }> };
-}
-
-export interface PoolCardArtifact {
-  mode: "live" | "static";
-  filename: string;
-  contentType: string;
-  body: string;
-  json: { filename: string; contentType: string; body: string };
-  enrollment: EnrollmentDocument;
-  liveFields: string[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasRecord(value: Record<string, unknown>, key: string): boolean {
+function hasRecord<Key extends string>(
+  value: Record<string, unknown>,
+  key: Key,
+): value is Record<string, unknown> & Record<Key, Record<string, unknown>> {
   return isRecord(value[key]);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+const managerActionCapabilityIds = new Set<ManagerActionCapabilityId>([
+  "register-self",
+  "update-admin",
+  "update-fees",
+  "withdraw-fees",
+  "sweep-fee-refunds",
+  "reference-reward-claims",
+]);
+
+function isManagerCapabilityAdapter(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      typeof value.id === "string" &&
+      typeof value.revision === "number" &&
+      Number.isInteger(value.revision) &&
+      typeof value.reviewedSourceSha256 === "string")
+  );
+}
+
+function isManagerCapabilities(value: unknown): value is ManagerCapabilities {
+  if (!isRecord(value)) return false;
+  const trait = value.signerManagerTrait;
+  const observed = value.observedFunctions;
+  const sourceReview = value.sourceReview;
+  const vocabulary = value.eventVocabulary;
+  if (
+    !isRecord(trait) ||
+    typeof trait.compatible !== "boolean" ||
+    typeof trait.reason !== "string" ||
+    !isRecord(observed) ||
+    !isStringArray(observed.public) ||
+    !isStringArray(observed.readOnly) ||
+    !isRecord(sourceReview) ||
+    typeof sourceReview.exactReviewed !== "boolean" ||
+    typeof sourceReview.reason !== "string" ||
+    (sourceReview.clarityVersion !== undefined &&
+      sourceReview.clarityVersion !== null &&
+      typeof sourceReview.clarityVersion !== "string") ||
+    (sourceReview.epoch !== undefined &&
+      sourceReview.epoch !== null &&
+      typeof sourceReview.epoch !== "string") ||
+    (sourceReview.interfaceSha256 !== undefined &&
+      typeof sourceReview.interfaceSha256 !== "string") ||
+    !isRecord(vocabulary) ||
+    vocabulary.id !== "reference-manager-v1" ||
+    typeof vocabulary.normalizationAvailable !== "boolean" ||
+    !isManagerCapabilityAdapter(vocabulary.adapter) ||
+    typeof vocabulary.reason !== "string" ||
+    !Array.isArray(value.actions)
+  ) {
+    return false;
+  }
+  return value.actions.every(
+    (action) =>
+      isRecord(action) &&
+      typeof action.id === "string" &&
+      managerActionCapabilityIds.has(action.id as ManagerActionCapabilityId) &&
+      typeof action.interfaceAvailable === "boolean" &&
+      typeof action.executionAvailable === "boolean" &&
+      isStringArray(action.missingFunctions) &&
+      isManagerCapabilityAdapter(action.adapter) &&
+      typeof action.reason === "string",
+  );
 }
 
 function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
   return (
     isRecord(value) &&
+    value.schemaVersion === 1 &&
     typeof value.generatedAt === "string" &&
     typeof value.network === "string" &&
     typeof value.managerPrincipal === "string" &&
+    (value.chainAnchor === undefined ||
+      engineChainAnchorSchema.safeParse(value.chainAnchor).success) &&
+    (value.nodeAuthority === undefined ||
+      localNodeAuthoritySchema.safeParse(value.nodeAuthority).success) &&
+    (value.historyRecovery === undefined ||
+      historyRecoveryCoverageSchema.safeParse(value.historyRecovery).success) &&
     hasRecord(value, "preflight") &&
     hasRecord(value, "manager") &&
+    isManagerCapabilities(value.manager.capabilities) &&
     hasRecord(value, "activity") &&
     Array.isArray(value.roster) &&
     Array.isArray(value.alerts)
   );
 }
-
-function isOnboardingState(value: unknown): value is OnboardingState {
-  return (
-    isRecord(value) &&
-    (value.path === "attach" || value.path === "fresh") &&
-    typeof value.currentStep === "string" &&
-    typeof value.managerPrincipal === "string" &&
-    hasRecord(value, "artifact") &&
-    hasRecord(value, "signerGrant") &&
-    Array.isArray(value.audit)
-  );
-}
-
-const onboardingStateSchema = z.custom<OnboardingState>(isOnboardingState, {
-  error: "Invalid onboarding response",
-});
 
 export const dashboardSnapshotSchema = z.custom<DashboardSnapshot>(isDashboardSnapshot, {
   error: "Invalid dashboard snapshot",
@@ -718,6 +1435,7 @@ export type ReconciliationSummary = z.infer<typeof reconciliationSummarySchema>;
 export interface ReconciliationOperation {
   schemaVersion: 1;
   operationId: string | null;
+  trigger: "manual" | "automatic" | null;
   status: "idle" | "running" | "succeeded" | "failed";
   phase: ReconciliationOperationPhase;
   processLocal: true;
@@ -749,6 +1467,7 @@ function isReconciliationOperation(value: unknown): value is ReconciliationOpera
   return (
     value.schemaVersion === 1 &&
     isNullableString(value.operationId) &&
+    (value.trigger === null || value.trigger === "manual" || value.trigger === "automatic") &&
     ["idle", "running", "succeeded", "failed"].includes(String(value.status)) &&
     [
       "idle",
@@ -795,13 +1514,27 @@ export type PoolPageResponse = z.infer<typeof poolPageResponseSchema>;
 
 export const rewardsPageResponseSchema = z.custom<{
   rewards: DashboardSnapshot["rewards"];
+  rewardOutlook?: DashboardSnapshot["rewardOutlook"];
+  rewardRealizations?: RewardCalculationRealization[];
   freshness?: DashboardSnapshot["freshness"];
-}>((value) => isRecord(value) && (value.rewards === null || isRecord(value.rewards)), {
-  error: "Invalid rewards response",
-});
+}>(
+  (value) => {
+    if (!isRecord(value) || (value.rewards !== null && !isRecord(value.rewards))) return false;
+    return (
+      value.rewardRealizations === undefined ||
+      (Array.isArray(value.rewardRealizations) &&
+        value.rewardRealizations.every(
+          (entry) => rewardCalculationRealizationSchema.safeParse(entry).success,
+        ))
+    );
+  },
+  {
+    error: "Invalid rewards response",
+  },
+);
 export type RewardsPageResponse = z.infer<typeof rewardsPageResponseSchema>;
 
-export const activityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
+export const rewardsActivityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
   (value) =>
     isRecord(value) &&
     Array.isArray(value.claims) &&
@@ -810,7 +1543,7 @@ export const activityResponseSchema = z.custom<DashboardSnapshot["activity"]>(
     typeof value.withdrawalTotal === "number",
   { error: "Invalid activity response" },
 );
-export type ActivityResponse = z.infer<typeof activityResponseSchema>;
+export type RewardsActivityResponse = z.infer<typeof rewardsActivityResponseSchema>;
 
 export const rewardHistoryResponseSchema = z.custom<{
   items: RewardCycleSummary[];
@@ -819,50 +1552,6 @@ export const rewardHistoryResponseSchema = z.custom<{
   error: "Invalid reward history response",
 });
 export type RewardHistoryResponse = z.infer<typeof rewardHistoryResponseSchema>;
-
-export const onboardingEnvelopeSchema = z.custom<{
-  onboarding: OnboardingState | null;
-  wizard: OnboardingWizardState;
-}>(
-  (value) =>
-    isRecord(value) &&
-    (value.onboarding === null || isOnboardingState(value.onboarding)) &&
-    isRecord(value.wizard) &&
-    typeof value.wizard.dismissed === "boolean" &&
-    Array.isArray(value.wizard.audit),
-  { error: "Invalid onboarding response" },
-);
-export type OnboardingEnvelope = z.infer<typeof onboardingEnvelopeSchema>;
-
-export const onboardingActionResponseSchema = z.object({ onboarding: onboardingStateSchema });
-export type OnboardingActionResponse = z.infer<typeof onboardingActionResponseSchema>;
-
-export const freshRefreshResponseSchema = z.custom<{
-  onboarding: OnboardingState;
-  preflight: OperatorSnapshot["preflight"];
-  setup: NonNullable<OperatorSnapshot["setup"]>;
-}>(
-  (value) =>
-    isRecord(value) &&
-    isOnboardingState(value.onboarding) &&
-    hasRecord(value, "preflight") &&
-    hasRecord(value, "setup"),
-  { error: "Invalid onboarding refresh response" },
-);
-export type FreshRefreshResponse = z.infer<typeof freshRefreshResponseSchema>;
-
-export const poolCardResponseSchema = z.custom<PoolCardArtifact>(
-  (value) =>
-    isRecord(value) &&
-    (value.mode === "live" || value.mode === "static") &&
-    typeof value.filename === "string" &&
-    typeof value.contentType === "string" &&
-    typeof value.body === "string" &&
-    hasRecord(value, "json") &&
-    hasRecord(value, "enrollment") &&
-    Array.isArray(value.liveFields),
-  { error: "Invalid pool card response" },
-);
 
 const walletIntentChainTipSchema = z
   .object({
@@ -898,12 +1587,15 @@ export const apiErrorSchema = z.looseObject({
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
-export const healthSourceTestRequestSchema = z
-  .object({
-    kind: z.enum(["node-metrics", "signer-monitoring", "hiro-reference"]),
-    url: z.string().min(1).max(500),
-  })
-  .strict();
+export const healthSourceTestRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.enum(["node-metrics", "signer-monitoring"]),
+      url: z.string().min(1).max(500),
+    })
+    .strict(),
+  z.object({ kind: z.enum(["indexed-api", "hiro-reference"]) }).strict(),
+]);
 export type HealthSourceTestRequest = z.infer<typeof healthSourceTestRequestSchema>;
 export type HealthSourceKind = HealthSourceTestRequest["kind"];
 
@@ -912,19 +1604,6 @@ export const healthSourceTestResponseSchema = z.looseObject({
   signals: z.number().int().nonnegative(),
 });
 export type HealthSourceTestResponse = z.infer<typeof healthSourceTestResponseSchema>;
-
-export const onboardingStartRequestSchema = z
-  .object({ path: z.enum(["attach", "fresh"]), reset: z.boolean().optional() })
-  .strict();
-export type OnboardingStartRequest = z.infer<typeof onboardingStartRequestSchema>;
-
-export const onboardingAttachRequestSchema = z
-  .object({ managerPrincipal: z.string().min(1) })
-  .strict();
-export type OnboardingAttachRequest = z.infer<typeof onboardingAttachRequestSchema>;
-
-export const onboardingGrantVerifyRequestSchema = z.object({ signerOutput: z.unknown() }).strict();
-export type OnboardingGrantVerifyRequest = z.infer<typeof onboardingGrantVerifyRequestSchema>;
 
 export const managerSignerGrantPrepareRequestSchema = z
   .object({
@@ -936,13 +1615,48 @@ export type ManagerSignerGrantPrepareRequest = z.infer<
   typeof managerSignerGrantPrepareRequestSchema
 >;
 
-export const onboardingProgressRequestSchema = z
-  .object({ currentStep: z.string().min(1) })
+export const signerGrantVerifyRequestSchema = z.object({ signerOutput: z.unknown() }).strict();
+export type SignerGrantVerifyRequest = z.infer<typeof signerGrantVerifyRequestSchema>;
+
+const signerGrantSessionSchema = z
+  .object({
+    preparation: z
+      .looseObject({
+        managerPrincipal: z.string().min(1),
+        pox5ContractId: z.string().min(1),
+        command: z.string().min(1),
+        expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+        authId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+      })
+      .nullable(),
+    verified: z
+      .looseObject({
+        managerPrincipal: z.string().min(1),
+        pox5ContractId: z.string().min(1),
+        authId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+        signerKeyHex: z.string().regex(/^(?:02|03)[0-9a-f]{64}$/),
+        signerSignatureHex: z.string().regex(/^[0-9a-f]{130}$/),
+        expectedMessageHashHex: z.string().regex(/^[0-9a-f]{64}$/),
+        signatureValid: z.literal(true),
+        registerSelfCall: z
+          .object({
+            contract: z.string().min(1),
+            functionName: z.string().min(1),
+            arguments: z.array(z.string()),
+            signingPrincipal: z.string().min(1),
+            signingAuthority: z.literal("external-offline-admin"),
+          })
+          .strict(),
+      })
+      .nullable(),
+  })
   .strict();
-export type OnboardingProgressRequest = z.infer<typeof onboardingProgressRequestSchema>;
+export const signerGrantSessionResponseSchema = z
+  .object({ signerGrant: signerGrantSessionSchema })
+  .strict();
+export type SignerGrantSessionResponse = z.infer<typeof signerGrantSessionResponseSchema>;
 
 export const browserWalletIntentActionSchema = z.enum([
-  "deploy-manager",
   "register-self",
   "add-admin",
   "remove-admin",
@@ -951,7 +1665,771 @@ export const browserWalletIntentActionSchema = z.enum([
   "sweep-fee-refunds",
   "claim-rewards",
   "claim-staker-rewards",
+  "calculate-rewards",
 ]);
+export const operatorOperationCodeSchema = browserWalletIntentActionSchema;
+export type OperatorOperationCode = z.infer<typeof operatorOperationCodeSchema>;
+
+const contextualActionLabelSchema = z.string().min(1).max(120);
+const contextualActionContextSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }).strict(),
+  z
+    .object({
+      kind: z.literal("engine-job"),
+      jobId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("staker-reward"),
+      stakerPrincipal: z.string().min(1).max(500),
+      rewardCycle: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+      bondIndex: z
+        .string()
+        .regex(/^(?:0|[1-9][0-9]*)$/)
+        .nullable(),
+    })
+    .strict(),
+]);
+
+const openDomainActionSchema = z.union([
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("overview"),
+      section: z.enum(["attention", "cycle", "pool", "rewards", "health"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("pool"),
+      section: z.enum(["positions", "forecast", "roster"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("rewards"),
+      section: z
+        .enum(["outlook", "calculation", "claims", "fees", "withdrawals", "history"])
+        .nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("activity"),
+      section: z.enum(["active", "history"]).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-domain"),
+      label: contextualActionLabelSchema,
+      page: z.literal("health"),
+      section: z.enum(["findings", "node", "signer", "network", "sources"]).nullable(),
+    })
+    .strict(),
+]);
+
+const networkHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("network"),
+  })
+  .strict();
+const nodeHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("node"),
+  })
+  .strict();
+const signerHealthDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("health"),
+    section: z.literal("signer"),
+  })
+  .strict();
+const poolDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("pool"),
+    section: z.enum(["positions", "forecast", "roster"]).nullable(),
+  })
+  .strict();
+const rewardsDetailsActionSchema = z
+  .object({
+    kind: z.literal("open-domain"),
+    label: contextualActionLabelSchema,
+    page: z.literal("rewards"),
+    section: z
+      .enum(["outlook", "calculation", "claims", "fees", "withdrawals", "history"])
+      .nullable(),
+  })
+  .strict();
+
+export const contextualActionSchema = z.union([
+  z
+    .object({
+      kind: z.literal("launch-operation"),
+      operation: operatorOperationCodeSchema,
+      context: contextualActionContextSchema,
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("resume-activity"),
+      activityId: z.string().min(1).max(500),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("open-settings"),
+      section: z.enum(["attachment", "sources", "capabilities", "observer", "auth", "support"]),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("recheck"),
+      target: z.enum(["connection", "node", "api", "signer", "activity"]),
+      label: contextualActionLabelSchema,
+    })
+    .strict(),
+  openDomainActionSchema,
+]);
+export type ContextualAction = z.infer<typeof contextualActionSchema>;
+
+export const overviewEvidenceSchema = z
+  .object({
+    status: z.enum(["current", "delayed", "unavailable", "not-configured"]),
+    observedAt: z.iso.datetime().nullable(),
+    anchor: engineChainAnchorSchema.nullable(),
+    source: z.enum(["local-node", "signer", "indexed-api", "network-reference", "sidekick-store"]),
+    reason: z.string().min(1).max(1_000).nullable(),
+  })
+  .strict();
+export type OverviewEvidence = z.infer<typeof overviewEvidenceSchema>;
+
+export const operatorDeadlineSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("burn-block"),
+      burnBlockHeight: z.number().int().nonnegative(),
+      estimatedAt: z.iso.datetime().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reward-cycle"),
+      rewardCycleId: z.number().int().nonnegative(),
+      phase: z.enum(["before-prepare", "cycle-start"]),
+    })
+    .strict(),
+  z.object({ kind: z.literal("time"), at: z.iso.datetime() }).strict(),
+]);
+export type OperatorDeadline = z.infer<typeof operatorDeadlineSchema>;
+
+export const activityDisplayStatusSchema = z.enum([
+  "action-required",
+  "in-progress",
+  "needs-attention",
+  "complete",
+  "superseded",
+  "observed",
+]);
+export type ActivityDisplayStatus = z.infer<typeof activityDisplayStatusSchema>;
+
+export const activityOutcomeSchema = z.enum([
+  "pending",
+  "succeeded",
+  "failed",
+  "aborted",
+  "ambiguous",
+  "superseded",
+  "observed",
+]);
+export type ActivityOutcome = z.infer<typeof activityOutcomeSchema>;
+
+export const activityKindSchema = z.enum([
+  "operation",
+  "chain-event",
+  "configuration-change",
+  "finding-change",
+]);
+export type ActivityKind = z.infer<typeof activityKindSchema>;
+
+export const activityDomainSchema = z.enum([
+  "manager",
+  "pool",
+  "rewards",
+  "node",
+  "signer",
+  "network",
+  "sidekick",
+]);
+export type ActivityDomain = z.infer<typeof activityDomainSchema>;
+
+export const activityCoverageSourceSchema = z.enum([
+  "wallet-intents",
+  "transaction-engine",
+  "indexed-manager-history",
+  "indexed-pool-history",
+  "observer",
+  "settings-audit",
+]);
+export type ActivityCoverageSource = z.infer<typeof activityCoverageSourceSchema>;
+
+export const activityCoverageSchema = z
+  .object({
+    source: activityCoverageSourceSchema,
+    status: z.enum(["current", "delayed", "unavailable", "not-configured"]),
+    observedAt: z.iso.datetime().nullable(),
+    anchor: engineChainAnchorSchema.nullable(),
+    reason: z.string().min(1).max(1_000).nullable(),
+  })
+  .strict();
+export type ActivityCoverage = z.infer<typeof activityCoverageSchema>;
+
+export const activityStageSchema = z.enum([
+  "review-ready",
+  "preflighted",
+  "awaiting-approval",
+  "nonce-reserved",
+  "submitted",
+  "mempool",
+  "broadcast",
+  "confirmed",
+  "reobserving",
+  "blocked",
+  "ambiguous",
+  "failed",
+  "complete",
+  "superseded",
+  "observed",
+  "recorded",
+]);
+export type ActivityStage = z.infer<typeof activityStageSchema>;
+
+const activityStatusOutcomePairs = new Set([
+  "action-required:pending",
+  "in-progress:pending",
+  "needs-attention:pending",
+  "needs-attention:failed",
+  "needs-attention:aborted",
+  "needs-attention:ambiguous",
+  "complete:succeeded",
+  "superseded:superseded",
+  "observed:observed",
+]);
+
+export const activityGroupSummarySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    activityId: z.string().min(1).max(500),
+    kind: activityKindSchema,
+    domain: activityDomainSchema,
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(1_000),
+    stage: activityStageSchema,
+    operationScope: z.string().min(1).max(500).nullable(),
+    displayStatus: activityDisplayStatusSchema,
+    outcome: activityOutcomeSchema,
+    occurredAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    deadline: operatorDeadlineSchema.nullable(),
+    urgencyAt: z.iso.datetime().nullable(),
+    actorPrincipal: z.string().min(1).max(500).nullable(),
+    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(100),
+    anchor: engineChainAnchorSchema.nullable(),
+    supersedesActivityId: z.string().min(1).max(500).nullable(),
+    supersededByActivityId: z.string().min(1).max(500).nullable(),
+    primaryAction: contextualActionSchema.nullable(),
+    coverage: z.array(activityCoverageSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!activityStatusOutcomePairs.has(`${value.displayStatus}:${value.outcome}`)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity display status and outcome are incompatible",
+        path: ["outcome"],
+      });
+    }
+    if (
+      value.primaryAction?.kind === "resume-activity" &&
+      value.primaryAction.activityId !== value.activityId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Resume action must target the containing Activity group",
+        path: ["primaryAction", "activityId"],
+      });
+    }
+  });
+export type ActivityGroupSummary = z.infer<typeof activityGroupSummarySchema>;
+
+export const activityTimelineEntrySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: z.string().min(1).max(500),
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    detail: z.string().min(1).max(2_000),
+    occurredAt: z.iso.datetime(),
+    source: activityCoverageSourceSchema,
+    txid: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    stacksBlockHeight: z.number().int().nonnegative().nullable(),
+    indexBlockHash: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    canonical: z.boolean().nullable(),
+    finalized: z.boolean().nullable(),
+  })
+  .strict()
+  .refine((value) => (value.stacksBlockHeight === null) === (value.indexBlockHash === null), {
+    message: "Timeline block height and index-block hash must both be present or both be null",
+    path: ["indexBlockHash"],
+  });
+export type ActivityTimelineEntry = z.infer<typeof activityTimelineEntrySchema>;
+
+export const activityPageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    active: z.array(activityGroupSummarySchema),
+    items: z.array(activityGroupSummarySchema),
+    nextCursor: z.string().min(1).max(2_000).nullable(),
+    coverage: z.array(activityCoverageSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = new Set<string>();
+    for (const [section, items] of [
+      ["active", value.active],
+      ["items", value.items],
+    ] as const) {
+      for (const [index, item] of items.entries()) {
+        if (ids.has(item.activityId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Activity groups must not be duplicated between active work and history",
+            path: [section, index, "activityId"],
+          });
+        }
+        ids.add(item.activityId);
+      }
+    }
+  });
+export const activityResponseSchema = activityPageSchema;
+export type ActivityResponse = z.infer<typeof activityPageSchema>;
+
+export const activityDetailSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    requestedActivityId: z.string().min(1).max(500),
+    canonicalActivityId: z.string().min(1).max(500),
+    aliases: z.array(z.string().min(1).max(500)),
+    summary: activityGroupSummarySchema,
+    timeline: z.array(activityTimelineEntrySchema),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.summary.activityId !== value.canonicalActivityId) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail summary must use the canonical Activity id",
+        path: ["summary", "activityId"],
+      });
+    }
+    if (!value.aliases.includes(value.requestedActivityId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail aliases must contain the requested id",
+        path: ["aliases"],
+      });
+    }
+    if (!value.aliases.includes(value.canonicalActivityId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Activity detail aliases must contain the canonical id",
+        path: ["aliases"],
+      });
+    }
+  });
+export type ActivityDetail = z.infer<typeof activityDetailSchema>;
+
+const overviewProtocolMomentSchema = z
+  .object({
+    status: z.enum(["scheduled", "due", "unavailable"]),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    blocksRemaining: z.number().int().nonnegative().nullable(),
+    estimatedAt: z.iso.datetime().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.status === "unavailable" &&
+      (value.burnBlockHeight !== null ||
+        value.blocksRemaining !== null ||
+        value.estimatedAt !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An unavailable protocol moment cannot carry schedule values",
+      });
+    }
+    if (
+      value.status !== "unavailable" &&
+      (value.burnBlockHeight === null || value.blocksRemaining === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A scheduled or due protocol moment requires a block and remaining distance",
+      });
+    }
+    if (value.status === "due" && value.blocksRemaining !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocksRemaining"],
+        message: "A due protocol moment must have zero blocks remaining",
+      });
+    }
+    if (value.status === "scheduled" && (value.blocksRemaining ?? 0) < 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocksRemaining"],
+        message: "A scheduled protocol moment must be in the future",
+      });
+    }
+  });
+
+export const overviewCycleSnapshotSchema = z
+  .object({
+    status: z.enum(["current", "unavailable"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    phase: z.enum(["reward", "prepare"]).nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    nextRewardCalculation: overviewProtocolMomentSchema,
+    nextPreparePhase: overviewProtocolMomentSchema,
+    evidence: z.array(overviewEvidenceSchema).min(1),
+  })
+  .strict();
+export type OverviewCycleSnapshot = z.infer<typeof overviewCycleSnapshotSchema>;
+
+export const overviewNetworkHealthSummarySchema = z
+  .object({
+    status: z.enum(["advancing", "needs-attention", "unavailable", "insufficient-evidence"]),
+    reference: z.string().min(1).max(120).nullable(),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    lastObservedAt: z.iso.datetime().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: networkHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewNetworkHealthSummary = z.infer<typeof overviewNetworkHealthSummarySchema>;
+
+export const overviewNodeHealthSummarySchema = z
+  .object({
+    status: z.enum([
+      "aligned",
+      "behind",
+      "needs-attention",
+      "unavailable",
+      "insufficient-evidence",
+    ]),
+    stacksTipHeight: z.number().int().nonnegative().nullable(),
+    burnBlockHeight: z.number().int().nonnegative().nullable(),
+    peerHeightDifference: z.number().int().nullable(),
+    lastAdvancedAt: z.iso.datetime().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: nodeHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewNodeHealthSummary = z.infer<typeof overviewNodeHealthSummarySchema>;
+
+export const overviewSignerHealthSummarySchema = z
+  .object({
+    status: z.enum(["healthy", "needs-attention", "unavailable", "not-configured", "collecting"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    nodeHeightDifference: z.number().int().nullable(),
+    proposalsLastHour: z.number().int().nonnegative().nullable(),
+    acceptedLastHour: z.number().int().nonnegative().nullable(),
+    rejectedLastHour: z.number().int().nonnegative().nullable(),
+    responseP95Seconds: z.number().nonnegative().nullable(),
+    validationP95Seconds: z.number().nonnegative().nullable(),
+    detail: z.string().min(1).max(1_000),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: signerHealthDetailsActionSchema,
+  })
+  .strict();
+export type OverviewSignerHealthSummary = z.infer<typeof overviewSignerHealthSummarySchema>;
+
+export const overviewAttentionTierSchema = z.enum(["urgent", "action-required", "needs-attention"]);
+export type OverviewAttentionTier = z.infer<typeof overviewAttentionTierSchema>;
+export const overviewDomainSchema = z.enum([
+  "connection",
+  "manager",
+  "pool",
+  "rewards",
+  "node",
+  "signer",
+  "network",
+  "sidekick",
+]);
+export type OverviewDomain = z.infer<typeof overviewDomainSchema>;
+
+export const overviewAttentionItemSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    attentionId: z.string().min(1).max(500),
+    tier: overviewAttentionTierSchema,
+    domain: overviewDomainSchema,
+    affectedDomains: z.array(overviewDomainSchema).min(1),
+    code: z.string().min(1).max(120),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(1_000),
+    impact: z.string().min(1).max(1_000),
+    openedAt: z.iso.datetime().nullable(),
+    updatedAt: z.iso.datetime(),
+    deadline: operatorDeadlineSchema.nullable(),
+    urgencyAt: z.iso.datetime().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    relatedActivityId: z.string().min(1).max(500).nullable(),
+    relatedFindingId: z.string().min(1).max(500).nullable(),
+    primaryAction: contextualActionSchema,
+    detailsAction: contextualActionSchema.nullable(),
+  })
+  .strict();
+export type OverviewAttentionItem = z.infer<typeof overviewAttentionItemSchema>;
+
+export const overviewInProgressItemSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    activityId: z.string().min(1).max(500),
+    domain: z.enum(["manager", "pool", "rewards", "node", "signer", "network", "sidekick"]),
+    title: z.string().min(1).max(200),
+    stage: z.string().min(1).max(200),
+    updatedAt: z.iso.datetime(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    primaryAction: z
+      .object({
+        kind: z.literal("resume-activity"),
+        activityId: z.string().min(1).max(500),
+        label: contextualActionLabelSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.primaryAction.activityId !== value.activityId) {
+      context.addIssue({
+        code: "custom",
+        path: ["primaryAction", "activityId"],
+        message: "In-progress action must resume the projected activity",
+      });
+    }
+  });
+export type OverviewInProgressItem = z.infer<typeof overviewInProgressItemSchema>;
+
+const overviewPoolCycleSchema = z
+  .object({
+    rewardCycleId: z.number().int().nonnegative(),
+    amountUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    inSignerSet: z.boolean(),
+  })
+  .strict();
+
+export const overviewPoolSummarySchema = z
+  .object({
+    status: z.enum(["ready", "needs-attention", "unavailable", "insufficient-evidence"]),
+    current: overviewPoolCycleSchema.nullable(),
+    next: overviewPoolCycleSchema.nullable(),
+    nextThresholdMarginUstx: z
+      .string()
+      .regex(/^-?(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    participants: z
+      .object({
+        stxOnly: z.number().int().nonnegative(),
+        bitcoinBond: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    nextChange: z
+      .object({
+        kind: z.enum(["join", "exit", "amount-change", "unlock"]),
+        rewardCycleId: z.number().int().nonnegative(),
+        participantCount: z.number().int().nonnegative(),
+        amountDeltaUstx: z
+          .string()
+          .regex(/^-?(?:0|[1-9][0-9]*)$/)
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: poolDetailsActionSchema,
+  })
+  .strict();
+export type OverviewPoolSummary = z.infer<typeof overviewPoolSummarySchema>;
+
+export const overviewRewardsSummarySchema = z
+  .object({
+    status: z.enum(["ready", "needs-attention", "unavailable", "insufficient-evidence"]),
+    rewardCycleId: z.number().int().nonnegative().nullable(),
+    globalAccruedSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    estimatedPoolRewardSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    operatorFeeSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    operatorFeeUnavailableReason: z
+      .enum([
+        "reward-outlook-unavailable",
+        "reviewed-fee-capability-unavailable",
+        "forecast-unavailable",
+        "authoritative-roster-unavailable",
+        "per-staker-shares-incomplete",
+        "anchored-fee-inputs-unavailable",
+      ])
+      .nullable(),
+    estimateKind: z.enum(["checkpoint-forecast", "if-calculated-now", "unavailable"]),
+    confidence: z.enum(["contract-exact", "low", "developing", "calibrated", "unavailable"]),
+    calculationState: z.enum(["pending", "completed", "ahead", "unknown"]).nullable(),
+    actionableClaims: z.number().int().nonnegative().nullable(),
+    evidence: z.array(overviewEvidenceSchema).min(1),
+    detailsAction: rewardsDetailsActionSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.estimatedPoolRewardSats === null) {
+      if (value.estimateKind !== "unavailable" || value.confidence !== "unavailable") {
+        context.addIssue({
+          code: "custom",
+          path: ["estimatedPoolRewardSats"],
+          message: "An unavailable pool estimate must have unavailable kind and confidence",
+        });
+      }
+    } else if (value.estimateKind === "unavailable" || value.confidence === "unavailable") {
+      context.addIssue({
+        code: "custom",
+        path: ["estimatedPoolRewardSats"],
+        message: "An available pool estimate must identify its kind and confidence",
+      });
+    }
+    if (value.estimateKind === "if-calculated-now" && value.confidence !== "contract-exact") {
+      context.addIssue({
+        code: "custom",
+        path: ["confidence"],
+        message: "An if-calculated-now estimate must be contract-exact",
+      });
+    }
+    if (
+      value.estimateKind === "checkpoint-forecast" &&
+      value.confidence !== "low" &&
+      value.confidence !== "developing" &&
+      value.confidence !== "calibrated"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["confidence"],
+        message: "A checkpoint forecast must expose its calibration confidence",
+      });
+    }
+    if ((value.operatorFeeSats === null) === (value.operatorFeeUnavailableReason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["operatorFeeSats"],
+        message: "An operator fee must have either a value or an unavailability reason",
+      });
+    }
+    if (value.operatorFeeSats !== null && value.estimateKind === "unavailable") {
+      context.addIssue({
+        code: "custom",
+        path: ["operatorFeeSats"],
+        message: "An operator fee estimate requires an available pool estimate",
+      });
+    }
+  });
+export type OverviewRewardsSummary = z.infer<typeof overviewRewardsSummarySchema>;
+
+export const overviewPageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    monitoring: z
+      .object({
+        network: z.string().min(1).max(100),
+        managerPrincipal: z.string().min(1).max(500),
+      })
+      .strict(),
+    cycle: overviewCycleSnapshotSchema,
+    network: overviewNetworkHealthSummarySchema,
+    node: overviewNodeHealthSummarySchema,
+    signer: overviewSignerHealthSummarySchema,
+    attention: z.array(overviewAttentionItemSchema),
+    inProgress: z.array(overviewInProgressItemSchema),
+    pool: overviewPoolSummarySchema,
+    rewards: overviewRewardsSummarySchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const attentionIds = new Set<string>();
+    for (const [index, item] of value.attention.entries()) {
+      if (attentionIds.has(item.attentionId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["attention", index, "attentionId"],
+          message: "Attention IDs must be unique",
+        });
+      }
+      attentionIds.add(item.attentionId);
+    }
+    const activityIds = new Set<string>();
+    for (const [index, item] of value.inProgress.entries()) {
+      if (activityIds.has(item.activityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["inProgress", index, "activityId"],
+          message: "In-progress activity IDs must be unique",
+        });
+      }
+      activityIds.add(item.activityId);
+    }
+  });
+export type OverviewPage = z.infer<typeof overviewPageSchema>;
+
 export const browserWalletIntentNetworkSchema = z.enum([
   "mainnet",
   "pox5-testnet",
@@ -977,12 +2455,7 @@ const walletActorPrincipalInputSchema = z
   .max(64)
   .refine((value) => !value.includes("."), "Expected a standard principal");
 
-export const onboardingBrowserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("deploy-manager") }).strict(),
-  z.object({ action: z.literal("register-self") }).strict(),
-]);
 export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("deploy-manager") }).strict(),
   z
     .object({
       action: z.literal("register-self"),
@@ -1037,6 +2510,12 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     .strict(),
   z
     .object({
+      action: z.literal("calculate-rewards"),
+      actorPrincipal: walletActorPrincipalInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       // One `(staker, reward-cycle, bond-index)` per request. `claim-staker-rewards` takes a
       // single staker and has no batch form, so a settlement is one transaction per tuple.
       action: z.literal("claim-staker-rewards"),
@@ -1048,16 +2527,6 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     })
     .strict(),
 ]);
-
-/** One settleable tuple and why it is or is not worth a transaction. */
-export interface StakerClaimCandidate {
-  stakerPrincipal: string;
-  bondIndex: string | null;
-  payout: { kind: "direct-sbtc" | "bitcoin-l1"; maxFeeSats: string | null };
-  rewards: { earnedSats: string; feeSats: string; grossSats: string };
-  claimable: boolean;
-  blockedReason: null | "nothing-settled" | "l1-below-max-fee";
-}
 
 /**
  * What settling a cycle costs, shown before the operator signs anything. The outstanding claim
@@ -1120,17 +2589,6 @@ export const stakerClaimsResponseSchema = z
   })
   .strict();
 
-export interface StakerClaimDiscoveryResponse {
-  rewardCycle: number;
-  page: { stakerPrincipals: string[]; nextCursor: string | null };
-  settlement: {
-    outstandingClaims: number;
-    transactionCount: number;
-    totalNetSats: string;
-    blockedClaims: number;
-  };
-  candidates: StakerClaimCandidate[];
-}
 export const browserWalletIntentSubmissionRequestSchema = z
   .object({ txid: z.string().regex(/^0x[0-9a-f]{64}$/i) })
   .strict();
@@ -1161,18 +2619,6 @@ const browserWalletAssetPostConditionParamsSchema = browserWalletCommonParamsSch
 });
 
 export const browserWalletTransactionSchema = z.union([
-  z
-    .object({
-      method: z.literal("stx_deployContract"),
-      params: browserWalletNoPostConditionsParamsSchema
-        .extend({
-          name: z.string().min(1),
-          clarityCode: z.string().min(1),
-          clarityVersion: z.literal(6),
-        })
-        .strict(),
-    })
-    .strict(),
   z
     .object({
       method: z.literal("stx_callContract"),
@@ -1224,6 +2670,18 @@ export const browserWalletTransactionSchema = z.union([
   z
     .object({
       method: z.literal("stx_callContract"),
+      params: browserWalletNoPostConditionsParamsSchema
+        .extend({
+          contract: z.string().min(1),
+          functionName: z.literal("calculate-rewards"),
+          functionArgs: z.array(clarityHexSchema).length(1),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("stx_callContract"),
       params: browserWalletAssetPostConditionParamsSchema
         .extend({
           contract: z.string().min(1),
@@ -1262,7 +2720,7 @@ export const browserWalletTransactionSchema = z.union([
 
 export const browserWalletIntentSchema = z
   .object({
-    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    schemaVersion: z.literal(2),
     id: z.uuid(),
     action: browserWalletIntentActionSchema,
     network: browserWalletIntentNetworkSchema,
@@ -1271,11 +2729,16 @@ export const browserWalletIntentSchema = z
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     transaction: browserWalletTransactionSchema,
-    request: z
-      .union([
-        onboardingBrowserWalletIntentCreateRequestSchema,
-        browserWalletIntentCreateRequestSchema,
-      ])
+    request: browserWalletIntentCreateRequestSchema,
+    binding: z
+      .object({
+        kind: z.literal("calculate-rewards"),
+        pox5ContractId: z.string().min(1),
+        targetRewardCycle: z.number().int().nonnegative(),
+        targetCheckpoint: z.enum(["first-half", "second-half"]),
+        expectedLastRewardComputeBurnHeight: z.number().int().nonnegative(),
+      })
+      .strict()
       .optional(),
     review: z
       .object({
@@ -1349,36 +2812,29 @@ export const browserWalletIntentSchema = z
         message: "Wallet intent network and chain binding do not match",
       });
     }
-    if (value.schemaVersion === 1) {
-      if (
-        value.network !== "mainnet" ||
-        !["deploy-manager", "register-self"].includes(value.action)
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["schemaVersion"],
-          message: "Schema version 1 supports mainnet setup actions only",
-        });
-      }
-    } else {
-      if (value.review.fields.length === 0) {
-        context.addIssue({
-          code: "custom",
-          path: ["review", "fields"],
-          message: "Schema version 2 requires immutable review fields",
-        });
-      }
-      if (!value.request || value.request.action !== value.action) {
-        context.addIssue({
-          code: "custom",
-          path: ["request"],
-          message: "Schema version 2 requires the immutable action request",
-        });
-      }
+    if (value.review.fields.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["review", "fields"],
+        message: "Wallet intents require immutable review fields",
+      });
+    }
+    if (value.request.action !== value.action) {
+      context.addIssue({
+        code: "custom",
+        path: ["request"],
+        message: "Wallet intents require the immutable action request",
+      });
+    }
+    if ((value.action === "calculate-rewards") !== (value.binding?.kind === "calculate-rewards")) {
+      context.addIssue({
+        code: "custom",
+        path: ["binding"],
+        message: "Reward-calculation intents require their immutable completion binding",
+      });
     }
     const transaction = value.transaction;
     const actionMatches =
-      (value.action === "deploy-manager" && transaction.method === "stx_deployContract") ||
       (value.action === "register-self" &&
         transaction.method === "stx_callContract" &&
         transaction.params.functionName === "register-self") ||
@@ -1399,7 +2855,10 @@ export const browserWalletIntentSchema = z
         transaction.params.functionName === "claim-rewards") ||
       (value.action === "claim-staker-rewards" &&
         transaction.method === "stx_callContract" &&
-        transaction.params.functionName === "claim-staker-rewards");
+        transaction.params.functionName === "claim-staker-rewards") ||
+      (value.action === "calculate-rewards" &&
+        transaction.method === "stx_callContract" &&
+        transaction.params.functionName === "calculate-rewards");
     if (!actionMatches) {
       context.addIssue({
         code: "custom",
@@ -1413,8 +2872,3 @@ export const browserWalletIntentResponseSchema = z
   .object({ intent: browserWalletIntentSchema })
   .strict();
 export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
-
-export const poolCardGenerateRequestSchema = z
-  .object({ mode: z.enum(["live", "static"]) })
-  .strict();
-export type PoolCardGenerateRequest = z.infer<typeof poolCardGenerateRequestSchema>;

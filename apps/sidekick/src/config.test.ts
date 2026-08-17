@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, redactConfig } from "./config.js";
+import {
+  hiroReferenceApiCredential,
+  indexedApiCredential,
+  loadConfig,
+  loadManagerPrincipal,
+  redactConfig,
+} from "./config.js";
 
 describe("Sidekick configuration", () => {
+  it("requires a syntactically valid configured manager contract principal", () => {
+    expect(() => loadManagerPrincipal({})).toThrow("SIDEKICK_MANAGER_PRINCIPAL is required");
+    expect(() => loadManagerPrincipal({ SIDEKICK_MANAGER_PRINCIPAL: "not-a-contract" })).toThrow(
+      "must be a valid contract principal",
+    );
+    expect(
+      loadManagerPrincipal({
+        SIDEKICK_MANAGER_PRINCIPAL: " SP000000000000000000002Q6VF78.signer-manager ",
+      }),
+    ).toBe("SP000000000000000000002Q6VF78.signer-manager");
+  });
+
   it("uses the mainnet Hiro API default and redacts its key", () => {
     const config = loadConfig({
       STACKS_NODE_RPC_URL: "http://127.0.0.1:20443/",
@@ -14,7 +32,9 @@ describe("Sidekick configuration", () => {
       apiUrl: "https://api.mainnet.hiro.so",
       hiroReferenceApiUrl: "https://api.mainnet.hiro.so",
       apiKey: "secret-key",
+      apiKeyOrigin: "https://api.mainnet.hiro.so",
       apiKeyHeader: "x-api-key",
+      hiroReferenceApiKeyHeader: "x-api-key",
       maxApiBurnBlockLag: 12,
       forecastHorizonCycles: 6,
       stakerPageLimit: 200,
@@ -23,6 +43,14 @@ describe("Sidekick configuration", () => {
     });
     expect(redactConfig(config)).not.toHaveProperty("apiKey");
     expect(redactConfig(config)).toMatchObject({ apiKeyConfigured: true });
+    expect(indexedApiCredential(config)).toEqual({
+      headerName: "x-api-key",
+      value: "secret-key",
+    });
+    expect(hiroReferenceApiCredential(config)).toEqual({
+      headerName: "x-api-key",
+      value: "secret-key",
+    });
   });
 
   it("loads optional node and signer health endpoints", () => {
@@ -32,12 +60,28 @@ describe("Sidekick configuration", () => {
         STACKS_NODE_METRICS_URL: "http://node:9153/metrics",
         STACKS_SIGNER_MONITORING_URL: "http://signer:9153",
         HIRO_REFERENCE_API_URL: "https://reference.example.com",
+        HIRO_REFERENCE_API_KEY: "reference-secret",
+        HIRO_REFERENCE_API_KEY_HEADER: "authorization",
       }),
     ).toMatchObject({
       nodeMetricsUrl: "http://node:9153/metrics",
       signerMonitoringUrl: "http://signer:9153",
       hiroReferenceApiUrl: "https://reference.example.com",
+      hiroReferenceApiKey: "reference-secret",
+      hiroReferenceApiKeyOrigin: "https://reference.example.com",
+      hiroReferenceApiKeyHeader: "authorization",
     });
+  });
+
+  it("does not reuse an API key across origins", () => {
+    const config = loadConfig({
+      STACKS_NODE_RPC_URL: "http://node:20443",
+      STACKS_API_KEY: "indexed-secret",
+      HIRO_REFERENCE_API_URL: "https://reference.example.com",
+    });
+
+    expect(indexedApiCredential(config)?.value).toBe("indexed-secret");
+    expect(hiroReferenceApiCredential(config)).toBeUndefined();
   });
 
   it("requires an explicit API URL for regtest", () => {
@@ -132,6 +176,15 @@ describe("Sidekick configuration", () => {
     expect(() => loadConfig({ STACKS_NODE_RPC_URL: "data:text/plain,not-a-node" })).toThrow(
       "must use http or https",
     );
+  });
+
+  it("rejects API key headers that override HTTP transport headers", () => {
+    expect(() =>
+      loadConfig({
+        STACKS_NODE_RPC_URL: "http://127.0.0.1:20443",
+        STACKS_API_KEY_HEADER: "Host",
+      }),
+    ).toThrow("STACKS_API_KEY_HEADER is invalid");
   });
 
   it("bounds the operator forecast horizon to the PoX-5 lock period", () => {

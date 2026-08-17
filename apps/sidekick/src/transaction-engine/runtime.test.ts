@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "../chain-clients.js";
 import type { SidekickConfig } from "../config.js";
-import type { SetupSnapshot } from "../setup-snapshot.js";
+import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "../storage/store.js";
 import { GasPayerSigner } from "./gas-payer-signer.js";
 import type { ManagerClaimObservationInput } from "./manager-claim-observation-service.js";
@@ -69,8 +69,8 @@ function context(): TransactionEngineRuntimeContext {
   };
 }
 
-function setup(value: ChainAnchor): SetupSnapshot {
-  return { chainAnchor: value } as SetupSnapshot;
+function setup(value: ChainAnchor): OperatorAnchorSnapshot {
+  return { chainAnchor: value } as OperatorAnchorSnapshot;
 }
 
 function blockedOutcome() {

@@ -66,8 +66,30 @@ function compatibleInterface(): ContractInterface {
     "check-pox-addr",
   ];
   return {
+    clarity_version: "Clarity6",
+    epoch: "Epoch40",
     functions: [
-      ...publicFunctions.map((name) => ({ name, access: "public", args: [], outputs: null })),
+      ...publicFunctions.map((name) =>
+        name === "validate-stake!"
+          ? {
+              name,
+              access: "public",
+              args: [
+                { name: "staker", type: "principal" },
+                { name: "first-index", type: "uint128" },
+                { name: "num-indexes", type: "uint128" },
+                { name: "amount-ustx", type: "uint128" },
+                { name: "amount-sats", type: "uint128" },
+                { name: "is-bond", type: "bool" },
+                {
+                  name: "signer-calldata",
+                  type: { optional: { buffer: { length: 500 } } },
+                },
+              ],
+              outputs: { type: { response: { ok: "bool", error: "uint128" } } },
+            }
+          : { name, access: "public", args: [], outputs: null },
+      ),
       ...readOnlyFunctions.map((name) => ({
         name,
         access: "read_only",
@@ -346,6 +368,36 @@ describe("manager trust profiles", () => {
     });
 
     if (profile.tier !== "reference-render") throw new Error("Expected a reference render");
+    const reformatted = `\n${source}`;
+    expect(claritySourceSha256(reformatted)).not.toBe(profile.sourceSha256);
+    expect(claritySourceSha256(canonicalizeClaritySource(reformatted))).toBe(
+      profile.canonicalSha256,
+    );
+    const reformattedProfile = parseInstalledManagerProfile({
+      ...profile,
+      sourceSha256: claritySourceSha256(reformatted),
+    });
+    const reformattedReport = verifyManagerArtifact(
+      "devnet",
+      manager,
+      { source: reformatted, publish_height: 100 },
+      compatibleInterface(),
+      context(upstreamSource, {
+        directory: "/profiles",
+        profiles: [{ fileName: "reformatted.json", profile: reformattedProfile }],
+        issues: [],
+      }),
+    );
+    expect(reformattedReport).toMatchObject({
+      source: { tier: "reference-render", recognized: true, match: "exact" },
+      attachAllowed: true,
+      automationEligible: false,
+      capabilities: { sourceReview: { exactReviewed: false } },
+    });
+    expect(
+      reformattedReport.capabilities.actions.every(({ executionAvailable }) => !executionAvailable),
+    ).toBe(true);
+
     const staleProvenance = parseInstalledManagerProfile({
       ...profile,
       reference: {

@@ -1,22 +1,21 @@
 import {
   ArrowClockwise,
+  CaretDown,
+  ClockCounterClockwise,
   Coins,
   Gauge,
   GearSix,
   Heartbeat,
-  ListChecks,
   Moon,
-  SealCheck,
-  ShareNetwork,
   ShieldCheck,
-  SlidersHorizontal,
   Sun,
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
 import {
+  type ConnectionAssessment,
+  connectionAssessmentSchema,
   type DashboardSnapshot,
-  onboardingEnvelopeSchema,
   type RateLimitInfo,
   type ReconciliationOperation,
   statusResponseSchema,
@@ -28,15 +27,15 @@ import "../../../design/tokens/tokens.css";
 import "./base.css";
 import "./styles.css";
 import { ApiRequestError, AUTH_REJECTED_EVENT, apiJson } from "./api-client.js";
+import { ConnectionPage } from "./connection-page.js";
+import { connectionNeedsRecoveryPage } from "./connection-presentation.js";
 import { type DashboardPage, dashboardHash, parseDashboardHash } from "./dashboard-route.js";
-import { EnrollmentPage } from "./features/enrollment/enrollment-page.js";
-import { Manager } from "./features/manager/manager-page.js";
-import { Operations } from "./features/operations/operations-page.js";
+import { ActionPage } from "./features/actions/action-page.js";
+import { Activity } from "./features/activity/activity-page.js";
 import { Overview } from "./features/overview/overview-page.js";
 import { Pool } from "./features/pool/pool-page.js";
 import { Rewards } from "./features/rewards/rewards-page.js";
 import { SettingsPage } from "./features/settings/settings-page.js";
-import { SetupPage } from "./features/setup/setup-page.js";
 import { number } from "./shared/format.js";
 import { operatorActionError, operatorErrorDetail } from "./shared/operator-error.js";
 import {
@@ -50,16 +49,87 @@ type Snapshot = DashboardSnapshot;
 const nav: Array<{ group?: string; id?: DashboardPage; label?: string; icon?: typeof Gauge }> = [
   { group: "Operate" },
   { id: "overview", label: "Overview", icon: Gauge },
-  { id: "manager", label: "Manager", icon: SealCheck },
   { id: "pool", label: "Pool", icon: UsersThree },
   { id: "rewards", label: "Rewards", icon: Coins },
-  { id: "operations", label: "Operations", icon: ListChecks },
+  { id: "activity", label: "Activity", icon: ClockCounterClockwise },
   { id: "health", label: "Signer Health", icon: Heartbeat },
   { group: "Configure" },
-  { id: "setup", label: "Initial Setup", icon: SlidersHorizontal },
   { id: "settings", label: "Settings", icon: GearSix },
-  { id: "enrollment", label: "Public Pool Page", icon: ShareNetwork },
 ];
+
+function MobilePageMenu({ page, alertCount }: { page: DashboardPage; alertCount: number }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const activeItem = nav.find((item) => item.id === page);
+  const ActiveIcon = activeItem?.icon;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromKeyboard);
+    };
+  }, [open]);
+
+  return (
+    <div className="mobile-page-menu" ref={rootRef}>
+      <button
+        aria-controls="mobile-dashboard-pages"
+        aria-expanded={open}
+        aria-label="Dashboard page"
+        className="mobile-page-menu-trigger"
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+        type="button"
+      >
+        <span className="mobile-page-menu-current">
+          {ActiveIcon ? <ActiveIcon /> : null}
+          <span>{activeItem?.label ?? "Choose page"}</span>
+        </span>
+        <CaretDown className="mobile-page-menu-chevron" />
+      </button>
+      <nav
+        aria-label="Dashboard pages"
+        className="mobile-page-menu-popover"
+        hidden={!open}
+        id="mobile-dashboard-pages"
+      >
+        {nav.map((item) =>
+          item.group ? (
+            <div className="mobile-page-menu-group" key={item.group}>
+              {item.group}
+            </div>
+          ) : (
+            <a
+              aria-current={page === item.id ? "page" : undefined}
+              className={`mobile-page-menu-item ${page === item.id ? "active" : ""}`}
+              href={`#${item.id}`}
+              key={item.id}
+              onClick={() => setOpen(false)}
+            >
+              {item.icon ? <item.icon /> : null}
+              <span>{item.label}</span>
+              {item.id === "overview" && alertCount ? (
+                <span className="mobile-page-menu-count">{alertCount}</span>
+              ) : null}
+            </a>
+          ),
+        )}
+      </nav>
+    </div>
+  );
+}
 
 function StacksGlyph() {
   return (
@@ -70,9 +140,10 @@ function StacksGlyph() {
   );
 }
 
-const STATUS_POLL_MS = 30_000;
+const STATUS_POLL_MS = 15_000;
 const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
+const CONNECTION_RECHECK_MS = 60_000;
 
 function rateLimitFromError(cause: unknown): RateLimitInfo | null {
   return cause instanceof ApiRequestError ? (cause.body?.rateLimit ?? null) : null;
@@ -103,7 +174,15 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function Login({ onLogin, error }: { onLogin: (token: string) => void; error: string | null }) {
+function Login({
+  onLogin,
+  error,
+  checkingAutomaticAuth,
+}: {
+  onLogin: (token: string) => void;
+  error: string | null;
+  checkingAutomaticAuth: boolean;
+}) {
   const [token, setToken] = useState("");
   return (
     <main className="login-shell">
@@ -140,7 +219,11 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
             Open console
           </button>
         </form>
-        <small>Stored in this browser tab only.</small>
+        <small>
+          {checkingAutomaticAuth
+            ? "Checking for trusted proxy or HTTP Basic access…"
+            : "Stored in this browser tab only."}
+        </small>
       </div>
     </main>
   );
@@ -148,18 +231,31 @@ function Login({ onLogin, error }: { onLogin: (token: string) => void; error: st
 
 function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem("sidekick-token") ?? "");
+  const [automaticAuth, setAutomaticAuth] = useState<"checking" | "authenticated" | "unavailable">(
+    () => (sessionStorage.getItem("sidekick-token") ? "unavailable" : "checking"),
+  );
+  const authenticated = Boolean(token) || automaticAuth === "authenticated";
   const [route, setRoute] = useState(() => parseDashboardHash(location.hash));
   const page = route.page;
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
   );
   const settingsThemeApplied = useRef(false);
   const activeStatusRequests = useRef(0);
   const statusRequestGeneration = useRef(0);
+  const connectionRequestGeneration = useRef(0);
+  const connectionRef = useRef<ConnectionAssessment | null>(null);
   const syncController = useRef<AbortController | null>(null);
+  const [connection, setConnection] = useState<ConnectionAssessment | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [checkingConnection, setCheckingConnection] = useState(false);
   const [data, setData] = useState<Snapshot | null>(null);
-  const [onboardingStarted, setOnboardingStarted] = useState<boolean | null>(null);
-  const [dismissedSetupNoticeKey, setDismissedSetupNoticeKey] = useState<string | null>(null);
+  const [overviewMeta, setOverviewMeta] = useState<{
+    network: string;
+    attentionCount: number;
+  } | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusRateLimit, setStatusRateLimit] = useState<RateLimitInfo | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -168,30 +264,113 @@ function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncOperation, setSyncOperation] = useState<ReconciliationOperation | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const loadOnboardingState = useCallback(async () => {
-    if (!token) return;
-    try {
-      const result = await apiJson(token, "/api/v1/onboarding", onboardingEnvelopeSchema);
-      setOnboardingStarted(result.onboarding !== null);
-    } catch {
-      // Setup guidance is optional UI state; do not hide the operator dashboard if it is unavailable.
-      setOnboardingStarted(null);
+  useEffect(() => {
+    if (token) {
+      setAutomaticAuth("unavailable");
+      return;
     }
+    const controller = new AbortController();
+    setAutomaticAuth("checking");
+    void fetch("/api/v1/auth/session", {
+      credentials: "same-origin",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const body: unknown = await response.json().catch(() => null);
+        return (
+          typeof body === "object" &&
+          body !== null &&
+          "authenticated" in body &&
+          body.authenticated === true
+        );
+      })
+      .then((available) => {
+        if (!controller.signal.aborted) {
+          setAutomaticAuth(available ? "authenticated" : "unavailable");
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setAutomaticAuth("unavailable");
+      });
+    return () => controller.abort();
   }, [token]);
+  const loadConnection = useCallback(
+    async (force = false) => {
+      if (!authenticated) return false;
+      const generation = ++connectionRequestGeneration.current;
+      setCheckingConnection(true);
+      try {
+        const result = await apiJson(
+          token,
+          force ? "/api/v1/connection/recheck" : "/api/v1/connection",
+          connectionAssessmentSchema,
+          force ? { method: "POST" } : {},
+        );
+        if (generation !== connectionRequestGeneration.current) return false;
+        const hadProvedConnection = Boolean(
+          connectionRef.current?.status === "connected" || connectionRef.current?.lastSuccessful,
+        );
+        connectionRef.current = result;
+        setConnection(result);
+        setConnectionError(null);
+        if (force && !hadProvedConnection && result.status === "connected") {
+          location.hash = dashboardHash("overview");
+        }
+        return result.status === "connected";
+      } catch (cause) {
+        if (generation !== connectionRequestGeneration.current) return false;
+        setConnectionError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+        return false;
+      } finally {
+        if (generation === connectionRequestGeneration.current) setCheckingConnection(false);
+      }
+    },
+    [authenticated, token],
+  );
+  useEffect(() => {
+    if (!authenticated) return;
+    void loadConnection();
+  }, [authenticated, loadConnection]);
+  useEffect(() => {
+    if (!authenticated) return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") void loadConnection(true);
+    };
+    const interval = window.setInterval(refreshIfVisible, CONNECTION_RECHECK_MS);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [authenticated, loadConnection]);
+  const connectionStatus = connection?.status ?? null;
+  const connectionUnavailableAfterSuccess = Boolean(
+    connection?.status === "unavailable" && connection.lastSuccessful,
+  );
+  const connectionAllowsDashboard =
+    connection?.status === "connected" || connectionUnavailableAfterSuccess;
+  const diagnosticSafeMode =
+    connection?.status === "blocked" && connection.outcomeCode === "deployment-identity-mismatch";
   const load = useCallback(
-    async (background = false, includeOnboarding = false, force = false) => {
-      if (!token || (background && activeStatusRequests.current > 0)) return false;
+    async (background = false, force = false) => {
+      if (
+        !authenticated ||
+        pageRef.current === "overview" ||
+        !connectionAllowsDashboard ||
+        (background && activeStatusRequests.current > 0)
+      )
+        return false;
       const requestGeneration = ++statusRequestGeneration.current;
       activeStatusRequests.current += 1;
       try {
         const snapshot = await apiJson(
           token,
-          force ? "/api/v1/status?refresh=1" : "/api/v1/status",
+          force && connectionStatus === "connected" ? "/api/v1/status?refresh=1" : "/api/v1/status",
           statusResponseSchema,
         );
         if (requestGeneration !== statusRequestGeneration.current) return false;
         setData(snapshot);
-        if (includeOnboarding) await loadOnboardingState();
         setStatusError(null);
         setStatusRateLimit(null);
         return true;
@@ -217,24 +396,30 @@ function App() {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
       }
     },
-    [loadOnboardingState, token],
+    [authenticated, connectionAllowsDashboard, connectionStatus, token],
   );
   useEffect(() => {
-    void load(false, true);
-  }, [load]);
+    if (page !== "overview") void load();
+  }, [load, page]);
   useEffect(() => {
     const rejectAuth = () => {
       statusRequestGeneration.current += 1;
       syncController.current?.abort();
       setLoginError("The operator credential was rejected. Check it and try again.");
+      connectionRequestGeneration.current += 1;
+      connectionRef.current = null;
+      setConnection(null);
+      setConnectionError(null);
+      setCheckingConnection(false);
       setData(null);
+      setOverviewMeta(null);
       setStatusError(null);
       setStatusRateLimit(null);
       setSyncError(null);
       setSyncOperation(null);
       setSyncing(false);
-      setOnboardingStarted(null);
       settingsThemeApplied.current = false;
+      setAutomaticAuth("unavailable");
       setToken("");
     };
     window.addEventListener(AUTH_REJECTED_EVENT, rejectAuth);
@@ -242,6 +427,9 @@ function App() {
   }, []);
   useEffect(() => {
     const refreshIfVisible = () => {
+      // Sidekick refreshes the retained snapshot autonomously. Poll that snapshot while the page is
+      // visible so multiple browsers do not turn the 15-second UI cadence into repeated full chain
+      // reads. Manual Refresh remains the explicit forced-read path.
       if (document.visibilityState === "visible") void load(true);
     };
     const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
@@ -272,9 +460,7 @@ function App() {
   }, [data]);
   useEffect(() => {
     const handler = () => {
-      const next = parseDashboardHash(location.hash);
-      if (next.legacy) history.replaceState(null, "", dashboardHash("manager"));
-      setRoute({ ...next, legacy: false });
+      setRoute(parseDashboardHash(location.hash));
     };
     handler();
     addEventListener("hashchange", handler);
@@ -285,14 +471,20 @@ function App() {
     syncController.current?.abort();
     sessionStorage.setItem("sidekick-token", value);
     setLoginError(null);
+    connectionRequestGeneration.current += 1;
+    connectionRef.current = null;
+    setConnection(null);
+    setConnectionError(null);
+    setCheckingConnection(false);
     setData(null);
+    setOverviewMeta(null);
     setStatusError(null);
     setStatusRateLimit(null);
     setSyncError(null);
     setSyncOperation(null);
     setSyncing(false);
-    setOnboardingStarted(null);
     settingsThemeApplied.current = false;
+    setAutomaticAuth("unavailable");
     setToken(value);
   };
   const monitorSync = useCallback(
@@ -336,6 +528,12 @@ function App() {
   );
   const sync = async () => {
     if (syncing) return;
+    if (connectionRef.current?.status !== "connected") {
+      setSyncError(
+        "Chain data sync is paused until Sidekick can recheck the configured local node.",
+      );
+      return;
+    }
     syncController.current?.abort();
     const controller = new AbortController();
     syncController.current = controller;
@@ -369,7 +567,7 @@ function App() {
     }
   };
   useEffect(() => {
-    if (!token) return;
+    if (!authenticated || connectionStatus !== "connected") return;
     const controller = new AbortController();
     syncController.current?.abort();
     syncController.current = controller;
@@ -406,7 +604,7 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [monitorSync, token]);
+  }, [authenticated, connectionStatus, monitorSync, token]);
   const refreshOperatorState = useCallback(async () => {
     const refreshed = await load();
     if (!refreshed) throw new Error("The latest operator state is not available yet.");
@@ -414,58 +612,127 @@ function App() {
   const refreshStatus = useCallback(async () => {
     setRefreshingStatus(true);
     try {
-      await load(false, false, true);
+      await load(false, true);
     } finally {
       setRefreshingStatus(false);
     }
   }, [load]);
-  const markOnboardingStarted = useCallback(() => setOnboardingStarted(true), []);
-  const setupNoticeKey = data
-    ? `sidekick-setup-notice:${data.network}:${data.managerPrincipal}`
-    : null;
-  const setupNoticeDismissed = setupNoticeKey
-    ? dismissedSetupNoticeKey === setupNoticeKey ||
-      localStorage.getItem(setupNoticeKey) === "dismissed"
-    : false;
-  const dismissSetupNotice = () => {
-    if (!setupNoticeKey) return;
-    localStorage.setItem(setupNoticeKey, "dismissed");
-    setDismissedSetupNoticeKey(setupNoticeKey);
-  };
   const lastStatusAt = data
     ? Date.parse(data.freshness?.snapshotGeneratedAt ?? data.generatedAt)
     : Number.NaN;
   const ageMs = Number.isFinite(lastStatusAt) ? Math.max(0, now - lastStatusAt) : null;
   const stale = Boolean(
     data &&
-      (data.freshness?.status === "stale" ||
+      (connectionUnavailableAfterSuccess ||
+        data.freshness?.status === "stale" ||
         statusError ||
         ageMs === null ||
         ageMs > STATUS_STALE_AFTER_MS),
   );
   const rateLimit = data?.freshness?.rateLimit ?? statusRateLimit;
   const rateLimited = data?.freshness?.reason === "rate-limited" || statusRateLimit !== null;
+  const indexedApiChecksPass = Boolean(
+    data &&
+      data.preflight.api.available !== false &&
+      data.preflight.api.networkCompatible !== false &&
+      ["api-network", "api-version", "api-status"].every((id) => {
+        const check = data.preflight.checks.find((candidate) => candidate.id === id);
+        return !check || check.status === "pass";
+      }),
+  );
+  const indexedDataDelayed = Boolean(
+    data && (!indexedApiChecksPass || data.preflight.api.position === "behind"),
+  );
   const ageLabel =
     ageMs === null
       ? "age unavailable"
       : ageMs < 60_000
         ? `${Math.floor(ageMs / 1_000)}s old`
         : `${Math.floor(ageMs / 60_000)}m old`;
+  const freshnessStatusLabel = diagnosticSafeMode
+    ? "Deployment identity mismatch · Read-only diagnostic mode"
+    : connectionUnavailableAfterSuccess
+      ? "Local node unavailable · Actions paused"
+      : !data
+        ? "Connecting"
+        : stale
+          ? rateLimited
+            ? `${rateLimitHeading(rateLimit)} — retrying automatically`
+            : data.freshness?.reason === "refreshing"
+              ? "Refreshing data"
+              : "Data may be stale"
+          : data.preflight.status === "fail"
+            ? "Chain sources need attention"
+            : indexedDataDelayed
+              ? "Local node live · Indexed data delayed"
+              : "Live";
+  const freshnessDetailLabel = diagnosticSafeMode
+    ? "Stored evidence retained · actions disabled"
+    : connectionUnavailableAfterSuccess && connection?.lastSuccessful
+      ? `Last proved at Stacks ${number(connection.lastSuccessful.lastStacksTipHeight)} / Bitcoin ${number(connection.lastSuccessful.lastBurnBlockHeight)} · ${new Date(connection.lastSuccessful.lastVerifiedAt).toLocaleString()}`
+      : data
+        ? data.preflight.api.available === false
+          ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API unavailable · ${ageLabel}`
+          : !indexedApiChecksPass
+            ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
+            : data.preflight.api.position === "behind"
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+              : data.preflight.api.position === "ahead"
+                ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+        : "loading status";
+  const showFreshnessRefresh =
+    (connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited;
+  const showHiroRateLimitAction = rateLimited && isHiroRateLimit(rateLimit);
+  const handleOverviewLoaded = useCallback(
+    (summary: { network: string; attentionCount: number }) => setOverviewMeta(summary),
+    [],
+  );
   const content = (() => {
+    if (page === "overview") {
+      return (
+        <Overview
+          connectionUnavailable={connectionUnavailableAfterSuccess}
+          onConnectionRecheck={async () => {
+            await loadConnection(true);
+          }}
+          onLoaded={handleOverviewLoaded}
+          section={route.domainSection}
+          token={token}
+        />
+      );
+    }
     if (page === "health") {
       return (
         <SignerHealthPage
           token={token}
+          section={route.domainSection}
+          readOnly={diagnosticSafeMode}
           context={
             data
               ? {
                   network: data.preflight.compatibility.profileLabel ?? data.network,
                   currentCycle: data.preflight.cycle.currentId,
                   registration: data.registration,
-                  eligibility: data.setup?.eligibility ?? null,
+                  eligibility: data.readiness?.eligibility ?? data.setup?.eligibility ?? null,
                 }
               : null
           }
+        />
+      );
+    }
+    if (route.operation && data) {
+      return (
+        <ActionPage
+          context={route.operationContext}
+          data={data}
+          key={`${route.operation}:${JSON.stringify(route.operationContext)}`}
+          operation={route.operation}
+          operatorStateStale={stale}
+          onOperatorStateChanged={refreshOperatorState}
+          onRefreshStatus={refreshStatus}
+          refreshingStatus={refreshingStatus}
+          token={token}
         />
       );
     }
@@ -473,63 +740,79 @@ function App() {
       return (
         <SettingsPage
           data={data}
+          initialSection={route.settingsSection}
+          readOnly={diagnosticSafeMode}
+          onRefreshStatus={refreshStatus}
           token={token}
           setTheme={setTheme}
           onSaved={refreshOperatorState}
+          refreshingStatus={refreshingStatus}
+          sync={sync}
+          syncing={syncing}
+        />
+      );
+    }
+    if (page === "activity") {
+      return (
+        <Activity
+          activityId={route.activityId}
+          data={data}
+          key={`${route.activityId ?? "feed"}:${route.activitySearch}`}
+          operatorStateStale={stale || diagnosticSafeMode}
+          onOperatorStateChanged={refreshOperatorState}
+          search={route.activitySearch}
+          section={route.domainSection}
+          token={token}
         />
       );
     }
     if (!data) return null;
     switch (page) {
-      case "overview":
+      case "pool":
+        return <Pool data={data} section={route.domainSection} token={token} />;
+      case "rewards":
         return (
-          <Overview
-            data={data}
-            token={token}
-            sync={sync}
-            syncing={syncing}
-            showSetupNotice={onboardingStarted === false && !setupNoticeDismissed}
-            dismissSetupNotice={dismissSetupNotice}
-          />
-        );
-      case "manager":
-        return (
-          <Manager
-            action={route.action}
+          <Rewards
             data={data}
             operatorStateStale={stale}
+            section={route.domainSection}
             token={token}
-            onOperatorStateChanged={refreshOperatorState}
-            onRefreshStatus={refreshStatus}
-            refreshingStatus={refreshingStatus}
-            sync={sync}
-            syncing={syncing}
           />
         );
-      case "pool":
-        return <Pool data={data} token={token} />;
-      case "rewards":
-        return <Rewards data={data} operatorStateStale={stale} token={token} />;
-      case "operations":
-        return <Operations data={data} token={token} sync={sync} syncing={syncing} />;
-      case "setup":
-        return (
-          <SetupPage
-            data={data}
-            token={token}
-            onOnboardingStarted={markOnboardingStarted}
-            onOperatorStateChanged={refreshOperatorState}
-          />
-        );
-      case "enrollment":
-        return <EnrollmentPage token={token} />;
       default:
         return null;
     }
   })();
-  if (!token) return <Login onLogin={login} error={loginError} />;
+  if (!authenticated) {
+    return (
+      <Login
+        onLogin={login}
+        error={loginError}
+        checkingAutomaticAuth={automaticAuth === "checking"}
+      />
+    );
+  }
+  const diagnosticPageAllowed =
+    diagnosticSafeMode && (page === "activity" || page === "health" || page === "settings");
+  if (connectionNeedsRecoveryPage(connection) && !diagnosticPageAllowed) {
+    return (
+      <ConnectionPage
+        assessment={connection}
+        checking={checkingConnection}
+        error={connectionError}
+        token={token}
+        onRecheck={async () => {
+          await loadConnection(true);
+        }}
+      />
+    );
+  }
+  const shellNetwork =
+    (page === "overview" ? overviewMeta?.network : data?.network) ?? connection?.configured.network;
+  const shellAttentionCount =
+    page === "overview" ? (overviewMeta?.attentionCount ?? 0) : (data?.alerts.length ?? 0);
   return (
-    <div className="app" data-network={data?.network ?? "mainnet"}>
+    <div className="app" data-network={shellNetwork ?? "mainnet"}>
       <aside className="sidebar">
         <div className="brand">
           <div className="glyph">
@@ -553,8 +836,8 @@ function App() {
               >
                 {item.icon ? <item.icon /> : null}
                 {item.label}
-                {item.id === "operations" && data?.alerts.length ? (
-                  <span className="count alert">{data.alerts.length}</span>
+                {item.id === "overview" && shellAttentionCount ? (
+                  <span className="count alert">{shellAttentionCount}</span>
                 ) : null}
               </a>
             ),
@@ -564,31 +847,14 @@ function App() {
       </aside>
       <div className={`content ${page === "settings" ? "content-settings" : ""}`}>
         <div className="topbar">
-          <select
-            aria-label="Dashboard page"
-            className="mobile-page-picker"
-            value={page}
-            onChange={(event) => {
-              location.hash = event.target.value;
-            }}
-          >
-            {nav
-              .filter((item): item is (typeof nav)[number] & { id: DashboardPage; label: string } =>
-                Boolean(item.id && item.label),
-              )
-              .map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-          </select>
+          <MobilePageMenu key={page} page={page} alertCount={shellAttentionCount} />
           <div className="crumbs">
             Signer Sidekick / <strong>{nav.find((item) => item.id === page)?.label}</strong>
           </div>
           <div className="right">
-            <span className={`net ${data?.network === "mainnet" ? "net-mainnet" : "net-testnet"}`}>
+            <span className={`net ${shellNetwork === "mainnet" ? "net-mainnet" : "net-testnet"}`}>
               <span className="dot" />
-              {data?.network ?? "Connecting"}
+              {shellNetwork ?? "Connecting"}
             </span>
             <button
               type="button"
@@ -600,57 +866,75 @@ function App() {
             </button>
           </div>
         </div>
-        <div className={`freshness ${stale || data?.preflight.status === "fail" ? "stale" : ""}`}>
-          <span className="dot" />
-          <span>
-            {!data
-              ? "Connecting"
-              : stale
-                ? rateLimited
-                  ? `${rateLimitHeading(rateLimit)} — retrying automatically`
-                  : data.freshness?.reason === "refreshing"
-                    ? "Refreshing data"
-                    : "Data may be stale"
-                : data.preflight.status === "fail"
-                  ? "Chain sources need attention"
-                  : "Live"}
-          </span>
-          <span className="sep">·</span>
-          <span className="mono">
-            {data
-              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node/API gap ${data.preflight.api.burnBlockLag} Bitcoin blocks · ${ageLabel}`
-              : "loading status"}
-          </span>
-          {stale && !rateLimited ? (
-            <button
-              type="button"
-              className="btn btn-tertiary sm"
-              disabled={refreshingStatus}
-              onClick={() => void refreshStatus()}
-            >
-              {refreshingStatus ? "Refreshing…" : "Refresh"}
-            </button>
-          ) : null}
-          {rateLimited && isHiroRateLimit(rateLimit) ? (
-            <a
-              className="btn btn-tertiary sm"
-              href="https://platform.hiro.so"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
-            </a>
-          ) : null}
-          <span className="right">
-            <span className="hint-dot-legend">
-              <span className="src src-chain">on-chain</span>
-              <span className="src src-api">indexed / estimated</span>
-              <span className="src src-local">calculated</span>
+        {page !== "overview" ? (
+          <div
+            className={`freshness ${diagnosticSafeMode || connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
+            role="status"
+          >
+            <div className="freshness-primary">
+              <span className="dot" aria-hidden="true" />
+              <strong className="freshness-state">{freshnessStatusLabel}</strong>{" "}
+              <span className="freshness-detail mono">{freshnessDetailLabel}</span>
+            </div>
+            {showFreshnessRefresh || showHiroRateLimitAction ? (
+              <div className="freshness-actions">
+                {showFreshnessRefresh ? (
+                  <button
+                    type="button"
+                    className="btn btn-tertiary sm"
+                    disabled={
+                      connectionUnavailableAfterSuccess ? checkingConnection : refreshingStatus
+                    }
+                    onClick={() =>
+                      void (connectionUnavailableAfterSuccess
+                        ? loadConnection(true)
+                        : refreshStatus())
+                    }
+                  >
+                    {connectionUnavailableAfterSuccess
+                      ? checkingConnection
+                        ? "Checking…"
+                        : "Recheck node"
+                      : refreshingStatus
+                        ? "Refreshing…"
+                        : "Refresh"}
+                  </button>
+                ) : null}
+                {showHiroRateLimitAction ? (
+                  <a
+                    className="btn btn-tertiary sm"
+                    href="https://platform.hiro.so"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {rateLimit?.apiKeyConfigured ? "Open Hiro Platform" : "Get a Hiro API key"}
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
+            <span className="right">
+              <span className="hint-dot-legend">
+                <span className="src src-chain">on-chain</span>
+                <span className="src src-api">indexed / estimated</span>
+                <span className="src src-local">calculated</span>
+              </span>
             </span>
-          </span>
-        </div>
+          </div>
+        ) : null}
         <main className={`main ${page === "settings" ? "main-settings" : ""}`}>
-          {syncOperation?.status === "running" ? (
+          {page !== "overview" && connectionUnavailableAfterSuccess ? (
+            <div className="callout callout-caution app-status-banner" role="status">
+              <WarningCircle className="ic" />
+              <div className="body">
+                <strong>Showing retained operator data</strong>{" "}
+                <span>
+                  Sidekick cannot currently reach the configured local node. Read-only evidence
+                  remains available, but operations requiring current chain evidence are paused.
+                </span>
+              </div>
+            </div>
+          ) : null}
+          {page !== "overview" && syncOperation?.status === "running" ? (
             <div
               className="callout callout-info app-status-banner"
               role="status"
@@ -658,7 +942,7 @@ function App() {
             >
               <ArrowClockwise className="ic spin" />
               <div className="body">
-                <strong>Syncing chain data</strong>
+                <strong>Syncing chain data</strong>{" "}
                 <span>
                   {syncOperation.progress.message} · step
                   {` ${syncOperation.progress.completedSteps + 1} of ${syncOperation.progress.totalSteps}`}
@@ -673,11 +957,11 @@ function App() {
               </div>
             </div>
           ) : null}
-          {syncOperation?.status === "failed" && !syncError ? (
+          {page !== "overview" && syncOperation?.status === "failed" && !syncError ? (
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Chain data sync failed</strong>
+                <strong>Chain data sync failed</strong>{" "}
                 <span>{syncOperationError(syncOperation)}</span>
                 <div className="actions">
                   <button
@@ -692,12 +976,11 @@ function App() {
               </div>
             </div>
           ) : null}
-          {syncError ? (
+          {page !== "overview" && syncError ? (
             <div className="callout callout-critical app-status-banner" role="alert">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Chain data sync needs attention</strong>
-                <span>{syncError}</span>
+                <strong>Chain data sync needs attention</strong> <span>{syncError}</span>
                 <div className="actions">
                   <button
                     type="button"
@@ -711,11 +994,11 @@ function App() {
               </div>
             </div>
           ) : null}
-          {statusError ? (
+          {page !== "overview" && statusError ? (
             <div className="callout callout-critical app-status-banner error-banner">
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>
+                <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>{" "}
                 <span>{statusError}</span>
                 {statusRateLimit ? <span>{rateLimitGuidance(statusRateLimit)}</span> : null}
                 {data ? (

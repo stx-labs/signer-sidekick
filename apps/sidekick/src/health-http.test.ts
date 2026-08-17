@@ -73,6 +73,31 @@ describe("health endpoint safety", () => {
     ).rejects.toMatchObject({ code: "response-too-large" });
   });
 
+  it("sends an explicitly supplied API header and classifies authentication failures", async () => {
+    const observedHeaders: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      observedHeaders.push(request.headers["x-api-key"]);
+      response.statusCode = request.url === "/ok" ? 200 : request.url === "/limited" ? 429 : 401;
+      response.end(request.url === "/ok" ? "{}" : "rejected body must not escape");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    await expect(
+      fetchHealthSource(`${baseUrl}/ok`, { headers: { "x-api-key": "test-secret" } }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(fetchHealthSource(`${baseUrl}/unauthorized`)).rejects.toMatchObject({
+      code: "authentication-required",
+    });
+    await expect(fetchHealthSource(`${baseUrl}/limited`)).rejects.toMatchObject({
+      code: "rate-limited",
+    });
+    expect(observedHeaders).toEqual(["test-secret", undefined, undefined]);
+  });
+
   it("times out stalled sources and does not follow redirects", async () => {
     const server = createServer((request, response) => {
       if (request.url === "/redirect") {

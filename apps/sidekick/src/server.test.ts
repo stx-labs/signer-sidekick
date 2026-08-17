@@ -1,24 +1,25 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ChainAnchorError,
-  RateLimitedError,
-  UpstreamHttpError,
-  UpstreamSchemaError,
-} from "./chain-clients.js";
+  activityResponseSchema,
+  type ConnectionAssessment,
+  type DeploymentRequirements,
+  overviewPageSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActivityProjectionError } from "./activity-projection.js";
+import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
+import type { SidekickConfig } from "./config.js";
 import { HealthSourceError } from "./health-http.js";
-import type { OnboardingService } from "./onboarding-service.js";
-import { OnboardingWalletIntentError } from "./onboarding-wallet-intent.js";
+import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
+import type { HealthObservation, SignerMetricValues } from "./health-monitoring-types.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
 import { createServer, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
+import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
-import { OperatorWorkflowError } from "./workflow-error.js";
+import { WalletIntentError } from "./wallet-intent-service.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
-const walletIntentPrefixes = [
-  "/api/v1/onboarding/wallet-intents",
-  "/api/v1/wallet-intents",
-] as const;
+const walletIntentPrefixes = ["/api/v1/wallet-intents"] as const;
 const walletIntentAnchorMismatch = {
   error: "wallet_intent_anchor_mismatch",
   retryable: true,
@@ -27,7 +28,7 @@ const walletIntentAnchorMismatch = {
   poxBurnBlockHeight: 4_819,
 } as const;
 const chainSourcesOutOfSyncMessage =
-  "The node and API are temporarily out of sync. Retry after the indexed API catches up.";
+  "The local node is behind or inconsistent with the configured chain sources. Check node synchronization and retry.";
 
 function retryableWalletIntentAnchorError(): ChainAnchorError {
   return new ChainAnchorError("Node, API, and PoX tips do not describe one chain position", {
@@ -67,6 +68,141 @@ function reconciliationResult() {
       stoppedAtKnownOverlap: true,
     },
   };
+}
+
+function serverHealthSnapshot() {
+  const config: SidekickConfig = {
+    network: "mainnet",
+    nodeRpcUrl: "http://127.0.0.1:20443",
+    apiUrl: "https://configured.example.com",
+    apiKeyHeader: "x-api-key",
+    maxApiBurnBlockLag: 12,
+    forecastHorizonCycles: 6,
+    stakerPageLimit: 200,
+    eventPageLimit: 100,
+    databasePath: ":memory:",
+    nodeMetricsUrl: "http://127.0.0.1:9154",
+    signerMonitoringUrl: "http://127.0.0.1:9153",
+    hiroReferenceApiUrl: "https://reference.example.com",
+  };
+  const signerKeyHex = `02${"11".repeat(32)}`;
+  const source = (checkedAt: string) => ({
+    reachable: true,
+    latencyMs: 2,
+    errorCode: null,
+    checkedAt,
+  });
+  const signerMetrics = (overrides: Partial<SignerMetricValues>): SignerMetricValues => ({
+    nodeHeight: 200_000,
+    rewardCycle: 141,
+    stxBalanceUstx: 1_000_000,
+    proposalsTotal: 0,
+    validationAcceptedTotal: 0,
+    validationRejectedTotal: 0,
+    acceptedTotal: 0,
+    rejectedTotal: 0,
+    preCommitsTotal: 0,
+    conflictTotal: 0,
+    nodeRpcLatencyBuckets: {},
+    validationLatencyBuckets: {},
+    responseLatencyBuckets: {},
+    capitulationLatencyBuckets: {},
+    ...overrides,
+  });
+  const observation = (observedAt: string, metrics: SignerMetricValues): HealthObservation => ({
+    observedAt,
+    nodeRpc: source(observedAt),
+    nodeInfo: {
+      network_id: 1,
+      burn_block_height: 960_000,
+      stacks_tip_height: 200_000,
+      is_fully_synced: true,
+    },
+    nodeHealth: {
+      difference_from_max_peer: 0,
+      max_stacks_height_of_neighbors: 200_000,
+      node_stacks_tip_height: 200_000,
+    },
+    nodeMetricsSource: source(observedAt),
+    nodeMetrics: null,
+    hiroSource: source(observedAt),
+    hiro: {
+      status: "ready",
+      chain_tip: { block_height: 200_000, burn_block_height: 960_000 },
+    },
+    configuredApiSource: {
+      reachable: false,
+      latencyMs: null,
+      errorCode: "upstream-timeout",
+      checkedAt: observedAt,
+    },
+    configuredApi: null,
+    signerInfoSource: source(observedAt),
+    signerInfo: {
+      signerPublicKey: signerKeyHex,
+      network: "mainnet",
+      stxAddress: "SP000000000000000000002Q6VF78",
+      version: "4.0.2.0.0",
+    },
+    signerHeartbeat: source(observedAt),
+    signerMetricsSource: source(observedAt),
+    signerMetrics: metrics,
+  });
+
+  return buildHealthSnapshot({
+    observations: [
+      observation(
+        "2026-08-14T12:00:00.000Z",
+        signerMetrics({
+          proposalsTotal: 10,
+          validationAcceptedTotal: 8,
+          validationRejectedTotal: 2,
+          acceptedTotal: 8,
+          rejectedTotal: 2,
+          validationLatencyBuckets: { "0.5": 8, "+Inf": 8 },
+          responseLatencyBuckets: { "1": 10, "10": 10, "+Inf": 10 },
+        }),
+      ),
+      // A middle sample older than the 30s settle window carries the unanswered proposal burst, so
+      // the gap is settled (real) rather than trailing-edge in-flight.
+      observation(
+        "2026-08-14T12:00:45.000Z",
+        signerMetrics({
+          proposalsTotal: 40,
+          validationAcceptedTotal: 9,
+          validationRejectedTotal: 2,
+          acceptedTotal: 9,
+          rejectedTotal: 2,
+          validationLatencyBuckets: { "0.5": 9, "+Inf": 9 },
+          responseLatencyBuckets: { "1": 11, "10": 20, "+Inf": 20 },
+        }),
+      ),
+      observation(
+        "2026-08-14T12:01:30.000Z",
+        signerMetrics({
+          proposalsTotal: 60,
+          validationAcceptedTotal: 18,
+          validationRejectedTotal: 12,
+          acceptedTotal: 18,
+          rejectedTotal: 12,
+          validationLatencyBuckets: { "0.5": 18, "+Inf": 18 },
+          responseLatencyBuckets: { "1": 15, "10": 30, "+Inf": 30 },
+        }),
+      ),
+    ],
+    config,
+    burnBlockTiming: null,
+    operator: {
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      currentRewardCycle: 141,
+      registered: true,
+      signerKeyHex,
+      signerKeyGrantValid: true,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: true,
+    },
+  });
 }
 
 afterEach(async () => {
@@ -118,6 +254,576 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ network: "mainnet", preflight: { status: "pass" } });
+  });
+
+  it("serves the strict Overview projection from cached state without running reconciliation", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const generatedAt = "2026-08-14T12:00:00.000Z";
+    const snapshot = vi.fn(async () => ({
+      schemaVersion: 1,
+      generatedAt: "2026-08-14T12:00:00.000Z",
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      setup: null,
+      preflight: {
+        status: "pass",
+        node: {
+          serverVersion: "4.0.1",
+          version: "4.0.1",
+          commit: null,
+          networkId: 1,
+          burnBlockHeight: 962_300,
+          stacksTipHeight: 8_750_000,
+        },
+        api: {
+          serverVersion: "api",
+          burnBlockHeight: 962_298,
+          stacksTipHeight: 8_749_998,
+          burnBlockLag: 2,
+        },
+        pox: {
+          activationState: "active",
+          blocksUntilActivation: 0,
+          rewardCycleId: 141,
+          pox5Available: true,
+          pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+        },
+        cycle: {
+          currentId: 141,
+          nextId: 142,
+          preparePhaseStartBurnHeight: 963_300,
+          blocksUntilPreparePhase: 1_000,
+          rewardPhaseStartBurnHeight: 963_400,
+          blocksUntilRewardPhase: 1_100,
+          isPreparePhase: false,
+        },
+        compatibility: {
+          status: "matched",
+          profileId: "mainnet",
+          profileRevision: 1,
+          profileLabel: "Mainnet",
+          origin: "built-in",
+          nodeBuildPreviouslyTested: true,
+          reason: "matched",
+        },
+        checks: [],
+      },
+      manager: {
+        capabilities: {
+          signerManagerTrait: { compatible: true, reason: "matched" },
+          observedFunctions: { public: [], readOnly: [] },
+          sourceReview: { exactReviewed: true, reason: "reviewed" },
+          eventVocabulary: {
+            id: "reference-manager-v1",
+            normalizationAvailable: true,
+            adapter: null,
+            reason: "reviewed",
+          },
+          actions: [],
+        },
+      },
+      registration: null,
+      forecast: null,
+      rewards: null,
+      activity: { withdrawals: [] },
+      roster: [],
+      alerts: [],
+    }));
+    const synchronize = vi.fn(async () => ({}));
+    const projectedActivity = activityResponseSchema.parse({
+      schemaVersion: 1,
+      generatedAt,
+      active: [],
+      items: [],
+      nextCursor: null,
+      coverage: [
+        {
+          source: "transaction-engine",
+          status: "current",
+          observedAt: generatedAt,
+          anchor: null,
+          reason: null,
+        },
+      ],
+    });
+    const activityProjection = {
+      page: vi.fn(() => projectedActivity),
+      detail: vi.fn(() => null),
+    };
+    const server = createServer({
+      service: { snapshot, supportSnapshot: snapshot, synchronize },
+      activityProjection,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/overview" })).statusCode).toBe(401);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/overview",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(() => overviewPageSchema.parse(response.json())).not.toThrow();
+    expect(response.json()).toMatchObject({
+      schemaVersion: 1,
+      monitoring: { network: "mainnet" },
+      cycle: { rewardCycleId: 141 },
+      pool: { status: "unavailable" },
+      rewards: { status: "unavailable" },
+    });
+    expect(snapshot).toHaveBeenCalledWith(false);
+    expect(synchronize).not.toHaveBeenCalled();
+    expect(activityProjection.page).toHaveBeenCalledWith(
+      {
+        status: "all",
+        type: "all",
+        domain: "all",
+        time: "all",
+        search: null,
+        cursor: null,
+        limit: 1,
+      },
+      false,
+    );
+
+    activityProjection.page.mockImplementationOnce(() => {
+      throw new Error("database unavailable");
+    });
+    const unavailableResponse = await server.inject({
+      method: "GET",
+      url: "/api/v1/overview",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(unavailableResponse.statusCode).toBe(200);
+    expect(unavailableResponse.json()).toMatchObject({
+      attention: [
+        {
+          attentionId: "sidekick:activity-unavailable",
+          tier: "needs-attention",
+          primaryAction: { kind: "recheck", target: "activity" },
+        },
+      ],
+    });
+  });
+
+  it("serves connection recovery independently and gates operational routes", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const blocked = {
+      status: "blocked",
+      outcomeCode: "manager-not-deployed",
+      checkedAt: "2026-08-13T12:00:00.000Z",
+      stale: false,
+    } as unknown as ConnectionAssessment;
+    const connected = {
+      ...blocked,
+      status: "connected",
+      outcomeCode: null,
+    } as unknown as ConnectionAssessment;
+    const check = vi.fn(async (force = false) => (force ? connected : blocked));
+    const onConnectionAssessed = vi.fn();
+    const requirementResult = {
+      schemaVersion: 1,
+      checkedAt: "2026-08-15T12:00:00.000Z",
+      status: "ready",
+      requiredReady: true,
+      checks: [
+        {
+          id: "node-rpc",
+          component: "node",
+          importance: "required",
+          status: "pass",
+          title: "Stacks node RPC",
+          summary: "Node verified.",
+          observed: "http://node:20443",
+          remediation: null,
+        },
+      ],
+    } as const satisfies DeploymentRequirements;
+    const checkRequirements = vi.fn(async () => requirementResult);
+    const retainedHealth = serverHealthSnapshot();
+    const health = {
+      current: vi.fn().mockResolvedValue(retainedHealth),
+      storedSnapshot: vi.fn().mockResolvedValue(retainedHealth),
+      refresh: vi.fn().mockResolvedValue(retainedHealth),
+      testSource: vi.fn(),
+    };
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+      settings: vi.fn(() => ({ schemaVersion: 1 })),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => blocked, check },
+      deploymentRequirements: { current: () => null, check: checkRequirements },
+      isOperational: () => false,
+      health,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const connection = await server.inject({ method: "GET", url: "/api/v1/connection", headers });
+    expect(connection.statusCode).toBe(200);
+    expect(connection.json()).toMatchObject({
+      status: "blocked",
+      outcomeCode: "manager-not-deployed",
+    });
+    expect(check).toHaveBeenCalledWith();
+
+    const requirements = await server.inject({
+      method: "GET",
+      url: "/api/v1/deployment-requirements",
+      headers,
+    });
+    expect(requirements.statusCode).toBe(200);
+    expect(requirements.headers["cache-control"]).toBe("no-store");
+    expect(requirements.json()).toEqual(requirementResult);
+    expect(checkRequirements).toHaveBeenCalledWith();
+
+    const refreshedRequirements = await server.inject({
+      method: "POST",
+      url: "/api/v1/deployment-requirements/refresh",
+      headers,
+    });
+    expect(refreshedRequirements.statusCode).toBe(200);
+    expect(checkRequirements).toHaveBeenCalledWith(true);
+
+    const status = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(status.statusCode).toBe(503);
+    expect(status.json()).toMatchObject({ error: "connection_required", retryable: true });
+    expect(service.snapshot).not.toHaveBeenCalled();
+
+    const healthResponse = await server.inject({ method: "GET", url: "/api/v1/health", headers });
+    expect(healthResponse.statusCode).toBe(200);
+    expect(healthResponse.json()).toEqual(retainedHealth);
+    expect(health.current).toHaveBeenCalledOnce();
+    expect(
+      (await server.inject({ method: "POST", url: "/api/v1/health/refresh", headers })).statusCode,
+    ).toBe(503);
+
+    const support = await server.inject({ method: "GET", url: "/api/v1/support-bundle", headers });
+    expect(support.statusCode).toBe(200);
+    expect(support.json()).toMatchObject({
+      sections: { nodeAndSignerHealth: { status: "ok", data: retainedHealth } },
+    });
+    expect(health.storedSnapshot).toHaveBeenCalledOnce();
+    expect(health.current).toHaveBeenCalledOnce();
+
+    const settings = await server.inject({ method: "GET", url: "/api/v1/settings", headers });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toEqual({ schemaVersion: 1 });
+
+    const ready = await server.inject({ method: "GET", url: "/health/ready" });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({ status: "ready" });
+    const operational = await server.inject({ method: "GET", url: "/health/operational" });
+    expect(operational.statusCode).toBe(503);
+    expect(operational.json()).toMatchObject({
+      status: "not-operational",
+      code: "manager-not-deployed",
+    });
+
+    const recheck = await server.inject({
+      method: "POST",
+      url: "/api/v1/connection/recheck",
+      headers,
+    });
+    expect(recheck.statusCode).toBe(200);
+    expect(recheck.json()).toMatchObject({ status: "connected", outcomeCode: null });
+    expect(check).toHaveBeenLastCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenLastCalledWith(connected);
+  });
+
+  it("preserves read-only operator evidence after a proved connection becomes unavailable", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: true,
+      lastSuccessful: {
+        managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      },
+    } as ConnectionAssessment;
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const status = await server.inject({ method: "GET", url: "/api/v1/status", headers });
+    expect(status.statusCode).toBe(200);
+    expect(service.snapshot).toHaveBeenCalledWith(false);
+
+    const synchronization = await server.inject({
+      method: "POST",
+      url: "/api/v1/sync",
+      headers,
+    });
+    expect(synchronization.statusCode).toBe(503);
+    expect(synchronization.json()).toMatchObject({ error: "connection_required" });
+    expect(service.synchronize).not.toHaveBeenCalled();
+  });
+
+  it("allows an unavailable node URL to be repaired without weakening blocked identity mode", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: false,
+      lastSuccessful: null,
+    } as ConnectionAssessment;
+    const connected = {
+      ...unavailable,
+      status: "connected",
+      outcomeCode: null,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const updateSettings = vi.fn(() => ({ nodeRpcUrl: "http://new-node:20443" }));
+    const onConnectionAssessed = vi.fn();
+    const server = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        settings: () => ({}),
+        updateSettings,
+      },
+      connection: { current: () => unavailable, check },
+      isOperational: () => false,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers,
+      payload: { nodeRpcUrl: "http://new-node:20443" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(updateSettings).toHaveBeenCalledWith({ nodeRpcUrl: "http://new-node:20443" });
+    expect(check).toHaveBeenCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenCalledWith(connected);
+
+    const blocked = { ...unavailable, status: "blocked" } as ConnectionAssessment;
+    const blockedServer = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        updateSettings,
+      },
+      connection: { current: () => blocked, check },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(blockedServer);
+    const denied = await blockedServer.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers,
+      payload: { nodeRpcUrl: "http://attacker:20443" },
+    });
+    expect(denied.statusCode).toBe(503);
+  });
+
+  it("rechecks deployment identity when a connected settings update changes the node URL", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const connected = {
+      status: "connected",
+      outcomeCode: null,
+      checkedAt: "2026-08-13T12:05:00.000Z",
+      stale: false,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const onConnectionAssessed = vi.fn();
+    const server = createServer({
+      service: {
+        snapshot: async () => ({}),
+        synchronize: async () => ({}),
+        settings: () => ({ dataSources: { nodeRpcUrl: "http://old-node:20443" } }),
+        updateSettings: () => ({ dataSources: { nodeRpcUrl: "http://new-node:20443" } }),
+      },
+      connection: { current: () => connected, check },
+      isOperational: () => true,
+      onConnectionAssessed,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { dataSources: { nodeRpcUrl: "http://new-node:20443" } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(check).toHaveBeenCalledWith(true);
+    expect(onConnectionAssessed).toHaveBeenCalledWith(connected);
+  });
+
+  it("downloads a server-collected support bundle without requiring every source", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const supportSnapshot = vi.fn(async () => ({
+      schemaVersion: 1,
+      generatedAt: "2026-08-13T12:00:00.000Z",
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      preflight: { status: "pass" },
+      manager: {
+        capabilities: {
+          signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
+          observedFunctions: { public: [], readOnly: [] },
+          sourceReview: { exactReviewed: false, reason: "Observe-only fixture" },
+          eventVocabulary: {
+            id: "reference-manager-v1",
+            normalizationAvailable: false,
+            adapter: null,
+            reason: "Observe-only fixture",
+          },
+          actions: [],
+        },
+      },
+      activity: { withdrawals: [] },
+      roster: [],
+      alerts: [],
+    }));
+    const service = {
+      snapshot: async () => ({}),
+      supportSnapshot,
+      synchronize: async () => ({}),
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      logger: false,
+      databaseStatus: () => ({
+        schemaVersion: 21,
+        journalMode: "wal",
+        synchronous: 2,
+        foreignKeys: true,
+      }),
+      supportApplication: () =>
+        operatorSupportApplication(
+          { SIDEKICK_BUILD_VERSION: "1.2.3", SIDEKICK_BUILD_COMMIT: "abcdef1" },
+          new Date("2026-08-13T12:01:00.000Z"),
+          120,
+        ),
+    });
+    servers.push(server);
+
+    expect((await server.inject({ method: "GET", url: "/api/v1/support-bundle" })).statusCode).toBe(
+      401,
+    );
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/support-bundle",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.headers["content-disposition"]).toMatch(
+      /^attachment; filename="signer-sidekick-support-.+\.json"$/,
+    );
+    expect(response.json()).toMatchObject({
+      schemaVersion: 2,
+      documentType: "signer-sidekick-operator-support-bundle",
+      collectionStatus: "partial",
+      application: { version: "1.2.3", buildCommit: "abcdef1" },
+      sections: {
+        operator: { status: "ok", data: { network: "mainnet" } },
+        nodeAndSignerHealth: { status: "unavailable", data: null },
+        recentSidekickErrors: {
+          status: "ok",
+          data: [{ severity: "warning", source: "operator-api", code: "unauthorized" }],
+        },
+        database: { status: "ok", data: { schemaVersion: 21 } },
+        automation: { status: "ok" },
+      },
+    });
+    expect(response.body).not.toContain(token);
+    expect(supportSnapshot).toHaveBeenCalledWith(true);
+  });
+
+  it("accepts the API key from an explicitly configured trusted proxy header", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({
+      service,
+      authToken: token,
+      authTrustedHeader: "X-Sidekick-Operator",
+      logger: false,
+    });
+    servers.push(server);
+
+    const denied = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { "x-sidekick-operator": "wrong-operator-token-with-32-chars" },
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { "x-sidekick-operator": token },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authenticated: true, method: "trusted-header" });
+  });
+
+  it("accepts HTTP Basic with the configured username and API key password", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const username = "operator";
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const server = createServer({
+      service,
+      authToken: token,
+      authBasicUsername: username,
+      logger: false,
+    });
+    servers.push(server);
+
+    const denied = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${username}:wrong-operator-token-with-32-chars`).toString("base64")}`,
+      },
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.headers["www-authenticate"]).toContain("Basic");
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authenticated: true, method: "basic" });
   });
 
   it("treats a normal one-block node lead as an unstable anchor, not source drift", async () => {
@@ -172,69 +878,13 @@ describe("local API", () => {
     expect(summary).toHaveBeenCalledWith(true);
   });
 
-  it("returns stable workflow codes with safe operator guidance", async () => {
-    const token = "test-operator-token-with-32-chars";
-    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const onboarding = {
-      start: () => {
-        throw new OperatorWorkflowError(
-          409,
-          "onboarding_reset_confirmation_required",
-          "Switching onboarding paths requires explicit reset confirmation",
-        );
-      },
-    } as unknown as OnboardingService;
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
-    servers.push(server);
-
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/v1/onboarding/start",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { path: "attach" },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "onboarding_reset_confirmation_required",
-      message: "Switching onboarding paths requires explicit reset confirmation",
-      retryable: false,
-    });
-  });
-
-  it("replaces code-only workflow messages with safe operator guidance", async () => {
-    const token = "test-operator-token-with-32-chars";
-    const service = {
-      snapshot: async () => ({}),
-      synchronize: async () => ({}),
-      poolCard: async () => {
-        throw new OperatorWorkflowError(409, "pool_setup_not_complete");
-      },
-    };
-    const server = createServer({ service, authToken: token, logger: false });
-    servers.push(server);
-
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/v1/pool-card/generate",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { mode: "live" },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "pool_setup_not_complete",
-      message:
-        "Pool information is unavailable until setup completes. Finish Initial Setup, then retry.",
-      retryable: false,
-    });
-  });
-
   it("protects and forwards signer health reads, refreshes, and source tests", async () => {
     const token = "test-operator-token-with-32-chars";
+    const currentSnapshot = serverHealthSnapshot();
+    const refreshedSnapshot = { ...currentSnapshot, overallStatus: "partial" as const };
     const health = {
-      current: vi.fn().mockResolvedValue({ overallStatus: "healthy" }),
-      refresh: vi.fn().mockResolvedValue({ overallStatus: "partial" }),
+      current: vi.fn().mockResolvedValue(currentSnapshot),
+      refresh: vi.fn().mockResolvedValue(refreshedSnapshot),
       testSource: vi.fn().mockResolvedValue({ status: "connected", signals: 7 }),
     };
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
@@ -244,11 +894,11 @@ describe("local API", () => {
 
     expect((await server.inject({ method: "GET", url: "/api/v1/health" })).statusCode).toBe(401);
     expect((await server.inject({ method: "GET", url: "/api/v1/health", headers })).json()).toEqual(
-      { overallStatus: "healthy" },
+      currentSnapshot,
     );
     expect(
       (await server.inject({ method: "POST", url: "/api/v1/health/refresh", headers })).json(),
-    ).toEqual({ overallStatus: "partial" });
+    ).toEqual(refreshedSnapshot);
     expect(
       (
         await server.inject({
@@ -269,17 +919,54 @@ describe("local API", () => {
           method: "POST",
           url: "/api/v1/health/test-source",
           headers,
+          payload: { kind: "indexed-api" },
+        })
+      ).json(),
+    ).toEqual({ status: "connected", signals: 7 });
+    expect(health.testSource).toHaveBeenCalledWith("indexed-api");
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/health/test-source",
+          headers,
           payload: { kind: "unknown", url: "http://signer.internal:9153" },
         })
       ).statusCode,
     ).toBe(400);
+
+    const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    // The settled proposal burst is old enough to be an unanswered gap, so the primary diagnosis is
+    // likely-local-signer alongside the source-disagreement rejection finding. End-to-end response
+    // latency remains exported as diagnostic telemetry but no longer opens a finding.
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="likely-local-signer"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="source-disagreement"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 0',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_signer_health_source_available{source="configured-api"} 0',
+    );
+    // Settled gap: 30 proposals outstanding past the settle window against 20 responses.
+    expect(metrics.body).toContain("sidekick_signer_response_gap 10");
+    expect(metrics.body).toContain("sidekick_signer_rejection_percent 50");
+    // Interpolated within the [1s, 10s] bucket instead of the raw 10s boundary.
+    expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 9.4");
+    expect(metrics.body).toContain("sidekick_signer_validation_p95_seconds 0.475");
   });
 
   it("accepts only sealed wallet-intent actions and txids", async () => {
     const token = "test-operator-token-with-32-chars";
     const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
     const txid = `0x${"ab".repeat(32)}`;
-    const intent = { schemaVersion: 1, id: intentId, action: "deploy-manager" };
+    const intent = { schemaVersion: 2, id: intentId, action: "update-fees" };
     const wallet = {
       prepare: vi.fn().mockResolvedValue(intent),
       get: vi.fn().mockReturnValue(intent),
@@ -287,15 +974,16 @@ describe("local API", () => {
       refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
       replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
     };
-    const prepareManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
-    const verifyManagerSignerGrant = vi.fn().mockResolvedValue({ path: "attach" });
-    const onboarding = {
-      wallet,
-      prepareManagerSignerGrant,
-      verifyManagerSignerGrant,
-    } as unknown as OnboardingService;
+    const prepareManagerSignerGrant = vi
+      .fn()
+      .mockResolvedValue({ preparation: {}, verified: null });
+    const verifyManagerSignerGrant = vi.fn().mockResolvedValue({ preparation: {}, verified: {} });
+    const signerGrant = {
+      prepare: prepareManagerSignerGrant,
+      verify: verifyManagerSignerGrant,
+    };
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, signerGrant, authToken: token, logger: false });
     servers.push(server);
     const headers = { authorization: `Bearer ${token}` };
 
@@ -303,25 +991,13 @@ describe("local API", () => {
       (
         await server.inject({
           method: "POST",
-          url: "/api/v1/onboarding/wallet-intents",
+          url: "/api/v1/wallet-intents",
           headers,
-          payload: { action: "deploy-manager", transaction: "arbitrary" },
+          payload: { action: "unknown-operation", transaction: "arbitrary" },
         })
       ).statusCode,
     ).toBe(400);
     expect(wallet.prepare).not.toHaveBeenCalled();
-
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/onboarding/wallet-intents",
-          headers,
-          payload: { action: "deploy-manager" },
-        })
-      ).json(),
-    ).toEqual({ intent });
-    expect(wallet.prepare).toHaveBeenCalledWith({ action: "deploy-manager" });
 
     expect(
       (
@@ -367,6 +1043,20 @@ describe("local API", () => {
 
     await server.inject({
       method: "POST",
+      url: "/api/v1/wallet-intents",
+      headers,
+      payload: {
+        action: "calculate-rewards",
+        actorPrincipal: "SP000000000000000000002Q6VF78",
+      },
+    });
+    expect(wallet.prepare).toHaveBeenLastCalledWith({
+      action: "calculate-rewards",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+    });
+
+    await server.inject({
+      method: "POST",
       url: "/api/v1/manager/signer-grant/prepare",
       headers,
       payload: { authId: "9", signerConfigPath: "/etc/stacks-signer/signer.toml" },
@@ -392,18 +1082,14 @@ describe("local API", () => {
     const wallet = {
       prepare: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
-    const payload =
-      prefix === "/api/v1/onboarding/wallet-intents"
-        ? { action: "deploy-manager" }
-        : {
-            action: "update-fees",
-            actorPrincipal: "SP000000000000000000002Q6VF78",
-            feeBips: "250",
-          };
+    const payload = {
+      action: "update-fees",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      feeBips: "250",
+    };
 
     const response = await server.inject({
       method: "POST",
@@ -465,9 +1151,8 @@ describe("local API", () => {
       refresh: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
       replace: vi.fn().mockRejectedValue(retryableWalletIntentAnchorError()),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
 
     for (const prefix of walletIntentPrefixes) {
@@ -499,9 +1184,8 @@ describe("local API", () => {
       refresh: vi.fn().mockResolvedValue({ ...intent, txid, status: "mempool" }),
       replace: vi.fn().mockResolvedValue({ ...intent, id: `${intentId.slice(0, -1)}d` }),
     };
-    const onboarding = { wallet } as unknown as OnboardingService;
     const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
-    const server = createServer({ service, onboarding, authToken: token, logger: false });
+    const server = createServer({ service, wallet, authToken: token, logger: false });
     servers.push(server);
     const headers = { authorization: `Bearer ${token}` };
 
@@ -594,29 +1278,24 @@ describe("local API", () => {
     walletIntentPrefixes,
   )("returns safe wallet-intent guidance at %s without internal details", async (prefix) => {
     const token = "test-operator-token-with-32-chars";
-    const error = new OnboardingWalletIntentError(
+    const error = new WalletIntentError(
       "wallet_intent_conflict",
       "The wallet transaction changed. Prepare a new transaction.",
     );
     Object.assign(error, { internalDetail: "must-not-leak" });
-    const onboarding = {
-      wallet: { prepare: vi.fn().mockRejectedValue(error) },
-    } as unknown as OnboardingService;
+    const wallet = { prepare: vi.fn().mockRejectedValue(error) };
     const server = createServer({
       service: { snapshot: async () => ({}), synchronize: async () => ({}) },
-      onboarding,
+      wallet,
       authToken: token,
       logger: false,
     });
     servers.push(server);
-    const payload =
-      prefix === "/api/v1/onboarding/wallet-intents"
-        ? { action: "deploy-manager" }
-        : {
-            action: "update-fees",
-            actorPrincipal: "SP000000000000000000002Q6VF78",
-            feeBips: "250",
-          };
+    const payload = {
+      action: "update-fees",
+      actorPrincipal: "SP000000000000000000002Q6VF78",
+      feeBips: "250",
+    };
 
     const response = await server.inject({
       method: "POST",
@@ -640,14 +1319,14 @@ describe("local API", () => {
       prepare: vi
         .fn()
         .mockRejectedValueOnce(
-          new OnboardingWalletIntentError(
+          new WalletIntentError(
             "wallet_execution_unavailable",
             "Claim eligibility could not be refreshed. Retry in a moment.",
             true,
           ),
         )
         .mockRejectedValueOnce(
-          new OnboardingWalletIntentError(
+          new WalletIntentError(
             "wallet_execution_unavailable",
             "This claim is not eligible for browser-wallet execution.",
           ),
@@ -655,7 +1334,7 @@ describe("local API", () => {
     };
     const server = createServer({
       service: { snapshot: async () => ({}), synchronize: async () => ({}) },
-      onboarding: { wallet } as unknown as OnboardingService,
+      wallet,
       authToken: token,
       logger: false,
     });
@@ -700,6 +1379,17 @@ describe("local API", () => {
     ).toThrow("SIDEKICK_AUTH_TOKEN");
   });
 
+  it("rejects unsafe automatic-authentication settings", () => {
+    const service = { snapshot: async () => ({}), synchronize: async () => ({}) };
+    const authToken = "test-operator-token-with-32-chars";
+    expect(() =>
+      createServer({ service, authToken, authTrustedHeader: "Authorization", logger: false }),
+    ).toThrow("SIDEKICK_AUTH_TRUSTED_HEADER");
+    expect(() =>
+      createServer({ service, authToken, authBasicUsername: "bad:user", logger: false }),
+    ).toThrow("SIDEKICK_AUTH_BASIC_USERNAME");
+  });
+
   it("reports readiness and Prometheus counters without authentication", async () => {
     const service = {
       snapshot: async () => ({
@@ -725,6 +1415,157 @@ describe("local API", () => {
       authToken: "test-operator-token-with-32-chars",
       logger: false,
       snapshotRefreshMetrics,
+      observerStatus: () => ({
+        schemaVersion: 1,
+        enabled: true,
+        listening: true,
+        listener: { host: "127.0.0.1", port: 3700, maxBodyBytes: 4_194_304 },
+        inbox: {
+          schemaVersion: 1,
+          uniqueDeliveries: 3,
+          deliveryAttempts: 4,
+          processingAttempts: 2,
+          duplicates: 1,
+          queueDepth: 2,
+          processing: 0,
+          nodeVerified: 1,
+          quarantined: 0,
+          expired: 0,
+          retainedPayloadBytes: 1024,
+          prunedPayloads: 0,
+          lastReceivedAt: "2026-07-14T12:00:09.000Z",
+          lastProcessedAt: "2026-07-14T12:00:10.000Z",
+          oldestPendingAt: "2026-07-14T12:00:08.000Z",
+          lastClaimedStacksBlock: null,
+          lastVerifiedStacksBlock: null,
+          lastClaimedBurnBlock: null,
+          lastQuarantine: null,
+        },
+        reconciliation: {
+          schemaVersion: 1,
+          started: true,
+          domains: {
+            current: {
+              pending: false,
+              running: false,
+              requests: 4,
+              coalescedRequests: 2,
+              successes: 2,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: 50,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+              callbackLatency: {
+                samples: 2,
+                sumSeconds: 2.5,
+                maxSeconds: 1.5,
+                lastSeconds: 1,
+                withinTwoSeconds: 2,
+                buckets: { le1: 1, le2: 2, le5: 2, le10: 2, le30: 2 },
+              },
+            },
+            "manager-activity": {
+              pending: true,
+              running: false,
+              requests: 3,
+              coalescedRequests: 1,
+              successes: 1,
+              failuresTotal: 1,
+              consecutiveFailures: 1,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:00.000Z",
+              lastFailureAt: "2026-07-14T12:00:10.000Z",
+              lastError: "API unavailable",
+              nextRetryAt: "2026-07-14T12:00:25.000Z",
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 3,
+                maxSeconds: 3,
+                lastSeconds: 3,
+                withinTwoSeconds: 0,
+                buckets: { le1: 0, le2: 0, le5: 1, le10: 1, le30: 1 },
+              },
+            },
+            rewards: {
+              pending: false,
+              running: false,
+              requests: 2,
+              coalescedRequests: 0,
+              successes: 2,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 1.25,
+                maxSeconds: 1.25,
+                lastSeconds: 1.25,
+                withinTwoSeconds: 1,
+                buckets: { le1: 0, le2: 1, le5: 1, le10: 1, le30: 1 },
+              },
+            },
+            roster: {
+              pending: false,
+              running: false,
+              requests: 1,
+              coalescedRequests: 0,
+              successes: 1,
+              failuresTotal: 0,
+              consecutiveFailures: 0,
+              requestedStacksHeight: 100,
+              requestedBurnHeight: null,
+              lastRequestedAt: "2026-07-14T12:00:09.000Z",
+              lastStartedAt: "2026-07-14T12:00:09.000Z",
+              lastSuccessAt: "2026-07-14T12:00:10.000Z",
+              lastFailureAt: null,
+              lastError: null,
+              nextRetryAt: null,
+              callbackLatency: {
+                samples: 1,
+                sumSeconds: 1.5,
+                maxSeconds: 1.5,
+                lastSeconds: 1.5,
+                withinTwoSeconds: 1,
+                buckets: { le1: 0, le2: 1, le5: 1, le10: 1, le30: 1 },
+              },
+            },
+          },
+        },
+        gap: {
+          schemaVersion: 1,
+          started: true,
+          status: "degraded",
+          reason: "observer-behind-node",
+          intervalSeconds: 15,
+          checksTotal: 10,
+          failuresTotal: 1,
+          consecutiveFailures: 0,
+          startedAt: "2026-07-14T11:59:00.000Z",
+          checkedAt: "2026-07-14T12:00:10.000Z",
+          baselineStacksHeight: 98,
+          nodeStacksHeight: 100,
+          observerStacksHeight: 99,
+          stacksGap: 1,
+          observerSilenceSeconds: 16,
+          lastError: null,
+        },
+      }),
     });
     servers.push(server);
 
@@ -740,6 +1581,46 @@ describe("local API", () => {
     expect(metrics.body).toContain(
       'sidekick_operator_snapshot_source_burn_height{source="pox"} 49',
     );
+    expect(metrics.body).toContain("sidekick_observer_deliveries_total 4");
+    expect(metrics.body).toContain("sidekick_observer_listening 1");
+    expect(metrics.body).toContain("sidekick_observer_duplicates_total 1");
+    expect(metrics.body).toContain("sidekick_observer_processing_attempts_total 2");
+    expect(metrics.body).toContain("sidekick_observer_queue_depth 2");
+    expect(metrics.body).toContain("sidekick_observer_processing 0");
+    expect(metrics.body).toContain("sidekick_observer_node_verified 1");
+    expect(metrics.body).toContain("sidekick_observer_expired 0");
+    expect(metrics.body).toContain("sidekick_observer_retained_payload_bytes 1024");
+    expect(metrics.body).toContain("sidekick_observer_pruned_payloads 0");
+    expect(metrics.body).toContain("sidekick_observer_last_received_timestamp_seconds 1784030409");
+    expect(metrics.body).toContain("sidekick_observer_last_processed_timestamp_seconds 1784030410");
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_requests_total{domain="current"} 4',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_pending{domain="manager-activity"} 1',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_successes_total{domain="rewards"} 2',
+    );
+    expect(metrics.body).toContain(
+      'sidekick_observer_reconciliation_latency_seconds_bucket{domain="current",le="2"} 2',
+    );
+    expect(metrics.body).toContain("sidekick_observer_gap_degraded 1");
+    expect(metrics.body).toContain("sidekick_observer_stacks_gap_blocks 1");
+    expect(metrics.body).toContain("sidekick_observer_silence_seconds 16");
+    const status = await server.inject({
+      method: "GET",
+      url: "/api/v1/status",
+      headers: { authorization: "Bearer test-operator-token-with-32-chars" },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().alerts).toContainEqual({
+      id: "observer:callbacks-behind",
+      severity: "warning",
+      title: "Event Observer Is Behind",
+      detail:
+        "The local node is at Stacks 100, but the latest node-verified callback is 99 (16 seconds old). Sidekick is using polling fallback while callback delivery recovers.",
+    });
   });
 
   it("keeps readiness available from a recent stale observation", async () => {
@@ -763,7 +1644,7 @@ describe("local API", () => {
 
     const response = await server.inject({ method: "GET", url: "/health/ready" });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ status: "ready", freshness: "stale" });
+    expect(response.json()).toMatchObject({ status: "ready" });
   });
 
   it("runs reconciliation asynchronously with process-local single-flight progress", async () => {
@@ -793,6 +1674,7 @@ describe("local API", () => {
     const idle = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
     expect(idle.json().operation).toMatchObject({
       operationId: null,
+      trigger: null,
       status: "idle",
       phase: "idle",
       processLocal: true,
@@ -807,6 +1689,7 @@ describe("local API", () => {
 
     const running = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
     expect(running.json().operation).toMatchObject({
+      trigger: "manual",
       status: "running",
       phase: "reconciling-stakers-verification",
       processLocal: true,
@@ -832,6 +1715,104 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.body).toContain("sidekick_sync_total 1");
     expect(metrics.body).toContain("sidekick_sync_requests_total 2");
+  });
+
+  it("reconciles a configured roster automatically even when setup needs attention", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-07-19T18:00:02.000Z",
+        setup: { status: "attention" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      authToken: token,
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(() => expect(service.synchronize).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => {
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/v1/sync",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.json().operation).toMatchObject({
+        trigger: "automatic",
+        status: "succeeded",
+      });
+    });
+
+    const metrics = await server.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).toContain("sidekick_sync_total 1");
+    expect(metrics.body).toContain("sidekick_sync_requests_total 0");
+    expect(metrics.body).toContain("sidekick_roster_reconciliation_attempts_total 1");
+    expect(metrics.body).toContain("sidekick_roster_reconciliation_successes_total 1");
+  });
+
+  it("skips automatic reconciliation until manager setup is ready", async () => {
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-07-19T18:00:02.000Z",
+        setup: { status: "blocked" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(async () => {
+      const metrics = await server.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.body).toContain("sidekick_roster_reconciliation_skips_total 1");
+    });
+    expect(service.synchronize).not.toHaveBeenCalled();
+  });
+
+  it("skips automatic reconciliation while a proved connection is temporarily unavailable", async () => {
+    const unavailable = {
+      status: "unavailable",
+      lastSuccessful: {
+        managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      },
+    } as ConnectionAssessment;
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAt: "2026-08-13T12:00:00.000Z",
+        setup: { status: "ready" },
+      }),
+      synchronize: vi.fn().mockResolvedValue(reconciliationResult()),
+    };
+    const server = createServer({
+      service,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => true,
+      authToken: "test-operator-token-with-32-chars",
+      logger: false,
+      rosterReconciliationInitialDelayMs: 1,
+      rosterReconciliationIntervalMs: 30 * 60_000,
+    });
+    servers.push(server);
+    await server.ready();
+
+    await vi.waitFor(async () => {
+      const metrics = await server.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.body).toContain("sidekick_roster_reconciliation_skips_total 1");
+    });
+    expect(service.snapshot).not.toHaveBeenCalled();
+    expect(service.synchronize).not.toHaveBeenCalled();
   });
 
   it("stores structured retryable reconciliation failures for polling", async () => {
@@ -940,7 +1921,7 @@ describe("local API", () => {
     servers.splice(servers.indexOf(server), 1);
   });
 
-  it("classifies transient, content, malformed, and unexpected operator failures", async () => {
+  it("classifies transient, malformed, and unexpected operator failures", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
       snapshot: async () => ({}),
@@ -950,7 +1931,6 @@ describe("local API", () => {
         .mockRejectedValueOnce(new Error("must-not-leak")),
       synchronize: async () => reconciliationResult(),
       updateSettings: vi.fn().mockRejectedValue(new RateLimitedError("limited", 3_000)),
-      poolCard: vi.fn().mockRejectedValue(new UpstreamSchemaError("bad upstream body")),
     };
     const health = {
       current: async () => ({}),
@@ -1009,22 +1989,6 @@ describe("local API", () => {
         message:
           "A configured chain source is rate limiting Sidekick. Retry after the indicated delay.",
         retryable: true,
-      },
-    ]);
-
-    const invalidContent = await server.inject({
-      method: "POST",
-      url: "/api/v1/pool-card/generate",
-      headers,
-      payload: { mode: "live" },
-    });
-    expect([invalidContent.statusCode, invalidContent.json()]).toEqual([
-      502,
-      {
-        error: "upstream_response_invalid",
-        message:
-          "The node or API returned a response this Sidekick version does not support. Check the configured endpoint and version; if it persists, review the Sidekick logs.",
-        retryable: false,
       },
     ]);
 
@@ -1134,6 +2098,56 @@ describe("local API", () => {
     ]);
   });
 
+  it.each([
+    [
+      "authentication-required" as const,
+      422,
+      "health_source_authentication_required",
+      "The API requires a credential.",
+    ],
+    [
+      "authentication-rejected" as const,
+      422,
+      "health_source_authentication_rejected",
+      "The API rejected its configured credential.",
+    ],
+    [
+      "rate-limited" as const,
+      429,
+      "health_source_rate_limited",
+      "The API is rate limiting Sidekick.",
+    ],
+  ])("classifies API source credential failures: %s", async (code, status, responseCode, message) => {
+    const token = "test-operator-token-with-32-chars";
+    const server = createServer({
+      service: { snapshot: async () => ({}) },
+      health: {
+        current: async () => ({}),
+        refresh: async () => ({}),
+        testSource: async () => {
+          throw new HealthSourceError(code, "upstream body must-not-leak");
+        },
+      },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { kind: "indexed-api" },
+    });
+
+    expect(response.statusCode).toBe(status);
+    expect(response.json()).toMatchObject({
+      error: responseCode,
+      message: expect.stringContaining(message),
+    });
+    expect(response.body).not.toContain("must-not-leak");
+  });
+
   it("classifies retryable and rejected upstream HTTP responses without leaking bodies", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
@@ -1175,7 +2189,6 @@ describe("local API", () => {
       summary: vi.fn().mockResolvedValue({ rosterTotal: 500, roster: [] }),
       synchronize: vi.fn().mockResolvedValue({}),
       poolPage: vi.fn().mockResolvedValue({ total: 500, offset: 100, limit: 50, roster: [] }),
-      poolHistory: vi.fn().mockResolvedValue({ total: 96, offset: 25, limit: 25, items: [] }),
       rewardsPage: vi.fn().mockResolvedValue({ total: 500, offset: 50, limit: 50, rewards: {} }),
       rewardsHistory: vi.fn().mockResolvedValue({ total: 96, offset: 25, limit: 25, items: [] }),
       activity: vi.fn().mockResolvedValue({ claimTotal: 4_000, withdrawalTotal: 400 }),
@@ -1203,13 +2216,6 @@ describe("local API", () => {
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/pool/history?offset=25&limit=25",
-      headers,
-    });
-    expect(service.poolHistory).toHaveBeenCalledWith({ offset: 25, limit: 25 });
-
-    await server.inject({
-      method: "GET",
       url: "/api/v1/rewards?offset=50&limit=50&sort=net&direction=desc",
       headers,
     });
@@ -1234,7 +2240,7 @@ describe("local API", () => {
 
     await server.inject({
       method: "GET",
-      url: "/api/v1/activity?claimOffset=150&claimLimit=50&claimSort=amount&claimDirection=desc&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalSort=max-fee&withdrawalDirection=asc&withdrawalState=pending",
+      url: "/api/v1/rewards/activity?claimOffset=150&claimLimit=50&claimSort=amount&claimDirection=desc&rewardCycle=141&withdrawalOffset=20&withdrawalLimit=20&withdrawalSort=max-fee&withdrawalDirection=asc&withdrawalState=pending",
       headers,
     });
     expect(service.activity).toHaveBeenCalledWith({
@@ -1272,7 +2278,7 @@ describe("local API", () => {
       (
         await server.inject({
           method: "GET",
-          url: "/api/v1/activity?withdrawalState=unknown",
+          url: "/api/v1/rewards/activity?withdrawalState=unknown",
           headers,
         })
       ).statusCode,
@@ -1281,11 +2287,131 @@ describe("local API", () => {
       (
         await server.inject({
           method: "GET",
-          url: "/api/v1/activity?rewardCycle=abc",
+          url: "/api/v1/rewards/activity?rewardCycle=abc",
           headers,
         })
       ).statusCode,
     ).toBe(400);
+  });
+
+  it("serves the typed Activity projection in read-only connection mode", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const generatedAt = "2026-08-14T12:00:00.000Z";
+    const projected = activityResponseSchema.parse({
+      schemaVersion: 1,
+      generatedAt,
+      active: [],
+      items: [],
+      nextCursor: null,
+      coverage: [
+        {
+          source: "wallet-intents",
+          status: "current",
+          observedAt: generatedAt,
+          anchor: null,
+          reason: null,
+        },
+      ],
+    });
+    const activityProjection = {
+      page: vi.fn(() => projected),
+      detail: vi.fn(() => ({ canonical: true })),
+    };
+    const unavailable = {
+      status: "unavailable",
+      outcomeCode: "node-unreachable",
+      checkedAt: generatedAt,
+      stale: true,
+      lastSuccessful: null,
+    } as ConnectionAssessment;
+    const server = createServer({
+      activityProjection,
+      connection: { current: () => unavailable, check: async () => unavailable },
+      isOperational: () => false,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const page = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity?status=needs-attention&type=actions&domain=rewards&time=7d&search=claim&limit=20",
+      headers,
+    });
+    expect(page.statusCode).toBe(200);
+    expect(activityResponseSchema.parse(page.json())).toEqual(projected);
+    expect(activityProjection.page).toHaveBeenCalledWith(
+      {
+        status: "needs-attention",
+        type: "actions",
+        domain: "rewards",
+        time: "7d",
+        search: "claim",
+        cursor: null,
+        limit: 20,
+      },
+      true,
+    );
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/api/v1/activity/${encodeURIComponent("chain-tx:1:0xabc")}`,
+      headers,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(activityProjection.detail).toHaveBeenCalledWith("chain-tx:1:0xabc", true);
+  });
+
+  it("maps invalid Activity input and bounded-authority failures without leaking internals", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const detail = vi.fn(() => null);
+    const page = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new ActivityProjectionError("invalid_activity_cursor", "secret cursor body");
+      })
+      .mockImplementationOnce(() => {
+        throw new ActivityProjectionError(
+          "activity_authority_limit_exceeded",
+          "secret database cardinality",
+        );
+      });
+    const server = createServer({
+      activityProjection: { page, detail },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const badQuery = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity?status=unknown",
+      headers,
+    });
+    expect(badQuery.statusCode).toBe(400);
+    expect(badQuery.json()).toMatchObject({ error: "invalid_activity_query", retryable: false });
+
+    const badCursor = await server.inject({ method: "GET", url: "/api/v1/activity", headers });
+    expect(badCursor.statusCode).toBe(400);
+    expect(badCursor.json()).toMatchObject({ error: "invalid_activity_cursor", retryable: false });
+
+    const bounded = await server.inject({ method: "GET", url: "/api/v1/activity", headers });
+    expect(bounded.statusCode).toBe(503);
+    expect(bounded.json()).toMatchObject({
+      error: "activity_authority_limit_exceeded",
+      retryable: true,
+    });
+
+    const missing = await server.inject({
+      method: "GET",
+      url: "/api/v1/activity/wallet-intent%3Amissing",
+      headers,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "activity_not_found", retryable: false });
+    expect(`${badCursor.body}${bounded.body}`).not.toContain("secret");
   });
 
   it("validates and forwards the authenticated transaction-engine API", async () => {
@@ -1411,7 +2537,8 @@ describe("local API", () => {
       snapshot: async () => ({
         generatedAt: "2026-07-17T12:00:00.000Z",
         preflight: { status: "pass" },
-        setup: { status: "ready" },
+        manager: { attachAllowed: true },
+        registration: { registered: true, signerKeyGrantValid: true },
       }),
       synchronize: async () => ({}),
     };
@@ -1455,10 +2582,12 @@ describe("local API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      schemaVersion: 2,
       status: "blocked",
       checks: [
         { id: "control-plane", status: "ready" },
-        { id: "setup", status: "ready" },
+        { id: "manager", status: "ready" },
+        { id: "signer", status: "ready" },
         { id: "engine", status: "blocked", detail: "Chain tips disagree" },
       ],
     });
@@ -1524,19 +2653,13 @@ describe("local API", () => {
     });
   });
 
-  it("validates authenticated runtime settings and pool-card actions", async () => {
+  it("validates authenticated runtime settings", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
       snapshot: async () => ({ generatedAt: "2026-07-15T12:00:00.000Z" }),
       synchronize: async () => ({}),
       settings: vi.fn().mockReturnValue({ revision: 2, dataSources: { apiKeyConfigured: true } }),
       updateSettings: vi.fn().mockReturnValue({ revision: 3 }),
-      poolCard: vi.fn().mockResolvedValue({
-        mode: "live",
-        filename: "signer-sidekick-pool.html",
-        contentType: "text/html; charset=utf-8",
-        body: "<!doctype html>",
-      }),
     };
     const server = createServer({ service, authToken: token, logger: false });
     servers.push(server);
@@ -1557,27 +2680,5 @@ describe("local API", () => {
       ).json(),
     ).toEqual({ revision: 3 });
     expect(service.updateSettings).toHaveBeenCalledWith(settingsBody);
-
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/pool-card/generate",
-          headers,
-          payload: { mode: "live" },
-        })
-      ).json(),
-    ).toMatchObject({ filename: "signer-sidekick-pool.html" });
-    expect(service.poolCard).toHaveBeenCalledWith("live");
-    expect(
-      (
-        await server.inject({
-          method: "POST",
-          url: "/api/v1/pool-card/generate",
-          headers,
-          payload: { mode: "dynamic" },
-        })
-      ).statusCode,
-    ).toBe(400);
   });
 });

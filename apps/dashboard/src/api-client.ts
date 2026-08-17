@@ -48,7 +48,7 @@ export interface ApiDownloadOptions extends RequestInit {
 
 function authenticatedHeaders(token: string, init: RequestInit): Headers {
   const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${token}`);
+  if (token) headers.set("authorization", `Bearer ${token}`);
   if (init.body !== undefined && init.body !== null && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -107,6 +107,7 @@ async function authenticatedFetch(
   try {
     response = await fetch(url, {
       ...init,
+      credentials: init.credentials ?? "same-origin",
       headers,
       signal,
     });

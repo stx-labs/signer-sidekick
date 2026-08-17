@@ -6,6 +6,7 @@ import {
 import { useEffect, useState } from "react";
 import { apiDownload, apiJson } from "../../api-client.js";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
+import type { DomainSection } from "../../dashboard-route.js";
 import {
   Badge,
   PageHead,
@@ -13,12 +14,15 @@ import {
   SortableHeader,
   type TableSort,
 } from "../../shared/dashboard-ui.js";
+import { useDomainSection } from "../../shared/domain-section.js";
 import { number, short, stx } from "../../shared/format.js";
 import {
   operatorActionError,
   operatorErrorDetail,
   operatorErrorSentence,
 } from "../../shared/operator-error.js";
+import { PoolForecastChart } from "./pool-forecast-chart.js";
+import { buildPoolForecastView } from "./pool-forecast-view.js";
 
 type Snapshot = DashboardSnapshot;
 type RosterSort =
@@ -30,7 +34,16 @@ type RosterSort =
   | "bond"
   | "status";
 
-export function Pool({ data, token }: { data: Snapshot; token: string }) {
+export function Pool({
+  data,
+  token,
+  section,
+}: {
+  data: Snapshot;
+  token: string;
+  section: DomainSection | null;
+}) {
+  useDomainSection("pool", section);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<TableSort<RosterSort>>({ key: "staker", direction: "asc" });
@@ -102,7 +115,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
     }
   };
   const cycles = data.forecast?.cycles ?? [];
-  const max = Math.max(1, ...cycles.map((cycle) => Number(cycle.contract.pendingStxUstx)));
+  const forecastView = buildPoolForecastView(cycles);
   return (
     <>
       <PageHead
@@ -141,7 +154,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
           {downloadError}
         </div>
       ) : null}
-      <div className="kpi">
+      <div className="kpi pool-kpi domain-section-anchor" id="pool-positions">
         <div className="tile hero">
           <div className="l">Stakers</div>
           <div className="v">{data.rosterTotal ?? data.roster.length}</div>
@@ -155,7 +168,7 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
             {stx(cycles[0]?.contract.pendingStxUstx)} <span className="u">STX</span>
           </div>
           <div className="d">
-            {cycles[0]?.threshold.meetsThreshold ? "above threshold" : "below threshold"}
+            {cycles[0]?.threshold.meetsThreshold ? "eligible" : "not eligible"}
           </div>
         </div>
         <div className="tile">
@@ -176,28 +189,23 @@ export function Pool({ data, token }: { data: Snapshot; token: string }) {
           <div className="d">recorded unlock heights</div>
         </div>
       </div>
-      <div className="section-title">
-        Pool total by cycle{" "}
+      {cycles[0] && !cycles[0].threshold.meetsThreshold ? (
+        <div className="callout callout-critical content-notice" role="alert">
+          <div className="body">
+            <strong>Pool is not eligible for signing.</strong> It is below the 50,000 STX minimum.
+          </div>
+        </div>
+      ) : null}
+      <div className="section-title domain-section-anchor" id="pool-forecast">
+        Pool forecast{" "}
         <span className="hint">Current cycle confirmed; future cycles may change.</span>
       </div>
       <div className="card forecast-card">
-        <div className="barchart">
-          {cycles.map((cycle, index) => (
-            <div className="col" key={cycle.cycleId}>
-              <div className="amt">{stx(cycle.contract.pendingStxUstx)}</div>
-              <div
-                className={`bar ${cycle.threshold.meetsThreshold ? (index === 0 ? "" : "forecast") : "under"}`}
-                style={{
-                  height: `${Math.max(6, (Number(cycle.contract.pendingStxUstx) / max) * 100)}%`,
-                }}
-              />
-              <div className="cyc">{cycle.cycleId}</div>
-              <div className="hint">{cycle.provenance.classification}</div>
-            </div>
-          ))}
-        </div>
+        <PoolForecastChart view={forecastView} />
       </div>
-      <div className="section-title">Staker roster</div>
+      <div className="section-title domain-section-anchor" id="pool-roster">
+        Staker roster
+      </div>
       {rosterError ? (
         <div className="callout callout-critical content-notice" role="alert">
           <div className="body">

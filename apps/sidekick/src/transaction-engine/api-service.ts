@@ -14,6 +14,7 @@ import {
   type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
   type EngineJobPage,
+  type EngineJobState,
   type EngineJobSummary,
   type EngineReconciliation,
   type EngineStatus,
@@ -33,6 +34,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { z } from "zod";
 import type { TransactionEngineApiService } from "../server.js";
+import { copyValidDate } from "../time.js";
 import {
   type ManagerClaimIntentRecord,
   type ManagerClaimPolicyRecord,
@@ -452,11 +454,11 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
   }
 
   #now(): Date {
-    const now = this.#clock();
-    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    const now = copyValidDate(this.#clock());
+    if (!now) {
       throw new Error("Transaction engine API clock returned an invalid instant");
     }
-    return new Date(now.getTime());
+    return now;
   }
 
   #effectiveMode(): TransactionEngineMode {
@@ -506,7 +508,11 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
     });
   }
 
-  async listJobs(options: { cursor: string | null; limit: number }): Promise<EngineJobPage> {
+  async listJobs(options: {
+    cursor: string | null;
+    limit: number;
+    states?: readonly EngineJobState[];
+  }): Promise<EngineJobPage> {
     const limit = z.number().int().min(1).max(100).safeParse(options.limit);
     if (!limit.success) {
       throw new TransactionEngineApiServiceError(400, "invalid_engine_pagination");
@@ -516,6 +522,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
     try {
       page = this.#repository.listLogicalJobs({
         limit: limit.data,
+        ...(options.states === undefined ? {} : { states: options.states }),
         ...(options.cursor === null ? {} : { cursor: options.cursor }),
       });
     } catch (error) {

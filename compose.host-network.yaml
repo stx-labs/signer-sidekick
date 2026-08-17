@@ -5,6 +5,7 @@ services:
     ports: !reset []
     environment:
       SIDEKICK_HTTP_HOST: 127.0.0.1
+      SIDEKICK_EVENT_HTTP_HOST: 127.0.0.1
     healthcheck:
       test:
         ["CMD", "node", "-e", "const host = process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; fetch('http://' + host + ':3998/health/live').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]

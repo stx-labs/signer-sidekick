@@ -69,6 +69,9 @@ stacks_node_image_url = "ghcr.io/stacks-network/stacks-core:4.0.1@sha256:ceb768f
 stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.1@sha256:815b5518ec0f3a9b4c30d7fdca8f048a1fe8c263790ca65c5785e119b87d8590"
 stacks_api_image_url = "ghcr.io/stx-labs/stacks-blockchain-api:9.0.1@sha256:5ee39d1da7c1e37090ffef172f17390437545720e29e54e1818172edc52189bd"
 postgres_image_url = "docker.io/library/postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
+# The harness proxy acknowledges bootstrap callbacks before a manager exists, then forwards new
+# real stacks-node callbacks to Sidekick once its connection and private listener are ready.
+stacks_node_events_observers = ["host.docker.internal:23700"]
 
 [[devnet.pox_stacking_orders]]
 start_at_cycle = 1

@@ -24,7 +24,7 @@ const openStores: SidekickStore[] = [];
 async function store(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", observedAt);
   openStores.push(store);
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId,
     kind: "api",
     network: "mainnet",
@@ -102,11 +102,184 @@ function transaction(txId: string, height: number): TransactionSummary {
   };
 }
 
+function nodeTransaction(txId: string, height: number) {
+  return {
+    status: "observed" as const,
+    httpStatus: 200,
+    value: {
+      txid: txId as `0x${string}`,
+      transactionHex: "00",
+      nonce: 0n,
+      feeUstx: 0n,
+      indexBlockHash: `0x${"44".repeat(32)}` as `0x${string}`,
+      blockHeight: BigInt(height),
+      isCanonical: true,
+      resultRepr: "(ok true)",
+    },
+  };
+}
+
+function nodeBlocks(canonical = true) {
+  return {
+    getTenureInfo: vi.fn(async () => ({
+      tip_block_id: `0x${"99".repeat(32)}` as `0x${string}`,
+      tip_height: 8_700_000,
+      reward_cycle: 141,
+    })),
+    getNakamotoBlockById: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    getNakamotoBlockAtHeight: vi.fn(async () =>
+      canonical ? Uint8Array.of(1, 2, 3) : Uint8Array.of(4, 5, 6),
+    ),
+  };
+}
+
 afterEach(() => {
   for (const sidekickStore of openStores.splice(0)) sidekickStore.close();
 });
 
 describe("manager event synchronization", () => {
+  it("commits API event content only after a canonical local transaction witness", async () => {
+    const sidekickStore = await store();
+    const nodeTransactions = {
+      lookupIndexedTransaction: vi.fn().mockResolvedValue(nodeTransaction(txOne, 8_600_000)),
+    };
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).resolves.toMatchObject({ newEvents: 1, nodeVerifiedTransactions: 1 });
+    expect(nodeTransactions.lookupIndexedTransaction).toHaveBeenCalledWith(txOne);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toMatchObject({
+      occurredAt: "2026-07-14T03:33:20.000Z",
+      firstSeenAt: observedAt,
+    });
+  });
+
+  it("rejects a page atomically when the local transaction witness disagrees", async () => {
+    const sidekickStore = await store();
+    const mismatched = nodeTransaction(txOne, 8_600_000);
+    mismatched.value.indexBlockHash = `0x${"55".repeat(32)}`;
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockResolvedValue(mismatched),
+        },
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).rejects.toThrow("Local node and indexed API disagree");
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
+    expect(
+      sidekickStore.chainState.getCursor(
+        sourceId,
+        `manager-logs:v3:reference-manager-v1:${manager}`,
+      ),
+    ).toBeNull();
+  });
+
+  it("pins a historical proof to the captured local tip while new blocks arrive", async () => {
+    const sidekickStore = await store();
+    const blocks = nodeBlocks();
+    blocks.getTenureInfo
+      .mockResolvedValueOnce({
+        tip_block_id: `0x${"99".repeat(32)}`,
+        tip_height: 8_700_000,
+        reward_cycle: 141,
+      })
+      .mockResolvedValueOnce({
+        tip_block_id: `0x${"aa".repeat(32)}`,
+        tip_height: 8_700_001,
+        reward_cycle: 141,
+      });
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockResolvedValue({
+            status: "not-found",
+            httpStatus: 404,
+          }),
+        },
+        nodeBlocks: blocks,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).resolves.toMatchObject({ newEvents: 1, nodeVerifiedTransactions: 1 });
+    expect(blocks.getNakamotoBlockById).toHaveBeenCalledWith(`0x${"44".repeat(32)}`, {});
+    expect(blocks.getNakamotoBlockAtHeight).toHaveBeenCalledWith(8_600_000, {
+      tip: `0x${"99".repeat(32)}`,
+    });
+    expect(blocks.getTenureInfo).toHaveBeenCalledTimes(1);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
+  });
+
+  it("rejects an API event when its historical block is not canonical on the local node", async () => {
+    const sidekickStore = await store();
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockResolvedValue({
+            status: "not-found",
+            httpStatus: 404,
+          }),
+        },
+        nodeBlocks: nodeBlocks(false),
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).rejects.toThrow("not canonical according to the local node");
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
+  });
+
   it("backfills canonical logs, enriches block identity, and stops future scans at overlap", async () => {
     const sidekickStore = await store();
     const firstApi = {
@@ -127,6 +300,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -159,6 +333,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -170,6 +345,50 @@ describe("manager event synchronization", () => {
     });
     expect(overlapApi.getSmartContractLogs).toHaveBeenCalledTimes(1);
     expect(overlapApi.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it("stores lookalike custom events as generic raw data and removes stale projections", async () => {
+    const sidekickStore = await store();
+    const api = {
+      getSmartContractLogs: vi
+        .fn()
+        .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+      getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+    };
+
+    await syncManagerEvents({
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
+      observedAt,
+      pageLimit: 100,
+    });
+    expect(sidekickStore.listManagerClaims(1, manager).total).toBe(1);
+
+    const genericResult = await syncManagerEvents({
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      eventVocabulary: "generic-v1",
+      observedAt: "2026-07-14T12:01:00.000Z",
+      pageLimit: 100,
+    });
+
+    expect(genericResult.decodeFailures).toBe(0);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toMatchObject({
+      topic: "print",
+      decodedSchemaVersion: null,
+      decodedPayload: null,
+    });
+    expect(sidekickStore.listManagerClaims(1, manager).total).toBe(0);
+    expect(
+      sidekickStore.chainState.getCursor(sourceId, `manager-logs:v3:generic-v1:${manager}`),
+    ).toMatchObject({ cursor: null });
   });
 
   it("resumes from the page cursor committed before an interruption", async () => {
@@ -189,6 +408,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -207,6 +427,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt,
         pageLimit: 1,
       }),
@@ -227,6 +448,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 100,
     });
@@ -243,6 +465,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt: "2026-07-14T12:01:00.000Z",
         pageLimit: 100,
       }),
@@ -264,6 +487,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 1,
     });
@@ -286,6 +510,7 @@ describe("manager event synchronization", () => {
         sourceId,
         chainId: 1,
         managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
         observedAt: "2026-07-14T12:01:00.000Z",
         pageLimit: 1,
       }),
@@ -313,6 +538,7 @@ describe("manager event synchronization", () => {
       sourceId,
       chainId: 1,
       managerPrincipal: manager,
+      eventVocabulary: "reference-manager-v1",
       observedAt,
       pageLimit: 100,
       signal: controller.signal,
@@ -323,6 +549,11 @@ describe("manager event synchronization", () => {
 
     await expect(synchronization).rejects.toThrow("shutdown requested");
     expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
-    expect(sidekickStore.getCursor(sourceId, `manager-logs:v2:${manager}`)).toBeNull();
+    expect(
+      sidekickStore.chainState.getCursor(
+        sourceId,
+        `manager-logs:v3:reference-manager-v1:${manager}`,
+      ),
+    ).toBeNull();
   });
 });

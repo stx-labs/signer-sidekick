@@ -47,9 +47,12 @@ function countConsecutiveFailures(
   key: HealthSourceKey,
 ): number {
   let failures = 0;
+  let lastCheckedAt: string | null = null;
   for (let index = observations.length - 1; index >= 0; index -= 1) {
     const source = observations[index]?.[key];
     if (!source || source.reachable) break;
+    if (source.checkedAt === lastCheckedAt) continue;
+    lastCheckedAt = source.checkedAt;
     failures += 1;
   }
   return failures;
@@ -78,9 +81,13 @@ export function healthSourceState(
     .find((observation) => observation[key]?.reachable);
   return {
     configured: true,
-    status: source?.reachable ? "healthy" : "unavailable",
-    checkedAt: latest?.observedAt ?? null,
-    lastSuccessAt: lastSuccess?.observedAt ?? null,
+    status: source?.reachable
+      ? "healthy"
+      : source?.errorCode === "unsupported"
+        ? "unsupported"
+        : "unavailable",
+    checkedAt: source?.checkedAt ?? latest?.observedAt ?? null,
+    lastSuccessAt: lastSuccess?.[key]?.checkedAt ?? lastSuccess?.observedAt ?? null,
     latencyMs: source?.latencyMs ?? null,
     consecutiveFailures: countConsecutiveFailures(observations, key),
     errorCode: source?.errorCode ?? null,
@@ -106,46 +113,176 @@ export function counterIncrease<T>(
   return transitions > 0 ? increase : null;
 }
 
-export function histogramP95(observations: readonly HealthObservation[]): number | null {
-  const bounds = new Set<string>();
-  for (const observation of observations) {
-    for (const bound of Object.keys(observation.signerMetrics?.responseLatencyBuckets ?? {})) {
-      bounds.add(bound);
+export function histogramStatsFor(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): { p95: number | null; count: number } {
+  const latestBuckets = [...observations]
+    .reverse()
+    .map(select)
+    .find((buckets) => buckets["+Inf"] !== undefined);
+  if (!latestBuckets) return { p95: null, count: 0 };
+
+  const bounds = Object.keys(latestBuckets)
+    .filter((bound) => bound !== "+Inf")
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  if (bounds.length === 0 || new Set(bounds).size !== bounds.length) return { p95: null, count: 0 };
+
+  interface HistogramSnapshot {
+    counts: number[];
+    total: number;
+  }
+  const readSnapshot = (buckets: Record<string, number>): HistogramSnapshot | null => {
+    const finiteEntries = Object.entries(buckets)
+      .filter(([bound]) => bound !== "+Inf")
+      .map(([bound, value]) => ({ upper: Number(bound), value }))
+      .filter(({ upper }) => Number.isFinite(upper))
+      .sort((left, right) => left.upper - right.upper);
+    if (
+      finiteEntries.length !== bounds.length ||
+      finiteEntries.some(({ upper }, index) => upper !== bounds[index])
+    ) {
+      return null;
     }
+    const total = buckets["+Inf"];
+    if (total === undefined || !Number.isFinite(total) || total < 0) return null;
+    const counts = finiteEntries.map(({ value }) => value);
+    if (
+      counts.some((count) => !Number.isFinite(count) || count < 0) ||
+      counts.some((count, index) => index > 0 && count < (counts[index - 1] ?? 0)) ||
+      (counts.at(-1) ?? 0) > total
+    ) {
+      return null;
+    }
+    return { counts, total };
+  };
+
+  // Accumulate each cumulative bucket's windowed increase in lockstep, using the "+Inf" total as
+  // the joint reset signal: when it drops the whole histogram restarted, so we re-baseline every
+  // bucket together and skip that interval. A partial or non-monotonic scrape also breaks the
+  // interval rather than letting different buckets accumulate over different sample pairs.
+  const increase = bounds.map(() => 0);
+  let totalIncrease = 0;
+  let previous: HistogramSnapshot | null = null;
+  for (const observation of observations) {
+    const current = readSnapshot(select(observation));
+    if (!current) {
+      previous = null;
+      continue;
+    }
+    if (previous !== null && current.total >= previous.total) {
+      const deltas = current.counts.map((count, index) => count - (previous?.counts[index] ?? 0));
+      const totalDelta = current.total - previous.total;
+      const validInterval =
+        deltas.every((delta) => delta >= 0) &&
+        deltas.every((delta, index) => index === 0 || delta >= (deltas[index - 1] ?? 0)) &&
+        (deltas.at(-1) ?? 0) <= totalDelta;
+      if (!validInterval) {
+        previous = null;
+        continue;
+      }
+      for (const [index, delta] of deltas.entries()) {
+        increase[index] = (increase[index] ?? 0) + delta;
+      }
+      totalIncrease += totalDelta;
+    }
+    previous = current;
   }
-  const deltas = [...bounds].map((bound) => ({
-    bound,
-    value: counterIncrease(
-      observations,
-      (observation) => observation.signerMetrics?.responseLatencyBuckets[bound] ?? null,
-    ),
-  }));
-  const total = deltas.find(({ bound }) => bound === "+Inf")?.value ?? null;
-  if (total === null || total < 1) return null;
-  const target = total * 0.95;
-  for (const bucket of deltas
-    .filter(({ bound }) => bound !== "+Inf")
-    .sort((left, right) => Number(left.bound) - Number(right.bound))) {
-    if (bucket.value !== null && bucket.value >= target) return Number(bucket.bound);
+
+  if (totalIncrease < 1) return { p95: null, count: 0 };
+  const target = totalIncrease * 0.95;
+
+  // Linearly interpolate within the crossing bucket (Prometheus histogram_quantile), so a p95 that
+  // falls partway through the [lower, upper] bucket is not rounded up to the bucket boundary.
+  let lowerBound = 0;
+  let lowerCount = 0;
+  for (const [index, upperBound] of bounds.entries()) {
+    const count = increase[index] ?? 0;
+    if (count >= target) {
+      const span = count - lowerCount;
+      if (span <= 0) return { p95: upperBound, count: totalIncrease };
+      return {
+        p95: lowerBound + (upperBound - lowerBound) * ((target - lowerCount) / span),
+        count: totalIncrease,
+      };
+    }
+    lowerBound = upperBound;
+    lowerCount = count;
   }
-  return null;
+  // The 95th percentile sits above the largest finite bucket; report it as a conservative floor.
+  return { p95: bounds.at(-1) ?? null, count: totalIncrease };
+}
+
+export function histogramP95For(
+  observations: readonly HealthObservation[],
+  select: (observation: HealthObservation) => Record<string, number>,
+): number | null {
+  return histogramStatsFor(observations, select).p95;
+}
+
+export function histogramP95(observations: readonly HealthObservation[]): number | null {
+  return histogramP95For(
+    observations,
+    (observation) => observation.signerMetrics?.responseLatencyBuckets ?? {},
+  );
+}
+
+interface TipPosition {
+  stacks: number;
+}
+
+function lastAdvanceAt(
+  observations: readonly HealthObservation[],
+  position: (observation: HealthObservation) => TipPosition | null,
+  occurredAt: (observation: HealthObservation) => string = (observation) => observation.observedAt,
+): string | null {
+  let previous: TipPosition | null = null;
+  let lastAdvance: string | null = null;
+  for (const observation of observations) {
+    const current = position(observation);
+    if (previous && current && current.stacks > previous.stacks) {
+      lastAdvance = occurredAt(observation);
+    }
+    previous = current;
+  }
+  return lastAdvance;
 }
 
 export function lastTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
-  let previous: HealthObservation | null = null;
-  let lastAdvance: string | null = null;
-  for (const observation of observations) {
-    if (
-      previous?.nodeInfo &&
-      observation.nodeInfo &&
-      (observation.nodeInfo.stacks_tip_height !== previous.nodeInfo.stacks_tip_height ||
-        observation.nodeInfo.burn_block_height !== previous.nodeInfo.burn_block_height)
-    ) {
-      lastAdvance = observation.observedAt;
-    }
-    previous = observation;
-  }
-  return lastAdvance ?? observations.find(({ nodeInfo }) => nodeInfo)?.observedAt ?? null;
+  return lastAdvanceAt(observations, (observation) =>
+    observation.nodeInfo
+      ? {
+          stacks: observation.nodeInfo.stacks_tip_height,
+        }
+      : null,
+  );
+}
+
+export function lastHiroTipAdvanceAt(observations: readonly HealthObservation[]): string | null {
+  return lastAdvanceAt(observations, (observation) =>
+    observation.hiro
+      ? {
+          stacks: observation.hiro.chain_tip.block_height,
+        }
+      : null,
+  );
+}
+
+export function lastConfiguredApiTipAdvanceAt(
+  observations: readonly HealthObservation[],
+): string | null {
+  return lastAdvanceAt(
+    observations,
+    (observation) =>
+      observation.configuredApi
+        ? {
+            stacks: observation.configuredApi.chain_tip.block_height,
+          }
+        : null,
+    (observation) => observation.configuredApiSource?.checkedAt ?? observation.observedAt,
+  );
 }
 
 export function trimHealthObservations(

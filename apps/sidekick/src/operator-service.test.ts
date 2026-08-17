@@ -10,7 +10,6 @@ import { RateLimitedError, type StacksApiClient, type StacksNodeClient } from ".
 import type { SidekickConfig } from "./config.js";
 import {
   buildAlerts,
-  classifySupportContact,
   OperatorService,
   type OperatorServiceOptions,
   observeTransactionEngineSafely,
@@ -27,7 +26,7 @@ afterEach(() => {
 
 function alertInput(options: {
   belowThreshold?: boolean;
-  setupBlocked?: boolean;
+  readinessBlocked?: boolean;
   cycles?: Array<{
     cycleId: number;
     status: "ready" | "attention";
@@ -47,7 +46,7 @@ function alertInput(options: {
       source: { tier: "reference-built-in" },
       installedProfiles: { issues: [] },
     },
-    setup: options.setupBlocked
+    readiness: options.readinessBlocked
       ? {
           status: "blocked",
           checks: [{ id: "signer-grant", status: "fail", message: "Grant is revoked" }],
@@ -201,17 +200,15 @@ describe("operator service", () => {
     expect(buildAlerts(input)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: "manager:not-recognized-read-only",
-          severity: "warning",
-          title: "Manager Source Not Recognized",
-          detail: expect.stringContaining("wallet or manual signing"),
-          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
+          id: "manager:custom-capabilities",
+          severity: "info",
+          title: "Custom Manager Attached",
+          detail: expect.stringContaining("PoX-5 baseline state remains available"),
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
           title: "Manager Assist Eligibility Lost",
-          action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
         }),
       ]),
     );
@@ -230,12 +227,11 @@ describe("operator service", () => {
         id: "manager:trust-transition-degraded:2026-07-16T12:00:00.000Z",
         severity: "warning",
         title: "Manager Recognition Degraded",
-        action: { kind: "navigate", label: "Review manager profiles", target: "settings" },
       }),
     );
   });
 
-  it("routes connection and manager compatibility alerts to their repair screens", () => {
+  it("describes connection and manager compatibility alerts", () => {
     const input = alertInput({});
     input.forecast = null;
     input.preflight.checks = [
@@ -250,42 +246,32 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "preflight:stacks-api",
           detail: "Stacks API is unavailable.",
-          action: { kind: "navigate", label: "Open Settings", target: "settings" },
         }),
         expect.objectContaining({
           id: "manager:unsupported",
           detail: "Manager network does not match.",
-          action: { kind: "navigate", label: "Open Initial Setup", target: "setup" },
         }),
         expect.objectContaining({
           id: "manager:profile-load-issues",
           detail: "1 manager profile could not be loaded.",
-          action: { kind: "navigate", label: "Review profile issues", target: "settings" },
         }),
       ]),
     );
   });
 
-  it("uses the live threshold, routes to the pool, and preserves setup alerts", () => {
-    const alerts = buildAlerts(alertInput({ belowThreshold: true, setupBlocked: true }));
+  it("uses the live threshold and preserves readiness alerts", () => {
+    const alerts = buildAlerts(alertInput({ belowThreshold: true, readinessBlocked: true }));
     expect(alerts).toContainEqual(
       expect.objectContaining({
         id: "pool:forecast-attention",
         title: "Pool Below Signer-Set Threshold",
         detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 144.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
     expect(alerts).toContainEqual(
       expect.objectContaining({
-        id: "setup:blocked",
+        id: "readiness:blocked",
         detail: "Grant is revoked.",
-        action: {
-          kind: "navigate",
-          label: "Repair signer authorization",
-          target: "manager",
-          managerAction: "register-self",
-        },
       }),
     );
   });
@@ -295,7 +281,6 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Forecast Needs Attention",
         detail: "Pool checks need attention for reward cycle 144.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
   });
@@ -324,7 +309,6 @@ describe("operator service", () => {
       expect.objectContaining({
         title: "Pool Below Signer-Set Threshold",
         detail: "The pool is below the 75,000 STX signer-set threshold in reward cycle 6.",
-        action: { kind: "navigate", label: "Review pool positions", target: "pool" },
       }),
     );
   });
@@ -387,7 +371,7 @@ describe("operator service", () => {
     );
   });
 
-  it("attaches the resolving control to roster and withdrawal alerts", () => {
+  it("describes incomplete roster and pending withdrawal alerts", () => {
     const input = alertInput({});
     input.forecast = null;
     input.rewards = { status: "attention" } as typeof input.rewards;
@@ -397,17 +381,11 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "rewards:incomplete",
           detail: "The individual staker roster has not been synced.",
-          action: { kind: "reconcile", label: "Sync now" },
         }),
         expect.objectContaining({
           id: "withdrawals:pending",
           title: "Bitcoin Withdrawals Await Resolution",
           detail: "2 Bitcoin withdrawal requests remain pending.",
-          action: {
-            kind: "navigate",
-            label: "Review Bitcoin withdrawals",
-            target: "rewards",
-          },
         }),
       ]),
     );
@@ -417,11 +395,11 @@ describe("operator service", () => {
     const input = alertInput({});
     input.forecast = null;
     input.manager.source.tier = "custom-observe";
-    const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-read-only");
+    const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-capabilities");
     expect(alert).toMatchObject({
       severity: "info",
-      title: "Custom Manager",
-      detail: expect.stringContaining("wallet or manual signing"),
+      title: "Custom Manager Attached",
+      detail: expect.stringContaining("reviewed capability fingerprint"),
     });
     expect(alert).not.toHaveProperty("action");
   });
@@ -514,6 +492,63 @@ describe("operator service", () => {
         reason: "refresh-failed",
       },
     });
+  });
+
+  it("retains the last chain-authoritative health context across cache invalidation", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      cacheTtlMs: 0,
+    });
+    const generatedAt = "2026-07-19T18:00:00.000Z";
+    const snapshot = {
+      generatedAt,
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      preflight: { cycle: { currentId: 141, nextId: 142 } },
+      registration: {
+        registered: true,
+        signerKeyHex: `02${"11".repeat(32)}`,
+        signerKeyGrantValid: true,
+      },
+      forecast: {
+        cycles: [
+          { cycleId: 141, contract: { inSignerSet: true } },
+          { cycleId: 142, contract: { inSignerSet: false } },
+        ],
+      },
+    };
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot)
+      .mockRejectedValueOnce(new Error("upstream unavailable"));
+    (service as unknown as { load: typeof load }).load = load;
+
+    await expect(service.snapshot()).resolves.toBe(snapshot);
+    const retained = service.healthMonitoringContext();
+    expect(retained).toMatchObject({
+      observedAt: generatedAt,
+      currentRewardCycle: 141,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: false,
+    });
+
+    await expect(service.snapshot(true)).resolves.toBe(snapshot);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(service.healthMonitoringContext()).toEqual(retained);
   });
 
   it("serves a stale snapshot immediately while one background refresh is in progress", async () => {
@@ -722,12 +757,31 @@ describe("operator service", () => {
     const node = {
       getContractSource: async () => ({ source, publish_height: 100 }),
       getContractInterface: async () => ({
+        clarity_version: "Clarity6",
+        epoch: "Epoch40",
         functions: [
           ...REFERENCE_MANAGER_PUBLIC_FUNCTIONS.map((name) => ({
             name,
             access: "public",
-            args: [],
-            outputs: null,
+            args:
+              name === "validate-stake!"
+                ? [
+                    { name: "staker", type: "principal" },
+                    { name: "first-index", type: "uint128" },
+                    { name: "num-indexes", type: "uint128" },
+                    { name: "amount-ustx", type: "uint128" },
+                    { name: "amount-sats", type: "uint128" },
+                    { name: "is-bond", type: "bool" },
+                    {
+                      name: "signer-calldata",
+                      type: { optional: { buffer: { length: 500 } } },
+                    },
+                  ]
+                : [],
+            outputs:
+              name === "validate-stake!"
+                ? { type: { response: { ok: "bool", error: "uint128" } } }
+                : null,
           })),
           ...REFERENCE_MANAGER_READ_ONLY_FUNCTIONS.map((name) => ({
             name,
@@ -763,17 +817,9 @@ describe("operator service", () => {
     await expect(service.observeManagerTrustState()).resolves.toMatchObject({
       transition: { transition: "lost" },
     });
-    expect(store.listManagerTrustAudit(managerPrincipal)).toMatchObject([
+    expect(store.managerTrust.listAudit(managerPrincipal)).toMatchObject([
       { transition: "lost" },
       { transition: "gained" },
     ]);
-  });
-
-  it("classifies support contacts by email validity rather than an at-sign heuristic", () => {
-    expect(classifySupportContact("pool@example.com")).toEqual({ email: "pool@example.com" });
-    expect(classifySupportContact("https://user@example.com/support")).toEqual({
-      url: "https://user@example.com/support",
-    });
-    expect(classifySupportContact("")).toBeUndefined();
   });
 });

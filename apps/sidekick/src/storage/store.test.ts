@@ -12,7 +12,6 @@ import {
   openSidekickStore,
   SidekickStore,
 } from "./store.js";
-import { canonicalJsonSha256 } from "./wallet-intent-repository.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const later = "2026-07-14T12:01:00.000Z";
@@ -22,6 +21,7 @@ const indexBlockHash = `0x${"33".repeat(32)}`;
 const sourceId = createChainSourceId("mainnet", "https://api.mainnet.hiro.so");
 const nodeSourceId = createNodeSourceId("mainnet", "http://127.0.0.1:20443");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
+const pox5 = "SP000000000000000000002Q6VF78.pox-5";
 const stakerOne = "SP000000000000000000002Q6VF78";
 const stakerTwo = "SP2JXKMSH007NPYAQHKJPQMAQYAD90NQGTVJVQ02B";
 const openStores: SidekickStore[] = [];
@@ -50,7 +50,7 @@ async function memoryStore(): Promise<SidekickStore> {
 }
 
 function registerSource(store: SidekickStore, id = sourceId): void {
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: id,
     kind: "api",
     network: "mainnet",
@@ -60,7 +60,7 @@ function registerSource(store: SidekickStore, id = sourceId): void {
 }
 
 function registerNodeSource(store: SidekickStore): void {
-  store.upsertChainSource({
+  store.chainState.upsertSource({
     sourceId: nodeSourceId,
     kind: "node",
     network: "mainnet",
@@ -71,6 +71,19 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE runtime_api_credentials;
+    DROP TABLE current_member_history_recovery;
+    ALTER TABLE chain_events DROP COLUMN occurred_at;
+    ALTER TABLE chain_events DROP COLUMN evidence_level;
+    ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+    DROP TABLE local_node_authority;
+    DROP TABLE health_finding_episodes;
+    DROP TABLE health_rollups;
+    DROP TABLE health_observations;
+    DROP TABLE reward_calculation_realizations;
+    DROP TABLE reward_outlook_observations;
+    DROP TABLE observer_deliveries;
+    DROP TABLE deployment_identity;
     DROP TABLE signer_staker_api_scan_items;
     DROP TABLE signer_staker_api_scans;
     DROP TABLE browser_wallet_intent_observations;
@@ -130,6 +143,104 @@ afterEach(async () => {
 });
 
 describe("Sidekick SQLite store", () => {
+  it("binds one immutable deployment identity and advances only its proof anchor", async () => {
+    const store = await memoryStore();
+    expect(store.deploymentIdentity.get()).toBeNull();
+
+    const bound = store.deploymentIdentity.bind({
+      network: "mainnet",
+      networkId: 1,
+      parentNetworkId: 0,
+      managerPrincipal: manager,
+      verifiedAt: observedAt,
+      stacksTipHeight: 8_600_000,
+      burnBlockHeight: 960_240,
+      pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    });
+    expect(bound).toMatchObject({
+      schemaVersion: 1,
+      network: "mainnet",
+      networkId: 1,
+      parentNetworkId: 0,
+      managerPrincipal: manager,
+      boundAt: observedAt,
+      lastVerifiedAt: observedAt,
+    });
+
+    expect(
+      store.deploymentIdentity.recordVerification({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: manager,
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toMatchObject({
+      boundAt: observedAt,
+      lastVerifiedAt: later,
+      lastStacksTipHeight: 8_600_010,
+      lastBurnBlockHeight: 960_241,
+    });
+    expect(() =>
+      store.deploymentIdentity.recordVerification({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: "SP2369QN53586176SYRF4XFGF4E84V0J0EWKRG0ZH.other-manager",
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toThrow("does not match");
+    expect(() =>
+      store.deploymentIdentity.bind({
+        network: "mainnet",
+        networkId: 1,
+        parentNetworkId: 0,
+        managerPrincipal: manager,
+        verifiedAt: later,
+        stacksTipHeight: 8_600_010,
+        burnBlockHeight: 960_241,
+        pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+      }),
+    ).toThrow("already bound");
+  });
+
+  it("persists local-node authority independently for each manager", async () => {
+    const store = await memoryStore();
+    expect(store.deploymentIdentity.getLocalNodeAuthority(manager)).toBeNull();
+
+    const authority = store.deploymentIdentity.putLocalNodeAuthority(manager, {
+      schemaVersion: 1,
+      status: "current",
+      observedAt,
+      stacksTipHeight: 8_600_000,
+      highestProvenCurrentStacksTipHeight: 8_600_000,
+      consecutiveCurrentObservations: 2,
+      reason: "The local node is current.",
+    });
+    expect(authority).toEqual(store.deploymentIdentity.getLocalNodeAuthority(manager));
+
+    expect(
+      store.deploymentIdentity.putLocalNodeAuthority(manager, {
+        ...authority,
+        status: "catching-up",
+        observedAt: later,
+        stacksTipHeight: 8_599_000,
+        consecutiveCurrentObservations: 0,
+        reason: "The local node is catching up.",
+      }),
+    ).toMatchObject({
+      status: "catching-up",
+      highestProvenCurrentStacksTipHeight: 8_600_000,
+      consecutiveCurrentObservations: 0,
+    });
+  });
+
   it("deduplicates durable manager automation-eligibility transitions", async () => {
     const store = await memoryStore();
     const base = {
@@ -143,12 +254,12 @@ describe("Sidekick SQLite store", () => {
       eligibilityReason: "Not recognized — read-only",
       observedAt: "2026-07-16T12:00:00.000Z",
     };
-    expect(store.recordManagerTrustState(base)).toBeNull();
+    expect(store.managerTrust.record(base)).toBeNull();
     expect(
-      store.recordManagerTrustState({ ...base, observedAt: "2026-07-16T12:01:00.000Z" }),
+      store.managerTrust.record({ ...base, observedAt: "2026-07-16T12:01:00.000Z" }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         recognitionTier: "reference-render",
         profileId: "private-1",
@@ -161,7 +272,7 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toMatchObject({ transition: "gained", previousTier: "unrecognized" });
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         recognitionTier: "reference-render",
         profileId: "private-1",
@@ -174,13 +285,13 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         eligibilityReason: "Installed profile is unavailable",
         observedAt: "2026-07-16T12:04:00.000Z",
       }),
     ).toMatchObject({ transition: "lost", currentTier: "unrecognized" });
-    expect(store.listManagerTrustAudit(base.managerPrincipal)).toMatchObject([
+    expect(store.managerTrust.listAudit(base.managerPrincipal)).toMatchObject([
       {
         transition: "lost",
         previousSourceSha256: "c".repeat(64),
@@ -195,7 +306,7 @@ describe("Sidekick SQLite store", () => {
       },
     ]);
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: "ST000000000000000000002AMW42H.second-manager",
         recognitionTier: "reference-built-in",
@@ -208,7 +319,7 @@ describe("Sidekick SQLite store", () => {
 
     const unapprovedManager = "ST000000000000000000002AMW42H.unapproved-manager";
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: unapprovedManager,
         recognitionTier: "reference-render",
@@ -219,14 +330,14 @@ describe("Sidekick SQLite store", () => {
       }),
     ).toBeNull();
     expect(
-      store.recordManagerTrustState({
+      store.managerTrust.record({
         ...base,
         managerPrincipal: unapprovedManager,
         eligibilityReason: "Installed profile was removed",
         observedAt: "2026-07-16T12:05:00.000Z",
       }),
     ).toMatchObject({ transition: "degraded", previousTier: "reference-render" });
-    expect(store.listManagerTrustAudit(unapprovedManager)).toMatchObject([
+    expect(store.managerTrust.listAudit(unapprovedManager)).toMatchObject([
       {
         transition: "degraded",
         previousTier: "reference-render",
@@ -239,86 +350,99 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 21,
+      schemaVersion: 34,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
     });
   });
 
-  it("persists redacted runtime settings history and resumable onboarding state", async () => {
+  it("moves the legacy indexed API key into origin-bound source storage", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v33-credentials-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    createDatabaseThroughMigration(path, 33).close();
+    const legacy = new DatabaseSync(path);
+    legacy
+      .prepare(
+        `INSERT INTO runtime_settings (
+          singleton_id, settings_json, api_key_secret, revision, updated_at
+        ) VALUES (1, ?, ?, 1, ?)`,
+      )
+      .run(
+        JSON.stringify({
+          schemaVersion: 1,
+          dataSources: { apiUrl: "https://api.mainnet.hiro.so" },
+        }),
+        "legacy-secret",
+        observedAt,
+      );
+    legacy.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.store.runtimeSettings.get()?.apiCredentials).toEqual({
+      "indexed-api": {
+        value: "legacy-secret",
+        boundUrl: "https://api.mainnet.hiro.so",
+      },
+    });
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspection
+        .prepare("SELECT api_key_secret FROM runtime_settings WHERE singleton_id = 1")
+        .get(),
+    ).toEqual({ api_key_secret: null });
+    inspection.close();
+  });
+
+  it("persists redacted runtime settings history", async () => {
     const store = await memoryStore();
-    store.putRuntimeSettings({
+    store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Test pool" },
-      apiKeySecret: "must-not-appear-in-settings-json",
+      apiCredentials: {
+        "indexed-api": {
+          value: "must-not-appear-in-settings-json",
+          boundUrl: "https://api.mainnet.hiro.so",
+        },
+      },
       changedFields: ["pool.displayName", "dataSources.apiKey"],
       observedAt,
     });
-    const runtime = store.getRuntimeSettings();
+    const runtime = store.runtimeSettings.get();
     expect(runtime).toMatchObject({ revision: 1, settings: { displayName: "Test pool" } });
     expect(JSON.stringify(runtime?.settings)).not.toContain("must-not-appear");
-    expect(runtime?.apiKeySecret).toBe("must-not-appear-in-settings-json");
-    expect(store.listSettingsAudit()).toEqual([
+    expect(runtime?.apiCredentials["indexed-api"]).toEqual({
+      value: "must-not-appear-in-settings-json",
+      boundUrl: "https://api.mainnet.hiro.so",
+    });
+    expect(store.runtimeSettings.listAudit()).toEqual([
       {
         revision: 1,
         changedFields: ["dataSources.apiKey", "pool.displayName"],
         changedAt: observedAt,
       },
     ]);
-
-    store.putOnboardingState({
-      path: "fresh",
-      currentStep: "deploy-manager",
-      status: "in-progress",
-      state: { schemaVersion: 1, managerPrincipal: manager },
-      updatedAt: later,
-      auditAction: "fresh-prepared",
+    expect(store.runtimeSettings.getAudit(1)).toEqual({
+      revision: 1,
+      changedFields: ["dataSources.apiKey", "pool.displayName"],
+      changedAt: observedAt,
     });
-    expect(store.getOnboardingState()).toEqual({
-      path: "fresh",
-      currentStep: "deploy-manager",
-      status: "in-progress",
-      state: { schemaVersion: 1, managerPrincipal: manager },
-      updatedAt: later,
-    });
-    expect(store.listOnboardingAudit()).toEqual([
-      {
-        action: "fresh-prepared",
-        path: "fresh",
-        currentStep: "deploy-manager",
-        status: "in-progress",
-        changedAt: later,
-      },
-    ]);
-
-    store.setOnboardingWizardDismissed(true, later);
-    expect(store.getOnboardingWizardPreference()).toEqual({
-      dismissedAt: later,
-      updatedAt: later,
-    });
-    store.setOnboardingWizardDismissed(false, "2026-07-15T13:00:00.000Z");
-    expect(store.getOnboardingWizardPreference()).toEqual({
-      dismissedAt: null,
-      updatedAt: "2026-07-15T13:00:00.000Z",
-    });
-    expect(store.listOnboardingWizardAudit()).toEqual([
-      { action: "resumed", changedAt: "2026-07-15T13:00:00.000Z" },
-      { action: "dismissed", changedAt: later },
-    ]);
+    expect(store.runtimeSettings.getAudit(2)).toBeNull();
   });
 
   it("keeps durable cursors isolated by API source identity", async () => {
     const store = await memoryStore();
     const otherSource = createChainSourceId("mainnet", "https://stacks-api.example.com/");
     registerSource(store);
-    store.upsertChainSource({
+    store.chainState.upsertSource({
       sourceId: otherSource,
       kind: "api",
       network: "mainnet",
       baseUrl: "https://stacks-api.example.com",
       observedAt,
     });
-    store.putCursor({
+    store.chainState.putCursor({
       sourceId,
       stream: `signer-stakers:${txId}`,
       cursor: "SP000000000000000000002Q6VF78",
@@ -327,11 +451,11 @@ describe("Sidekick SQLite store", () => {
       updatedAt: observedAt,
     });
 
-    expect(store.getCursor(sourceId, `signer-stakers:${txId}`)).toMatchObject({
+    expect(store.chainState.getCursor(sourceId, `signer-stakers:${txId}`)).toMatchObject({
       cursor: "SP000000000000000000002Q6VF78",
       lastBlockHeight: 8_600_000,
     });
-    expect(store.getCursor(otherSource, `signer-stakers:${txId}`)).toBeNull();
+    expect(store.chainState.getCursor(otherSource, `signer-stakers:${txId}`)).toBeNull();
     expect(createChainSourceId("mainnet", "https://api.mainnet.hiro.so/")).toBe(sourceId);
   });
 
@@ -340,7 +464,7 @@ describe("Sidekick SQLite store", () => {
     registerSource(store);
 
     expect(() =>
-      store.upsertChainSource({
+      store.chainState.upsertSource({
         sourceId,
         kind: "api",
         network: "mainnet",
@@ -353,6 +477,7 @@ describe("Sidekick SQLite store", () => {
   it("upserts replayed chain evidence without losing first-seen history", async () => {
     const store = await memoryStore();
     registerSource(store);
+    const occurredAt = "2026-07-14T11:58:00.000Z";
     store.putChainEvent({
       chainId: 1,
       txId,
@@ -370,6 +495,7 @@ describe("Sidekick SQLite store", () => {
       decodedSchemaVersion: 1,
       decodedPayload: { amountUstx: "50000000000" },
       sourceId,
+      occurredAt,
       observedAt,
     });
     store.putChainEvent({
@@ -397,6 +523,7 @@ describe("Sidekick SQLite store", () => {
       canonical: false,
       rawPayload: { amount_ustx: "51000000000" },
       decodedPayload: { amountUstx: "51000000000" },
+      occurredAt,
       firstSeenAt: observedAt,
       updatedAt: later,
     });
@@ -501,6 +628,18 @@ describe("Sidekick SQLite store", () => {
       eventCount: 2,
       latestBlockHeight: 8_600_001,
     });
+    const activityEvents = store.listManagerActivityChainEvents(1, manager);
+    expect(activityEvents).toHaveLength(2);
+    expect(activityEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ txId, decodedSchemaVersion: 1, canonical: true }),
+      ]),
+    );
+    for (const event of activityEvents) {
+      expect(event).not.toHaveProperty("rawPayload");
+      expect(event).not.toHaveProperty("blockHash");
+      expect(event).not.toHaveProperty("sourceId");
+    }
   });
 
   it("orders canonical administrator changes by transaction and event index", async () => {
@@ -861,6 +1000,364 @@ describe("Sidekick SQLite store", () => {
     });
   });
 
+  it("coalesces same-state outlook refreshes while preserving a same-block calculation boundary", async () => {
+    const store = await memoryStore();
+    const observation = (globalAccruedRewardsSats: string, observedAt: string) => ({
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt,
+      chainAnchor,
+      globalAccruedRewardsSats,
+      calculationState: "completed" as const,
+      lastRewardComputeBurnHeight: "959190",
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "anchored-inputs-unavailable" as const,
+      forecast: null,
+      forecastUnavailableReason: "current-pool-estimate-unavailable" as const,
+      nextCalculation: {
+        state: "scheduled" as const,
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half" as const,
+        calculationBurnHeight: 960_240,
+        eligibleBurnHeight: 960_241,
+        blocksRemaining: 1,
+      },
+    });
+    store.putRewardOutlookObservation(observation("100", observedAt));
+    store.putRewardOutlookObservation(observation("200", later));
+    // A late refresh from the same burn block cannot replace newer anchored evidence.
+    store.putRewardOutlookObservation(observation("50", observedAt));
+
+    const nextAnchor = {
+      ...chainAnchor,
+      burnBlockHeight: chainAnchor.burnBlockHeight + 1,
+      stacksBlockHeight: chainAnchor.stacksBlockHeight + 1,
+      indexBlockHash: `0x${"44".repeat(32)}`,
+      cyclePosition: chainAnchor.cyclePosition + 1,
+      checkpoint: "second-half" as const,
+    };
+    store.putRewardOutlookObservation({
+      ...observation("300", "2026-07-14T12:02:00.000Z"),
+      chainAnchor: nextAnchor,
+      calculationState: "pending",
+      nextCalculation: {
+        state: "due",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        eligibleBurnHeight: 960_241,
+        blocksRemaining: 0,
+      },
+    });
+    store.putRewardOutlookObservation({
+      ...observation("0", "2026-07-14T12:03:00.000Z"),
+      chainAnchor: nextAnchor,
+      lastRewardComputeBurnHeight: "960240",
+      nextCalculation: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "second-half",
+        calculationBurnHeight: 961_290,
+        eligibleBurnHeight: 961_291,
+        blocksRemaining: 1_050,
+      },
+    });
+
+    expect(store.listRewardOutlookObservations(manager, pox5)).toMatchObject({
+      total: 3,
+      items: [
+        {
+          chainAnchor: nextAnchor,
+          globalAccruedRewardsSats: "0",
+          calculationState: "completed",
+          nextCalculation: { blocksRemaining: 1_050 },
+        },
+        {
+          chainAnchor: nextAnchor,
+          globalAccruedRewardsSats: "300",
+          calculationState: "pending",
+          nextCalculation: { state: "due", blocksRemaining: 0 },
+        },
+        {
+          chainAnchor,
+          globalAccruedRewardsSats: "200",
+          observedAt: later,
+        },
+      ],
+    });
+    expect(
+      store.listRewardOutlookObservations(manager, pox5, { direction: "asc", limit: 1 }),
+    ).toMatchObject({
+      total: 3,
+      items: [{ globalAccruedRewardsSats: "200" }],
+    });
+    expect(
+      store.listRewardForecastSamples(manager, pox5, {
+        lastRewardComputeBurnHeight: "959190",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        throughBurnBlockHeight: 960_240,
+      }),
+    ).toEqual([
+      {
+        observedBurnBlockHeight: 960_240,
+        observedAt: later,
+        globalAccruedRewardsSats: "200",
+        lastRewardComputeBurnHeight: "959190",
+        nextCalculation: {
+          targetRewardCycle: 141,
+          targetCheckpoint: "first-half",
+          calculationBurnHeight: 960_240,
+        },
+      },
+    ]);
+  });
+
+  it("persists the anchored current-share pool estimate with its accrual observation", async () => {
+    const store = await memoryStore();
+    store.putRewardOutlookObservation({
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt,
+      chainAnchor,
+      globalAccruedRewardsSats: "100",
+      calculationState: "completed",
+      lastRewardComputeBurnHeight: "959190",
+      nextCalculation: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        eligibleBurnHeight: 960_241,
+        blocksRemaining: 1,
+      },
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        grossSats: "90",
+        stxSats: "80",
+        bondSats: "10",
+        inputs: {
+          globalStxSharesUstx: "100000000000",
+          managerStxSharesUstx: "50000000000",
+          activeBonds: [
+            {
+              bondIndex: "2",
+              targetRateBips: "500",
+              globalSharesSats: "100000",
+              managerSharesSats: "50000",
+            },
+          ],
+        },
+        assumptions: [
+          "current-global-accrual",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "contract-integer-rounding",
+        ],
+      },
+      poolEstimateUnavailableReason: null,
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_230,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 10,
+          elapsedBlocks: 1_050,
+          remainingBlocks: 0,
+        },
+        confidence: "low",
+        assumptions: [
+          "zero-accrual-after-last-calculation",
+          "linear-global-accrual-run-rate",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "unchanged-reserve-before-calculation",
+          "contract-integer-rounding",
+        ],
+      },
+      forecastModelRevision: 1,
+      forecastUnavailableReason: null,
+    });
+
+    expect(store.listRewardOutlookObservations(manager, pox5).items[0]).toMatchObject({
+      globalAccruedRewardsSats: "100",
+      poolEstimateUnavailableReason: null,
+      poolEstimate: {
+        grossSats: "90",
+        inputs: { activeBonds: [{ bondIndex: "2" }] },
+      },
+      forecastUnavailableReason: null,
+      forecastModelRevision: 1,
+      forecast: {
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
+      },
+    });
+  });
+
+  it("persists a first-calculation forecast measured over its observed sample window", async () => {
+    const store = await memoryStore();
+    store.putRewardOutlookObservation({
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      observedAt,
+      chainAnchor,
+      globalAccruedRewardsSats: "100",
+      calculationState: "completed",
+      lastRewardComputeBurnHeight: "0",
+      nextCalculation: {
+        state: "scheduled",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_300,
+        eligibleBurnHeight: 960_301,
+        blocksRemaining: 61,
+      },
+      poolEstimate: null,
+      poolEstimateUnavailableReason: "anchored-inputs-unavailable",
+      forecast: {
+        kind: "checkpoint-run-rate",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_300,
+        globalSats: { low: "100", point: "110", high: "120" },
+        poolSats: { low: "90", point: "99", high: "108" },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 960_216,
+          lastObservedBurnHeight: 960_240,
+          sampleBlocks: 24,
+          elapsedBlocks: 24,
+          remainingBlocks: 60,
+        },
+        confidence: "low",
+        assumptions: [
+          "observed-accrual-sample-window",
+          "linear-global-accrual-run-rate",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "unchanged-reserve-before-calculation",
+          "contract-integer-rounding",
+        ],
+      },
+      forecastModelRevision: 1,
+      forecastUnavailableReason: null,
+    });
+
+    expect(store.listRewardOutlookObservations(manager, pox5).items[0]).toMatchObject({
+      lastRewardComputeBurnHeight: "0",
+      forecast: {
+        sample: { sampleBlocks: 24, elapsedBlocks: 24 },
+        assumptions: expect.arrayContaining(["observed-accrual-sample-window"]),
+      },
+    });
+  });
+
+  it("persists canonical reward realizations with their fixed-horizon evaluation", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    store.putRewardCalculationRealization({
+      chainId: 1,
+      txId,
+      eventIndex: 4,
+      sourceId,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      canonical: true,
+      evidenceLevel: "node-index-verified",
+      blockHeight: 8_600_001,
+      indexBlockHash,
+      burnBlockHeight: 960_241,
+      targetRewardCycle: 141,
+      targetCheckpoint: "first-half",
+      calculationBurnHeight: 960_240,
+      event: {
+        kind: "calculate-rewards",
+        topic: "calculate-rewards",
+        bondPeriods: [],
+        calculationBurnHeight: "960240",
+        grossAccruedRewardsSats: "100",
+        totalBondRewardsSats: "0",
+        reserveDepositSats: "5",
+        reserveBalanceSats: "10",
+        rewardCycle: "141",
+        totalStxStakerRewardsSats: "95",
+        cycleStakedUstx: "1000",
+        accruedRewardsPerUstx: "95000000000000000",
+        cumulativeRewardsPerUstx: "95000000000000000",
+      },
+      poolEstimate: {
+        kind: "if-calculated-now",
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        calculationBurnHeight: 960_240,
+        grossSats: "90",
+        stxSats: "90",
+        bondSats: "0",
+        inputs: {
+          globalStxSharesUstx: "1000",
+          managerStxSharesUstx: "950",
+          activeBonds: [],
+        },
+        assumptions: [
+          "current-global-accrual",
+          "current-cycle-shares",
+          "current-active-bond-set",
+          "contract-integer-rounding",
+        ],
+      },
+      poolEstimateUnavailableReason: null,
+      modelRevision: 1,
+      evaluation: {
+        modelRevision: 1,
+        forecastObservedBurnHeight: 960_096,
+        calculationBurnHeight: 960_240,
+        targetRewardCycle: 141,
+        targetCheckpoint: "first-half",
+        globalSats: { low: "90", point: "100", high: "110" },
+        poolSats: { low: "80", point: "100", high: "110" },
+        actualPoolSats: "90",
+        leadBlocks: 144,
+        pointErrorSats: "10",
+        pointErrorBips: "1112",
+        rangeContainsActual: true,
+        rangeWidthBips: "3000",
+      },
+      observedAt,
+    });
+
+    expect(store.listRewardCalculationRealizations(manager, pox5)).toMatchObject([
+      {
+        canonical: true,
+        targetRewardCycle: 141,
+        poolEstimate: { grossSats: "90" },
+        evaluation: { leadBlocks: 144, rangeContainsActual: true },
+      },
+    ]);
+    expect(
+      store.markRewardRealizationNoncanonical({
+        chainId: 1,
+        txId,
+        eventIndex: 4,
+        updatedAt: later,
+      }),
+    ).toBe(true);
+    expect(store.listRewardCalculationRealizations(manager, pox5)).toEqual([]);
+    expect(
+      store.listRewardCalculationRealizations(manager, pox5, { canonicalOnly: false }),
+    ).toMatchObject([{ canonical: false, updatedAt: later }]);
+  });
+
   it("resumes partial scans without deactivating unseen members until completion", async () => {
     const store = await memoryStore();
     registerSource(store);
@@ -893,6 +1390,42 @@ describe("Sidekick SQLite store", () => {
       observedAt,
       burnBlockHeight: 960_240,
       stacksTipHeight: 8_600_000,
+    });
+
+    expect(
+      store.ensureCurrentMemberHistoryRecovery({
+        sourceId,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        stakerPrincipals: [stakerOne, stakerTwo, stakerOne],
+        observedAt,
+      }),
+    ).toBe(2);
+    expect(store.nextCurrentMemberHistoryRecovery(sourceId, manager, pox5)).toMatchObject({
+      stakerPrincipal: stakerOne,
+      status: "pending",
+      pagesProcessed: 0,
+    });
+    expect(
+      store.recordCurrentMemberHistoryRecoveryPage({
+        sourceId,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        stakerPrincipal: stakerOne,
+        nextCursor: "8500000:2147483647:0",
+        transactionsInspected: 50,
+        relevantEvents: 2,
+        observedAt: later,
+      }),
+    ).toMatchObject({
+      status: "pending",
+      cursor: "8500000:2147483647:0",
+      pagesProcessed: 1,
+      transactionsInspected: 50,
+      relevantEvents: 2,
+    });
+    expect(store.nextCurrentMemberHistoryRecovery(sourceId, manager, pox5)).toMatchObject({
+      stakerPrincipal: stakerTwo,
     });
 
     const partial = store.startOrResumeSignerStakerRun(sourceId, manager, later);
@@ -953,21 +1486,23 @@ describe("Sidekick SQLite store", () => {
 
     expect(result.backupPath).not.toBeNull();
     expect((await stat(result.backupPath as string)).isFile()).toBe(true);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 21,
+      schemaVersion: 34,
       journalMode: "wal",
       synchronous: 2,
     });
   });
 
-  it("upgrades a persisted migration 13 database through migration 21 once", async () => {
+  it("upgrades a persisted migration 13 database through the latest migration once", async () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v13-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, observedAt);
-    initial.store.putRuntimeSettings({
+    initial.store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Preserved through forward migrations" },
-      apiKeySecret: null,
+      apiCredentials: {},
       changedFields: ["pool.displayName"],
       observedAt,
     });
@@ -980,8 +1515,8 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
-    expect(upgraded.store.getRuntimeSettings()?.settings).toMatchObject({
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
+    expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
 
@@ -1017,96 +1552,78 @@ describe("Sidekick SQLite store", () => {
     inspection.close();
   });
 
-  it("preserves an active V1 wallet intent and observation from migration 16", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v16-wallet-upgrade-"));
+  it("requeues bounded current-member history when occurrence times need enrichment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v32-occurrence-upgrade-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
-    const version16 = createDatabaseThroughMigration(path, 16);
-    const intentId = "10000000-0000-4000-8000-000000000016";
-    const observationId = "20000000-0000-4000-8000-000000000016";
-    const factsSha256 = "44".repeat(32);
-    const manifest = {
-      schemaVersion: 1,
-      id: intentId,
-      action: "deploy-manager" as const,
-      network: "mainnet" as const,
-      chainId: 1,
-      requiredSender: stakerOne,
-      createdAt: observedAt,
-      expiresAt: "2026-07-14T13:00:00.000Z",
-      transaction: {
-        method: "stx_deployContract" as const,
-        params: {
-          name: "signer-manager",
-          clarityCode: "(define-public (ping) (ok true))",
-          clarityVersion: 6 as const,
-          network: "mainnet" as const,
-          address: stakerOne,
-          sponsored: false as const,
-          postConditionMode: "deny" as const,
-          postConditions: [] as [],
-        },
-      },
-      review: {
-        title: "Deploy signer manager",
-        summary: "Deploy the reviewed manager source.",
-        expectedPostState: "The exact manager source is canonical.",
-      },
-      seal: { factsSha256 },
-    };
-    const manifestSha256 = canonicalJsonSha256(manifest);
-    version16.walletIntents.create({
-      id: intentId,
-      action: "deploy-manager",
-      scope: manager,
-      factsSha256,
-      manifestSha256,
-      manifest,
-      requiredSender: stakerOne,
-      network: "mainnet",
-      chainId: 1,
-      createdAt: observedAt,
-      expiresAt: manifest.expiresAt,
-    });
-    version16.walletIntents.submit({ id: intentId, txid: txId, submittedAt: later });
-    const evidence = {
-      schemaVersion: 1,
-      verification: {
-        outcome: "submitted",
-        observedAt: later,
-        canonical: null,
-        blockHeight: null,
-        indexBlockHash: null,
-        detail: "Wallet transaction recorded",
-      },
-      decoded: null,
-    };
-    version16.walletIntents.appendObservation({
-      id: observationId,
-      intentId,
-      outcome: "submitted",
-      canonical: null,
-      blockHeight: null,
-      indexBlockHash: null,
-      evidence,
-      observedAt: later,
-    });
-    version16.close();
+    createDatabaseThroughMigration(path, 32).close();
+    const existing = new DatabaseSync(path);
+    existing
+      .prepare(
+        `INSERT INTO chain_sources (
+          source_id, kind, network, base_url, created_at, last_seen_at
+        ) VALUES (?, 'api', 'mainnet', 'https://api.mainnet.hiro.so', ?, ?)`,
+      )
+      .run(sourceId, observedAt, observedAt);
+    existing
+      .prepare(
+        `INSERT INTO chain_events (
+          chain_id, tx_id, event_index, block_height, block_hash, index_block_hash,
+          microblock_hash, microblock_sequence, canonical, microblock_canonical,
+          contract_id, topic, raw_payload_json, decoded_schema_version,
+          decoded_payload_json, source_id, first_seen_at, updated_at, evidence_level
+        ) VALUES (1, ?, 0, 8600000, ?, ?, NULL, NULL, 1, 1, ?, 'stake', '{}', 1, ?, ?, ?, ?,
+          'node-index-verified')`,
+      )
+      .run(
+        txId,
+        blockHash,
+        indexBlockHash,
+        pox5,
+        JSON.stringify({ event: { kind: "stake", stakerPrincipal: stakerOne } }),
+        sourceId,
+        observedAt,
+        observedAt,
+      );
+    existing
+      .prepare(
+        `INSERT INTO current_member_history_recovery (
+          source_id, manager_principal, pox5_contract_id, staker_principal, status, cursor,
+          pages_processed, transactions_inspected, relevant_events, discovered_at, updated_at,
+          completed_at
+        ) VALUES (?, ?, ?, ?, 'complete', NULL, 3, 120, 1, ?, ?, ?)`,
+      )
+      .run(sourceId, manager, pox5, stakerOne, observedAt, later, later);
+    existing.close();
 
-    const upgraded = await openSidekickStore(path, "2026-07-14T12:02:00.000Z");
+    const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.schemaVersion()).toBe(21);
-    expect(upgraded.store.walletIntents.get(intentId)).toMatchObject({
-      id: intentId,
-      state: "submitted",
-      txid: txId,
-      manifestSha256,
-      manifest,
+    expect(upgraded.store.schemaVersion()).toBe(34);
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspection
+        .prepare("SELECT name FROM pragma_table_info('chain_events') WHERE name = ?")
+        .get("occurred_at"),
+    ).toEqual({ name: "occurred_at" });
+    expect(
+      inspection
+        .prepare(
+          `SELECT status, cursor, pages_processed, transactions_inspected, relevant_events,
+             completed_at
+           FROM current_member_history_recovery
+           WHERE source_id = ? AND manager_principal = ? AND pox5_contract_id = ?
+             AND staker_principal = ?`,
+        )
+        .get(sourceId, manager, pox5, stakerOne),
+    ).toEqual({
+      status: "pending",
+      cursor: null,
+      pages_processed: 0,
+      transactions_inspected: 0,
+      relevant_events: 0,
+      completed_at: null,
     });
-    expect(upgraded.store.walletIntents.listObservations(intentId)).toEqual([
-      expect.objectContaining({ id: observationId, outcome: "submitted", evidence }),
-    ]);
+    inspection.close();
   });
 
   it("upgrades migration 14 nonce history without losing attempts or foreign keys", async () => {
@@ -1153,6 +1670,17 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
+      DROP TABLE reward_calculation_realizations;
+      DROP TABLE reward_outlook_observations;
       DROP TABLE signer_staker_api_scan_items;
       DROP TABLE signer_staker_api_scans;
       DROP TABLE browser_wallet_intent_observations;
@@ -1162,6 +1690,8 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE observer_deliveries;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 15;
       PRAGMA user_version = 14;
     `);
@@ -1170,7 +1700,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1273,7 +1803,7 @@ describe("Sidekick SQLite store", () => {
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, observedAt);
     const principal = "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ.signer-manager";
-    initial.store.recordManagerTrustState({
+    initial.store.managerTrust.record({
       managerPrincipal: principal,
       recognitionTier: "unrecognized",
       profileId: null,
@@ -1284,7 +1814,7 @@ describe("Sidekick SQLite store", () => {
       eligibilityReason: "Not recognized — read-only",
       observedAt,
     });
-    initial.store.recordManagerTrustState({
+    initial.store.managerTrust.record({
       managerPrincipal: principal,
       recognitionTier: "reference-render",
       profileId: "private-render",
@@ -1314,15 +1844,15 @@ describe("Sidekick SQLite store", () => {
       ALTER TABLE stake_positions DROP COLUMN observed_index_block_hash;
       ALTER TABLE cycle_memberships DROP COLUMN observed_index_block_hash;
       ALTER TABLE staker_position_observations DROP COLUMN observed_index_block_hash;
-      DELETE FROM schema_migrations WHERE version = 13;
+      DELETE FROM schema_migrations WHERE version >= 13;
       PRAGMA user_version = 12;
     `);
     version12.close();
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
-    expect(upgraded.store.listManagerTrustAudit(principal)).toMatchObject([
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
+    expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
         previousTier: "unrecognized",
@@ -1347,6 +1877,7 @@ describe("Sidekick SQLite store", () => {
       quickCheck: "ok",
     });
     expect((await stat(destination)).size).toBeGreaterThan(0);
+    expect((await stat(destination)).mode & 0o777).toBe(0o600);
     await expect(backupSidekickDatabase(path, destination)).rejects.toThrow(
       "Backup destination already exists",
     );
@@ -1443,11 +1974,24 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
+      DROP TABLE reward_calculation_realizations;
+      DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE observer_deliveries;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 19;
       PRAGMA user_version = 18;
     `);
@@ -1455,7 +1999,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(21);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1492,11 +2036,24 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
+      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      ALTER TABLE chain_events DROP COLUMN evidence_level;
+      ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
+      DROP TABLE local_node_authority;
+      DROP TABLE health_finding_episodes;
+      DROP TABLE health_rollups;
+      DROP TABLE health_observations;
+      DROP TABLE reward_calculation_realizations;
+      DROP TABLE reward_outlook_observations;
       ALTER TABLE stakers DROP COLUMN bond_node_verified;
       ALTER TABLE stakers DROP COLUMN bond_index;
       ALTER TABLE stakers DROP COLUMN bond_amount_ustx;
       ALTER TABLE stakers DROP COLUMN bond_amount_sats;
       ALTER TABLE stakers DROP COLUMN bond_is_l1_lock;
+      DROP TABLE observer_deliveries;
+      DROP TABLE deployment_identity;
       DELETE FROM schema_migrations WHERE version >= 19;
       PRAGMA user_version = 18;
     `);

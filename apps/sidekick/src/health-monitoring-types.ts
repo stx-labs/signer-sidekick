@@ -1,6 +1,7 @@
 import type { HealthSnapshot as ApiHealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import type { BurnBlockPage } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import type { SidekickStore } from "./storage/store.js";
 
 export type HealthSnapshot = ApiHealthSnapshot;
 export type HealthFinding = HealthSnapshot["findings"][number];
@@ -12,6 +13,7 @@ export interface SourceObservation {
   reachable: boolean;
   latencyMs: number | null;
   errorCode: string | null;
+  checkedAt: string;
 }
 
 export interface NodeInfo {
@@ -19,6 +21,15 @@ export interface NodeInfo {
   network_id: number;
   burn_block_height: number;
   stacks_tip_height: number;
+  stacks_tip?: `0x${string}` | undefined;
+  stacks_tip_consensus_hash?: string | undefined;
+  is_fully_synced?: boolean | undefined;
+}
+
+export interface NodeHealth {
+  difference_from_max_peer: number;
+  max_stacks_height_of_neighbors: number;
+  node_stacks_tip_height: number;
 }
 
 export interface HiroStatus {
@@ -27,6 +38,7 @@ export interface HiroStatus {
   chain_tip: {
     block_height: number;
     burn_block_height: number;
+    index_block_hash?: string | undefined;
   };
 }
 
@@ -51,20 +63,30 @@ export interface SignerMetricValues {
   rewardCycle: number | null;
   stxBalanceUstx: number | null;
   proposalsTotal: number | null;
+  validationAcceptedTotal: number | null;
+  validationRejectedTotal: number | null;
   acceptedTotal: number | null;
   rejectedTotal: number | null;
+  preCommitsTotal: number | null;
   conflictTotal: number | null;
+  nodeRpcLatencyBuckets: Record<string, number>;
+  validationLatencyBuckets: Record<string, number>;
   responseLatencyBuckets: Record<string, number>;
+  capitulationLatencyBuckets: Record<string, number>;
 }
 
 export interface HealthObservation {
   observedAt: string;
   nodeRpc: SourceObservation;
   nodeInfo: NodeInfo | null;
+  nodeHealth: NodeHealth | null;
+  nodeHealthSource: SourceObservation | null;
   nodeMetricsSource: SourceObservation | null;
   nodeMetrics: NodeMetricValues | null;
   hiroSource: SourceObservation | null;
   hiro: HiroStatus | null;
+  configuredApiSource: SourceObservation | null;
+  configuredApi: HiroStatus | null;
   signerInfoSource: SourceObservation | null;
   signerInfo: SignerInfo | null;
   signerHeartbeat: SourceObservation | null;
@@ -75,15 +97,32 @@ export interface HealthObservation {
 export type HealthSourceKey =
   | "nodeRpc"
   | "nodeMetricsSource"
+  | "nodeHealthSource"
   | "hiroSource"
+  | "configuredApiSource"
   | "signerInfoSource"
   | "signerHeartbeat"
   | "signerMetricsSource";
 
+export interface HealthOperatorContext {
+  observedAt?: string;
+  network: string;
+  managerPrincipal: string;
+  currentRewardCycle: number;
+  registered: boolean | null;
+  signerKeyHex: string | null;
+  signerKeyGrantValid: boolean | null;
+  expectedCurrentParticipation: boolean;
+  expectedNextParticipation: boolean;
+}
+
 export interface HealthMonitoringOptions {
   getConfig: () => SidekickConfig;
+  store?: SidekickStore;
+  getOperatorContext?: () => HealthOperatorContext | null;
   getBurnBlocks?: () => Promise<BurnBlockPage>;
   now?: () => Date;
   pollIntervalMs?: number;
+  referencePollIntervalMs?: number;
   historyWindowMs?: number;
 }

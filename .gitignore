@@ -15,3 +15,6 @@ test-results/
 playwright-report/
 test/integration/regtest/.cache/
 trusted-managers/*.json
+
+# Point-in-time review snapshots are kept locally, not tracked
+docs/reviews/

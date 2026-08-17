@@ -273,14 +273,22 @@ a {
 
 /* ============ FRESHNESS BANNER ============ */
 .freshness {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px 20px;
+  min-height: 46px;
   padding: 8px 24px;
   font-size: 12px;
   background: var(--surface-secondary);
   border-bottom: 1px solid var(--border-secondary);
   color: var(--text-secondary);
+}
+.freshness-primary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
 }
 .freshness .dot {
   width: 7px;
@@ -296,15 +304,32 @@ a {
 .freshness.stale .dot {
   background: var(--yellow-600);
 }
+.freshness-state {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.freshness.stale .freshness-state {
+  color: var(--status-caution);
+}
+.freshness .freshness-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.freshness.stale .freshness-detail {
+  color: color-mix(in srgb, var(--status-caution) 72%, var(--text-secondary));
+}
 .freshness .mono {
   font-family: var(--font-mono);
-  color: inherit;
 }
-.freshness .sep {
-  color: var(--text-tertiary);
+.freshness-actions {
+  display: flex;
+  align-items: center;
 }
 .freshness .right {
-  margin-left: auto;
   display: flex;
   gap: 16px;
   align-items: center;
@@ -666,6 +691,7 @@ a {
   font-family: var(--font-body);
   font-weight: 500;
   letter-spacing: 0.01em;
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1134,54 +1160,6 @@ td .avatar {
   font-size: 12px;
 }
 
-/* alert list row */
-.alert-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--border-tertiary);
-}
-.alert-row:last-child {
-  border-bottom: 0;
-}
-.alert-row .sev {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 5px;
-  flex-shrink: 0;
-}
-.sev-critical {
-  background: var(--red-500);
-}
-.sev-warning {
-  background: var(--yellow-600);
-}
-.sev-info {
-  background: var(--blue-500);
-}
-.alert-row .body {
-  flex: 1;
-  min-width: 0;
-}
-.alert-row .body .t {
-  font-size: 13px;
-  font-weight: 500;
-}
-.alert-row .body .m {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 1px;
-}
-.alert-row .meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-tertiary);
-  text-align: right;
-  white-space: nowrap;
-}
-
 /* required-action list */
 .actions-list {
   display: flex;
@@ -1256,6 +1234,28 @@ td .avatar {
   color: var(--text-tertiary);
 }
 .input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+.select {
+  font-family: var(--font-body);
+  font-size: 14px;
+  height: 38px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background-color: var(--surface-fourth);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b8b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  color: var(--text-primary);
+  outline: none;
+  width: 100%;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-weak);
 }

@@ -126,3 +126,41 @@ export function sampleValue(
   );
   return sample?.value ?? null;
 }
+
+export type PrometheusValue = string | number;
+export type PrometheusSamples = PrometheusValue | readonly (readonly [string, PrometheusValue])[];
+
+/** Small text-format builder that keeps metric metadata and sample names together. */
+export class PrometheusText {
+  private readonly lines: string[] = [];
+
+  counter(name: string, help: string, samples: PrometheusSamples): void {
+    this.metric("counter", name, help, samples);
+  }
+
+  gauge(name: string, help: string, samples: PrometheusSamples): void {
+    this.metric("gauge", name, help, samples);
+  }
+
+  histogram(name: string, help: string, samples: PrometheusSamples): void {
+    this.metric("histogram", name, help, samples);
+  }
+
+  render(): string {
+    return `${this.lines.join("\n")}\n`;
+  }
+
+  private metric(
+    type: "counter" | "gauge" | "histogram",
+    name: string,
+    help: string,
+    samples: PrometheusSamples,
+  ): void {
+    this.lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
+    if (Array.isArray(samples)) {
+      this.lines.push(...samples.map(([suffix, value]) => `${name}${suffix} ${value}`));
+    } else {
+      this.lines.push(`${name} ${samples}`);
+    }
+  }
+}

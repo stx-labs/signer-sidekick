@@ -1,64 +1,35 @@
 # Signer Sidekick
 
-Signer Sidekick is a self-hosted control plane for Stacks PoX-5 signer and STX pool operators. It
-guides Fresh or Attach setup and reconciles registration, pool membership, rewards, and withdrawals
-from the operator's node and Stacks API.
+Signer Sidekick monitors and operates one running Stacks PoX-5 signer and pool. It reconciles
+registration, pool membership, rewards, manager actions, and signer health against the operator's
+node and an indexed Stacks API.
 
-V1 provides monitoring, externally signed manager administration, and Observe reward claims.
-Assist is a separate, controlled release track; it is not available for unattended mainnet use.
+![Signer Sidekick dashboard overview with fixture data](docs/assets/dashboard-overview.jpg)
 
-![Signer Sidekick dashboard overview](docs/assets/dashboard-overview.jpg)
+## Use
 
-## Documentation
+- [Install on mainnet](docs/operator/deployment.md)
+- [Configure the node and signer](docs/operator/node-signer-requirements.md)
+- [Operate and recover Sidekick](docs/operator/operations.md)
+- [Evaluate on PoX-5 Testnet](docs/operator/pox5-testnet-deployment.md)
 
-Start with [the documentation index](docs/README.md). Node and signer installation remain separate
-upstream responsibilities.
+Sidekick starts after the node, signer, and signer-manager are running. Use
+[Zero to Signing](https://stx.fan/zero_to/signing/) to deploy the manager and
+[StacksUp](https://github.com/stx-labs/stacksup) to manage node and signer infrastructure.
 
-## Scope
-
-- One network and signer-manager per deployment. Pools may include PoX-5 bond participants;
-  Sidekick observes bond membership and claims per-bond reward buckets, but never creates or
-  changes a bond.
-- Existing and fresh manager workflows.
-- Browser-wallet or manual execution for setup, manager administration, and Observe reward claims.
-- Hiro or self-hosted Stacks API endpoints.
-- No custody of signer or manager-admin private keys.
-- No end-user wallet connection or stake submission.
-- Direct node/signer health endpoints are supported; host resource and log monitoring remain out of
-  scope.
-- No bond creation, Bitcoin L1 lock handling, SPV proofs, early exits, or rollovers.
-
-Compatible managers can use supported external administration and registration actions. Observe
-reward claims require a verified reference manager; Assist has additional release gates.
+Sidekick supports STX-only positions and the STX side of Bitcoin bonds. Manager and signer keys
+remain in the operator's wallet and signer. Compatible custom managers receive baseline monitoring;
+actions also require a reviewed execution profile.
 
 ## Development
 
-Requires Node.js 24.18.0 and pnpm 10.32.1.
+Requires Node.js 24.18.0 and pnpm 10.32.1. See [Development](docs/operator/development.md).
 
 ```sh
 pnpm install
 pnpm check
-pnpm test:coverage
-pnpm test:regtest
+pnpm test
 pnpm build
 ```
 
-See [development](docs/operator/development.md) for browser tests, the released Devnet harness,
-live-node smoke tests, and upstream-source verification.
-
-## Repository
-
-| Path | Purpose |
-| --- | --- |
-| `apps/sidekick` | API, CLI, reconciliation, persistence, and dashboard host |
-| `apps/dashboard` | React operator UI |
-| `packages/protocol` | PoX-5 and signer-manager codecs, profiles, and artifacts |
-| `packages/api-contracts` | Versioned operator API schemas and browser-facing DTOs |
-| `contracts` | Pinned upstream sources and generated test artifacts |
-| `test` | Contract, browser, container, and released-Devnet validation |
-| `design` | Vendored tokens, fonts, and the local UI contract |
-
-## License
-
-GPL-3.0-only. Vendored sources retain their notices; see
-[contract provenance](contracts/PROVENANCE.md) and [NOTICE.md](NOTICE.md).
+GPL-3.0-only. See [NOTICE.md](NOTICE.md) and [contract provenance](contracts/PROVENANCE.md).
