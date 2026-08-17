@@ -1,7 +1,7 @@
 # Signer Health diagnosis model
 
 - Status: Product and implementation contract
-- Date: 2026-08-14
+- Date: 2026-08-17
 - Scope: How Sidekick turns local node, signer, on-chain, and bounded external evidence into an
   operator-facing diagnosis
 
@@ -68,12 +68,14 @@ diagnosis does not require the Hiro Signer Metrics API. If future incident evide
 bounded cohort comparison would materially change an operator action, that should be proposed as a
 separate model revision rather than added as general-purpose monitoring.
 
-### Time and repetition turn observations into findings
+### Time and repetition turn observations into actionable findings
 
 A failed request, one slow response, or a temporary height mismatch is an observation. It becomes a
-finding only after meeting a defined sample count and duration. This reduces false positives from
-normal five-second block timing, API indexing delay, process scheduling, and transient network
-loss.
+finding that needs operator attention only after meeting a defined sample count and duration. This
+reduces false positives from normal five-second block timing, API indexing delay, process
+scheduling, and transient network loss. The only single-observation rule records a local canonical
+tip regression or same-height hash change as informational reorg evidence; by itself it does not
+raise the health state to `needs-attention`.
 
 ### Evidence and inference remain separate
 
@@ -126,7 +128,9 @@ flowchart LR
 
 The server owns collection. It begins with the Sidekick control plane and continues without an open
 browser or an operational manager connection. Cheap local endpoints are polled every five seconds;
-public and configured comparison APIs are refreshed every 30 seconds.
+public and configured comparison APIs are refreshed every 30 seconds. After either API returns a
+rate-limit response, reference polling backs off to at least 60 seconds while local collection
+continues normally.
 
 When a 30-second reference sample is reused in intervening five-second observations, its original
 `checkedAt` remains unchanged. Reuse does not become a new success, failure, or independent sample.
@@ -165,8 +169,9 @@ missing evidence as recovery.
 
 ### 4. Apply sustained rules
 
-Every finding requires a defined sample count and minimum duration (see "Time and repetition" above).
-The exact thresholds are the implementation contract and are listed once, in the
+Every actionable finding requires a defined sample count and minimum duration (see "Time and
+repetition" above). The informational local-canonical-tip event is the documented exception. The
+exact thresholds are the implementation contract and are listed once, in the
 [Signer Health v2](signer-health.md) thresholds table; this document does not restate them so the two
 cannot drift apart.
 
@@ -277,6 +282,38 @@ submission have their own anchored safety requirements. A stale public API may r
 feature's coverage, but it cannot invalidate node-proved current state merely by being behind.
 
 ## Review and calibration process
+
+### Questions for Stacks Core and signer reviewers
+
+The most useful Core-team review is validation of protocol and telemetry semantics, not a broad UI
+review. The current implementation makes the assumptions below. A reviewer can answer each item
+with **correct**, **change**, or **needs incident data**, plus the preferred replacement when one is
+known.
+
+| Area | Current assumption | Question for the Core/signer team |
+| --- | --- | --- |
+| Connected-peer height | `/v3/health.difference_from_max_peer` is a safe local-node lag signal. A gap of 3 Stacks blocks across 6 samples and 25 seconds is actionable. | Can tenure changes, reorgs, or peer-selection behavior produce this gap during normal operation? Is another field or persistence window more reliable? |
+| Signer heartbeat | `/heartbeat` returning `OK` proves only that the signer can reach its configured node; it does not prove participation. | Is that the complete and stable endpoint contract? Which failures can still exist while it returns `OK`? |
+| Proposal and response counters | `stacks_signer_block_proposals_received` and `stacks_signer_block_responses_sent{response_type}` support a conservative missing-response lower bound after a 30-second settling window. | Does every actionable proposal increment once, and which normal paths can intentionally produce neither an accepted nor rejected response? |
+| Expected-signer silence | A signer proved to be in the current set should see proposals. No proposal-counter change for 10 minutes while the local node advances at least 12 times is a critical local participation finding. | Are there legitimate protocol windows where an expected signer sees no proposals this long? Should the rule count a different chain or tenure event? |
+| Signer node view | `stacks_signer_stacks_node_height` is the signer's current view of its configured node. Lag of 3 blocks across 3 metric updates and 2 minutes is actionable; 2 aligned updates prove recovery. | What exactly advances this gauge, and what lag or update cadence is normal during tenure transitions or reorgs? |
+| Validation latency | `stacks_signer_block_validation_latencies_histogram_bucket` measures `validation_time_ms` reported by the local node for successful validations. A 15-minute interpolated p95 above 5 seconds with at least 20 timed validations is a warning. | Are the start/end points and successful-validation interpretation correct? On 2026-08-17 our mainnet test produced 5.4s across 73 timed validations; should that be actionable, and what threshold/sample window better separates normal block complexity from a node problem? |
+| Rejections and agreement conflicts | A 25% rejection rate across at least 20 responses, or 3 agreement conflicts in 15 minutes, is anomalous but not attributable to one component without corroboration. | Which rejection reasons or agreement-conflict states are expected protocol behavior, and which can safely support a more specific operator action? |
+| Canonical-tip changes | A local height regression or same-height derived StacksBlockId change is useful informational reorg evidence. Repeated same-height disagreement with an independent indexer's `index_block_hash` is a warning. | Is deriving the StacksBlockId from `/v2/info`'s `stacks_tip` and `stacks_tip_consensus_hash` the correct comparison with `index_block_hash`? Which same-height changes are normal, and should comparison wait for a particular finality or tenure boundary? |
+| Network-stall attribution | A 180-second local stall plus two distinct stalled peer/API signals supports `suspected-network-wide`; one source never does. | Is 180 seconds appropriate for current block production, and should the node's connected-peer view count as independent corroboration alongside a public indexer? |
+| Metrics compatibility | Missing metric families reduce coverage instead of creating a failure. | Which metric names, labels, and endpoint response fields are stable across supported signer/Core releases, and which need version-specific handling? |
+
+The following boundaries are deliberate and do not need protocol review unless incident evidence
+shows they produce a wrong operator action:
+
+- end-to-end response p95 is diagnostic only and cannot create or strengthen a finding;
+- Hiro and the configured indexed API are comparison sources, never authority over an advancing
+  local node;
+- detailed external signer-cohort monitoring remains outside Sidekick;
+- missing evidence cannot resolve an active episode; and
+- host/process remediation and unrestricted log collection remain outside Sidekick.
+
+### Changing the model
 
 When proposing a model change, reviewers should answer:
 

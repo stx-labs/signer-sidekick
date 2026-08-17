@@ -12,6 +12,7 @@
 - [Development](operator/development.md)
 - [Architecture](architecture/README.md)
 - [Product contracts](product/scope-and-decisions.md)
+- [Signer Health model and Core-team review questions](product/signer-health-diagnosis-model.md)
 - [UI design contract](../design/README.md)
 
 Runtime configuration is defined by [`.env.mainnet.example`](../.env.mainnet.example). Protocol

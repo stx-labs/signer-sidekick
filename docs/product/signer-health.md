@@ -16,10 +16,10 @@ detailed signer-network exploration belongs in [Slotwatch](https://slotwatch.dev
 ## Evidence model
 
 Sidekick polls cheap local node and signer endpoints every five seconds. Public/configured API
-references are refreshed every 30 seconds and their original `checkedAt` time is retained between
-polls; reusing a reference sample never counts as an additional failure or independent source.
-Browser pages read the server-owned snapshot every 15 seconds while visible. Closing the browser
-does not stop collection.
+references are refreshed every 30 seconds and back off to at least 60 seconds after a rate-limit
+response. Their original `checkedAt` time is retained between polls; reusing a reference sample
+never counts as an additional failure or independent source. Browser pages read the server-owned
+snapshot every 15 seconds while visible. Closing the browser does not stop collection.
 
 | Source | Role | Authority |
 | --- | --- | --- |
@@ -34,6 +34,11 @@ One delayed or unavailable API cannot classify a local node as unhealthy and can
 network-wide diagnosis. `suspected-network-wide` requires the local node to stop advancing and at
 least two distinct comparison/peer signals to corroborate the same condition. A healthy advancing
 local node instead classifies a lagging API as `source-disagreement`.
+
+If signer monitoring is not configured, Sidekick reports stable `partial` coverage after the local
+baseline is collected; it does not claim that the signer is healthy or create an availability
+incident for a source the operator did not configure. A configured signer source that becomes
+unavailable is subject to the sustained availability rules below.
 
 ## Classifications
 
@@ -104,7 +109,7 @@ diagnostics, and validation p95 for alert calibration.
 
 ## Operator and support surfaces
 
-All health routes require the existing operator credential:
+All operator health API routes require the existing operator credential:
 
 - `GET /api/v1/health` returns the latest server-owned v2 snapshot and collects once if empty.
 - `POST /api/v1/health/refresh` forces one bounded collection.
@@ -112,9 +117,11 @@ All health routes require the existing operator credential:
 
 Process probes are separate from authenticated operator health data: `/health/live` reports process
 liveness, `/health/ready` reports that Sidekick and its database can serve requests, and
-`/health/operational` verifies the current node/manager connection and node-health evidence. A node
-outage must not make `/health/ready` fail because Sidekick remains the diagnostic surface during
-that outage.
+`/health/operational` verifies the current node/manager connection, manager preflight, and the
+availability of node-health evidence. It returns the current diagnostic status in its body, but a
+warning such as slow validation does not make the probe fail; connection/preflight failure or an
+`unavailable` health state does. A node outage must not make `/health/ready` fail because Sidekick
+remains the diagnostic surface during that outage.
 
 The five-second collector starts with the Sidekick control plane and remains server-owned even when
 the manager connection is not yet operational or no browser is open. Manager readiness gates

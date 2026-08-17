@@ -45,7 +45,8 @@ curl --fail http://127.0.0.1:3998/health/operational
 
 `connection check` fails when RPC, network, manager identity, or transaction indexing is invalid.
 `/health/ready` confirms Sidekick and its database can serve requests; `/health/operational` also
-checks the current node, manager connection, and health evidence.
+checks the current node, manager connection, manager preflight, and availability of health evidence.
+Diagnostic warnings are reported in its body but do not fail the operational probe.
 The dashboard's **Settings → Deployment check** tests the same requirements and optional telemetry.
 
 ## Network paths
