@@ -1070,6 +1070,10 @@ Environment:
   SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
   STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
   STACKS_API_KEY       Optional API key; never included in output
+  STACKS_API_KEY_HEADER  Optional indexed API key header; defaults to x-api-key
+  HIRO_REFERENCE_API_URL  Optional network-comparison API
+  HIRO_REFERENCE_API_KEY  Optional separate comparison API key; never included in output
+  HIRO_REFERENCE_API_KEY_HEADER  Optional comparison API key header; defaults to x-api-key
   STACKS_NODE_METRICS_URL  Recommended private Stacks Core Prometheus endpoint
   STACKS_SIGNER_MONITORING_URL  Recommended private signer monitoring base URL
   SIDEKICK_DATABASE_PATH  Optional SQLite path; defaults to data/sidekick.sqlite

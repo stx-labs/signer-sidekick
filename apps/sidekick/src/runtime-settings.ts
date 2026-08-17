@@ -1,9 +1,16 @@
 import { z } from "zod";
 import { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
-import { isHttpUrl, parseEndpointUrl, type SidekickConfig } from "./config.js";
+import {
+  hiroReferenceApiCredential,
+  isHttpUrl,
+  parseApiKeyHeader,
+  parseEndpointUrl,
+  type SidekickConfig,
+} from "./config.js";
 import { validateHealthEndpointForSave } from "./health-http.js";
 import { indexedWorkflowsReady, runOperatorPreflight } from "./preflight.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
+import type { RuntimeApiCredentials } from "./storage/runtime-settings-repository.js";
 import type { SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -22,7 +29,7 @@ const supportContactSchema = z
     "Expected an email address or HTTP(S) URL",
   );
 
-const persistedRuntimeSettingsSchema = z
+const legacyPersistedRuntimeSettingsSchema = z
   .object({
     schemaVersion: z.literal(1),
     pool: z
@@ -62,19 +69,45 @@ const persistedRuntimeSettingsSchema = z
   })
   .strict();
 
+const persistedRuntimeSettingsSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    pool: legacyPersistedRuntimeSettingsSchema.shape.pool,
+    display: legacyPersistedRuntimeSettingsSchema.shape.display,
+    dataSources: z
+      .object({
+        nodeRpcUrl: z.string(),
+        apiUrl: z.string(),
+        apiKeyHeader: z.string().regex(/^[A-Za-z0-9-]{1,100}$/),
+        nodeMetricsUrl: optionalUrlSchema.default(""),
+        signerMonitoringUrl: optionalUrlSchema.default(""),
+        hiroReferenceApiUrl: optionalUrlSchema.default(""),
+        hiroReferenceApiKeyHeader: z
+          .string()
+          .regex(/^[A-Za-z0-9-]{1,100}$/)
+          .default("x-api-key"),
+      })
+      .strict(),
+    forecast: legacyPersistedRuntimeSettingsSchema.shape.forecast,
+    embed: legacyPersistedRuntimeSettingsSchema.shape.embed,
+  })
+  .strict();
+
 export type PersistedRuntimeSettings = z.infer<typeof persistedRuntimeSettingsSchema>;
+
+const apiKeyActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("keep") }).strict(),
+  z.object({ action: z.literal("remove-override") }).strict(),
+  z.object({ action: z.literal("replace"), value: z.string().min(1).max(2_000) }).strict(),
+]);
 
 export const runtimeSettingsUpdateSchema = persistedRuntimeSettingsSchema
   .omit({ schemaVersion: true })
   .extend({
     dataSources: persistedRuntimeSettingsSchema.shape.dataSources
-      .omit({ apiKeyMode: true })
       .extend({
-        apiKeyAction: z.discriminatedUnion("action", [
-          z.object({ action: z.literal("keep") }).strict(),
-          z.object({ action: z.literal("clear") }).strict(),
-          z.object({ action: z.literal("replace"), value: z.string().min(1).max(2_000) }).strict(),
-        ]),
+        apiKeyAction: apiKeyActionSchema.default({ action: "keep" }),
+        hiroReferenceApiKeyAction: apiKeyActionSchema.default({ action: "keep" }),
       })
       .strict(),
   })
@@ -87,14 +120,16 @@ export type RuntimeSettingsSourceValidator = (
 ) => Promise<void>;
 
 export interface PublicRuntimeSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   revision: number;
   updatedAt: string | null;
   pool: PersistedRuntimeSettings["pool"];
   display: PersistedRuntimeSettings["display"];
-  dataSources: Omit<PersistedRuntimeSettings["dataSources"], "apiKeyMode"> & {
+  dataSources: PersistedRuntimeSettings["dataSources"] & {
     apiKeyConfigured: boolean;
     apiKeySource: "environment" | "database" | "none";
+    hiroReferenceApiKeyConfigured: boolean;
+    hiroReferenceApiKeySource: "environment" | "database" | "indexed-api" | "none";
   };
   forecast: PersistedRuntimeSettings["forecast"];
   embed: PersistedRuntimeSettings["embed"];
@@ -109,7 +144,7 @@ function publicApiDefault(config: SidekickConfig): string {
 
 function defaults(config: SidekickConfig): PersistedRuntimeSettings {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     pool: {
       displayName: "Stacks Pool",
       websiteUrl: "",
@@ -123,20 +158,56 @@ function defaults(config: SidekickConfig): PersistedRuntimeSettings {
       nodeRpcUrl: config.nodeRpcUrl,
       apiUrl: config.apiUrl,
       apiKeyHeader: config.apiKeyHeader,
-      apiKeyMode: config.apiKey ? "environment" : "none",
       nodeMetricsUrl: config.nodeMetricsUrl ?? "",
       signerMonitoringUrl: config.signerMonitoringUrl ?? "",
       hiroReferenceApiUrl: config.hiroReferenceApiUrl ?? "",
+      hiroReferenceApiKeyHeader: config.hiroReferenceApiKeyHeader,
     },
     forecast: { horizonCycles: config.forecastHorizonCycles },
     embed: { publicApiUrl: publicApiDefault(config) },
   };
 }
 
+function migratePersistedSettings(
+  input: unknown,
+  config: SidekickConfig,
+): PersistedRuntimeSettings {
+  const current = persistedRuntimeSettingsSchema.safeParse(input);
+  if (current.success) return current.data;
+  const legacy = legacyPersistedRuntimeSettingsSchema.parse(input);
+  return persistedRuntimeSettingsSchema.parse({
+    schemaVersion: 2,
+    pool: legacy.pool,
+    display: legacy.display,
+    dataSources: {
+      nodeRpcUrl: legacy.dataSources.nodeRpcUrl,
+      apiUrl: legacy.dataSources.apiUrl,
+      apiKeyHeader: legacy.dataSources.apiKeyHeader,
+      nodeMetricsUrl: legacy.dataSources.nodeMetricsUrl,
+      signerMonitoringUrl: legacy.dataSources.signerMonitoringUrl,
+      hiroReferenceApiUrl: legacy.dataSources.hiroReferenceApiUrl,
+      hiroReferenceApiKeyHeader: config.hiroReferenceApiKeyHeader,
+    },
+    forecast: legacy.forecast,
+    embed: legacy.embed,
+  });
+}
+
+function sameOrigin(left: string, right: string): boolean {
+  return new URL(left).origin === new URL(right).origin;
+}
+
+function storedCredentialForUrl(
+  credential: RuntimeApiCredentials[keyof RuntimeApiCredentials],
+  url: string,
+) {
+  return credential && sameOrigin(credential.boundUrl, url) ? credential : undefined;
+}
+
 function changedFields(
   previous: PersistedRuntimeSettings,
   next: PersistedRuntimeSettings,
-  secretChanged: boolean,
+  changedCredentialSources: ReadonlySet<keyof RuntimeApiCredentials>,
 ): string[] {
   const fields: string[] = [];
   for (const section of ["pool", "display", "dataSources", "forecast", "embed"] as const) {
@@ -147,13 +218,14 @@ function changedFields(
         fields.push(`${section}.${key}`);
     }
   }
-  if (secretChanged && !fields.includes("dataSources.apiKey")) fields.push("dataSources.apiKey");
+  if (changedCredentialSources.has("indexed-api")) fields.push("dataSources.apiKey");
+  if (changedCredentialSources.has("reference-api")) fields.push("dataSources.hiroReferenceApiKey");
   return fields;
 }
 
 export class RuntimeSettingsController {
   private settings: PersistedRuntimeSettings;
-  private apiKeySecret: string | null;
+  private apiCredentials: RuntimeApiCredentials;
   private revision: number;
   private updatedAt: string | null;
 
@@ -184,34 +256,67 @@ export class RuntimeSettingsController {
   ) {
     const stored = store.runtimeSettings.get();
     this.settings = stored
-      ? persistedRuntimeSettingsSchema.parse(stored.settings)
+      ? migratePersistedSettings(stored.settings, baseConfig)
       : defaults(baseConfig);
-    this.apiKeySecret = stored?.apiKeySecret ?? null;
+    this.apiCredentials = stored?.apiCredentials ?? {};
     this.revision = stored?.revision ?? 0;
     this.updatedAt = stored?.updatedAt ?? null;
   }
 
   effectiveConfig(): SidekickConfig {
-    return this.configFor(this.settings, this.apiKeySecret);
+    return this.configFor(this.settings, this.apiCredentials);
   }
 
   private configFor(
     settings: PersistedRuntimeSettings,
-    apiKeySecret: string | null,
+    apiCredentials: RuntimeApiCredentials,
   ): SidekickConfig {
-    const apiKey =
-      settings.dataSources.apiKeyMode === "database"
-        ? (apiKeySecret ?? undefined)
-        : settings.dataSources.apiKeyMode === "environment"
-          ? this.baseConfig.apiKey
-          : undefined;
-    const { apiKey: _baseApiKey, ...baseConfig } = this.baseConfig;
+    const indexedStoredCredential = storedCredentialForUrl(
+      apiCredentials["indexed-api"],
+      settings.dataSources.apiUrl,
+    );
+    const indexedEnvironmentCredential =
+      this.baseConfig.apiKey &&
+      this.baseConfig.apiKeyOrigin &&
+      new URL(settings.dataSources.apiUrl).origin === this.baseConfig.apiKeyOrigin
+        ? this.baseConfig.apiKey
+        : undefined;
+    const referenceStoredCredential = settings.dataSources.hiroReferenceApiUrl
+      ? storedCredentialForUrl(
+          apiCredentials["reference-api"],
+          settings.dataSources.hiroReferenceApiUrl,
+        )
+      : undefined;
+    const referenceEnvironmentCredential =
+      this.baseConfig.hiroReferenceApiKey &&
+      this.baseConfig.hiroReferenceApiKeyOrigin &&
+      settings.dataSources.hiroReferenceApiUrl &&
+      new URL(settings.dataSources.hiroReferenceApiUrl).origin ===
+        this.baseConfig.hiroReferenceApiKeyOrigin
+        ? this.baseConfig.hiroReferenceApiKey
+        : undefined;
+    const apiKey = indexedStoredCredential?.value ?? indexedEnvironmentCredential;
+    const hiroReferenceApiKey = referenceStoredCredential?.value ?? referenceEnvironmentCredential;
+    const {
+      apiKey: _baseApiKey,
+      apiKeyOrigin: _baseApiKeyOrigin,
+      hiroReferenceApiKey: _baseHiroReferenceApiKey,
+      hiroReferenceApiKeyOrigin: _baseHiroReferenceApiKeyOrigin,
+      nodeMetricsUrl: _baseNodeMetricsUrl,
+      signerMonitoringUrl: _baseSignerMonitoringUrl,
+      hiroReferenceApiUrl: _baseHiroReferenceApiUrl,
+      ...baseConfig
+    } = this.baseConfig;
     return {
       ...baseConfig,
       nodeRpcUrl: settings.dataSources.nodeRpcUrl,
       apiUrl: settings.dataSources.apiUrl,
       ...(apiKey ? { apiKey } : {}),
-      apiKeyHeader: settings.dataSources.apiKeyHeader,
+      ...(apiKey ? { apiKeyOrigin: new URL(settings.dataSources.apiUrl).origin } : {}),
+      apiKeyHeader: parseApiKeyHeader(
+        settings.dataSources.apiKeyHeader,
+        "Indexed chain API key header",
+      ),
       forecastHorizonCycles: settings.forecast.horizonCycles,
       ...(settings.dataSources.nodeMetricsUrl
         ? { nodeMetricsUrl: settings.dataSources.nodeMetricsUrl }
@@ -222,6 +327,16 @@ export class RuntimeSettingsController {
       ...(settings.dataSources.hiroReferenceApiUrl
         ? { hiroReferenceApiUrl: settings.dataSources.hiroReferenceApiUrl }
         : {}),
+      ...(hiroReferenceApiKey ? { hiroReferenceApiKey } : {}),
+      ...(hiroReferenceApiKey && settings.dataSources.hiroReferenceApiUrl
+        ? {
+            hiroReferenceApiKeyOrigin: new URL(settings.dataSources.hiroReferenceApiUrl).origin,
+          }
+        : {}),
+      hiroReferenceApiKeyHeader: parseApiKeyHeader(
+        settings.dataSources.hiroReferenceApiKeyHeader,
+        "Network comparison API key header",
+      ),
     };
   }
 
@@ -236,8 +351,26 @@ export class RuntimeSettingsController {
 
   publicSettings(): PublicRuntimeSettings {
     const config = this.effectiveConfig();
+    const indexedStoredCredential = storedCredentialForUrl(
+      this.apiCredentials["indexed-api"],
+      this.settings.dataSources.apiUrl,
+    );
+    const referenceStoredCredential = this.settings.dataSources.hiroReferenceApiUrl
+      ? storedCredentialForUrl(
+          this.apiCredentials["reference-api"],
+          this.settings.dataSources.hiroReferenceApiUrl,
+        )
+      : undefined;
+    const referenceCredential = hiroReferenceApiCredential(config);
+    const referenceCredentialSource = referenceStoredCredential
+      ? "database"
+      : config.hiroReferenceApiKey
+        ? "environment"
+        : referenceCredential
+          ? "indexed-api"
+          : "none";
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: this.revision,
       updatedAt: this.updatedAt,
       pool: this.settings.pool,
@@ -247,10 +380,13 @@ export class RuntimeSettingsController {
         apiUrl: this.settings.dataSources.apiUrl,
         apiKeyHeader: this.settings.dataSources.apiKeyHeader,
         apiKeyConfigured: Boolean(config.apiKey),
-        apiKeySource: this.settings.dataSources.apiKeyMode,
+        apiKeySource: indexedStoredCredential ? "database" : config.apiKey ? "environment" : "none",
         nodeMetricsUrl: this.settings.dataSources.nodeMetricsUrl,
         signerMonitoringUrl: this.settings.dataSources.signerMonitoringUrl,
         hiroReferenceApiUrl: this.settings.dataSources.hiroReferenceApiUrl,
+        hiroReferenceApiKeyHeader: this.settings.dataSources.hiroReferenceApiKeyHeader,
+        hiroReferenceApiKeyConfigured: Boolean(referenceCredential),
+        hiroReferenceApiKeySource: referenceCredentialSource,
       },
       forecast: this.settings.forecast,
       embed: this.settings.embed,
@@ -276,10 +412,20 @@ export class RuntimeSettingsController {
     let nodeRpcUrl: string;
     let apiUrl: string;
     let publicApiUrl: string;
+    let apiKeyHeader: string;
+    let hiroReferenceApiKeyHeader: string;
     try {
       nodeRpcUrl = parseEndpointUrl(value.dataSources.nodeRpcUrl, "Stacks node RPC URL");
       apiUrl = parseEndpointUrl(value.dataSources.apiUrl, "Stacks API URL");
       publicApiUrl = parseEndpointUrl(value.embed.publicApiUrl, "Public embed API URL");
+      apiKeyHeader = parseApiKeyHeader(
+        value.dataSources.apiKeyHeader,
+        "Indexed chain API key header",
+      );
+      hiroReferenceApiKeyHeader = parseApiKeyHeader(
+        value.dataSources.hiroReferenceApiKeyHeader,
+        "Network comparison API key header",
+      );
     } catch (error) {
       throw new OperatorWorkflowError(
         400,
@@ -308,37 +454,54 @@ export class RuntimeSettingsController {
           requestSignal,
         )
       : "";
-    const action = value.dataSources.apiKeyAction;
-    const nextSecret =
-      action.action === "replace"
-        ? action.value
-        : action.action === "clear"
-          ? null
-          : this.apiKeySecret;
-    const apiKeyMode =
-      action.action === "replace"
-        ? "database"
-        : action.action === "clear"
-          ? "none"
-          : this.settings.dataSources.apiKeyMode;
+    if (value.dataSources.hiroReferenceApiKeyAction.action === "replace" && !hiroReferenceApiUrl) {
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_runtime_settings",
+        "Configure the network comparison API URL before adding its key",
+      );
+    }
+    const nextCredentials: RuntimeApiCredentials = { ...this.apiCredentials };
+    const changedCredentialSources = new Set<keyof RuntimeApiCredentials>();
+    const applyCredentialAction = (
+      source: keyof RuntimeApiCredentials,
+      action: z.infer<typeof apiKeyActionSchema>,
+      boundUrl: string,
+    ) => {
+      if (action.action === "keep") {
+        const current = nextCredentials[source];
+        if (!current || (boundUrl && sameOrigin(current.boundUrl, boundUrl))) return;
+      }
+      const previous = nextCredentials[source];
+      if (action.action === "replace") nextCredentials[source] = { value: action.value, boundUrl };
+      else delete nextCredentials[source];
+      if (JSON.stringify(previous) !== JSON.stringify(nextCredentials[source]))
+        changedCredentialSources.add(source);
+    };
+    applyCredentialAction("indexed-api", value.dataSources.apiKeyAction, apiUrl);
+    applyCredentialAction(
+      "reference-api",
+      value.dataSources.hiroReferenceApiKeyAction,
+      hiroReferenceApiUrl,
+    );
     const next = persistedRuntimeSettingsSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       ...value,
       dataSources: {
         nodeRpcUrl,
         apiUrl,
-        apiKeyHeader: value.dataSources.apiKeyHeader,
-        apiKeyMode,
+        apiKeyHeader,
         nodeMetricsUrl,
         signerMonitoringUrl,
         hiroReferenceApiUrl,
+        hiroReferenceApiKeyHeader,
       },
       embed: { publicApiUrl },
     });
-    const fields = changedFields(this.settings, next, action.action !== "keep");
+    const fields = changedFields(this.settings, next, changedCredentialSources);
     if (fields.length === 0) return this.publicSettings();
     if (fields.some((field) => field.startsWith("dataSources."))) {
-      const candidateConfig = this.configFor(next, nextSecret);
+      const candidateConfig = this.configFor(next, nextCredentials);
       await this.validateSources(
         candidateConfig,
         new StacksNodeClient(candidateConfig.nodeRpcUrl),
@@ -352,12 +515,12 @@ export class RuntimeSettingsController {
     requestSignal?.throwIfAborted();
     const stored = this.store.runtimeSettings.put({
       settings: next,
-      apiKeySecret: nextSecret,
+      apiCredentials: nextCredentials,
       changedFields: fields,
       observedAt,
     });
     this.settings = next;
-    this.apiKeySecret = nextSecret;
+    this.apiCredentials = nextCredentials;
     this.revision = stored.revision;
     this.updatedAt = stored.updatedAt;
     return this.publicSettings();

@@ -171,7 +171,7 @@ const withdrawals = Array.from({ length: 71 }, (_, index) => ({
 }));
 
 export const runtimeSettings = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   revision: 12,
   updatedAt: "2026-07-15T12:00:00.000Z",
   pool: {
@@ -192,6 +192,9 @@ export const runtimeSettings = {
     nodeMetricsUrl: "http://stacks-node:9153",
     signerMonitoringUrl: "http://stacks-signer:9153",
     hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
+    hiroReferenceApiKeyHeader: "x-api-key",
+    hiroReferenceApiKeyConfigured: true,
+    hiroReferenceApiKeySource: "database",
   },
   forecast: { horizonCycles: 6 },
   embed: { publicApiUrl: "https://pool.example/sidekick" },

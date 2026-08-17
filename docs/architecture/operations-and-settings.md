@@ -79,11 +79,15 @@ reference endpoints; API credentials; and forecast horizon. Candidate endpoint c
 preflight before becoming active. Transaction-engine policy and gas-payer identity are
 deployment-only configuration.
 
-API keys are write-only in the browser and stored separately from public settings. They may be
-persisted in SQLite, so the database and backups are secret-bearing. Signer, manager-admin, and
-gas-payer private keys are forbidden from SQLite.
+Each API has its own write-only credential. Environment variables supply deployment defaults; a
+key entered in Settings overrides only that source. Removing the saved override returns to the
+environment default. A reference API may reuse the indexed API key only when their URL origins are
+identical. Every stored key is origin-bound, so editing a URL cannot forward an existing secret to
+a different host. Keys are stored separately from public settings in SQLite, making the database
+and backups secret-bearing. Signer, manager-admin, and gas-payer private keys remain forbidden.
 
-Settings revisions take precedence over later environment changes. Ingestion cursors remain scoped
-to their source endpoint, preventing one provider's checkpoint from being reused for another.
+Saved URLs and headers take precedence over later environment changes. Ingestion cursors remain
+scoped to their source endpoint, preventing one provider's checkpoint from being reused for
+another.
 
 See [operations](../operator/operations.md) for backup, restore, and support collection.

@@ -24,6 +24,8 @@ Set these values in `.env`:
 
 A Hiro key avoids public rate limits during existing-pool backfill. Set
 `STACKS_NODE_METRICS_URL` and `STACKS_SIGNER_MONITORING_URL` for full Signer Health diagnostics.
+`HIRO_REFERENCE_API_KEY` is needed only when the comparison API uses a different credential. When
+both API URLs have the same origin, Sidekick safely reuses `STACKS_API_KEY`.
 
 The local node supplies current chain state. The indexed API supplies roster and history data; API
 lag does not block node-backed status.

@@ -4,9 +4,39 @@ import { z } from "zod";
 
 export interface StoredRuntimeSettings {
   settings: unknown;
-  apiKeySecret: string | null;
+  apiCredentials: RuntimeApiCredentials;
   revision: number;
   updatedAt: string;
+}
+
+export type RuntimeApiCredentialSource = "indexed-api" | "reference-api";
+export interface RuntimeApiCredential {
+  value: string;
+  boundUrl: string;
+}
+export type RuntimeApiCredentials = Partial<
+  Record<RuntimeApiCredentialSource, RuntimeApiCredential>
+>;
+
+const apiCredentialsSchema = z
+  .object({
+    "indexed-api": z
+      .object({ value: z.string().min(1).max(2_000), boundUrl: z.string().min(1).max(500) })
+      .strict()
+      .optional(),
+    "reference-api": z
+      .object({ value: z.string().min(1).max(2_000), boundUrl: z.string().min(1).max(500) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+function parseApiCredentials(input: unknown): RuntimeApiCredentials {
+  const parsed = apiCredentialsSchema.parse(input);
+  return {
+    ...(parsed["indexed-api"] ? { "indexed-api": parsed["indexed-api"] } : {}),
+    ...(parsed["reference-api"] ? { "reference-api": parsed["reference-api"] } : {}),
+  };
 }
 
 export interface SettingsAuditEntry {
@@ -44,9 +74,23 @@ export class RuntimeSettingsRepository {
         }
       | undefined;
     if (!row) return null;
+    const credentialRows = this.db
+      .prepare(`SELECT source, secret, bound_url FROM runtime_api_credentials ORDER BY source`)
+      .all() as Array<{
+      source: RuntimeApiCredentialSource;
+      secret: string;
+      bound_url: string;
+    }>;
     return {
       settings: JSON.parse(row.settings_json) as unknown,
-      apiKeySecret: row.api_key_secret,
+      apiCredentials: parseApiCredentials(
+        Object.fromEntries(
+          credentialRows.map(({ source, secret, bound_url: boundUrl }) => [
+            source,
+            { value: secret, boundUrl },
+          ]),
+        ),
+      ),
       revision: z.number().int().positive().parse(row.revision),
       updatedAt: z.iso.datetime().parse(row.updated_at),
     };
@@ -54,13 +98,14 @@ export class RuntimeSettingsRepository {
 
   put(input: {
     settings: unknown;
-    apiKeySecret: string | null;
+    apiCredentials: RuntimeApiCredentials;
     changedFields: string[];
     observedAt: string;
   }): StoredRuntimeSettings {
     const observedAt = z.iso.datetime().parse(input.observedAt);
     const changedFields = z.array(z.string().min(1)).min(1).parse(input.changedFields);
     const settingsJson = serializeJson(input.settings, "runtime settings");
+    const apiCredentials = parseApiCredentials(input.apiCredentials);
     const changedFieldsJson = serializeJson([...new Set(changedFields)].sort(), "changed fields");
     const revision = (this.get()?.revision ?? 0) + 1;
     this.db.exec("BEGIN IMMEDIATE");
@@ -69,14 +114,23 @@ export class RuntimeSettingsRepository {
         .prepare(
           `INSERT INTO runtime_settings (
             singleton_id, settings_json, api_key_secret, revision, updated_at
-          ) VALUES (1, ?, ?, ?, ?)
+          ) VALUES (1, ?, NULL, ?, ?)
           ON CONFLICT (singleton_id) DO UPDATE SET
             settings_json = excluded.settings_json,
-            api_key_secret = excluded.api_key_secret,
+            api_key_secret = NULL,
             revision = excluded.revision,
             updated_at = excluded.updated_at`,
         )
-        .run(settingsJson, input.apiKeySecret, revision, observedAt);
+        .run(settingsJson, revision, observedAt);
+      this.db.prepare("DELETE FROM runtime_api_credentials").run();
+      const putCredential = this.db.prepare(
+        `INSERT INTO runtime_api_credentials (source, secret, bound_url, updated_at)
+         VALUES (?, ?, ?, ?)`,
+      );
+      for (const [source, credential] of Object.entries(apiCredentials)) {
+        if (!credential) continue;
+        putCredential.run(source, credential.value, credential.boundUrl, observedAt);
+      }
       this.db
         .prepare(
           `INSERT INTO settings_audit (
@@ -91,7 +145,7 @@ export class RuntimeSettingsRepository {
     }
     return {
       settings: JSON.parse(settingsJson) as unknown,
-      apiKeySecret: input.apiKeySecret,
+      apiCredentials,
       revision,
       updatedAt: observedAt,
     };

@@ -18,6 +18,9 @@ export class HealthSourceError extends Error {
       | "connection-failed"
       | "timeout"
       | "response-too-large"
+      | "authentication-required"
+      | "authentication-rejected"
+      | "rate-limited"
       | "http-error"
       | "unexpected-content",
     message: string,
@@ -171,7 +174,11 @@ export async function validateHealthEndpointForSave(
 
 export async function fetchHealthSource(
   input: string,
-  options: { timeoutMs?: number; maxBytes?: number } = {},
+  options: {
+    timeoutMs?: number;
+    maxBytes?: number;
+    headers?: Readonly<Record<string, string>>;
+  } = {},
 ): Promise<HealthHttpResponse> {
   const normalized = validateHealthEndpointUrl(input);
   const url = new URL(normalized);
@@ -195,7 +202,10 @@ export async function fetchHealthSource(
       url,
       {
         method: "GET",
-        headers: { accept: "application/json, text/plain; q=0.9, */*; q=0.1" },
+        headers: {
+          accept: "application/json, text/plain; q=0.9, */*; q=0.1",
+          ...options.headers,
+        },
         lookup: ((_, lookupOptions, callback) => {
           if (lookupOptions.all) {
             callback(null, [resolved]);
@@ -224,9 +234,15 @@ export async function fetchHealthSource(
         response.on("end", () => {
           if (settled) return;
           if (status < 200 || status >= 300) {
-            finishError(
-              new HealthSourceError("http-error", `Health endpoint returned HTTP ${status}`),
-            );
+            const code =
+              status === 401
+                ? "authentication-required"
+                : status === 403
+                  ? "authentication-rejected"
+                  : status === 429
+                    ? "rate-limited"
+                    : "http-error";
+            finishError(new HealthSourceError(code, `Health endpoint returned HTTP ${status}`));
             return;
           }
           settled = true;

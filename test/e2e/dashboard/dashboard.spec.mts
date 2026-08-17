@@ -1314,6 +1314,39 @@ test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
 });
 
+test("edits indexed and comparison API credentials independently", async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null;
+  await page.route("**/api/v1/settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      submitted = route.request().postDataJSON() as Record<string, unknown>;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(snapshot.runtimeSettings),
+    });
+  });
+
+  await login(page);
+  await openSettingsSection(page, "sources", "Data sources");
+  const indexed = page.locator('section[aria-labelledby="indexed-api-title"]');
+  const comparison = page.locator('section[aria-labelledby="reference-api-title"]');
+  await expect(indexed.getByText("Provided by the deployment environment")).toBeVisible();
+  await expect(comparison.getByText("Saved in Sidekick")).toBeVisible();
+
+  await indexed.locator('input[type="password"]').fill("new-indexed-secret");
+  await comparison.locator('input[type="password"]').fill("new-reference-secret");
+  await expect(indexed.getByRole("button", { name: "Test saved connection" })).toBeDisabled();
+  await page.getByRole("button", { name: "Save changes" }).click();
+
+  expect(submitted).toMatchObject({
+    dataSources: {
+      apiKeyAction: { action: "replace", value: "new-indexed-secret" },
+      hiroReferenceApiKeyAction: { action: "replace", value: "new-reference-secret" },
+    },
+  });
+});
+
 test("keeps sustained health findings on the Signer Health page", async ({ page }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {

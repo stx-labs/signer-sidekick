@@ -913,6 +913,17 @@ describe("local API", () => {
           method: "POST",
           url: "/api/v1/health/test-source",
           headers,
+          payload: { kind: "indexed-api" },
+        })
+      ).json(),
+    ).toEqual({ status: "connected", signals: 7 });
+    expect(health.testSource).toHaveBeenCalledWith("indexed-api");
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url: "/api/v1/health/test-source",
+          headers,
           payload: { kind: "unknown", url: "http://signer.internal:9153" },
         })
       ).statusCode,
@@ -2079,6 +2090,56 @@ describe("local API", () => {
         retryable: false,
       },
     ]);
+  });
+
+  it.each([
+    [
+      "authentication-required" as const,
+      422,
+      "health_source_authentication_required",
+      "The API requires a credential.",
+    ],
+    [
+      "authentication-rejected" as const,
+      422,
+      "health_source_authentication_rejected",
+      "The API rejected its configured credential.",
+    ],
+    [
+      "rate-limited" as const,
+      429,
+      "health_source_rate_limited",
+      "The API is rate limiting Sidekick.",
+    ],
+  ])("classifies API source credential failures: %s", async (code, status, responseCode, message) => {
+    const token = "test-operator-token-with-32-chars";
+    const server = createServer({
+      service: { snapshot: async () => ({}) },
+      health: {
+        current: async () => ({}),
+        refresh: async () => ({}),
+        testSource: async () => {
+          throw new HealthSourceError(code, "upstream body must-not-leak");
+        },
+      },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/v1/health/test-source",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { kind: "indexed-api" },
+    });
+
+    expect(response.statusCode).toBe(status);
+    expect(response.json()).toMatchObject({
+      error: responseCode,
+      message: expect.stringContaining(message),
+    });
+    expect(response.body).not.toContain("must-not-leak");
   });
 
   it("classifies retryable and rejected upstream HTTP responses without leaking bodies", async () => {

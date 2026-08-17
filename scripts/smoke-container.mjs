@@ -88,6 +88,9 @@ for (const name of [
   "SIDEKICK_NETWORK_ID",
   "STACKS_API_KEY",
   "STACKS_API_KEY_HEADER",
+  "HIRO_REFERENCE_API_URL",
+  "HIRO_REFERENCE_API_KEY",
+  "HIRO_REFERENCE_API_KEY_HEADER",
   "SIDEKICK_FORECAST_HORIZON_CYCLES",
   "SIDEKICK_MAX_API_BURN_BLOCK_LAG",
   "SIDEKICK_STAKER_PAGE_LIMIT",
@@ -214,6 +217,12 @@ try {
     invariant(
       !supportBundleOutput.includes(process.env.STACKS_API_KEY),
       "Support bundle exposed the API key",
+    );
+  }
+  if (process.env.HIRO_REFERENCE_API_KEY) {
+    invariant(
+      !supportBundleOutput.includes(process.env.HIRO_REFERENCE_API_KEY),
+      "Support bundle exposed the reference API key",
     );
   }
 

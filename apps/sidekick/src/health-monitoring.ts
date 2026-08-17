@@ -1,3 +1,4 @@
+import { hiroReferenceApiCredential, indexedApiCredential } from "./config.js";
 import { buildHealthRollup, buildHealthSnapshot } from "./health-monitoring-presentation.js";
 import {
   collectHealthObservation,
@@ -63,9 +64,18 @@ export class HealthMonitoringService {
   }
 
   async testSource(
-    kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
-    url: string,
+    kind: "node-metrics" | "signer-monitoring" | "indexed-api" | "hiro-reference",
+    url?: string,
   ): Promise<{ status: "connected"; signals: number }> {
+    if (kind === "indexed-api" || kind === "hiro-reference") {
+      const config = this.options.getConfig();
+      const configuredUrl = kind === "indexed-api" ? config.apiUrl : config.hiroReferenceApiUrl;
+      if (!configuredUrl) throw new Error(`${kind} is not configured`);
+      const credential =
+        kind === "indexed-api" ? indexedApiCredential(config) : hiroReferenceApiCredential(config);
+      return testHealthSource(kind, configuredUrl, credential);
+    }
+    if (!url) throw new Error(`${kind} URL is required`);
     return testHealthSource(kind, url);
   }
 

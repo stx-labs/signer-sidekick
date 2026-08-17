@@ -27,8 +27,21 @@ import { ManagerSettings } from "./manager-settings.js";
 const healthSourceLabels = {
   "node-metrics": "node metrics",
   "signer-monitoring": "signer monitoring",
-  "hiro-reference": "reference API",
+  "indexed-api": "indexed chain API",
+  "hiro-reference": "network comparison API",
 } as const;
+
+type HealthSourceKind = keyof typeof healthSourceLabels;
+type ApiKeyAction = "keep" | "remove-override" | "replace";
+
+function credentialSourceLabel(
+  source: "environment" | "database" | "indexed-api" | "none",
+): string {
+  if (source === "database") return "Saved in Sidekick";
+  if (source === "environment") return "Provided by the deployment environment";
+  if (source === "indexed-api") return "Reusing the indexed API key (same origin)";
+  return "No API key configured";
+}
 
 const settingsTabs = [
   ["deployment", "Deployment"],
@@ -145,8 +158,12 @@ export function SettingsPage({
     data?.freshness?.status === "stale" ? null : (data?.runtimeSettings ?? null),
   );
   const [loading, setLoading] = useState(settings === null);
-  const [apiKeyAction, setApiKeyAction] = useState<"keep" | "clear" | "replace">("keep");
+  const [apiKeyAction, setApiKeyAction] = useState<ApiKeyAction>("keep");
   const [apiKey, setApiKey] = useState("");
+  const [referenceApiKeyAction, setReferenceApiKeyAction] = useState<ApiKeyAction>("keep");
+  const [referenceApiKey, setReferenceApiKey] = useState("");
+  const [indexedApiDirty, setIndexedApiDirty] = useState(false);
+  const [referenceApiDirty, setReferenceApiDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -156,7 +173,7 @@ export function SettingsPage({
   const [supportDownloadError, setSupportDownloadError] = useState<string | null>(null);
   const [deploymentCheckRevision, setDeploymentCheckRevision] = useState(0);
   const [sourceTest, setSourceTest] = useState<{
-    kind: "node-metrics" | "signer-monitoring" | "hiro-reference";
+    kind: HealthSourceKind;
     state: "testing" | "connected" | "failed";
     detail: string;
   } | null>(null);
@@ -179,6 +196,12 @@ export function SettingsPage({
       if (settingsLoadController.current === controller) {
         setSettings(result);
         setDirty(false);
+        setApiKey("");
+        setApiKeyAction("keep");
+        setReferenceApiKey("");
+        setReferenceApiKeyAction("keep");
+        setIndexedApiDirty(false);
+        setReferenceApiDirty(false);
       }
     } catch (cause) {
       if (controller.signal.aborted || settingsLoadController.current !== controller) return;
@@ -241,10 +264,15 @@ export function SettingsPage({
             nodeMetricsUrl: editable.dataSources.nodeMetricsUrl,
             signerMonitoringUrl: editable.dataSources.signerMonitoringUrl,
             hiroReferenceApiUrl: editable.dataSources.hiroReferenceApiUrl,
+            hiroReferenceApiKeyHeader: editable.dataSources.hiroReferenceApiKeyHeader,
             apiKeyAction:
               apiKeyAction === "replace"
                 ? { action: "replace", value: apiKey }
                 : { action: apiKeyAction },
+            hiroReferenceApiKeyAction:
+              referenceApiKeyAction === "replace"
+                ? { action: "replace", value: referenceApiKey }
+                : { action: referenceApiKeyAction },
           },
         }),
       });
@@ -252,6 +280,10 @@ export function SettingsPage({
       setLoadError(null);
       setApiKey("");
       setApiKeyAction("keep");
+      setReferenceApiKey("");
+      setReferenceApiKeyAction("keep");
+      setIndexedApiDirty(false);
+      setReferenceApiDirty(false);
       setSaved(true);
       setDirty(false);
       setDeploymentCheckRevision((revision) => revision + 1);
@@ -302,10 +334,7 @@ export function SettingsPage({
     setDirty(true);
     setSettings({ ...settings, [section]: value });
   };
-  const testHealthSource = async (
-    kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
-    url: string,
-  ) => {
+  const testHealthSource = async (kind: HealthSourceKind, url?: string) => {
     sourceTestController.current?.abort();
     const controller = new AbortController();
     sourceTestController.current = controller;
@@ -315,7 +344,11 @@ export function SettingsPage({
         token,
         "/api/v1/health/test-source",
         healthSourceTestResponseSchema,
-        { method: "POST", body: JSON.stringify({ kind, url }), signal: controller.signal },
+        {
+          method: "POST",
+          body: JSON.stringify(url === undefined ? { kind } : { kind, url }),
+          signal: controller.signal,
+        },
       );
       if (sourceTestController.current !== controller) return;
       setSourceTest({
@@ -602,98 +635,219 @@ export function SettingsPage({
                   </span>
                 ) : null}
               </Field>
-              <Field label="Reference API URL" help="Public API used to compare chain height.">
-                <div className="field-inline-action">
-                  <input
-                    className="input mono"
-                    type="url"
-                    value={settings.dataSources.hiroReferenceApiUrl}
-                    onChange={(event) =>
-                      update("dataSources", {
-                        ...settings.dataSources,
-                        hiroReferenceApiUrl: event.target.value,
-                      })
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    disabled={
-                      !settings.dataSources.hiroReferenceApiUrl || sourceTest?.state === "testing"
-                    }
-                    onClick={() =>
-                      void testHealthSource(
-                        "hiro-reference",
-                        settings.dataSources.hiroReferenceApiUrl,
-                      )
-                    }
+              <div className="api-source-grid">
+                <section className="api-source-card" aria-labelledby="indexed-api-title">
+                  <div className="api-source-head">
+                    <div>
+                      <h3 id="indexed-api-title">Indexed chain API</h3>
+                      <p>Roster, activity, and historical chain data.</p>
+                    </div>
+                    <span className="credential-status">
+                      {apiKeyAction === "replace"
+                        ? "New key will be saved"
+                        : apiKeyAction === "remove-override"
+                          ? "Saved key will be removed"
+                          : credentialSourceLabel(settings.dataSources.apiKeySource)}
+                    </span>
+                  </div>
+                  <Field label="URL">
+                    <input
+                      className="input mono"
+                      type="url"
+                      value={settings.dataSources.apiUrl}
+                      onChange={(event) => {
+                        setIndexedApiDirty(true);
+                        update("dataSources", {
+                          ...settings.dataSources,
+                          apiUrl: event.target.value,
+                        });
+                      }}
+                    />
+                  </Field>
+                  <Field
+                    label="API key"
+                    help="Write-only. Leave blank to keep the current deployment or saved key."
                   >
-                    Test
-                  </button>
-                </div>
-                {sourceTest?.kind === "hiro-reference" ? (
-                  <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
-                    {sourceTest.detail}
-                  </span>
-                ) : null}
-              </Field>
-              <Field label="Stacks API URL" help="Stacks API used for chain data.">
-                <input
-                  className="input mono"
-                  type="url"
-                  value={settings.dataSources.apiUrl}
-                  onChange={(event) =>
-                    update("dataSources", { ...settings.dataSources, apiUrl: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label="API key header">
-                <input
-                  className="input mono"
-                  value={settings.dataSources.apiKeyHeader}
-                  onChange={(event) =>
-                    update("dataSources", {
-                      ...settings.dataSources,
-                      apiKeyHeader: event.target.value,
-                    })
-                  }
-                />
-              </Field>
-              <Field
-                label="API key"
-                help={`Status: ${settings.dataSources.apiKeyConfigured ? `configured from ${settings.dataSources.apiKeySource}` : "not configured"}.`}
-              >
-                <select
-                  className="input"
-                  value={apiKeyAction}
-                  onChange={(event) => {
-                    setSaved(false);
-                    setDirty(true);
-                    setSourceTest(null);
-                    setApiKeyAction(event.target.value as typeof apiKeyAction);
-                  }}
-                >
-                  <option value="keep">Keep current</option>
-                  <option value="replace">Replace</option>
-                  <option value="clear">Clear</option>
-                </select>
-              </Field>
-              {apiKeyAction === "replace" ? (
-                <Field label="New API key">
-                  <input
-                    className="input mono"
-                    type="password"
-                    autoComplete="new-password"
-                    value={apiKey}
-                    onChange={(event) => {
-                      setSaved(false);
-                      setDirty(true);
-                      setSourceTest(null);
-                      setApiKey(event.target.value);
-                    }}
-                  />
-                </Field>
-              ) : null}
+                    <input
+                      className="input mono"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={
+                        settings.dataSources.apiKeyConfigured ? "Configured" : "Optional"
+                      }
+                      value={apiKey}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setSaved(false);
+                        setDirty(true);
+                        setIndexedApiDirty(true);
+                        setSourceTest(null);
+                        setApiKey(value);
+                        setApiKeyAction(value ? "replace" : "keep");
+                      }}
+                    />
+                  </Field>
+                  <div className="api-source-actions">
+                    <button
+                      type="button"
+                      className="btn btn-tertiary"
+                      disabled={indexedApiDirty || sourceTest?.state === "testing"}
+                      onClick={() => void testHealthSource("indexed-api")}
+                    >
+                      Test saved connection
+                    </button>
+                    {settings.dataSources.apiKeySource === "database" ? (
+                      <button
+                        type="button"
+                        className="btn btn-tertiary"
+                        onClick={() => {
+                          setApiKey("");
+                          setApiKeyAction("remove-override");
+                          setIndexedApiDirty(true);
+                          setDirty(true);
+                          setSaved(false);
+                          setSourceTest(null);
+                        }}
+                      >
+                        Remove saved key
+                      </button>
+                    ) : null}
+                  </div>
+                  {indexedApiDirty ? (
+                    <p className="help">Save changes before testing this connection.</p>
+                  ) : null}
+                  {sourceTest?.kind === "indexed-api" ? (
+                    <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
+                      {sourceTest.detail}
+                    </span>
+                  ) : null}
+                  <details className="wallet-operation-advanced api-source-advanced">
+                    <summary>Advanced</summary>
+                    <Field label="API key header">
+                      <input
+                        className="input mono"
+                        value={settings.dataSources.apiKeyHeader}
+                        onChange={(event) => {
+                          setIndexedApiDirty(true);
+                          update("dataSources", {
+                            ...settings.dataSources,
+                            apiKeyHeader: event.target.value,
+                          });
+                        }}
+                      />
+                    </Field>
+                  </details>
+                </section>
+
+                <section className="api-source-card" aria-labelledby="reference-api-title">
+                  <div className="api-source-head">
+                    <div>
+                      <h3 id="reference-api-title">Network comparison API</h3>
+                      <p>External reference used only to diagnose local node health.</p>
+                    </div>
+                    <span className="credential-status">
+                      {referenceApiKeyAction === "replace"
+                        ? "New key will be saved"
+                        : referenceApiKeyAction === "remove-override"
+                          ? "Saved key will be removed"
+                          : credentialSourceLabel(settings.dataSources.hiroReferenceApiKeySource)}
+                    </span>
+                  </div>
+                  <Field label="URL">
+                    <input
+                      className="input mono"
+                      type="url"
+                      value={settings.dataSources.hiroReferenceApiUrl}
+                      onChange={(event) => {
+                        setReferenceApiDirty(true);
+                        update("dataSources", {
+                          ...settings.dataSources,
+                          hiroReferenceApiUrl: event.target.value,
+                        });
+                      }}
+                    />
+                  </Field>
+                  <Field
+                    label="API key"
+                    help="Optional. A same-origin indexed API key is reused automatically."
+                  >
+                    <input
+                      className="input mono"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={
+                        settings.dataSources.hiroReferenceApiKeyConfigured
+                          ? "Configured"
+                          : "Optional"
+                      }
+                      value={referenceApiKey}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setSaved(false);
+                        setDirty(true);
+                        setReferenceApiDirty(true);
+                        setSourceTest(null);
+                        setReferenceApiKey(value);
+                        setReferenceApiKeyAction(value ? "replace" : "keep");
+                      }}
+                    />
+                  </Field>
+                  <div className="api-source-actions">
+                    <button
+                      type="button"
+                      className="btn btn-tertiary"
+                      disabled={
+                        !settings.dataSources.hiroReferenceApiUrl ||
+                        referenceApiDirty ||
+                        sourceTest?.state === "testing"
+                      }
+                      onClick={() => void testHealthSource("hiro-reference")}
+                    >
+                      Test saved connection
+                    </button>
+                    {settings.dataSources.hiroReferenceApiKeySource === "database" ? (
+                      <button
+                        type="button"
+                        className="btn btn-tertiary"
+                        onClick={() => {
+                          setReferenceApiKey("");
+                          setReferenceApiKeyAction("remove-override");
+                          setReferenceApiDirty(true);
+                          setDirty(true);
+                          setSaved(false);
+                          setSourceTest(null);
+                        }}
+                      >
+                        Remove saved key
+                      </button>
+                    ) : null}
+                  </div>
+                  {referenceApiDirty ? (
+                    <p className="help">Save changes before testing this connection.</p>
+                  ) : null}
+                  {sourceTest?.kind === "hiro-reference" ? (
+                    <span className={sourceTest.state === "failed" ? "field-error" : "muted"}>
+                      {sourceTest.detail}
+                    </span>
+                  ) : null}
+                  <details className="wallet-operation-advanced api-source-advanced">
+                    <summary>Advanced</summary>
+                    <Field label="API key header">
+                      <input
+                        className="input mono"
+                        value={settings.dataSources.hiroReferenceApiKeyHeader}
+                        onChange={(event) => {
+                          setReferenceApiDirty(true);
+                          update("dataSources", {
+                            ...settings.dataSources,
+                            hiroReferenceApiKeyHeader: event.target.value,
+                          });
+                        }}
+                      />
+                    </Field>
+                  </details>
+                </section>
+              </div>
             </section>
           ) : null}
 

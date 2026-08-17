@@ -129,6 +129,7 @@ describe("operator support bundle", () => {
       SIDEKICK_BUILD_VERSION: "1.2.3",
       SIDEKICK_BUILD_COMMIT: "abcdef1234567",
       STACKS_API_KEY: "must-not-enter-application-metadata",
+      HIRO_REFERENCE_API_KEY: "reference-key-must-not-enter-application-metadata",
     },
     collectedAt,
     120,
@@ -169,7 +170,7 @@ describe("operator support bundle", () => {
         ],
       }),
       runtimeSettings: () => ({
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: 0,
         updatedAt: null,
         pool: { displayName: "", websiteUrl: "", supportContact: "", leatherUrl: "" },
@@ -183,6 +184,9 @@ describe("operator support bundle", () => {
           nodeMetricsUrl: "",
           signerMonitoringUrl: "",
           hiroReferenceApiUrl: "",
+          hiroReferenceApiKeyHeader: "x-api-key",
+          hiroReferenceApiKeyConfigured: false,
+          hiroReferenceApiKeySource: "none",
         },
         forecast: { horizonCycles: 6 },
         embed: { publicApiUrl: "" },
@@ -328,6 +332,9 @@ describe("operator support bundle", () => {
       },
     });
     expect(JSON.stringify(bundle)).not.toContain("must-not-enter-application-metadata");
+    expect(JSON.stringify(bundle)).not.toContain(
+      "reference-key-must-not-enter-application-metadata",
+    );
   });
 
   it("fails only the affected section when a forbidden field is presented", async () => {

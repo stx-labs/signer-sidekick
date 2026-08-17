@@ -382,8 +382,8 @@ export interface ServerOptions {
     current(): Promise<HealthSnapshot>;
     refresh(): Promise<HealthSnapshot>;
     testSource(
-      kind: "node-metrics" | "signer-monitoring" | "hiro-reference",
-      url: string,
+      kind: "node-metrics" | "signer-monitoring" | "indexed-api" | "hiro-reference",
+      url?: string,
     ): Promise<unknown>;
   };
   engine?: TransactionEngineApiService;
@@ -430,6 +430,12 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   unauthorized:
     "The operator credential is missing or invalid. Check proxy authentication or enter the configured credential and retry.",
   invalid_health_source: "Choose a supported health source and enter a valid URL.",
+  health_source_authentication_required:
+    "The API requires a credential. Add or replace its API key in Settings, save, then retry.",
+  health_source_authentication_rejected:
+    "The API rejected its configured credential. Replace the API key in Settings, save, then retry.",
+  health_source_rate_limited:
+    "The API is rate limiting Sidekick. Verify that its API key is configured, then retry shortly.",
   invalid_pagination: "Pagination values are invalid. Correct the request and retry.",
   limit_must_be_positive:
     "Pagination limits must be positive whole numbers. Correct the request and retry.",
@@ -675,6 +681,18 @@ function classifySafeOperatorError(
     }
     if (error.code === "unsafe-address") {
       return safeClassification(422, "health_source_not_allowed");
+    }
+    if (error.code === "authentication-required") {
+      return safeClassification(422, "health_source_authentication_required");
+    }
+    if (error.code === "authentication-rejected") {
+      return safeClassification(422, "health_source_authentication_rejected");
+    }
+    if (error.code === "rate-limited") {
+      return safeClassification(429, "health_source_rate_limited", {
+        retryable: true,
+        retryAfterSeconds: 30,
+      });
     }
     if (
       error.code === "dns-unavailable" ||
@@ -2029,9 +2047,15 @@ export function createServer(options: ServerOptions = {}) {
     const health = requireFeature(options.health, "health_monitoring_unavailable");
     const parsed = healthSourceTestRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_health_source");
-    return await interactive(request, async () =>
-      health.testSource(parsed.data.kind, parsed.data.url),
-    );
+    return await interactive(request, async () => {
+      if (parsed.data.kind === "indexed-api" || parsed.data.kind === "hiro-reference") {
+        return health.testSource(parsed.data.kind);
+      }
+      return health.testSource(
+        parsed.data.kind,
+        "url" in parsed.data ? parsed.data.url : undefined,
+      );
+    });
   });
   server.get("/api/v1/pool", async (request, _reply) => {
     if (options.service?.poolPage) {

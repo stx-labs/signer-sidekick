@@ -101,6 +101,59 @@ stacks_signer_block_responses_sent{response_type="accepted"} 12
     });
   });
 
+  it("authenticates API health reads only with an origin-bound credential", async () => {
+    const observedApiKeys: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      if (request.url === "/v2/info") {
+        response.end(JSON.stringify({ network_id: 1, burn_block_height: 1, stacks_tip_height: 1 }));
+        return;
+      }
+      if (request.url === "/extended") {
+        observedApiKeys.push(request.headers["x-api-key"]);
+        response.end(
+          JSON.stringify({
+            status: "ready",
+            chain_tip: { block_height: 1, burn_block_height: 1 },
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end("missing");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const config: SidekickConfig = {
+      network: "mainnet",
+      nodeRpcUrl: baseUrl,
+      apiUrl: baseUrl,
+      apiKey: "bound-secret",
+      apiKeyOrigin: new URL(baseUrl).origin,
+      apiKeyHeader: "x-api-key",
+      maxApiBurnBlockLag: 12,
+      forecastHorizonCycles: 6,
+      stakerPageLimit: 200,
+      eventPageLimit: 100,
+      databasePath: ":memory:",
+      hiroReferenceApiUrl: baseUrl,
+      hiroReferenceApiKeyHeader: "x-api-key",
+    };
+
+    const observation = await collectHealthObservation(config, "2026-08-15T12:00:00.000Z");
+    expect(observation.hiroSource?.reachable).toBe(true);
+    expect(observedApiKeys).toEqual(["bound-secret"]);
+
+    const health = new HealthMonitoringService({ getConfig: () => config });
+    await expect(health.testSource("indexed-api")).resolves.toEqual({
+      status: "connected",
+      signals: 2,
+    });
+    expect(observedApiKeys).toEqual(["bound-secret", "bound-secret"]);
+  });
+
   it("combines live node, Hiro, and signer signals with reset-safe rolling values", async () => {
     let accepted = 10;
     let rejected = 2;

@@ -71,6 +71,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE runtime_api_credentials;
     DROP TABLE current_member_history_recovery;
     ALTER TABLE chain_events DROP COLUMN occurred_at;
     ALTER TABLE chain_events DROP COLUMN evidence_level;
@@ -349,25 +350,72 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 33,
+      schemaVersion: 34,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
     });
   });
 
+  it("moves the legacy indexed API key into origin-bound source storage", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-v33-credentials-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    createDatabaseThroughMigration(path, 33).close();
+    const legacy = new DatabaseSync(path);
+    legacy
+      .prepare(
+        `INSERT INTO runtime_settings (
+          singleton_id, settings_json, api_key_secret, revision, updated_at
+        ) VALUES (1, ?, ?, 1, ?)`,
+      )
+      .run(
+        JSON.stringify({
+          schemaVersion: 1,
+          dataSources: { apiUrl: "https://api.mainnet.hiro.so" },
+        }),
+        "legacy-secret",
+        observedAt,
+      );
+    legacy.close();
+
+    const upgraded = await openSidekickStore(path, later);
+    openStores.push(upgraded.store);
+    expect(upgraded.store.runtimeSettings.get()?.apiCredentials).toEqual({
+      "indexed-api": {
+        value: "legacy-secret",
+        boundUrl: "https://api.mainnet.hiro.so",
+      },
+    });
+    const inspection = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspection
+        .prepare("SELECT api_key_secret FROM runtime_settings WHERE singleton_id = 1")
+        .get(),
+    ).toEqual({ api_key_secret: null });
+    inspection.close();
+  });
+
   it("persists redacted runtime settings history", async () => {
     const store = await memoryStore();
     store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Test pool" },
-      apiKeySecret: "must-not-appear-in-settings-json",
+      apiCredentials: {
+        "indexed-api": {
+          value: "must-not-appear-in-settings-json",
+          boundUrl: "https://api.mainnet.hiro.so",
+        },
+      },
       changedFields: ["pool.displayName", "dataSources.apiKey"],
       observedAt,
     });
     const runtime = store.runtimeSettings.get();
     expect(runtime).toMatchObject({ revision: 1, settings: { displayName: "Test pool" } });
     expect(JSON.stringify(runtime?.settings)).not.toContain("must-not-appear");
-    expect(runtime?.apiKeySecret).toBe("must-not-appear-in-settings-json");
+    expect(runtime?.apiCredentials["indexed-api"]).toEqual({
+      value: "must-not-appear-in-settings-json",
+      boundUrl: "https://api.mainnet.hiro.so",
+    });
     expect(store.runtimeSettings.listAudit()).toEqual([
       {
         revision: 1,
@@ -1441,7 +1489,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 33,
+      schemaVersion: 34,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1454,7 +1502,7 @@ describe("Sidekick SQLite store", () => {
     const initial = await openSidekickStore(path, observedAt);
     initial.store.runtimeSettings.put({
       settings: { schemaVersion: 1, displayName: "Preserved through forward migrations" },
-      apiKeySecret: null,
+      apiCredentials: {},
       changedFields: ["pool.displayName"],
       observedAt,
     });
@@ -1467,7 +1515,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1550,7 +1598,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(33);
+    expect(upgraded.store.schemaVersion()).toBe(34);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1623,6 +1671,7 @@ describe("Sidekick SQLite store", () => {
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
       DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
       ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
@@ -1651,7 +1700,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1802,7 +1851,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1926,6 +1975,7 @@ describe("Sidekick SQLite store", () => {
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
       DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
       ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
@@ -1949,7 +1999,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(33);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(34);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -1987,6 +2037,7 @@ describe("Sidekick SQLite store", () => {
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
       DROP TABLE current_member_history_recovery;
+      DROP TABLE runtime_api_credentials;
       ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;

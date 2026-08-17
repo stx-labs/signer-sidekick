@@ -2123,4 +2123,29 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 34,
+    name: "source_scoped_api_credentials",
+    sql: `
+      -- API credentials belong to a specific outbound source. Keeping them outside the public
+      -- settings document prevents accidental disclosure and lets future sources add credentials
+      -- without adding another secret column to the singleton settings row.
+      CREATE TABLE runtime_api_credentials (
+        source TEXT PRIMARY KEY CHECK (source IN ('indexed-api', 'reference-api')),
+        secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 2000),
+        bound_url TEXT NOT NULL CHECK (length(bound_url) BETWEEN 1 AND 500),
+        updated_at TEXT NOT NULL
+      ) STRICT, WITHOUT ROWID;
+
+      -- Preserve the pre-v34 indexed API credential. The legacy column remains only because
+      -- SQLite cannot drop it without rebuilding the settings table; new writes clear it.
+      INSERT INTO runtime_api_credentials (source, secret, bound_url, updated_at)
+      SELECT 'indexed-api', api_key_secret,
+        json_extract(settings_json, '$.dataSources.apiUrl'), updated_at
+      FROM runtime_settings
+      WHERE singleton_id = 1 AND api_key_secret IS NOT NULL;
+
+      UPDATE runtime_settings SET api_key_secret = NULL WHERE singleton_id = 1;
+    `,
+  },
 ];

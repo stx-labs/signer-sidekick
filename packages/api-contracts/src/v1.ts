@@ -238,7 +238,7 @@ export type HistoryRecoveryCoverage = z.infer<typeof historyRecoveryCoverageSche
 
 const runtimeSettingsShape = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     revision: z.number().int().nonnegative(),
     updatedAt: z.string().nullable(),
     pool: z
@@ -262,6 +262,9 @@ const runtimeSettingsShape = z
         nodeMetricsUrl: z.string(),
         signerMonitoringUrl: z.string(),
         hiroReferenceApiUrl: z.string(),
+        hiroReferenceApiKeyHeader: z.string(),
+        hiroReferenceApiKeyConfigured: z.boolean(),
+        hiroReferenceApiKeySource: z.enum(["environment", "database", "indexed-api", "none"]),
       })
       .strict(),
     forecast: z.object({ horizonCycles: z.number().int().nonnegative() }).strict(),
@@ -1566,12 +1569,15 @@ export const apiErrorSchema = z.looseObject({
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
-export const healthSourceTestRequestSchema = z
-  .object({
-    kind: z.enum(["node-metrics", "signer-monitoring", "hiro-reference"]),
-    url: z.string().min(1).max(500),
-  })
-  .strict();
+export const healthSourceTestRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.enum(["node-metrics", "signer-monitoring"]),
+      url: z.string().min(1).max(500),
+    })
+    .strict(),
+  z.object({ kind: z.enum(["indexed-api", "hiro-reference"]) }).strict(),
+]);
 export type HealthSourceTestRequest = z.infer<typeof healthSourceTestRequestSchema>;
 export type HealthSourceKind = HealthSourceTestRequest["kind"];
 
