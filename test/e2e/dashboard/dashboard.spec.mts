@@ -51,6 +51,14 @@ async function openSettingsSection(
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
 }
 
+async function editConnection(page: Page, label: string) {
+  const row = page.locator(".connection-row", {
+    has: page.getByRole("heading", { name: label, exact: true }),
+  });
+  await row.getByRole("button", { name: "Edit" }).click();
+  return row;
+}
+
 test("shows focused recovery when the configured signer manager is not deployed", async ({
   page,
 }) => {
@@ -138,12 +146,11 @@ test("keeps diagnostics readable and actions disabled during identity safe mode"
 
   await openPage(page, "settings", "Settings");
   await expect(page.getByText(/configuration changes and source tests are disabled/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Save / })).toHaveCount(0);
   await openSettingsSection(page, "support", "Support & maintenance");
   const supportButtons = page.getByRole("button", { name: "Download support bundle" });
-  await expect(supportButtons).toHaveCount(2);
-  await expect(supportButtons.first()).toBeEnabled();
-  await expect(supportButtons.last()).toBeDisabled();
+  await expect(supportButtons).toHaveCount(1);
+  await expect(supportButtons).toBeEnabled();
 });
 
 test("keeps retained operator evidence visible during a temporary local-node outage", async ({
@@ -386,7 +393,9 @@ test("provides viewport-contained touch navigation on smaller screens", async ({
   await expect(navigation).toBeHidden();
 });
 
-test("styles the mobile Settings picker and preserves reward section spacing", async ({ page }) => {
+test("keeps the single-page Settings flow responsive and preserves reward section spacing", async ({
+  page,
+}) => {
   const rewardsWithBond = structuredClone(snapshot);
   rewardsWithBond.rewards.buckets.push({
     bondIndex: "0",
@@ -406,31 +415,22 @@ test("styles the mobile Settings picker and preserves reward section spacing", a
   await login(page);
   await openPage(page, "settings", "Settings");
 
-  const settingsPicker = page.getByRole("button", { name: /Settings section/ });
+  await expect(page.getByRole("button", { name: /Settings section/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Operations", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeVisible();
   const viewport = page.viewportSize();
   if (viewport && viewport.width <= 640) {
-    await expect(settingsPicker).toBeVisible();
-    await settingsPicker.click();
-    const menu = page.locator("#settings-section-menu");
-    await expect(menu).toBeVisible();
-    await expect(menu.getByRole("button", { name: "Deployment" })).toHaveAttribute(
-      "aria-current",
-      "page",
+    const indexed = await editConnection(page, "Indexed chain API");
+    await expect(indexed.locator(".connection-editor")).toBeVisible();
+    const editorBox = await indexed.locator(".connection-editor").boundingBox();
+    expect(editorBox).not.toBeNull();
+    expect(editorBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((editorBox?.x ?? 0) + (editorBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      viewport.width,
     );
-    const menuBox = await menu.boundingBox();
-    expect(menuBox).not.toBeNull();
-    expect(menuBox?.x ?? -1).toBeGreaterThanOrEqual(0);
-    expect((menuBox?.x ?? 0) + (menuBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
-    await page.keyboard.press("Escape");
-    await expect(menu).toBeHidden();
-    await expect(settingsPicker).toBeFocused();
-    await settingsPicker.click();
-    await menu.getByRole("button", { name: "Data sources" }).click();
-    await expect(page.getByRole("heading", { name: "Data sources", exact: true })).toBeVisible();
-    await expect(menu).toBeHidden();
-    await expect(settingsPicker).toBeFocused();
-  } else {
-    await expect(settingsPicker).toBeHidden();
   }
 
   await openPage(page, "rewards", "Rewards");
@@ -716,7 +716,8 @@ test("keeps Settings and Signer Health usable when initial operator state fails"
 
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByText("Couldn’t load status")).toBeVisible();
-  await openSettingsSection(page, "sources", "Data sources");
+  await openSettingsSection(page, "sources", "Connections");
+  await editConnection(page, "Stacks node");
   await expect(page.getByLabel("Stacks node RPC URL")).toBeVisible();
 
   await openPage(page, "health", "Signer Health");
@@ -1310,15 +1311,19 @@ test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
-  await openSettingsSection(page, "sources", "Data sources");
+  await openSettingsSection(page, "sources", "Connections");
+  await page
+    .locator(".connection-compatibility")
+    .getByText(/Network compatibility/)
+    .click();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
 });
 
 test("edits indexed and comparison API credentials independently", async ({ page }) => {
-  let submitted: Record<string, unknown> | null = null;
+  const submissions: Record<string, unknown>[] = [];
   await page.route("**/api/v1/settings", async (route) => {
     if (route.request().method() === "PUT") {
-      submitted = route.request().postDataJSON() as Record<string, unknown>;
+      submissions.push(route.request().postDataJSON() as Record<string, unknown>);
     }
     await route.fulfill({
       status: 200,
@@ -1328,22 +1333,33 @@ test("edits indexed and comparison API credentials independently", async ({ page
   });
 
   await login(page);
-  await openSettingsSection(page, "sources", "Data sources");
-  const indexed = page.locator('section[aria-labelledby="indexed-api-title"]');
-  const comparison = page.locator('section[aria-labelledby="reference-api-title"]');
+  await openSettingsSection(page, "sources", "Connections");
+  await page.getByLabel("Forecast horizon").fill("12");
+  const indexed = await editConnection(page, "Indexed chain API");
   await expect(indexed.getByText("Provided by the deployment environment")).toBeVisible();
-  await expect(comparison.getByText("Saved in Sidekick")).toBeVisible();
-
   await indexed.locator('input[type="password"]').fill("new-indexed-secret");
-  await comparison.locator('input[type="password"]').fill("new-reference-secret");
   await expect(indexed.getByRole("button", { name: "Test saved connection" })).toBeDisabled();
-  await page.getByRole("button", { name: "Save changes" }).click();
 
-  expect(submitted).toMatchObject({
+  const comparison = await editConnection(page, "Network comparison API");
+  await expect(comparison.getByText("Saved in Sidekick")).toBeVisible();
+  await comparison.locator('input[type="password"]').fill("new-reference-secret");
+  await page.getByRole("button", { name: "Save connections" }).click();
+
+  expect(submissions[0]).toMatchObject({
     dataSources: {
       apiKeyAction: { action: "replace", value: "new-indexed-secret" },
       hiroReferenceApiKeyAction: { action: "replace", value: "new-reference-secret" },
     },
+    forecast: snapshot.runtimeSettings.forecast,
+  });
+  await expect(page.getByLabel("Forecast horizon")).toHaveValue("12");
+  await page.getByRole("button", { name: "Save forecast" }).click();
+  expect(submissions[1]).toMatchObject({
+    dataSources: {
+      apiKeyAction: { action: "keep" },
+      hiroReferenceApiKeyAction: { action: "keep" },
+    },
+    forecast: { horizonCycles: 12 },
   });
 });
 
@@ -1456,9 +1472,13 @@ test("explains manager attachment and trust evidence in Settings", async ({ page
   expect(valueBox).not.toBeNull();
   expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
   await openSettingsSection(page, "support", "Support & maintenance");
-  await expect(page.getByText("Manager trust")).toBeVisible();
+  await expect(page.getByText("Manager trust", { exact: true })).toBeVisible();
   await expect(page.getByText("Installed profile store")).toBeVisible();
-  await openSettingsSection(page, "sources", "Data sources");
+  await openSettingsSection(page, "sources", "Connections");
+  await page
+    .locator(".connection-compatibility")
+    .getByText(/Network compatibility/)
+    .click();
   await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
 });
 
@@ -1909,30 +1929,16 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
   expect(walletBody).toEqual({ action: "register-self", actorPrincipal });
 });
 
-test("keeps desktop settings chrome visible while the form scrolls", async ({ page }) => {
+test("uses one document scroll for desktop Settings", async ({ page }) => {
   test.skip((page.viewportSize()?.width ?? 0) <= 1080, "Desktop settings shell only");
   await login(page);
   await openPage(page, "settings", "Settings");
 
-  const settingsScroll = page.locator(".settings-scroll");
-  const saveButton = page.getByRole("button", { name: "Save changes" });
-  const settingsMenu = page.locator(".set-nav");
-  await expect(settingsScroll).toHaveCSS("overflow-y", "auto");
-  const saveBefore = await saveButton.boundingBox();
-  const menuBefore = await settingsMenu.boundingBox();
-
-  await settingsScroll.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-  await expect
-    .poll(() => settingsScroll.evaluate((element) => element.scrollTop))
-    .toBeGreaterThan(0);
-
-  const saveAfter = await saveButton.boundingBox();
-  const menuAfter = await settingsMenu.boundingBox();
-  expect(saveAfter?.y).toBe(saveBefore?.y);
-  expect(menuAfter?.y).toBe(menuBefore?.y);
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.locator(".settings-scroll")).toHaveCount(0);
+  await expect(page.locator(".set-nav")).toHaveCount(0);
+  await page.getByRole("heading", { name: "Support", exact: true }).scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeInViewport();
 });
 
 test("hands first-time signer setup to the maintained external flow", async ({ page }) => {
@@ -2040,7 +2046,9 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
   await expect(page.getByText("Operator-installed")).toBeVisible();
   await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByText("Assist unavailable.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel("Operations").getByText("Assist unavailable.", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -2290,7 +2298,8 @@ test("editing a Settings source invalidates its overlapping connection test", as
 
   try {
     await login(page);
-    await openSettingsSection(page, "sources", "Data sources");
+    await openSettingsSection(page, "sources", "Connections");
+    await editConnection(page, "Node monitoring");
     const metricsUrl = page.getByLabel("Node metrics URL");
     await metricsUrl.locator("xpath=following-sibling::button").click();
     await expect.poll(() => sourceTestCalls).toBe(1);

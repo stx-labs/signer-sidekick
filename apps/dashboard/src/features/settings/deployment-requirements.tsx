@@ -127,6 +127,8 @@ export function DeploymentRequirementsPanel({
   }, [load, refreshRevision]);
 
   const incomplete = requirements?.checks.filter(({ status }) => status !== "pass").length ?? 0;
+  const incompleteChecks = requirements?.checks.filter(({ status }) => status !== "pass") ?? [];
+  const passingChecks = requirements?.checks.filter(({ status }) => status === "pass") ?? [];
   return (
     <section className="card-standout set-section deployment-requirements" id="requirements">
       <div className="card-head">
@@ -178,11 +180,25 @@ export function DeploymentRequirementsPanel({
                 : `${incomplete} ${incomplete === 1 ? "check needs" : "checks need"} review.`}
             </div>
           </div>
-          <div className="deployment-requirement-list">
-            {requirements.checks.map((check) => (
-              <RequirementCard check={check} key={check.id} />
-            ))}
-          </div>
+          {incompleteChecks.length ? (
+            <div className="deployment-requirement-list">
+              {incompleteChecks.map((check) => (
+                <RequirementCard check={check} key={check.id} />
+              ))}
+            </div>
+          ) : null}
+          {passingChecks.length ? (
+            <details className="deployment-passing-checks">
+              <summary>
+                {passingChecks.length} successful {passingChecks.length === 1 ? "check" : "checks"}
+              </summary>
+              <div className="deployment-requirement-list">
+                {passingChecks.map((check) => (
+                  <RequirementCard check={check} key={check.id} />
+                ))}
+              </div>
+            </details>
+          ) : null}
           <p className="help">
             Last checked {new Date(requirements.checkedAt).toLocaleString()}. Required failures
             block only the features that need them; recommended checks improve diagnosis and
