@@ -58,8 +58,11 @@ Sampling confidence is:
 - `low` after the minimum three observations and six-block span; and
 - `developing` after at least six observations spanning at least 24 Bitcoin blocks.
 
-Non-monotonic accrual, incomplete anchored inputs, or simulation failure omits the forecast instead
-of substituting a stale or proportional estimate.
+A lower cumulative observation starts a fresh monotonic sample window. Sidekick omits the forecast
+until that new window again has at least three observations spanning six Bitcoin blocks, then
+recovers without allowing a superseded chain-history sample to poison the whole checkpoint.
+Incomplete anchored inputs or simulation failure also omit the forecast instead of substituting a
+stale or proportional estimate.
 
 ## Calibration
 

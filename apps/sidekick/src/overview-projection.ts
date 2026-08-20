@@ -576,6 +576,7 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       rewardCycleId: null,
       estimatedNetworkRewardSats: null,
       estimatedPoolRewardSats: null,
+      distributionCheckpoint: null,
       estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reward-outlook-unavailable",
       estimateKind: "unavailable",
@@ -591,6 +592,8 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
   const operatorFeeForecast = outlook?.operatorFeeForecast ?? null;
   const operatorFeeEstimate = outlook?.operatorFeeEstimate ?? null;
   const usesForecast = forecast !== null;
+  const checkpointPoolSats = forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null;
+  const targetCheckpoint = forecast?.targetCheckpoint ?? currentEstimate?.targetCheckpoint ?? null;
   const available = outlook !== null || rewards !== null;
   const rewardEvidence = evidence({
     status: !available
@@ -616,7 +619,8 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
     estimatedNetworkRewardSats:
       forecast?.globalSats.point ?? (currentEstimate ? outlook?.accrued.globalSats : null) ?? null,
-    estimatedPoolRewardSats: forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null,
+    estimatedPoolRewardSats: checkpointPoolSats,
+    distributionCheckpoint: checkpointPoolSats === null ? null : targetCheckpoint,
     estimatedOperatorFeeSats: usesForecast
       ? (operatorFeeForecast?.sats.point ?? null)
       : (operatorFeeEstimate?.sats ?? null),

@@ -2310,6 +2310,7 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
+    distributionCheckpoint: z.enum(["first-half", "second-half"]).nullable(),
     estimatedOperatorFeeSats: z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
@@ -2351,6 +2352,13 @@ export const overviewRewardsSummarySchema = z
         code: "custom",
         path: ["estimatedPoolRewardSats"],
         message: "An available pool estimate must identify its kind and confidence",
+      });
+    }
+    if ((value.estimatedPoolRewardSats === null) !== (value.distributionCheckpoint === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["distributionCheckpoint"],
+        message: "An available reward estimate must identify its distribution checkpoint",
       });
     }
     if (value.estimateKind === "if-calculated-now" && value.confidence !== "contract-exact") {

@@ -253,6 +253,7 @@ describe("Overview V1 contracts", () => {
         rewardCycleId: 141,
         estimatedNetworkRewardSats: "200000",
         estimatedPoolRewardSats: "150000",
+        distributionCheckpoint: "first-half" as const,
         estimatedOperatorFeeSats: "7500",
         operatorFeeUnavailableReason: null,
         estimateKind: "checkpoint-forecast" as const,
@@ -299,6 +300,12 @@ describe("Overview V1 contracts", () => {
       overviewPageSchema.safeParse({
         ...fixture,
         rewards: { ...fixture.rewards, confidence: "contract-exact" },
+      }).success,
+    ).toBe(false);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: { ...fixture.rewards, distributionCheckpoint: null },
       }).success,
     ).toBe(false);
     expect(

@@ -129,16 +129,19 @@ health is already prominent in the operational snapshot and is not repeated here
 The card links to `#pool`, normally its forecast or roster section. It does not reproduce the
 forecast chart or staker table.
 
-#### Rewards
+#### Current Reward Distribution
 
-- projected network-wide rewards, pool gross, operator fee, and staker net for the next allocation;
-- forecast confidence and target reward cycle; and
+- projected network-wide rewards, pool gross, operator fee, and staker net for one weekly
+  first-half or second-half distribution;
+- forecast confidence, target reward cycle, and distribution checkpoint; and
 - reward evidence coverage and age.
 
-Every monetary value in the summary uses the same horizon. When a checkpoint forecast exists, the
-card must not mix in current accrual, claim counts, or calculation state. If no forecast is
-available, it may instead show the contract-exact if-calculated-now estimate, with that different
-horizon explicit in every label.
+Every monetary value in the summary uses the same one-distribution horizon. The reward cycle ID
+identifies the encompassing two-week protocol cycle; the distribution checkpoint identifies which
+weekly half the estimate covers. The card must not add rewards already allocated for the other half.
+When a checkpoint forecast exists, the card must not mix in current claim counts or calculation
+state. If no forecast is available, it may instead show the contract-exact if-calculated-now
+estimate, with that different horizon explicit in every label.
 
 The card links to the relevant Rewards section. It does not show the full pipeline, bucket list, or
 historical distributions.

@@ -645,23 +645,23 @@ export function Overview({
           aria-labelledby="overview-rewards-heading"
         >
           <div className="card-head">
-            <h2 id="overview-rewards-heading">Rewards</h2>
+            <h2 id="overview-rewards-heading">Current Reward Distribution</h2>
             <Badge state={statusTone(rewards.status)}>{statusLabel(rewards.status)}</Badge>
           </div>
           <div className="overview-domain-primary">
-            <span>
-              {rewards.estimateKind === "checkpoint-forecast"
-                ? "Projected next allocation"
-                : rewards.estimateKind === "if-calculated-now"
-                  ? "Accrued so far — pool gross"
-                  : "Pool estimate"}
-            </span>
+            <span>Total Estimated Pool Earnings for This Distribution</span>
             <strong>
               {rewards.estimatedPoolRewardSats === null
                 ? "Unavailable"
                 : `${sbtc(rewards.estimatedPoolRewardSats)} sBTC`}
             </strong>
-            <small>{forecastConfidence}</small>
+            <small>
+              {rewards.estimateKind === "checkpoint-forecast"
+                ? `Projected at this distribution's checkpoint · ${forecastConfidence}`
+                : rewards.estimateKind === "if-calculated-now"
+                  ? `If this distribution were calculated now · ${forecastConfidence}`
+                  : forecastConfidence}
+            </small>
           </div>
           <dl>
             <div>
@@ -720,10 +720,11 @@ export function Overview({
               </dd>
             </div>
           </dl>
-          {rewards.rewardCycleId === null ? null : (
+          {rewards.rewardCycleId === null || rewards.distributionCheckpoint === null ? null : (
             <p className="overview-domain-note">
-              {usesRewardForecast ? "Projected for" : "Estimate for"} reward cycle{" "}
-              {rewards.rewardCycleId}
+              {usesRewardForecast ? "Projected for" : "Estimate for"} cycle {rewards.rewardCycleId}
+              {" · "}
+              {rewards.distributionCheckpoint} distribution
             </p>
           )}
           <EvidenceLine evidence={rewards.evidence} />

@@ -1130,6 +1130,7 @@ export const overview = {
     rewardCycleId: 140,
     estimatedNetworkRewardSats: "200000",
     estimatedPoolRewardSats: "150000",
+    distributionCheckpoint: "first-half",
     estimatedOperatorFeeSats: "7500",
     operatorFeeUnavailableReason: null,
     estimateKind: "checkpoint-forecast",

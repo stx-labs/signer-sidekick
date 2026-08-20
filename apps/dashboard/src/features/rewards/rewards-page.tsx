@@ -106,7 +106,7 @@ function rewardForecastUnavailableDetail(
     case "insufficient-samples":
       return "Sidekick is collecting enough observed accrual history to project the next allocation. The first PoX-5 calculation requires at least 24 Bitcoin blocks of observations.";
     case "non-monotonic-accrual":
-      return "The cumulative reward balance changed unexpectedly inside this interval.";
+      return "The cumulative reward balance decreased, which can happen when canonical chain history changes. Sidekick is collecting a fresh forecast window.";
     case "forecast-inputs-unavailable":
       return "The durable observation window could not be read safely.";
     case "contract-simulation-failed":
