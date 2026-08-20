@@ -11,7 +11,11 @@ import {
   type OperatorAnchorSnapshot,
   readOperatorAnchorSnapshot,
 } from "./operator-anchor-snapshot.js";
-import { OperatorService, resolveRosterProjectionAnchor } from "./operator-service.js";
+import { OperatorService } from "./operator-service.js";
+import {
+  anchorSetupToRewardEvidence,
+  resolveRosterProjectionAnchor,
+} from "./reward-observation-anchor.js";
 import {
   SignerStakerAnchorError,
   type SyncSignerStakersResult,
@@ -212,6 +216,26 @@ describe("OperatorService synchronization anchor retries", () => {
 });
 
 describe("roster projection anchor selection", () => {
+  it("aligns transaction setup to a canonical reward anchor during ordinary indexed lag", () => {
+    const liveAnchor = anchor(101, 201);
+    const rewardAnchor = anchor(100, 200);
+    const liveSetup = setupSnapshot(liveAnchor);
+
+    const aligned = anchorSetupToRewardEvidence(liveSetup, rewardAnchor);
+
+    expect(aligned).not.toBe(liveSetup);
+    expect(aligned.chainAnchor).toBe(rewardAnchor);
+    expect(aligned.preflight).toBe(liveSetup.preflight);
+    expect(aligned.manager).toBe(liveSetup.manager);
+  });
+
+  it("preserves the fenced setup when reward evidence is already live", () => {
+    const liveAnchor = anchor(101, 201);
+    const liveSetup = setupSnapshot(liveAnchor);
+
+    expect(anchorSetupToRewardEvidence(liveSetup, { ...liveAnchor })).toBe(liveSetup);
+  });
+
   it("keeps a completed pinned roster when the live tip advances normally", async () => {
     const pinnedAnchor = anchor(100, 200);
     const liveAnchor = anchor(101, 200);

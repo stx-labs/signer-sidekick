@@ -18,6 +18,11 @@ import {
   type OperatorAnchorSnapshot,
   readOperatorAnchorSnapshot,
 } from "../operator-anchor-snapshot.js";
+import { indexedApiCompatible } from "../preflight.js";
+import {
+  anchorSetupToRewardEvidence,
+  resolveRosterProjectionAnchor,
+} from "../reward-observation-anchor.js";
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
 import { createChainSourceId, type SidekickStore } from "../storage/store.js";
 import { copyValidDate, parseCanonicalInstant } from "../time.js";
@@ -749,9 +754,18 @@ export async function createSidekickTransactionEngineRuntime(
           managerVerification: options.managerVerification,
           reportMissingManager: true,
         });
+        const sourceId = createChainSourceId(context.config.network, context.config.apiUrl);
+        const rewardAnchor = await resolveRosterProjectionAnchor({
+          store: options.store,
+          api: context.api,
+          sourceId,
+          managerPrincipal: options.managerPrincipal,
+          liveAnchor: setup.chainAnchor,
+          indexedApiAvailable: indexedApiCompatible(setup.preflight),
+        });
         const pox5ContractId = setup.preflight.pox.pox5ContractId;
         const rewardCalculation = deriveRewardCalculationTarget(
-          setup.chainAnchor,
+          rewardAnchor,
           setup.preflight.pox.firstRewardCycleId,
         );
         const rewards =
@@ -763,21 +777,21 @@ export async function createSidekickTransactionEngineRuntime(
             ? await readStxRewardStatus({
                 store: options.store,
                 node: context.node,
-                sourceId: createChainSourceId(context.config.network, context.config.apiUrl),
+                sourceId,
                 managerPrincipal: options.managerPrincipal,
                 pox5ContractId,
                 rewardCycle: rewardCalculation.rewardCycle,
                 observedAt,
-                burnBlockHeight: setup.chainAnchor.burnBlockHeight,
-                stacksTipHeight: setup.chainAnchor.stacksBlockHeight,
-                chainAnchor: setup.chainAnchor,
+                burnBlockHeight: rewardAnchor.burnBlockHeight,
+                stacksTipHeight: rewardAnchor.stacksBlockHeight,
+                chainAnchor: rewardAnchor,
                 firstRewardCycleId: setup.preflight.pox.firstRewardCycleId,
               })
             : null;
         return {
-          setup,
+          setup: anchorSetupToRewardEvidence(setup, rewardAnchor),
           rewards,
-          sourceId: createChainSourceId(context.config.network, context.config.apiUrl),
+          sourceId,
           observedAt,
         };
       },

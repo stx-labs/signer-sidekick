@@ -1,5 +1,5 @@
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
-import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
+import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
   RateLimitedError,
@@ -38,6 +38,10 @@ import {
   indexedWorkflowsReady,
   type runOperatorPreflight,
 } from "./preflight.js";
+import {
+  anchorSetupToRewardEvidence,
+  resolveRosterProjectionAnchor,
+} from "./reward-observation-anchor.js";
 import { rewardRealizationStream, syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
@@ -46,11 +50,7 @@ import {
   type StxRewardStatus,
 } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import {
-  proveSignerStakerAnchorRemainsCanonical,
-  SignerStakerAnchorError,
-  syncSignerStakers,
-} from "./signer-staker-sync.js";
+import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import type { ManagerTrustTransition } from "./storage/manager-trust-repository.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -245,28 +245,6 @@ export async function observeTransactionEngineSafely(
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
-  }
-}
-
-export async function resolveRosterProjectionAnchor(options: {
-  store: Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
-  api: Pick<StacksApiClient, "getStatus" | "getBlock">;
-  sourceId: string;
-  managerPrincipal: string;
-  liveAnchor: ChainAnchor;
-  indexedApiAvailable?: boolean;
-}): Promise<ChainAnchor> {
-  const run = options.store.getLatestCompletedSignerStakerRun(
-    options.sourceId,
-    options.managerPrincipal,
-  );
-  if (!run?.chainAnchor || options.indexedApiAvailable === false) return options.liveAnchor;
-  try {
-    await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
-    return run.chainAnchor;
-  } catch (error) {
-    if (!(error instanceof SignerStakerAnchorError)) throw error;
-    return options.liveAnchor;
   }
 }
 
@@ -1389,7 +1367,7 @@ export class OperatorService {
           })
         : null;
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
-      setup: operatorSnapshot,
+      setup: anchorSetupToRewardEvidence(operatorSnapshot, projectionAnchor),
       rewards,
       sourceId,
       observedAt: generatedAt,
