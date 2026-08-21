@@ -1,3 +1,4 @@
+import { Cl, cvToHex } from "@stacks/transactions";
 import {
   type EngineApprovalReview,
   engineApprovalReviewSchema,
@@ -735,8 +736,10 @@ export class ObserveManagerClaimPlanner {
           arguments: [
             {
               name: "bond-periods",
-              clarityValue: "0x0b00000000",
-              displayValue: "[]",
+              clarityValue: cvToHex(
+                Cl.list(value.bondBuckets.map(({ bondIndex }) => Cl.uint(bondIndex))),
+              ),
+              displayValue: `[${value.bondBuckets.map(({ bondIndex }) => bondIndex).join(", ")}]`,
             },
             {
               name: "reward-cycle",

@@ -1264,12 +1264,12 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         domain: "rewards",
         affectedDomains: ["rewards"],
         code: "reward-claims-due",
-        title: `${actionableClaims} staker reward settlement${actionableClaims === 1 ? " is" : "s are"} due`,
+        title: `${actionableClaims} STX-bucket reward settlement${actionableClaims === 1 ? " is" : "s are"} due`,
         summary: profileIssueBlocksClaim
           ? "An installed manager profile issue removed the reviewed claim capability."
           : canClaim
-            ? "Current reward and capability evidence supports discovering and reviewing the exact per-staker settlement calls."
-            : "Staker settlements are due, but the required current evidence or reviewed manager capability is unavailable.",
+            ? "The fast snapshot found payable STX-bucket rewards. Open the settlement plan to discover and review exact calls across every participating bucket."
+            : "The fast snapshot found payable STX-bucket rewards, but the required current evidence or reviewed manager capability is unavailable.",
         impact: "The accrued rewards remain unclaimed until the operator reviews this work.",
         updatedAt,
         evidence: [localEvidence],

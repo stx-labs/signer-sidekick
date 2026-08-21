@@ -51,6 +51,7 @@ import {
   Pox5CalculateRewardsError,
   readPox5CalculateRewardsObservation,
 } from "./pox5-calculate-rewards.js";
+import type { StxRewardStatus } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { type VerifiedSignerGrant, verifySignerGrantOutput } from "./signer-grant.js";
 import type { SidekickStore } from "./storage/store.js";
@@ -64,6 +65,10 @@ import {
   LiveTransactionReader,
   type UnconfirmedTransactionObservation,
 } from "./transaction-engine/live-transaction-reader.js";
+import {
+  buildManagerClaimProposal,
+  type ManagerClaimProposal,
+} from "./transaction-engine/manager-claim-proposal.js";
 import {
   type ManagerClaimWalletAuthoritativeObservation,
   ManagerClaimWalletIntentError,
@@ -247,6 +252,12 @@ export interface WalletIntentRuntimeState {
   signerGrant: { verified: VerifiedSignerGrant | null };
 }
 
+export interface ManagerClaimWalletEvidence {
+  observedAt: string;
+  setup: OperatorAnchorSnapshot;
+  rewards: StxRewardStatus | null;
+}
+
 type WalletReader = Pick<
   LiveTransactionReader,
   "lookupIndexedTransaction" | "lookupUnconfirmedTransaction"
@@ -333,6 +344,10 @@ export class WalletIntentService {
       observeManagerClaimWalletJob?: (
         jobId: string,
       ) => Promise<ManagerClaimWalletAuthoritativeObservation>;
+      readManagerClaimEvidence?: () => Promise<ManagerClaimWalletEvidence>;
+      findEligibleManagerClaimWalletJob?: (
+        proposal: ManagerClaimProposal,
+      ) => Promise<{ jobId: string } | null>;
       readerFactory?: (nodeRpcUrl: string) => WalletReader;
     },
   ) {}
@@ -878,14 +893,28 @@ export class WalletIntentService {
     };
 
     const managerPrincipal = state.managerPrincipal;
-    const snapshot = await readOperatorAnchorSnapshot({
-      config,
-      node,
-      api,
-      managerPrincipal,
-      managerVerification: this.options.managerVerification,
-      reportMissingManager: true,
-    });
+    const directManagerClaim = action === "claim-rewards" && request.jobId === undefined;
+    const managerClaimEvidence = directManagerClaim
+      ? await (() => {
+          if (!this.options.readManagerClaimEvidence) {
+            throw new WalletIntentError(
+              "wallet_execution_unavailable",
+              "Manual manager claims are unavailable because fresh reward evidence is not connected",
+            );
+          }
+          return this.options.readManagerClaimEvidence();
+        })()
+      : null;
+    const snapshot =
+      managerClaimEvidence?.setup ??
+      (await readOperatorAnchorSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: this.options.managerVerification,
+        reportMissingManager: true,
+      }));
     if (snapshot.preflight.node.networkId !== network.chainId) {
       throw new WalletIntentError(
         "wallet_execution_unavailable",
@@ -935,6 +964,98 @@ export class WalletIntentService {
     const readOptions = snapshot.chainAnchor?.indexBlockHash
       ? { tip: snapshot.chainAnchor.indexBlockHash }
       : undefined;
+    if (directManagerClaim) {
+      const proposal = buildManagerClaimProposal({
+        setup: snapshot,
+        rewards: managerClaimEvidence?.rewards ?? null,
+      });
+      if (!proposal) {
+        throw new WalletIntentError(
+          "wallet_execution_unavailable",
+          "No current, claimable manager reward proposal could be proven at one chain anchor",
+        );
+      }
+      if (
+        proposal.network.chainId !== network.chainId ||
+        proposal.network.kind !== (config.network === "mainnet" ? "mainnet" : "testnet") ||
+        proposal.manager.contract !== managerPrincipal
+      ) {
+        throw new WalletIntentError(
+          "wallet_intent_conflict",
+          "The manager claim proposal does not match the configured network and manager",
+        );
+      }
+      const eligibleJob = await this.options.findEligibleManagerClaimWalletJob?.(proposal);
+      if (eligibleJob) {
+        throw new WalletIntentError(
+          "wallet_intent_conflict",
+          `An eligible Observe claim job already exists (${eligibleJob.jobId}). Open Activity and use that job instead`,
+        );
+      }
+      const rewardsPaused = decodeBoolean(
+        await node.getDataVar(proposal.contracts.pox5, "rewards-paused", readOptions),
+        "rewards-paused",
+      );
+      if (rewardsPaused) {
+        throw new WalletIntentError(
+          "wallet_execution_unavailable",
+          "PoX-5 manager reward claims are currently paused",
+        );
+      }
+      assertStateUnchanged();
+      const bondPeriods = proposal.buckets.bond.map(({ bondIndex }) => bondIndex);
+      return {
+        scope: `manager-claim-wallet:${proposal.manager.contract}:${proposal.rewardCheckpoint.rewardCycle}:${proposal.rewardCheckpoint.calculationCheckpoint}:${proposal.rewardCheckpoint.lastRewardComputeBurnHeight}:${proposal.rewardCheckpoint.rewardsPerToken}`,
+        requiredSender: actorPrincipal,
+        network: network.network,
+        chainId: network.chainId,
+        facts: {
+          schemaVersion: 2,
+          request,
+          proposal,
+          rewardsPaused: false,
+        },
+        transaction: {
+          method: "stx_callContract",
+          params: {
+            contract: proposal.call.contract,
+            functionName: proposal.call.functionName,
+            functionArgs: proposal.call.functionArgs,
+            network: network.network,
+            address: actorPrincipal,
+            sponsored: false,
+            postConditionMode: "deny",
+            postConditions: [proposal.expectedEffect.postCondition],
+          },
+        },
+        review: {
+          title: "Claim manager rewards",
+          summary: `Pull ${proposal.expectedEffect.amountSats} sats from PoX-5 into the manager for the ${proposal.rewardCheckpoint.calculationCheckpoint} distribution of cycle ${proposal.rewardCheckpoint.rewardCycle}.`,
+          expectedPostState:
+            "PoX-5 transfers the exact reviewed sBTC amount to the manager and pins the fee for every named reward bucket.",
+          fields: [
+            { label: "Manager", value: proposal.manager.contract },
+            { label: "Wallet payer", value: actorPrincipal },
+            { label: "Reward cycle", value: proposal.rewardCheckpoint.rewardCycle },
+            { label: "Distribution", value: proposal.rewardCheckpoint.calculationCheckpoint },
+            {
+              label: "Calculation Bitcoin block",
+              value: String(proposal.rewardCheckpoint.lastRewardComputeBurnHeight),
+            },
+            {
+              label: "Bond periods",
+              value: bondPeriods.length === 0 ? "None (STX-only)" : bondPeriods.join(", "),
+            },
+            { label: "Expected sBTC (sats)", value: proposal.expectedEffect.amountSats },
+            {
+              label: "STX bucket fee",
+              value: `${proposal.buckets.stxFeeSnapshot.effectiveFeeBips} bips (${proposal.buckets.stxFeeSnapshot.state === "present" ? "already pinned" : "pins with this claim"})`,
+            },
+            { label: "Source SHA-256", value: proposal.manager.sourceSha256 },
+          ],
+        },
+      };
+    }
     if (action === "calculate-rewards") {
       if (!pox5CalculationContract) {
         throw new WalletIntentError(
@@ -1026,6 +1147,13 @@ export class WalletIntentService {
       }
     }
     if (action === "claim-rewards") {
+      const jobId = request.jobId;
+      if (!jobId) {
+        throw new WalletIntentError(
+          "wallet_intent_conflict",
+          "The manual claim proposal lost its execution context. Prepare it again",
+        );
+      }
       const profileId = snapshot.manager.source.profileId;
       if (!profileId) {
         throw new WalletIntentError(
@@ -1041,13 +1169,13 @@ export class WalletIntentService {
             "Browser-wallet claims are unavailable because the transaction engine is not running",
           );
         }
-        const observation = await observeManagerClaimWalletJob(request.jobId);
+        const observation = await observeManagerClaimWalletJob(jobId);
         if (!observation) {
           throw new Error("Manager-claim wallet observation returned no result");
         }
         const prepared = await prepareManagerClaimWalletIntent({
           repository: this.options.store.transactionEngine,
-          jobId: request.jobId,
+          jobId,
           actorPrincipal,
           observation,
           live: {
@@ -1750,57 +1878,65 @@ export class WalletIntentService {
         complete =
           observedComputeHeight === BigInt(manifest.binding.expectedLastRewardComputeBurnHeight);
       } else if (manifest.action === "claim-rewards") {
-        if (!("jobId" in request) || !("actorPrincipal" in request)) {
+        if (request.action !== "claim-rewards") {
           throw new WalletIntentError(
             "wallet_intent_invalid",
-            "Manager-claim intent is missing its exact job binding",
+            "Manager-claim intent is missing its wallet payer binding",
           );
         }
-        const walletNetwork = this.walletNetwork(config);
-        const bound = readBoundManagerClaimWalletIntent({
-          repository: this.options.store.transactionEngine,
-          jobId: request.jobId,
-          actorPrincipal: request.actorPrincipal,
-          network: {
-            name: walletNetwork.network,
-            kind: config.network === "mainnet" ? "mainnet" : "testnet",
-            chainId: walletNetwork.chainId,
-          },
-          managerPrincipal,
-        });
-        if (
-          bound.scope !== stored.scope ||
-          bound.requiredSender !== stored.requiredSender ||
-          canonicalJsonSha256(bound.facts) !== stored.factsSha256 ||
-          canonicalJsonSha256(bound.transaction) !== canonicalJsonSha256(manifest.transaction)
-        ) {
-          throw new WalletIntentError(
-            "wallet_transaction_mismatch",
-            "Canonical manager claim does not bind the stored engine job",
-          );
-        }
-        const jobStatus = managerClaimWalletJobStatus({
-          repository: this.options.store.transactionEngine,
-          binding: bound.facts.job,
-        });
-        if (jobStatus === "superseded") {
-          next =
-            next.state === "superseded" ? next : this.transition(next, "superseded", observedAt);
-          this.recordObservation(
-            next,
-            {
-              outcome: "superseded",
-              observedAt,
-              canonical: true,
-              blockHeight,
-              indexBlockHash: indexed.indexBlockHash,
-              detail: "Transaction confirmed, but its claim job was superseded. Refresh Operations",
+        if (request.jobId) {
+          const walletNetwork = this.walletNetwork(config);
+          const bound = readBoundManagerClaimWalletIntent({
+            repository: this.options.store.transactionEngine,
+            jobId: request.jobId,
+            actorPrincipal: request.actorPrincipal,
+            network: {
+              name: walletNetwork.network,
+              kind: config.network === "mainnet" ? "mainnet" : "testnet",
+              chainId: walletNetwork.chainId,
             },
-            decoded,
-          );
-          return this.publicIntent(next);
+            managerPrincipal,
+          });
+          if (
+            bound.scope !== stored.scope ||
+            bound.requiredSender !== stored.requiredSender ||
+            canonicalJsonSha256(bound.facts) !== stored.factsSha256 ||
+            canonicalJsonSha256(bound.transaction) !== canonicalJsonSha256(manifest.transaction)
+          ) {
+            throw new WalletIntentError(
+              "wallet_transaction_mismatch",
+              "Canonical manager claim does not bind the stored engine job",
+            );
+          }
+          const jobStatus = managerClaimWalletJobStatus({
+            repository: this.options.store.transactionEngine,
+            binding: bound.facts.job,
+          });
+          if (jobStatus === "superseded") {
+            next =
+              next.state === "superseded" ? next : this.transition(next, "superseded", observedAt);
+            this.recordObservation(
+              next,
+              {
+                outcome: "superseded",
+                observedAt,
+                canonical: true,
+                blockHeight,
+                indexBlockHash: indexed.indexBlockHash,
+                detail:
+                  "Transaction confirmed, but its claim job was superseded. Refresh Operations",
+              },
+              decoded,
+            );
+            return this.publicIntent(next);
+          }
+          complete = jobStatus === "complete";
+        } else {
+          // The local node supplied raw transaction bytes, and `verifyObserved` already proved
+          // their sender, exact call arguments, deny mode, and equality postcondition against the
+          // immutable wallet manifest. No Assist job or attestation participates in this path.
+          complete = !verifiedByApi && decoded.postConditionCount === 1;
         }
-        complete = jobStatus === "complete";
       } else if (manifest.action === "register-self") {
         const snapshot = await readOperatorAnchorSnapshot({
           config,

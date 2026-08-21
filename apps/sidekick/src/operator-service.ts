@@ -62,6 +62,12 @@ export interface OperatorAlert {
   detail: string;
 }
 
+interface ManagerClaimWalletEvidence {
+  observedAt: string;
+  setup: OperatorAnchorSnapshot;
+  rewards: StxRewardStatus | null;
+}
+
 export interface OperatorServiceOptions {
   config: SidekickConfig;
   managerPrincipal: string;
@@ -438,6 +444,7 @@ export class OperatorService {
   private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
   private lastRateLimit: RateLimitInfo | null = null;
   private lastRateLimitEndpoint: string | undefined;
+  private latestManagerClaimWalletEvidence: ManagerClaimWalletEvidence | null = null;
 
   constructor(private readonly options: OperatorServiceOptions) {}
 
@@ -495,6 +502,16 @@ export class OperatorService {
   /** Refresh the retained operator snapshot without requiring a browser request. */
   async refreshSnapshot() {
     return await this.refresh();
+  }
+
+  /** One fresh, internally aligned reward observation for a manual manager-claim proposal. */
+  async managerClaimWalletEvidence(): Promise<ManagerClaimWalletEvidence> {
+    const snapshot = await this.refreshSnapshot();
+    const evidence = this.latestManagerClaimWalletEvidence;
+    if (!evidence || evidence.observedAt !== snapshot.generatedAt) {
+      throw new Error("Fresh manager-claim reward evidence is unavailable");
+    }
+    return evidence;
   }
 
   private currentTime(): number {
@@ -1366,8 +1383,14 @@ export class OperatorService {
             rewardOutlook,
           })
         : null;
+    const managerClaimSetup = anchorSetupToRewardEvidence(operatorSnapshot, projectionAnchor);
+    this.latestManagerClaimWalletEvidence = {
+      observedAt: generatedAt,
+      setup: managerClaimSetup,
+      rewards,
+    };
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
-      setup: anchorSetupToRewardEvidence(operatorSnapshot, projectionAnchor),
+      setup: managerClaimSetup,
       rewards,
       sourceId,
       observedAt: generatedAt,

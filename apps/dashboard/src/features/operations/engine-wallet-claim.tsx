@@ -15,7 +15,7 @@ export function isWalletClaimJobEligible(job: EngineJobDetail, status: EngineSta
       !status.forcedObserve.active &&
       job.state === "preflighted" &&
       job.review.adapter.id === claimAdapterId &&
-      job.review.adapter.revision === 1 &&
+      job.review.adapter.revision === adapter?.adapter.revision &&
       job.review.call.functionName === "claim-rewards" &&
       job.review.call.contract === job.review.managerPrincipal &&
       job.approval === null &&

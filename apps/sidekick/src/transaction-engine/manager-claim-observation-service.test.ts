@@ -757,6 +757,32 @@ describe("live manager-claim observation", () => {
     expect(liveReader.estimateUnsignedTransactionFee).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps missing Assist credentials out of the manual Observe path", async () => {
+    const observedStore = await memoryStore();
+    const observedInput = input(observedStore.attestation);
+    observedInput.attestation = null;
+    observedInput.gasPayer = null;
+    await expect(service(observedStore.store).observe(observedInput)).resolves.toEqual({
+      status: "idle",
+      blocks: [],
+      reason: "manual-wallet-available",
+    });
+    expect(observedStore.store.transactionEngine.logicalJobStats().total).toBe(0);
+
+    const assistedStore = await memoryStore();
+    const assistedInput = input(assistedStore.attestation);
+    assistedInput.requestedMode = "assist";
+    assistedInput.attestation = null;
+    assistedInput.gasPayer = null;
+    await expect(service(assistedStore.store).observe(assistedInput)).resolves.toMatchObject({
+      status: "blocked",
+      blocks: expect.arrayContaining([
+        expect.objectContaining({ code: "attestation-unavailable" }),
+        expect.objectContaining({ code: "gas-payer-unavailable" }),
+      ]),
+    });
+  });
+
   it("moves fresh Assist work into a bounded approval state but honors forced Observe", async () => {
     const assistedStore = await memoryStore();
     const assistedInput = input(assistedStore.attestation);
@@ -1392,6 +1418,10 @@ describe("live manager-claim observation", () => {
       { bondIndex: "2", earnedSats: "200" },
       { bondIndex: "3", earnedSats: "100" },
     ]);
+    expect(outcome.result.records.intent.review.call.arguments[0]).toMatchObject({
+      name: "bond-periods",
+      displayValue: "[2, 3]",
+    });
     // One transfer covers the whole claim, so the postcondition is the sum of every named bucket.
     expect(material.expectedEffect.amount).toBe("1534");
   });

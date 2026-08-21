@@ -438,7 +438,9 @@ export interface StxRewardStatus {
     grossSats: string;
     earnedSats: string;
     feeSats: string;
+    /** Fast snapshot count for the STX-only reward bucket, not whole-pool settlement status. */
     actionableClaims: number;
+    /** Bitcoin-L1 payouts below policy threshold in the STX-only reward bucket. */
     l1ClaimsWaitingForFeeThreshold: number;
   };
   stakers: StakerRewardStatus[];

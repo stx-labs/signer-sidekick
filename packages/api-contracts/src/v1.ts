@@ -553,7 +553,7 @@ export type BrowserWalletIntentCreateRequest =
       recipient: string;
     }
   | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
-  | { action: "claim-rewards"; actorPrincipal: string; jobId: string }
+  | { action: "claim-rewards"; actorPrincipal: string; jobId?: string | undefined }
   | { action: "calculate-rewards"; actorPrincipal: string }
   | {
       action: "claim-staker-rewards";
@@ -1236,7 +1236,9 @@ export interface DashboardSnapshot extends OperatorSnapshot {
       grossSats: string;
       earnedSats: string;
       feeSats: string;
+      /** Fast snapshot count for the STX-only reward bucket, not whole-pool settlement status. */
       actionableClaims: number;
+      /** Bitcoin-L1 payouts below policy threshold in the STX-only reward bucket. */
       l1ClaimsWaitingForFeeThreshold: number;
     };
     stakers: Array<{
@@ -2521,7 +2523,8 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     .object({
       action: z.literal("claim-rewards"),
       actorPrincipal: walletActorPrincipalInputSchema,
-      jobId: z.uuid(),
+      /** Present for a legacy Observe engine job; omitted for a fresh manual wallet proposal. */
+      jobId: z.uuid().optional(),
     })
     .strict(),
   z

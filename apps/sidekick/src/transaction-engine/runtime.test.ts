@@ -16,6 +16,8 @@ import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "../storage/store.js";
 import { GasPayerSigner } from "./gas-payer-signer.js";
 import type { ManagerClaimObservationInput } from "./manager-claim-observation-service.js";
+import { managerClaimOperationScopeKey } from "./manager-claim-observer.js";
+import type { ManagerClaimProposal } from "./manager-claim-proposal.js";
 import { ManagerClaimWalletIntentError } from "./manager-claim-wallet-intent.js";
 import type { StoredTransactionJob } from "./repository.js";
 import {
@@ -326,6 +328,56 @@ describe("transaction engine runtime composition", () => {
       retryable: false,
     });
     expect(freshReads).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
+  it("finds the exact current preflighted Observe job before a direct wallet claim", async () => {
+    const managerContract = "SP000000000000000000002Q6VF78.signer-manager";
+    const jobId = "00000000-0000-4000-8000-000000000001";
+    const job = {
+      jobId,
+      state: "preflighted",
+      adapterId: "reference-manager-claim-rewards",
+      adapterRevision: 2,
+      managerPrincipal: managerContract,
+    } as StoredTransactionJob;
+    const getActiveLogicalJobForScope = vi.fn(() => job);
+    const base = observeComposition({
+      freshAnchor: anchor(101),
+      seen: [],
+      freshReads: vi.fn(),
+    });
+    const runtime = new SidekickTransactionEngineRuntime({
+      ...base,
+      store: {
+        transactionEngine: {
+          listLogicalJobs: vi.fn(() => ({ items: [], nextCursor: null, total: 0 })),
+          getActiveLogicalJobForScope,
+        },
+      } as unknown as SidekickStore,
+    });
+    const proposal = {
+      network: { kind: "mainnet", chainId: 1 },
+      manager: { contract: managerContract },
+      rewardCheckpoint: {
+        rewardCycle: "144",
+        calculationCheckpoint: "first-half",
+        lastRewardComputeBurnHeight: 960_100,
+        rewardsPerToken: "42",
+      },
+    } as ManagerClaimProposal;
+
+    await expect(runtime.findEligibleManagerClaimWalletJob(proposal)).resolves.toEqual({ jobId });
+    expect(getActiveLogicalJobForScope).toHaveBeenCalledWith(
+      managerClaimOperationScopeKey({
+        network: proposal.network,
+        managerContract,
+        rewardCycle: 144n,
+        calculationCheckpoint: "first-half",
+        lastRewardComputeBurnHeight: 960_100,
+        rewardsPerToken: 42n,
+      }),
+    );
     await runtime.close();
   });
 

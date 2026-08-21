@@ -11,12 +11,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
-import {
-  type ChainAnchor,
-  chainAnchorsEqual,
-  deriveRewardCalculationTarget,
-  type RewardCalculationCheckpoint,
-} from "../chain-anchor.js";
+import { type ChainAnchor, chainAnchorsEqual } from "../chain-anchor.js";
 import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import type { StxRewardStatus } from "../reward-status.js";
 import type { SignerStakerRun, StoredSignerStaker } from "../storage/store.js";
@@ -40,11 +35,18 @@ import {
   storedManagerClaimRecords,
 } from "./manager-claim-observer.js";
 import {
+  type ManagerClaimBondBucket,
+  managerClaimCheckpoint,
+  managerClaimNetworkKind,
+} from "./manager-claim-proposal.js";
+import {
   type StoredTransactionApproval,
   type StoredTransactionJob,
   type TransactionEngineRepository,
   transactionEngineDocumentSha256,
 } from "./repository.js";
+
+export type { ManagerClaimBondBucket } from "./manager-claim-proposal.js";
 
 export type ManagerClaimObservationBlockCode =
   | "adapter-disabled"
@@ -65,13 +67,6 @@ export type ManagerClaimObservationBlockCode =
   | "fee-cap-exceeded"
   | "gas-balance-insufficient";
 
-export interface ManagerClaimBondBucket {
-  bondIndex: bigint;
-  managerSharesSats: bigint;
-  earnedSats: bigint;
-  feeSnapshot: { state: "absent" | "present"; effectiveFeeBips: bigint };
-}
-
 export interface ManagerClaimObservationBlock {
   code: ManagerClaimObservationBlockCode;
   message: string;
@@ -91,7 +86,8 @@ export type ManagerClaimObservationOutcome =
         | "buckets-present-nothing-claimable"
         | "external-completion-without-local-work"
         | "no-matching-active-work"
-        | "effect-still-remaining";
+        | "effect-still-remaining"
+        | "manual-wallet-available";
     }
   | {
       status: "blocked";
@@ -331,163 +327,13 @@ function block(
   blocks.push({ code, message });
 }
 
-function parsedUnsigned(value: string, label: string): bigint | null {
-  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
-  try {
-    return BigInt(value);
-  } catch {
-    throw new Error(`${label} is not an unsigned integer`);
-  }
-}
-
-function networkKind(setup: OperatorAnchorSnapshot): "mainnet" | "testnet" | null {
-  if (setup.preflight.network === "mainnet") return "mainnet";
-  if (["testnet", "devnet", "regtest"].includes(setup.preflight.network)) return "testnet";
-  return null;
-}
-
-function rewardCheckpoint(input: ManagerClaimObservationInput): {
-  rewardCycle: bigint;
-  calculationCheckpoint: RewardCalculationCheckpoint;
-  lastRewardComputeBurnHeight: number;
-  rewardsPerToken: bigint;
-  observedSignerEarnedSats: bigint;
-  expectedSignerOutflowSats: bigint;
-  feeSnapshot: { state: "absent" | "present"; effectiveFeeBips: bigint };
-  stxEarnedSats: bigint;
-  bondBuckets: ManagerClaimBondBucket[];
-  effect: "remaining" | "completed" | "none" | "buckets-idle";
-} | null {
-  const { rewards, setup } = input;
-  if (!rewards) return null;
-  const target = deriveRewardCalculationTarget(
-    setup.chainAnchor,
-    setup.preflight.pox.firstRewardCycleId,
-  );
-  if (target.status === "invalid") return null;
-  const lastHeight = parsedUnsigned(
-    rewards.global.lastRewardComputeBurnHeight,
-    "last reward compute height",
-  );
-  const rewardsPerToken = parsedUnsigned(rewards.global.rewardsPerToken, "rewards per token");
-  const signerEarned = parsedUnsigned(
-    rewards.global.signerEarnedBeforeManagerClaimSats,
-    "signer earned rewards",
-  );
-  const configuredFee = parsedUnsigned(rewards.manager.configuredFeeBips, "configured fee");
-  const snapshottedFee =
-    rewards.manager.feeSnapshotBips === null
-      ? null
-      : parsedUnsigned(rewards.manager.feeSnapshotBips, "snapshotted fee");
-  if (
-    lastHeight === null ||
-    lastHeight < 1n ||
-    lastHeight > BigInt(Number.MAX_SAFE_INTEGER) ||
-    rewardsPerToken === null ||
-    signerEarned === null ||
-    configuredFee === null ||
-    configuredFee > 9_999n ||
-    (snapshottedFee !== null && snapshottedFee > 9_999n) ||
-    rewards.status !== "ready" ||
-    rewards.managerPrincipal !== setup.manager.managerPrincipal ||
-    rewards.pox5ContractId !== setup.preflight.pox.pox5ContractId ||
-    rewards.ingestion === null ||
-    rewards.rewardCycle !== target.rewardCycle ||
-    rewards.global.lastComputedRewardCycle !== String(target.rewardCycle) ||
-    rewards.observedAt.burnBlockHeight !== setup.chainAnchor.burnBlockHeight ||
-    rewards.observedAt.stacksTipHeight !== setup.chainAnchor.stacksBlockHeight ||
-    lastHeight !== BigInt(target.expectedLastRewardComputeBurnHeight)
-  ) {
-    return null;
-  }
-  const stxBucket = rewards.buckets.find(({ bondIndex }) => bondIndex === null);
-  if (
-    !stxBucket ||
-    parsedUnsigned(stxBucket.signerEarnedBeforeManagerClaimSats, "stx bucket") !== signerEarned
-  ) {
-    return null;
-  }
-  // Only buckets that hold something go into the call. A bucket qualifies on shares alone so its
-  // fee snapshot is pinned with the rest of the pool, and on earnings alone because unstaking
-  // settles rewards before zeroing shares.
-  const bondBuckets: ManagerClaimBondBucket[] = [];
-  for (const bucket of rewards.buckets) {
-    if (bucket.bondIndex === null || !bucket.participating) continue;
-    const bondIndex = parsedUnsigned(bucket.bondIndex, "bond index");
-    const managerSharesSats = parsedUnsigned(bucket.managerSharesSats, "bond bucket shares");
-    const earnedSats = parsedUnsigned(
-      bucket.signerEarnedBeforeManagerClaimSats,
-      "bond bucket earnings",
-    );
-    const bucketFee =
-      bucket.feeSnapshotBips === null
-        ? null
-        : parsedUnsigned(bucket.feeSnapshotBips, "bond bucket fee snapshot");
-    if (
-      bondIndex === null ||
-      managerSharesSats === null ||
-      earnedSats === null ||
-      (bucketFee !== null && bucketFee > 9_999n)
-    ) {
-      return null;
-    }
-    bondBuckets.push({
-      bondIndex,
-      managerSharesSats,
-      earnedSats,
-      feeSnapshot: {
-        state: bucketFee === null ? "absent" : "present",
-        effectiveFeeBips: bucketFee ?? configuredFee,
-      },
-    });
-  }
-  bondBuckets.sort((left, right) =>
-    left.bondIndex < right.bondIndex ? -1 : left.bondIndex > right.bondIndex ? 1 : 0,
-  );
-  if (
-    new Set(bondBuckets.map(({ bondIndex }) => bondIndex.toString())).size !== bondBuckets.length
-  ) {
-    return null;
-  }
-  const totalEarned =
-    signerEarned + bondBuckets.reduce((total, bucket) => total + bucket.earnedSats, 0n);
-  const anyFeePinned =
-    snapshottedFee !== null ||
-    bondBuckets.some(({ feeSnapshot }) => feeSnapshot.state === "present");
-  return {
-    rewardCycle: BigInt(rewards.rewardCycle),
-    calculationCheckpoint: target.calculationCheckpoint,
-    lastRewardComputeBurnHeight: Number(lastHeight),
-    rewardsPerToken,
-    observedSignerEarnedSats: totalEarned,
-    expectedSignerOutflowSats: totalEarned,
-    feeSnapshot: {
-      state: snapshottedFee === null ? "absent" : "present",
-      effectiveFeeBips: snapshottedFee ?? configuredFee,
-    },
-    stxEarnedSats: signerEarned,
-    bondBuckets,
-    // `claim-rewards` reverts when the whole call totals zero, so a pool that has buckets but
-    // nothing settled in them is idle, not claimable — proposing the call would hand the operator
-    // a transaction that cannot succeed.
-    effect:
-      totalEarned > 0n
-        ? "remaining"
-        : anyFeePinned
-          ? "completed"
-          : bondBuckets.length > 0 || stxBucket.participating
-            ? "buckets-idle"
-            : "none",
-  };
-}
-
 function staticBlocks(
   input: ManagerClaimObservationInput,
-  checkpoint: ReturnType<typeof rewardCheckpoint>,
+  checkpoint: ReturnType<typeof managerClaimCheckpoint>,
   mode: "observe" | "assist",
 ): ManagerClaimObservationBlock[] {
   const blocks: ManagerClaimObservationBlock[] = [];
-  const kind = networkKind(input.setup);
+  const kind = managerClaimNetworkKind(input.setup);
   if (!kind) {
     block(blocks, "unsupported-network", "This network is not supported for manager claims");
   }
@@ -679,7 +525,7 @@ export class ManagerClaimObservationService {
     const intent = parseManagerClaimIntentRecord(job.intent);
     const policy = parseManagerClaimPolicyRecord(job.policy);
     const plan = storedApprovalPlanSchema.parse(intent.sealedPlan);
-    const kind = networkKind(input.setup);
+    const kind = managerClaimNetworkKind(input.setup);
     if (input.requestedMode !== "assist") {
       return this.revalidationBlock(
         input,
@@ -819,7 +665,7 @@ export class ManagerClaimObservationService {
         "Anchored reward status is temporarily unavailable",
       );
     }
-    const checkpoint = rewardCheckpoint(input);
+    const checkpoint = managerClaimCheckpoint(input.setup, input.rewards);
     if (checkpoint === null) {
       return this.revalidationBlock(
         input,
@@ -985,14 +831,14 @@ export class ManagerClaimObservationService {
   async observe(input: ManagerClaimObservationInput): Promise<ManagerClaimObservationOutcome> {
     const effectiveMode =
       this.options.repository.getForceObserveControl() === null ? input.requestedMode : "observe";
-    const checkpoint = rewardCheckpoint(input);
+    const checkpoint = managerClaimCheckpoint(input.setup, input.rewards);
     const blocks = staticBlocks(input, checkpoint, effectiveMode);
     if (blocks.length > 0 || !checkpoint) {
       this.#latest = { status: "blocked", blocks };
       return this.#latest;
     }
 
-    const kind = networkKind(input.setup);
+    const kind = managerClaimNetworkKind(input.setup);
     const pox5 = input.setup.preflight.pox.pox5ContractId;
     const sbtcToken = input.setup.preflight.pox.sbtcTokenContract;
     if (!kind || !pox5 || !sbtcToken)
@@ -1063,6 +909,13 @@ export class ManagerClaimObservationService {
         return this.#latest;
       }
       this.#latest = await this.reconcileCompleted(input, checkpoint, job, pox5, sbtcToken);
+      return this.#latest;
+    }
+
+    // A manual Observe claim is prepared from the same anchored neutral proposal by the wallet
+    // intent service. Do not misreport absent Assist credentials as a blocked reward workflow.
+    if (effectiveMode === "observe" && (!input.attestation || !input.gasPayer)) {
+      this.#latest = { status: "idle", blocks: [], reason: "manual-wallet-available" };
       return this.#latest;
     }
 
@@ -1255,7 +1108,7 @@ export class ManagerClaimObservationService {
 
   private async reconcileCompleted(
     input: ManagerClaimObservationInput,
-    checkpoint: NonNullable<ReturnType<typeof rewardCheckpoint>>,
+    checkpoint: NonNullable<ReturnType<typeof managerClaimCheckpoint>>,
     job: StoredTransactionJob,
     pox5: string,
     sbtcToken: string,
@@ -1291,7 +1144,7 @@ export class ManagerClaimObservationService {
       schemaVersion: 1,
       observedAt: input.observedAt,
       network: {
-        kind: networkKind(input.setup) ?? "testnet",
+        kind: managerClaimNetworkKind(input.setup) ?? "testnet",
         chainId: input.setup.preflight.node.networkId,
       },
       manager: {

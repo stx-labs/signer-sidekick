@@ -864,7 +864,7 @@ describe("browser-wallet intent contracts", () => {
     ).toBe(false);
   });
 
-  it("binds reward claims to one existing engine job", () => {
+  it("accepts a fresh manual reward claim or binds a legacy claim to one engine job", () => {
     const request = {
       action: "claim-rewards",
       actorPrincipal: actor,
@@ -875,6 +875,13 @@ describe("browser-wallet intent contracts", () => {
       browserWalletIntentCreateRequestSchema.safeParse({
         action: "claim-rewards",
         actorPrincipal: actor,
+      }).success,
+    ).toBe(true);
+    expect(
+      browserWalletIntentCreateRequestSchema.safeParse({
+        action: "claim-rewards",
+        actorPrincipal: actor,
+        jobId: "not-a-job-id",
       }).success,
     ).toBe(false);
 

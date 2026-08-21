@@ -27,7 +27,7 @@ export function stx(ustx: string | null | undefined): string {
 }
 
 export function sbtc(sats: string | null | undefined): string {
-  if (!sats) return "0";
+  if (sats === null || sats === undefined || !/^(0|[1-9]\d*)$/.test(sats)) return "—";
   return (Number(sats) / 100_000_000).toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 

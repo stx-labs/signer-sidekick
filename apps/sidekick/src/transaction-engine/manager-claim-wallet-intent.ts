@@ -441,12 +441,20 @@ function resolveManagerClaimWalletIntent(input: {
     bondBuckets: plan.material.bondBuckets,
   });
   const functionArgs = payload.functionArgs.map(cvToHex);
+  const decodedBondPeriods =
+    payload.functionArgs[0]?.type === ClarityType.List
+      ? payload.functionArgs[0].value.map((value) =>
+          value.type === ClarityType.UInt ? value.value.toString() : null,
+        )
+      : null;
   if (
     contract !== plan.material.call.contract ||
     payload.functionName.content !== MANAGER_CLAIM_REWARDS_FUNCTION_NAME ||
     payload.functionArgs.length !== 2 ||
-    payload.functionArgs[0]?.type !== ClarityType.List ||
-    payload.functionArgs[0].value.length !== 0 ||
+    decodedBondPeriods === null ||
+    decodedBondPeriods.some((value) => value === null) ||
+    decodedBondPeriods.length !== plan.material.call.bondPeriods.length ||
+    decodedBondPeriods.some((value, index) => value !== plan.material.call.bondPeriods[index]) ||
     payload.functionArgs[1]?.type !== ClarityType.UInt ||
     payload.functionArgs[1].value.toString() !== plan.material.call.rewardCycle
   ) {

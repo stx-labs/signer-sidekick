@@ -51,7 +51,7 @@ const operationCopy: Record<
   },
   "claim-rewards": {
     title: "Claim manager rewards",
-    detail: "Review and execute one previously prepared manager reward claim.",
+    detail: "Review and execute the current manager funding claim.",
     returnPage: "rewards",
   },
   "claim-staker-rewards": {
@@ -172,15 +172,22 @@ function ManagerOperation({
 function EngineClaimOperation({
   chainId,
   context,
+  data,
   network,
+  onOperatorStateChanged,
+  operatorStateStale,
   token,
 }: {
   chainId: number;
   context: ActionContext;
+  data: Snapshot;
   network: string;
+  onOperatorStateChanged: () => void | Promise<void>;
+  operatorStateStale: boolean;
   token: string;
 }) {
   const jobId = context.kind === "engine-job" ? context.jobId : null;
+  const [actorPrincipal, setActorPrincipal] = useState("");
   const [job, setJob] = useState<EngineJobDetail | null>(null);
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [loading, setLoading] = useState(jobId !== null);
@@ -188,6 +195,13 @@ function EngineClaimOperation({
   const [action, setAction] = useState<"approve" | "invalidate" | null>(null);
   const [revision, setRevision] = useState(0);
   const actionPending = useRef(false);
+  const actor = actorPrincipal.trim().toUpperCase();
+  const actorValid = standardManagerActionPrincipal(actor, data.network);
+  const availability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("claim-rewards"),
+    operatorStateStale,
+  );
 
   const load = useCallback(async () => {
     if (!jobId) return;
@@ -278,8 +292,63 @@ function EngineClaimOperation({
   };
 
   if (!jobId) {
+    const managerClaimableSats = data.rewards?.global.signerEarnedAcrossBucketsSats ?? null;
+    if (!availability.available) return <UnavailableAction reason={availability.reason} />;
+    if (managerClaimableSats === null || BigInt(managerClaimableSats) === 0n) {
+      return (
+        <UnavailableAction reason="No manager reward balance is currently claimable across the observed reward buckets." />
+      );
+    }
+    const request = actorValid
+      ? ({ action: "claim-rewards", actorPrincipal: actor } as const)
+      : null;
     return (
-      <UnavailableAction reason="Open the exact active reward claim from Activity so Sidekick can bind this workspace to its reviewed engine job." />
+      <section className="card-standout action-engine-review">
+        <div className="card-head">
+          <div>
+            <span className="eyebrow">MANUAL · OBSERVE</span>
+            <h2>Review manager funding claim</h2>
+          </div>
+        </div>
+        <StatLine label="Claimable across all buckets">{managerClaimableSats} sats</StatLine>
+        <p className="muted">
+          Sidekick re-reads one anchored reward checkpoint, includes every participating bond
+          period, and pins the exact PoX-5 sBTC outflow. Your browser wallet chooses the fee and
+          nonce, signs, and broadcasts; Assist credentials and attestations are not used.
+        </p>
+        <Field
+          label="Signing account"
+          help="This permissionless caller pays only the transaction fee; manager-admin authority is not required."
+        >
+          <input
+            autoComplete="off"
+            className="input mono"
+            placeholder={data.network === "mainnet" ? "SP…" : "ST…"}
+            value={actorPrincipal}
+            onChange={(event) => setActorPrincipal(event.target.value.toUpperCase())}
+          />
+          {actorPrincipal && !actorValid ? (
+            <span className="field-error">Enter a valid Stacks account principal.</span>
+          ) : null}
+        </Field>
+        {request ? (
+          <BrowserWalletActionPanel
+            chainId={chainId}
+            createRequest={request}
+            managerPrincipal={data.managerPrincipal}
+            network={data.network}
+            onVerified={onOperatorStateChanged}
+            token={token}
+          />
+        ) : (
+          <div className="callout callout-neutral" role="status">
+            <ShieldCheck className="ic" />
+            <div className="body">
+              Enter the public signing account to request a fresh anchored transaction review.
+            </div>
+          </div>
+        )}
+      </section>
     );
   }
   if (loading && !job) return <div className="loading-state">Loading transaction review</div>;
@@ -565,7 +634,10 @@ export function ActionPage({
         <EngineClaimOperation
           chainId={data.preflight.node.networkId}
           context={context}
+          data={data}
           network={data.network}
+          onOperatorStateChanged={onOperatorStateChanged}
+          operatorStateStale={operatorStateStale}
           token={token}
         />
       ) : operation === "claim-staker-rewards" ? (

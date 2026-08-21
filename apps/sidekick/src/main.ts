@@ -235,6 +235,9 @@ export async function executeCliCommand({
         transactionEngineRequestedMode: engine.requestedMode,
         observeManagerClaimWalletJob: async (jobId) =>
           await engine.observeManagerClaimWalletJob(jobId),
+        readManagerClaimEvidence: async () => await service.managerClaimWalletEvidence(),
+        findEligibleManagerClaimWalletJob: async (proposal) =>
+          await engine.findEligibleManagerClaimWalletJob(proposal),
         readState: () => signerGrant.walletState(),
         canRepairSignerRegistration: async () => {
           const current = await service.snapshot(true);

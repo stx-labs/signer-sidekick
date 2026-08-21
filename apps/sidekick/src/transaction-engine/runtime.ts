@@ -52,9 +52,11 @@ import {
   ManagerClaimObservationService,
 } from "./manager-claim-observation-service.js";
 import {
+  managerClaimOperationScopeKey,
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
 } from "./manager-claim-observer.js";
+import type { ManagerClaimProposal } from "./manager-claim-proposal.js";
 import {
   type ManagerClaimWalletAuthoritativeObservation,
   ManagerClaimWalletIntentError,
@@ -363,6 +365,37 @@ export class SidekickTransactionEngineRuntime {
           attestation: { ...job.attestation },
         },
       };
+    });
+  }
+
+  /**
+   * Serialize behind any in-progress observation and prefer its exact current Observe job over a
+   * second direct wallet proposal for the same reward checkpoint.
+   */
+  async findEligibleManagerClaimWalletJob(
+    proposal: ManagerClaimProposal,
+  ): Promise<{ jobId: string } | null> {
+    return await this.#exclusive(async () => {
+      if (this.#composition.runtimeConfig.requestedMode !== "observe") return null;
+      const operationScopeKey = managerClaimOperationScopeKey({
+        network: proposal.network,
+        managerContract: proposal.manager.contract,
+        rewardCycle: BigInt(proposal.rewardCheckpoint.rewardCycle),
+        calculationCheckpoint: proposal.rewardCheckpoint.calculationCheckpoint,
+        lastRewardComputeBurnHeight: proposal.rewardCheckpoint.lastRewardComputeBurnHeight,
+        rewardsPerToken: BigInt(proposal.rewardCheckpoint.rewardsPerToken),
+      });
+      const job =
+        this.#composition.store.transactionEngine.getActiveLogicalJobForScope(operationScopeKey);
+      if (
+        job?.state !== "preflighted" ||
+        job.adapterId !== MANAGER_CLAIM_REWARDS_ADAPTER_ID ||
+        job.adapterRevision !== MANAGER_CLAIM_REWARDS_ADAPTER_REVISION ||
+        job.managerPrincipal !== proposal.manager.contract
+      ) {
+        return null;
+      }
+      return { jobId: job.jobId };
     });
   }
 

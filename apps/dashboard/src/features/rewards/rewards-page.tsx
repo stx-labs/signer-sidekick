@@ -542,10 +542,10 @@ export function Rewards({
         </section>
       </div>
       <div className="card-standout pipeline-wrap">
-        <div className="pipeline">
+        <div className="pipeline domain-section-anchor" id="rewards-calculation">
           <PipelineStage
             done={calculation?.state === "completed" || calculation?.state === "ahead"}
-            title="Global calculated"
+            title="Distribution calculated"
             value={
               calculation?.state === "pending"
                 ? "Not run yet"
@@ -560,20 +560,30 @@ export function Rewards({
             }
           />
           <PipelineStage
-            done={BigInt(rewards?.global.signerEarnedAcrossBucketsSats ?? 0) === 0n}
-            title="Manager claimed"
-            value={`${sbtc(rewards?.global.signerEarnedAcrossBucketsSats)} sBTC`}
+            done={
+              !rewards || (calculation?.state !== "completed" && calculation?.state !== "ahead")
+                ? null
+                : BigInt(rewards.global.signerEarnedAcrossBucketsSats) === 0n
+            }
+            title="Manager claim"
+            value={
+              rewards
+                ? `${sbtc(rewards.global.signerEarnedAcrossBucketsSats)} sBTC available`
+                : "Unavailable"
+            }
             detail={
-              (rewards?.buckets.filter(({ bondIndex }) => bondIndex !== null).length ?? 0) > 0
-                ? "earned across all buckets"
-                : "currently earned"
+              !rewards
+                ? "reward evidence unavailable"
+                : rewards.buckets.some(({ bondIndex }) => bondIndex !== null)
+                  ? "unclaimed across all participating buckets"
+                  : "unclaimed in the STX-only bucket"
             }
           />
           <PipelineStage
-            done={(rewards?.totals.actionableClaims ?? 0) === 0}
-            title="Stakers paid"
+            done={null}
+            title="Staker settlements"
             value={`${activity.claimTotal} recorded`}
-            detail={`${rewards?.totals.actionableClaims ?? 0} ready for payout`}
+            detail="open the settlement plan for exact all-bucket status"
           />
           <PipelineStage
             done={activity.pendingWithdrawalTotal === 0}
@@ -621,6 +631,27 @@ export function Rewards({
               </div>
             ) : null}
           </div>
+        </div>
+      ) : null}
+      {(rewards?.totals.l1ClaimsWaitingForFeeThreshold ?? 0) > 0 ? (
+        <div className="callout callout-caution balance-note" role="status">
+          <div className="body">
+            <strong>
+              {rewards?.totals.l1ClaimsWaitingForFeeThreshold} Bitcoin payout
+              {rewards?.totals.l1ClaimsWaitingForFeeThreshold === 1 ? " is" : "s are"} below the
+              maximum fee or dust threshold.
+            </strong>{" "}
+            This fast snapshot covers the STX-only reward bucket. Open the settlement plan for the
+            exact status across every participating bucket.
+          </div>
+        </div>
+      ) : null}
+      {managerActionsAvailable &&
+      BigInt(rewards?.global.signerEarnedAcrossBucketsSats ?? 0) > 0n ? (
+        <div className="actions reward-admin-actions">
+          <a className="btn btn-primary" href={actionHash("claim-rewards")}>
+            Review manager claim
+          </a>
         </div>
       ) : null}
       <StakerSettlementPanel calculationPending={calculation?.state === "pending"} token={token} />
@@ -958,7 +989,7 @@ export function Rewards({
                   <SortableHeader
                     align="right"
                     column="actionable"
-                    label="Ready for payout"
+                    label="STX bucket ready"
                     setSort={(sort) => {
                       setHistorySort(sort);
                       setCycleHistoryPage(0);
@@ -1355,7 +1386,15 @@ export function Rewards({
                     <td className="right mono btc-value">{sbtc(entry.amountSats)}</td>
                     <td className="right mono">{sbtc(entry.maxFeeSats)}</td>
                     <td>
-                      <Badge state={entry.state === "pending" ? "caution" : "success"}>
+                      <Badge
+                        state={
+                          entry.state === "settled"
+                            ? "success"
+                            : entry.state === "reclaimed"
+                              ? "error"
+                              : "caution"
+                        }
+                      >
                         {entry.state}
                       </Badge>
                     </td>
