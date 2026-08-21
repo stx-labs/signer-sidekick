@@ -1,14 +1,18 @@
 # Transaction engine safety contract
 
-Sidekick launches in Observe mode. Assist is a future, approval-gated capability for one reviewed
-PoX-5 operation; it is not a wallet, generic contract caller, or workflow engine.
+Sidekick launches in Observe mode. Assist is a future, release-gated execution envelope for
+code-backed adapters; it is not a wallet, generic contract caller, or workflow engine. The current
+implementation and release scope remains one reviewed PoX-5 manager-claim operation. Any expansion
+follows [ADR 0009](decisions/0009-evidence-first-reward-distribution.md) and the existing Assist
+release gates.
 
 ## Authority
 
 - **Observe** may plan, display, hand off an exact request to an external wallet, and reconcile its
   effect. It cannot reserve a nonce, sign, or broadcast.
-- **Assist** may sign and broadcast only the code-backed
-  `reference-manager-claim-rewards` adapter after fresh, exact operator approval.
+- **Assist**, in the current implementation, may sign and broadcast only the code-backed
+  `reference-manager-claim-rewards` adapter after fresh, exact operator approval. No future adapter
+  is authorized merely by being described in an ADR or issue.
 - Signer and manager-admin keys never enter Sidekick. Assist may hold one dedicated, low-balance
   gas-payer key for that fixed adapter only. See
   [ADR 0003](decisions/0003-operator-auth-and-custody.md).
@@ -31,7 +35,8 @@ unavailable.
 An Assist plan and its pre-broadcast recheck must agree on:
 
 1. the completed reward calculation and its exact checkpoint;
-2. the accepted reference-manager source/profile and compatibility attestation;
+2. the accepted reference-manager source/profile and, for the Assist envelope, compatibility
+   attestation;
 3. the complete applicable manager reward-bucket set and each bucket's fee snapshot;
 4. claimable, unpaused rewards;
 5. the gas payer's current nonce, sufficient balance, and bounded fee; and
@@ -57,12 +62,18 @@ and reconciliation. The following invariants are intentional:
 - A noncanonical confirmation returns to observation before finality.
 - A matching external completion reconciles as success without creating a duplicate local effect.
 
-PoX-5 can calculate rewards twice for one reward cycle. Each claim therefore includes its
-calculation-checkpoint identity, not only the reward-cycle number.
+PoX-5 can calculate rewards twice for one reward cycle, while manager and staker claims settle
+cycle/bucket accumulations rather than independently claimable checkpoints. Manager-claim proposals
+bind their calculation-checkpoint evidence even though the contract call uses the reward cycle.
+Staker settlement is tracked at `(staker, cycle, bond-index)` with checkpoint attribution as an
+accounting overlay. The evidence model is defined in
+[ADR 0009](decisions/0009-evidence-first-reward-distribution.md).
 
 ## Review and release
 
 The executable behavior is defined by the adapter, transaction-engine code, typed schemas, and
 tests under `apps/sidekick/src/transaction-engine` and `packages/protocol`. Before any Assist
-canary or mainnet use, complete the [Assist release gates](https://github.com/stx-labs/signer-sidekick/issues/6).
-Additional operations require a separately reviewed code-backed adapter and release plan.
+canary or mainnet use, complete the
+[Assist release gates](https://github.com/stx-labs/signer-sidekick/issues/6). Additional operations
+require the single-tenant engine refactor in ADR 0009, a separately reviewed code-backed adapter,
+an adapter-specific signer capability, standing-policy or exact-approval review, and a release plan.

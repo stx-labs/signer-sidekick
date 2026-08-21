@@ -29,3 +29,4 @@ deploy contracts, manage infrastructure, or provide a public staker interface.
 | [0006](decisions/0006-manager-compatibility.md) | Manager-neutral observation and reviewed execution adapters |
 | [0007](decisions/0007-network-compatibility.md) | Release-independent network compatibility |
 | [0008](decisions/0008-chain-evidence-and-reconciliation.md) | Node-authoritative event reconciliation |
+| [0009](decisions/0009-evidence-first-reward-distribution.md) | Evidence-first reward distribution and settlement |
