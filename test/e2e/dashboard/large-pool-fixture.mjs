@@ -1423,6 +1423,133 @@ export const gasWalletCreated = {
   },
 };
 
+// ---------------------------------------------------------------------------------------------
+// Reward runs (plan S3): a sealed recipe for cycle 140 · First Distribution (collect + payments).
+// Tests drive the lifecycle by overriding the run routes; the default list is empty.
+// ---------------------------------------------------------------------------------------------
+
+export function rewardRunFixture(status = "awaiting-approval", overrides = {}) {
+  const runId = "00000000-0000-4000-8000-00000000a001";
+  const current = ledgerCycles[0];
+  const payments = current.payments.filter((row) => row.distribution === 1);
+  const accounts = payments.map((row) => ({
+    accountKey: `${row.stakerPrincipal}:140:stx`,
+    stakerPrincipal: row.stakerPrincipal,
+    rewardCycle: 140,
+    bondIndex: null,
+    maximumGrossSats: row.grossRewardSats,
+    payoutRoute: row.route === "bitcoin" ? "bitcoin-l1" : "direct-sbtc",
+  }));
+  const collectSats = payments
+    .reduce((sum, row) => sum + BigInt(row.grossRewardSats), 0n)
+    .toString();
+  const recipeChildren = [
+    {
+      index: 0,
+      operation: "claim-rewards",
+      adapterId: "reference-manager-claim-rewards",
+      adapterRevision: 3,
+      accountKey: null,
+      requestId: null,
+      stakerPrincipal: null,
+      maximumAmountSats: collectSats,
+      withdrawalAmountSats: null,
+      maxFeeSats: null,
+    },
+    ...accounts.map((account, index) => ({
+      index: index + 1,
+      operation: "claim-staker-rewards",
+      adapterId: "reference-manager-claim-staker-rewards",
+      adapterRevision: 2,
+      accountKey: account.accountKey,
+      requestId: null,
+      stakerPrincipal: account.stakerPrincipal,
+      maximumAmountSats: account.maximumGrossSats,
+      withdrawalAmountSats: null,
+      maxFeeSats: null,
+    })),
+  ];
+  const completed =
+    overrides.completed ?? (status === "awaiting-approval" || status === "approved" ? 0 : 13);
+  const inFlight = overrides.inFlight ?? (status === "running" || status === "halted" ? 1 : 0);
+  const children = recipeChildren.map((child, index) => ({
+    index: child.index,
+    operation: child.operation,
+    accountKey: child.accountKey,
+    status:
+      index < completed
+        ? "confirmed"
+        : index === completed && inFlight > 0
+          ? "broadcast"
+          : "pending",
+    maximumAmountSats: child.maximumAmountSats,
+    materializedAmountSats: index < completed ? child.maximumAmountSats : null,
+    planSha256: index <= completed && status !== "awaiting-approval" ? "ab".repeat(32) : null,
+    txid:
+      index < completed || (index === completed && inFlight > 0)
+        ? `0x${(0x40 + index).toString(16).padStart(2, "0").repeat(32)}`
+        : null,
+    provenance: index < completed ? "you" : null,
+    failureReason: null,
+    updatedAt: snapshot.generatedAt,
+  }));
+  const started = status !== "awaiting-approval" && status !== "approved";
+  return {
+    schemaVersion: 1,
+    runId,
+    status,
+    walletPrincipal: gasWalletCreated.principal,
+    recipeSha256: "ef".repeat(32),
+    recipe: {
+      schemaVersion: 1,
+      runId,
+      prepareRequestSha256: "12".repeat(32),
+      walletPrincipal: gasWalletCreated.principal,
+      managerPrincipal: snapshot.managerPrincipal,
+      pox5Contract: "ST000000000000000000002AMW42H.pox-5",
+      sbtcTokenContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token",
+      sbtcRegistryContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-registry",
+      network: "testnet",
+      chainId: 0x8000_0005,
+      cycle: 140,
+      distribution: 1,
+      orderedOperations: ["claim-rewards", "claim-staker-rewards"],
+      accounts,
+      reviewedTotalSats: collectSats,
+      reviewedPaymentCount: accounts.length,
+      maxTransactions: 200,
+      feeCapUstx: "100000",
+      gasBudgetUstx: String(100_000 * recipeChildren.length),
+      managerSourceFingerprint: "34".repeat(32),
+      pox5SourceFingerprint: "56".repeat(32),
+      adapterRevisions: {
+        "reference-manager-claim-rewards": 3,
+        "reference-manager-claim-staker-rewards": 2,
+      },
+      children: recipeChildren,
+      preparedAnchor: {
+        stacksBlockHeight: 5_000,
+        burnBlockHeight: 905_000,
+        indexBlockHash: `0x${"ab".repeat(32)}`,
+      },
+    },
+    cursor: completed,
+    progress: { completed, total: recipeChildren.length, inFlight },
+    gasSpentUstx: String(2_000 * completed),
+    approvalExpiresAt: "2026-08-14T17:35:00.000Z",
+    runtimeExpiresAt: started ? "2026-08-14T23:05:00.000Z" : null,
+    approvedAt: status === "awaiting-approval" ? null : "2026-08-14T17:06:00.000Z",
+    startedAt: started ? "2026-08-14T17:06:10.000Z" : null,
+    completedAt: ["completed", "cancelled", "expired"].includes(status)
+      ? "2026-08-14T17:30:00.000Z"
+      : null,
+    failureReason: status === "halted" ? "Broadcast outcome is ambiguous" : null,
+    createdAt: "2026-08-14T17:05:00.000Z",
+    updatedAt: snapshot.generatedAt,
+    children,
+  };
+}
+
 export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
@@ -1531,8 +1658,13 @@ export function responseFor(url) {
   }
   if (request.pathname === "/api/v1/settings/gas-wallet") return gasWalletStatus;
   if (request.pathname.startsWith("/api/v1/settings/gas-wallet/")) return gasWalletStatus;
-  if (request.pathname.startsWith("/api/v1/rewards/runs")) {
-    return { fixtureStatus: 404, error: "not_found", message: "Reward runs are not available" };
+  if (request.pathname === "/api/v1/rewards/runs") return [];
+  if (request.pathname.startsWith("/api/v1/rewards/runs/")) {
+    return {
+      fixtureStatus: 404,
+      error: "reward_run_not_found",
+      message: "Reward run does not exist",
+    };
   }
   if (request.pathname === "/api/v1/rewards/history") {
     return { total: cycleHistory.length, offset, limit, items: page(cycleHistory, offset, limit) };

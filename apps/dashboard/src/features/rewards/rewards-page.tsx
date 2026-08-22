@@ -7,6 +7,7 @@ import {
   type RewardCalculationRealization,
   type RewardLedger,
   type RewardLedgerPayment,
+  type RewardRun,
   rewardsPageResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -34,12 +35,17 @@ import { PaymentsTable, paymentsHint } from "./reward-payments.js";
 import { ProjectionDetails } from "./reward-projection-details.js";
 import { currentDistribution, deriveRewardNow, type RewardPrimaryAction } from "./reward-state.js";
 import {
+  ACTIVE_RUN_STATUSES,
   approveRewardRun,
-  draftRewardRun,
+  cancelRewardRun,
+  IN_PROGRESS_RUN_STATUSES,
+  listRewardRuns,
   loadRewardRun,
+  operationsForKind,
   pauseRewardRun,
-  type RewardRun,
+  prepareRewardRun,
   RewardRunsUnavailableError,
+  resumeRewardRun,
 } from "./run-api.js";
 import { RequestState, StakerSettlementPanel } from "./staker-settlement-panel.js";
 
@@ -50,17 +56,17 @@ const LEDGER_POLL_MS = 30_000;
 /** Overview's "Collect & distribute" hands the same confirm sheet over through this key. */
 export const PENDING_RUN_STORAGE_KEY = "sidekick-rewards-pending-run";
 
-function activeRunState(state: string): boolean {
-  return [
-    "planned",
-    "approved",
-    "running",
-    "started",
-    "collecting",
-    "distributing",
-    "calculating",
-    "paused",
-  ].includes(state);
+function terminalRunNotice(run: RewardRun): string {
+  switch (run.status) {
+    case "completed":
+      return "Run finished. The ledger below reflects what reached the chain.";
+    case "cancelled":
+      return "Run cancelled; the gas wallet is free again.";
+    case "expired":
+      return run.failureReason ? `Run expired: ${run.failureReason}` : "Run expired.";
+    default:
+      return `Run ${run.status}.`;
+  }
 }
 
 export function Rewards({
@@ -89,7 +95,8 @@ export function Rewards({
     state: ConfirmState;
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [pausing, setPausing] = useState(false);
+  const [runControlBusy, setRunControlBusy] = useState<"pause" | "resume" | "cancel" | null>(null);
+  const [runsUnavailable, setRunsUnavailable] = useState(false);
   const [walletPanelOpen, setWalletPanelOpen] = useState(false);
   const walletPanelRef = useRef<HTMLDivElement | null>(null);
   const rewards = data.rewards;
@@ -180,34 +187,53 @@ export function Rewards({
     return () => controller.abort();
   }, [token, data.generatedAt]);
 
-  // Active run polling (S3): keep the progress line live while a run is in flight.
+  // Active run discovery + polling (S3): a run started from Overview, another tab, or before a
+  // restart shows its progress here; terminal states refresh the ledger and leave a notice.
+  const activeRunRef = useRef<RewardRun | null>(null);
+  activeRunRef.current = activeRun;
+  const activeRunId = activeRun?.runId ?? null;
   useEffect(() => {
-    if (!activeRun || !activeRunState(activeRun.state)) return;
     const controller = new AbortController();
     const tick = () => {
-      loadRewardRun(token, activeRun.runId, controller.signal)
-        .then((run) => {
+      const current = activeRunRef.current;
+      const request = current
+        ? loadRewardRun(token, current.runId, controller.signal).then((run) => [run])
+        : listRewardRuns(token, 5, controller.signal);
+      request
+        .then((runs) => {
           if (controller.signal.aborted) return;
-          setActiveRun(run);
-          if (!activeRunState(run.state)) {
-            setNotice(
-              run.state === "complete" || run.state === "done" || run.state === "finished"
-                ? "Run finished. The ledger below reflects what reached the chain."
-                : run.haltReason
-                  ? `Run halted: ${run.haltReason}`
-                  : `Run ${run.state}.`,
-            );
-            refreshLedger().catch(() => undefined);
+          setRunsUnavailable(false);
+          const inFlight = runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null;
+          if (inFlight) {
+            setActiveRun(inFlight);
+            return;
+          }
+          if (current) {
+            const finished = runs.find((run) => run.runId === current.runId) ?? null;
+            if (finished && !ACTIVE_RUN_STATUSES.has(finished.status)) {
+              setNotice(terminalRunNotice(finished));
+              refreshLedger().catch(() => undefined);
+            }
+            setActiveRun(null);
           }
         })
-        .catch(() => undefined);
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
+          if (cause instanceof RewardRunsUnavailableError) setRunsUnavailable(true);
+        });
     };
-    const interval = window.setInterval(tick, RUN_POLL_MS);
+    tick();
+    const interval = window.setInterval(
+      () => {
+        if (document.visibilityState === "visible") tick();
+      },
+      activeRunId ? RUN_POLL_MS : LEDGER_POLL_MS,
+    );
     return () => {
       controller.abort();
       window.clearInterval(interval);
     };
-  }, [activeRun, refreshLedger, token]);
+  }, [token, refreshLedger, activeRunId]);
 
   const nextCalculationIn =
     calculation?.next?.state === "scheduled" && burnBlockTiming
@@ -224,7 +250,8 @@ export function Rewards({
             snapshot: data,
             gasWallet,
             engineMode,
-            activeRun: activeRun && activeRunState(activeRun.state) ? activeRun : null,
+            activeRun:
+              activeRun && IN_PROGRESS_RUN_STATUSES.has(activeRun.status) ? activeRun : null,
             nextCalculationIn,
           })
         : null,
@@ -234,31 +261,42 @@ export function Rewards({
   const openConfirm = useCallback(
     (action: RewardPrimaryAction) => {
       setConfirm({ action, state: { status: "drafting" } });
-      draftRewardRun(token, {
-        kind: action.kind,
-        cycle: ledger?.current.cycle ?? null,
-        distribution: action.distribution ?? ledger?.current.distribution ?? null,
-      })
-        .then((run) =>
-          setConfirm((current) =>
-            current?.action === action ? { action, state: { status: "ready", run } } : current,
-          ),
-        )
+      const cycle = ledger?.current.cycle ?? null;
+      const distribution = action.distribution ?? ledger?.current.distribution ?? null;
+      if (cycle === null || distribution === null) {
+        setConfirm({
+          action,
+          state: { status: "error", message: "The current distribution is not known yet." },
+        });
+        return;
+      }
+      const settle = (state: ConfirmState) =>
+        setConfirm((current) => (current?.action === action ? { action, state } : current));
+      listRewardRuns(token, 5)
+        .then(async (runs) => {
+          const draft = runs.find(
+            (run) =>
+              run.status === "awaiting-approval" &&
+              run.recipe.cycle === cycle &&
+              run.recipe.distribution === distribution,
+          );
+          if (draft) return { run: draft, reused: true };
+          const run = await prepareRewardRun(token, {
+            cycle,
+            distribution,
+            operations: action.operations,
+          });
+          return { run, reused: false };
+        })
+        .then(({ run, reused }) => settle({ status: "ready", run, reused }))
         .catch((cause: unknown) =>
-          setConfirm((current) =>
-            current?.action === action
+          settle(
+            cause instanceof RewardRunsUnavailableError
               ? {
-                  action,
-                  state:
-                    cause instanceof RewardRunsUnavailableError
-                      ? {
-                          status: "unavailable",
-                          reason:
-                            "The engine update that runs calls from here has not shipped in this build.",
-                        }
-                      : { status: "error", message: operatorErrorSentence(cause) },
+                  status: "unavailable",
+                  reason: "This Sidekick build does not include the run engine.",
                 }
-              : current,
+              : { status: "error", message: operatorErrorSentence(cause) },
           ),
         );
     },
@@ -278,7 +316,7 @@ export function Rewards({
     setConfirm((current) =>
       current ? { ...current, state: { status: "approving", run } } : current,
     );
-    approveRewardRun(token, run.runId)
+    approveRewardRun(token, run.runId, run.recipeSha256)
       .then((started) => {
         setConfirm(null);
         setActiveRun(started);
@@ -293,13 +331,40 @@ export function Rewards({
       );
   };
 
-  const pause = () => {
-    if (!activeRun) return;
-    setPausing(true);
-    pauseRewardRun(token, activeRun.runId)
-      .then((run) => setActiveRun(run))
+  const discardDraft = (run: RewardRun) => {
+    const action = confirm?.action;
+    cancelRewardRun(token, run.runId)
+      .then(() => {
+        if (action) openConfirm(action);
+      })
+      .catch((cause: unknown) =>
+        setConfirm((current) =>
+          current
+            ? { ...current, state: { status: "error", message: operatorErrorSentence(cause) } }
+            : current,
+        ),
+      );
+  };
+
+  const runControl = (runId: string, control: "pause" | "resume" | "cancel") => {
+    setRunControlBusy(control);
+    const operation =
+      control === "pause"
+        ? pauseRewardRun
+        : control === "resume"
+          ? resumeRewardRun
+          : cancelRewardRun;
+    operation(token, runId)
+      .then((run) => {
+        if (IN_PROGRESS_RUN_STATUSES.has(run.status)) setActiveRun(run);
+        else {
+          setActiveRun(null);
+          setNotice(terminalRunNotice(run));
+          refreshLedger().catch(() => undefined);
+        }
+      })
       .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)))
-      .finally(() => setPausing(false));
+      .finally(() => setRunControlBusy(null));
   };
 
   const dismissBanner = (kind: "setup" | "low-balance") => {
@@ -436,15 +501,16 @@ export function Rewards({
             openConfirm({
               kind: secondary.kind,
               label: secondary.label,
+              operations: operationsForKind(secondary.kind),
               transactions: 1,
               distribution:
                 model.previous?.kind === "prior-outstanding" ? model.previous.distribution : null,
             })
           }
           onViewCycle={viewCycle}
-          onPause={activeRun ? pause : undefined}
-          pausing={pausing}
-          busy={confirm !== null}
+          onRunControl={runControl}
+          runControlBusy={runControlBusy}
+          busy={confirm !== null || runsUnavailable}
         />
       ) : (
         <RequestState
@@ -543,6 +609,7 @@ export function Rewards({
           state={confirm.state}
           onCancel={() => setConfirm(null)}
           onGo={go}
+          onDiscard={discardDraft}
           onUseWallet={useWallet}
         />
       ) : null}

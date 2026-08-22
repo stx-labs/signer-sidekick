@@ -513,9 +513,60 @@ accounts.
 > status line, one primary button and the gas chip, projection details disclosure, payments with status tabs /
 > staker search / integer-sats sorting, past cycles paged with lazy payments, accounting exports + fee ledger,
 > banners, confirm sheet bound to the §8.8 run routes; state-specific Overview card; Settings › Gas wallet with
-> sweep; browser-wallet fallback kept behind "Distribute with your wallet"). S3/S4 in progress (other agent);
-> the Rewards confirm sheet and progress line read the §8.8 run routes and degrade gracefully until they exist.
-> S6 not started; **S1.1** (below) is queued.
+> sweep; browser-wallet fallback kept behind "Distribute with your wallet"). **S5 is bound to the S3 run
+> contract** (`packages/api-contracts/src/reward-runs.ts`, copied verbatim from the S3/S4 worktree): prepare with
+> the button's operations, approve with `recipeSha256`, recipe-based confirm sheet (grouped children, reviewed
+> totals, gas budget, approval deadline, draft reuse/discard), progress from `run.progress`/`children`,
+> pause/resume/cancel, run discovery via `GET /rewards/runs` so progress shows from any tab/Overview. S3/S4 in
+> progress (other agent; see §10.0). S6 not started; **S1.1** (below) is queued.
+
+### 10.0 S3/S4 integration checklist (branch `codex/reward-operations-s3-s4` → this branch)
+
+Reviewed 2026-08-22 against this plan. The S3/S4 work (uncommitted in its worktree, based on
+`3e5147e`) adds: `packages/protocol/reward-operation-plan` (five sealed adapters, deny-mode
+post-conditions, rebuild-before-sign), `packages/api-contracts/reward-runs` (recipe, run, child,
+prepare/approve requests), migration v37 (`gas_wallet_authorizations` lease shared with sweeps,
+`transaction_runs`, `_children`, `_attempts`), `RewardRunRepository`, `RewardRunService`
+(sealed recipe, one-in-flight cursor loop, 30-min approval / 6-h runtime, per-signature refusal,
+skip-when-done-by-another-caller, halt on ambiguity, restart recovery), `LiveRewardRunDriver` +
+facts (anchored node reads, fee selection, registry status), explicit signer methods, run routes,
+regtest adapter round-trip, Devnet gas-wallet calculate+collect scenario. It does not touch
+`apps/dashboard`, so it composes with S5 without conflicts.
+
+Before merge (small, in the S3/S4 worktree):
+
+1. Commit the work; rebase onto this branch head (no overlapping files).
+2. Drop the unused `draft` run status; keep one refusal check per child (at the signature
+   boundary) instead of two.
+3. `LiveRewardRunDriver.materialize` must not call `readRewardRunObservation()` per child — the
+   contract identities/fingerprints in the recipe are immutable once deployed; keep the canonical
+   anchor proof + per-child node reads only (same for `#desiredState`). This is the main
+   cost/over-engineering item for a 150-payment run.
+4. Surface recipe truncation (`maximumAccounts`/`maxTransactions`) in the run response
+   (`truncated: true`, remaining count) so the UI can say "first 200 of N".
+5. Reuse the ledger's registry-status read (`operator-service.withdrawalRequestStatus`) instead of
+   a second copy in `live-reward-run.ts`.
+6. Devnet scenario: add a distribute run with ≥2 payments including one Bitcoin-route payment,
+   and a Finish Bitcoin payouts run (settle + reclaim), so the adapters are exercised end-to-end on
+   Devnet, not only in regtest.
+
+On this branch after merge (S5 binding):
+
+7. Replace the permissive `apps/dashboard/src/features/rewards/run-api.ts` reader with the real
+   `rewardRunSchema`; map the primary-button kinds to `operations` (Collect & distribute →
+   calculate? + claim-rewards + claim-staker-rewards; Distribute → claim-staker-rewards; Collect →
+   claim-rewards; Run calculation → calculate-rewards; Finish Bitcoin payouts → settle + reclaim);
+   approve with `recipeSha256`; progress from `run.progress` / `children`; wire pause/resume/cancel.
+8. Confirm sheet: steps from `recipe.children` grouped by operation (counts, reviewed totals,
+   `gasBudgetUstx` as "up to"); show `approvalExpiresAt`.
+9. Rewards page: poll the active run from `GET /rewards/runs` (status in
+   `approved|running|paused|halted`) so a run started from another tab/Overview shows progress;
+   halted → needs-attention copy with Resume/Cancel.
+10. e2e fixture + specs for distributing / halted / complete run states; then retire the
+    "runs not available" fallback copy.
+
+Later (S3.1 / S6): retire the legacy attestation-gated single-job engine path (assist coordinator,
+admission attestation checks, legacy approvals) now that recipe runs replace it.
 
 ### 10.1 S1.1 — scale follow-ups (queued, additive)
 

@@ -5,6 +5,8 @@ import type {
   RewardLedgerCycle,
   RewardLedgerDistribution,
   RewardLedgerPayment,
+  RewardRun,
+  RewardRunOperation,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   amount,
@@ -14,7 +16,7 @@ import {
   shortUtc,
   stxAmount,
 } from "../../shared/format.js";
-import type { RewardRun, RewardRunKind } from "./run-api.js";
+import { IN_PROGRESS_RUN_STATUSES, operationsForKind, type RewardRunKind } from "./run-api.js";
 
 /**
  * Pure derivation of the Rewards "Now" card (plan §6) from the ledger, the projection outlook,
@@ -36,6 +38,8 @@ export interface RewardTile {
 export interface RewardPrimaryAction {
   kind: RewardRunKind;
   label: string;
+  /** Recipe operations the server may include for this action (plan §8.5). */
+  operations: RewardRunOperation[];
   /** Transactions this action is expected to take, for the gas check and the confirm sheet. */
   transactions: number;
   /** Distribution the action targets when it is not the current one (e.g. the prior distribution). */
@@ -77,7 +81,18 @@ export interface RewardNowModel {
       }
     | null;
   attention: { title: string; text: string } | null;
-  progress: { done: number; total: number; text: string; right: string } | null;
+  progress: {
+    done: number;
+    total: number;
+    text: string;
+    right: string;
+    /** The run the progress line describes; halted/paused runs expose Resume/Cancel. */
+    runId: string;
+    status: RewardRun["status"];
+    canPause: boolean;
+    canResume: boolean;
+    canCancel: boolean;
+  } | null;
   execution: RewardExecutionAvailability;
   coverage: RewardLedgerDistribution["coverage"] | null;
 }
@@ -321,11 +336,18 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
   let primary: RewardPrimaryAction | null = null;
   let secondary: RewardNowModel["secondary"] = null;
   if (distribution.status === "calculation-overdue") {
-    primary = { kind: "calculate", label: "Run calculation", transactions: 1, distribution: null };
+    primary = {
+      kind: "calculate",
+      label: "Run calculation",
+      operations: operationsForKind("calculate"),
+      transactions: 1,
+      distribution: null,
+    };
   } else if (rejected > 0 || arrived > 0) {
     const action = {
       kind: "finish-bitcoin-payouts" as const,
       label: "Finish Bitcoin payouts",
+      operations: operationsForKind("finish-bitcoin-payouts"),
       transactions: rejected + arrived,
       distribution: null,
     };
@@ -341,15 +363,23 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
       primary = {
         kind: "collect-and-distribute",
         label: "Collect & distribute",
+        operations: operationsForKind("collect-and-distribute"),
         transactions: 1 + p.outstanding,
         distribution: null,
       };
     } else if (available > 0n) {
-      primary = { kind: "collect", label: "Collect", transactions: 1, distribution: null };
+      primary = {
+        kind: "collect",
+        label: "Collect",
+        operations: operationsForKind("collect"),
+        transactions: 1,
+        distribution: null,
+      };
     } else if (p.outstanding > 0 && !activeRun) {
       primary = {
         kind: "distribute",
         label: `Distribute ${plural(p.outstanding, "payment")}`,
+        operations: operationsForKind("distribute"),
         transactions: p.outstanding,
         distribution: null,
       };
@@ -366,11 +396,7 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
   const executionState = execution(gasWallet, engineMode, Math.max(neededTransactions, 1));
 
   // ---- headline / badge / sub ----
-  const running =
-    activeRun !== null &&
-    ["running", "approved", "started", "distributing", "collecting", "calculating"].includes(
-      activeRun.state,
-    );
+  const running = activeRun !== null && IN_PROGRESS_RUN_STATUSES.has(activeRun.status);
   let badge: RewardNowModel["badge"];
   let headline: string;
   let sub: string;
@@ -385,17 +411,43 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
       )
     : null;
   if (running && activeRun) {
-    const done = activeRun.transactionsDone ?? 0;
-    const all = activeRun.transactions ?? total;
-    badge = { tone: "accent", label: "In progress", live: true };
-    headline = `Distributing… ${done} of ${all} payments`;
-    sub =
-      "Sidekick is submitting one transaction at a time; the manager sends each payout and the gas wallet pays the network fees. You can close this page.";
+    const done = activeRun.progress.completed;
+    const all = Math.max(activeRun.progress.total, 1);
+    const current = activeRun.children[activeRun.cursor] ?? null;
+    const sent = activeRun.children
+      .filter((child) => child.operation === "claim-staker-rewards" && child.status === "confirmed")
+      .reduce((sum, child) => sum + big(child.materializedAmountSats), 0n);
+    const halted = activeRun.status === "halted";
+    const paused = activeRun.status === "paused";
+    badge = halted
+      ? { tone: "error", label: "Run halted" }
+      : paused
+        ? { tone: "neutral", label: "Paused" }
+        : { tone: "accent", label: "In progress", live: true };
+    headline = halted
+      ? "Run halted"
+      : paused
+        ? `Paused · ${done} of ${all} done`
+        : `Distributing… ${done} of ${all} payments`;
+    sub = halted
+      ? `${activeRun.failureReason ?? "Sidekick stopped the run"}. Nothing was signed after the halt; resume to rebuild the next step from current chain facts, or cancel.`
+      : paused
+        ? "The run is paused between transactions. Resume to continue, or cancel to release the gas wallet."
+        : `Sidekick is submitting one transaction at a time; the manager sends each payout and the gas wallet pays the network fees.${current?.status === "broadcast" ? " Waiting for the current transaction to confirm." : ""} You can close this page.`;
+    attention = halted
+      ? { title: "Run halted", text: activeRun.failureReason ?? "Sidekick stopped the run" }
+      : null;
     progress = {
       done,
-      total: Math.max(all, 1),
-      text: `${done} of ${all} payments${activeRun.distributedSats ? ` · ${amount(activeRun.distributedSats)} sent` : ""}`,
-      right: activeRun.gasUsedUstx ? `${stxAmount(activeRun.gasUsedUstx)} gas used` : "",
+      total: all,
+      text: `${done} of ${all} transactions${sent > 0n ? ` · ${amount(text(sent))} sent` : ""}`,
+      right: `${stxAmount(activeRun.gasSpentUstx)} gas used`,
+      runId: activeRun.runId,
+      status: activeRun.status,
+      canPause: activeRun.status === "running" && activeRun.progress.inFlight === 0,
+      canResume: halted || paused,
+      canCancel:
+        (halted || paused || activeRun.status === "approved") && activeRun.progress.inFlight === 0,
     };
   } else if (distribution.status === "needs-attention" || rejected > 0) {
     badge = { tone: "error", label: "Needs attention" };

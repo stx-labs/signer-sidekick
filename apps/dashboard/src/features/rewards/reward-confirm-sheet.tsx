@@ -1,8 +1,9 @@
 import { ArrowRight } from "@phosphor-icons/react";
+import type { RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useRef } from "react";
-import { amount, stxAmount } from "../../shared/format.js";
+import { amount, shortUtc, stxAmount } from "../../shared/format.js";
 import type { RewardExecutionAvailability, RewardPrimaryAction } from "./reward-state.js";
-import type { RewardRun, RewardRunKind } from "./run-api.js";
+import { type RewardRunKind, summarizeRunSteps } from "./run-api.js";
 
 export function runTitle(kind: RewardRunKind): string {
   switch (kind) {
@@ -36,7 +37,7 @@ export function runLede(kind: RewardRunKind): string {
 
 export type ConfirmState =
   | { status: "drafting" }
-  | { status: "ready"; run: RewardRun }
+  | { status: "ready"; run: RewardRun; reused: boolean }
   | { status: "approving"; run: RewardRun }
   | { status: "unavailable"; reason: string }
   | { status: "error"; message: string };
@@ -48,6 +49,7 @@ export function RewardConfirmSheet({
   state,
   onCancel,
   onGo,
+  onDiscard,
   onUseWallet,
 }: {
   action: RewardPrimaryAction;
@@ -56,6 +58,8 @@ export function RewardConfirmSheet({
   state: ConfirmState;
   onCancel: () => void;
   onGo: (run: RewardRun) => void;
+  /** Cancels a reused draft so the wallet lease is released. */
+  onDiscard?: ((run: RewardRun) => void) | undefined;
   onUseWallet?: (() => void) | null;
 }) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -68,8 +72,9 @@ export function RewardConfirmSheet({
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
   const run = state.status === "ready" || state.status === "approving" ? state.run : null;
-  const steps = run?.steps ?? [];
-  const transactions = run?.transactions ?? action.transactions;
+  const steps = run ? summarizeRunSteps(run) : [];
+  const transactions = run?.recipe.children.length ?? action.transactions;
+  const truncated = run ? run.recipe.children.length >= run.recipe.maxTransactions : false;
   return (
     <div className="rw-backdrop" role="presentation">
       <div className="rw-sheet" role="dialog" aria-modal="true" aria-labelledby="rw-sheet-title">
@@ -80,29 +85,67 @@ export function RewardConfirmSheet({
         </p>
         {state.status === "drafting" ? (
           <p className="tertiary" role="status">
-            Preparing the run from the current chain facts…
+            Sealing the run from the current chain facts…
           </p>
         ) : null}
         {steps.length > 0 ? (
           <div className="checklist rw-run-steps rw-sheet-steps">
             {steps.map((step, index) => (
-              <div className="check-item" key={`${step.kind}-${step.label}`}>
-                <span className={`box ${step.state === "done" ? "ok" : "wait"}`}>{index + 1}</span>
+              <div className="check-item" key={step.operation}>
+                <span
+                  className={`box ${step.done === step.count && step.count > 0 ? "ok" : "wait"}`}
+                >
+                  {index + 1}
+                </span>
                 <div className="body">
                   {step.label}
-                  {step.detail ? <div className="m">{step.detail}</div> : null}
+                  <div className="m">
+                    {step.count === 1
+                      ? "1 transaction"
+                      : `${step.count.toLocaleString("en-US")} transactions, one at a time`}
+                    {step.operation === "claim-staker-rewards" && run
+                      ? ` · ${run.recipe.reviewedPaymentCount.toLocaleString("en-US")} payments reviewed · up to ${amount(run.recipe.reviewedTotalSats)} gross`
+                      : ""}
+                  </div>
                 </div>
-                {step.amountSats ? (
-                  <span className="v">{amount(step.amountSats, step.asset ?? "sBTC")}</span>
-                ) : null}
+                {step.amountSats ? <span className="v">{amount(step.amountSats)}</span> : null}
               </div>
             ))}
+          </div>
+        ) : null}
+        {state.status === "ready" && state.reused ? (
+          <div className="callout callout-neutral" role="status" style={{ marginTop: 12 }}>
+            <div className="body">
+              <strong>A sealed run is already waiting for your approval.</strong> It was prepared{" "}
+              {shortUtc(state.run.createdAt)} and holds the gas wallet until{" "}
+              {shortUtc(state.run.approvalExpiresAt)}.
+              {onDiscard ? (
+                <div className="actions">
+                  <button
+                    className="btn btn-tertiary sm"
+                    type="button"
+                    onClick={() => onDiscard(state.run)}
+                  >
+                    Discard it and prepare a fresh run
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {truncated && run ? (
+          <div className="callout callout-caution" role="status" style={{ marginTop: 12 }}>
+            <div className="body">
+              This run covers the first {run.recipe.maxTransactions.toLocaleString("en-US")}{" "}
+              transactions. Run it again afterwards for the rest; Sidekick skips what is already
+              done.
+            </div>
           </div>
         ) : null}
         {state.status === "unavailable" ? (
           <div className="callout callout-neutral" role="status" style={{ marginTop: 12 }}>
             <div className="body">
-              <strong>Runs are not available in this Sidekick build yet.</strong> {state.reason}
+              <strong>Runs are not available in this Sidekick build.</strong> {state.reason}
               {onUseWallet ? (
                 <div className="actions">
                   <button className="btn btn-secondary sm" type="button" onClick={onUseWallet}>
@@ -121,11 +164,11 @@ export function RewardConfirmSheet({
         <div className="rw-facts">
           <span>
             <span className="mono">{transactions.toLocaleString("en-US")} transactions</span>
-            {run?.estimatedGasUstx ? (
+            {run ? (
               <>
                 {" "}
-                · about <span className="mono">{stxAmount(run.estimatedGasUstx)}</span> gas from the
-                gas wallet
+                · up to <span className="mono">{stxAmount(run.recipe.gasBudgetUstx)}</span> gas from
+                the gas wallet
               </>
             ) : null}
             {execution.chip ? <> ({execution.chip.replace("Gas wallet ", "")} available)</> : null}
@@ -134,18 +177,16 @@ export function RewardConfirmSheet({
             Another caller may finish some of this first — Sidekick skips what is already done.
           </span>
           <span>You can close this page. Progress shows on Rewards and Overview.</span>
-          {run?.approvalExpiresAt ? (
+          {run ? (
             <span>
-              This approval is good until{" "}
-              <span className="mono">
-                {new Date(run.approvalExpiresAt).toUTCString().replace(" GMT", " UTC")}
-              </span>
+              Approve by <span className="mono">{shortUtc(run.approvalExpiresAt)}</span>; once
+              started the run stops itself after 6 hours.
             </span>
           ) : null}
         </div>
         <div className="rw-sheet-actions">
           <button className="btn btn-tertiary" type="button" onClick={onCancel} ref={cancelRef}>
-            Cancel
+            Close
           </button>
           <button
             className="btn btn-primary"

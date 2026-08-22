@@ -5,6 +5,7 @@ import type {
   RewardLedgerPayment,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { describe, expect, it } from "vitest";
+import { rewardRunFixture } from "./reward-run.fixture.js";
 import {
   comparePayments,
   deriveRewardNow,
@@ -406,27 +407,38 @@ describe("deriveRewardNow", () => {
       snapshot: null,
       gasWallet: gasWallet(),
       engineMode: "operator-run",
-      activeRun: {
-        runId: "run-1",
-        kind: "collect-and-distribute",
-        cycle: 141,
-        distribution: 2,
-        state: "running",
-        steps: [],
-        transactions: 41,
-        transactionsDone: 13,
-        estimatedGasUstx: null,
-        gasUsedUstx: "120000",
-        approvalExpiresAt: null,
-        startedAt: null,
-        finishedAt: null,
-        haltReason: null,
-        distributedSats: "351000",
-      },
+      activeRun: rewardRunFixture({
+        status: "running",
+        progress: { completed: 13, total: 41, inFlight: 1 },
+        gasSpentUstx: "120000",
+      }),
     });
     expect(running?.headline).toBe("Distributing… 13 of 41 payments");
-    expect(running?.progress).toMatchObject({ done: 13, total: 41, right: "0.12 STX gas used" });
+    expect(running?.progress).toMatchObject({
+      done: 13,
+      total: 41,
+      right: "0.12 STX gas used",
+      canPause: false,
+      canResume: false,
+    });
     expect(running?.badge).toMatchObject({ tone: "accent", live: true });
+    expect(running?.primary).not.toBeNull();
+
+    const halted = deriveRewardNow({
+      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true })),
+      snapshot: null,
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: rewardRunFixture({
+        status: "halted",
+        failureReason: "Broadcast outcome is ambiguous",
+        progress: { completed: 2, total: 3, inFlight: 1 },
+      }),
+    });
+    expect(halted?.badge).toMatchObject({ tone: "error", label: "Run halted" });
+    expect(halted?.headline).toBe("Run halted");
+    expect(halted?.sub).toContain("Broadcast outcome is ambiguous");
+    expect(halted?.progress).toMatchObject({ canResume: true, canCancel: false, canPause: false });
 
     const complete = deriveRewardNow({
       ledger: ledger(

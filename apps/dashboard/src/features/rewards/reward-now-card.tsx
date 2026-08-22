@@ -7,16 +7,16 @@ export function RewardNowCard({
   onPrimary,
   onSecondary,
   onViewCycle,
-  onPause,
-  pausing = false,
+  onRunControl,
+  runControlBusy = null,
   busy = false,
 }: {
   model: RewardNowModel;
   onPrimary: (action: NonNullable<RewardNowModel["primary"]>) => void;
   onSecondary: (action: NonNullable<RewardNowModel["secondary"]>) => void;
   onViewCycle: (cycle: number) => void;
-  onPause?: (() => void) | undefined;
-  pausing?: boolean;
+  onRunControl?: ((runId: string, control: "pause" | "resume" | "cancel") => void) | undefined;
+  runControlBusy?: "pause" | "resume" | "cancel" | null;
   busy?: boolean;
 }) {
   const { execution } = model;
@@ -52,12 +52,47 @@ export function RewardNowCard({
           </p>
         </div>
         <div className="rw-now-actions">
-          {model.progress && onPause ? (
-            <button className="btn btn-tertiary" type="button" onClick={onPause} disabled={pausing}>
-              {pausing ? "Pausing…" : "Pause after this payment"}
-            </button>
+          {model.progress && onRunControl ? (
+            <>
+              {model.progress.canResume ? (
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={runControlBusy !== null}
+                  onClick={() => {
+                    if (model.progress) onRunControl(model.progress.runId, "resume");
+                  }}
+                >
+                  {runControlBusy === "resume" ? "Resuming…" : "Resume"}
+                </button>
+              ) : null}
+              {model.progress.canPause ? (
+                <button
+                  className="btn btn-tertiary"
+                  type="button"
+                  disabled={runControlBusy !== null}
+                  onClick={() => {
+                    if (model.progress) onRunControl(model.progress.runId, "pause");
+                  }}
+                >
+                  {runControlBusy === "pause" ? "Pausing…" : "Pause after this transaction"}
+                </button>
+              ) : null}
+              {model.progress.canCancel ? (
+                <button
+                  className="btn btn-tertiary"
+                  type="button"
+                  disabled={runControlBusy !== null}
+                  onClick={() => {
+                    if (model.progress) onRunControl(model.progress.runId, "cancel");
+                  }}
+                >
+                  {runControlBusy === "cancel" ? "Cancelling…" : "Cancel run"}
+                </button>
+              ) : null}
+            </>
           ) : null}
-          {model.primary ? (
+          {model.primary && !model.progress ? (
             <>
               <button
                 className="btn btn-primary lg"

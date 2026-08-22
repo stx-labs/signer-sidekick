@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import {
   connection,
   deploymentRequirements,
+  engineStatus,
   gasWalletCreated,
   gasWalletStatus,
   health,
@@ -10,6 +11,7 @@ import {
   overview,
   reconciliationResponse,
   responseFor,
+  rewardRunFixture,
   roster,
   snapshot,
 } from "./large-pool-fixture.mjs";
@@ -2520,6 +2522,76 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   await expect
     .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
     .toBe(true);
+});
+
+test("seals, approves, and follows a reward run from the Rewards page", async ({ page }) => {
+  let runStatus: string | null = null;
+  const operatorRunEngine = { ...engineStatus, mode: "operator-run" };
+  const readyWallet = { ...gasWalletCreated, enabled: true, signer: "ready" };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const method = route.request().method();
+    if (request.pathname === "/api/v1/engine") {
+      await route.fulfill(fixtureFulfillment(operatorRunEngine));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      await route.fulfill(fixtureFulfillment(readyWallet));
+      return;
+    }
+    if (request.pathname === "/api/v1/rewards/runs" && method === "GET") {
+      await route.fulfill(fixtureFulfillment(runStatus ? [rewardRunFixture(runStatus)] : []));
+      return;
+    }
+    if (request.pathname === "/api/v1/rewards/runs" && method === "POST") {
+      runStatus = "awaiting-approval";
+      await route.fulfill(fixtureFulfillment(rewardRunFixture("awaiting-approval")));
+      return;
+    }
+    if (request.pathname.endsWith("/approve") && method === "POST") {
+      runStatus = "running";
+      await route.fulfill(fixtureFulfillment(rewardRunFixture("running")));
+      return;
+    }
+    if (request.pathname.endsWith("/resume") && method === "POST") {
+      runStatus = "running";
+      await route.fulfill(fixtureFulfillment(rewardRunFixture("running")));
+      return;
+    }
+    if (request.pathname.startsWith("/api/v1/rewards/runs/") && method === "GET") {
+      await route.fulfill(fixtureFulfillment(rewardRunFixture(runStatus ?? "awaiting-approval")));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const now = page.locator(".rw-now");
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toBeEnabled();
+  await expect(now.getByText(/Gas wallet 12\.48 STX/)).toBeVisible();
+  await now.getByRole("button", { name: "Collect & distribute" }).click();
+
+  const sheet = page.getByRole("dialog", { name: "Collect & distribute" });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText("Collect into the manager")).toBeVisible();
+  await expect(sheet.getByText("Distribute payments")).toBeVisible();
+  await expect(sheet.getByText(/41 transactions/)).toBeVisible();
+  await expect(sheet.getByText(/up to 4\.10 STX gas/)).toBeVisible();
+  await sheet.getByRole("button", { name: "Go" }).click();
+
+  await expect(now.getByRole("heading", { name: /Distributing… 13 of 41 payments/ })).toBeVisible();
+  await expect(now.getByText("13 of 41 transactions", { exact: false })).toBeVisible();
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toHaveCount(0);
+
+  runStatus = "halted";
+  await expect(now.getByRole("heading", { name: "Run halted" })).toBeVisible({ timeout: 15_000 });
+  await expect(
+    now.getByText("Broadcast outcome is ambiguous", { exact: false }).first(),
+  ).toBeVisible();
+  await now.getByRole("button", { name: "Resume" }).click();
+  await expect(now.getByRole("heading", { name: /Distributing… 13 of 41 payments/ })).toBeVisible();
 });
 
 test("creates a gas wallet from Settings", async ({ page }) => {

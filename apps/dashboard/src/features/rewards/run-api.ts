@@ -1,10 +1,15 @@
+import {
+  type RewardRun,
+  type RewardRunOperation,
+  type RewardRunPrepareRequest,
+  rewardRunSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { ApiRequestError, apiJson, type ResponseSchema } from "../../api-client.js";
 
 /**
- * Operator-run reward runs (plan §8.8, delivered by S3). The dashboard binds to the route shapes
- * the plan fixes — `POST /api/v1/rewards/runs` (draft), `POST …/runs/:id/approve` (Go),
- * `GET …/runs/:id` — with a permissive reader so the page ships ahead of the engine slice and
- * degrades to "runs are not available in this build" until the routes exist.
+ * Operator-run reward runs (plan §8.8, engine slice S3). One sealed recipe per run: the operator
+ * reviews the exact children and approves with the recipe digest; the server-owned loop does the
+ * rest without a browser.
  */
 
 export const rewardRunKinds = [
@@ -16,111 +21,42 @@ export const rewardRunKinds = [
 ] as const;
 export type RewardRunKind = (typeof rewardRunKinds)[number];
 
-export interface RewardRunStep {
-  kind: string;
-  label: string;
-  detail: string | null;
-  transactions: number | null;
-  amountSats: string | null;
-  asset: "sBTC" | "BTC" | null;
-  state: "planned" | "running" | "done" | "skipped" | "failed" | "halted" | null;
+/** The primary-button vocabulary maps onto the recipe operations the server may include. */
+export function operationsForKind(kind: RewardRunKind): RewardRunOperation[] {
+  switch (kind) {
+    case "collect-and-distribute":
+      return ["claim-rewards", "claim-staker-rewards"];
+    case "distribute":
+      return ["claim-staker-rewards"];
+    case "collect":
+      return ["claim-rewards"];
+    case "calculate":
+      return ["calculate-rewards"];
+    case "finish-bitcoin-payouts":
+      return ["settle-accepted-withdrawal", "reclaim-failed-withdrawal"];
+  }
 }
 
-export interface RewardRun {
-  runId: string;
-  kind: string;
-  cycle: number | null;
-  distribution: 1 | 2 | null;
-  state: string;
-  steps: RewardRunStep[];
-  transactions: number | null;
-  transactionsDone: number | null;
-  estimatedGasUstx: string | null;
-  gasUsedUstx: string | null;
-  approvalExpiresAt: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  haltReason: string | null;
-  distributedSats: string | null;
-}
+/** Runs that still own the gas wallet: unapproved drafts, approved, running, paused, halted. */
+export const ACTIVE_RUN_STATUSES: ReadonlySet<RewardRun["status"]> = new Set([
+  "awaiting-approval",
+  "approved",
+  "running",
+  "paused",
+  "halted",
+]);
 
-function text(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function integer(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-function step(value: unknown): RewardRunStep | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const kind = text(record.kind);
-  const label = text(record.label);
-  if (kind === null || label === null) return null;
-  const state = text(record.state);
-  const asset = text(record.asset);
-  return {
-    kind,
-    label,
-    detail: text(record.detail),
-    transactions: integer(record.transactions),
-    amountSats: text(record.amountSats),
-    asset: asset === "sBTC" || asset === "BTC" ? asset : null,
-    state:
-      state === "planned" ||
-      state === "running" ||
-      state === "done" ||
-      state === "skipped" ||
-      state === "failed" ||
-      state === "halted"
-        ? state
-        : null,
-  };
-}
-
-export const rewardRunSchema: ResponseSchema<RewardRun> = {
-  safeParse(value: unknown) {
-    if (!value || typeof value !== "object") {
-      return { success: false, error: { message: "run is not an object" } };
-    }
-    const record = value as Record<string, unknown>;
-    const runId = text(record.runId);
-    const kind = text(record.kind);
-    const state = text(record.state);
-    if (!runId || !kind || !state) {
-      return { success: false, error: { message: "run is missing runId, kind, or state" } };
-    }
-    const distribution = integer(record.distribution);
-    const steps = Array.isArray(record.steps)
-      ? record.steps.map(step).filter((entry): entry is RewardRunStep => entry !== null)
-      : [];
-    return {
-      success: true,
-      data: {
-        runId,
-        kind,
-        cycle: integer(record.cycle),
-        distribution: distribution === 1 || distribution === 2 ? distribution : null,
-        state,
-        steps,
-        transactions: integer(record.transactions),
-        transactionsDone: integer(record.transactionsDone),
-        estimatedGasUstx: text(record.estimatedGasUstx),
-        gasUsedUstx: text(record.gasUsedUstx),
-        approvalExpiresAt: text(record.approvalExpiresAt),
-        startedAt: text(record.startedAt),
-        finishedAt: text(record.finishedAt),
-        haltReason: text(record.haltReason),
-        distributedSats: text(record.distributedSats),
-      },
-    };
-  },
-};
+/** Runs whose loop is or may be moving transactions (drives the Now card's progress line). */
+export const IN_PROGRESS_RUN_STATUSES: ReadonlySet<RewardRun["status"]> = new Set([
+  "approved",
+  "running",
+  "paused",
+  "halted",
+]);
 
 export class RewardRunsUnavailableError extends Error {
   constructor() {
-    super("Reward runs are not available in this Sidekick build yet.");
+    super("Reward runs are not available in this Sidekick build.");
     this.name = "RewardRunsUnavailableError";
   }
 }
@@ -132,22 +68,57 @@ function unavailable(error: unknown): never {
   throw error;
 }
 
-export async function draftRewardRun(
+const runListSchema: ResponseSchema<RewardRun[]> = {
+  safeParse(value: unknown) {
+    if (!Array.isArray(value)) {
+      return { success: false, error: { message: "run list is not an array" } };
+    }
+    const runs: RewardRun[] = [];
+    for (const item of value) {
+      const parsed = rewardRunSchema.safeParse(item);
+      if (!parsed.success) return { success: false, error: { message: parsed.error.message } };
+      runs.push(parsed.data);
+    }
+    return { success: true, data: runs };
+  },
+};
+
+export async function listRewardRuns(
   token: string,
-  input: { kind: RewardRunKind; cycle: number | null; distribution: 1 | 2 | null },
+  limit = 10,
+  signal?: AbortSignal,
+): Promise<RewardRun[]> {
+  return apiJson(
+    token,
+    `/api/v1/rewards/runs?limit=${limit}`,
+    runListSchema,
+    signal ? { signal } : {},
+  ).catch(unavailable);
+}
+
+export async function prepareRewardRun(
+  token: string,
+  request: RewardRunPrepareRequest,
 ): Promise<RewardRun> {
   return apiJson(token, "/api/v1/rewards/runs", rewardRunSchema, {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify(request),
   }).catch(unavailable);
 }
 
-export async function approveRewardRun(token: string, runId: string): Promise<RewardRun> {
+export async function approveRewardRun(
+  token: string,
+  runId: string,
+  recipeSha256: string,
+): Promise<RewardRun> {
   return apiJson(
     token,
     `/api/v1/rewards/runs/${encodeURIComponent(runId)}/approve`,
     rewardRunSchema,
-    { method: "POST" },
+    {
+      method: "POST",
+      body: JSON.stringify({ recipeSha256 }),
+    },
   ).catch(unavailable);
 }
 
@@ -164,20 +135,82 @@ export async function loadRewardRun(
   ).catch(unavailable);
 }
 
-export async function pauseRewardRun(token: string, runId: string): Promise<RewardRun> {
+async function runAction(
+  token: string,
+  runId: string,
+  action: "pause" | "resume" | "cancel",
+): Promise<RewardRun> {
   return apiJson(
     token,
-    `/api/v1/rewards/runs/${encodeURIComponent(runId)}/pause`,
+    `/api/v1/rewards/runs/${encodeURIComponent(runId)}/${action}`,
     rewardRunSchema,
-    { method: "POST" },
+    {
+      method: "POST",
+    },
   ).catch(unavailable);
 }
 
-export async function cancelRewardRun(token: string, runId: string): Promise<RewardRun> {
-  return apiJson(
-    token,
-    `/api/v1/rewards/runs/${encodeURIComponent(runId)}/cancel`,
-    rewardRunSchema,
-    { method: "POST" },
-  ).catch(unavailable);
+export const pauseRewardRun = (token: string, runId: string) => runAction(token, runId, "pause");
+export const resumeRewardRun = (token: string, runId: string) => runAction(token, runId, "resume");
+export const cancelRewardRun = (token: string, runId: string) => runAction(token, runId, "cancel");
+
+export function runOperationLabel(operation: RewardRunOperation): string {
+  switch (operation) {
+    case "calculate-rewards":
+      return "Run the network calculation";
+    case "claim-rewards":
+      return "Collect into the manager";
+    case "claim-staker-rewards":
+      return "Distribute payments";
+    case "settle-accepted-withdrawal":
+      return "Retire settled Bitcoin payouts";
+    case "reclaim-failed-withdrawal":
+      return "Return rejected Bitcoin payouts as sBTC";
+  }
+}
+
+export interface RunStepSummary {
+  operation: RewardRunOperation;
+  label: string;
+  count: number;
+  done: number;
+  amountSats: string | null;
+}
+
+/** Groups a recipe's children by operation for review and progress. */
+export function summarizeRunSteps(run: RewardRun): RunStepSummary[] {
+  const steps = new Map<RewardRunOperation, RunStepSummary>();
+  for (const operation of run.recipe.orderedOperations) {
+    steps.set(operation, {
+      operation,
+      label: runOperationLabel(operation),
+      count: 0,
+      done: 0,
+      amountSats: null,
+    });
+  }
+  for (const child of run.recipe.children) {
+    const step = steps.get(child.operation) ?? {
+      operation: child.operation,
+      label: runOperationLabel(child.operation),
+      count: 0,
+      done: 0,
+      amountSats: null,
+    };
+    steps.set(child.operation, step);
+    step.count += 1;
+    if (child.maximumAmountSats !== null && child.operation !== "claim-rewards") {
+      step.amountSats = (
+        BigInt(step.amountSats ?? "0") + BigInt(child.maximumAmountSats)
+      ).toString();
+    } else if (child.operation === "claim-rewards" && child.maximumAmountSats !== null) {
+      step.amountSats = child.maximumAmountSats;
+    }
+  }
+  for (const child of run.children) {
+    const step = steps.get(child.operation);
+    if (step && ["confirmed", "externally-completed", "skipped"].includes(child.status))
+      step.done += 1;
+  }
+  return [...steps.values()];
 }

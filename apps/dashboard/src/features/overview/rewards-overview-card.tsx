@@ -3,6 +3,7 @@ import type {
   GasWalletStatus,
   OverviewPage,
   RewardLedger,
+  RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useState } from "react";
 import { dashboardHash, domainHash } from "../../dashboard-route.js";
@@ -17,6 +18,7 @@ import {
   type RewardNowModel,
 } from "../rewards/reward-state.js";
 import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
+import { IN_PROGRESS_RUN_STATUSES, listRewardRuns } from "../rewards/run-api.js";
 import { loadGasWalletStatus } from "../settings/gas-wallet-api.js";
 
 const CARD_POLL_MS = 30_000;
@@ -68,6 +70,7 @@ export function RewardsOverviewCard({
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
   const [gasWallet, setGasWallet] = useState<GasWalletStatus | null>(null);
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
+  const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     void generatedAt;
@@ -94,6 +97,13 @@ export function RewardsOverviewCard({
             setEngineMode(status?.mode === "operator-run" ? "operator-run" : "observe");
         })
         .catch(() => undefined);
+      listRewardRuns(token, 3, controller.signal)
+        .then((runs) => {
+          if (!controller.signal.aborted) {
+            setActiveRun(runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null);
+          }
+        })
+        .catch(() => undefined);
     };
     load();
     const interval = window.setInterval(() => {
@@ -106,7 +116,7 @@ export function RewardsOverviewCard({
   }, [token, generatedAt]);
 
   if (!ledger) return <>{failed ? fallback : fallback}</>;
-  const model = deriveRewardNow({ ledger, snapshot: null, gasWallet, engineMode, activeRun: null });
+  const model = deriveRewardNow({ ledger, snapshot: null, gasWallet, engineMode, activeRun });
   const distribution = currentDistribution(ledger);
   if (!model || !distribution) return <>{fallback}</>;
   const state = cardState(model, ledger);
