@@ -13,21 +13,27 @@ export function SortableHeader<Key extends string>({
   sort,
   setSort,
   align = "left",
+  title,
+  className,
 }: {
   label: string;
   column: Key;
   sort: TableSort<Key>;
   setSort: (sort: TableSort<Key>) => void;
   align?: "left" | "right";
+  title?: string | undefined;
+  className?: string | undefined;
 }) {
   const active = sort.key === column;
   const nextDirection: SortDirection = active && sort.direction === "asc" ? "desc" : "asc";
   const Icon = active ? (sort.direction === "asc" ? CaretUp : CaretDown) : CaretUpDown;
+  const classes = [align === "right" ? "right" : null, className ?? null].filter(Boolean).join(" ");
   return (
     <th
       aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
-      className={align === "right" ? "right" : undefined}
+      className={classes || undefined}
       scope="col"
+      title={title}
     >
       <button
         aria-label={`Sort by ${label}, ${nextDirection === "asc" ? "ascending" : "descending"}`}

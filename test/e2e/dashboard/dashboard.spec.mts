@@ -2,6 +2,8 @@ import { expect, type Page, test } from "@playwright/test";
 import {
   connection,
   deploymentRequirements,
+  gasWalletCreated,
+  gasWalletStatus,
   health,
   healthFinding,
   operationReadiness,
@@ -22,13 +24,29 @@ test.beforeEach(async ({ page }) => {
     if (message.type() === "error") errors.push(message.text());
   });
   await page.route("**/api/v1/**", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(responseFor(route.request().url())),
-    });
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
   });
 });
+
+function fixtureFulfillment(body: unknown) {
+  const record = body as {
+    fixtureStatus?: number;
+    fixtureContentType?: string;
+    fixtureText?: string;
+  };
+  if (record && typeof record === "object" && record.fixtureText !== undefined) {
+    return {
+      status: record.fixtureStatus ?? 200,
+      contentType: record.fixtureContentType ?? "text/plain",
+      body: record.fixtureText,
+    };
+  }
+  return {
+    status: record?.fixtureStatus ?? 200,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  };
+}
 
 test.afterEach(async ({ page }) => {
   expect(consoleErrors.get(page) ?? []).toEqual([]);
@@ -193,20 +211,13 @@ test("loads the independent operator Overview without the shared status endpoint
   await expect(page.getByText("Next cycle is below threshold")).toBeVisible();
   await expect(page.getByText("Reward claim is awaiting approval")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Local node" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Current Reward Distribution" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Rewards — ready to distribute" })).toBeVisible();
   const rewardsSummary = page.locator("#overview-rewards");
-  await expect(
-    rewardsSummary.getByText("Total Estimated Pool Earnings for This Distribution"),
-  ).toBeVisible();
-  await expect(
-    rewardsSummary.getByText(/Projected at this distribution's checkpoint/),
-  ).toBeVisible();
-  await expect(
-    rewardsSummary.getByText("Projected for cycle 140 · first-half distribution"),
-  ).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected network-wide rewards")).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected operator fee")).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected net for your stakers")).toBeVisible();
+  await expect(rewardsSummary.getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(rewardsSummary.getByText("Ready to collect & distribute")).toBeVisible();
+  await expect(rewardsSummary.getByText("To stakers")).toBeVisible();
+  await expect(rewardsSummary.getByText("Your fee")).toBeVisible();
+  await expect(rewardsSummary.getByRole("link", { name: "Review payments" })).toBeVisible();
   await expect(rewardsSummary).not.toContainText("stakers ready for payout");
   await expect(rewardsSummary).not.toContainText("Reward calculation:");
   await expect.poll(() => statusRequests).toBe(0);
@@ -288,9 +299,7 @@ test("keeps healthy Overview domains visible when one domain is unavailable", as
     page.getByText("Signer monitoring is healthy and aligned with the node."),
   ).toBeVisible();
   await expect(
-    page
-      .locator("#overview-rewards")
-      .getByText("Total Estimated Pool Earnings for This Distribution", { exact: true }),
+    page.locator("#overview-rewards").getByText("Cycle 140 · First Distribution", { exact: true }),
   ).toBeVisible();
 });
 
@@ -454,17 +463,20 @@ test("keeps the single-page Settings flow responsive and preserves reward sectio
   }
 
   await openPage(page, "rewards", "Rewards");
-  const rewardBuckets = page.locator("section.reward-buckets");
-  const rewardLedger = page.locator(".reward-ledger");
-  await expect(rewardBuckets).toBeVisible();
-  await expect(rewardLedger).toBeVisible();
-  const bucketsBox = await rewardBuckets.boundingBox();
-  const ledgerBox = await rewardLedger.boundingBox();
-  expect(bucketsBox).not.toBeNull();
-  expect(ledgerBox).not.toBeNull();
+  const nowCard = page.locator(".rw-now");
+  const projection = page.locator("#rewards-outlook");
+  await expect(nowCard).toBeVisible();
+  await expect(projection).toBeVisible();
+  const nowBox = await nowCard.boundingBox();
+  const projectionBox = await projection.boundingBox();
+  expect(nowBox).not.toBeNull();
+  expect(projectionBox).not.toBeNull();
   expect(
-    (ledgerBox?.y ?? 0) - ((bucketsBox?.y ?? 0) + (bucketsBox?.height ?? 0)),
-  ).toBeGreaterThanOrEqual(15);
+    (projectionBox?.y ?? 0) - ((nowBox?.y ?? 0) + (nowBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(12);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    viewport.width,
+  );
 });
 
 function discardExpectedHttpConsoleError(page: Page, status: number) {
@@ -1506,7 +1518,8 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
   await login(page);
 
   await openPage(page, "rewards", "Rewards");
-  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards:/ }).first();
+  await page.locator("#rewards-outlook summary").click();
+  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards/ }).first();
   await rewardTerm.focus();
   await expect
     .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").visibility))
@@ -1716,18 +1729,13 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  const accrualCard = page.getByRole("heading", { name: "Accrued so far" }).locator("../..");
-  const projectedCard = page
-    .getByRole("heading", { name: "Projected next allocation" })
-    .locator("../..");
-  await expect(accrualCard).toBeVisible();
-  await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
-  await expect(accrualCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
-  await expect(projectedCard.getByText("0.05 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("low confidence", { exact: true })).toBeVisible();
+  const projection = page.locator("#rewards-outlook");
+  await projection.locator("summary").click();
+  await expect(projection.getByText("0.025 sBTC", { exact: true })).toBeVisible();
+  await expect(projection.getByText("0.05 sBTC", { exact: true }).first()).toBeVisible();
+  await expect(projection.getByText("0.008 sBTC – 0.012 sBTC", { exact: true })).toBeVisible();
+  await expect(projection).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
+  await expect(projection).toContainText("low confidence");
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
@@ -1755,10 +1763,18 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
 });
 
+async function openWalletSettlement(page: Page) {
+  const details = page.locator("details", {
+    has: page.getByText("Distribute with your wallet", { exact: false }),
+  });
+  await details.locator("summary").click();
+}
+
 test("prepares a staker settlement through the browser-wallet flow", async ({ page }) => {
   await login(page);
   await openPage(page, "rewards", "Rewards");
 
+  await openWalletSettlement(page);
   await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
   await expect(page.getByRole("button", { name: "Settle" })).toBeVisible();
   await page.getByRole("button", { name: "Settle" }).click();
@@ -1820,6 +1836,7 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
 
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  await openWalletSettlement(page);
   await expect(
     page.getByText("Staker rewards become available after the global calculation runs."),
   ).toBeVisible();
@@ -1881,6 +1898,7 @@ test("does not list every zero-value staker in settlement discovery", async ({ p
 
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  await openWalletSettlement(page);
   await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
   await expect(page.getByText("No staker rewards are settleable for this cycle")).toBeVisible();
   await expect(page.getByText("Nothing settled")).toHaveCount(0);
@@ -2454,11 +2472,82 @@ test("copies the full principal from an abbreviated address", async ({ page }) =
     .toBe(principal);
 });
 
-test("paginates multi-year reward history", async ({ page }) => {
+test("pages multi-year reward history and loads payments on demand", async ({ page }) => {
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  await expect(page.getByText("1–10 of 48")).toBeVisible();
-  const paginations = page.getByRole("navigation", { name: "Table pagination" });
-  await paginations.first().getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText("11–20 of 48")).toBeVisible();
+  await expect(page.getByText("Showing cycles 139–135 of 12 with reward activity")).toBeVisible();
+  await page.getByRole("button", { name: "Show older cycles" }).click();
+  await expect(page.getByText("Showing cycles 139–130 of 12 with reward activity")).toBeVisible();
+  const cycle139 = page.getByRole("region", { name: "Cycle 139" });
+  await cycle139.getByRole("button", { name: "Show payments" }).first().click();
+  await expect(cycle139.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
+});
+
+test("shows the ready distribution with payments, exports, and the wallet fallback", async ({
+  page,
+}) => {
+  const downloads: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/rewards/ledger/")) downloads.push(request.url());
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const now = page.locator(".rw-now");
+  await expect(now.getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(now.getByRole("heading", { name: "Ready to collect & distribute" })).toBeVisible();
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toBeDisabled();
+  await expect(now.getByText("Calculated for this pool", { exact: true })).toBeVisible();
+  await expect(now.getByText("0 of 40", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sign with your own wallet.")).toBeVisible();
+
+  const payments = page.locator("#rewards-claims").locator("..").locator(".tbl-wrap").first();
+  await expect(page.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
+  await page.getByLabel("Find a staker").fill(roster[1].stakerPrincipal);
+  await expect(page.getByText("1 of 40 payments")).toBeVisible();
+  await page.getByLabel("Find a staker").fill("");
+  await expect(page.getByText("Showing 25 of 40")).toBeVisible();
+  await page.getByRole("button", { name: "Show all 40" }).click();
+  await expect(page.getByText("Showing 40 of 40")).toBeVisible();
+  void payments;
+
+  await page.getByRole("button", { name: "payments.csv" }).click();
+  await expect
+    .poll(() => downloads.some((url) => url.includes("/payments.csv?cycle=140&distribution=1")))
+    .toBe(true);
+  await page.getByRole("button", { name: "All cycles" }).click();
+  await page.getByRole("button", { name: "JSON" }).click();
+  await page.getByRole("button", { name: "payments.json" }).click();
+  await expect
+    .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
+    .toBe(true);
+});
+
+test("creates a gas wallet from Settings", async ({ page }) => {
+  let created = false;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/settings/gas-wallet" && route.request().method() === "POST") {
+      created = true;
+      await route.fulfill(fixtureFulfillment(gasWalletCreated));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      await route.fulfill(fixtureFulfillment(created ? gasWalletCreated : gasWalletStatus));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#settings?section=gas-wallet";
+  });
+  const section = page.locator("#gas-wallet");
+  await expect(section.getByRole("heading", { name: "Gas wallet" })).toBeVisible();
+  await expect(section.getByText("Not set up")).toBeVisible();
+  await section.getByRole("button", { name: "Create gas wallet" }).click();
+  await expect(section.getByText("ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7")).toBeVisible();
+  await expect(section.getByText(/12\.48 STX/).first()).toBeVisible();
+  await expect(section.getByRole("button", { name: "Enable" })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
 });

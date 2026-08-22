@@ -1145,6 +1145,284 @@ export const overview = {
   },
 };
 
+// ---------------------------------------------------------------------------------------------
+// Reward ledger (plan S1) and gas wallet (plan S2) fixtures for the Rewards page and Overview card.
+// Cycle 140 · First Distribution is calculated and ready to collect & distribute; cycles 128–139
+// are complete history.
+// ---------------------------------------------------------------------------------------------
+
+const ledgerStakers = roster.slice(0, 40).map(({ stakerPrincipal }) => stakerPrincipal);
+
+function ledgerTx(seed) {
+  return `0x${seed.toString(16).padStart(2, "0").repeat(32)}`;
+}
+
+function ledgerPayment(cycle, distribution, index, staker, status, overrides = {}) {
+  const gross = 245_900 - index * 3_100;
+  const fee = Math.floor(gross * 0.05);
+  const entitlement = gross - fee;
+  const bitcoin = index % 7 === 1;
+  const paid = status !== "outstanding";
+  return {
+    schemaVersion: 1,
+    cycle,
+    distribution,
+    bucket: "stx",
+    stakerPrincipal: staker,
+    route: bitcoin ? "bitcoin" : "sbtc",
+    grossRewardSats: String(gross),
+    operatorFeeSats: String(fee),
+    stakerEntitlementSats: String(entitlement),
+    payoutSats: bitcoin ? String(entitlement - 10_000) : String(entitlement),
+    payoutAsset: bitcoin ? "BTC" : "sBTC",
+    l1MaxFeeSats: bitcoin ? "10000" : null,
+    l1ActualFeeSats: null,
+    feeRefundSats: null,
+    returnedSats: null,
+    status,
+    coverage: "exact",
+    includesPriorDistribution: false,
+    paymentTxId: paid ? ledgerTx(0x30 + index) : null,
+    paymentBlockHeight: paid ? 3_000 + cycle * 10 + index : null,
+    paidAt: paid ? "2026-08-15T09:12:00.000Z" : null,
+    by: paid ? (index % 2 === 0 ? "you" : "another-caller") : null,
+    l1RequestId: bitcoin && paid ? String(4_100 + index) : null,
+    l1Status: bitcoin && paid ? "retired" : null,
+    settleOrReclaimTxId: null,
+    btcSweepTxId: null,
+    unavailableReason: null,
+    ...overrides,
+  };
+}
+
+function ledgerDistribution(cycle, distribution, status, stakers) {
+  const calculated = status !== "accruing";
+  const outstanding = status === "ready";
+  const payments = stakers.map((staker, index) =>
+    ledgerPayment(
+      cycle,
+      distribution,
+      index,
+      staker,
+      outstanding ? "outstanding" : index % 7 === 1 ? "retired" : "paid",
+    ),
+  );
+  const distributed = outstanding
+    ? 0n
+    : payments.reduce((sum, p) => sum + BigInt(p.stakerEntitlementSats), 0n);
+  const fees = outstanding ? 0n : payments.reduce((sum, p) => sum + BigInt(p.operatorFeeSats), 0n);
+  const outstandingSats = outstanding
+    ? payments.reduce((sum, p) => sum + BigInt(p.stakerEntitlementSats), 0n)
+    : 0n;
+  const pool = payments.reduce((sum, p) => sum + BigInt(p.grossRewardSats), 0n);
+  return {
+    payments,
+    distribution: {
+      schemaVersion: 1,
+      cycle,
+      distribution,
+      current: false,
+      calculation: calculated
+        ? {
+            state: "done",
+            txId: ledgerTx(0x10 + distribution),
+            blockHeight: 2_000 + cycle * 10,
+            calculationBurnHeight: 900_000 + cycle * 2_100,
+            observedAt: "2026-08-15T03:20:00.000Z",
+            poolSats: pool.toString(),
+            poolSatsUnavailableReason: null,
+            by: "another-caller",
+          }
+        : {
+            state: "waiting",
+            txId: null,
+            blockHeight: null,
+            calculationBurnHeight: null,
+            observedAt: null,
+            poolSats: null,
+            poolSatsUnavailableReason: null,
+            by: null,
+          },
+      collects:
+        outstanding || !calculated
+          ? []
+          : [
+              {
+                sats: pool.toString(),
+                stxSats: pool.toString(),
+                txId: ledgerTx(0x20 + distribution),
+                blockHeight: 2_100 + cycle * 10,
+                by: "you",
+              },
+            ],
+      collectedSats: outstanding || !calculated ? "0" : pool.toString(),
+      availableToCollectSats: outstanding ? pool.toString() : "0",
+      feeBips: "500",
+      feeEvidence: "locked",
+      payments: {
+        made: outstanding ? 0 : payments.length,
+        outstanding: outstanding ? payments.length : 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        arriving: 0,
+        rejected: 0,
+        returned: 0,
+        distributedSats: distributed.toString(),
+        outstandingSats: outstandingSats.toString(),
+        operatorFeeSats: fees.toString(),
+      },
+      status,
+      statusDetail:
+        status === "ready"
+          ? "Calculated; collect and distribute"
+          : status === "complete"
+            ? "Complete"
+            : "Accruing",
+      coverage: "exact",
+    },
+  };
+}
+
+function ledgerCycle(cycle, statuses, stakers) {
+  const built = statuses.map((status, index) =>
+    ledgerDistribution(cycle, index + 1, status, stakers),
+  );
+  const distributions = built.map(({ distribution }) => distribution);
+  return {
+    payments: built.flatMap(({ payments }) => payments),
+    cycle: {
+      cycle,
+      feeBips: "500",
+      feeEvidence: "locked",
+      collectedSats: distributions.reduce((sum, d) => sum + BigInt(d.collectedSats), 0n).toString(),
+      distributedSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.distributedSats), 0n)
+        .toString(),
+      operatorFeeSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.operatorFeeSats), 0n)
+        .toString(),
+      outstandingSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.outstandingSats), 0n)
+        .toString(),
+      coverage: "exact",
+      distributions,
+    },
+  };
+}
+
+const ledgerCycles = [
+  ledgerCycle(140, ["ready"], ledgerStakers),
+  ...Array.from({ length: 12 }, (_, index) =>
+    ledgerCycle(139 - index, ["complete", "complete"], ledgerStakers),
+  ),
+];
+ledgerCycles[0].cycle.distributions[0].current = true;
+
+export function rewardLedger(url) {
+  const request = new URL(url);
+  const cycleText = request.searchParams.get("cycle");
+  const distributionText = request.searchParams.get("distribution");
+  const scope = request.searchParams.get("scope") === "all" ? "all" : "selection";
+  const selectedCycle = cycleText === null ? 140 : Number(cycleText);
+  const selectedDistribution =
+    distributionText === null ? (cycleText === null ? 1 : null) : Number(distributionText);
+  const payments =
+    scope === "all"
+      ? ledgerCycles.flatMap(({ payments: rows }) => rows)
+      : ledgerCycles
+          .filter(({ cycle }) => cycle.cycle === selectedCycle)
+          .flatMap(({ payments: rows }) => rows)
+          .filter(
+            (row) => selectedDistribution === null || row.distribution === selectedDistribution,
+          );
+  return {
+    schemaVersion: 1,
+    generatedAt: snapshot.generatedAt,
+    managerPrincipal: snapshot.managerPrincipal,
+    network: "testnet",
+    pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+    anchor: {
+      stacksTipHeight: 5_000,
+      burnBlockHeight: 905_000,
+      indexBlockHash: `0x${"11".repeat(32)}`,
+    },
+    capabilityLevel: "reviewed-event-vocabulary",
+    monitoringStartedAt: "2026-07-01T00:00:00.000Z",
+    recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
+    evidenceWindow: { truncated: false, oldestRetainedBlockHeight: null, limit: 10_000 },
+    current: { cycle: 140, distribution: 1 },
+    cycles: ledgerCycles.map(({ cycle }) => cycle),
+    payments,
+    paymentsTruncated: false,
+    fees: {
+      feeBips: "500",
+      earnedIndexedSats: ledgerCycles
+        .reduce((sum, { cycle }) => sum + BigInt(cycle.operatorFeeSats), 0n)
+        .toString(),
+      balanceInManagerSats: "504000",
+      withdrawnDerivedSats: "1100000",
+      refunds: [],
+    },
+    query: { cycle: selectedCycle, distribution: selectedDistribution, staker: null, scope },
+  };
+}
+
+export const gasWalletStatus = {
+  schemaVersion: 1,
+  generatedAt: snapshot.generatedAt,
+  network: "testnet",
+  engineMode: "observe",
+  configured: false,
+  enabled: false,
+  source: null,
+  principal: null,
+  publicKey: null,
+  secretFilePath: null,
+  createdAt: null,
+  enabledAt: null,
+  signer: "not-loaded",
+  signerError: null,
+  balanceUstx: null,
+  balanceObservedAt: null,
+  balanceError: null,
+  feeBasisUstx: "100000",
+  feeBasis: "fee-cap",
+  estimatedTransactions: null,
+  refusal: {
+    checkedAt: null,
+    isManagerAdmin: null,
+    isSignerKey: null,
+    isContract: false,
+    refusalReason: null,
+  },
+  banners: { setupDismissedAt: null, lowBalanceDismissedUntil: null },
+  activeSweepId: null,
+  sweeps: [],
+};
+
+export const gasWalletCreated = {
+  ...gasWalletStatus,
+  engineMode: "operator-run",
+  configured: true,
+  source: "generated",
+  principal: "ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7",
+  publicKey: `02${"ab".repeat(32)}`,
+  secretFilePath: "/var/lib/sidekick/gas-wallet.key",
+  createdAt: snapshot.generatedAt,
+  signer: "disabled",
+  balanceUstx: "12480000",
+  balanceObservedAt: snapshot.generatedAt,
+  estimatedTransactions: 124,
+  refusal: {
+    checkedAt: snapshot.generatedAt,
+    isManagerAdmin: false,
+    isSignerKey: false,
+    isContract: false,
+    refusalReason: null,
+  },
+};
+
 export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
@@ -1237,6 +1515,24 @@ export function responseFor(url) {
         },
       ],
     };
+  }
+  if (request.pathname === "/api/v1/rewards/ledger") return rewardLedger(url);
+  if (request.pathname.startsWith("/api/v1/rewards/ledger/")) {
+    const ledger = rewardLedger(url);
+    if (request.pathname.endsWith("payments.json")) return ledger.payments;
+    if (request.pathname.endsWith("distributions.json"))
+      return ledger.cycles.flatMap((cycle) => cycle.distributions);
+    if (request.pathname.endsWith("fees.json")) return { fees: ledger.fees, rows: [] };
+    return {
+      fixtureStatus: 200,
+      fixtureContentType: "text/csv",
+      fixtureText: "cycle,distribution\n140,1\n",
+    };
+  }
+  if (request.pathname === "/api/v1/settings/gas-wallet") return gasWalletStatus;
+  if (request.pathname.startsWith("/api/v1/settings/gas-wallet/")) return gasWalletStatus;
+  if (request.pathname.startsWith("/api/v1/rewards/runs")) {
+    return { fixtureStatus: 404, error: "not_found", message: "Reward runs are not available" };
   }
   if (request.pathname === "/api/v1/rewards/history") {
     return { total: cycleHistory.length, offset, limit, items: page(cycleHistory, offset, limit) };

@@ -509,7 +509,13 @@ accounts.
 > retired, hot activation, refusal checks, banners) and S2b delivered (sealed `gas-wallet-sweep` plan, signer
 > method, approve/broadcast/settle, run-exclusion). Evidence reads now keep the **newest** rows when a long
 > history exceeds the per-stream limit and report an explicit `evidenceWindow` (older cycles become
-> `historical-coverage-incomplete`). S3–S6 not started; **S1.1** (below) is queued before S5.
+> `historical-coverage-incomplete`). **S5 delivered** (Rewards page rebuilt per the mockups: Now card with the
+> status line, one primary button and the gas chip, projection details disclosure, payments with status tabs /
+> staker search / integer-sats sorting, past cycles paged with lazy payments, accounting exports + fee ledger,
+> banners, confirm sheet bound to the §8.8 run routes; state-specific Overview card; Settings › Gas wallet with
+> sweep; browser-wallet fallback kept behind "Distribute with your wallet"). S3/S4 in progress (other agent);
+> the Rewards confirm sheet and progress line read the §8.8 run routes and degrade gracefully until they exist.
+> S6 not started; **S1.1** (below) is queued.
 
 ### 10.1 S1.1 — scale follow-ups (queued, additive)
 

@@ -22,6 +22,7 @@ import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { operatorActionError } from "../../shared/operator-error.js";
 import { DeploymentRequirementsPanel } from "./deployment-requirements.js";
 import { EngineSettings } from "./engine-settings.js";
+import { GasWalletSettings } from "./gas-wallet-settings.js";
 import { ManagerSettings } from "./manager-settings.js";
 
 const healthSourceLabels = {
@@ -75,6 +76,7 @@ const settingsTargetBySection: Record<SettingsSection, string> = {
   attachment: "attachment",
   sources: "connections",
   capabilities: "capabilities",
+  "gas-wallet": "gas-wallet",
   observer: "observer",
   auth: "auth",
   support: "support",
@@ -1084,6 +1086,7 @@ export function SettingsPage({
               </div>
             ) : null}
           </section>
+          <GasWalletSettings token={token} readOnly={readOnly} />
           <EngineSettings token={token} />
         </section>
 
