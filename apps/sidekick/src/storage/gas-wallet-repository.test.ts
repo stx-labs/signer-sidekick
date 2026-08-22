@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { planGasWalletSweep } from "../gas-wallet-sweep.js";
 import { openSidekickStore, type SidekickStore } from "./store.js";
 
 describe("gas wallet repository", () => {
@@ -69,5 +70,64 @@ describe("gas wallet repository", () => {
     expect(() => store.gasWallet.setEnabled(true, "2026-08-22T12:40:00.000Z")).toThrow(
       "No gas wallet is recorded",
     );
+  });
+
+  it("stores sealed sweeps with one active at a time", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const plan = await planGasWalletSweep({
+      network: "testnet",
+      chainId: 0x8000_0000,
+      sender: {
+        principal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+        publicKey: `02${"ab".repeat(32)}`,
+      },
+      recipient: "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG",
+      balanceUstx: 1_000_000n,
+      feeUstx: 200n,
+      nonce: 3n,
+      indexBlockHash: `0x${"ab".repeat(32)}`,
+      createdAt: new Date("2026-08-22T12:00:00.000Z"),
+      expiresAt: new Date("2026-08-22T12:30:00.000Z"),
+    });
+    expect(store.gasWalletSweeps.active()).toBeNull();
+    const stored = store.gasWalletSweeps.insert({
+      sweepId: "00000000-0000-4000-8000-000000000001",
+      walletPrincipal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+      plan,
+      createdAt: "2026-08-22T12:00:00.000Z",
+    });
+    expect(stored).toMatchObject({
+      status: "planned",
+      recipient: "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG",
+      amountUstx: "999800",
+      feeUstx: "200",
+      nonce: "3",
+      planSha256: plan.planSha256,
+      txid: null,
+      broadcastAmbiguous: false,
+      expiresAt: "2026-08-22T12:30:00.000Z",
+    });
+    expect(store.gasWalletSweeps.getPlan(stored.sweepId)).toEqual(plan);
+    expect(store.gasWalletSweeps.active()?.sweepId).toBe(stored.sweepId);
+    const updated = store.gasWalletSweeps.update(
+      stored.sweepId,
+      {
+        status: "broadcast",
+        txid: `0x${"cd".repeat(32)}`,
+        broadcastAt: "2026-08-22T12:05:00.000Z",
+      },
+      "2026-08-22T12:05:00.000Z",
+    );
+    expect(updated).toMatchObject({ status: "broadcast", txid: `0x${"cd".repeat(32)}` });
+    const settled = store.gasWalletSweeps.update(
+      stored.sweepId,
+      { status: "confirmed", resolvedAt: "2026-08-22T12:20:00.000Z", blockHeight: 10 },
+      "2026-08-22T12:20:00.000Z",
+    );
+    expect(settled).toMatchObject({ status: "confirmed", blockHeight: 10 });
+    expect(store.gasWalletSweeps.active()).toBeNull();
+    expect(store.gasWalletSweeps.list()).toHaveLength(1);
+    expect(store.gasWalletSweeps.get("00000000-0000-4000-8000-000000000002")).toBeNull();
   });
 });

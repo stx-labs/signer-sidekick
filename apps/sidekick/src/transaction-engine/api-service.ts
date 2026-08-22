@@ -115,6 +115,8 @@ export class TransactionEngineApiServiceError extends Error {
 export interface RepositoryTransactionEngineApiServiceOptions {
   repository: TransactionEngineRepository;
   requestedMode: TransactionEngineMode;
+  /** Whether the retired single-job Assist approvals may still execute (engine tests only). */
+  legacyApprovals?: boolean;
   maximumApprovalMinutes: number;
   finalityDepth: number;
   now?: () => Date;
@@ -430,6 +432,7 @@ function repositoryMutationConflict(error: unknown): never {
 export class RepositoryTransactionEngineApiService implements TransactionEngineApiService {
   readonly #repository: TransactionEngineRepository;
   readonly #requestedMode: TransactionEngineMode;
+  readonly #legacyApprovals: boolean;
   readonly #maximumApprovalMilliseconds: number;
   readonly #finalityDepth: number;
   readonly #clock: () => Date;
@@ -439,6 +442,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
   constructor(options: RepositoryTransactionEngineApiServiceOptions) {
     this.#repository = options.repository;
     this.#requestedMode = z.enum(["observe", "operator-run"]).parse(options.requestedMode);
+    this.#legacyApprovals = options.legacyApprovals === true;
     this.#maximumApprovalMilliseconds =
       z
         .number()
@@ -623,6 +627,13 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         eligible: false,
         expiresAt: null,
         reason: "Approval is unavailable in Observe mode",
+      };
+    }
+    if (!this.#legacyApprovals) {
+      return {
+        eligible: false,
+        expiresAt: null,
+        reason: "Single-job Assist approvals are retired; reward runs arrive with operator-run",
       };
     }
     if (this.#repository.getDisabledAdapterControl(job.adapterId) !== null) {

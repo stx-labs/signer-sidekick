@@ -325,6 +325,7 @@ export async function executeCliCommand({
         runtimeContext: connectedRuntimeContext,
         managerPrincipal,
         network: effectiveConfig.network,
+        chainId,
         secretFilePath: join(dirname(resolve(config.databasePath)), "gas-wallet.key"),
         maximumFeeUstx: engine.maximumFeeUstx,
         signerKeyHex: async () => (await service.snapshot()).registration?.signerKeyHex ?? null,

@@ -166,6 +166,7 @@ function service(
   return new RepositoryTransactionEngineApiService({
     repository: store.transactionEngine,
     requestedMode: "operator-run",
+    legacyApprovals: true,
     maximumApprovalMinutes: 30,
     finalityDepth: 6,
     now: () => new Date(clock.value),

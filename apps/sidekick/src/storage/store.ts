@@ -21,6 +21,7 @@ import {
 } from "./chain-state-repository.js";
 import { DeploymentIdentityRepository } from "./deployment-identity-repository.js";
 import { GasWalletRepository } from "./gas-wallet-repository.js";
+import { GasWalletSweepRepository } from "./gas-wallet-sweep-repository.js";
 import { HealthMonitoringRepository } from "./health-monitoring-repository.js";
 import { ManagerTrustRepository } from "./manager-trust-repository.js";
 import { type Migration, migrations } from "./migrations.js";
@@ -1237,6 +1238,8 @@ export interface StoredManagerClaim {
   amountSats: string;
   destination: "direct-sbtc" | "bitcoin-l1";
   withdrawalRequestId: string | null;
+  /** Block time of the payment transaction when the evidence source reported it. */
+  occurredAt: string | null;
 }
 
 export interface StoredManagerWithdrawal {
@@ -1681,6 +1684,7 @@ export class SidekickStore {
   readonly observerInbox: ObserverInboxRepository;
   readonly deploymentIdentity: DeploymentIdentityRepository;
   readonly gasWallet: GasWalletRepository;
+  readonly gasWalletSweeps: GasWalletSweepRepository;
   readonly runtimeSettings: RuntimeSettingsRepository;
   readonly managerTrust: ManagerTrustRepository;
   readonly chainState: ChainStateRepository;
@@ -1692,6 +1696,7 @@ export class SidekickStore {
     this.observerInbox = new ObserverInboxRepository(db);
     this.deploymentIdentity = new DeploymentIdentityRepository(db);
     this.gasWallet = new GasWalletRepository(db);
+    this.gasWalletSweeps = new GasWalletSweepRepository(db);
     this.runtimeSettings = new RuntimeSettingsRepository(db);
     this.managerTrust = new ManagerTrustRepository(db);
     this.chainState = new ChainStateRepository(db);
@@ -2254,7 +2259,7 @@ export class SidekickStore {
            AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
            AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
            AND json_extract(decoded_payload_json, '$.event.kind') IN (${kinds.map(() => "?").join(", ")})
-         ORDER BY block_height ASC, tx_id ASC, event_index ASC
+         ORDER BY block_height DESC, tx_id DESC, event_index DESC
          LIMIT ?`,
       )
       .all(parsedChainId, contract, manager, ...kinds, limit) as Array<{
@@ -2265,7 +2270,9 @@ export class SidekickStore {
       decoded_payload_json: string;
       first_seen_at: string;
     }>;
-    return rows.map((row) => {
+    // Newest rows are retained when the limit truncates; callers receive them oldest first so a
+    // long-history pool degrades at the historical end, never the current cycle.
+    return rows.reverse().map((row) => {
       const decoded = JSON.parse(row.decoded_payload_json) as { event?: Record<string, unknown> };
       const event = decoded.event ?? {};
       const text = (key: string): string | null =>
@@ -2291,7 +2298,7 @@ export class SidekickStore {
     });
   }
 
-  /** Every canonical staker payment event for the manager, oldest first, bounded. */
+  /** Canonical staker payment events for the manager: the newest `limit`, returned oldest first. */
   listManagerClaimRecords(
     chainId: number,
     managerPrincipal: string,
@@ -2302,12 +2309,14 @@ export class SidekickStore {
     const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
     const rows = this.db
       .prepare(
-        `SELECT tx_id, event_index, block_height, staker_principal, reward_cycle,
-                bond_index, amount_sats, request_id
-         FROM manager_activity_events
-         WHERE chain_id = ? AND manager_principal = ? AND canonical = 1
-           AND kind = 'claim-staker-rewards'
-         ORDER BY block_height ASC, tx_id ASC, event_index ASC
+        `SELECT m.tx_id, m.event_index, m.block_height, m.staker_principal, m.reward_cycle,
+                m.bond_index, m.amount_sats, m.request_id, c.occurred_at
+         FROM manager_activity_events AS m
+         LEFT JOIN chain_events AS c
+           ON c.chain_id = m.chain_id AND c.tx_id = m.tx_id AND c.event_index = m.event_index
+         WHERE m.chain_id = ? AND m.manager_principal = ? AND m.canonical = 1
+           AND m.kind = 'claim-staker-rewards'
+         ORDER BY m.block_height DESC, m.tx_id DESC, m.event_index DESC
          LIMIT ?`,
       )
       .all(parsedChainId, manager, parsedLimit) as Array<{
@@ -2319,8 +2328,10 @@ export class SidekickStore {
       bond_index: string | null;
       amount_sats: string;
       request_id: string | null;
+      occurred_at: string | null;
     }>;
-    return rows.map((row) => ({
+    // Newest rows are retained when the limit truncates; returned oldest first (see listPox5RewardPrints).
+    return rows.reverse().map((row) => ({
       txId: row.tx_id,
       eventIndex: row.event_index,
       blockHeight: row.block_height,
@@ -2330,6 +2341,7 @@ export class SidekickStore {
       amountSats: row.amount_sats,
       destination: row.request_id === null ? "direct-sbtc" : "bitcoin-l1",
       withdrawalRequestId: row.request_id,
+      occurredAt: row.occurred_at,
     }));
   }
 
@@ -2452,6 +2464,8 @@ export class SidekickStore {
           amountSats: value.amount_sats,
           destination: value.request_id === null ? "direct-sbtc" : "bitcoin-l1",
           withdrawalRequestId: value.request_id,
+          // Block time is only joined on the ledger read path (listManagerClaimRecords).
+          occurredAt: null,
         };
       }),
       total: z.number().int().nonnegative().parse(totalRow.count),

@@ -15,6 +15,7 @@ import {
   type ManagerClaimRewardsPlan,
   planManagerClaimRewards,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import { type GasWalletSweepPlan, revalidateGasWalletSweepPlan } from "../gas-wallet-sweep.js";
 
 export type GasPayerSignerErrorCode =
   | "invalid-configuration"
@@ -50,6 +51,7 @@ export interface GasPayerSignerOptions {
 }
 
 const signedTransactionCapability = Symbol("signed-manager-claim-rewards");
+const signedSweepCapability = Symbol("signed-gas-wallet-sweep");
 
 /**
  * Opaque signed output from {@link GasPayerSigner}. Its constructor cannot be used without the
@@ -84,6 +86,47 @@ export class SignedManagerClaimRewardsTransaction {
     return {
       kind: this.kind,
       intentHash: this.intentHash,
+      unsignedTransactionSha256: this.unsignedTransactionSha256,
+      precomputedTxid: this.precomputedTxid,
+      nonce: this.nonce,
+      fee: this.fee,
+    };
+  }
+}
+
+/**
+ * Opaque signed gas-wallet sweep (plan §7.6). Same sealing rules as the manager-claim output: the
+ * constructor needs the module-local capability and bytes are returned as defensive copies.
+ */
+export class SignedGasWalletSweepTransaction {
+  readonly kind = "signed-gas-wallet-sweep" as const;
+
+  #signedTransactionBytes: Uint8Array;
+
+  constructor(
+    capability: typeof signedSweepCapability,
+    signedTransactionBytes: Uint8Array,
+    readonly planSha256: string,
+    readonly unsignedTransactionSha256: string,
+    readonly precomputedTxid: `0x${string}`,
+    readonly nonce: string,
+    readonly fee: string,
+  ) {
+    if (capability !== signedSweepCapability) {
+      throw new GasPayerSignerError("signing-failed", "Signed sweep construction is sealed");
+    }
+    this.#signedTransactionBytes = Uint8Array.from(signedTransactionBytes);
+    Object.freeze(this);
+  }
+
+  get signedTransactionBytes(): Uint8Array {
+    return Uint8Array.from(this.#signedTransactionBytes);
+  }
+
+  toJSON(): Record<string, string> {
+    return {
+      kind: this.kind,
+      planSha256: this.planSha256,
       unsignedTransactionSha256: this.unsignedTransactionSha256,
       precomputedTxid: this.precomputedTxid,
       nonce: this.nonce,
@@ -355,6 +398,50 @@ export class GasPayerSigner {
       );
     } catch {
       throw signerError("signing-failed", "Manager claim transaction could not be signed");
+    }
+  }
+
+  /**
+   * Signs one sealed gas-wallet sweep: an STX transfer of `balance - fee` to an operator-entered
+   * address with an exact STX post-condition. The plan is rebuilt from its material first, so this
+   * method still cannot sign arbitrary bytes or amounts.
+   */
+  async signGasWalletSweepPlan(plan: GasWalletSweepPlan): Promise<SignedGasWalletSweepTransaction> {
+    if (this.#destroyed) {
+      throw signerError("signer-destroyed", "Gas-payer signer has been destroyed");
+    }
+    let validated: GasWalletSweepPlan;
+    try {
+      validated = await revalidateGasWalletSweepPlan(plan);
+    } catch {
+      throw signerError("sealed-plan-invalid", "Gas wallet sweep plan failed sealed revalidation");
+    }
+    if (
+      validated.material.network.kind !== this.network ||
+      validated.material.sender.principal !== this.principal ||
+      validated.material.sender.publicKey !== this.publicKey
+    ) {
+      throw signerError(
+        "plan-signer-mismatch",
+        "Gas wallet sweep plan does not belong to the loaded gas wallet",
+      );
+    }
+    try {
+      const transaction = deserializeTransaction(validated.unsignedTransactionHex);
+      const transactionSigner = new TransactionSigner(transaction);
+      transactionSigner.signOrigin(this.#privateKey);
+      const signedBytes = transaction.serializeBytes();
+      return new SignedGasWalletSweepTransaction(
+        signedSweepCapability,
+        signedBytes,
+        validated.planSha256,
+        validated.unsignedTransactionSha256,
+        `0x${transaction.txid()}`,
+        validated.material.nonce,
+        validated.material.feeUstx,
+      );
+    } catch {
+      throw signerError("signing-failed", "Gas wallet sweep transaction could not be signed");
     }
   }
 

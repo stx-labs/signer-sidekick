@@ -482,6 +482,7 @@ describe("manager-claim Assist execution coordinator", () => {
     const api = new RepositoryTransactionEngineApiService({
       repository: value.store.transactionEngine,
       requestedMode: "operator-run",
+      legacyApprovals: true,
       maximumApprovalMinutes: 30,
       finalityDepth: 6,
       now: () => new Date(approvalAt),

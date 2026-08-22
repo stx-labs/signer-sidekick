@@ -33,6 +33,9 @@ import type {
 
 const maximumPayments = 10_000;
 const maximumCycles = 200;
+/** Newest evidence rows retained per stream; store reads accept at most 10,001. */
+const maximumEvidenceRows = 10_000;
+const registryLookupConcurrency = 8;
 
 export type RewardLedgerDistributionIndex = 1 | 2;
 
@@ -145,6 +148,8 @@ export interface RewardLedgerQuery {
   cycle?: number | null;
   distribution?: RewardLedgerDistributionIndex | null;
   staker?: string | null;
+  /** `all` lists every retained payment (accounting exports); default selects one cycle. */
+  scope?: "selection" | "all" | null;
 }
 
 export interface BuildRewardLedgerInput {
@@ -160,6 +165,12 @@ export interface BuildRewardLedgerInput {
   withdrawalRequestStatus?: (requestId: string) => Promise<WithdrawalRegistryStatus>;
   now: Date;
   query?: RewardLedgerQuery;
+  /**
+   * Newest evidence rows read per stream (PoX-5 prints, manager claims). Beyond this the ledger
+   * keeps the newest rows and marks older cycles `historical-coverage-incomplete` (plan S1.1 will
+   * window reads by cycle instead). Defaults to 10,000.
+   */
+  evidenceLimit?: number;
 }
 
 interface CalculationFact {
@@ -267,10 +278,32 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         canonicalOnly: true,
       })
     : [];
-  const prints = pox5ContractId
-    ? store.listPox5RewardPrints(chainId, pox5ContractId, managerPrincipal)
+  const evidenceLimit = Math.max(
+    1,
+    Math.min(maximumEvidenceRows, input.evidenceLimit ?? maximumEvidenceRows),
+  );
+  const printsRead = pox5ContractId
+    ? store.listPox5RewardPrints(chainId, pox5ContractId, managerPrincipal, {
+        limit: evidenceLimit + 1,
+      })
     : [];
-  const claims = store.listManagerClaimRecords(chainId, managerPrincipal);
+  const claimsRead = store.listManagerClaimRecords(chainId, managerPrincipal, evidenceLimit + 1);
+  // Stores return the newest rows oldest-first; one extra row proves truncation. Drop the oldest so
+  // the retained window is exactly `evidenceLimit` rows, and remember where it starts.
+  const printsTruncated = printsRead.length > evidenceLimit;
+  const claimsTruncated = claimsRead.length > evidenceLimit;
+  const prints = printsTruncated ? printsRead.slice(printsRead.length - evidenceLimit) : printsRead;
+  const claims = claimsTruncated ? claimsRead.slice(claimsRead.length - evidenceLimit) : claimsRead;
+  const oldestRetainedBlockHeight = Math.max(
+    printsTruncated ? (prints[0]?.blockHeight ?? 0) : -1,
+    claimsTruncated ? (claims[0]?.blockHeight ?? 0) : -1,
+  );
+  const evidenceWindow: RewardLedger["evidenceWindow"] = {
+    truncated: printsTruncated || claimsTruncated,
+    oldestRetainedBlockHeight:
+      printsTruncated || claimsTruncated ? Math.max(0, oldestRetainedBlockHeight) : null,
+    limit: evidenceLimit,
+  };
   const withdrawals = new Map(
     store
       .listManagerWithdrawalRecords(chainId, managerPrincipal)
@@ -278,12 +311,17 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   );
   const registryStatus = new Map<string, WithdrawalRegistryStatus>();
   if (input.withdrawalRequestStatus) {
-    for (const withdrawal of withdrawals.values()) {
-      if (withdrawal.state !== "pending") continue;
-      registryStatus.set(
-        withdrawal.requestId,
-        await input.withdrawalRequestStatus(withdrawal.requestId).catch(() => "unknown" as const),
+    const lookup = input.withdrawalRequestStatus;
+    const pending = [...withdrawals.values()].filter(({ state }) => state === "pending");
+    // Bounded concurrency: a mature pool can hold many in-flight Bitcoin payouts.
+    for (let index = 0; index < pending.length; index += registryLookupConcurrency) {
+      const batch = pending.slice(index, index + registryLookupConcurrency);
+      const statuses = await Promise.all(
+        batch.map(({ requestId }) => lookup(requestId).catch(() => "unknown" as const)),
       );
+      batch.forEach(({ requestId }, offset) => {
+        registryStatus.set(requestId, statuses[offset] ?? "unknown");
+      });
     }
   }
 
@@ -322,6 +360,10 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     claimsByCycle.set(cycle, list);
   }
 
+  const oldestRetainedCycle = evidenceWindow.truncated
+    ? Math.min(...[...collectsByCycle.keys(), ...claimsByCycle.keys()], Number.POSITIVE_INFINITY)
+    : Number.NEGATIVE_INFINITY;
+
   // --- cycle universe: everything with evidence plus the live cycle, newest first ---
   const cycleIds = [
     ...new Set<number>([
@@ -358,7 +400,24 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     const departedMembers = memberships.some(
       ({ stakerPrincipal, amountUstx }) => amountUstx > 0n && !roster.has(stakerPrincipal),
     );
-    const historicallyIncomplete = !isCurrent && (recoveryIncomplete || departedMembers);
+    // Evidence below the retained window may be missing for this cycle: anything at or before the
+    // oldest retained row, or any non-current cycle older than the oldest cycle still in the window.
+    const cycleEvidenceHeights = [
+      ...calculations.map(({ realization }) => realization.blockHeight),
+      ...collects.map(({ blockHeight }) => blockHeight),
+      ...cycleClaims.map(({ blockHeight }) => blockHeight),
+    ];
+    const evidenceIncomplete =
+      evidenceWindow.truncated &&
+      !isCurrent &&
+      (cycleEvidenceHeights.some(
+        (height) => height <= (evidenceWindow.oldestRetainedBlockHeight ?? 0),
+      ) ||
+        cycle < oldestRetainedCycle);
+    // Recovery gaps apply to the current cycle too: a fresh install may not yet have seen payments
+    // made earlier in this cycle. Departed members and the evidence window only concern history.
+    const historicallyIncomplete =
+      recoveryIncomplete || (!isCurrent && (departedMembers || evidenceIncomplete));
 
     // fee evidence for the cycle
     const feeBips = isCurrent
@@ -428,7 +487,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         includesPriorDistribution: false,
         paymentTxId: claim.txId,
         paymentBlockHeight: claim.blockHeight,
-        paidAt: null,
+        paidAt: claim.occurredAt,
         by: provenance(ownedTxids, claim.txId),
         l1RequestId: claim.withdrawalRequestId,
         l1Status: l1,
@@ -455,12 +514,15 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
           )
           .map((row) => `${row.stakerPrincipal}|${row.bucket}`),
       );
-      const rolled = new Set(
-        memberships
+      // Account universe: STX-only buckets from memberships plus every (staker, bond bucket) that
+      // paid in this cycle, so Bitcoin-bond buckets keep their identity across the seam.
+      const accounts = new Set<string>([
+        ...memberships
           .filter(({ amountUstx }) => amountUstx > 0n)
-          .map(({ stakerPrincipal }) => `${stakerPrincipal}|stx`)
-          .filter((account) => !paidBeforeSecond.has(account)),
-      );
+          .map(({ stakerPrincipal }) => `${stakerPrincipal}|stx`),
+        ...paidRows.map((row) => `${row.stakerPrincipal}|${row.bucket}`),
+      ]);
+      const rolled = new Set([...accounts].filter((account) => !paidBeforeSecond.has(account)));
       rolledForward = rolled.size;
       for (const row of paidRows) {
         if (
@@ -730,10 +792,13 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   }
 
   // --- payment selection: outstanding first, then newest paid ---
+  const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const selectedCycle =
-    query.cycle !== null && query.cycle !== undefined
-      ? query.cycle
-      : (currentCycle ?? cycleIds[0] ?? null);
+    scope === "all"
+      ? null
+      : query.cycle !== null && query.cycle !== undefined
+        ? query.cycle
+        : (currentCycle ?? cycleIds[0] ?? null);
   const filtered = allPayments
     .filter((row) => selectedCycle === null || row.cycle === selectedCycle)
     .filter(
@@ -785,6 +850,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       managerHistory: recoveryStatus(recovery?.managerHistory.status),
       currentMemberHistory: recoveryStatus(recovery?.currentMemberHistory.status),
     },
+    evidenceWindow,
     current: { cycle: currentCycle, distribution: currentDistribution },
     cycles,
     payments,
@@ -800,6 +866,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       cycle: selectedCycle,
       distribution: query.distribution ?? null,
       staker: query.staker ?? null,
+      scope,
     },
   });
 }
@@ -894,6 +961,7 @@ export function rewardLedgerPaymentsCsv(ledger: RewardLedger): string {
     "includes_prior_distribution",
     "payment_txid",
     "payment_block_height",
+    "paid_at",
     "by",
     "l1_request_id",
     "l1_status",
@@ -921,6 +989,7 @@ export function rewardLedgerPaymentsCsv(ledger: RewardLedger): string {
     p.includesPriorDistribution,
     p.paymentTxId,
     p.paymentBlockHeight,
+    p.paidAt,
     p.by,
     p.l1RequestId,
     p.l1Status,
@@ -929,6 +998,85 @@ export function rewardLedgerPaymentsCsv(ledger: RewardLedger): string {
     p.unavailableReason,
   ]);
   return csv([header, ...rows]);
+}
+
+export interface RewardLedgerFeeRow {
+  kind:
+    | "operator-fee"
+    | "fee-refund-sweep"
+    | "earned-indexed-total"
+    | "balance-in-manager"
+    | "withdrawn-derived";
+  cycle: number | null;
+  distribution: number | null;
+  stakerPrincipal: string | null;
+  bucket: string | null;
+  amountSats: string | null;
+  txId: string | null;
+  blockHeight: number | null;
+  note: string;
+}
+
+/** Fee accounting rows shared by the CSV and JSON fee exports (plan §9). */
+export function rewardLedgerFeeRows(ledger: RewardLedger): RewardLedgerFeeRow[] {
+  const feeRows: RewardLedgerFeeRow[] = ledger.payments
+    .filter((p) => p.paymentTxId !== null && p.operatorFeeSats !== null)
+    .map((p) => ({
+      kind: "operator-fee",
+      cycle: p.cycle,
+      distribution: p.distribution,
+      stakerPrincipal: p.stakerPrincipal,
+      bucket: p.bucket,
+      amountSats: p.operatorFeeSats,
+      txId: p.paymentTxId,
+      blockHeight: p.paymentBlockHeight,
+      note: "credited in the manager as the payment was distributed",
+    }));
+  const refundRows: RewardLedgerFeeRow[] = ledger.fees.refunds.map((r) => ({
+    kind: "fee-refund-sweep",
+    cycle: null,
+    distribution: null,
+    stakerPrincipal: null,
+    bucket: null,
+    amountSats: r.amountSats,
+    txId: r.txId,
+    blockHeight: r.blockHeight,
+    note: "sweep-fee-refunds event",
+  }));
+  const summary = (
+    kind: RewardLedgerFeeRow["kind"],
+    amountSats: string | null,
+    note: string,
+  ): RewardLedgerFeeRow => ({
+    kind,
+    cycle: null,
+    distribution: null,
+    stakerPrincipal: null,
+    bucket: null,
+    amountSats,
+    txId: null,
+    blockHeight: null,
+    note,
+  });
+  return [
+    ...feeRows,
+    ...refundRows,
+    summary(
+      "earned-indexed-total",
+      ledger.fees.earnedIndexedSats,
+      "sum of operator fees on indexed payments",
+    ),
+    summary(
+      "balance-in-manager",
+      ledger.fees.balanceInManagerSats,
+      "manager earned-fees balance at the anchor",
+    ),
+    summary(
+      "withdrawn-derived",
+      ledger.fees.withdrawnDerivedSats,
+      "earned-indexed-total minus balance; withdraw-fees emits no event",
+    ),
+  ];
 }
 
 export function rewardLedgerFeesCsv(ledger: RewardLedger): string {
@@ -943,64 +1091,16 @@ export function rewardLedgerFeesCsv(ledger: RewardLedger): string {
     "block_height",
     "note",
   ];
-  const feeRows = ledger.payments
-    .filter((p) => p.paymentTxId !== null && p.operatorFeeSats !== null)
-    .map((p) => [
-      "operator-fee",
-      p.cycle,
-      p.distribution,
-      p.stakerPrincipal,
-      p.bucket,
-      p.operatorFeeSats,
-      p.paymentTxId,
-      p.paymentBlockHeight,
-      "credited in the manager as the payment was distributed",
-    ]);
-  const refundRows = ledger.fees.refunds.map((r) => [
-    "fee-refund-sweep",
-    null,
-    null,
-    null,
-    null,
-    r.amountSats,
-    r.txId,
-    r.blockHeight,
-    "sweep-fee-refunds event",
+  const rows = rewardLedgerFeeRows(ledger).map((row) => [
+    row.kind,
+    row.cycle,
+    row.distribution,
+    row.stakerPrincipal,
+    row.bucket,
+    row.amountSats,
+    row.txId,
+    row.blockHeight,
+    row.note,
   ]);
-  const summary = [
-    [
-      "earned-indexed-total",
-      null,
-      null,
-      null,
-      null,
-      ledger.fees.earnedIndexedSats,
-      null,
-      null,
-      "sum of operator fees on indexed payments",
-    ],
-    [
-      "balance-in-manager",
-      null,
-      null,
-      null,
-      null,
-      ledger.fees.balanceInManagerSats,
-      null,
-      null,
-      "manager earned-fees balance at the anchor",
-    ],
-    [
-      "withdrawn-derived",
-      null,
-      null,
-      null,
-      null,
-      ledger.fees.withdrawnDerivedSats,
-      null,
-      null,
-      "earned-indexed-total minus balance; withdraw-fees leaves no event",
-    ],
-  ];
-  return csv([header, ...feeRows, ...refundRows, ...summary]);
+  return csv([header, ...rows]);
 }

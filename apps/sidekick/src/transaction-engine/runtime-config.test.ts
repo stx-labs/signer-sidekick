@@ -16,8 +16,6 @@ function operatorRunEnvironment(): NodeJS.ProcessEnv {
     SIDEKICK_GAS_PAYER_PRINCIPAL: principal,
     SIDEKICK_GAS_PAYER_PUBLIC_KEY: publicKey,
     SIDEKICK_GAS_PAYER_SECRET_FILE: "/run/secrets/sidekick-gas-payer",
-    SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/etc/sidekick/compatibility.json",
-    SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: "/etc/sidekick/attestation-keys.json",
   };
 }
 
@@ -83,7 +81,7 @@ describe("transaction-engine runtime config", () => {
         SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/etc/sidekick/compatibility.json",
         SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: "/etc/sidekick/attestation-keys.json",
       },
-      "Compatibility attestation needs SIDEKICK_GAS_PAYER_SECRET_FILE",
+      "Compatibility attestation files are not used in operator-run",
     ],
     [
       { SIDEKICK_GAS_PAYER_PRINCIPAL: principal },

@@ -71,6 +71,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE gas_wallet_sweeps;
     DROP TABLE gas_wallet_banners;
     DROP TABLE gas_wallet;
     DROP TABLE runtime_api_credentials;
@@ -352,7 +353,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 35,
+      schemaVersion: 36,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1491,7 +1492,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 35,
+      schemaVersion: 36,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1517,7 +1518,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(35);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1600,7 +1601,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(35);
+    expect(upgraded.store.schemaVersion()).toBe(36);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1672,6 +1673,7 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
@@ -1704,7 +1706,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(35);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1855,7 +1857,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(35);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1978,6 +1980,7 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
@@ -2005,7 +2008,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(35);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -2042,6 +2045,7 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
@@ -2078,5 +2082,80 @@ describe("Sidekick SQLite store", () => {
 
     // A settled claim is history: nothing reads its sealed plan to act on it again.
     expect(job).toMatchObject({ state: "reconciled", state_version: 7 });
+  });
+
+  it("keeps the newest reward evidence when a read limit truncates, returned oldest first", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    const staker = "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7";
+    const baseEvent = {
+      chainId: 1,
+      eventIndex: 0,
+      blockHash,
+      indexBlockHash,
+      microblockHash: null,
+      microblockSequence: null,
+      canonical: true,
+      microblockCanonical: true,
+      rawPayload: {},
+      decodedSchemaVersion: 1,
+      sourceId,
+      observedAt,
+    } as const;
+    for (const [index, blockHeight] of [30, 10, 20].entries()) {
+      store.putChainEvent({
+        ...baseEvent,
+        txId: `0x${String(index + 1)
+          .padStart(2, "0")
+          .repeat(32)}`,
+        blockHeight,
+        contractId: pox5,
+        topic: "print",
+        decodedPayload: {
+          transactionStatus: "success",
+          event: {
+            kind: "claim-staker-rewards-for-signer",
+            signerManager: manager,
+            stakerPrincipal: staker,
+            rewardCycle: "140",
+            bondIndex: null,
+            rewardsClaimedSats: String(blockHeight),
+          },
+        },
+      });
+      store.putChainEvent({
+        ...baseEvent,
+        txId: `0x${String(index + 4)
+          .padStart(2, "0")
+          .repeat(32)}`,
+        blockHeight,
+        contractId: manager,
+        topic: "claim-staker-rewards",
+        decodedPayload: {
+          transactionStatus: "success",
+          event: {
+            kind: "claim-staker-rewards",
+            stakerPrincipal: staker,
+            rewardCycle: "140",
+            bondIndex: null,
+            amountSats: String(blockHeight),
+            l1Withdrawal: null,
+          },
+        },
+      });
+    }
+
+    expect(store.listPox5RewardPrints(1, pox5, manager).map((row) => row.blockHeight)).toEqual([
+      10, 20, 30,
+    ]);
+    expect(
+      store.listPox5RewardPrints(1, pox5, manager, { limit: 2 }).map((row) => row.blockHeight),
+    ).toEqual([20, 30]);
+    expect(store.listManagerClaimRecords(1, manager).map((row) => row.blockHeight)).toEqual([
+      10, 20, 30,
+    ]);
+    expect(store.listManagerClaimRecords(1, manager, 2).map((row) => row.blockHeight)).toEqual([
+      20, 30,
+    ]);
   });
 });

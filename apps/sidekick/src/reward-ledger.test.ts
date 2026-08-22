@@ -104,6 +104,7 @@ function claim(
     amountSats,
     destination: requestId === null ? "direct-sbtc" : "bitcoin-l1",
     withdrawalRequestId: requestId,
+    occurredAt: null,
   };
 }
 
@@ -170,8 +171,17 @@ function fakeStore(data: {
 }): RewardLedgerStore {
   return {
     listRewardCalculationRealizations: () => data.realizations ?? [],
-    listPox5RewardPrints: () => data.prints ?? [],
-    listManagerClaimRecords: () => data.claims ?? [],
+    // Mirrors the store contract: newest `limit` rows, returned oldest first.
+    listPox5RewardPrints: (_chainId, _pox5, _manager, options) => {
+      const rows = [...(data.prints ?? [])].sort((a, b) => a.blockHeight - b.blockHeight);
+      const limit = options?.limit ?? rows.length;
+      return rows.slice(Math.max(0, rows.length - limit));
+    },
+    listManagerClaimRecords: (_chainId, _manager, limit) => {
+      const rows = [...(data.claims ?? [])].sort((a, b) => a.blockHeight - b.blockHeight);
+      const bounded = limit ?? rows.length;
+      return rows.slice(Math.max(0, rows.length - bounded));
+    },
     listManagerWithdrawalRecords: () => data.withdrawals ?? [],
     listManagerTopicEvents: () => [],
     listCycleMembershipsForCycle: (_manager, cycle) => data.memberships?.[cycle] ?? [],
@@ -502,6 +512,10 @@ describe("buildRewardLedger", () => {
     expect(reconstructing.cycles.find((c) => c.cycle === 139)?.coverage).toBe(
       "historical-coverage-incomplete",
     );
+    // A fresh install may not have seen payments made earlier in the live cycle either.
+    expect(reconstructing.cycles.find((c) => c.cycle === 141)?.coverage).toBe(
+      "historical-coverage-incomplete",
+    );
     const complete = await buildRewardLedger({
       ...base,
       snapshot: snapshot({
@@ -568,7 +582,7 @@ describe("buildRewardLedger", () => {
     });
     const payments = rewardLedgerPaymentsCsv(ledger);
     expect(payments.split("\n")[0]).toBe(
-      "cycle,distribution,bucket,staker_principal,route,gross_reward_sats,operator_fee_sats,staker_entitlement_sats,payout_sats,payout_asset,l1_max_fee_sats,l1_actual_fee_sats,fee_refund_sats,returned_sats,status,coverage,includes_prior_distribution,payment_txid,payment_block_height,by,l1_request_id,l1_status,settle_or_reclaim_txid,btc_sweep_txid,unavailable_reason",
+      "cycle,distribution,bucket,staker_principal,route,gross_reward_sats,operator_fee_sats,staker_entitlement_sats,payout_sats,payout_asset,l1_max_fee_sats,l1_actual_fee_sats,fee_refund_sats,returned_sats,status,coverage,includes_prior_distribution,payment_txid,payment_block_height,paid_at,by,l1_request_id,l1_status,settle_or_reclaim_txid,btc_sweep_txid,unavailable_reason",
     );
     expect(payments).toContain("'=SP1EVIL");
     expect(rewardLedgerDistributionsCsv(ledger).split("\n")).toHaveLength(3);
@@ -576,5 +590,224 @@ describe("buildRewardLedger", () => {
     expect(csvSafeCell("+1")).toBe("'+1");
     expect(csvSafeCell('a,"b"')).toBe('"a,""b"""');
     expect(csvSafeCell(12)).toBe("12");
+  });
+
+  it("keeps the newest evidence and marks older cycles incomplete when the window truncates", async () => {
+    const store = fakeStore({
+      realizations: [
+        realization(138, "first-half", 900, "1000000", tx(1)),
+        realization(139, "first-half", 1_900, "1000000", tx(2)),
+        realization(140, "first-half", 2_900, "1000000", tx(3)),
+      ],
+      prints: [
+        grossPrint(10, alice, 1_000, "100000"),
+        grossPrint(11, bob, 1_050, "100000"),
+        grossPrint(12, alice, 2_000, "100000"),
+        grossPrint(13, bob, 2_050, "100000"),
+        grossPrint(14, alice, 3_000, "100000"),
+      ],
+      claims: [
+        claim(10, alice, 138, 1_000, "95000"),
+        claim(11, bob, 138, 1_050, "95000"),
+        claim(12, alice, 139, 2_000, "95000"),
+        claim(13, bob, 139, 2_050, "95000"),
+        claim(14, alice, 140, 3_000, "95000"),
+      ],
+      memberships: {
+        138: [membership(alice, 138), membership(bob, 138)],
+        139: [membership(alice, 139), membership(bob, 139)],
+        140: [membership(alice, 140), membership(bob, 140)],
+      },
+    });
+    const build = (evidenceLimit?: number, query?: { cycle: number }) =>
+      buildRewardLedger({
+        store,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        sourceId: null,
+        ownedTxids: new Set(),
+        now,
+        snapshot: snapshot({
+          rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+        }),
+        ...(evidenceLimit === undefined ? {} : { evidenceLimit }),
+        ...(query === undefined ? {} : { query }),
+      });
+
+    const complete = await build();
+    expect(complete.evidenceWindow).toEqual({
+      truncated: false,
+      oldestRetainedBlockHeight: null,
+      limit: 10_000,
+    });
+    expect(complete.cycles.map((c) => [c.cycle, c.coverage])).toEqual([
+      [141, "exact"],
+      [140, "exact"],
+      [139, "exact"],
+      [138, "exact"],
+    ]);
+
+    // Only the newest three rows per stream survive: the current cycle stays exact, the boundary
+    // cycle (139, whose oldest row is the oldest retained row) and everything older degrade.
+    const windowed = await build(3);
+    expect(windowed.evidenceWindow).toEqual({
+      truncated: true,
+      oldestRetainedBlockHeight: 2_000,
+      limit: 3,
+    });
+    expect(windowed.cycles.map((c) => [c.cycle, c.coverage])).toEqual([
+      [141, "exact"],
+      [140, "exact"],
+      [139, "historical-coverage-incomplete"],
+      [138, "historical-coverage-incomplete"],
+    ]);
+    const latest = windowed.cycles.find((c) => c.cycle === 140);
+    expect(latest?.distributions[0]?.payments).toMatchObject({ made: 1, distributedSats: "95000" });
+    const windowedCycle = await build(3, { cycle: 140 });
+    expect(windowedCycle.payments.filter((row) => row.cycle === 140)).toHaveLength(1);
+    expect(windowedCycle.payments.find((row) => row.cycle === 140)).toMatchObject({
+      grossRewardSats: "100000",
+      coverage: "exact",
+    });
+    // Nothing newer than the window start was dropped.
+    expect(
+      windowedCycle.payments
+        .filter((row) => row.paymentTxId !== null)
+        .every((row) => (row.paymentBlockHeight ?? 0) >= 2_000),
+    ).toBe(true);
+  });
+
+  it("keeps Bitcoin-bond bucket identity across the settlement seam", async () => {
+    const store = fakeStore({
+      realizations: [
+        realization(140, "first-half", 1_000, "1000000", tx(1)),
+        realization(140, "second-half", 2_000, "1000000", tx(2)),
+      ],
+      prints: [
+        grossPrint(10, alice, 1_200, "100000"),
+        { ...grossPrint(11, bob, 2_200, "80000"), bondIndex: "1" },
+        grossPrint(12, bob, 2_300, "50000"),
+      ],
+      claims: [
+        claim(10, alice, 140, 1_200, "95000"),
+        { ...claim(11, bob, 140, 2_200, "76000"), bondIndex: "1" },
+        claim(12, bob, 140, 2_300, "47500"),
+      ],
+      memberships: { 140: [membership(alice, 140), membership(bob, 140)] },
+    });
+    const ledger = await buildRewardLedger({
+      store,
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+      }),
+      query: { cycle: 140 },
+    });
+    const cycle = ledger.cycles.find((c) => c.cycle === 140);
+    const first = cycle?.distributions.find((d) => d.distribution === 1);
+    const second = cycle?.distributions.find((d) => d.distribution === 2);
+    // bob's STX bucket and bob's bond bucket both rolled forward out of the First Distribution;
+    // alice's STX bucket did not. Their later payments carry both distributions.
+    expect(first?.payments).toMatchObject({ made: 1, rolledForward: 2 });
+    expect(second?.payments).toMatchObject({ made: 2, rolledForward: 0 });
+    const bond = ledger.payments.find((p) => p.stakerPrincipal === bob && p.bucket === "bond-1");
+    expect(bond).toMatchObject({
+      distribution: 2,
+      grossRewardSats: "80000",
+      stakerEntitlementSats: "76000",
+      includesPriorDistribution: true,
+      coverage: "combined",
+    });
+    expect(
+      ledger.payments.find((p) => p.stakerPrincipal === bob && p.bucket === "stx"),
+    ).toMatchObject({
+      includesPriorDistribution: true,
+      coverage: "combined",
+    });
+    expect(ledger.payments.find((p) => p.stakerPrincipal === alice)).toMatchObject({
+      distribution: 1,
+      includesPriorDistribution: false,
+      coverage: "exact",
+    });
+  });
+
+  it("stays fast and truthful for a 150-staker pool with 50 cycles of history", async () => {
+    const stakers = Array.from({ length: 150 }, (_, index) =>
+      `SP${index.toString(36).toUpperCase().padStart(4, "0")}${"A".repeat(35)}`.slice(0, 41),
+    );
+    const realizations: StoredRewardCalculationRealization[] = [];
+    const prints: StoredPox5RewardPrint[] = [];
+    const claims: StoredManagerClaim[] = [];
+    const memberships: Record<number, StoredCycleMembership[]> = {};
+    let seed = 1_000;
+    for (let cycle = 91; cycle <= 140; cycle += 1) {
+      const base = (cycle - 91) * 10_000;
+      realizations.push(realization(cycle, "first-half", base + 100, "10000000", tx(seed++)));
+      realizations.push(realization(cycle, "second-half", base + 5_100, "10000000", tx(seed++)));
+      memberships[cycle] = stakers.map((staker) => membership(staker, cycle));
+      for (const [index, staker] of stakers.entries()) {
+        for (const offset of [200, 5_200]) {
+          const id = seed++;
+          prints.push(grossPrint(id, staker, base + offset + index, "100000"));
+          claims.push(claim(id, staker, cycle, base + offset + index, "95000"));
+        }
+      }
+    }
+    expect(claims).toHaveLength(15_000);
+    const store = fakeStore({ realizations, prints, claims, memberships });
+    const started = performance.now();
+    const ledger = await buildRewardLedger({
+      store,
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        roster: stakers.map((stakerPrincipal) => ({ stakerPrincipal, active: true })),
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+      }),
+      query: { cycle: 140 },
+    });
+    const elapsedMs = performance.now() - started;
+    expect(elapsedMs).toBeLessThan(3_000);
+    // 15,000 rows per stream exceed the 10,000-row window: the newest cycles stay exact and
+    // complete, the oldest ones are flagged rather than silently thinned.
+    expect(ledger.evidenceWindow.truncated).toBe(true);
+    expect(ledger.cycles.find((c) => c.cycle === 140)).toMatchObject({ coverage: "exact" });
+    expect(
+      ledger.cycles.find((c) => c.cycle === 140)?.distributions.map((d) => d.payments.made),
+    ).toEqual([150, 150]);
+    expect(ledger.payments).toHaveLength(300);
+    expect(ledger.cycles.find((c) => c.cycle === 91)).toMatchObject({
+      coverage: "historical-coverage-incomplete",
+    });
+    const exact = ledger.cycles.filter((c) => c.coverage === "exact").map((c) => c.cycle);
+    expect(Math.min(...exact)).toBeGreaterThan(91);
+    expect(Math.max(...exact)).toBe(141);
+    const all = await buildRewardLedger({
+      store,
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        roster: stakers.map((stakerPrincipal) => ({ stakerPrincipal, active: true })),
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+      }),
+      query: { scope: "all" },
+    });
+    expect(all.query.scope).toBe("all");
+    expect(all.payments.length).toBe(10_000);
+    expect(all.paymentsTruncated).toBe(false);
   });
 });

@@ -30,6 +30,8 @@ import {
   engineForceObserveRequestSchema,
   engineInvalidateApprovalRequestSchema,
   type GasWalletStatus,
+  type GasWalletSweep,
+  gasWalletSweepRequestSchema,
   type HealthSnapshot,
   healthSnapshotSchema,
   healthSourceTestRequestSchema,
@@ -79,6 +81,7 @@ import {
 } from "./request-context.js";
 import {
   rewardLedgerDistributionsCsv,
+  rewardLedgerFeeRows,
   rewardLedgerFeesCsv,
   rewardLedgerPaymentsCsv,
 } from "./reward-ledger.js";
@@ -417,6 +420,10 @@ export interface GasWalletApi {
   enable(): Promise<GasWalletStatus>;
   disable(): Promise<GasWalletStatus>;
   dismissBanner(kind: "setup" | "low-balance"): Promise<GasWalletStatus>;
+  prepareSweep(input: { recipient: string }): Promise<GasWalletSweep>;
+  approveSweep(sweepId: string): Promise<GasWalletSweep>;
+  cancelSweep(sweepId: string): Promise<GasWalletSweep>;
+  refreshSweep(sweepId: string): Promise<GasWalletSweep>;
 }
 
 class OperatorApiError extends Error {
@@ -478,7 +485,9 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   reward_ledger_unavailable:
     "The reward ledger is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
   invalid_reward_ledger_query:
-    "The reward ledger query is invalid. Use a whole reward cycle, distribution 1 or 2, and a staker prefix.",
+    "The reward ledger query is invalid. Use a whole reward cycle, distribution 1 or 2, a staker prefix, and scope selection or all.",
+  cross_site_request_rejected:
+    "Cross-site requests are rejected. Open Sidekick directly in the browser and retry.",
   gas_wallet_unavailable:
     "The gas wallet is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
   gas_wallet_engine_mode:
@@ -492,7 +501,23 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "The transaction engine is unavailable. Restart Sidekick and review the startup logs.",
   gas_wallet_secret_unreadable:
     "The gas wallet secret file could not be loaded. Check that it exists, is owned by the Sidekick user, and is readable only by that user.",
-  invalid_gas_wallet_request: "Choose the setup or low-balance banner to dismiss.",
+  invalid_gas_wallet_request: "The gas wallet request is invalid. Refresh Settings and retry.",
+  gas_wallet_sweep_blocked:
+    "The gas wallet is busy: finish or cancel the current sweep, or wait for the running reward run to complete.",
+  gas_wallet_sweep_not_found: "This sweep no longer exists. Refresh Settings.",
+  gas_wallet_sweep_state:
+    "This sweep is no longer planned. Refresh Settings and prepare a new sweep.",
+  gas_wallet_sweep_expired: "The sweep approval window elapsed. Prepare the sweep again.",
+  gas_wallet_sweep_stale:
+    "The gas wallet changed after the sweep was planned. Prepare the sweep again.",
+  gas_wallet_sweep_empty:
+    "The gas wallet balance does not cover a transaction fee; nothing to sweep.",
+  gas_wallet_sweep_failed:
+    "The sweep could not be signed or was rejected by the node. Review the sweep details and retry.",
+  gas_wallet_sweep_unavailable:
+    "The node could not be read to prepare or settle the sweep. Reconnect and retry.",
+  invalid_gas_wallet_sweep_recipient:
+    "Enter a standard Stacks address on this network that is not the gas wallet itself.",
   signer_grant_sources_incompatible:
     "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
   signer_grant_unavailable:
@@ -821,6 +846,15 @@ const GAS_WALLET_ERROR_STATUS: Readonly<Record<GasWalletErrorCode, number>> = {
   gas_wallet_engine_unavailable: 503,
   gas_wallet_secret_unreadable: 503,
   invalid_gas_wallet_request: 400,
+  gas_wallet_sweep_blocked: 409,
+  gas_wallet_sweep_not_found: 404,
+  gas_wallet_sweep_state: 409,
+  gas_wallet_sweep_expired: 409,
+  gas_wallet_sweep_stale: 409,
+  gas_wallet_sweep_empty: 409,
+  gas_wallet_sweep_failed: 502,
+  gas_wallet_sweep_unavailable: 503,
+  invalid_gas_wallet_sweep_recipient: 400,
 };
 
 async function gasWalletCall<T>(operation: () => Promise<T>): Promise<T> {
@@ -879,6 +913,29 @@ function replyToWalletIntentAnchorError(
 }
 
 type OperatorAuthMethod = "bearer" | "trusted-header" | "basic";
+
+/**
+ * Browser CSRF guard for state-changing operator requests. Basic and trusted-header authentication
+ * are ambient in a browser, so a cross-site page must never be able to drive a mutation (gas
+ * wallet, sweeps, runs). Same-origin pages and non-browser clients (no Origin / Fetch Metadata)
+ * pass; an explicit cross-site signal is rejected.
+ */
+function crossSiteRequest(request: FastifyRequest): boolean {
+  if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") {
+    return false;
+  }
+  const origin = request.headers.origin;
+  if (typeof origin === "string") {
+    if (origin === "null") return true;
+    try {
+      return new URL(origin).host !== request.headers.host;
+    } catch {
+      return true;
+    }
+  }
+  const site = request.headers["sec-fetch-site"];
+  return typeof site === "string" && site === "cross-site";
+}
 
 function secureEqual(provided: string, expected: string): boolean {
   const providedBuffer = Buffer.from(provided);
@@ -1376,6 +1433,7 @@ export function createServer(options: ServerOptions = {}) {
       reply.header("www-authenticate", authenticationChallenges(options));
       throw new OperatorApiError(401, "unauthorized");
     }
+    if (crossSiteRequest(request)) throw new OperatorApiError(403, "cross_site_request_rejected");
     const pathname = new URL(request.url, "http://sidekick.local").pathname;
     const connection = options.connection?.current();
     const safeWhileDisconnected =
@@ -1997,6 +2055,9 @@ export function createServer(options: ServerOptions = {}) {
             health: async () => healthService.storedSnapshot?.() ?? (await healthService.current()),
           }
         : {}),
+      ...(options.gasWallet && operational
+        ? { gasWallet: async () => await options.gasWallet?.status() }
+        : {}),
       ...(options.engine && operational
         ? {
             engine: async () => options.engine?.status(),
@@ -2208,12 +2269,22 @@ export function createServer(options: ServerOptions = {}) {
     cycle: number | null;
     distribution: 1 | 2 | null;
     staker: string | null;
+    scope: "selection" | "all";
   } {
     try {
       const search = new URL(requestUrl, "http://sidekick.local").searchParams;
       const cycleText = search.get("cycle");
       const distributionText = search.get("distribution");
       const stakerText = search.get("staker");
+      const scopeText = search.get("scope");
+      const scope =
+        scopeText === null || scopeText === "selection"
+          ? "selection"
+          : scopeText === "all"
+            ? "all"
+            : (() => {
+                throw new Error("invalid scope");
+              })();
       const cycle =
         cycleText === null ? null : z.coerce.number().int().nonnegative().safe().parse(cycleText);
       const distribution =
@@ -2227,7 +2298,7 @@ export function createServer(options: ServerOptions = {}) {
                   throw new Error("invalid distribution");
                 })();
       const staker = stakerText === null ? null : z.string().min(1).max(200).parse(stakerText);
-      return { cycle, distribution, staker };
+      return { cycle, distribution, staker, scope };
     } catch {
       throw new OperatorApiError(400, "invalid_reward_ledger_query");
     }
@@ -2268,7 +2339,7 @@ export function createServer(options: ServerOptions = {}) {
         ? ledger.cycles.flatMap((cycle) => cycle.distributions)
         : ledgerExport.name === "payments"
           ? ledger.payments
-          : ledger.fees;
+          : { fees: ledger.fees, rows: rewardLedgerFeeRows(ledger) };
     });
   }
   server.get("/api/v1/rewards/staker-claims", async (request, _reply) => {
@@ -2418,6 +2489,37 @@ export function createServer(options: ServerOptions = {}) {
       .safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
     return await gasWalletCall(() => gasWallet.dismissBanner(parsed.data.kind));
+  });
+  server.post("/api/v1/settings/gas-wallet/sweep", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    const parsed = gasWalletSweepRequestSchema.safeParse(request.body);
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_gas_wallet_sweep_recipient");
+    return await interactive(
+      request,
+      async () => await gasWalletCall(() => gasWallet.prepareSweep(parsed.data)),
+    );
+  });
+  server.get("/api/v1/settings/gas-wallet/sweep/:sweepId", async (request, reply) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    const params = z.object({ sweepId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
+    reply.header("cache-control", "no-store");
+    return await gasWalletCall(() => gasWallet.refreshSweep(params.data.sweepId));
+  });
+  server.post("/api/v1/settings/gas-wallet/sweep/:sweepId/approve", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    const params = z.object({ sweepId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
+    return await interactive(
+      request,
+      async () => await gasWalletCall(() => gasWallet.approveSweep(params.data.sweepId)),
+    );
+  });
+  server.post("/api/v1/settings/gas-wallet/sweep/:sweepId/cancel", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    const params = z.object({ sweepId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
+    return await gasWalletCall(() => gasWallet.cancelSweep(params.data.sweepId));
   });
   server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
     const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");

@@ -113,12 +113,12 @@ export function loadTransactionEngineRuntimeConfig(
           ),
         };
 
-  // Operator-run does not require a gas payer or attestation at startup: the gas wallet is usually
-  // generated from Settings after boot (plan S2) and activated on the running engine. When the
-  // legacy attestation-gated single-job path is still configured, the secret must accompany it.
-  if (requestedMode === "operator-run" && attestation !== null && !gasPayer?.secretFilePath) {
+  // Operator-run does not require a gas payer at startup: the gas wallet is usually generated from
+  // Settings after boot (plan S2) and activated on the running engine. It never uses an issuer
+  // attestation (ADR 0010): the retired Assist path cannot be re-entered through configuration.
+  if (requestedMode === "operator-run" && attestation !== null) {
     throw new Error(
-      "Compatibility attestation needs SIDEKICK_GAS_PAYER_SECRET_FILE and the matching public identity",
+      "Compatibility attestation files are not used in operator-run (ADR 0010); remove SIDEKICK_COMPATIBILITY_ATTESTATION_FILE and SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
     );
   }
 

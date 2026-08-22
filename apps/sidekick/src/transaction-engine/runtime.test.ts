@@ -231,7 +231,7 @@ describe("transaction engine runtime composition", () => {
     await runtime.close();
   });
 
-  it("destroys a loaded signer when later legacy attestation startup validation fails", async () => {
+  it("refuses attestation files under operator-run before loading any signer", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
     const publicKey = privateKeyToPublic(`${"11".repeat(32)}01`);
@@ -260,11 +260,11 @@ describe("transaction engine runtime composition", () => {
         managerVerification: undefined,
         runtimeContext: () => assistContext,
       }),
-    ).rejects.toThrow("trust store cannot be read safely");
-    expect(destroy).toHaveBeenCalledTimes(1);
+    ).rejects.toThrow("Compatibility attestation files are not used in operator-run");
+    expect(destroy).not.toHaveBeenCalled();
   });
 
-  it("binds Assist attestation acceptance to the configured network", async () => {
+  it("refuses attestation files under operator-run even when they are valid for the network", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sidekick-runtime-attestation-"));
     try {
       const { store } = await openSidekickStore(":memory:");
@@ -334,9 +334,9 @@ describe("transaction engine runtime composition", () => {
           runtimeContext: () => assistContext,
           now: () => new Date("2026-07-18T12:00:00.000Z"),
         }),
-      ).rejects.toThrow("does not match configured network");
+      ).rejects.toThrow("Compatibility attestation files are not used in operator-run");
       await expect(store.transactionEngine.get("stacks-labs")).resolves.toBeNull();
-      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(destroy).not.toHaveBeenCalled();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -375,6 +375,7 @@ describe("transaction engine runtime composition", () => {
         requestedMode: "operator-run",
         attestation: legacyAttestationFiles,
       },
+      legacyAssist: true,
     });
 
     const error = await runtime
@@ -534,6 +535,7 @@ describe("transaction engine runtime composition", () => {
         requestedMode: "operator-run",
         attestation: legacyAttestationFiles,
       },
+      legacyAssist: true,
       store: { transactionEngine: repository } as unknown as SidekickStore,
       runtimeContext: () => ({ ...context(), api }),
       signerHolder: {
@@ -666,6 +668,7 @@ describe("transaction engine runtime composition", () => {
         requestedMode: "operator-run",
         attestation: legacyAttestationFiles,
       },
+      legacyAssist: true,
       store: { transactionEngine: repository } as unknown as SidekickStore,
       runtimeContext: () => ({ ...context(), api }),
       signerHolder: {

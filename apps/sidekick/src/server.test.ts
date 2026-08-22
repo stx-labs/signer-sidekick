@@ -2695,6 +2695,7 @@ describe("reward ledger routes", () => {
     capabilityLevel: "reviewed-event-vocabulary",
     monitoringStartedAt: null,
     recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
+    evidenceWindow: { truncated: false, oldestRetainedBlockHeight: null, limit: 10_000 },
     current: { cycle: 141, distribution: 2 },
     cycles: [],
     payments: [],
@@ -2706,7 +2707,7 @@ describe("reward ledger routes", () => {
       withdrawnDerivedSats: null,
       refunds: [],
     },
-    query: { cycle: 141, distribution: 2, staker: "SP1" },
+    query: { cycle: 141, distribution: 2, staker: "SP1", scope: "selection" },
   };
 
   it("forwards the parsed query and serves sanitized CSV and JSON exports", async () => {
@@ -2731,6 +2732,7 @@ describe("reward ledger routes", () => {
       cycle: 141,
       distribution: 2,
       staker: "SP1",
+      scope: "selection",
     });
 
     const csv = await server.inject({
@@ -2749,7 +2751,12 @@ describe("reward ledger routes", () => {
       headers,
     });
     expect(fees.statusCode).toBe(200);
-    expect(fees.json()).toMatchObject({ earnedIndexedSats: "0" });
+    expect(fees.json()).toMatchObject({
+      fees: { earnedIndexedSats: "0" },
+      rows: expect.arrayContaining([
+        expect.objectContaining({ kind: "earned-indexed-total", amountSats: "0" }),
+      ]),
+    });
 
     const invalid = await server.inject({
       method: "GET",
@@ -2791,6 +2798,28 @@ describe("gas wallet routes", () => {
       refusalReason: null,
     },
     banners: { setupDismissedAt: null, lowBalanceDismissedUntil: null },
+    activeSweepId: null,
+    sweeps: [],
+  };
+  const sweep = {
+    sweepId: "00000000-0000-4000-8000-000000000001",
+    status: "planned",
+    walletPrincipal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+    recipient: "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG",
+    amountUstx: "2499750",
+    feeUstx: "250",
+    nonce: "0",
+    balanceUstx: "2500000",
+    planSha256: "ab".repeat(32),
+    txid: null,
+    broadcastAmbiguous: false,
+    createdAt: "2026-08-22T12:00:00.000Z",
+    expiresAt: "2026-08-22T12:30:00.000Z",
+    approvedAt: null,
+    broadcastAt: null,
+    resolvedAt: null,
+    blockHeight: null,
+    failureReason: null,
   };
 
   it("serves status and lifecycle actions and maps wallet errors to stable codes", async () => {
@@ -2805,6 +2834,12 @@ describe("gas wallet routes", () => {
       enable: vi.fn().mockRejectedValue(new GasWalletError("gas_wallet_refused", "refused")),
       disable: vi.fn().mockResolvedValue(status),
       dismissBanner: vi.fn().mockResolvedValue(status),
+      prepareSweep: vi.fn().mockResolvedValue(sweep),
+      approveSweep: vi
+        .fn()
+        .mockRejectedValue(new GasWalletError("gas_wallet_sweep_stale", "stale")),
+      cancelSweep: vi.fn().mockResolvedValue({ ...sweep, status: "cancelled" }),
+      refreshSweep: vi.fn().mockResolvedValue(sweep),
     };
     const server = createServer({ service, gasWallet, authToken: token, logger: false });
     servers.push(server);
@@ -2858,6 +2893,109 @@ describe("gas wallet routes", () => {
     });
     expect(dismissed.statusCode).toBe(200);
     expect(gasWallet.dismissBanner).toHaveBeenCalledWith("setup");
+
+    const badRecipient = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep",
+      headers,
+      payload: { recipient: "" },
+    });
+    expect(badRecipient.statusCode).toBe(400);
+    const prepared = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep",
+      headers,
+      payload: { recipient: sweep.recipient },
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toEqual(sweep);
+    expect(gasWallet.prepareSweep).toHaveBeenCalledWith({ recipient: sweep.recipient });
+
+    const stale = await server.inject({
+      method: "POST",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}/approve`,
+      headers,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.stringify(stale.json())).toContain("gas_wallet_sweep_stale");
+    const badId = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep/not-a-uuid/approve",
+      headers,
+    });
+    expect(badId.statusCode).toBe(400);
+    const cancelled = await server.inject({
+      method: "POST",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}/cancel`,
+      headers,
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ status: "cancelled" });
+    const refreshed = await server.inject({
+      method: "GET",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}`,
+      headers,
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.headers["cache-control"]).toBe("no-store");
+    expect(gasWallet.refreshSweep).toHaveBeenCalledWith(sweep.sweepId);
+  });
+
+  it("rejects cross-site browser mutations and accepts same-origin ones", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const gasWallet = {
+      status: vi.fn().mockResolvedValue(status),
+      create: vi.fn().mockResolvedValue(status),
+      enable: vi.fn().mockResolvedValue(status),
+      disable: vi.fn().mockResolvedValue(status),
+      dismissBanner: vi.fn().mockResolvedValue(status),
+      prepareSweep: vi.fn().mockResolvedValue(sweep),
+      approveSweep: vi.fn().mockResolvedValue(sweep),
+      cancelSweep: vi.fn().mockResolvedValue(sweep),
+      refreshSweep: vi.fn().mockResolvedValue(sweep),
+    };
+    const server = createServer({ service, gasWallet, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}`, host: "sidekick.local" };
+
+    const crossSite = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "https://evil.example" },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(JSON.stringify(crossSite.json())).toContain("cross_site_request_rejected");
+    const fetchMetadata = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/enable",
+      headers: { ...headers, "sec-fetch-site": "cross-site" },
+    });
+    expect(fetchMetadata.statusCode).toBe(403);
+    expect(gasWallet.create).not.toHaveBeenCalled();
+    expect(gasWallet.enable).not.toHaveBeenCalled();
+
+    const sameOrigin = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "http://sidekick.local", "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOrigin.statusCode).toBe(200);
+    const nonBrowser = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/disable",
+      headers,
+    });
+    expect(nonBrowser.statusCode).toBe(200);
+    const crossSiteRead = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "https://evil.example" },
+    });
+    expect(crossSiteRead.statusCode).toBe(200);
   });
 
   it("reports the feature as unavailable when no gas wallet service is wired", async () => {

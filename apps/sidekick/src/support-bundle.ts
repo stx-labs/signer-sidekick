@@ -6,6 +6,7 @@ import {
   deploymentRequirementsSchema,
   engineJobPageSchema,
   engineStatusSchema,
+  gasWalletStatusSchema,
   healthSnapshotSchema,
   reconciliationOperationSchema,
   runtimeSettingsSchema,
@@ -47,6 +48,10 @@ const healthSectionSchema = supportSectionBaseSchema
   .strict();
 const engineSectionSchema = supportSectionBaseSchema
   .extend({ data: engineStatusSchema.nullable() })
+  .strict();
+// Public gas-wallet identity and lifecycle state only (plan S2); never key material.
+const gasWalletSectionSchema = supportSectionBaseSchema
+  .extend({ data: gasWalletStatusSchema.nullable() })
   .strict();
 const recentOperationsSectionSchema = supportSectionBaseSchema
   .extend({ data: engineJobPageSchema.nullable() })
@@ -380,6 +385,7 @@ export const operatorSupportBundleSchema = z
         operator: operatorSectionSchema,
         nodeAndSignerHealth: healthSectionSchema,
         transactionEngine: engineSectionSchema,
+        gasWallet: gasWalletSectionSchema.optional(),
         recentOperations: recentOperationsSectionSchema,
         recentSidekickErrors: recentSidekickErrorsSectionSchema,
         database: databaseSectionSchema,
@@ -573,6 +579,7 @@ export async function createOperatorSupportBundle(options: {
   operator?: () => Promise<unknown>;
   health?: () => Promise<unknown>;
   engine?: () => Promise<unknown> | unknown;
+  gasWallet?: () => Promise<unknown> | unknown;
   recentOperations?: () => Promise<unknown>;
   recentSidekickErrors?: () => Promise<unknown> | unknown;
   database?: () => Promise<unknown> | unknown;
@@ -622,6 +629,9 @@ export async function createOperatorSupportBundle(options: {
     collectSupportSection(options.automation, automationStatusSchema, now, timeoutMs),
     deploymentRequirementsPromise,
   ]);
+  const gasWallet = options.gasWallet
+    ? await collectSupportSection(options.gasWallet, gasWalletStatusSchema, now, timeoutMs)
+    : null;
   const sections = {
     connection,
     ...(deploymentRequirements ? { deploymentRequirements } : {}),
@@ -629,6 +639,7 @@ export async function createOperatorSupportBundle(options: {
     operator,
     nodeAndSignerHealth,
     transactionEngine,
+    ...(gasWallet ? { gasWallet } : {}),
     recentOperations,
     recentSidekickErrors,
     database,

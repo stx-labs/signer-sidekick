@@ -2176,4 +2176,36 @@ export const migrations: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 36,
+    name: "gas_wallet_sweeps",
+    sql: `
+      -- Sealed gas-wallet sweeps (plan §7.6): one STX transfer of balance - fee to an operator-entered
+      -- address, approved per run. The sealed plan JSON is the exact material the signer revalidates.
+      CREATE TABLE gas_wallet_sweeps (
+        sweep_id TEXT PRIMARY KEY CHECK (length(sweep_id) = 36),
+        status TEXT NOT NULL CHECK (status IN ('planned', 'broadcast', 'confirmed', 'failed', 'cancelled', 'expired')),
+        wallet_principal TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        amount_ustx TEXT NOT NULL,
+        fee_ustx TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        balance_ustx TEXT NOT NULL,
+        plan_sha256 TEXT NOT NULL CHECK (length(plan_sha256) = 64),
+        plan_json TEXT NOT NULL,
+        txid TEXT CHECK (txid IS NULL OR length(txid) = 66),
+        broadcast_ambiguous INTEGER NOT NULL DEFAULT 0 CHECK (broadcast_ambiguous IN (0, 1)),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        approved_at TEXT,
+        broadcast_at TEXT,
+        resolved_at TEXT,
+        block_height INTEGER,
+        failure_reason TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX gas_wallet_sweeps_created_idx ON gas_wallet_sweeps (created_at DESC);
+    `,
+  },
 ];

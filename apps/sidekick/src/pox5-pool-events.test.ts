@@ -101,7 +101,7 @@ describe("decodePox5PoolActivityEvent — reward prints", () => {
         topic: stringAsciiCV("claim-rewards"),
         "reward-cycle": uintCV(141),
         "signer-manager": contract(manager),
-        "stx-rewards": uintCV(1_200_000),
+        "stx-rewards": tupleCV({ earned: uintCV(1_200_000), "reward-cycle": uintCV(141) }),
         "total-rewards": uintCV(1_287_000),
       }),
       manager,

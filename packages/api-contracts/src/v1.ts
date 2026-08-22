@@ -3091,6 +3091,18 @@ export const rewardLedgerSchema = z
         currentMemberHistory: z.enum(["not-started", "reconstructing", "complete"]),
       })
       .strict(),
+    /**
+     * Evidence read window. When a long history exceeds `limit` rows per stream the ledger keeps
+     * the newest rows; cycles at or below `oldestRetainedBlockHeight` report
+     * `historical-coverage-incomplete` rather than silently missing payments.
+     */
+    evidenceWindow: z
+      .object({
+        truncated: z.boolean(),
+        oldestRetainedBlockHeight: z.number().int().nonnegative().nullable(),
+        limit: z.number().int().positive(),
+      })
+      .strict(),
     current: z
       .object({
         cycle: ledgerCycleSchema.nullable(),
@@ -3127,6 +3139,8 @@ export const rewardLedgerSchema = z
         cycle: ledgerCycleSchema.nullable(),
         distribution: ledgerDistributionIndexSchema.nullable(),
         staker: z.string().min(1).max(200).nullable(),
+        /** `all` lists every retained payment (accounting exports); `selection` is one cycle. */
+        scope: z.enum(["selection", "all"]),
       })
       .strict(),
   })
@@ -3149,6 +3163,49 @@ export const gasWalletRefusalSchema = z
   })
   .strict();
 export type GasWalletRefusal = z.infer<typeof gasWalletRefusalSchema>;
+
+export const gasWalletSweepStatusSchema = z.enum([
+  "planned",
+  "broadcast",
+  "confirmed",
+  "failed",
+  "cancelled",
+  "expired",
+]);
+export type GasWalletSweepStatus = z.infer<typeof gasWalletSweepStatusSchema>;
+
+/** One sealed sweep of the gas wallet's remaining STX to an operator-entered address. */
+export const gasWalletSweepSchema = z
+  .object({
+    sweepId: z.string().uuid(),
+    status: gasWalletSweepStatusSchema,
+    walletPrincipal: z.string().min(1),
+    recipient: z.string().min(1),
+    amountUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    feeUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    nonce: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    balanceUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    planSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    txid: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    broadcastAmbiguous: z.boolean(),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    approvedAt: z.iso.datetime().nullable(),
+    broadcastAt: z.iso.datetime().nullable(),
+    resolvedAt: z.iso.datetime().nullable(),
+    blockHeight: z.number().int().nonnegative().nullable(),
+    failureReason: z.string().min(1).max(300).nullable(),
+  })
+  .strict();
+export type GasWalletSweep = z.infer<typeof gasWalletSweepSchema>;
+
+export const gasWalletSweepRequestSchema = z
+  .object({ recipient: z.string().min(1).max(64) })
+  .strict();
+export type GasWalletSweepRequest = z.infer<typeof gasWalletSweepRequestSchema>;
 
 export const gasWalletStatusSchema = z
   .object({
@@ -3185,6 +3242,9 @@ export const gasWalletStatusSchema = z
         lowBalanceDismissedUntil: z.iso.datetime().nullable(),
       })
       .strict(),
+    /** Planned or broadcast sweep, if any; while present the wallet refuses new runs and sweeps. */
+    activeSweepId: z.string().uuid().nullable(),
+    sweeps: z.array(gasWalletSweepSchema).max(20),
   })
   .strict();
 export type GasWalletStatus = z.infer<typeof gasWalletStatusSchema>;

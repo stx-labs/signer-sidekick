@@ -950,6 +950,7 @@ export class OperatorService {
       query.cycle ?? null,
       query.distribution ?? null,
       query.staker ?? null,
+      query.scope ?? "selection",
     ]);
     const cached = this.rewardLedgerCache.get(cacheKey);
     if (cached) return cached;

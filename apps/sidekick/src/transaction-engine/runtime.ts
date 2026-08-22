@@ -12,6 +12,7 @@ import {
   type StacksNodeClient,
 } from "../chain-clients.js";
 import type { SidekickConfig } from "../config.js";
+import type { GasWalletSweepPlan } from "../gas-wallet-sweep.js";
 import { managerActionCapability } from "../manager-capabilities.js";
 import type { ManagerVerificationContext } from "../manager-verification.js";
 import {
@@ -37,7 +38,7 @@ import {
   proveCanonicalAnchorRelationship,
   proveCanonicalInclusionRelationship,
 } from "./canonical-anchor-proof.js";
-import { GasPayerSigner } from "./gas-payer-signer.js";
+import { GasPayerSigner, type SignedGasWalletSweepTransaction } from "./gas-payer-signer.js";
 import { LiveTransactionReader } from "./live-transaction-reader.js";
 import {
   ManagerClaimAssistCoordinator,
@@ -107,6 +108,12 @@ export interface SidekickTransactionEngineRuntimeComposition {
   runtimeContext: () => TransactionEngineRuntimeContext;
   /** Mutable holder so the gas wallet can be activated on a running engine (plan S2). */
   signerHolder: GasPayerSignerHolder;
+  /**
+   * Test-only: keeps the retired attestation-gated single-job path (ADR 0009) executable for the
+   * engine tests that still cover it. Production composition never sets it; recipe runs (plan S3)
+   * replace the path.
+   */
+  legacyAssist?: boolean;
   loadAttestation: (now: Date) => Promise<VerifiedCompatibilityAttestation | null>;
   createObservationService: (context: TransactionEngineRuntimeContext) => RuntimeObservationService;
   createCoordinator: (context: TransactionEngineRuntimeContext) => RuntimeAssistCoordinator;
@@ -287,6 +294,7 @@ export class SidekickTransactionEngineRuntime {
     this.api = new RepositoryTransactionEngineApiService({
       repository: composition.store.transactionEngine,
       requestedMode: composition.runtimeConfig.requestedMode,
+      legacyApprovals: composition.legacyAssist === true,
       maximumApprovalMinutes: composition.runtimeConfig.maximumApprovalMinutes,
       finalityDepth: composition.runtimeConfig.finalityDepth,
       now: () => exactNow(composition.now),
@@ -710,8 +718,8 @@ export class SidekickTransactionEngineRuntime {
    * `assist` literal. Recipe runs (plan S3) replace this path.
    */
   #legacyAssistMode(): "observe" | "assist" {
-    return this.#composition.runtimeConfig.requestedMode === "operator-run" &&
-      this.#composition.runtimeConfig.attestation !== null
+    return this.#composition.legacyAssist === true &&
+      this.#composition.runtimeConfig.requestedMode === "operator-run"
       ? "assist"
       : "observe";
   }
@@ -764,6 +772,25 @@ export class SidekickTransactionEngineRuntime {
       };
       previous?.destroy();
     });
+  }
+
+  /**
+   * Signs a sealed gas-wallet sweep (plan §7.6) under the same mutex that serializes reward
+   * execution, so a sweep and a legacy approval can never sign concurrently.
+   */
+  async signGasWalletSweep(plan: GasWalletSweepPlan): Promise<SignedGasWalletSweepTransaction> {
+    if (this.#closed) throw new Error("Transaction engine runtime is closed");
+    return await this.#exclusive(async () => {
+      const signer = this.#composition.signerHolder.current;
+      if (signer === null) throw new Error("No gas wallet signer is loaded");
+      return await signer.signGasWalletSweepPlan(plan);
+    });
+  }
+
+  /** Legacy engine jobs that are executing or ambiguous; sweeps refuse while any exist. */
+  activeJobCount(): number {
+    const status = this.api.status();
+    return status.jobs.active + status.jobs.ambiguous;
   }
 
   /** Drops the loaded gas-wallet signer; the public identity stays for recovery/observation. */
@@ -835,9 +862,6 @@ export async function createSidekickTransactionEngineRuntime(
         }
         signerHolder.current = signer;
       }
-      // The legacy attestation path cannot start with an unreadable, expired, untrusted, or
-      // rollback attestation.
-      if (runtimeConfig.attestation !== null) await loadAttestation(exactNow(clock));
     }
 
     const createCoordinator = (context: TransactionEngineRuntimeContext) => {

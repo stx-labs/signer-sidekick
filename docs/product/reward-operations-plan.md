@@ -1,6 +1,6 @@
 # Reward operations — design and implementation plan
 
-- Status: **Proposed — revision 4, after second independent review (2026-08-22)**
+- Status: **Accepted — revision 5, in delivery (S0–S2b delivered 2026-08-22; see §10 status)**
 - Branch: `codex/reward-forecast-and-overview-clarity`
 - Replaces: the Phase 2–5 plan in issue #34 and the earlier mockup run-rail / signing-session /
   Autopilot model. ADR 0009's safety invariants stand; its sequencing is amended (§15).
@@ -113,7 +113,7 @@ concept is superseded by `design/mockups/`.
 | **Distribute** | Send each staker their share. Items are **payments** — one per staker per bucket; counts are of payments, never stakers. "Distributed 38 of 40 payments." | `claim-staker-rewards` |
 | **Arriving over Bitcoin** / **Returned** | A Bitcoin-route payment is *sent* until sweep evidence proves arrival; the staker receives the entitlement minus the Bitcoin fee budget. A rejected one is **returned** to the staker as sBTC (the full entitlement) by Finish Bitcoin payouts. | withdrawal request / settle / reclaim |
 | **Finish Bitcoin payouts** | Two cases in one action: **retire** settled payouts (no money moves) and **return** rejected ones (the full entitlement goes to the staker as sBTC). The confirm names both: "Retire 3 completed payouts · return 59,356 sats to 1 staker." Future payouts keep the staker's configured route; Sidekick never changes a route. | `settle-accepted-withdrawal`, `reclaim-failed-withdrawal` |
-| **Your fee** | Operator fee: earned, withdrawn, balance held in manager. | `earned-fees`, `withdraw-fees` |
+| **Your fee** | Operator fee: earned, withdrawn (derived: earned − balance; `withdraw-fees` emits no event), balance held in manager. | `earned-fees`, `withdraw-fees` |
 | **Gas wallet** | Sidekick's own small STX wallet that pays transaction fees when the operator clicks. | gas payer |
 | **Accruing** | Before a distribution is calculated: "Accruing · projected 0.0129 sBTC." The quiet resting state names the last completed cycle on one line. | outlook / forecast |
 | **Rolled forward** | Payments not made before the next calculation merge into that later distribution's payment. | (ADR 0009 "combined" coverage, presentation) |
@@ -506,7 +506,31 @@ accounts.
 
 > **Status (2026-08-22):** S0 delivered (`c94e9c2`). S1 delivered on `codex/reward-forecast-and-overview-clarity`
 > (ledger + exports; commit pending). S2 core delivered (gas wallet lifecycle, `operator-run` mode, `assist`
-> retired, hot activation, refusal checks, banners); **S2b sweep pending**. S3–S6 not started.
+> retired, hot activation, refusal checks, banners) and S2b delivered (sealed `gas-wallet-sweep` plan, signer
+> method, approve/broadcast/settle, run-exclusion). Evidence reads now keep the **newest** rows when a long
+> history exceeds the per-stream limit and report an explicit `evidenceWindow` (older cycles become
+> `historical-coverage-incomplete`). S3–S6 not started; **S1.1** (below) is queued before S5.
+
+### 10.1 S1.1 — scale follow-ups (queued, additive)
+
+Findings from the 1-staker/cycle-2 vs 150-staker/cycle-50 review (2026-08-22). None change the data
+model; all are additive to the ledger builder and API:
+
+- Window evidence reads by reward cycle / block range instead of one global newest-N limit; build the
+  current and recent cycles fully and summarize older cycles compactly; then drop the 10k payment cap.
+- Summary mode for `GET /rewards/ledger` (cycles + current distribution only) and a paged payments
+  endpoint (`?cycle=&distribution=&cursor=`) so the dashboard never loads the whole payment history.
+- Stream CSV exports instead of building the whole ledger in memory.
+- Gas estimate: show a recent-actual-fee estimate alongside the fee-cap estimate (150 × cap overstates).
+- S3 knob: bounded N-in-flight after sequential v1; surface run progress for long distributions.
+
+S5 acceptance additions — small and large pools must both look right:
+
+- Payments load per selected distribution (server filter), never the unfiltered ledger; cycles page in
+  small groups with jump-to-cycle; staker search uses the server-side prefix filter.
+- Scale chrome disappears for tiny pools: no "Showing N of M" footers under a short table, no empty
+  "Past cycles" section, singular copy ("1 staker"), Accruing/quiet states front and centre, and the
+  fee-locks-on-first-collect explanation visible for pools that have not collected yet.
 
 | # | Slice | Scope | Gate |
 | --- | --- | --- | --- |
@@ -556,7 +580,8 @@ banner; api-contracts strictness; security tests.
   `SIDEKICK_ENGINE_FINALITY_DEPTH` kept; new `SIDEKICK_ENGINE_RUN_START_MINUTES` (30),
   `SIDEKICK_ENGINE_MAX_RUN_HOURS` (6), `SIDEKICK_ENGINE_MAX_RUN_TRANSACTIONS` (200).
 - Runtime settings: `gasWallet` identity + `enabled`; banner dismissals.
-- Migration v35 (additive): `transaction_runs` (recipe, lifecycle, cursor, child order);
+- Migration v37 (additive; v35 `gas_wallet` and v36 `gas_wallet_sweeps` are taken): `transaction_runs`
+  (recipe, lifecycle, cursor, child order);
   `run_id` + `child_index` on `transaction_jobs`; authorization schema version on jobs.
 - Backward compatibility: deployments without a wallet unchanged; legacy single jobs continue.
 

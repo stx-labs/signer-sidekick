@@ -67,6 +67,12 @@ function uintText(value: ClarityValue | undefined): string | null {
   return value?.type === ClarityType.UInt ? BigInt(value.value).toString() : null;
 }
 
+/** PoX-5 prints `stx-rewards` as the claimable-rewards tuple (`{ earned, ... }`), not a bare uint. */
+function nestedUintText(value: ClarityValue | undefined, key: string): string | null {
+  if (value?.type !== ClarityType.Tuple) return null;
+  return uintText(value.value[key]);
+}
+
 function isPoolTopic(value: string): value is Pox5PoolActivityTopic {
   return (pox5PoolActivityTopics as readonly string[]).includes(value);
 }
@@ -128,7 +134,8 @@ export function decodePox5PoolActivityEvent(
     rewardsClaimedSats: uintText(tuple["rewards-claimed"]),
     rewardCycle: uintText(tuple["reward-cycle"]),
     totalRewardsSats: uintText(tuple["total-rewards"]),
-    stxRewardsSats: uintText(tuple["stx-rewards"]),
+    stxRewardsSats:
+      uintText(tuple["stx-rewards"]) ?? nestedUintText(tuple["stx-rewards"], "earned"),
     firstRewardCycle: uintText(tuple["first-reward-cycle"]),
     unlockCycle: uintText(tuple["unlock-cycle"]),
     bondIndex: uintText(tuple["bond-index"]),
