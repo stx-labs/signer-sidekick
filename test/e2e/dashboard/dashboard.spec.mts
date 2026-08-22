@@ -287,7 +287,11 @@ test("keeps healthy Overview domains visible when one domain is unavailable", as
   await expect(
     page.getByText("Signer monitoring is healthy and aligned with the node."),
   ).toBeVisible();
-  await expect(page.getByText("Projected next allocation", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .locator("#overview-rewards")
+      .getByText("Total Estimated Pool Earnings for This Distribution", { exact: true }),
+  ).toBeVisible();
 });
 
 test("retains the last Overview projection when a forced refresh fails", async ({ page }) => {
