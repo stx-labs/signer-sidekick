@@ -1,6 +1,8 @@
 # ADR 0009: Evidence-first reward distribution and settlement
 
-- Status: Accepted
+- Status: Accepted — invariants in force; the Phase 2–5 delivery sequencing in this ADR was
+  replaced on 2026-08-22 by [ADR 0010](0010-operator-run-execution-envelope.md) and the
+  [reward operations plan](../../product/reward-operations-plan.md)
 - Date: 2026-08-20
 - Tracking: [#34](https://github.com/stx-labs/signer-sidekick/issues/34)
 

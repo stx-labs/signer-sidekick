@@ -1,0 +1,25 @@
+<div class="section-title" id="rw-accounting">Accounting <span class="hint">integer sats · every row carries its transaction ID</span></div>
+<div class="grid cols-2">
+  <section class="card" aria-labelledby="rw-export-title">
+    <div class="card-head"><h2 id="rw-export-title">Export</h2><span class="badge b-neutral">CSV · JSON</span></div>
+    <p class="card-sub">Distributions, payments, and your fee ledger — built to tie out against a block explorer.</p>
+    <div class="rw-export-row">
+      <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>This distribution</button>
+      <button class="btn btn-secondary" type="button">Cycle 141</button>
+      <button class="btn btn-secondary" type="button">All cycles</button>
+      <div class="seg" aria-label="Format"><button class="on" type="button">CSV</button><button type="button">JSON</button></div>
+    </div>
+    <div class="divider"></div>
+    <div class="statline"><span class="k">distributions.csv</span><span class="v"><span class="sub">cycle · distribution · bucket · calculated · collected · fee · distributed · outstanding</span></span></div>
+    <div class="statline"><span class="k">payments.csv</span><span class="v"><span class="sub">cycle · distribution · staker · route · gross · fee · net · status · paid at · txid</span></span></div>
+    <div class="statline"><span class="k">fees.csv</span><span class="v"><span class="sub">fee per payment · withdrawals · refunds · running balance</span></span></div>
+  </section>
+  <section class="card" aria-labelledby="rw-fee-title">
+    <div class="card-head"><h2 id="rw-fee-title">Your fee ledger</h2><span class="badge b-info">5% locked</span></div>
+    <p class="card-sub">Fees are paid to you as each payment is distributed and stay in the manager until you withdraw them.</p>
+    <div class="statline"><span class="k">Earned this cycle</span><span class="v">0.00127 sBTC</span></div>
+    <div class="statline"><span class="k">Earned all time</span><span class="v">0.0160 sBTC</span></div>
+    <div class="statline"><span class="k">Withdrawn <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Last withdrawal Jul 30, 16:20 UTC · 0.0110 sBTC · tx 0x2fa9…d6e1"><!-- @include icon-info --></button></span><span class="v">0.0110 sBTC</span></div>
+    <div class="statline"><span class="k">Balance in manager</span><span class="v">0.00504 sBTC<span class="sub">withdraw from Settings › Manager</span></span></div>
+  </section>
+</div>

@@ -1,0 +1,37 @@
+[
+  {
+    "id": "note-brief",
+    "x": 0,
+    "y": -190,
+    "w": 620,
+    "text": "Reward operations \u2014 hi-fi mockups (rev 1)\nOne page, four zones: Now \u00b7 Payments \u00b7 Past cycles \u00b7 Accounting. Vocabulary: Cycle / Distribution / Calculate / Collect / Distribute / payments. Who did a step and when live only in the \u24d8 tooltips and exports. Exceptions are never green."
+  },
+  {
+    "id": "note-amounts",
+    "x": 660,
+    "y": -190,
+    "w": 520,
+    "text": "Amount rule (whole interface): below 100,000 sats \u2192 \"64,350 sats\"; otherwise 3 significant figures with the unit word always present. Unit by context: sBTC for anything held or moved on Stacks (accrued, calculated, collected, direct payouts, fees); BTC for payouts that went out over Bitcoin (sent / arrived). Sorting, filtering and totals always use the underlying integer sats, never the rendered string."
+  },
+  {
+    "id": "note-projection",
+    "x": 1360,
+    "y": -190,
+    "w": 560,
+    "text": "Projection (distribution-first): the first tile is the earnings number \u2014 before calculation it is the projection with earned-so-far beneath; after, it is the exact calculated amount with projected \u2192 got. One cycle line below the tiles carries the whole-cycle figure. Details & accuracy are collapsed under the Now card."
+  },
+  {
+    "id": "note-canvas-fonts",
+    "x": 2720,
+    "y": -190,
+    "w": 520,
+    "text": "Canvas note: Matter / Matter Mono cannot load here, so headings and figures render in the fallback stack. The repo pages (design/mockups/index.html) use the real fonts."
+  },
+  {
+    "id": "note-quiet",
+    "x": 4080,
+    "y": -190,
+    "w": 560,
+    "text": "Quiet state (most days): the Now card accrues for the NEXT distribution, names the last completed cycle on one line, and nothing is actionable. Past cycles shows the just-finished cycle first."
+  }
+]

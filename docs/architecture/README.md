@@ -30,3 +30,4 @@ deploy contracts, manage infrastructure, or provide a public staker interface.
 | [0007](decisions/0007-network-compatibility.md) | Release-independent network compatibility |
 | [0008](decisions/0008-chain-evidence-and-reconciliation.md) | Node-authoritative event reconciliation |
 | [0009](decisions/0009-evidence-first-reward-distribution.md) | Evidence-first reward distribution and settlement |
+| [0010](decisions/0010-operator-run-execution-envelope.md) | Operator-run execution envelope |
