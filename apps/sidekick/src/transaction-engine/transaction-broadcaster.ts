@@ -2,11 +2,13 @@ import { deserializeTransaction, txidFromBytes } from "@stacks/transactions";
 import type {
   SignedGasWalletSweepTransaction,
   SignedManagerClaimRewardsTransaction,
+  SignedRewardOperationTransaction,
 } from "./gas-payer-signer.js";
 
 export type BroadcastableSignedTransaction =
   | SignedManagerClaimRewardsTransaction
-  | SignedGasWalletSweepTransaction;
+  | SignedGasWalletSweepTransaction
+  | SignedRewardOperationTransaction;
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -154,7 +156,8 @@ function validateSignedAttempt(
   try {
     if (
       attempt.kind !== "signed-manager-claim-rewards" &&
-      attempt.kind !== "signed-gas-wallet-sweep"
+      attempt.kind !== "signed-gas-wallet-sweep" &&
+      attempt.kind !== "signed-reward-operation"
     ) {
       return null;
     }

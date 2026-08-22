@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { openSync } from "node:fs";
 import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { arch, homedir, platform } from "node:os";
@@ -206,6 +206,8 @@ function sidekickRuntimeArgs(
     `SIDEKICK_MANAGER_PRINCIPAL=${manager}`,
     "--env",
     `SIDEKICK_AUTH_TOKEN=${state.authToken}`,
+    "--env",
+    "SIDEKICK_ENGINE_MODE=operator-run",
     "--env",
     "SIDEKICK_MAX_API_BURN_BLOCK_LAG=0",
     "--env",
@@ -506,6 +508,164 @@ async function ensureRewardPhase(actor) {
   );
 }
 
+async function waitForEligibleFirstDistributionTarget() {
+  return await waitFor(
+    async () => {
+      const pox = await fetch("http://127.0.0.1:20443/v2/pox").then((response) => response.json());
+      const cycle = pox.reward_cycle_id;
+      const burnHeight = pox.current_burnchain_block_height;
+      const cycleLength = pox.reward_cycle_length;
+      const nextCycleStart = pox.next_cycle?.reward_phase_start_block_height;
+      if (
+        !Number.isSafeInteger(cycle) ||
+        !Number.isSafeInteger(burnHeight) ||
+        !Number.isSafeInteger(cycleLength) ||
+        !Number.isSafeInteger(nextCycleStart)
+      ) {
+        return null;
+      }
+      const cycleStart = nextCycleStart - cycleLength;
+      const firstCalculationEligibleHeight = cycleStart + Math.floor(cycleLength / 2);
+      return burnHeight >= firstCalculationEligibleHeight ? { cycle, distribution: 1 } : null;
+    },
+    "the first reward calculation checkpoint for the manager's active cycle",
+    300_000,
+    500,
+  );
+}
+
+async function executePreparedRewardRun(state, prepared, label) {
+  const approved = await sidekickFetch(state, `/api/v1/rewards/runs/${prepared.runId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ recipeSha256: prepared.recipeSha256 }),
+  });
+  // The HTTP caller is deliberately done after approval. The server-owned loop must finish the
+  // work without a browser connection or a second action request.
+  const completed = await waitFor(
+    async () => {
+      const run = await sidekickFetch(state, `/api/v1/rewards/runs/${prepared.runId}`);
+      return ["completed", "halted", "cancelled", "expired"].includes(run.status) ? run : null;
+    },
+    label,
+    300_000,
+    500,
+  );
+  if (completed.status !== "completed") {
+    throw new Error(`${label} ended ${completed.status}: ${completed.failureReason ?? "unknown"}`);
+  }
+  return { approvedStatus: approved.status, completed };
+}
+
+async function prepareRewardRunWhenAvailable(state, operation, target, label) {
+  let lastError = null;
+  const requestId = randomUUID();
+  const prepared = await waitFor(
+    async () => {
+      await sidekickFetch(state, "/api/v1/status?refresh=1").catch(() => null);
+      try {
+        return await sidekickFetch(state, "/api/v1/rewards/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            requestId,
+            cycle: target.cycle,
+            distribution: target.distribution,
+            operations: [operation],
+            maxTransactions: 1,
+          }),
+        });
+      } catch (error) {
+        lastError = error;
+        return null;
+      }
+    },
+    label,
+    300_000,
+    1_000,
+  ).catch((error) => {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${lastError ? `: ${lastError.message}` : ""}`,
+    );
+  });
+  // Exercise the creation idempotency contract with the same public request key and body.
+  const retried = await sidekickFetch(state, "/api/v1/rewards/runs", {
+    method: "POST",
+    body: JSON.stringify({
+      requestId: prepared.runId,
+      cycle: prepared.recipe.cycle,
+      distribution: prepared.recipe.distribution,
+      operations: [operation],
+      maxTransactions: 1,
+    }),
+  });
+  if (retried.runId !== prepared.runId || retried.recipeSha256 !== prepared.recipeSha256) {
+    throw new Error(`${label} did not return the original sealed run on retry`);
+  }
+  return prepared;
+}
+
+async function runGasWalletCollectScenario(state, actor) {
+  const rewardFunding = await actor.fundPox5Rewards();
+  const created = await sidekickFetch(state, "/api/v1/settings/gas-wallet", {
+    method: "POST",
+    body: "{}",
+  });
+  if (!created.principal)
+    throw new Error("Sidekick did not return the generated gas-wallet address");
+  const funding = await actor.fundGasWallet(created.principal);
+  const enabled = await sidekickFetch(state, "/api/v1/settings/gas-wallet/enable", {
+    method: "POST",
+    body: "{}",
+  });
+  if (!enabled.enabled || enabled.signer !== "ready") {
+    throw new Error(`Devnet gas wallet did not activate: ${JSON.stringify(enabled)}`);
+  }
+  const target = await waitForEligibleFirstDistributionTarget();
+  const calculationDraft = await prepareRewardRunWhenAvailable(
+    state,
+    "calculate-rewards",
+    target,
+    "a permissionless Devnet reward calculation to become runnable",
+  );
+  const calculation = await executePreparedRewardRun(
+    state,
+    calculationDraft,
+    "the API-approved Devnet reward calculation",
+  );
+  const collectTarget = {
+    cycle: calculationDraft.recipe.cycle,
+    distribution: calculationDraft.recipe.distribution,
+  };
+  const collectDraft = await prepareRewardRunWhenAvailable(
+    state,
+    "claim-rewards",
+    collectTarget,
+    "the Devnet manager collect to become runnable",
+  );
+  const collect = await executePreparedRewardRun(
+    state,
+    collectDraft,
+    "the API-approved Devnet manager collect",
+  );
+  if (
+    collect.completed.children.length !== 1 ||
+    collect.completed.children[0]?.operation !== "claim-rewards" ||
+    collect.completed.children[0]?.status !== "confirmed"
+  ) {
+    throw new Error(
+      `Devnet collect run had unexpected children: ${JSON.stringify(collect.completed.children)}`,
+    );
+  }
+  return {
+    walletPrincipal: created.principal,
+    fundingTxid: funding.txid,
+    rewardFundingTxid: rewardFunding.txid,
+    calculationRunId: calculation.completed.runId,
+    collectRunId: collect.completed.runId,
+    collectTxid: collect.completed.children[0].txid,
+    backgroundCompletion: true,
+  };
+}
+
 async function readSynchronizationOperation(state) {
   const payload = await sidekickFetch(state, "/api/v1/sync");
   const operation = payload?.operation;
@@ -699,6 +859,7 @@ async function activePool(state) {
   );
   const cycleSync = await synchronizeSidekick(state, { label: "Reward-cycle synchronization" });
   const cycleSyncResult = synchronizationReconciliation(cycleSync, "Reward-cycle synchronization");
+  const rewardRun = await runGasWalletCollectScenario(state, actor);
   return {
     connection,
     deploymentRequirements: {
@@ -717,6 +878,7 @@ async function activePool(state) {
     replay: replayResult,
     cycle: { before: before.reward_cycle_id, after: after.reward_cycle_id },
     cycleSync: cycleSyncResult,
+    rewardRun,
   };
 }
 
@@ -1350,13 +1512,14 @@ async function scenario(name) {
   const state = await readState();
   if (name === "connect") return await connectExistingManager(state);
   if (name === "active-pool") return await activePool(state);
+  if (name === "reward-run") return await runGasWalletCollectScenario(state, createOperatorActor());
   if (name === "clean-connection") return await connectWithCleanDatabase(state);
   if (name === "restart") return await restartSidekick(state);
   if (name === "event-resume") return await eventResumeScenario(state);
   if (name === "trusted-manager-profile") return await installedManagerProfileScenario(state);
   if (name === "failure-injection") return await failureInjection(state);
   throw new Error(
-    `Unknown scenario ${name}; use connect, active-pool, clean-connection, restart, trusted-manager-profile, failure-injection, or event-resume`,
+    `Unknown scenario ${name}; use connect, active-pool, reward-run, clean-connection, restart, trusted-manager-profile, failure-injection, or event-resume`,
   );
 }
 
@@ -1550,7 +1713,7 @@ if (command === "doctor") {
 Usage:
   pnpm e2e:devnet:doctor
   pnpm e2e:devnet:up [--no-build]
-  pnpm e2e:devnet:scenario connect|active-pool|clean-connection|restart|trusted-manager-profile|failure-injection|event-resume
+  pnpm e2e:devnet:scenario connect|active-pool|reward-run|clean-connection|restart|trusted-manager-profile|failure-injection|event-resume
   pnpm e2e:devnet:mine [count]
   pnpm e2e:devnet:status
   pnpm e2e:devnet:reset

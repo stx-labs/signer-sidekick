@@ -8,6 +8,7 @@ import {
   hexToCV,
   makeContractCall,
   makeContractDeploy,
+  makeSTXTokenTransfer,
   PostConditionMode,
   privateKeyToPublic,
 } from "@stacks/transactions";
@@ -33,6 +34,10 @@ export const DEVNET_ACCOUNTS = Object.freeze({
 
 export const DEVNET_MANAGER_PRINCIPAL = `${DEVNET_ACCOUNTS.deployer.address}.signer-manager`;
 export const DEVNET_POX5_PRINCIPAL = "ST000000000000000000002AMW42H.pox-5";
+
+const DEVNET_SBTC_DEPOSIT_SOURCE = `(define-public (mint (amount uint) (recipient principal))
+  (contract-call? .sbtc-token protocol-mint amount recipient 0x01)
+)`;
 
 function splitContract(principal) {
   const separator = principal.indexOf(".");
@@ -224,6 +229,41 @@ export function createOperatorActor(options = {}) {
     return await submit(transaction);
   }
 
+  async function fundGasWallet(
+    recipient,
+    amountUstx = 25_000_000n,
+    account = DEVNET_ACCOUNTS.deployer,
+  ) {
+    const nonce = await fetchNonce({ address: account.address, network });
+    const transaction = await makeSTXTokenTransfer({
+      recipient,
+      amount: amountUstx,
+      senderKey: account.privateKey,
+      fee,
+      nonce,
+      network,
+    });
+    return await submit(transaction);
+  }
+
+  async function fundPox5Rewards(amountSats = 10_000_000n, account = DEVNET_ACCOUNTS.deployer) {
+    const deposit = await deployContract("sbtc-deposit", DEVNET_SBTC_DEPOSIT_SOURCE, 3, account);
+    const contract = splitContract(deposit.principal);
+    const nonce = await fetchNonce({ address: account.address, network });
+    const transaction = await makeContractCall({
+      contractAddress: contract.address,
+      contractName: contract.name,
+      functionName: "mint",
+      functionArgs: [Cl.uint(amountSats), Cl.principal(DEVNET_POX5_PRINCIPAL)],
+      senderKey: account.privateKey,
+      fee,
+      nonce,
+      postConditionMode: PostConditionMode.Allow,
+      network,
+    });
+    return await submit(transaction);
+  }
+
   async function browserWalletRequest(method, parameters = {}) {
     const account = DEVNET_ACCOUNTS.deployer;
     if (method === "getAddresses" || method === "stx_getAddresses") {
@@ -355,6 +395,8 @@ export function createOperatorActor(options = {}) {
     browserWalletRequest,
     deployContract,
     deployManager,
+    fundGasWallet,
+    fundPox5Rewards,
     mineBurnBlock,
     nodeInfo,
     registerManager,

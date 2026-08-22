@@ -76,6 +76,10 @@
     "./principals": {
       "types": "./dist/principals.d.ts",
       "default": "./dist/principals.js"
+    },
+    "./reward-operation-plan": {
+      "types": "./dist/reward-operation-plan.d.ts",
+      "default": "./dist/reward-operation-plan.js"
     }
   },
   "scripts": {

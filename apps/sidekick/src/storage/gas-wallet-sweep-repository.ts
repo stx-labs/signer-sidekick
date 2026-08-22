@@ -98,6 +98,13 @@ export interface GasWalletSweepPatch {
   failureReason?: string | null;
 }
 
+export class GasWalletSweepRepositoryError extends Error {
+  constructor(readonly code: "authorization-busy") {
+    super("The gas wallet already has an active reward run or sweep");
+    this.name = "GasWalletSweepRepositoryError";
+  }
+}
+
 export class GasWalletSweepRepository {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -108,28 +115,45 @@ export class GasWalletSweepRepository {
     createdAt: string;
   }): StoredGasWalletSweep {
     const plan = gasWalletSweepPlanSchema.parse(input.plan);
-    this.db
-      .prepare(
-        `INSERT INTO gas_wallet_sweeps (
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO gas_wallet_authorizations (
+             wallet_principal, authorization_kind, authorization_id, acquired_at, updated_at
+           ) VALUES (?, 'sweep', ?, ?, ?)`,
+        )
+        .run(input.walletPrincipal, input.sweepId, input.createdAt, input.createdAt);
+      this.db
+        .prepare(
+          `INSERT INTO gas_wallet_sweeps (
            sweep_id, status, wallet_principal, recipient, amount_ustx, fee_ustx, nonce, balance_ustx,
            plan_sha256, plan_json, txid, broadcast_ambiguous, created_at, expires_at, approved_at,
            broadcast_at, resolved_at, block_height, failure_reason, updated_at
          ) VALUES (?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
-      )
-      .run(
-        input.sweepId,
-        input.walletPrincipal,
-        plan.material.recipient,
-        plan.material.amountUstx,
-        plan.material.feeUstx,
-        plan.material.nonce,
-        plan.material.balanceUstx,
-        plan.planSha256,
-        JSON.stringify(plan),
-        input.createdAt,
-        plan.material.expiresAt,
-        input.createdAt,
-      );
+        )
+        .run(
+          input.sweepId,
+          input.walletPrincipal,
+          plan.material.recipient,
+          plan.material.amountUstx,
+          plan.material.feeUstx,
+          plan.material.nonce,
+          plan.material.balanceUstx,
+          plan.planSha256,
+          JSON.stringify(plan),
+          input.createdAt,
+          plan.material.expiresAt,
+          input.createdAt,
+        );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      if (String(error).includes("UNIQUE constraint failed")) {
+        throw new GasWalletSweepRepositoryError("authorization-busy");
+      }
+      throw error;
+    }
     const stored = this.get(input.sweepId);
     if (!stored) throw new Error("Gas wallet sweep did not persist");
     return stored;
@@ -168,9 +192,27 @@ export class GasWalletSweepRepository {
     if (patch.blockHeight !== undefined) add("block_height", patch.blockHeight);
     if (patch.failureReason !== undefined) add("failure_reason", patch.failureReason);
     values.push(sweepId);
-    this.db
-      .prepare(`UPDATE gas_wallet_sweeps SET ${sets.join(", ")} WHERE sweep_id = ?`)
-      .run(...values);
+    const terminal =
+      patch.status !== undefined &&
+      ["confirmed", "failed", "cancelled", "expired"].includes(patch.status);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(`UPDATE gas_wallet_sweeps SET ${sets.join(", ")} WHERE sweep_id = ?`)
+        .run(...values);
+      if (terminal) {
+        this.db
+          .prepare(
+            `DELETE FROM gas_wallet_authorizations
+             WHERE authorization_kind = 'sweep' AND authorization_id = ?`,
+          )
+          .run(sweepId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     const stored = this.get(sweepId);
     if (!stored) throw new Error("Gas wallet sweep does not exist");
     return stored;

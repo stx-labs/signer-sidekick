@@ -62,7 +62,12 @@ import {
   openSidekickStore,
 } from "./storage/store.js";
 import { createOperatorSupportBundle, operatorSupportApplication } from "./support-bundle.js";
+import {
+  createLiveRewardRunFacts,
+  LiveRewardRunDriver,
+} from "./transaction-engine/live-reward-run.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
+import { RewardRunService } from "./transaction-engine/reward-run-service.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
 import { WalletIntentService } from "./wallet-intent-service.js";
 
@@ -331,12 +336,35 @@ export async function executeCliCommand({
         signerKeyHex: async () => (await service.snapshot()).registration?.signerKeyHex ?? null,
         logger: { warn: (message) => warnGasWallet(message) },
       });
+      const rewardRuns = new RewardRunService({
+        repository: store.rewardRuns,
+        signer: engine,
+        driver: new LiveRewardRunDriver({
+          engine,
+          runtimeContext: connectedRuntimeContext,
+          maximumFeeUstx: engine.maximumFeeUstx,
+        }),
+        facts: createLiveRewardRunFacts({
+          engine,
+          store,
+          managerPrincipal,
+          runtimeContext: connectedRuntimeContext,
+          stakerClaims: async (options) => await service.stakerClaims(options),
+        }),
+        refusalChecks: async (principal, now) => await gasWallet.refusalChecks(principal, now),
+        maximumFeeUstx: engine.maximumFeeUstx,
+        maximumTransactions: engine.maximumRunTransactions,
+        approvalStartMinutes: engine.maximumApprovalMinutes,
+        maximumRunHours: engine.maximumRunHours,
+        logger: { warn: (message) => warnGasWallet(message) },
+      });
       const server = createServer({
         service,
         activityProjection,
         connection,
         deploymentRequirements,
         gasWallet,
+        rewardRuns,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
           if (result.status === "connected") await startOperationalRuntime();
@@ -412,6 +440,7 @@ export async function executeCliCommand({
           }
           operationalStarted = true;
           engine.start();
+          await rewardRuns.start();
           snapshotRefresh = startSnapshotRefreshLoop(
             {
               refreshSnapshot: async () => {
@@ -466,6 +495,7 @@ export async function executeCliCommand({
       server.addHook("onClose", async () => {
         snapshotRefresh?.stop();
         health.stop();
+        rewardRuns.stop();
         try {
           await observerServer?.close();
           observerListening = false;

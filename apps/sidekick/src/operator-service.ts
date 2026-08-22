@@ -2,7 +2,7 @@ import { ClarityType } from "@stacks/transactions";
 import type { DashboardSnapshot, RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
 import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
-import { deriveRewardCalculationTarget } from "./chain-anchor.js";
+import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
   RateLimitedError,
@@ -848,10 +848,20 @@ export class OperatorService {
    * multiply every refresh by the bucket count. The caller pages it, and the returned settlement
    * summary is what an operator sees before signing the first of N transactions.
    */
-  async stakerClaims(options: { offset?: number; limit?: number } = {}) {
+  async stakerClaims(
+    options: {
+      offset?: number;
+      limit?: number;
+      rewardCycle?: number;
+      bondIndices?: readonly bigint[];
+      chainAnchor?: ChainAnchor;
+    } = {},
+  ) {
     const snapshot = await this.snapshot();
     const rewards = snapshot.rewards;
-    if (!rewards) throw new Error("Reward status is unavailable");
+    if (!rewards && options.rewardCycle === undefined) {
+      throw new Error("Reward status is unavailable");
+    }
     const offset = options.offset ?? 0;
     const limit = Math.min(options.limit ?? 25, 100);
     // The reconciled roster, not the STX cycle-membership list. A pure bond staker has no STX
@@ -876,15 +886,18 @@ export class OperatorService {
       )
       .map(({ stakerPrincipal }) => stakerPrincipal);
     const page = principals.slice(offset, offset + limit);
-    const bondIndices = rewards.buckets
-      .filter(({ bondIndex, participating }) => bondIndex !== null && participating)
-      .map(({ bondIndex }) => BigInt(bondIndex as string));
+    const bondIndices =
+      options.bondIndices ??
+      (rewards?.buckets ?? [])
+        .filter(({ bondIndex, participating }) => bondIndex !== null && participating)
+        .map(({ bondIndex }) => BigInt(bondIndex as string));
     const discovery = await discoverStakerClaims({
       node: this.options.node,
       managerPrincipal: this.options.managerPrincipal,
-      rewardCycle: rewards.rewardCycle,
+      rewardCycle: options.rewardCycle ?? (rewards as NonNullable<typeof rewards>).rewardCycle,
       stakerPrincipals: page,
       bondIndices,
+      ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
     });
     return {
       generatedAt: snapshot.generatedAt,

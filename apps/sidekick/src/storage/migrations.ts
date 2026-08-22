@@ -2208,4 +2208,135 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX gas_wallet_sweeps_created_idx ON gas_wallet_sweeps (created_at DESC);
     `,
   },
+  {
+    version: 37,
+    name: "operator_reward_runs",
+    sql: `
+      -- A single durable lease enforces the one-active-authorization invariant across both reward
+      -- runs and gas-wallet sweeps. The row is acquired and released in the same SQLite
+      -- transaction as the owning record's state transition.
+      CREATE TABLE gas_wallet_authorizations (
+        wallet_principal TEXT PRIMARY KEY,
+        authorization_kind TEXT NOT NULL CHECK (authorization_kind IN ('reward-run', 'sweep')),
+        authorization_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE UNIQUE INDEX gas_wallet_authorization_owner
+        ON gas_wallet_authorizations (authorization_kind, authorization_id);
+
+      CREATE TABLE transaction_runs (
+        run_id TEXT PRIMARY KEY CHECK (length(run_id) = 36),
+        status TEXT NOT NULL CHECK (status IN (
+          'draft', 'awaiting-approval', 'approved', 'running', 'paused',
+          'completed', 'halted', 'cancelled', 'expired'
+        )),
+        authorization_schema_version INTEGER NOT NULL CHECK (authorization_schema_version = 2),
+        wallet_principal TEXT NOT NULL,
+        manager_principal TEXT NOT NULL,
+        network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet')),
+        reward_cycle INTEGER NOT NULL CHECK (reward_cycle >= 0),
+        distribution INTEGER NOT NULL CHECK (distribution IN (1, 2)),
+        recipe_sha256 TEXT NOT NULL CHECK (length(recipe_sha256) = 64),
+        recipe_json TEXT NOT NULL CHECK (json_valid(recipe_json)),
+        cursor INTEGER NOT NULL DEFAULT 0 CHECK (cursor >= 0),
+        gas_spent_ustx TEXT NOT NULL DEFAULT '0',
+        approval_expires_at TEXT NOT NULL,
+        runtime_expires_at TEXT,
+        approved_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (status IN ('approved', 'running', 'paused', 'completed', 'halted') AND approved_at IS NOT NULL)
+          OR (status NOT IN ('approved', 'running', 'paused', 'completed', 'halted'))
+        ),
+        CHECK (
+          (status IN ('running', 'paused', 'completed', 'halted') AND started_at IS NOT NULL AND runtime_expires_at IS NOT NULL)
+          OR (status NOT IN ('running', 'paused', 'completed', 'halted'))
+        )
+      ) STRICT;
+
+      CREATE INDEX transaction_runs_created ON transaction_runs (created_at DESC, run_id DESC);
+      CREATE INDEX transaction_runs_active ON transaction_runs (wallet_principal, status);
+
+      CREATE TABLE transaction_run_children (
+        run_id TEXT NOT NULL REFERENCES transaction_runs(run_id) ON DELETE CASCADE,
+        child_index INTEGER NOT NULL CHECK (child_index >= 0),
+        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+          'calculate-rewards', 'claim-rewards', 'claim-staker-rewards',
+          'settle-accepted-withdrawal', 'reclaim-failed-withdrawal'
+        )),
+        adapter_id TEXT NOT NULL,
+        adapter_revision INTEGER NOT NULL CHECK (adapter_revision > 0),
+        account_key TEXT,
+        maximum_amount_sats TEXT,
+        status TEXT NOT NULL CHECK (status IN (
+          'pending', 'materialized', 'broadcast', 'confirmed',
+          'externally-completed', 'skipped', 'halted'
+        )),
+        materialized_amount_sats TEXT,
+        plan_sha256 TEXT,
+        plan_json TEXT CHECK (plan_json IS NULL OR json_valid(plan_json)),
+        txid TEXT CHECK (txid IS NULL OR length(txid) = 66),
+        provenance TEXT CHECK (
+          provenance IS NULL OR provenance IN ('you', 'another-caller', 'policy-exception')
+        ),
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, child_index),
+        CHECK ((plan_json IS NULL) = (plan_sha256 IS NULL)),
+        CHECK (
+          (operation_kind = 'claim-staker-rewards'
+            AND account_key IS NOT NULL AND maximum_amount_sats IS NOT NULL)
+          OR (operation_kind <> 'claim-staker-rewards' AND account_key IS NULL)
+        ),
+        CHECK (
+          (operation_kind IN ('claim-rewards', 'claim-staker-rewards', 'reclaim-failed-withdrawal')
+            AND maximum_amount_sats IS NOT NULL)
+          OR (operation_kind IN ('calculate-rewards', 'settle-accepted-withdrawal')
+            AND maximum_amount_sats IS NULL)
+        )
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX transaction_run_children_state
+        ON transaction_run_children (run_id, status, child_index);
+
+      CREATE TABLE transaction_run_attempts (
+        run_id TEXT NOT NULL,
+        child_index INTEGER NOT NULL,
+        attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
+        precomputed_txid TEXT NOT NULL CHECK (length(precomputed_txid) = 66),
+        nonce TEXT NOT NULL,
+        fee_ustx TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('signed', 'accepted', 'ambiguous', 'rejected', 'confirmed')),
+        broadcast_result_json TEXT CHECK (
+          broadcast_result_json IS NULL OR json_valid(broadcast_result_json)
+        ),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, child_index, attempt_index),
+        FOREIGN KEY (run_id, child_index)
+          REFERENCES transaction_run_children(run_id, child_index) ON DELETE CASCADE
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE UNIQUE INDEX transaction_run_attempt_txid
+        ON transaction_run_attempts (precomputed_txid);
+
+      -- Existing nonterminal sweeps predate the shared lease. Preserve the newest one as the
+      -- exclusive owner; S2 already treats older concurrent rows as an invariant violation.
+      INSERT INTO gas_wallet_authorizations (
+        wallet_principal, authorization_kind, authorization_id, acquired_at, updated_at
+      )
+      SELECT wallet_principal, 'sweep', sweep_id, created_at, updated_at
+      FROM gas_wallet_sweeps
+      WHERE status IN ('planned', 'broadcast')
+      ORDER BY created_at DESC
+      LIMIT 1;
+    `,
+  },
 ];

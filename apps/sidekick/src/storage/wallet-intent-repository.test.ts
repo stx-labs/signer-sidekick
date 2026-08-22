@@ -81,7 +81,7 @@ describe("WalletIntentRepository", () => {
       }),
     ).intent;
 
-    expect(store.schemaVersion()).toBe(36);
+    expect(store.schemaVersion()).toBe(37);
     expect(store.walletIntents.get(intent.id)).toMatchObject({
       action: "add-admin",
       scope: manager,
@@ -173,7 +173,7 @@ describe("WalletIntentRepository", () => {
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, createdAt);
     stores.push(initial.store);
-    expect(initial.store.schemaVersion()).toBe(36);
+    expect(initial.store.schemaVersion()).toBe(37);
 
     const created = initial.store.walletIntents.create(
       intentInput({ id: "10000000-0000-4000-8000-000000000001" }),

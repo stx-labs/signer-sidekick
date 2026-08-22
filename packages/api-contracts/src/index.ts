@@ -59,6 +59,30 @@ export {
   operationReadinessSchema,
 } from "./engine.js";
 export type {
+  RewardRun,
+  RewardRunAccountBound,
+  RewardRunApproveRequest,
+  RewardRunChild,
+  RewardRunChildStatus,
+  RewardRunOperation,
+  RewardRunPrepareRequest,
+  RewardRunRecipe,
+  RewardRunRecipeChild,
+  RewardRunStatus,
+} from "./reward-runs.js";
+export {
+  rewardRunAccountBoundSchema,
+  rewardRunApproveRequestSchema,
+  rewardRunChildSchema,
+  rewardRunChildStatusSchema,
+  rewardRunOperationSchema,
+  rewardRunPrepareRequestSchema,
+  rewardRunRecipeChildSchema,
+  rewardRunRecipeSchema,
+  rewardRunSchema,
+  rewardRunStatusSchema,
+} from "./reward-runs.js";
+export type {
   ActivityCoverage,
   ActivityCoverageSource,
   ActivityDetail,
