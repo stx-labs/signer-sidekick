@@ -504,6 +504,10 @@ accounts.
 
 ## 10. Implementation slices
 
+> **Status (2026-08-22):** S0 delivered (`c94e9c2`). S1 delivered on `codex/reward-forecast-and-overview-clarity`
+> (ledger + exports; commit pending). S2 core delivered (gas wallet lifecycle, `operator-run` mode, `assist`
+> retired, hot activation, refusal checks, banners); **S2b sweep pending**. S3–S6 not started.
+
 | # | Slice | Scope | Gate |
 | --- | --- | --- | --- |
 | S0 | **Commit the design** | This document in `docs/product/` (done); ADR 0010; rewrite #34; re-scope #6 | Design agreed |

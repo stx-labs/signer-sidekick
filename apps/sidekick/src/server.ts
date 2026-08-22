@@ -29,6 +29,7 @@ import {
   engineDisableAdapterRequestSchema,
   engineForceObserveRequestSchema,
   engineInvalidateApprovalRequestSchema,
+  type GasWalletStatus,
   type HealthSnapshot,
   healthSnapshotSchema,
   healthSourceTestRequestSchema,
@@ -40,6 +41,7 @@ import {
   type ReconciliationOperation,
   type ReconciliationSummary,
   reconciliationSummarySchema,
+  rewardLedgerSchema,
   signerGrantVerifyRequestSchema,
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
@@ -57,6 +59,7 @@ import {
   UpstreamSchemaError,
   UpstreamUnavailableError,
 } from "./chain-clients.js";
+import { GasWalletError, type GasWalletErrorCode } from "./gas-wallet.js";
 import { HealthSourceError } from "./health-http.js";
 import type { ObserverRuntimeStatus } from "./observer-server.js";
 import type {
@@ -74,6 +77,11 @@ import {
   withInteractiveRequestDeadline,
   withOperatorRequestSignal,
 } from "./request-context.js";
+import {
+  rewardLedgerDistributionsCsv,
+  rewardLedgerFeesCsv,
+  rewardLedgerPaymentsCsv,
+} from "./reward-ledger.js";
 import {
   RosterReconciliationMetricsTracker,
   RosterReconciliationRetryError,
@@ -126,6 +134,11 @@ interface OperatorSnapshotShape {
 interface OperatorSnapshotService {
   snapshot(force?: boolean): Promise<OperatorSnapshotShape>;
   supportSnapshot?(force?: boolean): Promise<OperatorSnapshotShape>;
+  rewardLedger?(query?: {
+    cycle?: number | null;
+    distribution?: 1 | 2 | null;
+    staker?: string | null;
+  }): Promise<unknown>;
   synchronize(options?: {
     signal?: AbortSignal;
     onProgress?(progress: OperatorSynchronizationProgress): void | Promise<void>;
@@ -388,12 +401,22 @@ export interface ServerOptions {
     ): Promise<unknown>;
   };
   engine?: TransactionEngineApiService;
+  gasWallet?: GasWalletApi;
   supportApplication?(): OperatorSupportApplication;
   databaseStatus?(): unknown;
   observerStatus?(): ObserverRuntimeStatus;
   snapshotRefreshMetrics?: SnapshotRefreshMetricsTracker;
   rosterReconciliationIntervalMs?: number;
   rosterReconciliationInitialDelayMs?: number;
+}
+
+/** Gas wallet lifecycle surface (plan S2); public identity only, never key material. */
+export interface GasWalletApi {
+  status(): Promise<GasWalletStatus>;
+  create(): Promise<GasWalletStatus>;
+  enable(): Promise<GasWalletStatus>;
+  disable(): Promise<GasWalletStatus>;
+  dismissBanner(kind: "setup" | "low-balance"): Promise<GasWalletStatus>;
 }
 
 class OperatorApiError extends Error {
@@ -452,6 +475,24 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "Activity is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
   activity_authority_limit_exceeded:
     "Activity cannot safely project the complete operator record. Contact support before retrying.",
+  reward_ledger_unavailable:
+    "The reward ledger is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
+  invalid_reward_ledger_query:
+    "The reward ledger query is invalid. Use a whole reward cycle, distribution 1 or 2, and a staker prefix.",
+  gas_wallet_unavailable:
+    "The gas wallet is unavailable in this Sidekick deployment. Restart Sidekick and review the startup logs.",
+  gas_wallet_engine_mode:
+    "Enabling the gas wallet requires SIDEKICK_ENGINE_MODE=operator-run. Update the service configuration and restart Sidekick.",
+  gas_wallet_exists:
+    "A gas wallet already exists for this deployment. Disable it and move its secret file aside before generating another.",
+  gas_wallet_missing: "Generate the gas wallet before enabling or disabling it.",
+  gas_wallet_refused:
+    "The gas wallet must be a dedicated standard principal that is neither a manager admin nor the signer key. Review the wallet identity and retry.",
+  gas_wallet_engine_unavailable:
+    "The transaction engine is unavailable. Restart Sidekick and review the startup logs.",
+  gas_wallet_secret_unreadable:
+    "The gas wallet secret file could not be loaded. Check that it exists, is owned by the Sidekick user, and is readable only by that user.",
+  invalid_gas_wallet_request: "Choose the setup or low-balance banner to dismiss.",
   signer_grant_sources_incompatible:
     "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
   signer_grant_unavailable:
@@ -770,6 +811,27 @@ function sendClassifiedError(
     }
   }
   return reply.code(classified.statusCode).send(body);
+}
+
+const GAS_WALLET_ERROR_STATUS: Readonly<Record<GasWalletErrorCode, number>> = {
+  gas_wallet_engine_mode: 409,
+  gas_wallet_exists: 409,
+  gas_wallet_missing: 409,
+  gas_wallet_refused: 409,
+  gas_wallet_engine_unavailable: 503,
+  gas_wallet_secret_unreadable: 503,
+  invalid_gas_wallet_request: 400,
+};
+
+async function gasWalletCall<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof GasWalletError) {
+      throw new OperatorApiError(GAS_WALLET_ERROR_STATUS[error.code], error.code);
+    }
+    throw error;
+  }
 }
 
 function requireFeature<T>(value: T | undefined, responseCode: string): T {
@@ -1328,7 +1390,9 @@ export function createServer(options: ServerOptions = {}) {
         (request.method === "GET" || request.method === "HEAD")) ||
       (pathname === "/api/v1/settings" &&
         (request.method === "GET" ||
-          (request.method === "PUT" && connection?.status === "unavailable")));
+          (request.method === "PUT" && connection?.status === "unavailable"))) ||
+      (pathname === "/api/v1/settings/gas-wallet" &&
+        (request.method === "GET" || request.method === "HEAD"));
     const retainedReadOnlyAccess =
       connection?.status === "unavailable" &&
       connection.lastSuccessful !== null &&
@@ -2140,6 +2204,73 @@ export function createServer(options: ServerOptions = {}) {
       activity: snapshot?.activity,
     };
   });
+  function parseRewardLedgerQuery(requestUrl: string): {
+    cycle: number | null;
+    distribution: 1 | 2 | null;
+    staker: string | null;
+  } {
+    try {
+      const search = new URL(requestUrl, "http://sidekick.local").searchParams;
+      const cycleText = search.get("cycle");
+      const distributionText = search.get("distribution");
+      const stakerText = search.get("staker");
+      const cycle =
+        cycleText === null ? null : z.coerce.number().int().nonnegative().safe().parse(cycleText);
+      const distribution =
+        distributionText === null
+          ? null
+          : distributionText === "1"
+            ? 1
+            : distributionText === "2"
+              ? 2
+              : (() => {
+                  throw new Error("invalid distribution");
+                })();
+      const staker = stakerText === null ? null : z.string().min(1).max(200).parse(stakerText);
+      return { cycle, distribution, staker };
+    } catch {
+      throw new OperatorApiError(400, "invalid_reward_ledger_query");
+    }
+  }
+  async function loadRewardLedger(request: FastifyRequest) {
+    const service = requireFeature(options.service, "operator_service_unavailable");
+    const rewardLedger = requireFeature(service.rewardLedger, "reward_ledger_unavailable");
+    const query = parseRewardLedgerQuery(request.url);
+    return await interactive(request, async () => rewardLedger.call(service, query));
+  }
+  server.get("/api/v1/rewards/ledger", async (request, reply) => {
+    const ledger = await loadRewardLedger(request);
+    return reply.header("cache-control", "no-store").send(ledger);
+  });
+  const ledgerExports = [
+    { name: "distributions", csv: rewardLedgerDistributionsCsv },
+    { name: "payments", csv: rewardLedgerPaymentsCsv },
+    { name: "fees", csv: rewardLedgerFeesCsv },
+  ] as const;
+  for (const ledgerExport of ledgerExports) {
+    server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.csv`, async (request, reply) => {
+      const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
+      reply.type("text/csv; charset=utf-8");
+      reply.header(
+        "content-disposition",
+        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}.csv"`,
+      );
+      return ledgerExport.csv(ledger);
+    });
+    server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.json`, async (request, reply) => {
+      const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
+      reply.type("application/json; charset=utf-8");
+      reply.header(
+        "content-disposition",
+        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}.json"`,
+      );
+      return ledgerExport.name === "distributions"
+        ? ledger.cycles.flatMap((cycle) => cycle.distributions)
+        : ledgerExport.name === "payments"
+          ? ledger.payments
+          : ledger.fees;
+    });
+  }
   server.get("/api/v1/rewards/staker-claims", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");
     const stakerClaims = requireFeature(service.stakerClaims, "staker_claims_unavailable");
@@ -2261,6 +2392,32 @@ export function createServer(options: ServerOptions = {}) {
       if (assessment) await options.onConnectionAssessed?.(assessment);
     }
     return result;
+  });
+  server.get("/api/v1/settings/gas-wallet", async (_request, reply) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    reply.header("cache-control", "no-store");
+    return await gasWalletCall(() => gasWallet.status());
+  });
+  server.post("/api/v1/settings/gas-wallet", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    return await interactive(request, async () => await gasWalletCall(() => gasWallet.create()));
+  });
+  server.post("/api/v1/settings/gas-wallet/enable", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    return await interactive(request, async () => await gasWalletCall(() => gasWallet.enable()));
+  });
+  server.post("/api/v1/settings/gas-wallet/disable", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    return await interactive(request, async () => await gasWalletCall(() => gasWallet.disable()));
+  });
+  server.post("/api/v1/settings/gas-wallet/dismiss-banner", async (request) => {
+    const gasWallet = requireFeature(options.gasWallet, "gas_wallet_unavailable");
+    const parsed = z
+      .object({ kind: z.enum(["setup", "low-balance"]) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
+    return await gasWalletCall(() => gasWallet.dismissBanner(parsed.data.kind));
   });
   server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
     const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");

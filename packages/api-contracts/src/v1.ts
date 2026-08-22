@@ -2891,3 +2891,300 @@ export const browserWalletIntentResponseSchema = z
   .object({ intent: browserWalletIntentSchema })
   .strict();
 export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Reward ledger — operator-run reward operations (ADR 0010, plan S1).
+// Distributions inside cycles, derived from chain evidence at read time.
+// ---------------------------------------------------------------------------
+
+const ledgerSatsSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/);
+const ledgerTxIdSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
+const ledgerCycleSchema = z.number().int().nonnegative().safe();
+const ledgerDistributionIndexSchema = z.union([z.literal(1), z.literal(2)]);
+
+export const rewardLedgerCoverageSchema = z.enum([
+  "exact",
+  "combined",
+  "historical-coverage-incomplete",
+]);
+export type RewardLedgerCoverage = z.infer<typeof rewardLedgerCoverageSchema>;
+
+export const rewardLedgerProvenanceSchema = z.enum(["you", "another-caller", "unknown"]);
+export type RewardLedgerProvenance = z.infer<typeof rewardLedgerProvenanceSchema>;
+
+export const rewardLedgerDistributionStatusSchema = z.enum([
+  "needs-attention",
+  "accruing",
+  "waiting-calculation",
+  "calculation-overdue",
+  "ready",
+  "distributing",
+  "all-distributed",
+  "complete",
+]);
+export type RewardLedgerDistributionStatus = z.infer<typeof rewardLedgerDistributionStatusSchema>;
+
+export const rewardLedgerPaymentStatusSchema = z.enum([
+  "outstanding",
+  "not-payable",
+  "below-fee",
+  "paid",
+  "sent",
+  "arrived",
+  "retired",
+  "rejected",
+  "returned",
+]);
+export type RewardLedgerPaymentStatus = z.infer<typeof rewardLedgerPaymentStatusSchema>;
+
+export const rewardLedgerL1StatusSchema = z.enum([
+  "awaiting-signers",
+  "accepted-ready-to-retire",
+  "rejected-return-pending",
+  "retired",
+  "returned",
+  "unknown",
+]);
+export type RewardLedgerL1Status = z.infer<typeof rewardLedgerL1StatusSchema>;
+
+export const rewardLedgerCapabilityLevelSchema = z.enum([
+  "pox5-baseline",
+  "manager-readable",
+  "reviewed-event-vocabulary",
+  "reviewed-execution-adapter",
+]);
+export type RewardLedgerCapabilityLevel = z.infer<typeof rewardLedgerCapabilityLevelSchema>;
+
+export const rewardLedgerPaymentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cycle: ledgerCycleSchema,
+    distribution: ledgerDistributionIndexSchema.nullable(),
+    bucket: z.string().min(1).max(40),
+    stakerPrincipal: z.string().min(1).max(200),
+    route: z.enum(["sbtc", "bitcoin"]),
+    grossRewardSats: ledgerSatsSchema.nullable(),
+    operatorFeeSats: ledgerSatsSchema.nullable(),
+    stakerEntitlementSats: ledgerSatsSchema,
+    payoutSats: ledgerSatsSchema.nullable(),
+    payoutAsset: z.enum(["sBTC", "BTC"]).nullable(),
+    l1MaxFeeSats: ledgerSatsSchema.nullable(),
+    l1ActualFeeSats: ledgerSatsSchema.nullable(),
+    feeRefundSats: ledgerSatsSchema.nullable(),
+    returnedSats: ledgerSatsSchema.nullable(),
+    status: rewardLedgerPaymentStatusSchema,
+    coverage: rewardLedgerCoverageSchema,
+    includesPriorDistribution: z.boolean(),
+    paymentTxId: ledgerTxIdSchema.nullable(),
+    paymentBlockHeight: z.number().int().nonnegative().nullable(),
+    paidAt: z.iso.datetime().nullable(),
+    by: rewardLedgerProvenanceSchema.nullable(),
+    l1RequestId: z.string().min(1).max(40).nullable(),
+    l1Status: rewardLedgerL1StatusSchema.nullable(),
+    settleOrReclaimTxId: ledgerTxIdSchema.nullable(),
+    btcSweepTxId: z.string().min(1).max(128).nullable(),
+    unavailableReason: z.string().min(1).max(200).nullable(),
+  })
+  .strict();
+export type RewardLedgerPayment = z.infer<typeof rewardLedgerPaymentSchema>;
+
+export const rewardLedgerCalculationSchema = z
+  .object({
+    state: z.enum(["done", "waiting", "overdue"]),
+    txId: ledgerTxIdSchema.nullable(),
+    blockHeight: z.number().int().nonnegative().nullable(),
+    calculationBurnHeight: z.number().int().nonnegative().nullable(),
+    observedAt: z.iso.datetime().nullable(),
+    poolSats: ledgerSatsSchema.nullable(),
+    poolSatsUnavailableReason: z.string().min(1).max(200).nullable(),
+    by: rewardLedgerProvenanceSchema.nullable(),
+  })
+  .strict();
+export type RewardLedgerCalculation = z.infer<typeof rewardLedgerCalculationSchema>;
+
+export const rewardLedgerCollectSchema = z
+  .object({
+    sats: ledgerSatsSchema,
+    stxSats: ledgerSatsSchema.nullable(),
+    txId: ledgerTxIdSchema,
+    blockHeight: z.number().int().nonnegative(),
+    by: rewardLedgerProvenanceSchema,
+  })
+  .strict();
+export type RewardLedgerCollect = z.infer<typeof rewardLedgerCollectSchema>;
+
+export const rewardLedgerDistributionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cycle: ledgerCycleSchema,
+    distribution: ledgerDistributionIndexSchema,
+    current: z.boolean(),
+    calculation: rewardLedgerCalculationSchema,
+    collects: z.array(rewardLedgerCollectSchema).max(50),
+    collectedSats: ledgerSatsSchema,
+    availableToCollectSats: ledgerSatsSchema.nullable(),
+    feeBips: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    payments: z
+      .object({
+        made: z.number().int().nonnegative(),
+        outstanding: z.number().int().nonnegative(),
+        notPayable: z.number().int().nonnegative(),
+        belowFee: z.number().int().nonnegative(),
+        rolledForward: z.number().int().nonnegative(),
+        arriving: z.number().int().nonnegative(),
+        rejected: z.number().int().nonnegative(),
+        returned: z.number().int().nonnegative(),
+        distributedSats: ledgerSatsSchema,
+        outstandingSats: ledgerSatsSchema,
+        operatorFeeSats: ledgerSatsSchema,
+      })
+      .strict(),
+    status: rewardLedgerDistributionStatusSchema,
+    statusDetail: z.string().min(1).max(300),
+    coverage: rewardLedgerCoverageSchema,
+  })
+  .strict();
+export type RewardLedgerDistribution = z.infer<typeof rewardLedgerDistributionSchema>;
+
+export const rewardLedgerCycleSchema = z
+  .object({
+    cycle: ledgerCycleSchema,
+    feeBips: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    collectedSats: ledgerSatsSchema,
+    distributedSats: ledgerSatsSchema,
+    operatorFeeSats: ledgerSatsSchema,
+    outstandingSats: ledgerSatsSchema,
+    coverage: rewardLedgerCoverageSchema,
+    distributions: z.array(rewardLedgerDistributionSchema).max(2),
+  })
+  .strict();
+export type RewardLedgerCycle = z.infer<typeof rewardLedgerCycleSchema>;
+
+export const rewardLedgerSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    managerPrincipal: z.string().min(1),
+    network: z.string().min(1),
+    pox5ContractId: z.string().min(1).nullable(),
+    anchor: z
+      .object({
+        stacksTipHeight: z.number().int().nonnegative(),
+        burnBlockHeight: z.number().int().nonnegative(),
+        indexBlockHash: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
+    capabilityLevel: rewardLedgerCapabilityLevelSchema,
+    monitoringStartedAt: z.iso.datetime().nullable(),
+    recovery: z
+      .object({
+        managerHistory: z.enum(["not-started", "reconstructing", "complete"]),
+        currentMemberHistory: z.enum(["not-started", "reconstructing", "complete"]),
+      })
+      .strict(),
+    current: z
+      .object({
+        cycle: ledgerCycleSchema.nullable(),
+        distribution: ledgerDistributionIndexSchema.nullable(),
+      })
+      .strict(),
+    cycles: z.array(rewardLedgerCycleSchema).max(200),
+    payments: z.array(rewardLedgerPaymentSchema).max(10_000),
+    paymentsTruncated: z.boolean(),
+    fees: z
+      .object({
+        feeBips: z
+          .string()
+          .regex(/^(?:0|[1-9][0-9]*)$/)
+          .nullable(),
+        earnedIndexedSats: ledgerSatsSchema,
+        balanceInManagerSats: ledgerSatsSchema.nullable(),
+        withdrawnDerivedSats: ledgerSatsSchema.nullable(),
+        refunds: z
+          .array(
+            z
+              .object({
+                txId: ledgerTxIdSchema,
+                blockHeight: z.number().int().nonnegative(),
+                amountSats: ledgerSatsSchema.nullable(),
+              })
+              .strict(),
+          )
+          .max(1_000),
+      })
+      .strict(),
+    query: z
+      .object({
+        cycle: ledgerCycleSchema.nullable(),
+        distribution: ledgerDistributionIndexSchema.nullable(),
+        staker: z.string().min(1).max(200).nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type RewardLedger = z.infer<typeof rewardLedgerSchema>;
+
+// ---------------------------------------------------------------------------
+// Gas wallet (operator-run execution envelope, ADR 0010 / plan S2). Public identity only.
+// ---------------------------------------------------------------------------
+
+export const gasWalletRefusalSchema = z
+  .object({
+    checkedAt: z.iso.datetime().nullable(),
+    isManagerAdmin: z.boolean().nullable(),
+    isSignerKey: z.boolean().nullable(),
+    isContract: z.boolean(),
+    refusalReason: z
+      .enum(["manager-admin", "signer-key", "contract-principal", "check-unavailable"])
+      .nullable(),
+  })
+  .strict();
+export type GasWalletRefusal = z.infer<typeof gasWalletRefusalSchema>;
+
+export const gasWalletStatusSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    network: z.string().min(1),
+    engineMode: z.enum(["observe", "operator-run"]),
+    configured: z.boolean(),
+    enabled: z.boolean(),
+    source: z.enum(["generated", "configured"]).nullable(),
+    principal: z.string().min(1).nullable(),
+    publicKey: z
+      .string()
+      .regex(/^(02|03)[0-9a-f]{64}$/)
+      .nullable(),
+    secretFilePath: z.string().min(1).nullable(),
+    createdAt: z.iso.datetime().nullable(),
+    enabledAt: z.iso.datetime().nullable(),
+    signer: z.enum(["ready", "not-loaded", "unreadable", "disabled", "engine-unavailable"]),
+    signerError: z.string().min(1).max(200).nullable(),
+    balanceUstx: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    balanceObservedAt: z.iso.datetime().nullable(),
+    balanceError: z.string().min(1).max(200).nullable(),
+    feeBasisUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    feeBasis: z.enum(["fee-cap"]),
+    estimatedTransactions: z.number().int().nonnegative().nullable(),
+    refusal: gasWalletRefusalSchema,
+    banners: z
+      .object({
+        setupDismissedAt: z.iso.datetime().nullable(),
+        lowBalanceDismissedUntil: z.iso.datetime().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type GasWalletStatus = z.infer<typeof gasWalletStatusSchema>;

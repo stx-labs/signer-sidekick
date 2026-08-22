@@ -15,6 +15,8 @@ type EngineControlAction = "force-observe" | `disable:${string}`;
 
 const MODE_DESCRIPTION: Record<EngineStatus["mode"], string> = {
   observe: "Plans transactions but never signs or submits them.",
+  "operator-run":
+    "The gas wallet signs reward calls only inside a run you approve, then you can walk away.",
   assist: "Prepares each transaction and waits for your approval before submitting.",
 };
 

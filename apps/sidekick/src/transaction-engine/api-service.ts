@@ -438,7 +438,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
 
   constructor(options: RepositoryTransactionEngineApiServiceOptions) {
     this.#repository = options.repository;
-    this.#requestedMode = z.enum(["observe", "assist"]).parse(options.requestedMode);
+    this.#requestedMode = z.enum(["observe", "operator-run"]).parse(options.requestedMode);
     this.#maximumApprovalMilliseconds =
       z
         .number()
@@ -618,11 +618,11 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         reason: "Assist is paused by emergency Observe mode",
       };
     }
-    if (this.#requestedMode !== "assist") {
+    if (this.#requestedMode !== "operator-run") {
       return {
         eligible: false,
         expiresAt: null,
-        reason: "Assist is unavailable in Observe mode",
+        reason: "Approval is unavailable in Observe mode",
       };
     }
     if (this.#repository.getDisabledAdapterControl(job.adapterId) !== null) {

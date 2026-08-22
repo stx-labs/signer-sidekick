@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ActivityProjectionService } from "./activity-projection.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
@@ -15,6 +15,7 @@ import {
 import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 import { ConnectionAssessmentService } from "./connection-assessment.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
+import { GasWalletService } from "./gas-wallet.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
@@ -186,6 +187,7 @@ export async function executeCliCommand({
         return runtimeSettings.clients();
       };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
+      let warnGasWallet: (message: string) => void = (message) => console.warn(message);
       const engine = await createSidekickTransactionEngineRuntime({
         env,
         store,
@@ -316,11 +318,24 @@ export async function executeCliCommand({
         getConnection: () => connection.current(),
         getObserverStatus: currentObserverStatus,
       });
+      const gasWallet = new GasWalletService({
+        store,
+        engineMode: engine.requestedMode,
+        engine,
+        runtimeContext: connectedRuntimeContext,
+        managerPrincipal,
+        network: effectiveConfig.network,
+        secretFilePath: join(dirname(resolve(config.databasePath)), "gas-wallet.key"),
+        maximumFeeUstx: engine.maximumFeeUstx,
+        signerKeyHex: async () => (await service.snapshot()).registration?.signerKeyHex ?? null,
+        logger: { warn: (message) => warnGasWallet(message) },
+      });
       const server = createServer({
         service,
         activityProjection,
         connection,
         deploymentRequirements,
+        gasWallet,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
           if (result.status === "connected") await startOperationalRuntime();
@@ -350,6 +365,9 @@ export async function executeCliCommand({
           { error: error instanceof Error ? error.message : String(error) },
           "Transaction engine failed closed; operator reads remain available",
         );
+      warnGasWallet = (message) => server.log.warn(message);
+      // Re-activate a previously enabled gas wallet; failures surface in Settings, never block boot.
+      await gasWallet.startup();
       reportObserverInboxError = (error) =>
         server.log.warn(
           { error: error instanceof Error ? error.message : String(error) },

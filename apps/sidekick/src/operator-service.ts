@@ -1,4 +1,7 @@
-import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
+import { ClarityType } from "@stacks/transactions";
+import type { DashboardSnapshot, RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
+import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
@@ -38,6 +41,12 @@ import {
   indexedWorkflowsReady,
   type runOperatorPreflight,
 } from "./preflight.js";
+import {
+  buildRewardLedger,
+  type RewardLedgerQuery,
+  type RewardLedgerSnapshotInput,
+  type WithdrawalRegistryStatus,
+} from "./reward-ledger.js";
 import {
   anchorSetupToRewardEvidence,
   resolveRosterProjectionAnchor,
@@ -920,6 +929,119 @@ export class OperatorService {
     } = {},
   ) {
     return this.options.store.listRewardCycleSummaries(this.options.managerPrincipal, options);
+  }
+
+  /**
+   * Reward ledger: distributions inside cycles derived from chain evidence (plan S1). Read-only,
+   * bounded, memoized per snapshot anchor; never triggers a synchronization.
+   */
+  async rewardLedger(query: RewardLedgerQuery = {}): Promise<RewardLedger> {
+    const snapshot = await this.snapshot();
+    const config = this.runtimeContext().config;
+    const chainId =
+      config.expectedNetworkId ??
+      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    const pox5ContractId =
+      snapshot.preflight?.pox?.pox5ContractId ?? snapshot.rewardOutlook?.pox5ContractId ?? null;
+    const cacheKey = JSON.stringify([
+      snapshot.generatedAt,
+      snapshot.chainAnchor?.indexBlockHash ?? null,
+      query.cycle ?? null,
+      query.distribution ?? null,
+      query.staker ?? null,
+    ]);
+    const cached = this.rewardLedgerCache.get(cacheKey);
+    if (cached) return cached;
+    const registry =
+      BUILT_IN_NETWORK_COMPATIBILITY_PROFILES.find((profile) => profile.network === config.network)
+        ?.sbtc.registryContract ?? null;
+    const tip = snapshot.chainAnchor?.indexBlockHash;
+    const snapshotInput: RewardLedgerSnapshotInput = {
+      generatedAt: snapshot.generatedAt,
+      network: snapshot.network,
+      managerPrincipal: snapshot.managerPrincipal,
+      chainAnchor: snapshot.chainAnchor ?? null,
+      roster: snapshot.roster,
+      historyRecovery: snapshot.historyRecovery ?? null,
+      manager: { capabilities: snapshot.manager?.capabilities ?? null },
+      rewards: snapshot.rewards ?? null,
+      rewardOutlook: snapshot.rewardOutlook ?? null,
+    };
+    const ledger = await buildRewardLedger({
+      store: this.options.store,
+      chainId,
+      managerPrincipal: this.options.managerPrincipal,
+      pox5ContractId,
+      sourceId,
+      snapshot: snapshotInput,
+      ownedTxids: this.ownedTransactionIds(),
+      now: new Date(),
+      query,
+      ...(registry
+        ? {
+            withdrawalRequestStatus: (requestId: string) =>
+              this.withdrawalRequestStatus(registry, requestId, tip),
+          }
+        : {}),
+    });
+    if (this.rewardLedgerCache.size >= 8) {
+      const oldest = this.rewardLedgerCache.keys().next().value;
+      if (oldest !== undefined) this.rewardLedgerCache.delete(oldest);
+    }
+    this.rewardLedgerCache.set(cacheKey, ledger);
+    return ledger;
+  }
+
+  private readonly rewardLedgerCache = new Map<string, RewardLedger>();
+
+  /** Transaction IDs Sidekick produced itself: wallet intents and engine attempts (bounded). */
+  private ownedTransactionIds(): Set<string> {
+    const owned = new Set<string>();
+    for (const intent of this.options.store.walletIntents.listForActivity(10_001)) {
+      if (intent.txid) owned.add(intent.txid);
+    }
+    const jobIds: string[] = [];
+    let cursor: string | undefined;
+    while (jobIds.length <= 10_000) {
+      const page = this.options.store.transactionEngine.listLogicalJobs({
+        limit: 200,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      jobIds.push(...page.items.map(({ jobId }) => jobId));
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+    for (const attempts of this.options.store.transactionEngine
+      .listAttemptsForActivity(jobIds)
+      .values()) {
+      for (const attempt of attempts) owned.add(attempt.precomputedTxid);
+    }
+    return owned;
+  }
+
+  /** sBTC registry status for one withdrawal request id, read at the snapshot anchor. */
+  private async withdrawalRequestStatus(
+    registryContract: string,
+    requestId: string,
+    tip: string | undefined,
+  ): Promise<WithdrawalRegistryStatus> {
+    const value = await this.options.node.callReadOnly(
+      registryContract,
+      "get-withdrawal-request",
+      this.options.managerPrincipal,
+      [encodeUIntHex(BigInt(requestId))],
+      tip ? { tip } : undefined,
+    );
+    if (value.type !== ClarityType.OptionalSome) return "unknown";
+    const request = value.value;
+    if (request.type !== ClarityType.Tuple) return "unknown";
+    const status = request.value.status;
+    if (!status || status.type === ClarityType.OptionalNone) return "pending";
+    if (status.type === ClarityType.OptionalSome) {
+      return status.value.type === ClarityType.BoolTrue ? "accepted" : "rejected";
+    }
+    return "unknown";
   }
 
   async activity(options: Parameters<typeof readManagerActivity>[3] = {}) {

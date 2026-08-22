@@ -64,6 +64,7 @@ import {
 import type { StoredTransactionJob } from "./repository.js";
 import {
   loadTransactionEngineRuntimeConfig,
+  type TransactionEngineMode,
   type TransactionEngineRuntimeConfig,
 } from "./runtime-config.js";
 import { NoRetryTransactionBroadcaster } from "./transaction-broadcaster.js";
@@ -104,7 +105,8 @@ export interface SidekickTransactionEngineRuntimeComposition {
   runtimeConfig: TransactionEngineRuntimeConfig;
   store: SidekickStore;
   runtimeContext: () => TransactionEngineRuntimeContext;
-  signer: GasPayerSigner | null;
+  /** Mutable holder so the gas wallet can be activated on a running engine (plan S2). */
+  signerHolder: GasPayerSignerHolder;
   loadAttestation: (now: Date) => Promise<VerifiedCompatibilityAttestation | null>;
   createObservationService: (context: TransactionEngineRuntimeContext) => RuntimeObservationService;
   createCoordinator: (context: TransactionEngineRuntimeContext) => RuntimeAssistCoordinator;
@@ -163,10 +165,18 @@ function observationAvailability(outcome: ManagerClaimObservationOutcome): {
   };
 }
 
-function publicGasPayer(config: TransactionEngineRuntimeConfig) {
-  return config.gasPayer
-    ? { principal: config.gasPayer.principal, publicKey: config.gasPayer.publicKey }
-    : null;
+export interface GasPayerIdentity {
+  principal: string;
+  publicKey: string;
+}
+
+export interface GasPayerSignerHolder {
+  current: GasPayerSigner | null;
+  identity: GasPayerIdentity | null;
+}
+
+function publicGasPayer(holder: GasPayerSignerHolder): GasPayerIdentity | null {
+  return holder.identity ? { ...holder.identity } : null;
 }
 
 function configuredAttestationScope(config: SidekickConfig): CompatibilityAttestationScope {
@@ -252,7 +262,7 @@ function buildAdmission(
  */
 export class SidekickTransactionEngineRuntime {
   readonly api: RepositoryTransactionEngineApiService;
-  readonly requestedMode: "observe" | "assist";
+  readonly requestedMode: TransactionEngineMode;
 
   readonly #composition: SidekickTransactionEngineRuntimeComposition;
   #latest: ManagerClaimObservationOutcome = {
@@ -334,7 +344,7 @@ export class SidekickTransactionEngineRuntime {
       if (this.#composition.runtimeConfig.requestedMode !== "observe") {
         throw new ManagerClaimWalletIntentError(
           "unavailable",
-          "Browser-wallet claims require Observe mode. Use Assist or switch modes",
+          "Browser-wallet claims require Observe mode. Use the gas wallet or switch modes",
         );
       }
       const context = this.#composition.runtimeContext();
@@ -445,8 +455,8 @@ export class SidekickTransactionEngineRuntime {
       setup: input.setup,
       rewards: input.rewards,
       sourceId: input.sourceId,
-      requestedMode: this.#composition.runtimeConfig.requestedMode,
-      gasPayer: publicGasPayer(this.#composition.runtimeConfig),
+      requestedMode: this.#legacyAssistMode(),
+      gasPayer: publicGasPayer(this.#composition.signerHolder),
       maximumFeeUstx: this.#composition.runtimeConfig.maximumFeeUstx,
       attestation,
       observedAt: input.observedAt,
@@ -470,8 +480,8 @@ export class SidekickTransactionEngineRuntime {
       await this.#exclusive(async () => {
         const context = this.#composition.runtimeContext();
         const lookupNow = exactNow(this.#composition.now);
-        const signer = this.#composition.signer;
-        if (signer === null || this.#composition.runtimeConfig.requestedMode !== "assist") return;
+        const signer = this.#composition.signerHolder.current;
+        if (signer === null || this.#legacyAssistMode() !== "assist") return;
         const job = this.#composition.store.transactionEngine.getLogicalJob(jobId);
         const approval = this.#composition.store.transactionEngine.getActiveApproval(
           jobId,
@@ -502,8 +512,8 @@ export class SidekickTransactionEngineRuntime {
           job,
           approval,
           anchorProof,
-          requestedMode: this.#composition.runtimeConfig.requestedMode,
-          gasPayer: publicGasPayer(this.#composition.runtimeConfig),
+          requestedMode: this.#legacyAssistMode(),
+          gasPayer: publicGasPayer(this.#composition.signerHolder),
           maximumFeeUstx: this.#composition.runtimeConfig.maximumFeeUstx,
           attestation,
           samePassConfirmedJobIds: [],
@@ -690,7 +700,79 @@ export class SidekickTransactionEngineRuntime {
     }
     await this.#maintenanceWork;
     await this.#operationTail;
-    this.#composition.signer?.destroy();
+    this.#composition.signerHolder.current?.destroy();
+    this.#composition.signerHolder.current = null;
+  }
+
+  /**
+   * The legacy attestation-gated single-job path (ADR 0009) keeps running under `operator-run`
+   * only while an attestation is configured; the observation service still speaks its internal
+   * `assist` literal. Recipe runs (plan S3) replace this path.
+   */
+  #legacyAssistMode(): "observe" | "assist" {
+    return this.#composition.runtimeConfig.requestedMode === "operator-run" &&
+      this.#composition.runtimeConfig.attestation !== null
+      ? "assist"
+      : "observe";
+  }
+
+  /** Absolute per-attempt fee cap; the gas wallet's "≈ N transactions" estimate uses it. */
+  get maximumFeeUstx(): bigint {
+    return this.#composition.runtimeConfig.maximumFeeUstx;
+  }
+
+  /** Whether a gas-wallet signer is currently loaded in this process. */
+  gasWalletSignerReady(): boolean {
+    return this.#composition.signerHolder.current !== null;
+  }
+
+  /** Public identity of the active gas payer (configured or activated), if any. */
+  gasPayerIdentity(): GasPayerIdentity | null {
+    return publicGasPayer(this.#composition.signerHolder);
+  }
+
+  /**
+   * Loads the gas wallet secret into the running engine (plan S2). Serialized with observations so
+   * no approval can execute against a half-swapped signer. Fails closed: on any error the previous
+   * signer is left untouched and the error is rethrown.
+   */
+  async activateGasWallet(input: {
+    principal: string;
+    publicKey: string;
+    secretFilePath: string;
+    network: "mainnet" | "testnet";
+  }): Promise<void> {
+    if (this.#composition.runtimeConfig.requestedMode !== "operator-run") {
+      throw new Error("Gas wallet activation requires SIDEKICK_ENGINE_MODE=operator-run");
+    }
+    if (this.#closed) throw new Error("Transaction engine runtime is closed");
+    await this.#exclusive(async () => {
+      const signer = await GasPayerSigner.fromSecretFile({
+        secretFilePath: input.secretFilePath,
+        expectedPrincipal: input.principal,
+        network: input.network,
+      });
+      if (signer.publicKey !== input.publicKey.toLowerCase()) {
+        signer.destroy();
+        throw new Error("Gas wallet secret does not match the recorded public key");
+      }
+      const previous = this.#composition.signerHolder.current;
+      this.#composition.signerHolder.current = signer;
+      this.#composition.signerHolder.identity = {
+        principal: input.principal,
+        publicKey: signer.publicKey,
+      };
+      previous?.destroy();
+    });
+  }
+
+  /** Drops the loaded gas-wallet signer; the public identity stays for recovery/observation. */
+  async deactivateGasWallet(): Promise<void> {
+    await this.#exclusive(async () => {
+      const previous = this.#composition.signerHolder.current;
+      this.#composition.signerHolder.current = null;
+      previous?.destroy();
+    });
   }
 }
 
@@ -698,12 +780,12 @@ function readerFor(context: TransactionEngineRuntimeContext): LiveTransactionRea
   return new LiveTransactionReader({ baseUrl: context.config.nodeRpcUrl });
 }
 
-function recoveryOnlySigner(config: TransactionEngineRuntimeConfig) {
+function recoveryOnlySigner(holder: GasPayerSignerHolder) {
   return {
-    principal: config.gasPayer?.principal ?? "unavailable",
-    publicKey: config.gasPayer?.publicKey ?? "unavailable",
+    principal: holder.identity?.principal ?? "unavailable",
+    publicKey: holder.identity?.publicKey ?? "unavailable",
     async signManagerClaimRewardsPlan(_plan: ManagerClaimRewardsPlan): Promise<never> {
-      throw new Error("Observe mode cannot sign manager-claim plans");
+      throw new Error("No gas wallet signer is loaded; cannot sign manager-claim plans");
     },
   };
 }
@@ -717,7 +799,12 @@ export async function createSidekickTransactionEngineRuntime(
     initialContext.config.network,
   );
   const clock = options.now ?? (() => new Date());
-  let signer: GasPayerSigner | null = null;
+  const signerHolder: GasPayerSignerHolder = {
+    current: null,
+    identity: runtimeConfig.gasPayer
+      ? { principal: runtimeConfig.gasPayer.principal, publicKey: runtimeConfig.gasPayer.publicKey }
+      : null,
+  };
 
   const loadAttestation = async (now: Date) => {
     if (runtimeConfig.attestation === null) return null;
@@ -732,28 +819,32 @@ export async function createSidekickTransactionEngineRuntime(
   };
 
   try {
-    if (runtimeConfig.requestedMode === "assist") {
+    if (runtimeConfig.requestedMode === "operator-run") {
+      // An environment-configured gas payer (with secret) is loaded at startup; the Settings-managed
+      // gas wallet is activated later through `activateGasWallet` (plan S2).
       const gasPayer = runtimeConfig.gasPayer;
-      if (!gasPayer?.secretFilePath) {
-        throw new Error("Assist gas-payer configuration disappeared after validation");
+      if (gasPayer?.secretFilePath) {
+        const signer = await GasPayerSigner.fromSecretFile({
+          secretFilePath: gasPayer.secretFilePath,
+          expectedPrincipal: gasPayer.principal,
+          network: initialContext.config.network === "mainnet" ? "mainnet" : "testnet",
+        });
+        if (signer.publicKey !== gasPayer.publicKey) {
+          signer.destroy();
+          throw new Error("Gas-payer secret does not match the configured public key");
+        }
+        signerHolder.current = signer;
       }
-      signer = await GasPayerSigner.fromSecretFile({
-        secretFilePath: gasPayer.secretFilePath,
-        expectedPrincipal: gasPayer.principal,
-        network: initialContext.config.network === "mainnet" ? "mainnet" : "testnet",
-      });
-      if (signer.publicKey !== gasPayer.publicKey) {
-        throw new Error("Gas-payer secret does not match the configured public key");
-      }
-      // Assist cannot start with an unreadable, expired, untrusted, or rollback attestation.
-      await loadAttestation(exactNow(clock));
+      // The legacy attestation path cannot start with an unreadable, expired, untrusted, or
+      // rollback attestation.
+      if (runtimeConfig.attestation !== null) await loadAttestation(exactNow(clock));
     }
 
     const createCoordinator = (context: TransactionEngineRuntimeContext) => {
       const reader = readerFor(context);
       return new ManagerClaimAssistCoordinator({
         repository: options.store.transactionEngine,
-        signer: signer ?? recoveryOnlySigner(runtimeConfig),
+        signer: signerHolder.current ?? recoveryOnlySigner(signerHolder),
         reader,
         api: context.api,
         broadcaster: new NoRetryTransactionBroadcaster({ baseUrl: context.config.nodeRpcUrl }),
@@ -764,7 +855,7 @@ export async function createSidekickTransactionEngineRuntime(
       runtimeConfig,
       store: options.store,
       runtimeContext: options.runtimeContext,
-      signer,
+      signerHolder,
       loadAttestation,
       createObservationService: (context) =>
         new ManagerClaimObservationService({
@@ -833,7 +924,8 @@ export async function createSidekickTransactionEngineRuntime(
       onError: options.onError ?? (() => undefined),
     });
   } catch (error) {
-    signer?.destroy();
+    signerHolder.current?.destroy();
+    signerHolder.current = null;
     throw error;
   }
 }

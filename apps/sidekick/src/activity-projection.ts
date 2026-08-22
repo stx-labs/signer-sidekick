@@ -877,6 +877,7 @@ function eventTitle(kind: string | null, decodedPayload: unknown): string {
   if (kind === "unstake-sbtc") return "Bond participant reduced locked sBTC";
   if (kind === "announce-l1-early-exit") return "Bond participant announced an early exit";
   if (kind === "claim-staker-rewards-for-signer") return "Staker reward payout recorded";
+  if (kind === "claim-rewards") return "Rewards collected into the manager";
   return kind ? kind.replaceAll("-", " ") : "Manager contract activity";
 }
 

@@ -8,7 +8,8 @@ const unsignedIntegerTextSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 const indexBlockHashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 const txidSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 
-export const engineModeSchema = z.enum(["observe", "assist"]);
+// `assist` remains for persisted legacy job records; runtimes report `observe` or `operator-run`.
+export const engineModeSchema = z.enum(["observe", "assist", "operator-run"]);
 export type EngineMode = z.infer<typeof engineModeSchema>;
 
 export const engineJobStateSchema = z.enum([

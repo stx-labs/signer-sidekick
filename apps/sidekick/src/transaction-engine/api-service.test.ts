@@ -165,7 +165,7 @@ function service(
 ) {
   return new RepositoryTransactionEngineApiService({
     repository: store.transactionEngine,
-    requestedMode: "assist",
+    requestedMode: "operator-run",
     maximumApprovalMinutes: 30,
     finalityDepth: 6,
     now: () => new Date(clock.value),
@@ -207,7 +207,7 @@ describe("repository transaction-engine API service", () => {
     const api = service(store, { value: initialNow });
 
     expect(api.status()).toMatchObject({
-      mode: "assist",
+      mode: "operator-run",
       forcedObserve: { active: false },
       adapters: [
         {
@@ -215,7 +215,7 @@ describe("repository transaction-engine API service", () => {
             id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
             revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
           },
-          mode: "assist",
+          mode: "operator-run",
           enabled: true,
           availability: "available",
         },

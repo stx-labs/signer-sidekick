@@ -340,7 +340,7 @@ export class WalletIntentService {
       managerVerification?: ManagerVerificationContext;
       readState: () => WalletIntentRuntimeState;
       canRepairSignerRegistration: () => Promise<boolean>;
-      transactionEngineRequestedMode?: "observe" | "assist";
+      transactionEngineRequestedMode?: "observe" | "operator-run";
       observeManagerClaimWalletJob?: (
         jobId: string,
       ) => Promise<ManagerClaimWalletAuthoritativeObservation>;
@@ -1179,7 +1179,9 @@ export class WalletIntentService {
           actorPrincipal,
           observation,
           live: {
-            requestedMode: this.options.transactionEngineRequestedMode ?? "assist",
+            // The wallet-intent planner still speaks the legacy `assist` literal for any non-Observe mode.
+            requestedMode:
+              this.options.transactionEngineRequestedMode === "observe" ? "observe" : "assist",
             network: {
               name: network.network,
               kind: config.network === "mainnet" ? "mainnet" : "testnet",

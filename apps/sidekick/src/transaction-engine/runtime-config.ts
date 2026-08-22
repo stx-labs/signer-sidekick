@@ -4,7 +4,8 @@ import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals
 import { z } from "zod";
 import type { SidekickNetwork } from "../config.js";
 
-export type TransactionEngineMode = "observe" | "assist";
+/** Engine execution modes. `assist` was retired by ADR 0010 in favour of `operator-run`. */
+export type TransactionEngineMode = "observe" | "operator-run";
 
 export interface TransactionEngineRuntimeConfig {
   requestedMode: TransactionEngineMode;
@@ -52,10 +53,18 @@ export function loadTransactionEngineRuntimeConfig(
   env: NodeJS.ProcessEnv,
   network: SidekickNetwork,
 ): TransactionEngineRuntimeConfig {
-  const requestedMode = z
-    .enum(["observe", "assist"])
+  const requestedModeValue = z
+    .enum(["observe", "operator-run", "assist"])
     .default("observe")
     .parse(optionalValue(env, "SIDEKICK_ENGINE_MODE") ?? undefined);
+  if (requestedModeValue === "assist") {
+    // ADR 0010 retired the attestation-gated Assist mode. Operator-run needs no issuer attestation:
+    // the gas wallet signs only inside a sealed recipe the operator approved per run.
+    throw new Error(
+      "SIDEKICK_ENGINE_MODE=assist is retired; use SIDEKICK_ENGINE_MODE=operator-run (see ADR 0010)",
+    );
+  }
+  const requestedMode: TransactionEngineMode = requestedModeValue;
   const principal = optionalValue(env, "SIDEKICK_GAS_PAYER_PRINCIPAL");
   const publicKeyValue = optionalValue(env, "SIDEKICK_GAS_PAYER_PUBLIC_KEY");
   const secretFileValue = optionalValue(env, "SIDEKICK_GAS_PAYER_SECRET_FILE");
@@ -104,13 +113,13 @@ export function loadTransactionEngineRuntimeConfig(
           ),
         };
 
-  if (requestedMode === "assist") {
-    if (!gasPayer?.secretFilePath) {
-      throw new Error("Assist mode requires a dedicated gas-payer secret file and public identity");
-    }
-    if (!attestation) {
-      throw new Error("Assist mode requires compatibility attestation and trust-key files");
-    }
+  // Operator-run does not require a gas payer or attestation at startup: the gas wallet is usually
+  // generated from Settings after boot (plan S2) and activated on the running engine. When the
+  // legacy attestation-gated single-job path is still configured, the secret must accompany it.
+  if (requestedMode === "operator-run" && attestation !== null && !gasPayer?.secretFilePath) {
+    throw new Error(
+      "Compatibility attestation needs SIDEKICK_GAS_PAYER_SECRET_FILE and the matching public identity",
+    );
   }
 
   return {

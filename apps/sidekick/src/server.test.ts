@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import { GasWalletError } from "./gas-wallet.js";
 import { HealthSourceError } from "./health-http.js";
 import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
 import type { HealthObservation, SignerMetricValues } from "./health-monitoring-types.js";
@@ -2680,5 +2681,199 @@ describe("local API", () => {
       ).json(),
     ).toEqual({ revision: 3 });
     expect(service.updateSettings).toHaveBeenCalledWith(settingsBody);
+  });
+});
+
+describe("reward ledger routes", () => {
+  const ledger = {
+    schemaVersion: 1,
+    generatedAt: "2026-08-22T12:00:00.000Z",
+    managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+    network: "mainnet",
+    pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    anchor: null,
+    capabilityLevel: "reviewed-event-vocabulary",
+    monitoringStartedAt: null,
+    recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
+    current: { cycle: 141, distribution: 2 },
+    cycles: [],
+    payments: [],
+    paymentsTruncated: false,
+    fees: {
+      feeBips: "500",
+      earnedIndexedSats: "0",
+      balanceInManagerSats: null,
+      withdrawnDerivedSats: null,
+      refunds: [],
+    },
+    query: { cycle: 141, distribution: 2, staker: "SP1" },
+  };
+
+  it("forwards the parsed query and serves sanitized CSV and JSON exports", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+      rewardLedger: vi.fn().mockResolvedValue(ledger),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const page = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger?cycle=141&distribution=2&staker=SP1",
+      headers,
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["cache-control"]).toBe("no-store");
+    expect(service.rewardLedger).toHaveBeenCalledWith({
+      cycle: 141,
+      distribution: 2,
+      staker: "SP1",
+    });
+
+    const csv = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/payments.csv?cycle=141",
+      headers,
+    });
+    expect(csv.statusCode).toBe(200);
+    expect(csv.headers["content-type"]).toContain("text/csv");
+    expect(csv.headers["content-disposition"]).toContain("signer-sidekick-reward-payments.csv");
+    expect(csv.body.split("\n")[0]).toContain("staker_entitlement_sats");
+
+    const fees = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/fees.json",
+      headers,
+    });
+    expect(fees.statusCode).toBe(200);
+    expect(fees.json()).toMatchObject({ earnedIndexedSats: "0" });
+
+    const invalid = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger?distribution=3",
+      headers,
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: "invalid_reward_ledger_query" });
+  });
+});
+
+describe("gas wallet routes", () => {
+  const status = {
+    schemaVersion: 1,
+    generatedAt: "2026-08-22T12:00:00.000Z",
+    network: "testnet",
+    engineMode: "operator-run",
+    configured: true,
+    enabled: false,
+    source: "generated",
+    principal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+    publicKey: `02${"ab".repeat(32)}`,
+    secretFilePath: "/var/lib/sidekick/gas-wallet.key",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    enabledAt: null,
+    signer: "disabled",
+    signerError: null,
+    balanceUstx: "2500000",
+    balanceObservedAt: "2026-08-22T12:00:00.000Z",
+    balanceError: null,
+    feeBasisUstx: "100000",
+    feeBasis: "fee-cap",
+    estimatedTransactions: 25,
+    refusal: {
+      checkedAt: "2026-08-22T12:00:00.000Z",
+      isManagerAdmin: false,
+      isSignerKey: false,
+      isContract: false,
+      refusalReason: null,
+    },
+    banners: { setupDismissedAt: null, lowBalanceDismissedUntil: null },
+  };
+
+  it("serves status and lifecycle actions and maps wallet errors to stable codes", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const gasWallet = {
+      status: vi.fn().mockResolvedValue(status),
+      create: vi.fn().mockResolvedValue(status),
+      enable: vi.fn().mockRejectedValue(new GasWalletError("gas_wallet_refused", "refused")),
+      disable: vi.fn().mockResolvedValue(status),
+      dismissBanner: vi.fn().mockResolvedValue(status),
+    };
+    const server = createServer({ service, gasWallet, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const read = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.headers["cache-control"]).toBe("no-store");
+    expect(read.json()).toEqual(status);
+
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers,
+    });
+    expect(created.statusCode).toBe(200);
+    expect(gasWallet.create).toHaveBeenCalledTimes(1);
+
+    const refused = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/enable",
+      headers,
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(JSON.stringify(refused.json())).toContain("gas_wallet_refused");
+    expect(JSON.stringify(refused.json())).not.toContain('refused"}');
+
+    const disabled = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/disable",
+      headers,
+    });
+    expect(disabled.statusCode).toBe(200);
+
+    const badBanner = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/dismiss-banner",
+      headers,
+      payload: { kind: "nope" },
+    });
+    expect(badBanner.statusCode).toBe(400);
+    const dismissed = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/dismiss-banner",
+      headers,
+      payload: { kind: "setup" },
+    });
+    expect(dismissed.statusCode).toBe(200);
+    expect(gasWallet.dismissBanner).toHaveBeenCalledWith("setup");
+  });
+
+  it("reports the feature as unavailable when no gas wallet service is wired", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(501);
+    expect(JSON.stringify(response.json())).toContain("gas_wallet_unavailable");
   });
 });

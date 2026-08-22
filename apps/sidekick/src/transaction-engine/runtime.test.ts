@@ -27,6 +27,12 @@ import {
   type TransactionEngineRuntimeContext,
 } from "./runtime.js";
 
+/** Legacy attestation-gated path stays enabled under operator-run only while these are configured. */
+const legacyAttestationFiles = {
+  documentFilePath: "/etc/sidekick/compatibility.json",
+  trustKeysFilePath: "/etc/sidekick/attestation-keys.json",
+};
+
 const stores: SidekickStore[] = [];
 
 afterEach(() => {
@@ -108,7 +114,7 @@ function observeComposition(options: {
     },
     store,
     runtimeContext: () => runtimeContext,
-    signer: null,
+    signerHolder: { current: null, identity: null },
     loadAttestation: async () => null,
     createObservationService: () => ({
       observe: async (input) => {
@@ -160,7 +166,7 @@ describe("transaction engine runtime composition", () => {
     await runtime.close();
   });
 
-  it("rejects Assist before startup when isolated authority files are absent", async () => {
+  it("rejects the retired Assist mode before startup", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
 
@@ -172,10 +178,60 @@ describe("transaction engine runtime composition", () => {
         managerVerification: undefined,
         runtimeContext: context,
       }),
-    ).rejects.toThrow("Assist mode requires a dedicated gas-payer secret file");
+    ).rejects.toThrow("SIDEKICK_ENGINE_MODE=assist is retired");
   });
 
-  it("destroys a loaded signer when later Assist startup validation fails", async () => {
+  it("starts operator-run without a gas wallet and activates one later", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const publicKey = privateKeyToPublic(`${"11".repeat(32)}01`);
+    const principal = getAddressFromPublicKey(publicKey, "testnet");
+    const destroy = vi.fn();
+    const fromSecretFile = vi
+      .spyOn(GasPayerSigner, "fromSecretFile")
+      .mockResolvedValue({ principal, publicKey, destroy } as unknown as GasPayerSigner);
+    const operatorContext = context();
+    operatorContext.config.network = "testnet";
+
+    const runtime = await createSidekickTransactionEngineRuntime({
+      env: { SIDEKICK_ENGINE_MODE: "operator-run" },
+      store,
+      managerPrincipal: "ST000000000000000000002AMW42H.signer-manager",
+      managerVerification: undefined,
+      runtimeContext: () => operatorContext,
+    });
+    expect(runtime.requestedMode).toBe("operator-run");
+    expect(runtime.api.status()).toMatchObject({ mode: "operator-run" });
+    expect(runtime.gasWalletSignerReady()).toBe(false);
+    expect(runtime.gasPayerIdentity()).toBeNull();
+    expect(fromSecretFile).not.toHaveBeenCalled();
+
+    await expect(
+      runtime.activateGasWallet({
+        principal,
+        publicKey: "02ab".padEnd(66, "0"),
+        secretFilePath: "/private/tmp/sidekick-gas-wallet.key",
+        network: "testnet",
+      }),
+    ).rejects.toThrow("does not match the recorded public key");
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(runtime.gasWalletSignerReady()).toBe(false);
+
+    await runtime.activateGasWallet({
+      principal,
+      publicKey,
+      secretFilePath: "/private/tmp/sidekick-gas-wallet.key",
+      network: "testnet",
+    });
+    expect(runtime.gasWalletSignerReady()).toBe(true);
+    expect(runtime.gasPayerIdentity()).toEqual({ principal, publicKey });
+    await runtime.deactivateGasWallet();
+    expect(runtime.gasWalletSignerReady()).toBe(false);
+    expect(destroy).toHaveBeenCalledTimes(2);
+    await runtime.close();
+  });
+
+  it("destroys a loaded signer when later legacy attestation startup validation fails", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
     const publicKey = privateKeyToPublic(`${"11".repeat(32)}01`);
@@ -192,7 +248,7 @@ describe("transaction engine runtime composition", () => {
     await expect(
       createSidekickTransactionEngineRuntime({
         env: {
-          SIDEKICK_ENGINE_MODE: "assist",
+          SIDEKICK_ENGINE_MODE: "operator-run",
           SIDEKICK_GAS_PAYER_PRINCIPAL: principal,
           SIDEKICK_GAS_PAYER_PUBLIC_KEY: publicKey,
           SIDEKICK_GAS_PAYER_SECRET_FILE: "/private/tmp/missing-sidekick-gas-payer.key",
@@ -265,7 +321,7 @@ describe("transaction engine runtime composition", () => {
       await expect(
         createSidekickTransactionEngineRuntime({
           env: {
-            SIDEKICK_ENGINE_MODE: "assist",
+            SIDEKICK_ENGINE_MODE: "operator-run",
             SIDEKICK_GAS_PAYER_PRINCIPAL: principal,
             SIDEKICK_GAS_PAYER_PUBLIC_KEY: publicKey,
             SIDEKICK_GAS_PAYER_SECRET_FILE: join(directory, "gas-payer.key"),
@@ -309,12 +365,16 @@ describe("transaction engine runtime composition", () => {
     await runtime.close();
   });
 
-  it("rejects browser-wallet claims in Assist mode as a non-retryable policy failure", async () => {
+  it("rejects browser-wallet claims in operator-run mode as a non-retryable policy failure", async () => {
     const freshReads = vi.fn();
     const base = observeComposition({ freshAnchor: anchor(101), seen: [], freshReads });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
-      runtimeConfig: { ...base.runtimeConfig, requestedMode: "assist" },
+      runtimeConfig: {
+        ...base.runtimeConfig,
+        requestedMode: "operator-run",
+        attestation: legacyAttestationFiles,
+      },
     });
 
     const error = await runtime
@@ -324,7 +384,7 @@ describe("transaction engine runtime composition", () => {
     expect(error).toBeInstanceOf(ManagerClaimWalletIntentError);
     expect(error).toMatchObject({
       code: "unavailable",
-      message: "Browser-wallet claims require Observe mode. Use Assist or switch modes",
+      message: "Browser-wallet claims require Observe mode. Use the gas wallet or switch modes",
       retryable: false,
     });
     expect(freshReads).not.toHaveBeenCalled();
@@ -469,10 +529,17 @@ describe("transaction engine runtime composition", () => {
     });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
-      runtimeConfig: { ...base.runtimeConfig, requestedMode: "assist" },
+      runtimeConfig: {
+        ...base.runtimeConfig,
+        requestedMode: "operator-run",
+        attestation: legacyAttestationFiles,
+      },
       store: { transactionEngine: repository } as unknown as SidekickStore,
       runtimeContext: () => ({ ...context(), api }),
-      signer,
+      signerHolder: {
+        current: signer,
+        identity: { principal: signer.principal, publicKey: signer.publicKey },
+      },
       loadAttestation: async () => {
         order.push("attestation");
         return verifiedAttestation;
@@ -594,13 +661,20 @@ describe("transaction engine runtime composition", () => {
     const base = observeComposition({ freshAnchor: valueAnchor, seen: [], freshReads: vi.fn() });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
-      runtimeConfig: { ...base.runtimeConfig, requestedMode: "assist" },
+      runtimeConfig: {
+        ...base.runtimeConfig,
+        requestedMode: "operator-run",
+        attestation: legacyAttestationFiles,
+      },
       store: { transactionEngine: repository } as unknown as SidekickStore,
       runtimeContext: () => ({ ...context(), api }),
-      signer: {
-        principal: "SP000000000000000000002Q6VF78",
-        destroy: vi.fn(),
-      } as unknown as GasPayerSigner,
+      signerHolder: {
+        current: {
+          principal: "SP000000000000000000002Q6VF78",
+          destroy: vi.fn(),
+        } as unknown as GasPayerSigner,
+        identity: { principal: "SP000000000000000000002Q6VF78", publicKey: `02${"11".repeat(32)}` },
+      },
       now: clock,
       loadAttestation: async () => attestation,
       createObservationService: () => ({
@@ -842,7 +916,7 @@ describe("transaction engine runtime composition", () => {
     const base = observeComposition({ freshAnchor: anchor(101), seen: [], freshReads: vi.fn() });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
-      signer: { destroy } as unknown as GasPayerSigner,
+      signerHolder: { current: { destroy } as unknown as GasPayerSigner, identity: null },
       createObservationService: () => ({
         observe: async () => {
           await observationGate;
