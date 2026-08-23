@@ -414,20 +414,16 @@ export function evaluatePreflight(
   if (apiAvailable) {
     checks.push({
       id: "api-lag",
-      status: !apiNetworkCompatible
-        ? "warn"
-        : apiPosition === "ahead"
-          ? "fail"
-          : apiPosition === "behind" && burnBlockLag > config.maxApiBurnBlockLag
-            ? "warn"
-            : "pass",
+      // The indexed API trailing the local node is expected: it renders Bitcoin height differently
+      // from the node RPC and indexes behind the tip. Only the local node trailing the API matters.
+      status: !apiNetworkCompatible ? "warn" : apiPosition === "ahead" ? "fail" : "pass",
       message: !apiNetworkCompatible
         ? "API tip comparison is unavailable because the API is on a different network"
         : apiPosition === "equal"
           ? "API chain tip is at the local node tip"
           : apiPosition === "ahead"
             ? `The local node trails the API by ${bitcoinBlockCount(burnBlockLag)} and ${stacksTipLag} Stacks ${stacksTipLag === 1 ? "block" : "blocks"}`
-            : `API chain data is behind the local node by ${bitcoinBlockCount(burnBlockLag)} and ${stacksTipLag} Stacks ${stacksTipLag === 1 ? "block" : "blocks"}`,
+            : `Indexed API trails the local node by ${bitcoinBlockCount(burnBlockLag)} and ${stacksTipLag} Stacks ${stacksTipLag === 1 ? "block" : "blocks"} (normal indexing lag)`,
     });
   }
 

@@ -187,6 +187,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SidekickConfig {
   const apiUrl = env.STACKS_API_URL?.trim() || networkDefaults[network]?.apiUrl;
   if (!apiUrl) throw new Error(`STACKS_API_URL is required for ${network}`);
 
+  // Retained for compatibility; an indexed API that trails the local node no longer warns or gates.
   const maxApiBurnBlockLag = z.coerce
     .number()
     .int()

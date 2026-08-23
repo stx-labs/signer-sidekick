@@ -45,6 +45,7 @@ import {
   indexedWorkflowsReady,
   type runOperatorPreflight,
 } from "./preflight.js";
+import { carryForwardRewards, type LastGoodRewards } from "./reward-last-good.js";
 import {
   buildRewardLedger,
   previousCycleOpen,
@@ -447,6 +448,8 @@ export class OperatorService {
     value: Awaited<ReturnType<OperatorService["load"]>>;
   } | null = null;
   private lastKnownHealthContext: HealthOperatorContext | null = null;
+  /** Last published reward status; re-published through indexed-API outages. */
+  private lastGoodRewards: LastGoodRewards | null = null;
   private loading: Promise<Awaited<ReturnType<OperatorService["load"]>>> | null = null;
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
@@ -1092,6 +1095,7 @@ export class OperatorService {
       invalidateManagerVerificationCache(this.options.managerVerification);
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return result;
   }
 
@@ -1276,6 +1280,7 @@ export class OperatorService {
       }
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return {
       observedAt: synchronized.observedAt,
       stakers: synchronized.stakers,
@@ -1360,6 +1365,7 @@ export class OperatorService {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return { observedAt, events };
   }
 
@@ -1427,6 +1433,7 @@ export class OperatorService {
       ...(options.signal ? { signal: options.signal } : {}),
     });
     this.cached = null;
+    this.lastGoodRewards = null;
     return { observedAt, result };
   }
 
@@ -1473,6 +1480,7 @@ export class OperatorService {
       sourceId,
       managerPrincipal,
       liveAnchor: chainAnchor,
+      node,
       indexedApiAvailable: indexedApiCompatible(preflight),
     });
     const rewardCalculation = deriveRewardCalculationTarget(
@@ -1636,6 +1644,14 @@ export class OperatorService {
         monitoringStartedAt,
       },
     };
+    // Last known good: an indexed-API outage must not publish an empty Rewards page.
+    const published = carryForwardRewards({
+      indexedApiAvailable: indexedApiCompatible(preflight),
+      rewards,
+      rewardsPrevious,
+      lastGood: this.lastGoodRewards,
+    });
+    this.lastGoodRewards = published;
     const partial = {
       preflight,
       manager,
@@ -1644,8 +1660,8 @@ export class OperatorService {
       setup: readiness,
       forecast,
       rewardOutlook,
-      rewards,
-      rewardsPrevious,
+      rewards: published.rewards,
+      rewardsPrevious: published.rewardsPrevious,
       activity,
       roster,
       trustTransition,

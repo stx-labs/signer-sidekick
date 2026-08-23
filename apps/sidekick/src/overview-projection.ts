@@ -445,13 +445,9 @@ function currentForecastCycle(snapshot: DashboardSnapshot) {
   );
 }
 
+/** Only a stale snapshot delays the projection: an indexed API that trails the node is normal. */
 function indexedProjectionDelayed(snapshot: DashboardSnapshot): boolean {
-  return (
-    snapshot.freshness?.status === "stale" ||
-    snapshot.preflight.api.position === "behind" ||
-    (snapshot.preflight.api.stacksTipLag ?? 0) > 0 ||
-    snapshot.preflight.api.burnBlockLag > 0
-  );
+  return snapshot.freshness?.status === "stale";
 }
 
 function nextForecastCycle(snapshot: DashboardSnapshot) {
