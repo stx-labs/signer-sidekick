@@ -4724,6 +4724,21 @@ td .rw-txid {
   font-size: 11px;
   color: var(--text-tertiary);
 }
+.rw-payments {
+  /* Payment evidence can be taller than a row. Keep it above the table shell instead of
+     clipping it at the first or last row; the narrow layout uses viewport-fixed popovers. */
+  overflow: visible;
+}
+.rw-payments > .tbl-toolbar {
+  border-radius: inherit;
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.rw-payments > .pagination {
+  border-radius: inherit;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
 .rw-payment-toolbar-controls {
   display: flex;
   flex: 1 1 auto;
