@@ -29,6 +29,7 @@ import { RewardFeeLedger } from "./reward-accounting.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 import { GasWalletBanners } from "./reward-banners.js";
 import { type ConfirmState, RewardConfirmSheet } from "./reward-confirm-sheet.js";
+import { CurrentDistributionDetails } from "./reward-current-distribution.js";
 import { DistributionCard } from "./reward-distribution-card.js";
 import { EarningCard } from "./reward-earning-card.js";
 import {
@@ -139,6 +140,7 @@ export function Rewards({
   const [runsUnavailable, setRunsUnavailable] = useState(false);
   const [walletPanelOpen, setWalletPanelOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [currentDistributionView, setCurrentDistributionView] = useState<1 | 2 | null>(null);
   const [cardPayments, setCardPayments] = useState<PaymentsCache>({ byKey: {}, errors: {} });
   const walletPanelRef = useRef<HTMLDivElement | null>(null);
   const rewards = data.rewards;
@@ -293,6 +295,34 @@ export function Rewards({
         : null,
     [ledger, data, burnBlockTiming],
   );
+  const currentDistributionDetails = useMemo(() => {
+    if (!ledger || !earning || currentDistributionView === null) return null;
+    return (
+      ledger.cycles
+        .find((cycle) => cycle.cycle === earning.cycle)
+        ?.distributions.find(
+          (distribution) =>
+            distribution.distribution === currentDistributionView &&
+            distribution.status === "complete",
+        ) ?? null
+    );
+  }, [ledger, earning, currentDistributionView]);
+  useEffect(() => {
+    if (currentDistributionView !== null && currentDistributionDetails === null) {
+      setCurrentDistributionView(null);
+    }
+  }, [currentDistributionDetails, currentDistributionView]);
+  const closeCurrentDistributionDetails = useCallback(() => {
+    const distribution = currentDistributionView;
+    setCurrentDistributionView(null);
+    if (distribution !== null && earning) {
+      window.requestAnimationFrame(() =>
+        document
+          .getElementById(`rewards-view-distribution-${earning.cycle}-${distribution}`)
+          ?.focus(),
+      );
+    }
+  }, [currentDistributionView, earning]);
   const paymentsByKey = useMemo(() => {
     const map = new Map<string, readonly RewardLedgerPayment[]>();
     for (const [key, rows] of Object.entries(cardPayments.byKey)) map.set(key, rows);
@@ -629,6 +659,17 @@ export function Rewards({
     (cycle) =>
       (accruingCycle === null || cycle.cycle < accruingCycle) && !pendingCycles.has(cycle.cycle),
   );
+  const currentCycleDistributions =
+    ledger?.cycles.find((cycle) => cycle.cycle === accruingCycle)?.distributions ?? [];
+  const completedCurrentDistributions = currentCycleDistributions.filter(
+    (distribution) => distribution.status === "complete",
+  );
+  const quietDistributionCopy =
+    completedCurrentDistributions.length === 2
+      ? "Both distributions are complete. There is nothing waiting to distribute."
+      : completedCurrentDistributions.some((distribution) => distribution.distribution === 1)
+        ? "The First Distribution is complete. The Second Distribution will appear here after the network calculates it."
+        : "Nothing to distribute right now — the next distribution appears here once the network calculates it.";
   const leadCard = cards.find((card) => card.primary !== null) ?? cards[0] ?? null;
   const anyAction = cards.some((card) => card.primary !== null || card.secondary !== null);
   const walletFallback = leadCard?.execution.walletFallback ?? engineMode !== "operator-run";
@@ -663,7 +704,28 @@ export function Rewards({
         }}
       />
       {ledger && earning ? (
-        <EarningCard model={earning} />
+        <>
+          <EarningCard
+            model={earning}
+            openDistribution={currentDistributionView}
+            onViewDistribution={(distribution) =>
+              setCurrentDistributionView((current) =>
+                current === distribution ? null : distribution,
+              )
+            }
+          />
+          {currentDistributionDetails ? (
+            <CurrentDistributionDetails
+              cycle={earning.cycle}
+              distribution={currentDistributionDetails}
+              refreshKey={ledger.generatedAt}
+              loadPayments={loadDistributionPayments}
+              onExport={exportPayments}
+              exportBusy={exportBusy}
+              onClose={closeCurrentDistributionDetails}
+            />
+          ) : null}
+        </>
       ) : (
         <RequestState
           label="the reward ledger"
@@ -712,8 +774,7 @@ export function Rewards({
           </div>
           {cards.length === 0 ? (
             <div className="card rw-quiet" role="status">
-              Nothing to distribute right now — the next distribution appears here once the network
-              calculates it.
+              {quietDistributionCopy}
             </div>
           ) : (
             cards.map((card) => (

@@ -4664,6 +4664,36 @@ td .rw-txid {
   font-size: 11px;
   color: var(--text-tertiary);
 }
+.rw-half-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rw-half-foot .s {
+  min-width: 0;
+  flex: 1;
+}
+.rw-half-view {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.rw-current-distribution {
+  margin-top: 12px;
+  padding: 18px;
+}
+.rw-current-distribution-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.rw-current-distribution-head h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+  font-weight: 500;
+}
 
 /* ============ Rewards v2: Distribute ============ */
 .rw-pending-title {
@@ -5253,6 +5283,20 @@ td .rw-txid {
 }
 
 @media (max-width: 640px) {
+  .rw-half-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .rw-half-view {
+    width: 100%;
+  }
+  .rw-current-distribution {
+    padding: 14px;
+  }
+  .rw-current-distribution-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
   .rw-ledger-table th:first-child {
     width: 42%;
   }

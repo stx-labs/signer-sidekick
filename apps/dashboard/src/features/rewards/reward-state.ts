@@ -332,6 +332,8 @@ export interface EarningHalf {
   percent: number;
   status: { text: string; tone: "done" | "live" | "ready" | "idle" | "attention" };
   note: string;
+  /** Completed current-cycle evidence can be opened without waiting for the cycle to become past. */
+  detailsAvailable: boolean;
 }
 
 export interface EarningFact {
@@ -393,7 +395,7 @@ function halfStatus(distribution: RewardLedgerDistribution | null): EarningHalf[
     case "all-distributed":
       return { text: "Distributed · payouts arriving", tone: "done" };
     case "complete":
-      return { text: "Distributed", tone: "done" };
+      return { text: "Distribution complete", tone: "done" };
     default:
       return { text: distribution.statusDetail, tone: "idle" };
   }
@@ -527,6 +529,21 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
   const halves: EarningHalf[] = ([1, 2] as const).map((index) => {
     const d = distributionFor(index);
     const label = halfLabel(index);
+    const detailsAvailable = d?.status === "complete";
+    const distributionStatus = detailsAvailable
+      ? ({ text: `${distributionName(index)} complete`, tone: "done" } as const)
+      : halfStatus(d);
+    const calculationNote =
+      d?.calculation.state === "done"
+        ? [
+            `calculated ${shortDate(d.calculation.observedAt)}`,
+            amount(d.calculation.poolSats),
+            detailsAvailable ? `${d.payments.made} of ${paymentTotal(d)} paid` : null,
+            detailsAvailable ? `your fee ${amount(d.payments.operatorFeeSats)}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : null;
     if (!geometry) {
       const live = index === liveHalf;
       const finished = index < liveHalf || (d !== null && d.calculation.state === "done");
@@ -535,29 +552,21 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
         label,
         percent: finished ? 100 : live ? 50 : 0,
         status: finished
-          ? halfStatus(d)
+          ? distributionStatus
           : live
             ? { text: "Accruing", tone: "live" }
             : { text: "Not started", tone: "idle" },
-        note:
-          d?.calculation.state === "done"
-            ? `calculated ${shortDate(d.calculation.observedAt)} · ${amount(d.calculation.poolSats)}`
-            : "",
+        note: calculationNote ?? "",
+        detailsAvailable,
       };
     }
     const start = index === 1 ? geometry.cycleStart : geometry.halfBoundary;
     const end = index === 1 ? geometry.halfBoundary : geometry.cycleEnd;
     if (geometry.burnHeight >= end) {
-      const note = [
-        `ended at block ${blocks(end - 1)}`,
-        d?.calculation.state === "done"
-          ? `calculated ${shortDate(d.calculation.observedAt)} · ${amount(d.calculation.poolSats)}`
-          : null,
-        d && d.payments.made > 0 ? `${plural(d.payments.made, "payment")}` : null,
-      ]
+      const note = [`ended at block ${blocks(end - 1)}`, calculationNote]
         .filter(Boolean)
         .join(" · ");
-      return { index, label, percent: 100, status: halfStatus(d), note };
+      return { index, label, percent: 100, status: distributionStatus, note, detailsAvailable };
     }
     if (geometry.burnHeight < start) {
       return {
@@ -566,6 +575,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
         percent: 0,
         status: { text: "Not started", tone: "idle" },
         note: `starts at block ${blocks(start)}`,
+        detailsAvailable,
       };
     }
     const percent = Math.min(
@@ -589,6 +599,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
         tone: "live",
       },
       note: [`ends at block ${blocks(end - 1)}`, expected].filter(Boolean).join(" · "),
+      detailsAvailable,
     };
   });
 

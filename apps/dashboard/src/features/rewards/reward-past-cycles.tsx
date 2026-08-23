@@ -6,15 +6,12 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useState } from "react";
 import { amount } from "../../shared/format.js";
-import { PaymentsTable } from "./reward-payments.js";
 import {
-  type CycleGeometry,
-  distributionName,
-  distributionTooltip,
-  paymentTotal,
-  shortDate,
-} from "./reward-state.js";
-import { ChevronButton, InfoTip } from "./reward-ui.js";
+  DistributionHistoryDetails,
+  type DistributionPaymentsState,
+} from "./reward-distribution-history.js";
+import { type CycleGeometry, distributionName, paymentTotal, shortDate } from "./reward-state.js";
+import { ChevronButton } from "./reward-ui.js";
 
 const PAGE = 6;
 
@@ -61,24 +58,6 @@ function distributionMeta(d: RewardLedgerDistribution): string {
     .join(" · ");
 }
 
-function distributionSummary(d: RewardLedgerDistribution): string {
-  const parts: string[] = [];
-  if (d.calculation.state === "done") {
-    parts.push("Calculation confirmed");
-  } else {
-    parts.push(d.statusDetail);
-  }
-  const collect = d.collects.at(-1);
-  if (collect) parts.push("rewards collected");
-  if (d.payments.rolledForward > 0) {
-    parts.push(`${d.payments.rolledForward} rolled forward, paid with the Second Distribution`);
-  }
-  if (d.payments.arriving > 0) parts.push(`${d.payments.arriving} arriving over Bitcoin`);
-  return parts.join(" · ");
-}
-
-type PaymentsState = { rows: RewardLedgerPayment[] | null; error: string | null };
-
 /**
  * Past cycles as a ledger: one line per cycle; a cycle opens into its two distributions (tabs),
  * a one-line summary, and that distribution's payments with exports where the data is.
@@ -105,7 +84,7 @@ export function PastCyclesLedger({
   const [shown, setShown] = useState(PAGE);
   const [openCycle, setOpenCycle] = useState<number | null>(null);
   const [tabs, setTabs] = useState<Record<number, 1 | 2>>({});
-  const [payments, setPayments] = useState<Record<string, PaymentsState>>({});
+  const [payments, setPayments] = useState<Record<string, DistributionPaymentsState>>({});
   if (cycles.length === 0) return null;
   const visible = cycles.slice(0, shown);
   const seconds = burnBlockSeconds ?? 600;
@@ -239,56 +218,38 @@ export function PastCyclesLedger({
                             </button>
                           ))}
                         </div>
-                        <p className="rw-dist-summary">
-                          {distributionSummary(active)}{" "}
-                          <InfoTip text={distributionTooltip(active)} />
-                        </p>
-                        {!state || state.rows === null ? (
-                          <div
-                            className="tbl-wrap rw-pay-box rw-loading"
-                            role={state?.error ? "alert" : "status"}
-                          >
-                            {state?.error
-                              ? `Could not load payments: ${state.error}`
-                              : "Loading payments…"}
-                          </div>
-                        ) : (
-                          <div className="rw-pay-box-wrap">
-                            <PaymentsTable
-                              payments={state.rows}
-                              variant="history"
-                              emptyText="No payments recorded for this distribution."
-                              toolbarRight={
-                                <div className="rw-export-inline">
-                                  <span className="muted">Export</span>
-                                  <button
-                                    className="btn btn-tertiary sm"
-                                    type="button"
-                                    disabled={exportBusy}
-                                    onClick={() =>
-                                      onExport({
-                                        cycle: cycle.cycle,
-                                        distribution: active.distribution,
-                                      })
-                                    }
-                                  >
-                                    <DownloadSimple className="rw-ico" aria-hidden="true" />
-                                    This distribution
-                                  </button>
-                                  <button
-                                    className="btn btn-tertiary sm"
-                                    type="button"
-                                    disabled={exportBusy}
-                                    onClick={() => onExport({ cycle: cycle.cycle })}
-                                  >
-                                    <DownloadSimple className="rw-ico" aria-hidden="true" />
-                                    Cycle {cycle.cycle}
-                                  </button>
-                                </div>
-                              }
-                            />
-                          </div>
-                        )}
+                        <DistributionHistoryDetails
+                          distribution={active}
+                          state={state}
+                          toolbarRight={
+                            <div className="rw-export-inline">
+                              <span className="muted">Export</span>
+                              <button
+                                className="btn btn-tertiary sm"
+                                type="button"
+                                disabled={exportBusy}
+                                onClick={() =>
+                                  onExport({
+                                    cycle: cycle.cycle,
+                                    distribution: active.distribution,
+                                  })
+                                }
+                              >
+                                <DownloadSimple className="rw-ico" aria-hidden="true" />
+                                This distribution
+                              </button>
+                              <button
+                                className="btn btn-tertiary sm"
+                                type="button"
+                                disabled={exportBusy}
+                                onClick={() => onExport({ cycle: cycle.cycle })}
+                              >
+                                <DownloadSimple className="rw-ico" aria-hidden="true" />
+                                Cycle {cycle.cycle}
+                              </button>
+                            </div>
+                          }
+                        />
                       </div>
                     </td>
                   </tr>

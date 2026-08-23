@@ -380,6 +380,7 @@ describe("deriveEarning", () => {
       percent: 100,
       status: { text: "Ready to collect", tone: "ready" },
       note: "ended at block 963,199 · calculated Aug 19 · 0.014 sBTC",
+      detailsAvailable: false,
     });
     expect(model?.halves[1]).toMatchObject({
       label: "Second half",
@@ -387,6 +388,28 @@ describe("deriveEarning", () => {
       status: { text: "Accruing · 67% · 2d 10h left", tone: "live" },
     });
     expect(model?.halves[1]?.note).toMatch(/^ends at block 964,249 · calculation expected Aug 2/);
+  });
+
+  it("keeps a completed current-cycle distribution visible and drillable", () => {
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 2), [complete(141, 1)]),
+      snapshot: snapshot(),
+      burnBlockSeconds: 600,
+      now: new Date("2026-08-22T12:00:00.000Z"),
+    });
+
+    expect(model?.halves[0]).toMatchObject({
+      label: "First half",
+      percent: 100,
+      status: { text: "First Distribution complete", tone: "done" },
+      note: "ended at block 963,199 · calculated Aug 19 · 0.014 sBTC · 40 of 40 paid · your fee 70,000 sats",
+      detailsAvailable: true,
+    });
+    expect(model?.halves[1]).toMatchObject({
+      label: "Second half",
+      status: { text: "Accruing · 67% · 2d 10h left", tone: "live" },
+      detailsAvailable: false,
+    });
   });
 
   it("marks a finished first half by its distribution status and the second as not started", () => {

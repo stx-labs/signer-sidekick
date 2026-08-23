@@ -1325,18 +1325,22 @@ const ledgerCycles = [
 ];
 ledgerCycles[0].cycle.distributions[0].current = true;
 
-export function rewardLedger(url) {
+function rewardLedgerForCycles(url, cycles, current) {
   const request = new URL(url);
   const cycleText = request.searchParams.get("cycle");
   const distributionText = request.searchParams.get("distribution");
   const scope = request.searchParams.get("scope") === "all" ? "all" : "selection";
-  const selectedCycle = cycleText === null ? 140 : Number(cycleText);
+  const selectedCycle = cycleText === null ? current.cycle : Number(cycleText);
   const selectedDistribution =
-    distributionText === null ? (cycleText === null ? 1 : null) : Number(distributionText);
+    distributionText === null
+      ? cycleText === null
+        ? current.distribution
+        : null
+      : Number(distributionText);
   const payments =
     scope === "all"
-      ? ledgerCycles.flatMap(({ payments: rows }) => rows)
-      : ledgerCycles
+      ? cycles.flatMap(({ payments: rows }) => rows)
+      : cycles
           .filter(({ cycle }) => cycle.cycle === selectedCycle)
           .flatMap(({ payments: rows }) => rows)
           .filter(
@@ -1357,13 +1361,13 @@ export function rewardLedger(url) {
     monitoringStartedAt: "2026-07-01T00:00:00.000Z",
     recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
     evidenceWindow: { truncated: false, oldestRetainedBlockHeight: null, limit: 10_000 },
-    current: { cycle: 140, distribution: 1 },
-    cycles: ledgerCycles.map(({ cycle }) => cycle),
+    current,
+    cycles: cycles.map(({ cycle }) => cycle),
     payments,
     paymentsTruncated: false,
     fees: {
       feeBips: "500",
-      earnedIndexedSats: ledgerCycles
+      earnedIndexedSats: cycles
         .reduce((sum, { cycle }) => sum + BigInt(cycle.operatorFeeSats), 0n)
         .toString(),
       indexedPaymentCount: 0,
@@ -1375,6 +1379,20 @@ export function rewardLedger(url) {
     },
     query: { cycle: selectedCycle, distribution: selectedDistribution, staker: null, scope },
   };
+}
+
+export function rewardLedger(url) {
+  return rewardLedgerForCycles(url, ledgerCycles, { cycle: 140, distribution: 1 });
+}
+
+/** Current-cycle quiet state: the First Distribution is complete while the second half accrues. */
+export function completedFirstRewardLedger(url) {
+  const current = ledgerCycle(140, ["complete", "accruing"], ledgerStakers);
+  current.cycle.distributions[1].current = true;
+  return rewardLedgerForCycles(url, [current, ...ledgerCycles.slice(1)], {
+    cycle: 140,
+    distribution: 2,
+  });
 }
 
 export const gasWalletStatus = {

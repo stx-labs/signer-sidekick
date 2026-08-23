@@ -12,7 +12,15 @@ const statusClass: Record<EarningModel["halves"][number]["status"]["tone"], stri
  * Orientation for the accruing cycle (plan §6 v2): the cycle's identity and timing on the left,
  * three facts on the right, and the two halves beneath with each distribution's status.
  */
-export function EarningCard({ model }: { model: EarningModel }) {
+export function EarningCard({
+  model,
+  openDistribution,
+  onViewDistribution,
+}: {
+  model: EarningModel;
+  openDistribution: 1 | 2 | null;
+  onViewDistribution: (distribution: 1 | 2) => void;
+}) {
   return (
     <section
       className="card-standout rw-now rw-earning domain-section-anchor"
@@ -75,7 +83,23 @@ export function EarningCard({ model }: { model: EarningModel }) {
             >
               <i style={{ width: `${half.percent}%` }} />
             </div>
-            {half.note ? <div className="s">{half.note}</div> : null}
+            {half.note || half.detailsAvailable ? (
+              <div className="rw-half-foot">
+                {half.note ? <div className="s">{half.note}</div> : null}
+                {half.detailsAvailable ? (
+                  <button
+                    className="btn btn-tertiary sm rw-half-view"
+                    id={`rewards-view-distribution-${model.cycle}-${half.index}`}
+                    type="button"
+                    aria-expanded={openDistribution === half.index}
+                    aria-controls={`rewards-current-distribution-${model.cycle}-${half.index}`}
+                    onClick={() => onViewDistribution(half.index)}
+                  >
+                    View payments
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ))}
       </div>

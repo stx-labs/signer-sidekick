@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
+  completedFirstRewardLedger,
   connection,
   deploymentRequirements,
   engineStatus,
@@ -2463,6 +2464,40 @@ test("pages multi-year reward history and loads payments on demand", async ({ pa
   const panel = page.locator(".rw-ledger-panel");
   await expect(panel.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
   await expect(panel.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
+});
+
+test("keeps a completed current-cycle distribution accessible during the second half", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+
+  const currentCycle = page.locator("#rewards-calculation");
+  await expect(
+    currentCycle.getByText("First Distribution complete", { exact: true }),
+  ).toBeVisible();
+  await expect(currentCycle.getByText(/40 of 40 paid/)).toBeVisible();
+  const view = currentCycle.getByRole("button", { name: "View payments" });
+  await expect(view).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    page.getByText(
+      "The First Distribution is complete. The Second Distribution will appear here after the network calculates it.",
+    ),
+  ).toBeVisible();
+
+  await view.click();
+  await expect(view).toHaveAttribute("aria-expanded", "true");
+  const details = page.locator("#rewards-current-distribution-140-1");
+  await expect(details.getByRole("heading", { name: "First Distribution details" })).toBeVisible();
+  await expect(details.getByText(/Calculation confirmed · rewards collected/)).toBeVisible();
+  await expect(details.getByRole("tab", { name: "Paid · 40" })).toBeVisible();
+  await details.getByRole("button", { name: "Close" }).click();
+  await expect(details).toHaveCount(0);
+  await expect(view).toBeFocused();
 });
 
 test("shows the ready distribution with payments, exports, and the wallet fallback", async ({
