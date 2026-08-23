@@ -112,7 +112,13 @@ export function RewardFeeLedger({
           <span className="rw-export-all-label">
             {exportComplete ? "Export all history" : "Export indexed history"}
           </span>
-          {(["payments", "distributions", "fees"] as const).map((name) => (
+          {(
+            [
+              ["payments", "Staker Payments"],
+              ["distributions", "Distribution Cycles"],
+              ["fees", "Signer Fees"],
+            ] as const
+          ).map(([name, label]) => (
             <button
               key={name}
               className="btn btn-secondary sm"
@@ -122,7 +128,7 @@ export function RewardFeeLedger({
               title={`${name}.${format} for ${exportComplete ? "all indexed history" : "the history Sidekick has indexed so far"}`}
             >
               <DownloadSimple className="rw-ico" aria-hidden="true" />
-              {busy === name ? "Preparing…" : name[0]?.toUpperCase() + name.slice(1)}
+              {busy === name ? "Preparing…" : label}
             </button>
           ))}
           <div className="seg">
