@@ -11,12 +11,9 @@ import {
   MANAGER_CLAIM_REWARDS_ADAPTER_ID,
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
-import {
-  RepositoryTransactionEngineApiService,
-  TransactionEngineApiServiceError,
-} from "./api-service.js";
+import { RepositoryTransactionEngineApiService } from "./api-service.js";
 import {
   type ManagerClaimObserveFacts,
   ObserveManagerClaimPlanner,
@@ -161,30 +158,46 @@ function service(
   store: SidekickStore,
   clock: { value: string },
   adapterAvailability?: () => { available: boolean; reason: string | null },
-  onApproved?: (jobId: string) => Promise<void>,
 ) {
   return new RepositoryTransactionEngineApiService({
     repository: store.transactionEngine,
     requestedMode: "operator-run",
-    legacyApprovals: true,
-    maximumApprovalMinutes: 30,
     finalityDepth: 6,
     now: () => new Date(clock.value),
     ...(adapterAvailability ? { adapterAvailability } : {}),
-    ...(onApproved ? { onApproved } : {}),
   });
 }
 
-function approvalRequest(
+/**
+ * Records a stored approval directly (single-job approvals no longer have an API path, ADR 0010)
+ * so the read-side mapping of historical approvals stays covered.
+ */
+function recordApproval(
+  store: SidekickStore,
   job: Awaited<ReturnType<typeof awaitingJob>>["job"],
+  actor: string,
   expiresAt = "2026-07-17T12:31:00.000Z",
 ) {
-  return {
-    decision: "approve" as const,
+  const approval = {
+    schemaVersion: 1,
+    decision: "approve",
+    jobId: job.jobId,
     intentSha256: job.intentSha256,
     policySha256: job.policySha256,
+    attestationSha256: job.attestation.payloadSha256,
     expiresAt,
   };
+  return store.transactionEngine.createApproval({
+    jobId: job.jobId,
+    expectedJobStateVersion: job.stateVersion,
+    intentSha256: job.intentSha256,
+    policySha256: job.policySha256,
+    approval,
+    approvalSha256: transactionEngineDocumentSha256(approval),
+    actor,
+    createdAt: initialNow,
+    expiresAt,
+  });
 }
 
 describe("repository transaction-engine API service", () => {
@@ -266,9 +279,9 @@ describe("repository transaction-engine API service", () => {
         },
       },
       approvalWindow: {
-        eligible: true,
-        expiresAt: "2026-07-17T12:32:00.000Z",
-        reason: null,
+        eligible: false,
+        expiresAt: null,
+        reason: "Single-job approvals are retired; run reward calls from Rewards",
       },
       reconciliation: { outcome: "unknown", canonical: true, finalized: false },
     });
@@ -324,7 +337,6 @@ describe("repository transaction-engine API service", () => {
     const { store, digest } = await memoryStore();
     const { job } = await awaitingJob(store, digest);
     const api = service(store, { value: initialNow });
-    await api.approve(job.jobId, approvalRequest(job), "operator:test");
     const blocked = store.transactionEngine.transitionLogicalJob({
       jobId: job.jobId,
       expectedState: "awaiting_approval",
@@ -349,110 +361,12 @@ describe("repository transaction-engine API service", () => {
     });
   });
 
-  it("creates one exact hash-and-expiry-bound approval and invalidates it idempotently", async () => {
-    const { store, digest } = await memoryStore();
-    const { job } = await awaitingJob(store, digest);
-    const clock = { value: initialNow };
-    const api = service(store, clock);
-
-    await expect(
-      api.approve(job.jobId, approvalRequest(job, "2026-07-17T12:31:00.001Z"), "operator:a"),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      responseCode: "engine_approval_expiry_invalid",
-      message:
-        "Approval expiry is outside the current window. Refresh the job and submit a valid expiry",
-    });
-    const request = approvalRequest(job);
-    const created = await api.approve(job.jobId, request, "operator:a");
-    expect(created).toMatchObject({
-      created: true,
-      approval: {
-        actor: "operator:a",
-        expiresAt: request.expiresAt,
-        invalidatedAt: null,
-      },
-      job: { approvalWindow: { eligible: false } },
-    });
-    expect(store.transactionEngine.getLatestApproval(job.jobId)?.approval).toEqual({
-      schemaVersion: 1,
-      decision: "approve",
-      jobId: job.jobId,
-      intentSha256: job.intentSha256,
-      policySha256: job.policySha256,
-      attestationSha256: digest,
-      expiresAt: request.expiresAt,
-    });
-
-    clock.value = "2026-07-17T12:06:00.000Z";
-    await expect(api.approve(job.jobId, request, "operator:a")).resolves.toMatchObject({
-      created: false,
-      approval: { approvalId: created.approval.approvalId },
-    });
-    await expect(
-      api.approve(job.jobId, { ...request, intentSha256: "ff".repeat(32) }, "operator:a"),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      responseCode: "engine_approval_hash_mismatch",
-      message: "The transaction job changed. Refresh it before approving",
-    });
-
-    const invalidation = {
-      decision: "invalidate" as const,
-      reason: "Operator withdrew approval",
-    };
-    const invalidated = await api.invalidateApproval(job.jobId, invalidation, "operator:a");
-    expect(invalidated.approval).toMatchObject({
-      approvalId: created.approval.approvalId,
-      invalidatedAt: clock.value,
-      invalidationReason: invalidation.reason,
-      version: 1,
-    });
-    await expect(
-      api.invalidateApproval(job.jobId, invalidation, "operator:a"),
-    ).resolves.toMatchObject({ approval: { approvalId: created.approval.approvalId, version: 1 } });
-    await expect(
-      api.invalidateApproval(
-        job.jobId,
-        { ...invalidation, reason: "A different audit reason" },
-        "operator:a",
-      ),
-    ).rejects.toBeInstanceOf(TransactionEngineApiServiceError);
-  });
-
-  it("retries the idempotent execution callback when approval persistence outlives a callback failure", async () => {
-    const { store, digest } = await memoryStore();
-    const { job } = await awaitingJob(store, digest);
-    let calls = 0;
-    const onApproved = vi.fn(async () => {
-      calls += 1;
-      if (calls === 1) throw new Error("execution callback failed");
-    });
-    const api = service(store, { value: initialNow }, undefined, onApproved);
-    const request = approvalRequest(job);
-
-    await expect(api.approve(job.jobId, request, "operator:a")).rejects.toThrow(
-      "execution callback failed",
-    );
-    expect(store.transactionEngine.getActiveApproval(job.jobId, initialNow)).toMatchObject({
-      actor: "operator:a",
-      expiresAt: request.expiresAt,
-    });
-
-    await expect(api.approve(job.jobId, request, "operator:a")).resolves.toMatchObject({
-      created: false,
-    });
-    expect(onApproved).toHaveBeenCalledTimes(2);
-    expect(onApproved).toHaveBeenNthCalledWith(1, job.jobId);
-    expect(onApproved).toHaveBeenNthCalledWith(2, job.jobId);
-  });
-
   it("exposes nonce, txid, and whitelisted reconciliation evidence without signed material", async () => {
     const { store, digest } = await memoryStore();
     const { planned, job } = await awaitingJob(store, digest);
     const clock = { value: initialNow };
     const api = service(store, clock);
-    await api.approve(job.jobId, approvalRequest(job), "operator:a");
+    recordApproval(store, job, "operator:a");
     const approval = store.transactionEngine.getActiveApproval(
       job.jobId,
       "2026-07-17T12:06:00.000Z",
@@ -532,7 +446,7 @@ describe("repository transaction-engine API service", () => {
     const { job } = await awaitingJob(store, digest);
     const clock = { value: initialNow };
     const api = service(store, clock);
-    await api.approve(job.jobId, approvalRequest(job), "operator:a");
+    recordApproval(store, job, "operator:a");
 
     const forced = await api.forceObserve(
       { decision: "force-observe", reason: "Emergency stop" },

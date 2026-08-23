@@ -14,10 +14,6 @@ export interface TransactionEngineRuntimeConfig {
     publicKey: string;
     secretFilePath: string | null;
   };
-  attestation: null | {
-    documentFilePath: string;
-    trustKeysFilePath: string;
-  };
   finalityDepth: number;
   maximumFeeUstx: bigint;
   maximumApprovalMinutes: number;
@@ -96,38 +92,20 @@ export function loadTransactionEngineRuntimeConfig(
     throw new Error("Gas-payer secret path requires the matching public identity");
   }
 
-  const attestationFile = optionalValue(env, "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE");
-  const trustKeysFile = optionalValue(env, "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE");
-  if ((attestationFile === null) !== (trustKeysFile === null)) {
-    throw new Error("Compatibility attestation and trust-key files must be configured together");
-  }
-  const attestation =
-    attestationFile === null || trustKeysFile === null
-      ? null
-      : {
-          documentFilePath: absoluteFilePath(
-            attestationFile,
-            "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE",
-          ),
-          trustKeysFilePath: absoluteFilePath(
-            trustKeysFile,
-            "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
-          ),
-        };
-
-  // Operator-run does not require a gas payer at startup: the gas wallet is usually generated from
-  // Settings after boot (plan S2) and activated on the running engine. It never uses an issuer
-  // attestation (ADR 0010): the retired Assist path cannot be re-entered through configuration.
-  if (requestedMode === "operator-run" && attestation !== null) {
+  if (
+    optionalValue(env, "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE") !== null ||
+    optionalValue(env, "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE") !== null
+  ) {
+    // The attestation-gated Assist path is retired (ADR 0010); refuse stale configuration rather
+    // than silently ignoring files an operator believes are in force.
     throw new Error(
-      "Compatibility attestation files are not used in operator-run (ADR 0010); remove SIDEKICK_COMPATIBILITY_ATTESTATION_FILE and SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
+      "Compatibility attestation files are no longer used; remove SIDEKICK_COMPATIBILITY_ATTESTATION_FILE and SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
     );
   }
 
   return {
     requestedMode,
     gasPayer,
-    attestation,
     finalityDepth: z.coerce
       .number()
       .int()

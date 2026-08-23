@@ -9,10 +9,6 @@ import {
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
-import type {
-  CompatibilityAttestationRepository,
-  StoredCompatibilityAttestation,
-} from "./attestation-controller.js";
 import {
   assertTransactionJobTransition,
   type TransactionJobState,
@@ -723,7 +719,18 @@ function acceptedStateMatches(
   );
 }
 
-export class TransactionEngineRepository implements CompatibilityAttestationRepository {
+/**
+ * Accepted compatibility attestation record. The attestation-gated Assist path is retired
+ * (ADR 0010); the table and these records remain only so persisted job attestation identities keep
+ * validating. No runtime code accepts new attestations.
+ */
+export interface StoredCompatibilityAttestation {
+  acceptedState: AcceptedCompatibilityAttestationState;
+  document: SignedCompatibilityAttestation;
+  acceptedAt: string;
+}
+
+export class TransactionEngineRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   private transaction<T>(operation: () => T): T {

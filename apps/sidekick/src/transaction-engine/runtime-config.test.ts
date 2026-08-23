@@ -24,7 +24,6 @@ describe("transaction-engine runtime config", () => {
     expect(loadTransactionEngineRuntimeConfig({}, "mainnet")).toEqual({
       requestedMode: "observe",
       gasPayer: null,
-      attestation: null,
       finalityDepth: 6,
       maximumFeeUstx: 100_000n,
       maximumApprovalMinutes: 30,
@@ -60,7 +59,7 @@ describe("transaction-engine runtime config", () => {
   it("starts operator-run without a gas payer so the wallet can be generated later", () => {
     expect(
       loadTransactionEngineRuntimeConfig({ SIDEKICK_ENGINE_MODE: "operator-run" }, "testnet"),
-    ).toMatchObject({ requestedMode: "operator-run", gasPayer: null, attestation: null });
+    ).toMatchObject({ requestedMode: "operator-run", gasPayer: null });
   });
 
   it("permits Observe planning with a public identity and no private-key path", () => {
@@ -83,7 +82,7 @@ describe("transaction-engine runtime config", () => {
         SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/etc/sidekick/compatibility.json",
         SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: "/etc/sidekick/attestation-keys.json",
       },
-      "Compatibility attestation files are not used in operator-run",
+      "Compatibility attestation files are no longer used",
     ],
     [
       { SIDEKICK_GAS_PAYER_PRINCIPAL: principal },
@@ -99,7 +98,7 @@ describe("transaction-engine runtime config", () => {
     ],
     [
       { SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/tmp/attestation.json" },
-      "attestation and trust-key files must be configured together",
+      "Compatibility attestation files are no longer used",
     ],
   ])("fails closed for partial or unsafe configuration", (environment, message) => {
     expect(() => loadTransactionEngineRuntimeConfig(environment, "testnet")).toThrow(message);

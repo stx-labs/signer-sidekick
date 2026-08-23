@@ -460,15 +460,6 @@ export async function executeCliCommand({
             },
           );
           server.log.info("Connection established; operator background services are enabled");
-          void engine
-            .recoverActive()
-            .then((results) =>
-              server.log.info(
-                { recoveredJobs: results.length },
-                "Transaction engine startup recovery completed",
-              ),
-            )
-            .catch((error: unknown) => reportTransactionEngineError(error));
           void service
             .observeManagerTrustState()
             .then(() => server.log.info("Initial manager observation completed"))

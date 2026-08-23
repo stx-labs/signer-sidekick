@@ -660,7 +660,11 @@ function engineFixture() {
     blockReason: null,
     supersededByJobId: null,
     review,
-    approvalWindow: { eligible: true, expiresAt, reason: null },
+    approvalWindow: {
+      eligible: false,
+      expiresAt: null,
+      reason: "Single-job approvals are retired; run reward calls from Rewards",
+    },
     approval: null,
     nonce: null,
     attempts: [],
@@ -1033,15 +1037,11 @@ test("summarizes empty transaction work in Settings and links to Activity", asyn
   );
 });
 
-test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
-  page,
-}) => {
+test("reviews exact engine intent and keeps emergency controls idempotent", async ({ page }) => {
   const fixture = engineFixture();
-  let approvalRequests = 0;
-  let invalidationRequests = 0;
   let forceObserveRequests = 0;
   let disableRequests = 0;
-  let currentJob = fixture.job;
+  const currentJob = fixture.job;
   let currentStatus = fixture.status;
 
   await page.unroute("**/api/v1/**");
@@ -1056,37 +1056,6 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
       body = { schemaVersion: 1, items: [fixture.summary], nextCursor: null, total: 1 };
     } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}`) {
       body = currentJob;
-    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval/invalidate`) {
-      invalidationRequests += 1;
-      const requestBody = route.request().postDataJSON();
-      expect(requestBody).toEqual({
-        decision: "invalidate",
-        reason: "Operator invalidated approval from the action workspace",
-      });
-      const invalidatedApproval = {
-        ...fixture.approval,
-        invalidatedAt: "2026-07-17T12:05:00.000Z",
-        invalidationReason: "Operator invalidated approval from the action workspace",
-        version: 1,
-      };
-      currentJob = { ...currentJob, approval: invalidatedApproval, stateVersion: 5 };
-      body = { approval: invalidatedApproval, job: currentJob };
-    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval`) {
-      approvalRequests += 1;
-      expect(route.request().postDataJSON()).toEqual({
-        decision: "approve",
-        intentSha256: "a".repeat(64),
-        policySha256: "b".repeat(64),
-        expiresAt: "2026-07-17T12:10:00.000Z",
-      });
-      await new Promise((resolve) => setTimeout(resolve, 75));
-      currentJob = {
-        ...currentJob,
-        state: "nonce_reserved",
-        stateVersion: 4,
-        approval: fixture.approval,
-      };
-      body = { approval: fixture.approval, job: currentJob, created: approvalRequests === 1 };
     } else if (request.pathname === "/api/v1/engine/force-observe") {
       forceObserveRequests += 1;
       currentStatus = {
@@ -1130,18 +1099,11 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect(page.getByText("Last reward compute height", { exact: true })).toBeVisible();
   await expect(page.getByText("Maximum asset outflow", { exact: true })).toBeVisible();
   await expect(page.getByText("Attestation hash", { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: "Approve transaction" }).evaluate((button) => {
-    button.click();
-    button.click();
-  });
-  await expect.poll(() => approvalRequests).toBe(1);
-  await expect(page.getByText("Approved", { exact: true })).toBeVisible();
-
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Invalidate approval" }).click();
-  await expect.poll(() => invalidationRequests).toBe(1);
-  await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
+  // Single-job approvals are retired (ADR 0010): the review stays read-only.
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toHaveCount(0);
+  await expect(
+    page.getByText("Single-job approvals are retired; run reward calls from Rewards"),
+  ).toBeVisible();
 
   await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(page.getByText("assist", { exact: true })).toBeVisible();
@@ -1188,7 +1150,7 @@ test("opens one exact engine job in the shared action workspace", async ({ page 
   await expect(page.getByText("WHY THIS ACTION", { exact: true })).toBeVisible();
   await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
   await expect(page.getByText(fixture.jobId, { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Approve transaction" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toHaveCount(0);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
   );

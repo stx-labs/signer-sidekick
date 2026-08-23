@@ -170,14 +170,14 @@ Engine (existing, single-tenant) — `apps/sidekick/src/transaction-engine/`:
   (`packages/protocol/src/manager-claim-rewards.ts` ~L102) and the planner injects the accepted
   attestation (`manager-claim-observer.ts` ~L638) — an operator-run mode needs a versioned
   authorization variant, not just skipped admission checks (§8.7).
-- `admission.ts`: attestation, live fingerprint, adapter/revision, anchor canonical + descendant,
-  prerequisites, fee state, fee cap, observe-mode, approval (missing/invalid/expired), signer
+- `admission.ts` (retired in S3.1): attestation, live fingerprint, adapter/revision, anchor canonical +
+  descendant, prerequisites, fee state, fee cap, observe-mode, approval (missing/invalid/expired), signer
   availability/identity, nonce (owned/unresolved/foreign), authoritative blockers.
-- `nonce-policy.ts`: single unresolved reservation. `state-machine.ts`: `prepared → preflighted →
+- `nonce-policy.ts` (retired in S3.1): single unresolved reservation. `state-machine.ts`: `prepared → preflighted →
   awaiting_approval → nonce_reserved → broadcast → confirmed → reconciled`, plus `blocked`,
   `ambiguous`, `noncanonical_reobserve`, `superseded`.
-- `manager-claim-assist-coordinator.ts` (~52 KB): admission → sign → broadcast → observe →
-  reconcile, hard-wired to the manager-claim adapter; `api-service.ts` L263–265 asserts it.
+- `manager-claim-assist-coordinator.ts` (~52 KB, retired in S3.1): admission → sign → broadcast →
+  observe → reconcile, hard-wired to the manager-claim adapter; `api-service.ts` L263–265 asserted it.
 - `manager-claim-proposal.ts` (`buildManagerClaimProposal` L220): the sealed, execution-neutral
   proposal (ADR 0009). Routes: `server.ts` L1978–2031.
 
@@ -466,7 +466,8 @@ locked.
 Attestation checks apply only to `authorization.kind === "standing"`. New blocks:
 `run-approval-missing | run-approval-invalid | run-start-window-expired | run-runtime-exceeded |
 child-not-in-recipe | gas-budget-exceeded | nothing-to-pay | fee-not-locked | gas-wallet-is-admin |
-gas-wallet-is-signer`. Everything else in `admission.ts` stays.
+gas-wallet-is-signer`. Run admission lives in the reward-run service; the single-job `admission.ts` was
+retired with the legacy path in S3.1.
 
 ### 8.8 Activity / Overview / API
 
@@ -520,9 +521,14 @@ accounts.
 > pause/resume/cancel, run discovery via `GET /rewards/runs` so progress shows from any tab/Overview. S3/S4 in
 > **S3/S4 merged** (2026-08-22): durable reward runs (`bf9e3f5` + review fixes), five sealed adapters, run
 > routes, regtest round-trip, Devnet calculate + collect run; the dashboard reads the real run contract
-> (recipe `truncated` / `eligibleTransactions` / `remainingTransactions`). Pending: one Devnet run of the
-> extended harness (distribute ≥2 payments incl. Bitcoin route + Finish Bitcoin payouts); S3.1 legacy-path
-> retirement; S6 docs. **S1.1** (below) is queued.
+> (recipe `truncated` / `eligibleTransactions` / `remainingTransactions`). **S3.1 delivered** (2026-08-22):
+> the attestation-gated single-job engine path is retired — assist coordinator, nonce policy, admission,
+> attestation controller/trust store, the legacy `signManagerClaimRewardsPlan` signer method, the
+> `/engine/jobs/:id/approval[/invalidate]` routes + contracts, and the dashboard Approve/Invalidate controls
+> are gone; the engine is observe-only (jobs stay reviewable, `approvalWindow` always reports the retired
+> reason) and `SIDEKICK_COMPATIBILITY_*` env vars now fail startup. Pending: one Devnet run of the
+> extended harness (distribute ≥2 payments incl. Bitcoin route + Finish Bitcoin payouts); S3.2 (below); S6
+> docs. **S1.1** (below) is queued.
 
 ### 10.0 S3/S4 integration checklist (branch `codex/reward-operations-s3-s4` → this branch)
 
@@ -547,8 +553,19 @@ still to pass**; 7–10 dashboard bound to the contract (prepare with operations
 pause/resume/cancel, lifecycle e2e). Remaining: the Devnet run above; the "runs not available" copy
 stays as the graceful message for builds without the engine.
 
-Later (S3.1 / S6): retire the legacy attestation-gated single-job engine path (assist coordinator,
-admission attestation checks, legacy approvals) now that recipe runs replace it.
+Done (S3.1, 2026-08-22): the legacy attestation-gated single-job engine path is retired now that recipe
+runs replace it — deleted `manager-claim-assist-coordinator.ts`, `nonce-policy.ts`, `admission.ts`,
+`attestation-controller.ts`, `attestation-trust-store.ts` (+ tests); `runtime.ts` lost the recovery pass,
+approval refresh, attestation loading and coordinator wiring (observation is always `requestedMode:
+"observe"`, `attestation: null`); `api-service.ts` lost `approve`/`invalidateApproval`; `server.ts` +
+`api-contracts` lost the approval routes/schemas; the dashboard review card is read-only; the signer kept
+only sealed reward-operation and sweep methods; `runtime-config` rejects the attestation env vars.
+Historical approvals still render (repository approval/attestation tables untouched).
+
+Later (S3.2, cleanup only — no behaviour change): prune the observation service's assist-only branches
+(`revalidateApprovedJob`, approval/attestation blocks), the repository approval/attestation persistence
+that nothing writes any more, and the block-reason guidance strings that still say "review and approve
+it"; consider renaming `maximumApprovalMinutes` (it is the run approval-start window).
 
 ### 10.1 S1.1 — scale follow-ups (queued, additive)
 

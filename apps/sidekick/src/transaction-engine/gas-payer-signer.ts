@@ -1,7 +1,6 @@
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import {
   compressPublicKey,
   deserializeTransaction,
@@ -9,12 +8,6 @@ import {
   privateKeyToPublic,
   TransactionSigner,
 } from "@stacks/transactions";
-import {
-  MANAGER_CLAIM_REWARDS_ADAPTER_ID,
-  MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-  type ManagerClaimRewardsPlan,
-  planManagerClaimRewards,
-} from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import {
   type RewardOperationKind,
   type RewardOperationPlan,
@@ -55,50 +48,8 @@ export interface GasPayerSignerOptions {
   network: "mainnet" | "testnet";
 }
 
-const signedTransactionCapability = Symbol("signed-manager-claim-rewards");
 const signedSweepCapability = Symbol("signed-gas-wallet-sweep");
 const signedRewardOperationCapability = Symbol("signed-reward-operation");
-
-/**
- * Opaque signed output from {@link GasPayerSigner}. Its constructor cannot be used without the
- * module-local capability, while byte access returns a defensive copy for durable persistence.
- */
-export class SignedManagerClaimRewardsTransaction {
-  readonly kind = "signed-manager-claim-rewards" as const;
-
-  #signedTransactionBytes: Uint8Array;
-
-  constructor(
-    capability: typeof signedTransactionCapability,
-    signedTransactionBytes: Uint8Array,
-    readonly intentHash: string,
-    readonly unsignedTransactionSha256: string,
-    readonly precomputedTxid: `0x${string}`,
-    readonly nonce: string,
-    readonly fee: string,
-  ) {
-    if (capability !== signedTransactionCapability) {
-      throw new GasPayerSignerError("signing-failed", "Signed transaction construction is sealed");
-    }
-    this.#signedTransactionBytes = Uint8Array.from(signedTransactionBytes);
-    Object.freeze(this);
-  }
-
-  get signedTransactionBytes(): Uint8Array {
-    return Uint8Array.from(this.#signedTransactionBytes);
-  }
-
-  toJSON(): Record<string, string> {
-    return {
-      kind: this.kind,
-      intentHash: this.intentHash,
-      unsignedTransactionSha256: this.unsignedTransactionSha256,
-      precomputedTxid: this.precomputedTxid,
-      nonce: this.nonce,
-      fee: this.fee,
-    };
-  }
-}
 
 /**
  * Opaque signed gas-wallet sweep (plan §7.6). Same sealing rules as the manager-claim output: the
@@ -307,72 +258,8 @@ async function loadPrivateKey(options: GasPayerSignerOptions): Promise<Uint8Arra
   }
 }
 
-async function revalidateSealedPlan(
-  plan: ManagerClaimRewardsPlan,
-): Promise<ManagerClaimRewardsPlan> {
-  try {
-    if (
-      plan.kind !== "manager-claim-rewards" ||
-      plan.material.adapter.id !== MANAGER_CLAIM_REWARDS_ADAPTER_ID ||
-      plan.material.adapter.revision !== MANAGER_CLAIM_REWARDS_ADAPTER_REVISION
-    ) {
-      throw new Error("adapter mismatch");
-    }
-    const [sbtcTokenContract, assetName, unexpectedAssetPart] =
-      plan.material.expectedEffect.asset.split("::");
-    if (!sbtcTokenContract || assetName !== "sbtc-token" || unexpectedAssetPart !== undefined) {
-      throw new Error("asset mismatch");
-    }
-    const rebuilt = await planManagerClaimRewards({
-      schemaVersion: plan.material.schemaVersion,
-      adapterRevision: plan.material.adapter.revision,
-      network: plan.material.network,
-      managerContract: plan.material.call.contract,
-      pox5Contract: plan.material.expectedEffect.sender,
-      sbtcTokenContract,
-      rewardCycle: BigInt(plan.material.call.rewardCycle),
-      expectedSbtcOutflow: BigInt(plan.material.expectedEffect.amount),
-      chainAnchor: {
-        ...plan.material.chainAnchor,
-        rewardCycle: BigInt(plan.material.chainAnchor.rewardCycle),
-      },
-      attestationDigest: plan.material.attestationDigest,
-      managerSourceFingerprint: plan.material.managerSourceFingerprint,
-      rewardObservation: {
-        calculationCheckpoint: plan.material.rewardObservation.calculationCheckpoint,
-        lastRewardComputeBurnHeight: plan.material.rewardObservation.lastRewardComputeBurnHeight,
-        rewardsPerToken: BigInt(plan.material.rewardObservation.rewardsPerToken),
-      },
-      stxEarnedSats: BigInt(plan.material.stxEarnedSats),
-      bondBuckets: plan.material.bondBuckets.map((bucket) => ({
-        bondIndex: BigInt(bucket.bondIndex),
-        managerSharesSats: BigInt(bucket.managerSharesSats),
-        earnedSats: BigInt(bucket.earnedSats),
-        feeSnapshot: {
-          state: bucket.feeSnapshot.state,
-          effectiveFeeBips: BigInt(bucket.feeSnapshot.effectiveFeeBips),
-        },
-      })),
-      feeSnapshot: {
-        state: plan.material.feeSnapshot.state,
-        effectiveFeeBips: BigInt(plan.material.feeSnapshot.effectiveFeeBips),
-      },
-      sender: plan.material.sender,
-      nonce: BigInt(plan.material.transaction.nonce),
-      fee: BigInt(plan.material.transaction.fee),
-    });
-    if (!isDeepStrictEqual(plan, rebuilt)) throw new Error("sealed plan mismatch");
-    return rebuilt;
-  } catch {
-    throw signerError(
-      "sealed-plan-invalid",
-      "Manager claim plan failed sealed adapter and vector revalidation",
-    );
-  }
-}
-
 /**
- * Isolated signer for the single reviewed reference-manager `claim-rewards` vector.
+ * Isolated signer for sealed gas-wallet plans: reward operations (plan S3/S4) and sweeps (S2b).
  *
  * It has no method for arbitrary bytes or arbitrary transactions. The private key is held only in
  * a private byte array and can be zeroed with {@link destroy}.
@@ -408,43 +295,6 @@ export class GasPayerSigner {
       );
     }
     return new GasPayerSigner(privateKey, principal, publicKey, options.network);
-  }
-
-  async signManagerClaimRewardsPlan(
-    plan: ManagerClaimRewardsPlan,
-  ): Promise<SignedManagerClaimRewardsTransaction> {
-    if (this.#destroyed) {
-      throw signerError("signer-destroyed", "Gas-payer signer has been destroyed");
-    }
-    const validated = await revalidateSealedPlan(plan);
-    if (
-      validated.material.network.kind !== this.network ||
-      validated.material.sender.principal !== this.principal ||
-      validated.material.sender.publicKey !== this.publicKey
-    ) {
-      throw signerError(
-        "plan-signer-mismatch",
-        "Manager claim plan does not belong to the configured gas payer",
-      );
-    }
-
-    try {
-      const transaction = deserializeTransaction(validated.unsignedTransactionHex);
-      const transactionSigner = new TransactionSigner(transaction);
-      transactionSigner.signOrigin(this.#privateKey);
-      const signedBytes = transaction.serializeBytes();
-      return new SignedManagerClaimRewardsTransaction(
-        signedTransactionCapability,
-        signedBytes,
-        validated.intentHash,
-        validated.unsignedTransactionSha256,
-        `0x${transaction.txid()}`,
-        validated.material.transaction.nonce,
-        validated.material.transaction.fee,
-      );
-    } catch {
-      throw signerError("signing-failed", "Manager claim transaction could not be signed");
-    }
   }
 
   /**

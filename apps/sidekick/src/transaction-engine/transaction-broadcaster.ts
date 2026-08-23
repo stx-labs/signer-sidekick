@@ -1,12 +1,10 @@
 import { deserializeTransaction, txidFromBytes } from "@stacks/transactions";
 import type {
   SignedGasWalletSweepTransaction,
-  SignedManagerClaimRewardsTransaction,
   SignedRewardOperationTransaction,
 } from "./gas-payer-signer.js";
 
 export type BroadcastableSignedTransaction =
-  | SignedManagerClaimRewardsTransaction
   | SignedGasWalletSweepTransaction
   | SignedRewardOperationTransaction;
 
@@ -154,11 +152,7 @@ function validateSignedAttempt(
   attempt: BroadcastableSignedTransaction,
 ): { bytes: Uint8Array; txid: `0x${string}` } | null {
   try {
-    if (
-      attempt.kind !== "signed-manager-claim-rewards" &&
-      attempt.kind !== "signed-gas-wallet-sweep" &&
-      attempt.kind !== "signed-reward-operation"
-    ) {
+    if (attempt.kind !== "signed-gas-wallet-sweep" && attempt.kind !== "signed-reward-operation") {
       return null;
     }
     const txid = canonicalTxid(attempt.precomputedTxid);

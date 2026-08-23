@@ -383,43 +383,6 @@ export const operationReadinessSchema = z.union([
 ]);
 export type OperationReadiness = z.infer<typeof operationReadinessSchema>;
 
-export const engineApprovalRequestSchema = z
-  .object({
-    decision: z.literal("approve"),
-    intentSha256: sha256Schema,
-    policySha256: sha256Schema,
-    expiresAt: instantSchema,
-  })
-  .strict();
-export type EngineApprovalRequest = z.infer<typeof engineApprovalRequestSchema>;
-
-export const engineApprovalResponseSchema = z
-  .object({
-    approval: engineApprovalSchema,
-    job: engineJobDetailSchema,
-    created: z.boolean(),
-  })
-  .strict();
-export type EngineApprovalResponse = z.infer<typeof engineApprovalResponseSchema>;
-
-export const engineInvalidateApprovalRequestSchema = z
-  .object({
-    decision: z.literal("invalidate"),
-    reason: z.string().min(1).max(1_000),
-  })
-  .strict();
-export type EngineInvalidateApprovalRequest = z.infer<typeof engineInvalidateApprovalRequestSchema>;
-
-export const engineInvalidateApprovalResponseSchema = z
-  .object({
-    approval: engineApprovalSchema,
-    job: engineJobDetailSchema,
-  })
-  .strict();
-export type EngineInvalidateApprovalResponse = z.infer<
-  typeof engineInvalidateApprovalResponseSchema
->;
-
 export const engineForceObserveRequestSchema = z
   .object({
     decision: z.literal("force-observe"),

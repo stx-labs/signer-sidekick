@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  engineApprovalRequestSchema,
-  engineApprovalResponseSchema,
   engineDisableAdapterRequestSchema,
   engineForceObserveRequestSchema,
-  engineInvalidateApprovalRequestSchema,
   engineJobDetailSchema,
   engineJobPageSchema,
   engineStatusSchema,
@@ -130,7 +127,7 @@ const status = {
 };
 
 describe("transaction engine v1 API contracts", () => {
-  it("accepts the strict status, paginated job, detail, and approval response views", () => {
+  it("accepts the strict status, paginated job, and detail views", () => {
     expect(engineStatusSchema.parse(status)).toEqual(status);
     expect(
       engineJobPageSchema.parse({
@@ -156,13 +153,9 @@ describe("transaction engine v1 API contracts", () => {
       }).items,
     ).toHaveLength(1);
     expect(engineJobDetailSchema.parse(job).review).toEqual(review);
-    expect(
-      engineApprovalResponseSchema.parse({
-        approval,
-        job: { ...job, approval, state: "nonce_reserved" },
-        created: true,
-      }).approval.actor,
-    ).toBe("operator-session");
+    expect(engineJobDetailSchema.parse({ ...job, approval }).approval?.actor).toBe(
+      "operator-session",
+    );
     expect(
       operationReadinessSchema.parse({
         schemaVersion: 1,
@@ -219,33 +212,7 @@ describe("transaction engine v1 API contracts", () => {
     ).toBe(false);
   });
 
-  it("accepts only the exact approval decision, hashes, and expiry", () => {
-    const request = {
-      decision: "approve",
-      intentSha256: hashA,
-      policySha256: hashB,
-      expiresAt,
-    };
-    expect(engineApprovalRequestSchema.parse(request)).toEqual(request);
-    expect(
-      engineApprovalRequestSchema.safeParse({ ...request, transaction: { function: "anything" } })
-        .success,
-    ).toBe(false);
-    expect(engineApprovalRequestSchema.safeParse({ ...request, intentSha256: hashC }).success).toBe(
-      true,
-    );
-    expect(
-      engineApprovalRequestSchema.safeParse({ ...request, decision: "broadcast" }).success,
-    ).toBe(false);
-  });
-
-  it("keeps invalidation and emergency controls narrow and strict", () => {
-    expect(
-      engineInvalidateApprovalRequestSchema.parse({
-        decision: "invalidate",
-        reason: "Operator withdrew approval",
-      }).decision,
-    ).toBe("invalidate");
+  it("keeps emergency controls narrow and strict", () => {
     expect(
       engineForceObserveRequestSchema.safeParse({
         decision: "force-observe",

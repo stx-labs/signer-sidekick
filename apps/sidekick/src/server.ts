@@ -13,22 +13,16 @@ import {
   type DeploymentRequirements,
   dashboardSnapshotSchema,
   deploymentRequirementsSchema,
-  type EngineApprovalRequest,
-  type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
   type EngineDisableAdapterResponse,
   type EngineForceObserveRequest,
   type EngineForceObserveResponse,
-  type EngineInvalidateApprovalRequest,
-  type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
   type EngineJobPage,
   type EngineJobState,
   type EngineStatus,
-  engineApprovalRequestSchema,
   engineDisableAdapterRequestSchema,
   engineForceObserveRequestSchema,
-  engineInvalidateApprovalRequestSchema,
   type GasWalletStatus,
   type GasWalletSweep,
   gasWalletSweepRequestSchema,
@@ -359,16 +353,6 @@ export interface TransactionEngineApiService {
     states?: readonly EngineJobState[];
   }): Promise<EngineJobPage>;
   getJob(jobId: string): Promise<EngineJobDetail | null>;
-  approve(
-    jobId: string,
-    request: EngineApprovalRequest,
-    actor: string,
-  ): Promise<EngineApprovalResponse>;
-  invalidateApproval(
-    jobId: string,
-    request: EngineInvalidateApprovalRequest,
-    actor: string,
-  ): Promise<EngineInvalidateApprovalResponse>;
   forceObserve(
     request: EngineForceObserveRequest,
     actor: string,
@@ -573,9 +557,6 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
   invalid_engine_pagination: "The transaction job page is invalid. Refresh Operations.",
   invalid_engine_job_id: "The transaction job ID is invalid. Refresh Operations and retry.",
   engine_job_not_found: "This transaction job no longer exists. Refresh Operations.",
-  invalid_engine_approval: "The approval request is invalid. Review the job and retry.",
-  invalid_engine_approval_invalidation:
-    "The approval reset request is invalid. Refresh the job and retry.",
   invalid_force_observe_request:
     "The emergency Observe request is invalid. Confirm the decision and reason, then retry.",
   invalid_engine_adapter_id: "The transaction adapter ID is invalid. Refresh Operations.",
@@ -2179,22 +2160,6 @@ export function createServer(options: ServerOptions = {}) {
     const job = await engine.getJob(params.data.jobId);
     if (!job) throw new OperatorApiError(404, "engine_job_not_found");
     return job;
-  });
-  server.post("/api/v1/engine/jobs/:jobId/approval", async (request) => {
-    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
-    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params);
-    if (!params.success) throw new OperatorApiError(400, "invalid_engine_job_id");
-    const body = engineApprovalRequestSchema.safeParse(request.body);
-    if (!body.success) throw new OperatorApiError(400, "invalid_engine_approval");
-    return await engine.approve(params.data.jobId, body.data, engineActor());
-  });
-  server.post("/api/v1/engine/jobs/:jobId/approval/invalidate", async (request) => {
-    const engine = requireFeature(options.engine, "transaction_engine_unavailable");
-    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params);
-    if (!params.success) throw new OperatorApiError(400, "invalid_engine_job_id");
-    const body = engineInvalidateApprovalRequestSchema.safeParse(request.body);
-    if (!body.success) throw new OperatorApiError(400, "invalid_engine_approval_invalidation");
-    return await engine.invalidateApproval(params.data.jobId, body.data, engineActor());
   });
   server.post("/api/v1/engine/force-observe", async (request) => {
     const engine = requireFeature(options.engine, "transaction_engine_unavailable");

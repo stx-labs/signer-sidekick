@@ -1,7 +1,6 @@
 import { ArrowClockwise, ArrowLeft, ShieldCheck, WarningCircle } from "@phosphor-icons/react";
 import type {
   DashboardSnapshot,
-  EngineApprovalRequest,
   EngineJobDetail,
   EngineStatus,
   OperatorOperationCode,
@@ -16,7 +15,7 @@ import {
 } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
-import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
+import { operatorErrorDetail } from "../../shared/operator-error.js";
 import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
 import {
   ManagerActionWorkspace,
@@ -24,12 +23,7 @@ import {
   managerCapabilityIdForAction,
 } from "../manager/manager-page.js";
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
-import {
-  approveEngineJob,
-  invalidateEngineApproval,
-  loadEngineJob,
-  loadEngineStatus,
-} from "../operations/engine-api.js";
+import { loadEngineJob, loadEngineStatus } from "../operations/engine-api.js";
 import { EngineJobReview } from "../operations/engine-job-review.js";
 import { EngineWalletClaim } from "../operations/engine-wallet-claim.js";
 import { rewardManagerCapabilityId } from "../rewards/reward-action-capabilities.js";
@@ -192,9 +186,9 @@ function EngineClaimOperation({
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [loading, setLoading] = useState(jobId !== null);
   const [error, setError] = useState<string | null>(null);
-  const [action, setAction] = useState<"approve" | "invalidate" | null>(null);
+  const [action, _setAction] = useState<"approve" | "invalidate" | null>(null);
   const [revision, setRevision] = useState(0);
-  const actionPending = useRef(false);
+  const _actionPending = useRef(false);
   const actor = actorPrincipal.trim().toUpperCase();
   const actorValid = standardManagerActionPrincipal(actor, data.network);
   const availability = managerActionAvailability(
@@ -234,62 +228,6 @@ function EngineClaimOperation({
     void revision;
     void load();
   }, [load, revision]);
-
-  const approve = async () => {
-    if (!job?.approvalWindow.expiresAt || action !== null || actionPending.current) return;
-    const request: EngineApprovalRequest = {
-      decision: "approve",
-      intentSha256: job.review.hashes.intentSha256,
-      policySha256: job.review.hashes.policySha256,
-      expiresAt: job.approvalWindow.expiresAt,
-    };
-    actionPending.current = true;
-    setAction("approve");
-    setError(null);
-    try {
-      setJob((await approveEngineJob(token, job.jobId, request)).job);
-    } catch (cause) {
-      setError(
-        operatorActionError(
-          cause,
-          "Could not confirm transaction approval",
-          "Refresh the exact job before approving again",
-        ),
-      );
-    } finally {
-      actionPending.current = false;
-      setAction(null);
-    }
-  };
-
-  const invalidate = async () => {
-    if (!job?.approval || action !== null || actionPending.current) return;
-    if (!window.confirm("Invalidate this exact approval? It cannot be restored.")) return;
-    actionPending.current = true;
-    setAction("invalidate");
-    setError(null);
-    try {
-      setJob(
-        (
-          await invalidateEngineApproval(token, job.jobId, {
-            decision: "invalidate",
-            reason: "Operator invalidated approval from the action workspace",
-          })
-        ).job,
-      );
-    } catch (cause) {
-      setError(
-        operatorActionError(
-          cause,
-          "Could not confirm approval invalidation",
-          "Refresh the exact job before trying again",
-        ),
-      );
-    } finally {
-      actionPending.current = false;
-      setAction(null);
-    }
-  };
 
   if (!jobId) {
     const managerClaimableSats = data.rewards?.global.signerEarnedAcrossBucketsSats ?? null;
@@ -369,13 +307,7 @@ function EngineClaimOperation({
   return (
     <section className="card-standout action-engine-review">
       <ErrorCallout error={error} />
-      <EngineJobReview
-        action={action}
-        actionsEnabled={!loading && action === null}
-        job={job}
-        onApprove={() => void approve()}
-        onInvalidate={() => void invalidate()}
-      />
+      <EngineJobReview actionsEnabled={!loading && action === null} job={job} />
       <EngineWalletClaim
         chainId={chainId}
         job={job}

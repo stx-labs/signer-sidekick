@@ -2427,8 +2427,6 @@ describe("local API", () => {
         .fn()
         .mockResolvedValue({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
       getJob: vi.fn().mockResolvedValue({ schemaVersion: 1, jobId }),
-      approve: vi.fn().mockResolvedValue({ created: true }),
-      invalidateApproval: vi.fn().mockResolvedValue({}),
       forceObserve: vi.fn().mockResolvedValue({}),
       disableAdapter: vi.fn().mockResolvedValue({}),
     } as unknown as TransactionEngineApiService;
@@ -2450,32 +2448,6 @@ describe("local API", () => {
 
     await server.inject({ method: "GET", url: `/api/v1/engine/jobs/${jobId}`, headers });
     expect(engine.getJob).toHaveBeenCalledWith(jobId);
-
-    const approval = {
-      decision: "approve",
-      intentSha256: hash,
-      policySha256: hash,
-      expiresAt: "2026-07-17T19:00:00.000Z",
-    };
-    await server.inject({
-      method: "POST",
-      url: `/api/v1/engine/jobs/${jobId}/approval`,
-      headers,
-      payload: approval,
-    });
-    expect(engine.approve).toHaveBeenCalledWith(jobId, approval, "local-operator");
-
-    await server.inject({
-      method: "POST",
-      url: `/api/v1/engine/jobs/${jobId}/approval/invalidate`,
-      headers,
-      payload: { decision: "invalidate", reason: "Facts changed" },
-    });
-    expect(engine.invalidateApproval).toHaveBeenCalledWith(
-      jobId,
-      { decision: "invalidate", reason: "Facts changed" },
-      "local-operator",
-    );
 
     await server.inject({
       method: "POST",
@@ -2500,17 +2472,17 @@ describe("local API", () => {
       "local-operator",
     );
 
+    // Single-job approvals are retired (ADR 0010): the route no longer exists.
     expect(
       (
         await server.inject({
           method: "POST",
           url: `/api/v1/engine/jobs/${jobId}/approval`,
           headers,
-          payload: { decision: "broadcast", transaction: "arbitrary" },
+          payload: { decision: "approve", intentSha256: hash, policySha256: hash },
         })
       ).statusCode,
-    ).toBe(400);
-    expect(engine.approve).toHaveBeenCalledTimes(1);
+    ).toBe(404);
   });
 
   it("reports an unavailable transaction engine without weakening the operator API", async () => {

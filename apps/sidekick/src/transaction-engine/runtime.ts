@@ -1,8 +1,6 @@
-import type { VerifiedCompatibilityAttestation } from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
 import {
   MANAGER_CLAIM_REWARDS_ADAPTER_ID,
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-  type ManagerClaimRewardsPlan,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import type { RewardOperationPlan } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { z } from "zod";
@@ -28,17 +26,7 @@ import {
 import { readStxRewardStatus, type StxRewardStatus } from "../reward-status.js";
 import { createChainSourceId, type SidekickStore } from "../storage/store.js";
 import { copyValidDate, parseCanonicalInstant } from "../time.js";
-import type { TransactionAdmissionInput } from "./admission.js";
 import { RepositoryTransactionEngineApiService } from "./api-service.js";
-import {
-  CompatibilityAttestationController,
-  type CompatibilityAttestationScope,
-} from "./attestation-controller.js";
-import { loadCompatibilityAttestationTrustKeys } from "./attestation-trust-store.js";
-import {
-  proveCanonicalAnchorRelationship,
-  proveCanonicalInclusionRelationship,
-} from "./canonical-anchor-proof.js";
 import {
   GasPayerSigner,
   type SignedGasWalletSweepTransaction,
@@ -46,34 +34,21 @@ import {
 } from "./gas-payer-signer.js";
 import { LiveTransactionReader } from "./live-transaction-reader.js";
 import {
-  ManagerClaimAssistCoordinator,
-  type ManagerClaimAssistExecutionResult,
-  type ManagerClaimAssistRecoveryResult,
-} from "./manager-claim-assist-coordinator.js";
-import {
-  type ManagerClaimApprovalRevalidationInput,
-  type ManagerClaimApprovalRevalidationOutcome,
   type ManagerClaimObservationInput,
   type ManagerClaimObservationOutcome,
   ManagerClaimObservationService,
 } from "./manager-claim-observation-service.js";
-import {
-  managerClaimOperationScopeKey,
-  parseManagerClaimIntentRecord,
-  parseManagerClaimPolicyRecord,
-} from "./manager-claim-observer.js";
+import { managerClaimOperationScopeKey } from "./manager-claim-observer.js";
 import type { ManagerClaimProposal } from "./manager-claim-proposal.js";
 import {
   type ManagerClaimWalletAuthoritativeObservation,
   ManagerClaimWalletIntentError,
 } from "./manager-claim-wallet-intent.js";
-import type { StoredTransactionJob } from "./repository.js";
 import {
   loadTransactionEngineRuntimeConfig,
   type TransactionEngineMode,
   type TransactionEngineRuntimeConfig,
 } from "./runtime-config.js";
-import { NoRetryTransactionBroadcaster } from "./transaction-broadcaster.js";
 
 export interface TransactionEngineRuntimeContext {
   config: SidekickConfig;
@@ -90,21 +65,6 @@ export interface TransactionEngineObservationHookInput {
 
 export interface RuntimeObservationService {
   observe(input: ManagerClaimObservationInput): Promise<ManagerClaimObservationOutcome>;
-  revalidateApprovedJob(
-    input: ManagerClaimApprovalRevalidationInput,
-  ): Promise<ManagerClaimApprovalRevalidationOutcome>;
-}
-
-export interface RuntimeAssistCoordinator {
-  execute(input: {
-    jobId: string;
-    admission: TransactionAdmissionInput;
-  }): Promise<ManagerClaimAssistExecutionResult>;
-  recover(input: {
-    jobId: string;
-    liveAnchor: ChainAnchor;
-    observedAt: string;
-  }): Promise<ManagerClaimAssistRecoveryResult>;
 }
 
 export interface SidekickTransactionEngineRuntimeComposition {
@@ -113,16 +73,7 @@ export interface SidekickTransactionEngineRuntimeComposition {
   runtimeContext: () => TransactionEngineRuntimeContext;
   /** Mutable holder so the gas wallet can be activated on a running engine (plan S2). */
   signerHolder: GasPayerSignerHolder;
-  /**
-   * Test-only: keeps the retired attestation-gated single-job path (ADR 0009) executable for the
-   * engine tests that still cover it. Production composition never sets it; recipe runs (plan S3)
-   * replace the path.
-   */
-  legacyAssist?: boolean;
-  loadAttestation: (now: Date) => Promise<VerifiedCompatibilityAttestation | null>;
   createObservationService: (context: TransactionEngineRuntimeContext) => RuntimeObservationService;
-  createCoordinator: (context: TransactionEngineRuntimeContext) => RuntimeAssistCoordinator;
-  buildAdmission: typeof buildAdmission;
   readFreshObservation: (
     context: TransactionEngineRuntimeContext,
   ) => Promise<TransactionEngineObservationHookInput>;
@@ -141,8 +92,8 @@ export interface CreateTransactionEngineRuntimeOptions {
   onError?: (error: unknown) => void;
 }
 
-const maximumRecoveryJobsPerPass = 8;
-const recoverableJobStates = [
+const _maximumRecoveryJobsPerPass = 8;
+const _recoverableJobStates = [
   "nonce_reserved",
   "broadcast",
   "ambiguous",
@@ -191,82 +142,6 @@ function publicGasPayer(holder: GasPayerSignerHolder): GasPayerIdentity | null {
   return holder.identity ? { ...holder.identity } : null;
 }
 
-function configuredAttestationScope(config: SidekickConfig): CompatibilityAttestationScope {
-  const networkId =
-    config.expectedNetworkId ??
-    (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x8000_0005 : null);
-  if (networkId === null) {
-    throw new Error(`Compatibility attestations require SIDEKICK_NETWORK_ID for ${config.network}`);
-  }
-  return { network: config.network, networkId };
-}
-
-function buildAdmission(
-  job: StoredTransactionJob,
-  approval: NonNullable<ReturnType<SidekickStore["transactionEngine"]["getActiveApproval"]>>,
-  signer: GasPayerSigner,
-  attestation: VerifiedCompatibilityAttestation,
-  liveAnchor: ChainAnchor,
-  now: Date,
-  store: SidekickStore,
-  revalidation: Extract<ManagerClaimApprovalRevalidationOutcome, { status: "valid" }>["admission"],
-): TransactionAdmissionInput {
-  const intent = parseManagerClaimIntentRecord(job.intent);
-  const policy = parseManagerClaimPolicyRecord(job.policy);
-  const plan = intent.sealedPlan;
-  const attempts = store.transactionEngine.listAttempts(job.jobId);
-  const reservation = store.transactionEngine.getNonceReservationForJob(job.jobId);
-  const attestationCurrent =
-    attestation.payloadSha256 === job.attestation.payloadSha256 &&
-    Date.parse(attestation.document.payload.expiresAt) > now.getTime();
-  return {
-    mode: "assist",
-    intentHash: job.intentSha256,
-    policyHash: job.policySha256,
-    attestation: {
-      current: attestationCurrent,
-      payloadSha256: attestation.payloadSha256,
-    },
-    expectedAttestationSha256: job.attestation.payloadSha256,
-    liveFingerprintMatches: revalidation.liveFingerprintMatches,
-    adapter: {
-      id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
-      revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-    },
-    expectedAdapter: { id: job.adapterId, revision: job.adapterRevision },
-    plannedAnchor: job.chainAnchor,
-    liveAnchor,
-    anchorCanonical: revalidation.anchorCanonical,
-    anchorDescendant: revalidation.anchorDescendant,
-    prerequisitesComplete: revalidation.prerequisitesComplete,
-    fee: {
-      stateMatches: revalidation.feeStateMatches,
-      transactionFeeUstx: BigInt(plan.material.transaction.fee),
-      maximumFeeUstx: BigInt(policy.maximumFeeUstx),
-    },
-    approval: {
-      intentHash: approval.intentSha256,
-      policyHash: approval.policySha256,
-      expiresAt: approval.expiresAt,
-      invalidatedAt: approval.invalidatedAt,
-    },
-    signer: {
-      available: true,
-      principal: signer.principal,
-      expectedPrincipal: plan.material.sender.principal,
-    },
-    nonce: {
-      owned: reservation === null || reservation.jobId === job.jobId,
-      unresolvedAttempt: attempts.some(
-        ({ state }) => !["confirmed", "rejected", "reconciled"].includes(state),
-      ),
-      foreignActivity: reservation?.foreignActivity ?? false,
-    },
-    authoritativeBlockers: [],
-    now,
-  };
-}
-
 /**
  * Owns the small amount of mutable orchestration around the durable transaction engine.
  * Observations, approval execution, and recovery are serialized so compare-and-swap transitions
@@ -290,7 +165,6 @@ export class SidekickTransactionEngineRuntime {
   #operationTail: Promise<void> = Promise.resolve();
   #maintenanceTimer: NodeJS.Timeout | null = null;
   #maintenanceWork: Promise<void> | null = null;
-  #recoveryCursor: string | null = null;
   #closed = false;
 
   constructor(composition: SidekickTransactionEngineRuntimeComposition) {
@@ -299,12 +173,9 @@ export class SidekickTransactionEngineRuntime {
     this.api = new RepositoryTransactionEngineApiService({
       repository: composition.store.transactionEngine,
       requestedMode: composition.runtimeConfig.requestedMode,
-      legacyApprovals: composition.legacyAssist === true,
-      maximumApprovalMinutes: composition.runtimeConfig.maximumApprovalMinutes,
       finalityDepth: composition.runtimeConfig.finalityDepth,
       now: () => exactNow(composition.now),
       adapterAvailability: () => this.#adapterAvailability(),
-      onApproved: async (jobId) => await this.refreshApprovedJob(jobId),
     });
   }
 
@@ -432,242 +303,29 @@ export class SidekickTransactionEngineRuntime {
       throw new Error("Transaction engine observation source changed before evaluation");
     }
 
-    const recoveryResults = await this.#recoverActiveAt(
-      context,
-      input.setup.chainAnchor,
-      input.observedAt,
-    );
-    const samePassConfirmedJobIds: string[] = [];
-    for (const result of recoveryResults) {
-      if (result.status !== "confirmed") continue;
-      const attempt = this.#composition.store.transactionEngine.getAttempt(result.attemptId);
-      const inclusion = attempt?.inclusion;
-      if (
-        inclusion === null ||
-        inclusion === undefined ||
-        !inclusion.canonical ||
-        inclusion.executionStatus !== "success" ||
-        inclusion.indexBlockHash !== result.indexBlockHash
-      ) {
-        continue;
-      }
-      const proof = await proveCanonicalInclusionRelationship(
-        context.api,
-        inclusion,
-        input.setup.chainAnchor,
-      );
-      if (proof.status === "proven") samePassConfirmedJobIds.push(result.jobId);
-    }
     const observedAt = parseCanonicalInstant(input.observedAt);
     if (!observedAt) {
       throw new Error("Transaction engine observation time is invalid");
     }
-    const attestation = await this.#composition.loadAttestation(observedAt);
+    void observedAt;
     const service = this.#composition.createObservationService(context);
+    // Observe-only planning: the attestation-gated Assist execution path is retired (ADR 0010);
+    // operator-run signing happens through sealed reward runs, never through engine jobs.
     const outcome = await service.observe({
       setup: input.setup,
       rewards: input.rewards,
       sourceId: input.sourceId,
-      requestedMode: this.#legacyAssistMode(),
+      requestedMode: "observe",
       gasPayer: publicGasPayer(this.#composition.signerHolder),
       maximumFeeUstx: this.#composition.runtimeConfig.maximumFeeUstx,
-      attestation,
+      attestation: null,
       observedAt: input.observedAt,
-      samePassConfirmedJobIds,
+      samePassConfirmedJobIds: [],
       ...(maintenanceOnly ? { reconcileOnly: true } : {}),
     });
     this.#latest = outcome;
     this.#runtimeBlockReason = null;
-    if (outcome.status === "reconciled") {
-      await this.#composition.createCoordinator(context).recover({
-        jobId: outcome.result.job.jobId,
-        liveAnchor: input.setup.chainAnchor,
-        observedAt: input.observedAt,
-      });
-    }
     return outcome;
-  }
-
-  async refreshApprovedJob(jobId: string): Promise<void> {
-    try {
-      await this.#exclusive(async () => {
-        const context = this.#composition.runtimeContext();
-        const lookupNow = exactNow(this.#composition.now);
-        const signer = this.#composition.signerHolder.current;
-        if (signer === null || this.#legacyAssistMode() !== "assist") return;
-        const job = this.#composition.store.transactionEngine.getLogicalJob(jobId);
-        const approval = this.#composition.store.transactionEngine.getActiveApproval(
-          jobId,
-          lookupNow.toISOString(),
-        );
-        if (job === null || approval === null) return;
-
-        // Assemble a new fenced setup/reward snapshot. This path never calls the normal planner,
-        // so a harmless descendant cannot create or supersede the approved immutable job.
-        const fresh = await this.#composition.readFreshObservation(context);
-        const expectedSourceId = createChainSourceId(context.config.network, context.config.apiUrl);
-        if (fresh.sourceId !== expectedSourceId) {
-          throw new Error("Transaction engine approval source changed before revalidation");
-        }
-        const observedAt = parseCanonicalInstant(fresh.observedAt);
-        if (!observedAt) {
-          throw new Error("Transaction engine approval observation time is invalid");
-        }
-        const attestation = await this.#composition.loadAttestation(observedAt);
-        const anchorProof = await proveCanonicalAnchorRelationship(
-          context.api,
-          job.chainAnchor,
-          fresh.setup.chainAnchor,
-        );
-        const service = this.#composition.createObservationService(context);
-        const revalidation = await service.revalidateApprovedJob({
-          ...fresh,
-          job,
-          approval,
-          anchorProof,
-          requestedMode: this.#legacyAssistMode(),
-          gasPayer: publicGasPayer(this.#composition.signerHolder),
-          maximumFeeUstx: this.#composition.runtimeConfig.maximumFeeUstx,
-          attestation,
-          samePassConfirmedJobIds: [],
-        });
-        if (revalidation.status === "blocked") {
-          this.#runtimeBlockReason = `Assist unavailable: ${revalidation.message} (${revalidation.code})`;
-          return;
-        }
-        if (revalidation.status === "completed") {
-          this.#latest = revalidation.outcome;
-          this.#runtimeBlockReason = null;
-          if (revalidation.outcome.status === "reconciled") {
-            await this.#composition.createCoordinator(context).recover({
-              jobId,
-              liveAnchor: fresh.setup.chainAnchor,
-              observedAt: fresh.observedAt,
-            });
-          }
-          return;
-        }
-        // Re-prove ancestry after every pinned semantic/account read. This closes the approval
-        // path's reorg window before the final clock/expiry check and admission construction.
-        const executionAnchorProof = await proveCanonicalAnchorRelationship(
-          context.api,
-          job.chainAnchor,
-          revalidation.liveAnchor,
-        );
-        if (executionAnchorProof.status !== "proven") {
-          if (executionAnchorProof.status === "invalid") {
-            this.#composition.store.transactionEngine.transitionLogicalJob({
-              jobId: job.jobId,
-              expectedState: job.state,
-              expectedStateVersion: job.stateVersion,
-              nextState: "blocked",
-              blockReason: "approval-revalidation:planned-anchor-noncanonical",
-              changedAt: exactNow(this.#composition.now).toISOString(),
-            });
-          }
-          this.#runtimeBlockReason =
-            executionAnchorProof.status === "invalid"
-              ? "Assist unavailable: the approved chain anchor is no longer canonical. Sync chain data to prepare a new current job, then review and approve it"
-              : `Assist unavailable: ${executionAnchorProof.reason}`;
-          return;
-        }
-        const executionNow = exactNow(this.#composition.now);
-        if (
-          executionNow.getTime() >= Date.parse(approval.expiresAt) ||
-          executionNow.getTime() >= Date.parse(revalidation.attestation.document.payload.expiresAt)
-        ) {
-          this.#composition.store.transactionEngine.transitionLogicalJob({
-            jobId: job.jobId,
-            expectedState: job.state,
-            expectedStateVersion: job.stateVersion,
-            nextState: "blocked",
-            blockReason: "approval-revalidation:attestation-expired",
-            changedAt: executionNow.toISOString(),
-          });
-          this.#runtimeBlockReason =
-            "Assist unavailable: approval or compatibility attestation expired. Sync chain data to prepare a new current job, then review and approve it";
-          return;
-        }
-        const admission = this.#composition.buildAdmission(
-          job,
-          approval,
-          signer,
-          revalidation.attestation,
-          revalidation.liveAnchor,
-          executionNow,
-          this.#composition.store,
-          revalidation.admission,
-        );
-        const result = await this.#composition.createCoordinator(context).execute({
-          jobId,
-          admission,
-        });
-        this.#runtimeBlockReason =
-          result.status === "blocked"
-            ? `Assist unavailable: ${result.message} (${result.code})`
-            : null;
-      });
-    } catch (error) {
-      // The approval is already durable. Keep it visible for inspection/retry and fail closed
-      // instead of turning a post-persistence execution problem into a misleading API 500.
-      this.#runtimeBlockReason = runtimeFailureReason(error);
-      this.#composition.onError(error);
-    }
-  }
-
-  async #recoverActiveAt(
-    context: TransactionEngineRuntimeContext,
-    liveAnchor: ChainAnchor,
-    observedAt: string,
-  ): Promise<ManagerClaimAssistRecoveryResult[]> {
-    let page: ReturnType<SidekickStore["transactionEngine"]["listLogicalJobs"]>;
-    try {
-      page = this.#composition.store.transactionEngine.listLogicalJobs({
-        limit: maximumRecoveryJobsPerPass,
-        states: recoverableJobStates,
-        ...(this.#recoveryCursor === null ? {} : { cursor: this.#recoveryCursor }),
-      });
-    } catch {
-      // A changed state filter can invalidate a durable keyset cursor. Restart at the newest page;
-      // the next completed pass will continue paging, so no job can starve indefinitely.
-      this.#recoveryCursor = null;
-      page = this.#composition.store.transactionEngine.listLogicalJobs({
-        limit: maximumRecoveryJobsPerPass,
-        states: recoverableJobStates,
-      });
-    }
-    this.#recoveryCursor = page.nextCursor;
-    if (page.items.length === 0) return [];
-    const coordinator = this.#composition.createCoordinator(context);
-    const results: ManagerClaimAssistRecoveryResult[] = [];
-    for (const job of page.items.slice(0, maximumRecoveryJobsPerPass)) {
-      try {
-        results.push(
-          await coordinator.recover({
-            jobId: job.jobId,
-            liveAnchor,
-            observedAt,
-          }),
-        );
-      } catch (error) {
-        this.#runtimeBlockReason = runtimeFailureReason(error);
-        this.#composition.onError(error);
-      }
-    }
-    return results;
-  }
-
-  /** Run one bounded, read-before-transition recovery pass. It never calls a broadcast method. */
-  async recoverActive(): Promise<ManagerClaimAssistRecoveryResult[]> {
-    return await this.#exclusive(async () => {
-      const context = this.#composition.runtimeContext();
-      const anchor = await this.#composition.captureAnchor(context);
-      return await this.#recoverActiveAt(
-        context,
-        anchor,
-        exactNow(this.#composition.now).toISOString(),
-      );
-    });
   }
 
   start(intervalMs = defaultMaintenanceIntervalMs): void {
@@ -715,18 +373,6 @@ export class SidekickTransactionEngineRuntime {
     await this.#operationTail;
     this.#composition.signerHolder.current?.destroy();
     this.#composition.signerHolder.current = null;
-  }
-
-  /**
-   * The legacy attestation-gated single-job path (ADR 0009) keeps running under `operator-run`
-   * only while an attestation is configured; the observation service still speaks its internal
-   * `assist` literal. Recipe runs (plan S3) replace this path.
-   */
-  #legacyAssistMode(): "observe" | "assist" {
-    return this.#composition.legacyAssist === true &&
-      this.#composition.runtimeConfig.requestedMode === "operator-run"
-      ? "assist"
-      : "observe";
   }
 
   /** Absolute per-attempt fee cap; the gas wallet's "≈ N transactions" estimate uses it. */
@@ -871,16 +517,6 @@ function readerFor(context: TransactionEngineRuntimeContext): LiveTransactionRea
   return new LiveTransactionReader({ baseUrl: context.config.nodeRpcUrl });
 }
 
-function recoveryOnlySigner(holder: GasPayerSignerHolder) {
-  return {
-    principal: holder.identity?.principal ?? "unavailable",
-    publicKey: holder.identity?.publicKey ?? "unavailable",
-    async signManagerClaimRewardsPlan(_plan: ManagerClaimRewardsPlan): Promise<never> {
-      throw new Error("No gas wallet signer is loaded; cannot sign manager-claim plans");
-    },
-  };
-}
-
 export async function createSidekickTransactionEngineRuntime(
   options: CreateTransactionEngineRuntimeOptions,
 ): Promise<SidekickTransactionEngineRuntime> {
@@ -895,18 +531,6 @@ export async function createSidekickTransactionEngineRuntime(
     identity: runtimeConfig.gasPayer
       ? { principal: runtimeConfig.gasPayer.principal, publicKey: runtimeConfig.gasPayer.publicKey }
       : null,
-  };
-
-  const loadAttestation = async (now: Date) => {
-    if (runtimeConfig.attestation === null) return null;
-    const trustKeys = await loadCompatibilityAttestationTrustKeys(
-      runtimeConfig.attestation.trustKeysFilePath,
-    );
-    return await new CompatibilityAttestationController(
-      options.store.transactionEngine,
-      trustKeys,
-      configuredAttestationScope(initialContext.config),
-    ).acceptFile(runtimeConfig.attestation.documentFilePath, now);
   };
 
   try {
@@ -928,23 +552,11 @@ export async function createSidekickTransactionEngineRuntime(
       }
     }
 
-    const createCoordinator = (context: TransactionEngineRuntimeContext) => {
-      const reader = readerFor(context);
-      return new ManagerClaimAssistCoordinator({
-        repository: options.store.transactionEngine,
-        signer: signerHolder.current ?? recoveryOnlySigner(signerHolder),
-        reader,
-        api: context.api,
-        broadcaster: new NoRetryTransactionBroadcaster({ baseUrl: context.config.nodeRpcUrl }),
-        finalityDepth: runtimeConfig.finalityDepth,
-      });
-    };
     return new SidekickTransactionEngineRuntime({
       runtimeConfig,
       store: options.store,
       runtimeContext: options.runtimeContext,
       signerHolder,
-      loadAttestation,
       createObservationService: (context) =>
         new ManagerClaimObservationService({
           repository: options.store.transactionEngine,
@@ -954,8 +566,6 @@ export async function createSidekickTransactionEngineRuntime(
           liveReader: readerFor(context),
           finalityDepth: runtimeConfig.finalityDepth,
         }),
-      createCoordinator,
-      buildAdmission,
       readFreshObservation: async (context) => {
         const observedAt = exactNow(clock).toISOString();
         const setup = await readOperatorAnchorSnapshot({

@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,7 +14,6 @@ import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/k
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
-import { CompatibilityAttestationController } from "./attestation-controller.js";
 import {
   type CommitApprovedSignedAttemptInput,
   InFlightLogicalJobConflictError,
@@ -38,7 +37,7 @@ const time = {
 const manager = "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ.signer-manager";
 const gasPayer = "ST3PF13W7Z0RRM42A8VZRVFQ75SV1K26RXEP8YGKJ";
 const keys = generateKeyPairSync("ed25519");
-const trustKey: CompatibilityAttestationTrustKey = {
+const _trustKey: CompatibilityAttestationTrustKey = {
   keyId: "release-a",
   issuer: "stacks-labs",
   algorithm: "ed25519",
@@ -58,7 +57,7 @@ const anchor: ChainAnchor = {
 
 const openStores: SidekickStore[] = [];
 const temporaryDirectories: string[] = [];
-const attestationScope = {
+const _attestationScope = {
   network: POX5_TESTNET_COMPATIBILITY.network,
   networkId: POX5_TESTNET_COMPATIBILITY.networkId,
 } as const;
@@ -762,44 +761,6 @@ describe("transaction engine repository", () => {
       raw.prepare("UPDATE transaction_jobs SET intent_json = '{}' WHERE job_id = ?").run(job.jobId),
     ).toThrow("intent is immutable");
     raw.close();
-  });
-
-  it("implements durable attestation revision/digest CAS for the controller", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "sidekick-engine-attestation-"));
-    temporaryDirectories.push(directory);
-    const path = join(directory, "sidekick.sqlite");
-    const attestationPath = join(directory, "attestation.json");
-    await writeFile(attestationPath, JSON.stringify(signed(payload())), { mode: 0o600 });
-    const opened = await openSidekickStore(path, time.initial);
-    const controller = new CompatibilityAttestationController(
-      opened.store.transactionEngine,
-      [trustKey],
-      attestationScope,
-    );
-    const accepted = await controller.acceptFile(attestationPath, new Date(time.initial));
-    opened.store.close();
-
-    const restarted = await openSidekickStore(path, time.one);
-    openStores.push(restarted.store);
-    const cached = await new CompatibilityAttestationController(
-      restarted.store.transactionEngine,
-      [trustKey],
-      attestationScope,
-    ).verifyCached("stacks-labs", new Date(time.one));
-    expect(cached?.payloadSha256).toBe(accepted.payloadSha256);
-    await expect(
-      restarted.store.transactionEngine.accept(
-        {
-          acceptedState: {
-            ...accepted.acceptedState,
-            verifiedAt: time.two,
-          },
-          document: accepted.document,
-          acceptedAt: time.two,
-        },
-        null,
-      ),
-    ).rejects.toBeInstanceOf(TransactionEngineCasError);
   });
 
   it("persists irreversible Force Observe, invalidates approval, and blocks new authority", async () => {
