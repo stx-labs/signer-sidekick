@@ -1,5 +1,5 @@
 import { CaretLeft, CaretRight, CurrencyBtc, Info, Wallet } from "@phosphor-icons/react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { CopyIdentifierButton } from "../../copyable-identifier.js";
 import { short } from "../../shared/format.js";
 import type { RewardExecutionAvailability, Tone } from "./reward-state.js";
@@ -39,24 +39,50 @@ export function GasChip({ execution }: { execution: RewardExecutionAvailability 
 export function L1Marker({ address, principal }: { address: string | null; principal: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const wrapperRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && wrapperRef.current?.contains(target)) return;
+      setOpen(false);
+      triggerRef.current?.blur();
+    };
+    const dismissWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.blur();
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismissWithKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismissWithKeyboard);
+    };
+  }, [open]);
+
   return (
-    <span className={`rw-l1-wrap${open ? " is-open" : ""}`}>
+    <span className={`rw-l1-wrap${open ? " is-open" : ""}`} ref={wrapperRef}>
       <button
         type="button"
         className="rw-l1"
         aria-label={
           address
-            ? `Current registered Bitcoin address for ${short(principal, 4, 4)}: ${address}`
+            ? `L1 payout for ${short(principal, 4, 4)}: ${address}`
             : `L1 payout for ${short(principal, 4, 4)} over Bitcoin`
         }
         aria-expanded={open}
+        aria-haspopup="dialog"
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
       >
         <CurrencyBtc aria-hidden="true" weight="bold" />
       </button>
-      <span className="rw-pop rw-l1-pop" role="tooltip" id={id}>
-        <span className="k">Current registered address</span>
+      <span className="rw-pop rw-l1-pop" role="dialog" aria-label="L1 Payout" id={id}>
+        <span className="k">L1 Payout</span>
         {address ? (
           <>
             <span className="a">{address}</span>

@@ -2486,6 +2486,7 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   await l1Marker.click();
   const l1Popover = l1Marker.locator("xpath=following-sibling::*[contains(@class, 'rw-l1-pop')]");
   await expect(l1Popover).toBeVisible();
+  await expect(l1Popover.getByText("L1 Payout", { exact: true })).toBeVisible();
   const popoverBox = await l1Popover.boundingBox();
   const viewport = page.viewportSize();
   expect(popoverBox).not.toBeNull();
@@ -2496,6 +2497,8 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   );
   expect(popoverBox?.x ?? -1).toBeGreaterThanOrEqual(0);
   expect((popoverBox?.x ?? 0) + (popoverBox?.width ?? 0)).toBeLessThanOrEqual(viewport?.width ?? 0);
+  await page.getByRole("heading", { name: "Rewards" }).click();
+  await expect(l1Popover).toBeHidden();
   await page.getByLabel("Find a staker").fill(roster[1].stakerPrincipal);
   await expect(payments.getByText("1 of 40 payments")).toBeVisible();
   await page.getByLabel("Find a staker").fill("");
