@@ -94,7 +94,7 @@ export function managerClaimNetworkKind(
  * Derive the execution-neutral claim checkpoint from one anchored reward observation.
  *
  * It deliberately contains no attestation, fee payer, nonce, fee estimate, approval, signature,
- * or broadcast authority. Observe wallets and Assist envelopes consume the same exact bucket set
+ * or broadcast authority. Observe wallets and operator runs consume the same exact bucket set
  * and expected sBTC effect from here.
  */
 export function managerClaimCheckpoint(

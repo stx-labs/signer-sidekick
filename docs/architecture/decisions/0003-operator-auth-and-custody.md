@@ -5,24 +5,21 @@
 
 ## Decision
 
-V1 is a single-operator service. It listens on loopback by default. Remote access uses an SSH
-tunnel, an operator-controlled private network, or an authenticated TLS reverse proxy; unauthenticated
-HTTP is not a public deployment mode.
+Sidekick is a single-operator service and listens on loopback by default. Remote access uses an SSH
+tunnel, private network, or authenticating TLS proxy. Browser mutations remain protected against
+cross-site requests when authentication is supplied ambiently by Basic auth or a trusted header.
 
-Sidekick never receives a signer key, manager-admin key, mnemonic, signed transaction bytes, or
-generic signing request. Manager administration, signer registration, and Observe reward claims
-are expressed as sealed, expiring wallet intents. The browser wallet signs and submits them; the API
-receives only the transaction ID and independently verifies the canonical transaction and expected
-poststate.
+Sidekick never receives a signer key, manager-admin key, mnemonic, signed browser transaction, or
+generic signing request. Wallet actions are sealed, expiring intents; the API receives only a txid
+and independently verifies the canonical transaction and expected state.
 
-Assist may read one dedicated, deliberately low-balance gas-payer key from an explicit absolute
-file path. That key can sign only fixed transaction vectors implemented by reviewed adapters. The
-main configuration loader rejects private-key environment variables, and private keys are never
-stored in SQLite.
+Operator-run may hold one Sidekick-generated, low-balance gas-wallet key. It is stored outside
+SQLite with owner-only permissions and signs only reviewed recipe operations through explicit
+adapter methods. The configuration loader rejects private-key environment values. The key is never
+returned by the API, logged, or included in Activity or support output.
 
 ## Consequences
 
-Browser-wallet integration grants neither custody nor arbitrary transaction authority. Assist is a
-narrow execution mode, not embedded operator-wallet custody. Multiple users, delegated roles,
-embedded signer/admin signing, or any broader custody model require a separate threat model and
-architecture decision.
+The gas wallet is fee-payer custody, not signer or administrator custody. Its authority is bounded
+by its STX balance, the sealed recipe, postconditions, and the one-active-run nonce lease. Multiple
+operators, delegated roles, or broader signing authority require a new threat model and ADR.

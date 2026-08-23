@@ -261,7 +261,7 @@ On every later startup:
 - matching configuration proceeds normally;
 - a signer-key rotation or deployed-source observation does not change deployment identity;
 - a network or manager-principal mismatch enters diagnostic safe mode before any reconciliation,
-  event ingestion, projection write, transaction planning, or Assist activity;
+  event ingestion, projection write, transaction planning, or operator-run activity;
 - the UI shows both stored and configured identities and permits read-only Settings and support
   export; and
 - Sidekick never silently rebinds, merges histories, or offers a one-click dashboard reset.

@@ -15,10 +15,11 @@
     "check": "biome check . && pnpm typecheck && pnpm third-party:licenses && pnpm census:verify",
     "check:fix": "biome check --write .",
     "typecheck": "pnpm build:contracts && pnpm -r --if-present typecheck && tsc -p test/integration/regtest/tsconfig.json --noEmit",
-    "test": "pnpm build:contracts && pnpm -r --if-present test && pnpm test:devnet:harness && pnpm test:observer-latency && pnpm test:census:managers",
+    "test": "pnpm build:contracts && pnpm -r --if-present test && pnpm test:devnet:harness && pnpm test:observer-latency && pnpm test:census:managers && pnpm test:security:review",
     "census:managers": "node scripts/census-signer-managers.mjs",
     "census:verify": "node scripts/verify-signer-manager-census.mjs",
     "test:census:managers": "node --test scripts/census-signer-managers.test.mjs",
+    "test:security:review": "node --test scripts/operator-run-security-review.test.mjs",
     "test:devnet:harness": "node --test scripts/devnet-harness-state.test.mjs",
     "test:observer-latency": "node --test scripts/check-observer-latency.test.mjs",
     "test:coverage": "vitest run --config vitest.coverage.config.mts --coverage",
@@ -41,9 +42,11 @@
     "e2e:devnet:mine": "node scripts/e2e-devnet.mjs mine",
     "e2e:devnet:test": "node scripts/e2e-devnet.mjs test",
     "observer:latency:check": "node scripts/check-observer-latency.mjs",
+    "security:operator-run:fingerprint": "node scripts/source-fingerprint.mjs",
     "protocol:generate:mainnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:mainnet",
     "protocol:generate:devnet": "pnpm --filter @stx-labs/signer-sidekick-protocol generate:devnet",
-    "protocol:generate:regtest": "node scripts/generate-regtest-contracts.mjs && pnpm --filter @stx-labs/signer-sidekick-protocol generate:regtest"
+    "protocol:generate:regtest": "node scripts/generate-regtest-contracts.mjs && pnpm --filter @stx-labs/signer-sidekick-protocol generate:regtest",
+    "security:operator-run:verify": "node scripts/operator-run-security-review.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",

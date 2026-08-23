@@ -19,7 +19,8 @@ Sidekick starts after the node, signer, and signer-manager are running. Use
 
 Sidekick supports STX-only positions and the STX side of Bitcoin bonds. Manager and signer keys
 remain in the operator's wallet and signer. Compatible custom managers receive baseline monitoring;
-actions also require a reviewed execution profile.
+each executable action requires a reviewed capability adapter. Optional reward runs use a separate,
+low-balance gas wallet and one operator-approved recipe at a time.
 
 ## Development
 

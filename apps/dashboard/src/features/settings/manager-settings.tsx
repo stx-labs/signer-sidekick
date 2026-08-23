@@ -138,7 +138,7 @@ export function ManagerSettings({
                     ? "Built into Sidekick"
                     : "None"}
               </StatLine>
-              <StatLine label="Assist">
+              <StatLine label="Reviewed reward calls">
                 <Badge state={data.manager.automationEligible ? "success" : "neutral"}>
                   {data.manager.automationEligible ? "Available" : "Unavailable"}
                 </Badge>
@@ -263,7 +263,9 @@ export function ManagerSettings({
               <ShieldCheck className="ic" />
               <div className="body">
                 <strong>
-                  {data.manager.automationEligible ? "Assist available." : "Assist unavailable."}
+                  {data.manager.automationEligible
+                    ? "Reviewed reward calls available."
+                    : "Reviewed reward calls unavailable."}
                 </strong>{" "}
                 {!data.manager.automationEligible ? data.manager.automationEligibilityReason : null}
               </div>

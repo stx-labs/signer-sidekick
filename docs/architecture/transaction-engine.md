@@ -1,79 +1,58 @@
 # Transaction engine safety contract
 
-Sidekick launches in Observe mode. Assist is a future, release-gated execution envelope for
-code-backed adapters; it is not a wallet, generic contract caller, or workflow engine. The current
-implementation and release scope remains one reviewed PoX-5 manager-claim operation. Any expansion
-follows [ADR 0009](decisions/0009-evidence-first-reward-distribution.md) and the existing Assist
-release gates.
+Sidekick starts in **Observe** mode. Browser-wallet actions use sealed, expiring intents; Sidekick
+never receives wallet credentials or signed transaction bytes. **Operator-run** is an explicit
+deployment mode for the permissionless PoX-5 reward calls. It uses only the dedicated gas wallet
+and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-execution-envelope.md).
 
 ## Authority
 
-- **Observe** may plan, display, hand off an exact request to an external wallet, and reconcile its
-  effect. It cannot reserve a nonce, sign, or broadcast.
-- **Assist**, in the current implementation, may sign and broadcast only the code-backed
-  `reference-manager-claim-rewards` adapter after fresh, exact operator approval. No future adapter
-  is authorized merely by being described in an ADR or issue.
-- Signer and manager-admin keys never enter Sidekick. Assist may hold one dedicated, low-balance
-  gas-payer key for that fixed adapter only. See
-  [ADR 0003](decisions/0003-operator-auth-and-custody.md).
+- Signer and manager-admin keys never enter Sidekick.
+- The generated gas-wallet key is owner-readable only, is absent from SQLite and support output,
+  and pays network fees only. Its one self-transfer capability is an operator-approved sweep.
+- Every executable operation has a code-backed adapter and one explicit signer method. There is no
+  generic signing or contract-call API.
+- Manager source, PoX-5 source, network, chain ID, and contract principals must match reviewed
+  capability evidence. A data profile cannot add executable behavior.
+- Mainnet operator-run requires an approved security-review record for the build's exact source
+  fingerprint. Observe and non-mainnet evaluation do not require that approval.
 
-## Chain authority and admission
+## Sealed runs
 
-Every plan binds one canonical anchor: Stacks height and index block hash, Bitcoin height, reward
-cycle and position, phase, and reward-calculation checkpoint. The configured node is authoritative
-for actionable contract, account, and PoX state. The Stacks API provides indexed enumeration and
-history; it cannot override node state. SQLite is durable evidence and coordination state, not
-transaction authority.
+Preparing a run reads one stable node anchor and seals:
 
-Sidekick therefore keeps two chain positions separate. Current setup, manager, reward, and wallet
-facts use a stable local-node anchor. Indexed roster, event, history, and canonical-ancestry reads
-use the newest stable API anchor that the node can still read. An API that is behind or unavailable
-degrades only those indexed capabilities. A local node that is behind the API or its observed peers
-fails readiness, while Assist remains fail-closed whenever an API-specific completeness proof is
-unavailable.
+- manager, network, cycle, distribution, adapter revisions, and source fingerprints;
+- ordered operations and at most 200 children;
+- the exact `(staker, cycle, bond bucket)` account set and maximum gross amount per account;
+- reviewed payment count and total, per-transaction fee cap, and total gas budget; and
+- fixed recipient, asset, and expected-effect semantics.
 
-An Assist plan and its pre-broadcast recheck must agree on:
+Approval binds the recipe hash. A payment child is rebuilt only after any preceding collect is
+confirmed and the fee snapshot is proved. It may disappear, shrink, or be skipped when another
+caller completed the work; it may never add a recipient or exceed the approved amount.
 
-1. the completed reward calculation and its exact checkpoint;
-2. the accepted reference-manager source/profile and, for the Assist envelope, compatibility
-   attestation;
-3. the complete applicable manager reward-bucket set and each bucket's fee snapshot;
-4. claimable, unpaused rewards;
-5. the gas payer's current nonce, sufficient balance, and bounded fee; and
-6. the fixed call, arguments, deny-mode postconditions, recipient, outflow cap, and expected
-   post-state for the adapter revision.
+Immediately before every signature Sidekick rechecks the stable chain anchor, source identities,
+gas-wallet nonce and balance, fee and budget, account state, recipe bounds, and that the gas wallet
+is neither a contract, manager admin, nor signer. The signer reconstructs the transaction from the
+sealed material and enforces deny-mode postconditions, including the exact manager-to-staker refund
+for `reclaim-failed-withdrawal`.
 
-Changing authoritative facts supersedes uncommitted work. A bucket that changes between approval
-and broadcast invalidates the plan. An approval binds the exact plan and policy hashes to a bounded
-expiry; it cannot authorize a replan, another checkpoint, or another adapter.
+## Execution and recovery
 
-## Durable execution
+One run or sweep owns the gas wallet at a time, with one transaction in flight. Runs are durable:
+`awaiting-approval → approved → running → paused → completed | halted | cancelled | expired`.
+Approval must be used within 30 minutes; a started run expires after 6 hours.
 
-Jobs progress through planning, preflight, approval, nonce reservation, broadcast, confirmation,
-and reconciliation. The following invariants are intentional:
+- Signed bytes and txid are committed before the single broadcast attempt.
+- Submission is not confirmation; confirmation is not completion until the expected state is
+  proved.
+- A reset, timeout, conflicting nonce, reorg, or uncertain response halts without replacement.
+- Resume first reconciles the existing attempt. It never blindly signs the next nonce.
+- A predictable contract abort plus the already-proved target state is external completion.
+- Restart resumes from the durable cursor and never re-signs an existing attempt.
+- Cancel releases work that has not been signed; it cannot undo a broadcast transaction.
 
-- Duplicate observations create at most one active logical job.
-- Observe never reaches approval, nonce, signing, or broadcast state.
-- The job transition, nonce reservation, signed attempt, and txid are committed before the single
-  broadcast request.
-- Submission acceptance is not confirmation, and confirmation is not business success.
-- A timeout, reset, conflict, or other uncertain submission is ambiguous: no new nonce or
-  replacement transaction is created until the attempt is reconciled.
-- A noncanonical confirmation returns to observation before finality.
-- A matching external completion reconciles as success without creating a duplicate local effect.
-
-PoX-5 can calculate rewards twice for one reward cycle, while manager and staker claims settle
-cycle/bucket accumulations rather than independently claimable checkpoints. Manager-claim proposals
-bind their calculation-checkpoint evidence even though the contract call uses the reward cycle.
-Staker settlement is tracked at `(staker, cycle, bond-index)` with checkpoint attribution as an
-accounting overlay. The evidence model is defined in
-[ADR 0009](decisions/0009-evidence-first-reward-distribution.md).
-
-## Review and release
-
-The executable behavior is defined by the adapter, transaction-engine code, typed schemas, and
-tests under `apps/sidekick/src/transaction-engine` and `packages/protocol`. Before any Assist
-canary or mainnet use, complete the
-[Assist release gates](https://github.com/stx-labs/signer-sidekick/issues/6). Additional operations
-require the single-tenant engine refactor in ADR 0009, a separately reviewed code-backed adapter,
-an adapter-specific signer capability, standing-policy or exact-approval review, and a release plan.
+The executable contract is the typed schemas and tests under `apps/sidekick/src/transaction-engine`,
+`packages/protocol`, and `packages/api-contracts`. Operator recovery is in
+[Operations](../operator/operations.md); operation-specific effects are in
+[Operator action contracts](../product/recurring-operation-contracts.md).

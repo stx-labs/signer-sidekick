@@ -34,9 +34,9 @@ promptly even when no browser is open, but a callback is a trigger and evidence,
 authority: current state is still proved with anchored local-node reads, and periodic reconciliation
 plus API backfill cover gaps and reorgs.
 
-Assist remains a future execution mode, not the product definition. The useful product exists in
-Observe with wallet-signed operations; Assist may later automate the same reviewed plans after its
-release gates are met.
+Observe remains the default. Optional operator-run signs only permissionless reward calls from one
+operator-approved, sealed recipe with a dedicated low-balance gas wallet. It does not add unattended
+authority or custody of signer or manager-admin keys.
 
 ## Product test
 
@@ -97,7 +97,7 @@ products. The Overview answers “what needs attention now?”; other pages expl
 - Signer-protocol health from node RPC, signer monitoring, calibrated metrics, and independent
   network-reference evidence, without overstating certainty.
 - Actionable alerts and a comprehensive redacted support snapshot.
-- Observe as the default mode; Assist only through the existing explicit release gates.
+- Observe as the default; operator-run only in an exact-source reviewed release.
 
 ### Out of scope
 
@@ -113,7 +113,7 @@ products. The Overview answers “what needs attention now?”; other pages expl
 ## Still open
 
 - Operational-latency validation for the observer path.
-- Assist execution mode (release-gated; ownership and incident response decided before it ships).
+- Operational validation of operator-run against mainnet after its independent security review.
 - A non-reference executable capability adapter, which requires the adapter approver plus the
   source-fingerprint review process.
 - Squashing the pre-release SQLite migration history into the first release schema after live
@@ -152,11 +152,11 @@ products. The Overview answers “what needs attention now?”; other pages expl
   and Operations were removed after their actions/history moved; old URLs get no redirects; action
   workspaces are contextual routes. Normative contract:
   [Activity and action workspace](activity-and-action-workspace.md).
-- **Reward-calculation and Assist timing:** the Rewards page shows a newly eligible calculation as
+- **Reward-calculation timing:** the Rewards page shows a newly eligible calculation as
   normal `awaiting calculation`; Overview adds an action only after ten minutes and 24 newer canonical
-  Stacks blocks with an advancing node and current witnesses. Unattended Assist stays separately gated
-  and cannot become eligible before 30 minutes and 120 blocks. Forecast sampling, calibration,
-  contract simulation, fee semantics, and recovery are normative in
+  Stacks blocks with an advancing node and current witnesses. Browser-wallet and operator-run actions
+  use the same readiness rule. Forecast sampling, calibration, contract simulation, fee semantics,
+  and recovery are normative in
   [Reward outlook and calculation](reward-outlook.md).
 - **Browser delivery:** node callbacks and periodic anti-entropy update server-owned projections
   without a browser. A visible dashboard reads those cached projections every 15 seconds. SSE or

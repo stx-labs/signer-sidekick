@@ -35,7 +35,7 @@ export async function resolveRosterProjectionAnchor(options: {
  * The roster anchor has already been proven canonical by `resolveRosterProjectionAnchor`. Manager
  * source and contract identities are immutable, while preflight is deliberately live health data.
  * Planning can therefore use the older indexed anchor without mixing it with newer reward reads;
- * Assist still rebuilds and revalidates a fresh snapshot before execution.
+ * Operator runs still rebuild and revalidate a fresh snapshot before execution.
  */
 export function anchorSetupToRewardEvidence(
   setup: OperatorAnchorSnapshot,

@@ -1106,7 +1106,7 @@ test("reviews exact engine intent and keeps emergency controls idempotent", asyn
   ).toBeVisible();
 
   await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByText("assist", { exact: true })).toBeVisible();
+  await expect(page.getByText("retired mode", { exact: true })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Force Observe" }).click();
   await expect.poll(() => forceObserveRequests).toBe(1);
@@ -2079,7 +2079,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
       status.manager.automationEligible = automationEligible;
       status.manager.automationEligibilityReason = automationEligible
         ? "Pinned reference render and network approval verified"
-        : "Reference-manager Assist is disabled";
+        : "Reviewed reward calls are disabled for this manager";
       status.manager.provenance.status =
         tier === "reference-render"
           ? "verified"
@@ -2136,7 +2136,9 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(page.getByText("Operator-installed")).toBeVisible();
   await openSettingsSection(page, "capabilities", "Pool forecast");
   await expect(
-    page.getByLabel("Operations").getByText("Assist unavailable.", { exact: true }),
+    page.getByLabel("Operations").getByText("Reviewed reward calls unavailable.", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
     "aria-disabled",

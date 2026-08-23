@@ -14,8 +14,8 @@ deploy contracts, manage infrastructure, or provide a public staker interface.
 - [Operations and settings](operations-and-settings.md): product boundary, custody, durable
   reconciliation, and runtime configuration.
 - [Scaling](scaling.md): bounded reads, retained evidence, and large-pool expectations.
-- [Transaction engine safety contract](transaction-engine.md): Assist authority, admission, and
-  durable-execution invariants.
+- [Transaction engine safety contract](transaction-engine.md): gas-wallet authority, sealed reward
+  runs, and recovery invariants.
 
 ## Decisions
 

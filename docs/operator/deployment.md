@@ -93,4 +93,14 @@ reverse_proxy 127.0.0.1:3998 {
 Set `SIDEKICK_AUTH_BASIC_USERNAME` to use the token as an HTTP Basic password. Keep mainnet in the
 default `observe` engine mode.
 
+## Reward runs
+
+An official release enables mainnet `operator-run` only after its exact source fingerprint passes
+the scoped security review. To use it, set `SIDEKICK_ENGINE_MODE=operator-run` before starting, then
+open **Settings → Gas wallet** to generate, fund, and enable a dedicated low-balance wallet. The
+wallet signs only an approved reward recipe; signer and manager-admin keys remain external.
+
+Sidekick refuses to start mainnet operator-run if the bundled review is missing or stale. Do not
+override its review or fingerprint paths in a normal deployment. Observe remains available.
+
 See [Operations](operations.md) for upgrades, restore, diagnosis, and support collection.

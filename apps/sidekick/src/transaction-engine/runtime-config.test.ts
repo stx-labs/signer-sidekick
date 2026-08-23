@@ -1,14 +1,50 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   compressPublicKey,
   getAddressFromPublicKey,
   privateKeyToPublic,
 } from "@stacks/transactions";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { loadTransactionEngineRuntimeConfig } from "./runtime-config.js";
 
 const privateKey = "11".repeat(32);
 const publicKey = compressPublicKey(privateKeyToPublic(privateKey));
 const principal = getAddressFromPublicKey(publicKey, "testnet");
+const reviewDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of reviewDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function reviewedBuildEnvironment(status: "pending" | "approved" = "approved") {
+  const directory = mkdtempSync(join(tmpdir(), "sidekick-reviewed-build-"));
+  reviewDirectories.push(directory);
+  const sourceFingerprint = "ab".repeat(32);
+  const sourceFingerprintPath = join(directory, "SOURCE_FINGERPRINT");
+  const reviewPath = join(directory, "review.json");
+  writeFileSync(sourceFingerprintPath, sourceFingerprint);
+  writeFileSync(
+    reviewPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      status,
+      sourceFingerprint,
+      reviewedCommit: status === "approved" ? "12".repeat(20) : null,
+      reviewedAt: status === "approved" ? "2026-08-22T20:00:00.000Z" : null,
+      reviewer: status === "approved" ? "independent-reviewer" : null,
+      reviewUrl:
+        status === "approved" ? "https://github.com/stx-labs/signer-sidekick/pull/34" : null,
+    }),
+  );
+  return {
+    SIDEKICK_OPERATOR_RUN_REVIEW_PATH: reviewPath,
+    SIDEKICK_SOURCE_FINGERPRINT_PATH: sourceFingerprintPath,
+  };
+}
 
 function operatorRunEnvironment(): NodeJS.ProcessEnv {
   return {
@@ -60,6 +96,24 @@ describe("transaction-engine runtime config", () => {
     expect(
       loadTransactionEngineRuntimeConfig({ SIDEKICK_ENGINE_MODE: "operator-run" }, "testnet"),
     ).toMatchObject({ requestedMode: "operator-run", gasPayer: null });
+  });
+
+  it("requires an exact approved build for mainnet operator-run only", () => {
+    expect(() =>
+      loadTransactionEngineRuntimeConfig(
+        { SIDEKICK_ENGINE_MODE: "operator-run", ...reviewedBuildEnvironment() },
+        "mainnet",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      loadTransactionEngineRuntimeConfig({ SIDEKICK_ENGINE_MODE: "operator-run" }, "mainnet"),
+    ).toThrow("requires an approved security-reviewed build");
+    expect(() =>
+      loadTransactionEngineRuntimeConfig(
+        { SIDEKICK_ENGINE_MODE: "operator-run", ...reviewedBuildEnvironment("pending") },
+        "mainnet",
+      ),
+    ).toThrow("security review is pending");
   });
 
   it("permits Observe planning with a public identity and no private-key path", () => {

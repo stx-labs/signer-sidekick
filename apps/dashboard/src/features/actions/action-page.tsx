@@ -252,7 +252,7 @@ function EngineClaimOperation({
         <p className="muted">
           Sidekick re-reads one anchored reward checkpoint, includes every participating bond
           period, and pins the exact PoX-5 sBTC outflow. Your browser wallet chooses the fee and
-          nonce, signs, and broadcasts; Assist credentials and attestations are not used.
+          nonce, signs, and broadcasts; the Sidekick gas wallet is not used.
         </p>
         <Field
           label="Signing account"

@@ -1,7 +1,11 @@
 .git
-.github
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/release.yml
 .env
 .env.*
+.ai-runs
 node_modules
 dist
 coverage
@@ -15,3 +19,4 @@ tmp
 **/test-results
 test-results
 playwright-report
+design/mockups/canvas

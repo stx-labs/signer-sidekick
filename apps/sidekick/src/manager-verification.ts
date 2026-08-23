@@ -374,9 +374,9 @@ function proveReferenceRender(input: {
       sourceMatch: renderMatch,
       reason:
         profile.network !== "mainnet"
-          ? `Reference render is reproducible; production approval is not required for Assist on ${profile.network}`
+          ? `Reference render is reproducible; production approval is not required for reviewed execution on ${profile.network}`
           : automationEligible
-            ? `Reference render is reproducible and ${productionApprovedNetworkArtifact?.profile.id} approves Assist for mainnet`
+            ? `Reference render is reproducible and ${productionApprovedNetworkArtifact?.profile.id} approves reviewed execution on mainnet`
             : "Reference render is reproducible, but no matching mainnet built-in profile is production-approved",
       upstreamProfileId: upstreamArtifact.profile.id,
     };
@@ -528,7 +528,7 @@ export function verifyManagerArtifact(
   const missingReferenceFunctionReason = `Reference-manager execution interface is missing ${missingReferenceFunctions.length} required ${missingReferenceFunctions.length === 1 ? "function" : "functions"}`;
   const profileIssueReason = `${profileStore.issues.length} installed trusted-manager profile ${profileStore.issues.length === 1 ? "issue was" : "issues were"} ignored`;
   const automationEligibilityReason = automationEligible
-    ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for Assist")
+    ? (builtIn?.recognition.reason ?? proof?.reason ?? "Manager is eligible for reviewed execution")
     : !networkMatches
       ? "Manager principal does not match the configured network"
       : !interfaceCompatible
@@ -541,7 +541,7 @@ export function verifyManagerArtifact(
               : (proof?.reason ?? installedFailureReason ?? sourceReviewReason)
             : builtIn
               ? operatorProvidedArtifact
-                ? "Operator-provided network profiles cannot authorize Assist broadcasts"
+                ? "Operator-provided network profiles cannot authorize executable operations"
                 : `Mainnet profile ${builtIn.artifact.profile.id} is not production-approved`
               : (proof?.reason ??
                 installedFailureReason ??
@@ -605,7 +605,7 @@ export function verifyManagerArtifact(
             reason: installedFailureReason
               ? installedFailureReason
               : tier === "custom-observe"
-                ? "Operator-installed custom profile identifies source but does not authorize Assist"
+                ? "Operator-installed custom profile identifies source but does not authorize executable operations"
                 : "No installed reference-render profile matched this manager",
           },
     interface: {

@@ -17,7 +17,7 @@ const MODE_DESCRIPTION: Record<EngineStatus["mode"], string> = {
   observe: "Plans transactions but never signs or submits them.",
   "operator-run":
     "The gas wallet signs reward calls only inside a run you approve, then you can walk away.",
-  assist: "Prepares each transaction and waits for your approval before submitting.",
+  assist: "Retired mode retained only for historical engine records.",
 };
 
 function stateLabel(value: string): string {
@@ -152,8 +152,8 @@ export function EngineSettings({ token }: { token: string }) {
   const jobTotal = status
     ? status.jobs.active + status.jobs.awaitingApproval + status.jobs.ambiguous
     : 0;
-  // Engine job counts and the emergency brake are only meaningful in Assist mode or while work
-  // remains active, so keep them out of the default Observe view.
+  // Historical engine job counts and the emergency brake matter only outside ordinary Observe or
+  // while work remains active, so keep them out of the default view.
   const showEngineControls = Boolean(
     status && (status.mode !== "observe" || jobTotal > 0 || status.forcedObserve.active),
   );
@@ -192,7 +192,7 @@ export function EngineSettings({ token }: { token: string }) {
           <div className="engine-mode">
             <Eye />
             <div>
-              <strong>{stateLabel(status.mode)}</strong>{" "}
+              <strong>{status.mode === "assist" ? "retired mode" : stateLabel(status.mode)}</strong>{" "}
               <span className="muted">{MODE_DESCRIPTION[status.mode]}</span>
             </div>
             {status.forcedObserve.active ? <Badge state="error">Forced Observe</Badge> : null}

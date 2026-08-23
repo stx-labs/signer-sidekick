@@ -4,40 +4,63 @@ Reuse the `COMPOSE_FILE` value from installation.
 
 ## Upgrade
 
-Wait for submitted transactions to resolve. Back up SQLite, pull the pinned release, and recreate:
+Prefer to finish or pause an active reward run between transactions. Back up SQLite and the gas
+wallet together, then pull the pinned release and recreate:
 
 ```sh
-backup="sidekick-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
-mkdir -p backups
-docker compose exec -T sidekick node /app/dist/main.js database backup "/data/$backup"
-docker compose cp "sidekick:/data/$backup" "backups/$backup"
-docker compose exec -T sidekick rm "/data/$backup"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "backups/$stamp"
+docker compose exec -T sidekick node /app/dist/main.js database backup /data/sidekick-backup.sqlite
+docker compose cp sidekick:/data/sidekick-backup.sqlite "backups/$stamp/sidekick.sqlite"
+docker compose exec -T sidekick rm /data/sidekick-backup.sqlite
+if docker compose exec -T sidekick test -f /data/gas-wallet.key; then
+  docker compose cp sidekick:/data/gas-wallet.key "backups/$stamp/gas-wallet.key"
+  chmod 600 "backups/$stamp/gas-wallet.key"
+fi
 docker compose pull
 docker compose up -d
 curl --fail http://127.0.0.1:3998/health/ready
 curl --fail http://127.0.0.1:3998/health/operational
 ```
 
-The database may contain API credentials. Store backups accordingly.
+The database may contain API credentials; `gas-wallet.key` can spend its STX balance. Keep them as
+one restore set.
 
 ## Restore
 
-Replace `SIDEKICK_BACKUP.sqlite` with the selected backup filename.
+Set `restore` to the selected backup directory.
 
 ```sh
+restore=REPLACE_WITH_BACKUP_DIRECTORY
 docker compose down
 docker compose run --rm --no-deps --user 0 --entrypoint sh \
-  -v "$PWD/backups:/backups:ro" sidekick \
+  -v "$PWD/backups/$restore:/restore:ro" sidekick \
   -c 'set -eu
 q=$(mktemp -d /data/restore-quarantine.XXXXXX)
-for f in /data/sidekick.sqlite /data/sidekick.sqlite-wal /data/sidekick.sqlite-shm; do
+for f in /data/sidekick.sqlite /data/sidekick.sqlite-wal /data/sidekick.sqlite-shm /data/gas-wallet.key; do
   if [ -e "$f" ]; then mv "$f" "$q/"; fi
 done
-cp /backups/SIDEKICK_BACKUP.sqlite /data/sidekick.sqlite
-chown 10001:10001 /data/sidekick.sqlite'
+cp /restore/sidekick.sqlite /data/sidekick.sqlite
+chown 10001:10001 /data/sidekick.sqlite
+if [ -f /restore/gas-wallet.key ]; then
+  cp /restore/gas-wallet.key /data/gas-wallet.key
+  chown 10001:10001 /data/gas-wallet.key
+  chmod 600 /data/gas-wallet.key
+fi'
 docker compose run --rm --no-deps sidekick doctor
 docker compose up -d
 ```
+
+## Reward runs
+
+A run executes server-side, one transaction at a time, after one recipe approval. Closing the
+browser does not stop it. Pause or cancel only between transactions; cancellation cannot undo a
+broadcast transaction.
+
+If a run halts after an ambiguous broadcast, inspect its recorded transaction ID and chain evidence.
+Do not send a replacement. Resume makes Sidekick reconcile the existing attempt before continuing.
+After a restart, preserve the same database and gas-wallet key so recovery cannot change signer or
+nonce identity.
 
 ## Diagnose
 

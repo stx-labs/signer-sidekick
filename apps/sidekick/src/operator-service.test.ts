@@ -189,7 +189,7 @@ describe("operator service", () => {
     await pending;
   });
 
-  it("separates external signing from Assist and keeps stable transition IDs", () => {
+  it("separates external signing from reviewed execution and keeps stable transition IDs", () => {
     const input = alertInput({});
     input.manager.source.tier = "unrecognized";
     input.trustTransition = {
@@ -208,7 +208,7 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
           severity: "critical",
-          title: "Manager Assist Eligibility Lost",
+          title: "Manager Execution Eligibility Lost",
         }),
       ]),
     );

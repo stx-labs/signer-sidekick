@@ -3,6 +3,7 @@ import { compressPublicKey, getAddressFromPublicKey } from "@stacks/transactions
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import type { SidekickNetwork } from "../config.js";
+import { verifyMainnetOperatorRunSecurityReview } from "../operator-run-security-review.js";
 
 /** Engine execution modes. `assist` was retired by ADR 0010 in favour of `operator-run`. */
 export type TransactionEngineMode = "observe" | "operator-run";
@@ -63,6 +64,12 @@ export function loadTransactionEngineRuntimeConfig(
     );
   }
   const requestedMode: TransactionEngineMode = requestedModeValue;
+  if (network === "mainnet" && requestedMode === "operator-run") {
+    verifyMainnetOperatorRunSecurityReview({
+      reviewPath: optionalValue(env, "SIDEKICK_OPERATOR_RUN_REVIEW_PATH"),
+      sourceFingerprintPath: optionalValue(env, "SIDEKICK_SOURCE_FINGERPRINT_PATH"),
+    });
+  }
   const principal = optionalValue(env, "SIDEKICK_GAS_PAYER_PRINCIPAL");
   const publicKeyValue = optionalValue(env, "SIDEKICK_GAS_PAYER_PUBLIC_KEY");
   const secretFileValue = optionalValue(env, "SIDEKICK_GAS_PAYER_SECRET_FILE");

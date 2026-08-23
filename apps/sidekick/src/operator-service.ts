@@ -358,10 +358,10 @@ export function buildAlerts(snapshot: {
       id: `manager:trust-transition-${transition}:${snapshot.trustTransition.changedAt}`,
       severity: gained ? "info" : degraded ? "warning" : "critical",
       title: gained
-        ? "Manager Assist Eligibility Gained"
+        ? "Manager Execution Eligibility Gained"
         : degraded
           ? "Manager Recognition Degraded"
-          : "Manager Assist Eligibility Lost",
+          : "Manager Execution Eligibility Lost",
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
         : asSentence(snapshot.trustTransition.reason),

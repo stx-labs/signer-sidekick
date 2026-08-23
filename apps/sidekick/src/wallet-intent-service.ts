@@ -1179,7 +1179,7 @@ export class WalletIntentService {
           actorPrincipal,
           observation,
           live: {
-            // The wallet-intent planner still speaks the legacy `assist` literal for any non-Observe mode.
+            // Historical wallet-intent records use the legacy `assist` literal for any non-Observe mode.
             requestedMode:
               this.options.transactionEngineRequestedMode === "observe" ? "observe" : "assist",
             network: {
@@ -1936,7 +1936,7 @@ export class WalletIntentService {
         } else {
           // The local node supplied raw transaction bytes, and `verifyObserved` already proved
           // their sender, exact call arguments, deny mode, and equality postcondition against the
-          // immutable wallet manifest. No Assist job or attestation participates in this path.
+          // immutable wallet manifest. No historical single-job approval participates in this path.
           complete = !verifiedByApi && decoded.postConditionCount === 1;
         }
       } else if (manifest.action === "register-self") {

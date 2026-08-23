@@ -39,7 +39,7 @@ Overview does not:
 - expose a generic Manager or Operations destination;
 - offer first-time deployment, staking, or setup steps;
 - let the browser manufacture attention by comparing unrelated timestamps or status strings; or
-- define external notification delivery, acknowledgement, paging, or Assist policy.
+- define external notification delivery, acknowledgement, paging, or execution policy.
 
 ## Page contract
 
@@ -183,7 +183,7 @@ summaries until they become due. This keeps “attention now” literal and avoi
 | Public/reference API is behind while the local node is current | Never a deployment-wide item; only affected indexed/reference coverage is delayed |
 | Custom or unrecognized manager source | Settings provenance/capability state, not attention by itself |
 | Manager profile failed to load | Attention only when it removes a capability required by an action that is currently due |
-| Manager recognition/Assist eligibility gained | Activity history only; no action is required |
+| Manager adapter eligibility gained | Activity history only; no action is required |
 | Observer callback gap with healthy polling fallback inside the projection latency budget | Settings/coverage only |
 | Observer or fallback gap causes an affected projection to exceed its freshness budget | One `needs-attention` item for that affected domain |
 | Health or source is collecting a baseline | Domain summary says `collecting`; not attention unless the source remains unable to answer a required question beyond its defined window |
@@ -406,9 +406,9 @@ a proved tip change inside that window may render `advancing`; absence of such p
 
 The reward policy is fixed: the Rewards page shows a newly eligible calculation as normal
 `awaiting calculation` state. Overview adds an action only after ten minutes and 24 newer canonical
-Stacks blocks, provided the node is advancing and the reviewed wallet action has current witnesses.
-A stalled chain or stale witness produces evidence-specific `needs-attention` instead. Unattended
-Assist remains separately gated and cannot become eligible before 30 minutes and 120 blocks.
+Stacks blocks, provided the node is advancing and the reviewed action has current witnesses. A
+stalled chain or stale witness produces evidence-specific `needs-attention` instead. Browser-wallet
+and operator-run actions use the same readiness policy.
 
 ## Optional extensions
 

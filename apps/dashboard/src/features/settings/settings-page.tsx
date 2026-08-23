@@ -1134,8 +1134,8 @@ export function SettingsPage({
                   <div className="body">
                     <strong>
                       {data.manager.automationEligible
-                        ? "Assist available."
-                        : "Assist unavailable."}
+                        ? "Reviewed reward calls available."
+                        : "Reviewed reward calls unavailable."}
                     </strong>{" "}
                     {!data.manager.automationEligible
                       ? data.manager.automationEligibilityReason

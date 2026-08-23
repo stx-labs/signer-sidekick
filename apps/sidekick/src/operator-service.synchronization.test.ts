@@ -112,7 +112,7 @@ function setupSnapshot(chainAnchor: ChainAnchor): OperatorAnchorSnapshot {
     manager: {
       attachAllowed: true,
       automationEligible: true,
-      automationEligibilityReason: "Built-in reference manager is eligible for Assist",
+      automationEligibilityReason: "Built-in reference manager is eligible for reviewed execution",
       source: {
         tier: "reference-built-in",
         profileId: "reference-devnet",

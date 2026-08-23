@@ -57,6 +57,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify mainnet operator-run security review
+        run: pnpm security:operator-run:verify
+
       - name: Validate release
         run: |
           pnpm check

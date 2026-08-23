@@ -289,7 +289,7 @@ return to the preserved filter state.
 The detail route presents the complete durable evidence for one group. The summary header contains:
 
 - title, status, and outcome;
-- action authority (`external-wallet`, `permissionless-fee-payer`, `observe`, or later `assist`);
+- action authority (`external-wallet`, `permissionless-fee-payer`, `observe`, or `operator-run`);
 - actor/sender when known;
 - manager/network binding;
 - transaction ID and canonical anchor when known;

@@ -111,9 +111,8 @@ The node must still be advancing and every action witness must be current. A sta
 witness produces an evidence-specific `needs-attention` result without offering a transaction.
 Alongside the exact Bitcoin-block countdown, Rewards shows an approximate relative time derived from
 the recent observed Bitcoin-block average. It omits the time estimate when that timing evidence is
-unavailable.
-Future unattended Assist remains independently release-gated and cannot become eligible before 30
-minutes and 120 canonical Stacks blocks.
+unavailable. Operator-run uses the same readiness evidence; it changes signing authority, not when
+an action becomes due.
 
 The calculation plan binds the exact PoX-5 profile, anchor, target cycle/checkpoint, prior calculation
 height, global accrual, complete ordered active-bond set, and deterministic one-argument contract
