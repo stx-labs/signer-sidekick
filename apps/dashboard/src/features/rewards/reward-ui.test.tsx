@@ -1,7 +1,7 @@
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { TxIdMarker } from "./reward-ui.js";
+import { StakerCell, TxIdMarker } from "./reward-ui.js";
 
 const stacksTxId = `0x${"11".repeat(32)}`;
 const bitcoinTxId = `0x${"22".repeat(32)}`;
@@ -70,5 +70,15 @@ describe("reward transaction marker", () => {
     expect(html).toContain(bitcoinTxId);
     expect(html).toContain(stacksTxId);
     expect(html).toContain(retirementTxId);
+  });
+});
+
+describe("reward staker principal", () => {
+  it("shows six characters on each side and retains the full principal for hover or focus", () => {
+    const principal = "SP3CQC73G4YN9XAPMQEGV0X7YZGEZHERM8M30KVR1";
+    const html = renderToStaticMarkup(<StakerCell principal={principal} />);
+    expect(html).toContain("SP3CQC…30KVR1");
+    expect(html).toContain(`title="${principal}"`);
+    expect(html).toContain(`data-copy-value="${principal}"`);
   });
 });

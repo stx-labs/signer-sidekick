@@ -1,7 +1,6 @@
-import { MagnifyingGlass } from "@phosphor-icons/react";
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useState } from "react";
-import { SortableHeader, type TableSort } from "../../shared/dashboard-ui.js";
+import { Pagination, SortableHeader, type TableSort } from "../../shared/dashboard-ui.js";
 import { amount, exactSats } from "../../shared/format.js";
 import {
   comparePayments,
@@ -12,10 +11,9 @@ import {
   rollForwardExplanation,
   shortDate,
 } from "./reward-state.js";
-import { Pager, StakerCell, StatusChip, TxIdMarker } from "./reward-ui.js";
+import { StakerCell, StatusChip, TxIdMarker } from "./reward-ui.js";
 
 const PAGE_SIZE = 10;
-const SEARCH_THRESHOLD = 10;
 
 export type PaymentsVariant = "pending" | "history";
 
@@ -104,15 +102,29 @@ export function PaymentsTable({
   if (counts.rolled > 0) tabs.push(["rolled", "Rolled forward", counts.rolled]);
   if (counts.rejected > 0) tabs.push(["rejected", "Rejected", counts.rejected]);
   const hasAny = payments.length > 0;
+  const sortOptions: Array<[PaymentSortKey, string]> =
+    variant === "pending"
+      ? [
+          ["staker", "Staker"],
+          ["gross", "Gross"],
+          ["fee", "Fee"],
+          ["toStaker", "To staker"],
+          ["status", "Status"],
+        ]
+      : [
+          ["staker", "Staker"],
+          ["toStaker", "To staker"],
+          ["status", "Status"],
+        ];
   const selectTab = (key: PaymentTab) => {
     setTab(key);
     setPage(0);
   };
   return (
-    <div className={`tbl-wrap rw-dense rw-payments rw-payments-${variant}`}>
+    <div className={`tbl-wrap responsive-table-wrap rw-payments rw-payments-${variant}`}>
       {hasAny ? (
         <div className="tbl-toolbar">
-          <div className="filters">
+          <div className="rw-payment-toolbar-controls">
             <div className="seg" role="tablist" aria-label="Payment status">
               {tabs.map(([key, label, count]) => (
                 <button
@@ -129,21 +141,51 @@ export function PaymentsTable({
                 </button>
               ))}
             </div>
-            {payments.length > SEARCH_THRESHOLD ? (
-              <label className="search-inline">
-                <MagnifyingGlass className="rw-ico" aria-hidden="true" />
-                <input
-                  type="search"
-                  placeholder="Find a staker"
-                  aria-label="Find a staker"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setPage(0);
-                  }}
-                />
-              </label>
-            ) : null}
+            <div className="search-inline">
+              <input
+                type="search"
+                placeholder="Search principal…"
+                aria-label="Search principal"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(0);
+                }}
+              />
+            </div>
+          </div>
+          <div className="responsive-table-mobile-sort">
+            <label>
+              <span>Sort by</span>
+              <select
+                aria-label="Sort payments by"
+                value={sort.key}
+                onChange={(event) => {
+                  setSort({ key: event.target.value as PaymentSortKey, direction: "asc" });
+                  setPage(0);
+                }}
+              >
+                {sortOptions.map(([value, label]) => (
+                  <option value={value} key={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="btn btn-tertiary sm"
+              type="button"
+              aria-label={`Sort direction: ${sort.direction === "asc" ? "ascending" : "descending"}`}
+              onClick={() => {
+                setSort((current) => ({
+                  ...current,
+                  direction: current.direction === "asc" ? "desc" : "asc",
+                }));
+                setPage(0);
+              }}
+            >
+              {sort.direction === "asc" ? "Ascending" : "Descending"}
+            </button>
           </div>
           {toolbarRight ?? (
             <div className="total">
@@ -159,7 +201,7 @@ export function PaymentsTable({
       ) : filtered.length === 0 ? (
         <div className="empty-table">No payments match.</div>
       ) : (
-        <table>
+        <table className="responsive-data-table">
           <thead>
             <tr>
               <SortableHeader label="Staker" column="staker" sort={sort} setSort={setSort} />
@@ -171,9 +213,8 @@ export function PaymentsTable({
                     sort={sort}
                     setSort={setSort}
                     align="right"
-                    className="rw-hide-sm"
                   />
-                  <th scope="col" className="right rw-hide-sm">
+                  <th scope="col" className="right">
                     Fee
                   </th>
                 </>
@@ -187,11 +228,7 @@ export function PaymentsTable({
                 title="What the staker receives: sBTC directly, or BTC over Bitcoin after the Bitcoin fee budget. Hover an amount for the exact sats."
               />
               <th scope="col">Status</th>
-              {variant === "history" ? (
-                <th scope="col" className="rw-hide-sm">
-                  Paid
-                </th>
-              ) : null}
+              {variant === "history" ? <th scope="col">Paid</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -221,7 +258,7 @@ export function PaymentsTable({
                 <tr
                   key={`${row.cycle}|${row.distribution}|${row.stakerPrincipal}|${row.bucket}|${row.paymentTxId ?? "outstanding"}`}
                 >
-                  <td>
+                  <td data-label="Staker" data-table-span="full">
                     <StakerCell
                       principal={row.stakerPrincipal}
                       bitcoin={row.route === "bitcoin"}
@@ -242,7 +279,8 @@ export function PaymentsTable({
                   {variant === "pending" ? (
                     <>
                       <td
-                        className="mono right rw-hide-sm"
+                        className="mono right"
+                        data-label="Gross"
                         title={
                           row.grossRewardSats
                             ? exactSats(row.grossRewardSats)
@@ -252,17 +290,18 @@ export function PaymentsTable({
                         {amount(row.grossRewardSats)}
                       </td>
                       <td
-                        className="mono right rw-hide-sm"
+                        className="mono right"
+                        data-label="Fee"
                         title={row.operatorFeeSats ? exactSats(row.operatorFeeSats) : undefined}
                       >
                         {amount(row.operatorFeeSats)}
                       </td>
                     </>
                   ) : null}
-                  <td className="mono right" title={amountTitle}>
+                  <td className="mono right" data-label="To staker" title={amountTitle}>
                     {amountText}
                   </td>
-                  <td>
+                  <td data-label="Status">
                     <span className="rw-payment-status">
                       <StatusChip
                         tone={status.tone}
@@ -281,7 +320,7 @@ export function PaymentsTable({
                     ) : null}
                   </td>
                   {variant === "history" ? (
-                    <td className="rw-hide-sm">
+                    <td data-label="Paid" data-table-span="full">
                       <span className="rw-txid" title={displayTxId ?? undefined}>
                         {paidText}
                       </span>
@@ -294,7 +333,12 @@ export function PaymentsTable({
         </table>
       )}
       {hasAny ? (
-        <Pager page={currentPage} pageSize={pageSize} total={filtered.length} onPage={setPage} />
+        <Pagination
+          page={currentPage}
+          pageSize={pageSize}
+          total={filtered.length}
+          setPage={setPage}
+        />
       ) : null}
     </div>
   );

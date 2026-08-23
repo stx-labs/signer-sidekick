@@ -4684,39 +4684,26 @@ td .rw-txid {
   margin-bottom: var(--space-4);
 }
 
-/* Dense payment rows (Distribute lists and past-cycle payments) */
-.rw-dense thead th {
-  padding: 8px 12px;
-}
-.rw-dense tbody td {
-  padding: 5px 12px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.rw-dense td .staker {
-  gap: 8px;
-}
-.rw-dense td .avatar {
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  font-size: 9px;
-}
-.rw-dense .badge {
-  padding: 2px 7px;
-  font-size: 11px;
-}
-.rw-dense .rw-pay-sub {
-  display: inline;
-  margin-left: 6px;
-}
-.rw-dense .tbl-toolbar {
-  padding: 8px 12px;
-}
-.rw-dense .rw-txid {
+/* Payment tables use the same shell, row spacing, search, sorting, and pagination as Pool. */
+.rw-payments .rw-txid {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-tertiary);
+}
+.rw-payment-toolbar-controls {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rw-payment-toolbar-controls .search-inline {
+  min-width: 180px;
+}
+.rw-payments .staker,
+.rw-payments .copyable-identifier {
+  min-width: 0;
 }
 
 /* ₿ marker: the staker is paid over Bitcoin; hover/focus/click shows and copies the L1 address */
@@ -4880,11 +4867,11 @@ td .rw-txid {
   opacity: 0.45;
 }
 
-.pool-roster-mobile-sort {
+.responsive-table-mobile-sort {
   display: none;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .overview-attention,
   .overview-attention .body,
   .overview-attention-head {
@@ -4898,10 +4885,14 @@ td .rw-txid {
   }
 
   .rw-l1-pop {
+    position: fixed;
+    right: auto;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: 50vw;
     align-items: flex-start;
     flex-direction: column;
-    left: -48px;
     width: min(280px, calc(100vw - 48px));
+    transform: translateX(-50%);
     white-space: normal;
   }
 
@@ -4910,8 +4901,12 @@ td .rw-txid {
   }
 
   .rw-tx-pop {
-    right: -16px;
+    position: fixed;
+    right: auto;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: 50vw;
     width: min(330px, calc(100vw - 48px));
+    transform: translateX(-50%);
   }
 
   .rw-tx-entry {
@@ -4923,15 +4918,15 @@ td .rw-txid {
     grid-column: 1 / -1;
   }
 
-  .pool-roster-wrap {
+  .responsive-table-wrap {
     overflow: hidden;
   }
 
-  .pool-roster-table {
+  .responsive-data-table {
     display: block;
   }
 
-  .pool-roster-table thead {
+  .responsive-data-table thead {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -4941,11 +4936,11 @@ td .rw-txid {
     clip-path: inset(50%);
   }
 
-  .pool-roster-table tbody {
+  .responsive-data-table tbody {
     display: grid;
   }
 
-  .pool-roster-table tr {
+  .responsive-data-table tr {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
@@ -4954,7 +4949,7 @@ td .rw-txid {
     background: var(--surface-primary);
   }
 
-  .pool-roster-wrap .pool-roster-table td {
+  .responsive-table-wrap .responsive-data-table td {
     display: grid;
     min-width: 0;
     gap: 2px;
@@ -4964,7 +4959,7 @@ td .rw-txid {
     text-align: left;
   }
 
-  .pool-roster-wrap .pool-roster-table td::before {
+  .responsive-table-wrap .responsive-data-table td::before {
     content: attr(data-label);
     color: var(--text-tertiary);
     font-family: var(--font-sans);
@@ -4973,22 +4968,21 @@ td .rw-txid {
     text-transform: uppercase;
   }
 
-  .pool-roster-wrap .pool-roster-table td[data-label="Staker"],
-  .pool-roster-wrap .pool-roster-table td[data-label="Status"] {
+  .responsive-table-wrap .responsive-data-table td[data-table-span="full"] {
     grid-column: 1 / -1;
   }
 
-  .pool-roster-wrap .pool-roster-table td[data-label="Status"] {
+  .responsive-table-wrap .responsive-data-table td[data-label="Status"] {
     justify-items: start;
   }
 
-  .pool-roster-mobile-sort {
+  .responsive-table-mobile-sort {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: var(--space-2);
   }
 
-  .pool-roster-mobile-sort label {
+  .responsive-table-mobile-sort label {
     display: grid;
     gap: 4px;
     color: var(--text-tertiary);
@@ -4996,9 +4990,23 @@ td .rw-txid {
     text-transform: uppercase;
   }
 
-  .pool-roster-mobile-sort select {
+  .responsive-table-mobile-sort select {
     width: 100%;
     min-height: 34px;
+  }
+
+  .responsive-table-wrap .tbl-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rw-payment-toolbar-controls .seg,
+  .rw-payment-toolbar-controls .search-inline {
+    width: 100%;
+  }
+
+  .rw-payment-toolbar-controls .seg button {
+    flex: 1 1 auto;
   }
 }
 .rw-rf {
@@ -5012,59 +5020,6 @@ td .rw-txid {
   line-height: inherit;
 }
 
-/* Pager: "1–10 of 40 payments · ‹ 1 2 3 4 ›" */
-.rw-pager {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--border-tertiary);
-  background: var(--surface-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.rw-pager-nav {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.rw-pager .pg {
-  min-width: 26px;
-  height: 26px;
-  padding: 0 6px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  font: inherit;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.rw-pager .pg.on {
-  background: var(--surface-primary);
-  border-color: var(--border-secondary);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-.rw-pager .pg-gap {
-  padding: 0 4px;
-  color: var(--text-tertiary);
-}
-.rw-pager .btn-icon {
-  width: 26px;
-  height: 26px;
-  background: transparent;
-}
-.rw-pager .btn-icon svg {
-  width: 14px;
-  height: 14px;
-}
-.rw-pager .btn-icon[disabled] {
-  opacity: 0.35;
-  cursor: default;
-}
-
 /* ============ Rewards v2: Past cycles ledger ============ */
 .rw-past-title {
   margin-top: var(--space-6);
@@ -5073,11 +5028,26 @@ td .rw-txid {
 }
 .rw-ledger {
   padding: 0;
-  overflow: hidden;
-  overflow-x: auto;
+  overflow: visible;
 }
-.rw-ledger table {
+.rw-ledger > .rw-ledger-table {
   width: 100%;
+  table-layout: fixed;
+}
+.rw-ledger-table th:first-child {
+  width: 29%;
+}
+.rw-ledger-table th:nth-child(2) {
+  width: 22%;
+}
+.rw-ledger-table th:nth-child(3) {
+  width: 16%;
+}
+.rw-ledger-table th:nth-child(4) {
+  width: 15%;
+}
+.rw-ledger-table th:nth-child(5) {
+  width: 14%;
 }
 .rw-ledger-row > td:first-child {
   white-space: normal;
@@ -5275,6 +5245,21 @@ td .rw-txid {
   .rw-export-all .muted {
     margin-left: 0;
     width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .rw-ledger-table th:first-child {
+    width: 42%;
+  }
+  .rw-ledger-table th:nth-child(3) {
+    width: 25%;
+  }
+  .rw-ledger-table th:nth-child(5) {
+    width: 21%;
+  }
+  .rw-ledger-toggle {
+    width: 12%;
   }
 }
 

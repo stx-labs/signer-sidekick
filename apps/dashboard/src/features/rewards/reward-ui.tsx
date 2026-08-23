@@ -1,7 +1,7 @@
-import { CaretLeft, CaretRight, CurrencyBtc, Info, Wallet } from "@phosphor-icons/react";
+import { CaretRight, CurrencyBtc, Info, Wallet } from "@phosphor-icons/react";
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useId, useRef, useState } from "react";
-import { CopyIdentifierButton } from "../../copyable-identifier.js";
+import { CopyableIdentifier, CopyIdentifierButton } from "../../copyable-identifier.js";
 import { short } from "../../shared/format.js";
 import type { RewardExecutionAvailability, Tone } from "./reward-state.js";
 
@@ -169,9 +169,12 @@ export function StakerCell({
       <span className="avatar" aria-hidden="true">
         {initials}
       </span>
-      <span className="identifier" title={principal}>
-        {short(principal, 4, 4)}
-      </span>
+      <CopyableIdentifier
+        value={principal}
+        display={short(principal, 6, 6)}
+        label="staker principal"
+        className="mono"
+      />
       {bitcoin ? <L1Marker address={l1Address} principal={principal} /> : null}
     </span>
   );
@@ -240,84 +243,5 @@ export function ChevronButton({
         style={{ transform: expanded ? "rotate(90deg)" : undefined }}
       />
     </button>
-  );
-}
-
-function pageNumbers(pages: number, current: number): Array<number | null> {
-  if (pages <= 7) return Array.from({ length: pages }, (_, index) => index);
-  const set = new Set<number>([0, pages - 1, current - 1, current, current + 1]);
-  const sorted = [...set].filter((page) => page >= 0 && page < pages).sort((a, b) => a - b);
-  const withGaps: Array<number | null> = [];
-  for (const [index, page] of sorted.entries()) {
-    const previous = sorted[index - 1];
-    if (previous !== undefined && page - previous > 1) withGaps.push(null);
-    withGaps.push(page);
-  }
-  return withGaps;
-}
-
-/** "1–10 of 40 payments · ‹ 1 2 3 4 ›" — the table footer; renders nothing under one page. */
-export function Pager({
-  page,
-  pageSize,
-  total,
-  onPage,
-  noun = "payments",
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPage: (page: number) => void;
-  noun?: string;
-}) {
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(Math.max(0, page), pages - 1);
-  if (total <= pageSize) return null;
-  const first = current * pageSize + 1;
-  const last = Math.min(total, (current + 1) * pageSize);
-  return (
-    <div className="rw-pager">
-      <span className="rw-pager-range">
-        {first}–{last} of {total} {noun}
-      </span>
-      <nav className="rw-pager-nav" aria-label="Pages">
-        <button
-          className="btn-icon"
-          type="button"
-          aria-label="Previous page"
-          disabled={current === 0}
-          onClick={() => onPage(current - 1)}
-        >
-          <CaretLeft aria-hidden="true" />
-        </button>
-        {pageNumbers(pages, current).map((entry, index) =>
-          entry === null ? (
-            // biome-ignore lint/suspicious/noArrayIndexKey: gaps have no identity of their own
-            <span className="pg-gap" key={`gap-${index}`}>
-              …
-            </span>
-          ) : (
-            <button
-              className={`pg${entry === current ? " on" : ""}`}
-              type="button"
-              key={entry}
-              aria-current={entry === current ? "page" : undefined}
-              onClick={() => onPage(entry)}
-            >
-              {entry + 1}
-            </button>
-          ),
-        )}
-        <button
-          className="btn-icon"
-          type="button"
-          aria-label="Next page"
-          disabled={current >= pages - 1}
-          onClick={() => onPage(current + 1)}
-        >
-          <CaretRight aria-hidden="true" />
-        </button>
-      </nav>
-    </div>
   );
 }

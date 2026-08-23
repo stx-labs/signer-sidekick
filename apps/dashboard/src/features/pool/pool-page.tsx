@@ -249,7 +249,7 @@ export function Pool({
           Refreshing roster…
         </div>
       ) : null}
-      <div className="tbl-wrap pool-roster-wrap" aria-busy={rosterLoading}>
+      <div className="tbl-wrap responsive-table-wrap pool-roster-wrap" aria-busy={rosterLoading}>
         <div className="tbl-toolbar">
           <div className="search-inline">
             <input
@@ -262,7 +262,7 @@ export function Pool({
               }}
             />
           </div>
-          <div className="pool-roster-mobile-sort">
+          <div className="responsive-table-mobile-sort">
             <label>
               <span>Sort by</span>
               <select
@@ -303,7 +303,7 @@ export function Pool({
         </div>
         {!rosterLoading && !rosterError ? (
           <>
-            <table className="pool-roster-table">
+            <table className="responsive-data-table pool-roster-table">
               <thead>
                 <tr>
                   <SortableHeader
@@ -379,12 +379,12 @@ export function Pool({
                   const status = rosterStatus(entry);
                   return (
                     <tr key={entry.stakerPrincipal}>
-                      <td data-label="Staker">
+                      <td data-label="Staker" data-table-span="full">
                         <div className="staker">
                           <span className="avatar">SP</span>
                           <CopyableIdentifier
                             value={entry.stakerPrincipal}
-                            display={short(entry.stakerPrincipal, 8, 5)}
+                            display={short(entry.stakerPrincipal, 6, 6)}
                             label="staker principal"
                             className="mono"
                           />
@@ -412,7 +412,7 @@ export function Pool({
                           "—"
                         )}
                       </td>
-                      <td data-label="Status">
+                      <td data-label="Status" data-table-span="full">
                         <Badge state={status.state}>{status.label}</Badge>
                       </td>
                     </tr>

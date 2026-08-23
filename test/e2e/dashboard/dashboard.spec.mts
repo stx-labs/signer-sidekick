@@ -2437,6 +2437,8 @@ test("copies the full principal from an abbreviated address", async ({ page }) =
   const valueBox = await value.boundingBox();
   expect(copyBox).not.toBeNull();
   expect(valueBox).not.toBeNull();
+  await expect(value).toHaveText(`${principal.slice(0, 6)}…${principal.slice(-6)}`);
+  await expect(value.locator("xpath=parent::*")).toHaveAttribute("title", principal);
   expect(copyBox?.x ?? 0).toBeGreaterThanOrEqual((valueBox?.x ?? 0) + (valueBox?.width ?? 0));
   await expect(copy).toHaveCSS("opacity", "0");
   await copy.hover();
@@ -2481,6 +2483,19 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   await expect(page.getByText("Sign with your own wallet.")).toBeVisible();
 
   const payments = page.locator("#rewards-distribution-140-1 .rw-payments");
+  const principal = roster[0].stakerPrincipal;
+  const principalValue = payments
+    .locator(`[data-copy-value="${principal}"]`)
+    .first()
+    .locator("xpath=preceding-sibling::*[1]");
+  await expect(principalValue).toHaveText(`${principal.slice(0, 6)}…${principal.slice(-6)}`);
+  await expect(principalValue.locator("xpath=parent::*")).toHaveAttribute("title", principal);
+  expect(
+    await payments.evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBe(
+    0,
+  );
   await expect(payments.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
   await expect(payments.getByRole("tab", { name: "Paid · 0" })).toBeDisabled();
   await expect(payments.getByRole("tab", { name: "Arriving · 0" })).toBeDisabled();
@@ -2501,12 +2516,12 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   expect((popoverBox?.x ?? 0) + (popoverBox?.width ?? 0)).toBeLessThanOrEqual(viewport?.width ?? 0);
   await page.getByRole("heading", { name: "Rewards" }).click();
   await expect(l1Popover).toBeHidden();
-  await page.getByLabel("Find a staker").fill(roster[1].stakerPrincipal);
+  await page.getByLabel("Search principal").fill(roster[1].stakerPrincipal);
   await expect(payments.getByText("1 of 40 payments")).toBeVisible();
-  await page.getByLabel("Find a staker").fill("");
-  await expect(payments.getByText("1–10 of 40 payments")).toBeVisible();
-  await payments.getByRole("button", { name: "Next page" }).click();
-  await expect(payments.getByText("11–20 of 40 payments")).toBeVisible();
+  await page.getByLabel("Search principal").fill("");
+  await expect(payments.getByText("1–10 of 40")).toBeVisible();
+  await payments.getByRole("button", { name: "Next" }).click();
+  await expect(payments.getByText("11–20 of 40")).toBeVisible();
 
   // Exports live with the data: a past cycle's panel exports that distribution or the cycle…
   await page
