@@ -44,6 +44,19 @@ jobs:
             echo "Release tags must use vMAJOR.MINOR.PATCH" >&2
             exit 1
           }
+          version="${tag#v}"
+          for manifest in \
+            package.json \
+            apps/sidekick/package.json \
+            apps/dashboard/package.json \
+            packages/api-contracts/package.json \
+            packages/protocol/package.json; do
+            manifest_version="$(jq -r .version "$manifest")"
+            [[ "$manifest_version" == "$version" ]] || {
+              echo "$manifest is version $manifest_version; release tag is $tag" >&2
+              exit 1
+            }
+          done
           commit="$(git rev-list -n 1 "$GITHUB_REF")"
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$commit" origin/main || {
@@ -51,7 +64,7 @@ jobs:
             exit 1
           }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
@@ -97,9 +110,24 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          gh release create "${{ steps.release.outputs.tag }}" \
-            --verify-tag \
-            --title "Signer Sidekick ${{ steps.release.outputs.tag }}" \
-            --generate-notes \
-            --notes "Container image: \`${{ steps.image.outputs.reference }}\`"
+          set -euo pipefail
+          notes="docs/releases/${RELEASE_TAG}.md"
+          if [[ -f "$notes" ]]; then
+            {
+              printf 'Container image: `%s`\n\n' "$IMAGE_REFERENCE"
+              cat "$notes"
+            } > "$RUNNER_TEMP/release-notes.md"
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "Signer Sidekick $RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "Signer Sidekick $RELEASE_TAG" \
+              --generate-notes \
+              --notes "Container image: \`$IMAGE_REFERENCE\`"
+          fi
