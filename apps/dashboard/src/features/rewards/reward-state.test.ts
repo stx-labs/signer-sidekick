@@ -1,4 +1,5 @@
 import type {
+  DashboardSnapshot,
   GasWalletStatus,
   RewardLedger,
   RewardLedgerDistribution,
@@ -8,10 +9,14 @@ import { describe, expect, it } from "vitest";
 import { rewardRunFixture } from "./reward-run.fixture.js";
 import {
   comparePayments,
-  deriveRewardNow,
+  deriveCycleGeometry,
+  deriveDistributionCards,
+  deriveEarning,
   distributionTooltip,
   paymentStatusLabel,
   paymentTab,
+  pendingDistributions,
+  rollForwardExplanation,
 } from "./reward-state.js";
 
 const alice = "SP1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7QZD";
@@ -28,14 +33,14 @@ function distribution(
       txId: `0x${"7c".repeat(32)}`,
       blockHeight: 5_000,
       calculationBurnHeight: 908_000,
-      observedAt: "2026-08-22T03:14:00.000Z",
-      poolSats: "1287000",
+      observedAt: "2026-08-19T17:27:00.000Z",
+      poolSats: "1400000",
       poolSatsUnavailableReason: null,
       by: "another-caller",
     },
     collects: [],
     collectedSats: "0",
-    availableToCollectSats: "1287000",
+    availableToCollectSats: "1400000",
     feeBips: "500",
     feeEvidence: "locked",
     payments: {
@@ -48,7 +53,7 @@ function distribution(
       rejected: 0,
       returned: 0,
       distributedSats: "0",
-      outstandingSats: "1222650",
+      outstandingSats: "1330000",
       operatorFeeSats: "0",
     },
     status: "ready",
@@ -58,9 +63,76 @@ function distribution(
   };
 }
 
+function complete(cycle: number, index: 1 | 2): RewardLedgerDistribution {
+  return distribution({
+    cycle,
+    distribution: index,
+    collectedSats: "1400000",
+    availableToCollectSats: "0",
+    collects: [
+      {
+        sats: "1400000",
+        stxSats: "1400000",
+        txId: `0x${"9a".repeat(32)}`,
+        blockHeight: 4_100,
+        by: "you",
+      },
+    ],
+    payments: {
+      made: 40,
+      outstanding: 0,
+      notPayable: 0,
+      belowFee: 0,
+      rolledForward: 0,
+      arriving: 0,
+      rejected: 0,
+      returned: 0,
+      distributedSats: "1330000",
+      outstandingSats: "0",
+      operatorFeeSats: "70000",
+    },
+    status: "complete",
+    statusDetail: "Complete",
+  });
+}
+
+function accruing(cycle: number, index: 1 | 2, overdue = false): RewardLedgerDistribution {
+  return distribution({
+    cycle,
+    distribution: index,
+    calculation: {
+      state: overdue ? "overdue" : "waiting",
+      txId: null,
+      blockHeight: null,
+      calculationBurnHeight: null,
+      observedAt: null,
+      poolSats: null,
+      poolSatsUnavailableReason: null,
+      by: null,
+    },
+    availableToCollectSats: null,
+    payments: {
+      made: 0,
+      outstanding: 0,
+      notPayable: 0,
+      belowFee: 0,
+      rolledForward: 0,
+      arriving: 0,
+      rejected: 0,
+      returned: 0,
+      distributedSats: "0",
+      outstandingSats: "0",
+      operatorFeeSats: "0",
+    },
+    status: overdue ? "calculation-overdue" : "accruing",
+    statusDetail: overdue ? "The network calculation is overdue" : "Accruing",
+  });
+}
+
 function ledger(
   current: RewardLedgerDistribution,
   extra: RewardLedgerDistribution[] = [],
+  payments: RewardLedgerPayment[] = [],
 ): RewardLedger {
   const byCycle = new Map<number, RewardLedgerDistribution[]>();
   for (const d of [current, ...extra]) byCycle.set(d.cycle, [...(byCycle.get(d.cycle) ?? []), d]);
@@ -97,7 +169,7 @@ function ledger(
         coverage: "exact" as const,
         distributions: distributions.sort((a, b) => a.distribution - b.distribution),
       })),
-    payments: [],
+    payments,
     paymentsTruncated: false,
     fees: {
       feeBips: "500",
@@ -180,429 +252,219 @@ function payment(overrides: Partial<RewardLedgerPayment>): RewardLedgerPayment {
     settleOrReclaimTxId: null,
     btcSweepTxId: null,
     unavailableReason: null,
+    l1Address: null,
+    rollForward: null,
     ...overrides,
   };
 }
 
-describe("deriveRewardNow", () => {
-  it("offers Collect & distribute when the calculation is in and nothing has moved", () => {
-    const current = distribution({ cycle: 141, distribution: 2, current: true });
-    const first = distribution({
+/** Cycle 141 at burn block 963,900: second half, 67% through, prepare phase 250 blocks away. */
+function snapshot(
+  overrides: Partial<{
+    burnBlockHeight: number;
+    next: NonNullable<NonNullable<DashboardSnapshot["rewards"]>["calculation"]["next"]> | null;
+    outlook: Partial<NonNullable<DashboardSnapshot["rewardOutlook"]>> | null;
+  }> = {},
+): Pick<DashboardSnapshot, "rewardOutlook" | "rewards" | "preflight"> {
+  const burnBlockHeight = overrides.burnBlockHeight ?? 963_900;
+  const next =
+    overrides.next === undefined
+      ? {
+          state: "scheduled" as const,
+          targetRewardCycle: 141,
+          targetCheckpoint: "second-half" as const,
+          calculationBurnHeight: 964_249,
+          eligibleBurnHeight: 964_249,
+          blocksRemaining: 964_249 - burnBlockHeight,
+          grace: null,
+        }
+      : overrides.next;
+  const outlook =
+    overrides.outlook === null
+      ? null
+      : {
+          accrued: { globalSats: "242000000", source: "pox5-get-new-rewards" },
+          poolEstimate: { grossSats: "629000" },
+          forecast: {
+            targetRewardCycle: 141,
+            targetCheckpoint: "second-half",
+            globalSats: { low: "370000000", point: "381000000", high: "392000000" },
+            poolSats: { low: "1290000", point: "1400000", high: "1510000" },
+            sample: { observations: 6, sampleBlocks: 31 },
+            confidence: "developing",
+          },
+          operatorFeeForecast: { sats: { low: "65000", point: "70000", high: "75000" } },
+          calculation: { next },
+          ...(overrides.outlook ?? {}),
+        };
+  return {
+    preflight: {
+      node: { burnBlockHeight },
+      cycle: {
+        currentId: 141,
+        preparePhaseStartBurnHeight: 964_150,
+        blocksUntilPreparePhase: Math.max(0, 964_150 - burnBlockHeight),
+        rewardPhaseStartBurnHeight: 964_250,
+        blocksUntilRewardPhase: Math.max(0, 964_250 - burnBlockHeight),
+        isPreparePhase: burnBlockHeight >= 964_150,
+        rewardCycleLength: 2_100,
+        prepareCycleLength: 100,
+        currentCycleStartBurnHeight: 962_150,
+      },
+    },
+    rewards: {
+      global: { globalAccruedRewardsSats: "242000000" },
+      calculation: { next },
+    },
+    rewardOutlook: outlook,
+  } as unknown as Pick<DashboardSnapshot, "rewardOutlook" | "rewards" | "preflight">;
+}
+
+describe("deriveCycleGeometry", () => {
+  it("places the burn tip inside the accruing cycle", () => {
+    expect(deriveCycleGeometry(snapshot())).toEqual({
       cycle: 141,
-      distribution: 1,
-      calculation: {
-        state: "done",
-        txId: `0x${"41".repeat(32)}`,
-        blockHeight: 4_000,
-        calculationBurnHeight: 907_000,
-        observedAt: "2026-08-15T03:20:00.000Z",
-        poolSats: "1250000",
-        poolSatsUnavailableReason: null,
-        by: "another-caller",
-      },
-      collectedSats: "1250000",
-      availableToCollectSats: "0",
-      payments: {
-        made: 40,
-        outstanding: 0,
-        notPayable: 0,
-        belowFee: 0,
-        rolledForward: 0,
-        arriving: 0,
-        rejected: 0,
-        returned: 0,
-        distributedSats: "1187500",
-        outstandingSats: "0",
-        operatorFeeSats: "62500",
-      },
-      status: "complete",
-      statusDetail: "Complete",
+      burnHeight: 963_900,
+      cycleStart: 962_150,
+      halfBoundary: 963_200,
+      cycleEnd: 964_250,
+      length: 2_100,
+      prepareStart: 964_150,
+      blocksUntilPrepare: 250,
+      inPreparePhase: false,
+      liveHalf: 2,
     });
-    const model = deriveRewardNow({
-      ledger: ledger(current, [first]),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
+    expect(deriveCycleGeometry(null)).toBeNull();
+  });
+});
+
+describe("deriveEarning", () => {
+  it("describes the accruing cycle: identity, three facts, two halves", () => {
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 2), [distribution({ cycle: 141, distribution: 1 })]),
+      snapshot: snapshot(),
+      burnBlockSeconds: 600,
+      now: new Date("2026-08-22T12:00:00.000Z"),
     });
     expect(model).not.toBeNull();
-    expect(model?.eyebrow).toBe("Cycle 141 · Second Distribution");
-    expect(model?.badge).toMatchObject({ tone: "success", label: "Ready" });
-    expect(model?.headline).toBe("Ready to collect & distribute");
-    expect(model?.primary).toMatchObject({ kind: "collect-and-distribute", transactions: 41 });
-    expect(model?.execution).toMatchObject({ available: true, chipTone: "ok" });
-    expect(model?.execution.chip).toBe("Gas wallet 12.48 STX · ≈ 124 tx");
-    expect(model?.tiles.map((tile) => tile.label)).toEqual([
-      "Calculated for this pool",
-      "Collected",
-      "Distributed",
-      "Your fee",
+    expect(model?.cycle).toBe(141);
+    expect(model?.when).toBe("Second half · 2d 10h left · ends at block 964,249");
+    expect(model?.prepare).toBe("Prepare phase in 1d 17h · block 964,150");
+    expect(model?.facts.map((fact) => [fact.label, fact.value, fact.unit, fact.sub])).toEqual([
+      ["Network earned this half", "2.42", "sBTC", "3.81 sBTC projected at calculation"],
+      [
+        "Pool projected this half",
+        "0.014",
+        "sBTC",
+        "0.00629 sBTC accrued · 0.0129 sBTC – 0.0151 sBTC · developing confidence",
+      ],
+      [
+        "Pool projected this cycle",
+        "0.028",
+        "sBTC",
+        "0.014 sBTC calculated + 0.014 sBTC projected · your fee 0.0014 sBTC",
+      ],
     ]);
-    expect(model?.tiles[0]).toMatchObject({ value: "0.0129", unit: "sBTC" });
-    expect(model?.tiles[2]).toMatchObject({
-      value: "0",
-      unit: "of 40",
-      detail: "0.0122 sBTC waiting for stakers",
+    expect(model?.halves[0]).toMatchObject({
+      label: "First half",
+      percent: 100,
+      status: { text: "Ready to collect", tone: "ready" },
+      note: "ended at block 963,199 · calculated Aug 19 · 0.014 sBTC",
     });
-    expect(model?.tiles[3]).toMatchObject({ value: "64,350", unit: "sats" });
-    expect(model?.cycleLine).toMatchObject({ cycle: 141, amount: "0.0254 sBTC" });
-    expect(model?.cycleLine?.text).toContain("First Distribution complete");
-    expect(model?.sub).toContain("40 payments");
+    expect(model?.halves[1]).toMatchObject({
+      label: "Second half",
+      percent: 67,
+      status: { text: "Accruing · 67% · 2d 10h left", tone: "live" },
+    });
+    expect(model?.halves[1]?.note).toMatch(/^ends at block 964,249 · calculation expected Aug 2/);
   });
 
-  it("points at a newer live cycle waiting behind the current distribution", () => {
-    // Late window: cycle 142 already accrues its first distribution while 141's second is still
-    // ready to collect and distribute; the ledger keeps 141 current and 142 waits behind it.
-    const current = distribution({ cycle: 141, distribution: 2 });
-    const later = distribution({
-      cycle: 142,
-      distribution: 1,
-      calculation: {
-        state: "waiting",
-        txId: null,
-        blockHeight: null,
-        calculationBurnHeight: null,
-        observedAt: null,
-        poolSats: null,
-        poolSatsUnavailableReason: null,
-        by: null,
-      },
-      availableToCollectSats: null,
-      payments: {
-        made: 0,
-        outstanding: 0,
-        notPayable: 0,
-        belowFee: 0,
-        rolledForward: 0,
-        arriving: 0,
-        rejected: 0,
-        returned: 0,
-        distributedSats: "0",
-        outstandingSats: "0",
-        operatorFeeSats: "0",
-      },
-      status: "accruing",
-      statusDetail: "Accruing before the network calculation",
+  it("marks a finished first half by its distribution status and the second as not started", () => {
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 1, true)),
+      snapshot: snapshot({ burnBlockHeight: 962_400, next: null, outlook: null }),
     });
-    const model = deriveRewardNow({
-      ledger: ledger(current, [later]),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
+    expect(model?.when).toBe("First half · 5d 13h left · ends at block 963,199");
+    expect(model?.halves.map((half) => [half.status.text, half.percent])).toEqual([
+      ["Accruing · 24% · 5d 13h left", 24],
+      ["Not started", 0],
+    ]);
+    expect(model?.facts[1]?.sub).toBe("projection unavailable");
+    const later = deriveEarning({
+      ledger: ledger(accruing(141, 1, true), [complete(141, 2)]),
+      snapshot: snapshot({ burnBlockHeight: 964_300, next: null, outlook: null }),
     });
-    expect(model?.eyebrow).toBe("Cycle 141 · Second Distribution");
-    expect(model?.primary).toMatchObject({ kind: "collect-and-distribute" });
-    expect(model?.next).toEqual({
-      cycle: 142,
-      distribution: 1,
-      text: "Up next · Cycle 142 · First Distribution is accruing",
-    });
+    expect(later?.halves[0]?.status).toEqual({ text: "Ready to calculate", tone: "ready" });
   });
 
-  it("disables the run but keeps the financial state when the gas wallet cannot cover it", () => {
-    const current = distribution({ cycle: 141, distribution: 2, current: true });
-    const low = deriveRewardNow({
-      ledger: ledger(current),
-      snapshot: null,
-      gasWallet: gasWallet({ balanceUstx: "310000", estimatedTransactions: 3 }),
-      engineMode: "operator-run",
-      activeRun: null,
-    });
-    expect(low?.badge.label).toBe("Ready");
-    expect(low?.primary?.kind).toBe("collect-and-distribute");
-    expect(low?.execution).toMatchObject({ available: false, chipTone: "low" });
-    expect(low?.execution.reason).toContain("needs about 3.80 STX more");
-
-    const observe = deriveRewardNow({
-      ledger: ledger(current),
-      snapshot: null,
-      gasWallet: null,
-      engineMode: "observe",
-      activeRun: null,
-    });
-    expect(observe?.execution).toMatchObject({
-      available: false,
-      walletFallback: true,
-      chip: null,
-    });
-
-    const admin = deriveRewardNow({
-      ledger: ledger(current),
-      snapshot: null,
-      gasWallet: gasWallet({
-        refusal: {
-          checkedAt: "2026-08-22T12:00:00.000Z",
-          isManagerAdmin: true,
-          isSignerKey: false,
-          isContract: false,
-          refusalReason: "manager-admin",
+  it("keeps the projection honest when the calculation target still lags behind", () => {
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 2)),
+      snapshot: snapshot({
+        next: {
+          state: "due",
+          targetRewardCycle: 141,
+          targetCheckpoint: "first-half",
+          calculationBurnHeight: 963_199,
+          eligibleBurnHeight: 963_199,
+          blocksRemaining: 0,
+          grace: null,
         },
       }),
+    });
+    expect(model?.facts[0]?.sub).toBe("includes Cycle 141 first half until it is calculated");
+    expect(model?.facts[1]).toMatchObject({ value: "—", sub: "after the Cycle 141 calculation" });
+  });
+});
+
+describe("deriveDistributionCards", () => {
+  it("offers Collect & distribute for a calculated distribution with nothing moved", () => {
+    const cards = deriveDistributionCards({
+      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true }), [
+        complete(141, 1),
+      ]),
+      gasWallet: gasWallet(),
       engineMode: "operator-run",
       activeRun: null,
     });
-    expect(admin?.execution.reason).toContain("dedicated key");
-  });
-
-  it("describes accruing, quiet, distributing, complete, and attention states", () => {
-    const accruing = distribution({
-      cycle: 142,
-      distribution: 1,
-      current: true,
-      calculation: {
-        state: "waiting",
-        txId: null,
-        blockHeight: null,
-        calculationBurnHeight: null,
-        observedAt: null,
-        poolSats: null,
-        poolSatsUnavailableReason: null,
-        by: null,
-      },
-      availableToCollectSats: null,
-      payments: {
-        made: 0,
-        outstanding: 0,
-        notPayable: 0,
-        belowFee: 0,
-        rolledForward: 0,
-        arriving: 0,
-        rejected: 0,
-        returned: 0,
-        distributedSats: "0",
-        outstandingSats: "0",
-        operatorFeeSats: "0",
-      },
-      status: "accruing",
-      statusDetail: "Accruing",
-      feeEvidence: "provisional",
-    });
-    const previous = distribution({
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    expect(card?.eyebrow).toBe("Cycle 141 · Second Distribution");
+    expect(card?.badge).toMatchObject({ tone: "success", label: "Ready" });
+    expect(card?.headline).toBe("Ready to collect & distribute");
+    expect(card?.sub).toBe("Calculated Aug 19 by another caller");
+    expect(card?.primary).toMatchObject({
+      kind: "collect-and-distribute",
+      transactions: 41,
       cycle: 141,
       distribution: 2,
-      collectedSats: "1287000",
-      availableToCollectSats: "0",
-      payments: {
-        made: 40,
-        outstanding: 0,
-        notPayable: 0,
-        belowFee: 0,
-        rolledForward: 0,
-        arriving: 0,
-        rejected: 0,
-        returned: 0,
-        distributedSats: "1222650",
-        outstandingSats: "0",
-        operatorFeeSats: "64350",
-      },
-      status: "complete",
-      statusDetail: "Complete",
     });
-    const quiet = deriveRewardNow({
-      ledger: ledger(accruing, [previous]),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
-      nextCalculationIn: "2d 4h",
-    });
-    expect(quiet?.headline).toBe("Nothing to do — accruing for the next distribution");
-    expect(quiet?.sub).toContain("Cycle 141 is fully distributed");
-    expect(quiet?.sub).toContain("about 2d 4h");
-    expect(quiet?.primary).toBeNull();
-    expect(quiet?.previous).toMatchObject({ kind: "cycle-complete", cycle: 141 });
-    expect(quiet?.tiles[0]?.label).toBe("Projected for this distribution");
-    expect(quiet?.tiles[1]?.value).toBe("—");
-
-    const distributing = deriveRewardNow({
-      ledger: ledger(
-        distribution({
-          cycle: 141,
-          distribution: 2,
-          current: true,
-          collectedSats: "1287000",
-          availableToCollectSats: "0",
-          payments: {
-            made: 12,
-            outstanding: 28,
-            notPayable: 0,
-            belowFee: 0,
-            rolledForward: 0,
-            arriving: 0,
-            rejected: 0,
-            returned: 0,
-            distributedSats: "351000",
-            outstandingSats: "871650",
-            operatorFeeSats: "18470",
-          },
-          status: "distributing",
-          statusDetail: "Distributing",
-        }),
-      ),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
-    });
-    expect(distributing?.headline).toBe("Distributing · 12 of 40 paid");
-    expect(distributing?.primary).toMatchObject({
-      kind: "distribute",
-      label: "Distribute 28 payments",
-      transactions: 28,
-    });
-
-    const running = deriveRewardNow({
-      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true })),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: rewardRunFixture({
-        status: "running",
-        progress: { completed: 13, total: 41, inFlight: 1 },
-        gasSpentUstx: "120000",
-      }),
-    });
-    expect(running?.headline).toBe("Distributing… 13 of 41 payments");
-    expect(running?.progress).toMatchObject({
-      done: 13,
-      total: 41,
-      right: "0.12 STX gas used",
-      canPause: false,
-      canResume: false,
-    });
-    expect(running?.badge).toMatchObject({ tone: "accent", live: true });
-    expect(running?.primary).not.toBeNull();
-
-    const halted = deriveRewardNow({
-      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true })),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: rewardRunFixture({
-        status: "halted",
-        failureReason: "Broadcast outcome is ambiguous",
-        progress: { completed: 2, total: 3, inFlight: 1 },
-      }),
-    });
-    expect(halted?.badge).toMatchObject({ tone: "error", label: "Run halted" });
-    expect(halted?.headline).toBe("Run halted");
-    expect(halted?.sub).toContain("Broadcast outcome is ambiguous");
-    expect(halted?.progress).toMatchObject({ canResume: true, canCancel: false, canPause: false });
-
-    const complete = deriveRewardNow({
-      ledger: ledger(
-        distribution({
-          cycle: 141,
-          distribution: 2,
-          current: true,
-          collectedSats: "1287000",
-          availableToCollectSats: "0",
-          payments: {
-            made: 40,
-            outstanding: 0,
-            notPayable: 0,
-            belowFee: 0,
-            rolledForward: 0,
-            arriving: 3,
-            rejected: 0,
-            returned: 0,
-            distributedSats: "1222650",
-            outstandingSats: "0",
-            operatorFeeSats: "64350",
-          },
-          status: "all-distributed",
-          statusDetail: "All distributed",
-        }),
-      ),
-      payments: [
-        payment({ status: "arrived", route: "bitcoin", stakerPrincipal: bob, l1RequestId: "4187" }),
-      ],
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
-    });
-    expect(complete?.headline).toBe("All distributed · 3 payouts arriving over Bitcoin");
-    expect(complete?.primary).toBeNull();
-    expect(complete?.secondary).toMatchObject({
-      kind: "finish-bitcoin-payouts",
-      label: "Finish Bitcoin payouts",
-    });
-
-    const attention = deriveRewardNow({
-      ledger: ledger(
-        distribution({
-          cycle: 141,
-          distribution: 2,
-          current: true,
-          collectedSats: "1287000",
-          availableToCollectSats: "0",
-          payments: {
-            made: 40,
-            outstanding: 0,
-            notPayable: 0,
-            belowFee: 0,
-            rolledForward: 0,
-            arriving: 2,
-            rejected: 1,
-            returned: 0,
-            distributedSats: "1222650",
-            outstandingSats: "0",
-            operatorFeeSats: "64350",
-          },
-          status: "needs-attention",
-          statusDetail: "1 Bitcoin payout was rejected",
-        }),
-      ),
-      snapshot: null,
-      gasWallet: gasWallet(),
-      engineMode: "operator-run",
-      activeRun: null,
-    });
-    expect(attention?.badge).toMatchObject({ tone: "error", label: "Needs attention" });
-    expect(attention?.headline).toBe("1 Bitcoin payout was rejected");
-    expect(attention?.primary).toMatchObject({ kind: "finish-bitcoin-payouts", transactions: 1 });
-    expect(attention?.attention?.text).toContain("does not change a staker's route");
+    expect(card?.execution).toMatchObject({ available: true, chipTone: "ok" });
+    expect(card?.execution.chip).toBe("Gas wallet 12.48 STX · ≈ 124 tx");
+    expect(card?.tiles.map((tile) => [tile.label, tile.value, tile.unit, tile.detail])).toEqual([
+      ["Calculated for this pool", "0.014", "sBTC", null],
+      ["Collected", "0", "sats", "0.014 sBTC ready to collect"],
+      ["Distributed", "0", "of 40", "0.0133 sBTC to stakers"],
+      ["Your fee", "70,000", "sats", "5% locked"],
+    ]);
+    expect(card?.queued).toBeNull();
   });
 
-  it("surfaces a prior distribution that still has payments outstanding", () => {
-    const current = distribution({
-      cycle: 141,
-      distribution: 2,
-      current: true,
-      calculation: {
-        state: "waiting",
-        txId: null,
-        blockHeight: null,
-        calculationBurnHeight: null,
-        observedAt: null,
-        poolSats: null,
-        poolSatsUnavailableReason: null,
-        by: null,
-      },
-      availableToCollectSats: null,
-      payments: {
-        made: 0,
-        outstanding: 0,
-        notPayable: 0,
-        belowFee: 0,
-        rolledForward: 0,
-        arriving: 0,
-        rejected: 0,
-        returned: 0,
-        distributedSats: "0",
-        outstandingSats: "0",
-        operatorFeeSats: "0",
-      },
-      status: "accruing",
-      statusDetail: "Accruing",
-    });
+  it("lists every open distribution oldest first, and queues the rest behind the running one", () => {
     const first = distribution({
       cycle: 141,
       distribution: 1,
-      collectedSats: "1250000",
+      collectedSats: "1400000",
       availableToCollectSats: "0",
+      collects: [
+        {
+          sats: "1400000",
+          stxSats: "1400000",
+          txId: `0x${"9a".repeat(32)}`,
+          blockHeight: 4_100,
+          by: "you",
+        },
+      ],
       payments: {
         made: 38,
         outstanding: 2,
@@ -612,70 +474,198 @@ describe("deriveRewardNow", () => {
         arriving: 0,
         rejected: 0,
         returned: 0,
-        distributedSats: "1162890",
-        outstandingSats: "24610",
-        operatorFeeSats: "61200",
+        distributedSats: "1218548",
+        outstandingSats: "111452",
+        operatorFeeSats: "64300",
       },
       status: "distributing",
-      statusDetail: "2 payments outstanding",
+      statusDetail: "Distributing",
     });
-    const model = deriveRewardNow({
-      ledger: ledger(current, [first]),
-      snapshot: null,
+    const run = rewardRunFixture({
+      recipe: { ...rewardRunFixture().recipe, cycle: 141, distribution: 1 },
+    });
+    const cards = deriveDistributionCards({
+      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true }), [first]),
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: run,
+    });
+    expect(cards.map((card) => card.key)).toEqual(["141:1", "141:2"]);
+    expect(cards[0]?.progress).toMatchObject({ done: 2, total: 3, runId: run.runId });
+    expect(cards[0]?.headline).toBe("Distributing… 2 of 3 payments");
+    expect(cards[0]?.queued).toBeNull();
+    expect(cards[1]?.queued).toBe(
+      "Queued behind Cycle 141 · First Distribution — one run at a time",
+    );
+    expect(cards[1]?.primary?.kind).toBe("collect-and-distribute");
+    const idle = deriveDistributionCards({
+      ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true }), [first]),
       gasWallet: gasWallet(),
       engineMode: "operator-run",
       activeRun: null,
     });
-    expect(model?.previous).toMatchObject({ kind: "prior-outstanding", distribution: 1, count: 2 });
-    expect(model?.previous?.text).toBe(
-      "First Distribution still has 2 payments outstanding · 24,610 sats",
-    );
-    expect(model?.secondary).toMatchObject({ kind: "distribute", label: "Distribute 2 payments" });
-    expect(distributionTooltip(first)).toContain(
-      "Calculated Aug 22, 03:14 UTC · by another caller · tx 0x7c7c…7c7c",
+    expect(idle[0]).toMatchObject({
+      headline: "2 payments still outstanding",
+      sub: "Collected by you · 38 of 40 paid",
+      badge: { label: "In progress" },
+    });
+    expect(idle[0]?.primary).toMatchObject({ kind: "distribute", transactions: 2 });
+  });
+
+  it("surfaces an overdue calculation and rejected Bitcoin payouts as their own cards", () => {
+    const rejected = distribution({
+      cycle: 140,
+      distribution: 2,
+      availableToCollectSats: "0",
+      collectedSats: "1400000",
+      payments: {
+        made: 40,
+        outstanding: 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        arriving: 0,
+        rejected: 1,
+        returned: 0,
+        distributedSats: "1330000",
+        outstandingSats: "0",
+        operatorFeeSats: "70000",
+      },
+      status: "needs-attention",
+      statusDetail: "1 Bitcoin payout rejected · return pending",
+    });
+    const cards = deriveDistributionCards({
+      ledger: ledger(accruing(141, 1, true), [rejected]),
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: null,
+    });
+    expect(cards.map((card) => [card.key, card.primary?.kind, card.headline])).toEqual([
+      ["140:2", "finish-bitcoin-payouts", "1 Bitcoin payout was rejected"],
+      ["141:1", "calculate", "Calculation is overdue — you can run it"],
+    ]);
+    expect(cards[0]?.attention?.title).toBe("1 rejected withdrawal");
+    expect(cards[1]?.tiles).toEqual([]);
+    expect(cards[1]?.calculated).toBe(false);
+  });
+
+  it("leaves complete and accruing distributions out of Distribute", () => {
+    expect(
+      pendingDistributions(ledger(accruing(141, 2), [complete(141, 1), complete(140, 2)])),
+    ).toEqual([]);
+  });
+
+  it("explains why execution is unavailable without a gas wallet or in Observe mode", () => {
+    const base = ledger(distribution({ cycle: 141, distribution: 2, current: true }));
+    const observe = deriveDistributionCards({
+      ledger: base,
+      gasWallet: null,
+      engineMode: "observe",
+      activeRun: null,
+    });
+    expect(observe[0]?.execution).toMatchObject({ available: false, walletFallback: true });
+    const low = deriveDistributionCards({
+      ledger: base,
+      gasWallet: gasWallet({ estimatedTransactions: 10 }),
+      engineMode: "operator-run",
+      activeRun: null,
+    });
+    expect(low[0]?.execution.reason).toBe(
+      "Gas wallet needs about 3.10 STX more to cover 41 transactions",
     );
   });
 });
 
-describe("payment helpers", () => {
-  it("buckets statuses into tabs and labels them in operator terms", () => {
-    expect(paymentTab(payment({ status: "outstanding" }))).toBe("outstanding");
+describe("payment rows", () => {
+  it("groups statuses into tabs and words, including rolled-forward rows", () => {
     expect(paymentTab(payment({ status: "below-fee" }))).toBe("outstanding");
-    expect(paymentTab(payment({ status: "paid" }))).toBe("paid");
-    expect(paymentTab(payment({ status: "sent" }))).toBe("arriving");
     expect(paymentTab(payment({ status: "arrived" }))).toBe("arriving");
-    expect(paymentTab(payment({ status: "rejected" }))).toBe("rejected");
-    expect(paymentTab(payment({ status: "returned" }))).toBe("paid");
-    expect(
-      paymentStatusLabel(
-        payment({ status: "returned", settleOrReclaimTxId: `0x${"6e".repeat(32)}` }),
-      ),
-    ).toMatchObject({ tone: "caution", label: "Returned as sBTC" });
-    expect(paymentStatusLabel(payment({ status: "sent", l1RequestId: "4181" }))).toMatchObject({
-      label: "Sent over Bitcoin",
-      sub: "request #4181 · awaiting signers",
+    expect(paymentTab(payment({ status: "rolled-forward" }))).toBe("rolled");
+    expect(paymentStatusLabel(payment({ status: "rolled-forward" }))).toEqual({
+      tone: "caution",
+      label: "Rolled forward → Second",
+      sub: null,
     });
+    expect(paymentStatusLabel(payment({ status: "retired" })).label).toBe("Arrived");
   });
 
-  it("sorts amounts by integer sats regardless of rendering", () => {
-    const rows = [
-      payment({ stakerPrincipal: "SP1", grossRewardSats: "99999", payoutSats: "99999" }),
-      payment({ stakerPrincipal: "SP2", grossRewardSats: "100000", payoutSats: "100000" }),
-      payment({ stakerPrincipal: "SP3", grossRewardSats: "8150", payoutSats: "8150" }),
-      payment({
-        stakerPrincipal: "SP4",
-        grossRewardSats: null,
-        payoutSats: null,
-        stakerEntitlementSats: "5",
+  it("explains a rolled-forward payment from the recorded run history", () => {
+    const row = payment({
+      distribution: 1,
+      status: "rolled-forward",
+      stakerEntitlementSats: "0",
+      paymentTxId: `0x${"6e".repeat(32)}`,
+      paidAt: "2026-08-08T10:21:00.000Z",
+      rollForward: {
+        reason: "skipped-below-fee-budget",
+        detail: "Bitcoin payout is below its configured fee budget",
+        runId: "1f3a9c00-0000-4000-8000-000000000001",
+        childIndex: 3,
+        recordedAt: "2026-08-01T09:52:00.000Z",
+        paidWith: { distribution: 2, txId: `0x${"6e".repeat(32)}` },
+      },
+    });
+    expect(rollForwardExplanation(row)).toEqual({
+      title: "Skipped in the Aug 1 run · L1 payout below its fee budget",
+      detail: "Bitcoin payout is below its configured fee budget",
+      footer: "Paid with the Second Distribution · Aug 8 · tx 0x6e6e…6e6e · run 1f3a9c00",
+    });
+    expect(
+      rollForwardExplanation(
+        payment({
+          status: "rolled-forward",
+          rollForward: {
+            reason: "not-attempted-run-halted",
+            detail: "Current network fee exceeds the approved fee cap",
+            runId: null,
+            childIndex: null,
+            recordedAt: null,
+            paidWith: null,
+          },
+        }),
+      ),
+    ).toEqual({
+      title: "Not attempted — the run halted earlier",
+      detail: "Current network fee exceeds the approved fee cap",
+      footer: "Still waiting on the Second Distribution payment",
+    });
+    expect(rollForwardExplanation(payment({}))).toBeNull();
+  });
+
+  it("sorts by integer sats, never rendered strings", () => {
+    const small = payment({ stakerPrincipal: alice, payoutSats: "5", stakerEntitlementSats: "5" });
+    const large = payment({
+      stakerPrincipal: bob,
+      payoutSats: "1000000",
+      stakerEntitlementSats: "1000000",
+    });
+    expect([small, large].sort((a, b) => comparePayments(a, b, "toStaker", "desc"))[0]).toBe(large);
+    expect([large, small].sort((a, b) => comparePayments(a, b, "toStaker", "asc"))[0]).toBe(small);
+  });
+
+  it("keeps who / when / txid in the tooltip", () => {
+    const tooltip = distributionTooltip(
+      distribution({
+        cycle: 141,
+        distribution: 1,
+        collects: [
+          {
+            sats: "1400000",
+            stxSats: "1400000",
+            txId: `0x${"9a".repeat(32)}`,
+            blockHeight: 4_100,
+            by: "you",
+          },
+        ],
+        payments: { ...distribution({ cycle: 141, distribution: 1 }).payments, rolledForward: 2 },
       }),
-    ];
-    const ascending = [...rows]
-      .sort((a, b) => comparePayments(a, b, "gross", "asc"))
-      .map((row) => row.stakerPrincipal);
-    expect(ascending).toEqual(["SP4", "SP3", "SP1", "SP2"]);
-    const descending = [...rows]
-      .sort((a, b) => comparePayments(a, b, "toStaker", "desc"))
-      .map((row) => row.stakerPrincipal);
-    expect(descending).toEqual(["SP2", "SP1", "SP3", "SP4"]);
+    );
+    expect(tooltip).toBe(
+      [
+        "Calculated Aug 19, 17:27 UTC · by another caller · tx 0x7c7c…7c7c",
+        "Collected block 4,100 · by you · tx 0x9a9a…9a9a",
+        "2 payments rolled forward to the Second Distribution",
+      ].join("\n"),
+    );
   });
 });

@@ -28,6 +28,7 @@ This file tracks delivery only. Current behavior is defined by:
 | S4 | Calculate, collect, distribute, settle, and reclaim adapters with exact effects |
 | S5 | Rewards, Overview, Activity, Settings, responsive flows, and recipe approval UI |
 | S6 | Concise operator docs and the signing-path review checklist; review happens in the repository's required PR review |
+| S5.1 | Rewards page v2: Earning card for the accruing cycle, one Distribute card per open distribution (paged payments, ₿ marker with the registered L1 address), a past-cycles ledger with distribution tabs, rolled-forward reasons joined from run history, and exports next to the data; one fee-ledger card exports the whole history |
 
 ## Release gates
 

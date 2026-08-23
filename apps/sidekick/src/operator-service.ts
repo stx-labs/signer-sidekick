@@ -1,5 +1,9 @@
 import { ClarityType } from "@stacks/transactions";
-import type { DashboardSnapshot, RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
+import type {
+  DashboardSnapshot,
+  RewardLedger,
+  RewardRun,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
@@ -90,6 +94,8 @@ export interface OperatorServiceOptions {
   managerVerification?: ManagerVerificationContext;
   transactionEngineObservation?: TransactionEngineObservationHook;
   nodeTransactions?: ManagerEventNodeTransactions;
+  /** Operator runs sealed for a distribution; the ledger explains rolled-forward payments with it. */
+  rewardRunHistory?: (cycle: number, distribution: 1 | 2) => readonly RewardRun[];
 }
 
 export interface OperatorSynchronizationProgress {
@@ -1002,6 +1008,7 @@ export class OperatorService {
               this.withdrawalRequestStatus(registry, requestId, tip),
           }
         : {}),
+      ...(this.options.rewardRunHistory ? { runHistory: this.options.rewardRunHistory } : {}),
     });
     if (this.rewardLedgerCache.size >= 8) {
       const oldest = this.rewardLedgerCache.keys().next().value;

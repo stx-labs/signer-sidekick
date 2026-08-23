@@ -768,6 +768,10 @@ export interface OperatorSnapshot {
       rewardPhaseStartBurnHeight: number | null;
       blocksUntilRewardPhase: number | null;
       isPreparePhase: boolean | null;
+      /** PoX geometry for the current cycle, so pages can place halves and the prepare phase. */
+      rewardCycleLength?: number | null;
+      prepareCycleLength?: number | null;
+      currentCycleStartBurnHeight?: number | null;
     };
     compatibility: {
       status: "matched" | "unrecognized" | "inconsistent";
@@ -1243,7 +1247,11 @@ export interface DashboardSnapshot extends OperatorSnapshot {
     };
     stakers: Array<{
       stakerPrincipal: string;
-      payout: { kind: string; maxFeeSats: string | null };
+      payout: {
+        kind: string;
+        maxFeeSats: string | null;
+        poxAddress?: { versionHex: string; hashbytesHex: string } | null;
+      };
       rewards: { earnedSats: string; feeSats: string; grossSats: string };
       claimableByPolicy: boolean;
     }>;
@@ -2928,6 +2936,7 @@ export const rewardLedgerPaymentStatusSchema = z.enum([
   "outstanding",
   "not-payable",
   "below-fee",
+  "rolled-forward",
   "paid",
   "sent",
   "arrived",
@@ -2946,6 +2955,43 @@ export const rewardLedgerL1StatusSchema = z.enum([
   "unknown",
 ]);
 export type RewardLedgerL1Status = z.infer<typeof rewardLedgerL1StatusSchema>;
+
+/**
+ * Why a First-Distribution account was not paid before the Second calculation (its amount then
+ * travels with the Second-Distribution payment). Reasons come from the operator-run history:
+ * recorded child outcomes, the run's own state, or the absence of a run.
+ */
+export const rewardLedgerRollForwardReasonSchema = z.enum([
+  "no-run",
+  "not-in-recipe",
+  "skipped-below-fee-budget",
+  "skipped",
+  "halted-at-this-payment",
+  "not-attempted-run-halted",
+  "not-attempted-run-cancelled",
+  "not-attempted-run-expired",
+  "not-attempted-run-open",
+  "broadcast-unresolved",
+  "paid-after-second-calculation",
+]);
+export type RewardLedgerRollForwardReason = z.infer<typeof rewardLedgerRollForwardReasonSchema>;
+
+export const rewardLedgerRollForwardSchema = z
+  .object({
+    reason: rewardLedgerRollForwardReasonSchema,
+    /** The recorded failure/skip reason verbatim, when the run history holds one. */
+    detail: z.string().min(1).max(1_000).nullable(),
+    runId: z.string().uuid().nullable(),
+    childIndex: z.number().int().nonnegative().nullable(),
+    recordedAt: z.string().nullable(),
+    /** The Second-Distribution payment that carried this account's amount, once made. */
+    paidWith: z
+      .object({ distribution: z.literal(2), txId: ledgerTxIdSchema })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type RewardLedgerRollForward = z.infer<typeof rewardLedgerRollForwardSchema>;
 
 export const rewardLedgerCapabilityLevelSchema = z.enum([
   "pox5-baseline",
@@ -2984,6 +3030,10 @@ export const rewardLedgerPaymentSchema = z
     settleOrReclaimTxId: ledgerTxIdSchema.nullable(),
     btcSweepTxId: z.string().min(1).max(128).nullable(),
     unavailableReason: z.string().min(1).max(200).nullable(),
+    /** The staker's registered Bitcoin payout address (encoded), when the route is Bitcoin and known. */
+    l1Address: z.string().min(1).max(128).nullable(),
+    /** Set on `rolled-forward` rows: why the First-Distribution amount moved to the Second. */
+    rollForward: rewardLedgerRollForwardSchema.nullable(),
   })
   .strict();
 export type RewardLedgerPayment = z.infer<typeof rewardLedgerPaymentSchema>;

@@ -13,9 +13,9 @@ import { loadEngineStatus } from "../operations/engine-api.js";
 import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
   currentDistribution,
-  deriveRewardNow,
+  type DistributionCardModel,
+  deriveDistributionCards,
   distributionName,
-  type RewardNowModel,
 } from "../rewards/reward-state.js";
 import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
 import { IN_PROGRESS_RUN_STATUSES, listRewardRuns } from "../rewards/run-api.js";
@@ -25,24 +25,19 @@ const CARD_POLL_MS = 30_000;
 
 type CardState = "ready" | "accruing" | "distributing" | "complete" | "attention" | "overdue";
 
-function cardState(model: RewardNowModel, ledger: RewardLedger): CardState {
-  const distribution = currentDistribution(ledger);
-  if (!distribution) return "accruing";
-  if (model.progress) return "distributing";
-  switch (distribution.status) {
-    case "needs-attention":
+/** The Overview follows the oldest distribution that still needs the operator, else the accrual. */
+function cardState(card: DistributionCardModel | null): CardState {
+  if (!card) return "accruing";
+  if (card.progress) return "distributing";
+  switch (card.badge.label) {
+    case "Needs attention":
       return "attention";
-    case "calculation-overdue":
+    case "Calculation overdue":
       return "overdue";
-    case "ready":
-      return "ready";
-    case "distributing":
-      return "distributing";
-    case "all-distributed":
-    case "complete":
+    case "All distributed":
       return "complete";
     default:
-      return "accruing";
+      return "ready";
   }
 }
 
@@ -116,16 +111,22 @@ export function RewardsOverviewCard({
   }, [token, generatedAt]);
 
   if (!ledger) return <>{failed ? fallback : fallback}</>;
-  const model = deriveRewardNow({ ledger, snapshot: null, gasWallet, engineMode, activeRun });
-  const distribution = currentDistribution(ledger);
-  if (!model || !distribution) return <>{fallback}</>;
-  const state = cardState(model, ledger);
-  const cycle = ledger.cycles.find((entry) => entry.cycle === ledger.current.cycle) ?? null;
+  const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
+  const card = cards[0] ?? null;
+  const state = cardState(card);
+  const distribution = card
+    ? (ledger.cycles
+        .find((entry) => entry.cycle === card.cycle)
+        ?.distributions.find((d) => d.distribution === card.distribution) ?? null)
+    : currentDistribution(ledger);
+  if (!distribution) return <>{fallback}</>;
+  const cycleNumber = card?.cycle ?? ledger.current.cycle;
+  const cycle = ledger.cycles.find((entry) => entry.cycle === cycleNumber) ?? null;
   const calculated = distribution.calculation.state === "done";
-  const primaryAction = model.primary;
+  const primaryAction = card?.primary ?? card?.secondary?.action ?? null;
   const startRun = () => {
     if (primaryAction) sessionStorage.setItem(PENDING_RUN_STORAGE_KEY, primaryAction.kind);
-    location.hash = domainHash("rewards", "calculation");
+    location.hash = domainHash("rewards", "claims");
   };
   const toStakers = (
     BigInt(distribution.payments.distributedSats) + BigInt(distribution.payments.outstandingSats)
@@ -141,6 +142,9 @@ export function RewardsOverviewCard({
         .reduce((sum, d) => sum + BigInt(d.calculation.poolSats ?? "0"), 0n)
         .toString()
     : null;
+  const headline = card ? card.headline : "Accruing — nothing to do until the network calculates";
+  const badge = card ? card.badge : { tone: "neutral" as const, label: "Accruing" };
+  const execution = card?.execution ?? null;
   return (
     <section
       className="card overview-domain rw-overview-card"
@@ -149,13 +153,13 @@ export function RewardsOverviewCard({
     >
       <div className="card-head">
         <h2 id="overview-rewards-heading">{titles[state]}</h2>
-        <Badge state={model.badge.tone}>{model.badge.label}</Badge>
+        <Badge state={badge.tone}>{badge.label}</Badge>
       </div>
       <div className="overview-domain-primary">
         <span>
-          Cycle {ledger.current.cycle} · {distributionName(ledger.current.distribution)}
+          Cycle {cycleNumber} · {distributionName(distribution.distribution)}
         </span>
-        <strong>{model.headline}</strong>
+        <strong>{headline}</strong>
         <small>
           {calculated
             ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
@@ -163,6 +167,12 @@ export function RewardsOverviewCard({
               ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
               : "projection unavailable"}
         </small>
+        {cards.length > 1 ? (
+          <small>
+            {cards.length - 1} more {cards.length - 1 === 1 ? "distribution" : "distributions"}{" "}
+            waiting behind this one
+          </small>
+        ) : null}
       </div>
       <dl>
         {calculated ? (
@@ -216,9 +226,10 @@ export function RewardsOverviewCard({
                 className="btn btn-primary"
                 type="button"
                 onClick={startRun}
-                disabled={!model.execution.available}
+                disabled={!execution?.available || card?.queued !== null}
                 title={
-                  model.execution.available ? undefined : (model.execution.reason ?? undefined)
+                  card?.queued ??
+                  (execution?.available ? undefined : (execution?.reason ?? undefined))
                 }
               >
                 {primaryAction.label}
@@ -230,7 +241,7 @@ export function RewardsOverviewCard({
             </a>
           </>
         ) : state === "distributing" ? (
-          <a className="btn btn-tertiary" href={domainHash("rewards", "calculation")}>
+          <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
             View progress
           </a>
         ) : state === "complete" ? (

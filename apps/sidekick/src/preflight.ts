@@ -97,8 +97,21 @@ export interface PreflightResult {
     rewardPhaseStartBurnHeight: number | null;
     blocksUntilRewardPhase: number | null;
     isPreparePhase: boolean | null;
+    rewardCycleLength: number | null;
+    prepareCycleLength: number | null;
+    currentCycleStartBurnHeight: number | null;
   };
   checks: PreflightCheck[];
+}
+
+/** Cycle n starts at `first_burnchain_block_height + n * reward_cycle_length`; fall back to the next cycle's start. */
+function currentCycleStartBurnHeight(info: PoxInfo): number | null {
+  const currentId = info.current_cycle?.id ?? info.reward_cycle_id;
+  if (info.first_burnchain_block_height !== undefined && Number.isFinite(currentId)) {
+    return info.first_burnchain_block_height + currentId * info.reward_cycle_length;
+  }
+  const nextStart = info.next_cycle?.reward_phase_start_block_height ?? null;
+  return nextStart === null ? null : nextStart - info.reward_cycle_length;
 }
 
 export interface PreflightSources {
@@ -579,6 +592,9 @@ export function evaluatePreflight(
       rewardPhaseStartBurnHeight: nextCycle?.reward_phase_start_block_height ?? null,
       blocksUntilRewardPhase: nextCycle ? Math.max(0, nextCycle.blocks_until_reward_phase) : null,
       isPreparePhase,
+      rewardCycleLength: nodePoxInfo.reward_cycle_length,
+      prepareCycleLength: nodePoxInfo.prepare_cycle_length,
+      currentCycleStartBurnHeight: currentCycleStartBurnHeight(nodePoxInfo),
     },
     checks,
   };

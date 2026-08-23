@@ -1,7 +1,7 @@
 [
   {
     "file": "Main",
-    "title": "Rewards \u00b7 Ready to collect & distribute",
+    "title": "Rewards · Ready to collect & distribute",
     "x": 0,
     "y": 0,
     "w": 1280,
@@ -9,7 +9,7 @@
   },
   {
     "file": "Accruing",
-    "title": "Rewards \u00b7 Accruing (before calculation)",
+    "title": "Rewards · Accruing (before calculation)",
     "x": 1360,
     "y": 0,
     "w": 1280,
@@ -17,7 +17,7 @@
   },
   {
     "file": "Quiet",
-    "title": "Rewards \u00b7 Quiet (cycle complete, accruing for next)",
+    "title": "Rewards · Quiet (cycle complete, accruing for next)",
     "x": 4080,
     "y": 0,
     "w": 1280,
@@ -25,7 +25,7 @@
   },
   {
     "file": "Distributing",
-    "title": "Rewards \u00b7 Distributing 12 of 40",
+    "title": "Rewards · Distributing 12 of 40",
     "x": 2720,
     "y": 0,
     "w": 1280,
@@ -33,7 +33,7 @@
   },
   {
     "file": "Complete",
-    "title": "Rewards \u00b7 All distributed + past cycles",
+    "title": "Rewards · All distributed + past cycles",
     "x": 0,
     "y": 1760,
     "w": 1280,
@@ -41,7 +41,7 @@
   },
   {
     "file": "Attention",
-    "title": "Rewards \u00b7 Needs attention",
+    "title": "Rewards · Needs attention",
     "x": 1360,
     "y": 1760,
     "w": 1280,
@@ -49,7 +49,7 @@
   },
   {
     "file": "Confirm",
-    "title": "Confirm sheet \u00b7 Collect & distribute",
+    "title": "Confirm sheet · Collect & distribute",
     "x": 2720,
     "y": 1760,
     "w": 1280,
@@ -57,7 +57,7 @@
   },
   {
     "file": "Overview",
-    "title": "Overview \u00b7 Rewards card (two states)",
+    "title": "Overview · Rewards card (two states)",
     "x": 0,
     "y": 3640,
     "w": 1000,
@@ -65,7 +65,7 @@
   },
   {
     "file": "Settings",
-    "title": "Settings \u00b7 Gas wallet",
+    "title": "Settings · Gas wallet",
     "x": 1080,
     "y": 3640,
     "w": 1280,
@@ -73,7 +73,7 @@
   },
   {
     "file": "Mobile",
-    "title": "Rewards \u00b7 Mobile (390)",
+    "title": "Rewards · Mobile (390)",
     "x": 2440,
     "y": 3640,
     "w": 390,
@@ -81,10 +81,42 @@
   },
   {
     "file": "OverviewMobile",
-    "title": "Overview \u00b7 Rewards card \u00b7 mobile (390)",
+    "title": "Overview · Rewards card · mobile (390)",
     "x": 2900,
     "y": 3640,
     "w": 390,
     "h": 980
+  },
+  {
+    "file": "EarningQuiet",
+    "title": "Rewards v2 · Earning (nothing to distribute)",
+    "x": 0,
+    "y": 5000,
+    "w": 1280,
+    "h": 1700
+  },
+  {
+    "file": "EarningPending",
+    "title": "Rewards v2 · Earning + First Distribution ready",
+    "x": 1360,
+    "y": 5000,
+    "w": 1280,
+    "h": 2000
+  },
+  {
+    "file": "EarningPendingTwo",
+    "title": "Rewards v2 · Earning (cycle 142) + two distributions waiting",
+    "x": 2720,
+    "y": 5000,
+    "w": 1280,
+    "h": 2300
+  },
+  {
+    "file": "PastExpanded",
+    "title": "Rewards v2 · Past cycle expanded (payments)",
+    "x": 4080,
+    "y": 5000,
+    "w": 1280,
+    "h": 2000
   }
 ]

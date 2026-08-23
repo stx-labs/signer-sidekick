@@ -1,3 +1,4 @@
+import type { RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
 import { describe, expect, it } from "vitest";
 import {
   buildRewardLedger,
@@ -298,10 +299,11 @@ describe("buildRewardLedger", () => {
     }
   });
 
-  it("keeps an earlier ready distribution current while the next checkpoint is accruing", async () => {
+  it("keeps the accruing checkpoint current while an earlier distribution stays ready", async () => {
     // Live mainnet shape (cycle 141): the first-half calculation landed, nothing was collected yet,
-    // and the second-half checkpoint is already the "next" calculation. The operator must still be
-    // pointed at the first distribution, which is ready to collect.
+    // and the second-half checkpoint is already the "next" calculation. The Now card stays on the
+    // accruing second distribution; the first one is reported ready so the page can offer its
+    // collect under the card (plan §6, "Accruing" state).
     const ledger = await buildRewardLedger({
       store: fakeStore({
         realizations: [realization(141, "first-half", 4_000, "1403581", tx(9))],
@@ -342,11 +344,11 @@ describe("buildRewardLedger", () => {
         },
       }),
     });
-    expect(ledger.current).toEqual({ cycle: 141, distribution: 1 });
+    expect(ledger.current).toEqual({ cycle: 141, distribution: 2 });
     const [cycle] = ledger.cycles;
     expect(cycle?.distributions.map((d) => [d.distribution, d.status, d.current])).toEqual([
-      [1, "ready", true],
-      [2, "accruing", false],
+      [1, "ready", false],
+      [2, "accruing", true],
     ]);
     expect(cycle?.distributions[0]).toMatchObject({
       availableToCollectSats: "1403581",
@@ -354,10 +356,10 @@ describe("buildRewardLedger", () => {
     });
   });
 
-  it("keeps the previous cycle's open second distribution current after the target cycle moves on", async () => {
+  it("keeps the previous cycle's open second distribution live after the target cycle moves on", async () => {
     // Late window: the chain passed the midpoint of cycle 142, so the calculation target (and the
-    // primary live status) is 142's first distribution, while 141's second distribution is still
-    // uncollected. The operator snapshot carries a second live status for 141.
+    // Now card) is 142's first distribution, while 141's second distribution is still uncollected.
+    // The operator snapshot carries a second live status for 141 so it stays ready and payable.
     const ledger = await buildRewardLedger({
       store: fakeStore({
         realizations: [realization(141, "second-half", 4_100, "1403581", tx(9))],
@@ -407,25 +409,21 @@ describe("buildRewardLedger", () => {
         },
       }),
     });
-    expect(ledger.current).toEqual({ cycle: 141, distribution: 2 });
+    expect(ledger.current).toEqual({ cycle: 142, distribution: 1 });
     const previous = ledger.cycles.find((cycle) => cycle.cycle === 141);
     const target = ledger.cycles.find((cycle) => cycle.cycle === 142);
     expect(previous?.distributions.find((d) => d.distribution === 2)).toMatchObject({
       status: "ready",
-      current: true,
+      current: false,
       availableToCollectSats: "1403581",
       feeEvidence: "locked",
       payments: { outstanding: 1, outstandingSats: "1333401" },
       coverage: "exact",
     });
     expect(target?.distributions.map((d) => [d.distribution, d.status, d.current])).toEqual([
-      [1, "accruing", false],
+      [1, "accruing", true],
     ]);
-    expect(ledger.payments.find((row) => row.stakerPrincipal === alice)).toMatchObject({
-      cycle: 141,
-      distribution: 2,
-      status: "outstanding",
-    });
+    expect(ledger.cycles.find((cycle) => cycle.cycle === 141)?.outstandingSats).toBe("1333401");
   });
 
   it("falls back to the target cycle once the previous cycle has nothing left to do", async () => {
@@ -576,8 +574,15 @@ describe("buildRewardLedger", () => {
     ).toEqual([
       [carol, 2, true, "combined", "another-caller"],
       [bob, 2, true, "combined", "another-caller"],
+      // rolled-forward rows sit at the seam: they explain the First Distribution gap and point at
+      // the Second Distribution payment that carried the amount
+      [bob, 1, false, "exact", "another-caller"],
+      [carol, 1, false, "exact", "another-caller"],
       [alice, 1, false, "exact", "you"],
     ]);
+    expect(
+      rows.filter((r) => r.status === "rolled-forward").map((r) => r.rollForward?.reason),
+    ).toEqual(["no-run", "no-run"]);
     expect(ledger.fees).toMatchObject({ earnedIndexedSats: String(12295 + 6000 + 4500) });
   });
 
@@ -798,7 +803,7 @@ describe("buildRewardLedger", () => {
     });
     const payments = rewardLedgerPaymentsCsv(ledger);
     expect(payments.split("\n")[0]).toBe(
-      "cycle,distribution,bucket,staker_principal,route,gross_reward_sats,operator_fee_sats,staker_entitlement_sats,payout_sats,payout_asset,l1_max_fee_sats,l1_actual_fee_sats,fee_refund_sats,returned_sats,status,coverage,includes_prior_distribution,payment_txid,payment_block_height,paid_at,by,l1_request_id,l1_status,settle_or_reclaim_txid,btc_sweep_txid,unavailable_reason",
+      "cycle,distribution,bucket,staker_principal,route,gross_reward_sats,operator_fee_sats,staker_entitlement_sats,payout_sats,payout_asset,l1_max_fee_sats,l1_actual_fee_sats,fee_refund_sats,returned_sats,status,coverage,includes_prior_distribution,payment_txid,payment_block_height,paid_at,by,l1_request_id,l1_status,settle_or_reclaim_txid,btc_sweep_txid,unavailable_reason,l1_address,roll_forward_reason,roll_forward_detail,roll_forward_run_id,roll_forward_paid_with_txid",
     );
     expect(payments).toContain("'=SP1EVIL");
     expect(rewardLedgerDistributionsCsv(ledger).split("\n")).toHaveLength(3);
@@ -1025,5 +1030,224 @@ describe("buildRewardLedger", () => {
     expect(all.query.scope).toBe("all");
     expect(all.payments.length).toBe(10_000);
     expect(all.paymentsTruncated).toBe(false);
+  });
+});
+
+type RunChild = RewardRun["children"][number];
+
+function runFixture(input: {
+  runId: string;
+  status: RewardRun["status"];
+  failureReason?: string | null;
+  children: Array<Partial<RunChild> & { accountKey: string; status: RunChild["status"] }>;
+}): RewardRun {
+  return {
+    runId: input.runId,
+    status: input.status,
+    failureReason: input.failureReason ?? null,
+    createdAt: "2026-08-01T09:00:00.000Z",
+    children: input.children.map((child, index) => ({
+      index,
+      operation: "claim-staker-rewards",
+      accountKey: child.accountKey,
+      status: child.status,
+      maximumAmountSats: child.maximumAmountSats ?? null,
+      materializedAmountSats: null,
+      planSha256: null,
+      txid: child.txid ?? null,
+      provenance: child.provenance ?? null,
+      failureReason: child.failureReason ?? null,
+      updatedAt: "2026-08-01T09:30:00.000Z",
+    })),
+  } as unknown as RewardRun;
+}
+
+describe("buildRewardLedger roll-forward reasons and L1 addresses", () => {
+  const seamStore = () =>
+    fakeStore({
+      realizations: [
+        realization(140, "first-half", 1_000, "1198000", tx(1)),
+        realization(140, "second-half", 2_000, "1241000", tx(2)),
+      ],
+      prints: [
+        collectPrint(3, 140, 1_100, "1198000"),
+        collectPrint(4, 140, 2_100, "1241000"),
+        grossPrint(10, alice, 1_200, "245900"),
+        grossPrint(11, bob, 2_200, "120000"),
+        grossPrint(12, carol, 2_300, "90000"),
+      ],
+      claims: [
+        claim(10, alice, 140, 1_200, "233605"),
+        claim(11, bob, 140, 2_200, "114000"),
+        claim(12, carol, 140, 2_300, "85500"),
+      ],
+      memberships: { 140: [membership(alice, 140), membership(bob, 140), membership(carol, 140)] },
+    });
+  const runId = "00000000-0000-4000-8000-00000000abcd";
+
+  it("lists rolled-forward accounts under the First Distribution with the recorded reason", async () => {
+    const ledger = await buildRewardLedger({
+      store: seamStore(),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set([tx(3), tx(10)]),
+      now,
+      snapshot: snapshot({
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+      }),
+      query: { cycle: 140 },
+      runHistory: (cycle, distribution) =>
+        cycle === 140 && distribution === 1
+          ? [
+              runFixture({
+                runId,
+                status: "halted",
+                failureReason: "Current network fee exceeds the approved fee cap",
+                children: [
+                  { accountKey: `${alice}:140:stx`, status: "confirmed", txid: tx(10) },
+                  {
+                    accountKey: `${bob}:140:stx`,
+                    status: "skipped",
+                    provenance: "policy-exception",
+                    failureReason: "Bitcoin payout is below its configured fee budget",
+                    maximumAmountSats: "8674",
+                  },
+                  { accountKey: `${carol}:140:stx`, status: "pending", maximumAmountSats: "42000" },
+                ],
+              }),
+            ]
+          : [],
+    });
+    const first = ledger.cycles.find((c) => c.cycle === 140)?.distributions[0];
+    expect(first?.payments).toMatchObject({
+      made: 1,
+      rolledForward: 2,
+      distributedSats: "233605",
+      outstandingSats: "0",
+    });
+    const rolled = ledger.payments.filter((row) => row.status === "rolled-forward");
+    expect(rolled.map((row) => [row.stakerPrincipal, row.distribution])).toEqual([
+      [bob, 1],
+      [carol, 1],
+    ]);
+    expect(rolled[0]).toMatchObject({
+      grossRewardSats: "8674",
+      stakerEntitlementSats: "0",
+      paymentTxId: tx(11),
+      by: "another-caller",
+      rollForward: {
+        reason: "skipped-below-fee-budget",
+        detail: "Bitcoin payout is below its configured fee budget",
+        runId,
+        childIndex: 1,
+        paidWith: { distribution: 2, txId: tx(11) },
+      },
+    });
+    expect(rolled[1]?.rollForward).toMatchObject({
+      reason: "not-attempted-run-halted",
+      detail: "Current network fee exceeds the approved fee cap",
+      childIndex: 2,
+      paidWith: { distribution: 2, txId: tx(12) },
+    });
+    // The Second Distribution payments still carry both halves.
+    expect(
+      ledger.payments.filter((row) => row.distribution === 2).map((row) => row.coverage),
+    ).toEqual(["combined", "combined"]);
+    const csv = rewardLedgerPaymentsCsv(ledger);
+    expect(csv.split("\n")[0]).toContain("roll_forward_reason");
+    expect(csv).toContain("skipped-below-fee-budget");
+  });
+
+  it("falls back to no-run / not-in-recipe when the history has no child for the account", async () => {
+    const build = (runs: RewardRun[]) =>
+      buildRewardLedger({
+        store: seamStore(),
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        sourceId: null,
+        ownedTxids: new Set(),
+        now,
+        snapshot: snapshot({
+          rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+        }),
+        query: { cycle: 140, distribution: 1 },
+        runHistory: () => runs,
+      });
+    const noRuns = await build([]);
+    expect(
+      noRuns.payments
+        .filter((row) => row.status === "rolled-forward")
+        .map((row) => row.rollForward?.reason),
+    ).toEqual(["no-run", "no-run"]);
+    const capped = await build([
+      runFixture({
+        runId,
+        status: "completed",
+        children: [{ accountKey: `${alice}:140:stx`, status: "confirmed", txid: tx(10) }],
+      }),
+    ]);
+    expect(
+      capped.payments
+        .filter((row) => row.status === "rolled-forward")
+        .map((row) => row.rollForward),
+    ).toMatchObject([
+      { reason: "not-in-recipe", runId, childIndex: null },
+      { reason: "not-in-recipe", runId, childIndex: null },
+    ]);
+  });
+
+  it("encodes the registered Bitcoin payout address on live payment rows", async () => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "second-half", 4_900, "1287000", tx(9))],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: {
+          rewardCycle: 141,
+          calculation: { next: null },
+          buckets: [
+            { bondIndex: null, signerEarnedBeforeManagerClaimSats: "0", feeSnapshotBips: "500" },
+          ],
+          manager: { configuredFeeBips: "500", feeSnapshotBips: "500", earnedFeesSats: "0" },
+          stakers: [
+            {
+              stakerPrincipal: alice,
+              payout: { kind: "direct-sbtc", maxFeeSats: null, poxAddress: null },
+              rewards: { earnedSats: "233605", feeSats: "12295", grossSats: "245900" },
+              claimableByPolicy: true,
+            },
+            {
+              stakerPrincipal: bob,
+              payout: {
+                kind: "bitcoin-l1",
+                maxFeeSats: "10000",
+                poxAddress: {
+                  versionHex: "04",
+                  hashbytesHex: "751e76e8199196d454941c45d1b3a323f1433bd6",
+                },
+              },
+              rewards: { earnedSats: "172235", feeSats: "9065", grossSats: "181300" },
+              claimableByPolicy: true,
+            },
+          ],
+        },
+      }),
+    });
+    const byStaker = new Map(ledger.payments.map((row) => [row.stakerPrincipal, row]));
+    expect(byStaker.get(alice)?.l1Address).toBe(null);
+    expect(byStaker.get(bob)).toMatchObject({
+      route: "bitcoin",
+      l1Address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+      rollForward: null,
+    });
   });
 });

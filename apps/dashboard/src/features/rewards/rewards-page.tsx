@@ -24,16 +24,29 @@ import {
   dismissGasWalletBanner,
   loadGasWalletStatus,
 } from "../settings/gas-wallet-api.js";
-import { RewardAccounting } from "./reward-accounting.js";
+import { RewardFeeLedger } from "./reward-accounting.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 import { GasWalletBanners } from "./reward-banners.js";
 import { type ConfirmState, RewardConfirmSheet } from "./reward-confirm-sheet.js";
-import { loadRewardLedger } from "./reward-ledger-api.js";
-import { RewardNowCard } from "./reward-now-card.js";
-import { PastCycles } from "./reward-past-cycles.js";
-import { PaymentsTable, paymentsHint } from "./reward-payments.js";
+import { DistributionCard } from "./reward-distribution-card.js";
+import { EarningCard } from "./reward-earning-card.js";
+import {
+  downloadRewardLedgerExport,
+  loadRewardLedger,
+  type RewardLedgerQuery,
+} from "./reward-ledger-api.js";
+import { PastCyclesLedger } from "./reward-past-cycles.js";
 import { ProjectionDetails } from "./reward-projection-details.js";
-import { currentDistribution, deriveRewardNow, type RewardPrimaryAction } from "./reward-state.js";
+import {
+  deriveCycleGeometry,
+  deriveDistributionCards,
+  deriveEarning,
+  distributionKey,
+  distributionName,
+  execution as executionAvailability,
+  pendingDistributions,
+  type RewardPrimaryAction,
+} from "./reward-state.js";
 import {
   ACTIVE_RUN_STATUSES,
   approveRewardRun,
@@ -41,7 +54,6 @@ import {
   IN_PROGRESS_RUN_STATUSES,
   listRewardRuns,
   loadRewardRun,
-  operationsForKind,
   pauseRewardRun,
   prepareRewardRun,
   RewardRunsUnavailableError,
@@ -68,6 +80,11 @@ function terminalRunNotice(run: RewardRun): string {
       return `Run ${run.status}.`;
   }
 }
+
+type PaymentsCache = {
+  byKey: Record<string, RewardLedgerPayment[]>;
+  errors: Record<string, string>;
+};
 
 export function Rewards({
   data,
@@ -98,6 +115,8 @@ export function Rewards({
   const [runControlBusy, setRunControlBusy] = useState<"pause" | "resume" | "cancel" | null>(null);
   const [runsUnavailable, setRunsUnavailable] = useState(false);
   const [walletPanelOpen, setWalletPanelOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [cardPayments, setCardPayments] = useState<PaymentsCache>({ byKey: {}, errors: {} });
   const walletPanelRef = useRef<HTMLDivElement | null>(null);
   const rewards = data.rewards;
   const calculation = data.rewardOutlook?.calculation ?? rewards?.calculation ?? null;
@@ -115,7 +134,7 @@ export function Rewards({
     [token],
   );
 
-  // Ledger: the page's single source for cycles, the current distribution, its payments, fees.
+  // Ledger: the page's single source for cycles, the pending distributions, their payments, fees.
   useEffect(() => {
     void ledgerRetry;
     void data.generatedAt;
@@ -164,7 +183,7 @@ export function Rewards({
     return () => controller.abort();
   }, [token, data.generatedAt]);
 
-  // Projection accuracy + Bitcoin block timing for "expected in about …".
+  // Projection accuracy + Bitcoin block timing for "left" / "in about …".
   useEffect(() => {
     void data.generatedAt;
     const controller = new AbortController();
@@ -239,37 +258,110 @@ export function Rewards({
     calculation?.next?.state === "scheduled" && burnBlockTiming
       ? compactDuration(calculation.next.blocksRemaining * burnBlockTiming.averageSeconds)
       : null;
-  const distribution = ledger ? currentDistribution(ledger) : null;
-  const payments: RewardLedgerPayment[] = ledger?.payments ?? [];
-  const model = useMemo(
+  const geometry = useMemo(() => deriveCycleGeometry(data), [data]);
+  const earning = useMemo(
     () =>
       ledger
-        ? deriveRewardNow({
+        ? deriveEarning({
             ledger,
-            payments,
             snapshot: data,
-            gasWallet,
-            engineMode,
-            activeRun:
-              activeRun && IN_PROGRESS_RUN_STATUSES.has(activeRun.status) ? activeRun : null,
-            nextCalculationIn,
+            burnBlockSeconds: burnBlockTiming?.averageSeconds ?? null,
           })
         : null,
-    [ledger, payments, data, gasWallet, engineMode, activeRun, nextCalculationIn],
+    [ledger, data, burnBlockTiming],
   );
+  const paymentsByKey = useMemo(() => {
+    const map = new Map<string, readonly RewardLedgerPayment[]>();
+    for (const [key, rows] of Object.entries(cardPayments.byKey)) map.set(key, rows);
+    return map;
+  }, [cardPayments.byKey]);
+  const inProgressRun =
+    activeRun && IN_PROGRESS_RUN_STATUSES.has(activeRun.status) ? activeRun : null;
+  const cards = useMemo(
+    () =>
+      ledger
+        ? deriveDistributionCards({
+            ledger,
+            paymentsByKey,
+            gasWallet,
+            engineMode,
+            activeRun: inProgressRun,
+          })
+        : [],
+    [ledger, paymentsByKey, gasWallet, engineMode, inProgressRun],
+  );
+
+  // Payments per Distribute card. The ledger read carries the selected cycle's rows; every other
+  // card fetches its own distribution and refreshes whenever the ledger does. Targets come from the
+  // ledger alone so this effect never depends on the payments it stores.
+  const pendingTargets = useMemo(
+    () =>
+      ledger
+        ? pendingDistributions(ledger).map(({ cycle, distribution }) => ({
+            key: distributionKey(cycle.cycle, distribution.distribution),
+            cycle: cycle.cycle,
+            distribution: distribution.distribution,
+          }))
+        : [],
+    [ledger],
+  );
+  const seededStamp = useRef<string | null>(null);
+  const fetchedStamp = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (!ledger) return;
+    if (seededStamp.current !== ledger.generatedAt) {
+      seededStamp.current = ledger.generatedAt;
+      const seeded: Record<string, RewardLedgerPayment[]> = {};
+      if (ledger.query.scope === "selection" && ledger.query.cycle !== null) {
+        const cycle = ledger.cycles.find((entry) => entry.cycle === ledger.query.cycle) ?? null;
+        const covered = (cycle?.distributions ?? [])
+          .map((d) => d.distribution)
+          .filter((d) => ledger.query.distribution === null || ledger.query.distribution === d);
+        for (const distribution of covered) {
+          const key = distributionKey(ledger.query.cycle, distribution);
+          seeded[key] = ledger.payments.filter(
+            (row) => row.cycle === ledger.query.cycle && row.distribution === distribution,
+          );
+          fetchedStamp.current[key] = ledger.generatedAt;
+        }
+      }
+      if (Object.keys(seeded).length > 0) {
+        setCardPayments((current) => ({ ...current, byKey: { ...current.byKey, ...seeded } }));
+      }
+    }
+    const controller = new AbortController();
+    for (const target of pendingTargets) {
+      if (fetchedStamp.current[target.key] === ledger.generatedAt) continue;
+      fetchedStamp.current[target.key] = ledger.generatedAt;
+      loadRewardLedger(
+        token,
+        { cycle: target.cycle, distribution: target.distribution },
+        controller.signal,
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setCardPayments((current) => ({
+            byKey: { ...current.byKey, [target.key]: result.payments },
+            errors: Object.fromEntries(
+              Object.entries(current.errors).filter(([key]) => key !== target.key),
+            ),
+          }));
+        })
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
+          delete fetchedStamp.current[target.key];
+          setCardPayments((current) => ({
+            ...current,
+            errors: { ...current.errors, [target.key]: operatorErrorSentence(cause) },
+          }));
+        });
+    }
+    return () => controller.abort();
+  }, [ledger, pendingTargets, token]);
 
   const openConfirm = useCallback(
     (action: RewardPrimaryAction) => {
       setConfirm({ action, state: { status: "drafting" } });
-      const cycle = ledger?.current.cycle ?? null;
-      const distribution = action.distribution ?? ledger?.current.distribution ?? null;
-      if (cycle === null || distribution === null) {
-        setConfirm({
-          action,
-          state: { status: "error", message: "The current distribution is not known yet." },
-        });
-        return;
-      }
       const settle = (state: ConfirmState) =>
         setConfirm((current) => (current?.action === action ? { action, state } : current));
       listRewardRuns(token, 5)
@@ -277,13 +369,13 @@ export function Rewards({
           const draft = runs.find(
             (run) =>
               run.status === "awaiting-approval" &&
-              run.recipe.cycle === cycle &&
-              run.recipe.distribution === distribution,
+              run.recipe.cycle === action.cycle &&
+              run.recipe.distribution === action.distribution,
           );
           if (draft) return { run: draft, reused: true };
           const run = await prepareRewardRun(token, {
-            cycle,
-            distribution,
+            cycle: action.cycle,
+            distribution: action.distribution,
             operations: action.operations,
           });
           return { run, reused: false };
@@ -300,17 +392,21 @@ export function Rewards({
           ),
         );
     },
-    [ledger, token],
+    [token],
   );
 
   // Overview hands over a pending run kind; open the same sheet once the ledger is here.
   useEffect(() => {
-    if (!model || !ledger) return;
+    if (!ledger || cards.length === 0) return;
     const pending = sessionStorage.getItem(PENDING_RUN_STORAGE_KEY);
     if (!pending) return;
     sessionStorage.removeItem(PENDING_RUN_STORAGE_KEY);
-    if (model.primary && model.primary.kind === pending) openConfirm(model.primary);
-  }, [ledger, model, openConfirm]);
+    const match =
+      cards.find((card) => card.primary?.kind === pending)?.primary ??
+      cards.find((card) => card.secondary?.action.kind === pending)?.secondary?.action ??
+      null;
+    if (match) openConfirm(match);
+  }, [ledger, cards, openConfirm]);
 
   const go = (run: RewardRun) => {
     setConfirm((current) =>
@@ -395,10 +491,11 @@ export function Rewards({
     [token],
   );
 
-  const viewCycle = (cycle: number) => {
-    document
-      .getElementById(`rewards-cycle-${cycle}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const exportPayments = (query: RewardLedgerQuery) => {
+    setExportBusy(true);
+    downloadRewardLedgerExport(token, "payments", "csv", query)
+      .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)))
+      .finally(() => setExportBusy(false));
   };
 
   // Legacy manager fee actions (browser wallet) stay reachable from the fee ledger card.
@@ -460,23 +557,27 @@ export function Rewards({
     </>
   );
 
-  // Newer live cycles wait behind the current distribution (shown on the Now card as "up next");
-  // only strictly older cycles are history.
-  const currentCycleNumber = ledger?.current.cycle ?? null;
-  const pastCycles =
-    ledger && currentCycleNumber !== null
-      ? ledger.cycles.filter((cycle) => cycle.cycle < currentCycleNumber)
-      : (ledger?.cycles ?? []);
-  const paymentsForTable =
-    ledger && distribution && ledger.query.cycle === null ? payments : payments;
-  const walletFallback = model?.execution.walletFallback ?? engineMode !== "operator-run";
+  // Past cycles: strictly older than the accruing cycle, and not still in Distribute. A cycle with
+  // a distribution that needs the operator is listed there until it is finished.
+  const accruingCycle = earning?.cycle ?? ledger?.current.cycle ?? null;
+  const pendingCycles = new Set(cards.map((card) => card.cycle));
+  const pastCycles = (ledger?.cycles ?? []).filter(
+    (cycle) =>
+      (accruingCycle === null || cycle.cycle < accruingCycle) && !pendingCycles.has(cycle.cycle),
+  );
+  const leadCard = cards.find((card) => card.primary !== null) ?? cards[0] ?? null;
+  const anyAction = cards.some((card) => card.primary !== null || card.secondary !== null);
+  const walletFallback = leadCard?.execution.walletFallback ?? engineMode !== "operator-run";
+  const confirmCard = confirm
+    ? (cards.find(
+        (card) =>
+          card.cycle === confirm.action.cycle && card.distribution === confirm.action.distribution,
+      ) ?? null)
+    : null;
 
   return (
     <>
-      <PageHead
-        title="Rewards"
-        lede="What the network calculated, what you collected, and what reached your stakers — for this distribution and every cycle before it."
-      />
+      <PageHead title="Rewards" />
       {data.freshness?.status === "stale" ? (
         <div className="callout callout-caution content-notice" role="status">
           Showing last known reward data while Sidekick refreshes chain data.
@@ -490,32 +591,15 @@ export function Rewards({
       <GasWalletBanners
         gasWallet={gasWallet}
         engineMode={engineMode}
-        neededTransactions={model?.primary?.transactions ?? 0}
+        neededTransactions={leadCard?.primary?.transactions ?? 0}
         onCreate={createWallet}
         onDismiss={dismissBanner}
         onFundInstructions={() => {
           location.hash = settingsHash("gas-wallet");
         }}
       />
-      {ledger && model ? (
-        <RewardNowCard
-          model={model}
-          onPrimary={openConfirm}
-          onSecondary={(secondary) =>
-            openConfirm({
-              kind: secondary.kind,
-              label: secondary.label,
-              operations: operationsForKind(secondary.kind),
-              transactions: 1,
-              distribution:
-                model.previous?.kind === "prior-outstanding" ? model.previous.distribution : null,
-            })
-          }
-          onViewCycle={viewCycle}
-          onRunControl={runControl}
-          runControlBusy={runControlBusy}
-          busy={confirm !== null || runsUnavailable}
-        />
+      {ledger && earning ? (
+        <EarningCard model={earning} />
       ) : (
         <RequestState
           label="the reward ledger"
@@ -538,10 +622,10 @@ export function Rewards({
           </div>
         </div>
       ) : null}
-      {model && walletFallback && (model.primary || model.secondary) ? (
+      {walletFallback && anyAction ? (
         <div className="callout callout-neutral content-notice" role="status">
           <div className="body">
-            <strong>Sign with your own wallet.</strong> {model.execution.reason}
+            <strong>Sign with your own wallet.</strong> {leadCard?.execution.reason}
             <div className="actions">
               {claimRewards.available &&
               BigInt(rewards?.global.signerEarnedAcrossBucketsSats ?? 0) > 0n ? (
@@ -568,17 +652,33 @@ export function Rewards({
       />
       {ledger ? (
         <>
-          <div className="section-title domain-section-anchor" id="rewards-claims">
-            Payments <span className="hint">{paymentsHint(distribution)}</span>
+          <div className="section-title rw-pending-title domain-section-anchor" id="rewards-claims">
+            Distribute{" "}
+            <span className="hint">
+              {cards.length === 0
+                ? "nothing waiting"
+                : `${cards.length} waiting${cards.length > 1 ? " · oldest first" : ""}`}
+            </span>
           </div>
-          <PaymentsTable
-            payments={paymentsForTable}
-            emptyText={
-              distribution && distribution.calculation.state !== "done"
-                ? "No payments yet for this distribution. They appear as soon as the network calculates it."
-                : "No payments recorded for this distribution."
-            }
-          />
+          {cards.length === 0 ? (
+            <div className="card rw-quiet" role="status">
+              Nothing to distribute right now — the next distribution appears here once the network
+              calculates it.
+            </div>
+          ) : (
+            cards.map((card) => (
+              <DistributionCard
+                key={card.key}
+                model={card}
+                payments={cardPayments.byKey[card.key] ?? null}
+                paymentsError={cardPayments.errors[card.key] ?? null}
+                onAction={openConfirm}
+                onRunControl={runControl}
+                runControlBusy={runControlBusy}
+                busy={confirm !== null || runsUnavailable}
+              />
+            ))
+          )}
           <div ref={walletPanelRef} id="rewards-withdrawals" className="domain-section-anchor">
             {walletPanelOpen || walletFallback ? (
               <details className="card rw-details" open={walletPanelOpen}>
@@ -595,21 +695,28 @@ export function Rewards({
               </details>
             ) : null}
           </div>
-          <PastCycles cycles={pastCycles} loadPayments={loadDistributionPayments} />
-          <RewardAccounting
-            token={token}
-            ledger={ledger}
-            selectedCycle={ledger.current.cycle}
-            selectedDistribution={ledger.current.distribution}
-            feeActions={feeActions}
+          <PastCyclesLedger
+            cycles={pastCycles}
+            loadPayments={loadDistributionPayments}
+            onExport={exportPayments}
+            exportBusy={exportBusy}
+            geometry={geometry}
+            burnBlockSeconds={burnBlockTiming?.averageSeconds ?? null}
           />
+          <RewardFeeLedger token={token} ledger={ledger} feeActions={feeActions} />
         </>
       ) : null}
-      {confirm && model ? (
+      {confirm ? (
         <RewardConfirmSheet
           action={confirm.action}
-          eyebrow={model.eyebrow}
-          execution={model.execution}
+          eyebrow={
+            confirmCard?.eyebrow ??
+            `Cycle ${confirm.action.cycle} · ${distributionName(confirm.action.distribution)}`
+          }
+          execution={
+            confirmCard?.execution ??
+            executionAvailability(gasWallet, engineMode, confirm.action.transactions)
+          }
           state={confirm.state}
           onCancel={() => setConfirm(null)}
           onGo={go}

@@ -1,31 +1,39 @@
 import { ArrowRight, Warning } from "@phosphor-icons/react";
-import type { RewardNowModel } from "./reward-state.js";
+import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
+import { PaymentsTable } from "./reward-payments.js";
+import type { DistributionCardModel, RewardPrimaryAction } from "./reward-state.js";
 import { GasChip, InfoTip } from "./reward-ui.js";
 
-export function RewardNowCard({
+/**
+ * One distribution that still needs the operator: status, the single next action, the four
+ * figures, an in-flight run's progress, and the distribution's payments (ten per page).
+ */
+export function DistributionCard({
   model,
-  onPrimary,
-  onSecondary,
-  onViewCycle,
+  payments,
+  paymentsError = null,
+  onAction,
   onRunControl,
   runControlBusy = null,
   busy = false,
 }: {
-  model: RewardNowModel;
-  onPrimary: (action: NonNullable<RewardNowModel["primary"]>) => void;
-  onSecondary: (action: NonNullable<RewardNowModel["secondary"]>) => void;
-  onViewCycle: (cycle: number) => void;
+  model: DistributionCardModel;
+  /** Null while the distribution's payments are still loading. */
+  payments: readonly RewardLedgerPayment[] | null;
+  paymentsError?: string | null;
+  onAction: (action: RewardPrimaryAction) => void;
   onRunControl?: ((runId: string, control: "pause" | "resume" | "cancel") => void) | undefined;
   runControlBusy?: "pause" | "resume" | "cancel" | null;
   busy?: boolean;
 }) {
   const { execution } = model;
-  const primaryDisabled = busy || !execution.available;
+  const actionDisabled = busy || !execution.available || model.queued !== null;
+  const disabledReason = model.queued ?? (execution.available ? null : execution.reason);
   return (
     <section
-      className="card-standout rw-now domain-section-anchor"
-      id="rewards-calculation"
-      aria-labelledby="rw-now-title"
+      className="card-standout rw-now rw-pending"
+      id={`rewards-distribution-${model.cycle}-${model.distribution}`}
+      aria-labelledby={`rw-pending-${model.cycle}-${model.distribution}`}
     >
       <div className="rw-now-head">
         <div>
@@ -44,7 +52,7 @@ export function RewardNowCard({
               </span>
             ) : null}
           </div>
-          <h2 className="rw-status" id="rw-now-title">
+          <h2 className="rw-status" id={`rw-pending-${model.cycle}-${model.distribution}`}>
             {model.headline}
           </h2>
           <p className="rw-status-sub">
@@ -97,34 +105,29 @@ export function RewardNowCard({
               <button
                 className="btn btn-primary lg"
                 type="button"
-                disabled={primaryDisabled}
-                title={execution.available ? undefined : (execution.reason ?? undefined)}
+                disabled={actionDisabled}
+                title={disabledReason ?? undefined}
                 onClick={() => {
-                  if (model.primary) onPrimary(model.primary);
+                  if (model.primary) onAction(model.primary);
                 }}
               >
                 {model.primary.label}
                 <ArrowRight className="rw-ico" aria-hidden="true" />
               </button>
-              {!execution.available && execution.reason ? (
-                <span className="rw-disabled-reason">{execution.reason}</span>
-              ) : null}
+              {disabledReason ? <span className="rw-disabled-reason">{disabledReason}</span> : null}
             </>
           ) : null}
-          {model.secondary && !model.primary ? (
+          {model.secondary && !model.primary && !model.progress ? (
             <button
               className="btn btn-secondary"
               type="button"
-              disabled={busy || !execution.available}
-              title={
-                model.secondary.tooltip ??
-                (execution.available ? undefined : (execution.reason ?? undefined))
-              }
+              disabled={actionDisabled}
+              title={model.secondary.tooltip ?? disabledReason ?? undefined}
               onClick={() => {
-                if (model.secondary) onSecondary(model.secondary);
+                if (model.secondary) onAction(model.secondary.action);
               }}
             >
-              {model.secondary.label}
+              {model.secondary.action.label}
             </button>
           ) : null}
           <GasChip execution={execution} />
@@ -156,58 +159,35 @@ export function RewardNowCard({
           </div>
         </div>
       ) : null}
-      <div className="kpi rw-tiles">
-        {model.tiles.map((tile) => (
-          <div className={`tile${tile.hero ? " hero" : ""}`} key={tile.label}>
-            <div className="l">
-              {tile.label} <InfoTip text={tile.tooltip} />
+      {model.tiles.length > 0 ? (
+        <div className="kpi rw-tiles">
+          {model.tiles.map((tile) => (
+            <div className="tile" key={tile.label}>
+              <div className="l">
+                {tile.label} <InfoTip text={tile.tooltip} />
+              </div>
+              <div className="v">
+                {tile.value}
+                {tile.unit ? <span className="u"> {tile.unit}</span> : null}
+              </div>
+              {tile.detail ? <div className="d">{tile.detail}</div> : null}
             </div>
-            <div className="v">
-              {tile.value}
-              {tile.unit ? <span className="u"> {tile.unit}</span> : null}
+          ))}
+        </div>
+      ) : null}
+      {model.calculated ? (
+        <div className="rw-pending-payments">
+          {payments === null ? (
+            <div className="tbl-wrap rw-loading" role="status">
+              {paymentsError ? `Could not load payments: ${paymentsError}` : "Loading payments…"}
             </div>
-            <div className="d">{tile.detail}</div>
-          </div>
-        ))}
-      </div>
-      {model.cycleLine ? (
-        <p className="rw-cycle-line">
-          <span>Cycle {model.cycleLine.cycle}</span>
-          <strong className="mono">{model.cycleLine.amount}</strong>
-          <span>{model.cycleLine.text}</span>
-        </p>
-      ) : null}
-      {model.next ? (
-        <p className="rw-cycle-line rw-next">
-          <span>{model.next.text}</span>
-        </p>
-      ) : null}
-      {model.previous ? (
-        <div className="rw-prev">
-          <span>{model.previous.text}</span>
-          {model.previous.kind === "cycle-complete" ? (
-            <button
-              className="btn btn-tertiary sm"
-              type="button"
-              onClick={() => {
-                if (model.previous?.kind === "cycle-complete") onViewCycle(model.previous.cycle);
-              }}
-            >
-              View cycle {model.previous.cycle}
-            </button>
-          ) : model.secondary ? (
-            <button
-              className="btn btn-secondary sm"
-              type="button"
-              disabled={busy || !execution.available}
-              title={execution.available ? undefined : (execution.reason ?? undefined)}
-              onClick={() => {
-                if (model.secondary) onSecondary(model.secondary);
-              }}
-            >
-              {model.secondary.label}
-            </button>
-          ) : null}
+          ) : (
+            <PaymentsTable
+              payments={payments}
+              variant="pending"
+              emptyText="No payments recorded for this distribution."
+            />
+          )}
         </div>
       ) : null}
     </section>

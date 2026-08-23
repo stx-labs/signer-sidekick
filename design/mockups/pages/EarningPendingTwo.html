@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewards v2 · Earning (cycle 142) + two distributions waiting · reward operations mockup</title>
+<link rel="stylesheet" href="../../tokens/tokens.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
+<link rel="stylesheet" href="../src/mockup.css?v=mt5tnj1l">
+<script>
+  const theme = new URLSearchParams(location.search).get("theme");
+  if (theme === "dark") document.documentElement.dataset.theme = "dark";
+</script>
+</head>
+<body>
+<div class="app" data-network="mainnet">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6-4 6 4M6 15l6 4 6-4M5 12h14"></path></svg></div>
+      <div class="name">Signer Sidekick<small>PoX-5 · v1</small></div>
+    </div>
+    <nav aria-label="Primary">
+      <div class="nav-label">Operate</div>
+      <a class="item" href="#overview"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a8 8 0 0 1 16 0"></path><path d="M12 14l4-4"></path><circle cx="12" cy="14" r="1"></circle></svg>Overview<span class="count alert">1</span></a>
+      <a class="item" href="#pool"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3 19a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 6 0"></path></svg>Pool</a>
+      <a class="item active" href="#rewards" aria-current="page"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="10" cy="8" rx="6" ry="3"></ellipse><path d="M4 8v5c0 1.7 2.7 3 6 3s6-1.3 6-3V8"></path><path d="M14 11c3.3 0 6 1.3 6 3v5c0 1.7-2.7 3-6 3s-6-1.3-6-3v-2"></path></svg>Rewards</a>
+      <a class="item" href="#activity"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg>Activity</a>
+      <a class="item" href="#health"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>Signer Health</a>
+      <div class="nav-label">Configure</div>
+      <a class="item" href="#settings"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"></path></svg>Settings</a>
+    </nav>
+    <div class="spacer"></div>
+  </aside>
+  <div class="content">
+    <div class="topbar">
+      <div class="crumbs"><strong>Rewards</strong></div>
+      <div class="right">
+        <span class="net net-mainnet"><span class="dot"></span>Mainnet</span>
+        <button class="chip-btn" type="button" aria-label="Toggle theme"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg></button>
+      </div>
+    </div>
+    <main class="main">
+
+<div class="page-head">
+  <div>
+    <h1>Rewards</h1>
+    </div>
+</div>
+
+<section class="card-standout rw-now rw-earning" aria-labelledby="rw-earning-title">
+  <div class="rw-earning-grid">
+    <div class="rw-cycle-id">
+      <div class="rw-eyebrow">Current cycle <span class="badge b-neutral"><span class="dot"></span>Accruing</span></div>
+      <h2 class="rw-cycle-number" id="rw-earning-title">Cycle 142</h2>
+      <p class="rw-cycle-when">First half · 6 d 2 h left · ends at block 965,299</p>
+      <p class="rw-cycle-when muted">Prepare phase in 13 d 2 h · block 966,250</p>
+    </div>
+    <dl class="rw-facts">
+      <div><dt>Network earned this half</dt><dd>0.41 <span class="u">sBTC</span><small>3.80 sBTC projected at calculation</small></dd></div>
+      <div><dt>Pool projected this half</dt><dd>0.0131 <span class="u">sBTC</span><small>0.00214 accrued · 0.0118 – 0.0144 · early estimate</small></dd></div>
+      <div><dt>Pool projected this cycle</dt><dd>0.0262 <span class="u">sBTC</span><small>both halves projected · your fee 0.00131 sBTC</small></dd></div>
+    </dl>
+  </div>
+  <div class="rw-timeline" aria-label="Cycle 142 timeline">
+    <div class="rw-half live">
+      <div class="k"><span>First half</span><span class="st">Accruing · 12% · 6 d 2 h left</span></div>
+      <div class="bar"><i style="width:12%"></i></div>
+      <div class="s">ends at block 965,299 · calculation expected Sep 2 ~14:00 UTC</div>
+    </div>
+    <div class="rw-half">
+      <div class="k"><span>Second half</span><span class="st muted">Not started</span></div>
+      <div class="bar"><i style="width:0%"></i></div>
+      <div class="s">starts at block 965,300 · calculation expected Sep 9</div>
+    </div>
+  </div>
+</section>
+
+<details class="card rw-details">
+  <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Projection details &amp; accuracy</summary>
+  <div class="rw-details-body">
+    <div>
+      <h4>This projection</h4>
+      <div class="statline"><span class="k">Network-wide rewards accrued so far</span><span class="v btc-value">2.42 sBTC</span></div>
+      <div class="statline"><span class="k">Projected network-wide at calculation</span><span class="v">3.81 sBTC</span></div>
+      <div class="statline"><span class="k">Your pool — projected range</span><span class="v">0.0119 – 0.0136 sBTC</span></div>
+      <div class="statline"><span class="k">Basis</span><span class="v"><span class="sub">developing confidence · 6 observations across 31 Bitcoin blocks</span></span></div>
+      <div class="statline"><span class="k">Fee assumption</span><span class="v"><span class="sub">5%</span></span></div>
+      <div class="statline"><span class="k">Model</span><span class="v"><span class="sub">revision 1 · developing · 3 of 6 realized calculations</span></span></div>
+    </div>
+    <div>
+      <h4>Projected → got</h4>
+      <div class="tbl-wrap rw-accuracy">
+        <table>
+          <thead><tr><th scope="col">Distribution</th><th scope="col" class="right">Projected</th><th scope="col" class="right">Got</th><th scope="col" class="right">Δ</th></tr></thead>
+          <tbody>
+            <tr><td>Cycle 140 · Second</td><td class="mono right">0.0121</td><td class="mono right">0.0124</td><td class="mono right delta-up">+2.6%</td></tr>
+            <tr><td>Cycle 140 · First</td><td class="mono right">0.0123</td><td class="mono right">0.0120</td><td class="mono right delta-down">−2.6%</td></tr>
+            <tr><td>Cycle 139 · Second</td><td class="mono right">0.0116</td><td class="mono right">0.0117</td><td class="mono right delta-up">+1.0%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</details>
+
+<div class="section-title rw-pending-title" id="rw-pending">Distribute <span class="hint">2 waiting · oldest first</span></div>
+<section class="card-standout rw-now rw-pending" aria-labelledby="rw-pending-141-1b">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · First Distribution <span class="badge b-info">In progress</span></div>
+      <h2 class="rw-status" id="rw-pending-141-1b">2 payments still outstanding</h2>
+      <p class="rw-status-sub">Collected Aug 20 by you <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Collected Aug 20, 09:40 UTC · by you · tx 0x9ac4…11d7 · 38 payments Aug 20 · by you"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-primary lg" type="button">Distribute 2 payments<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      <span class="rw-gas" title="Gas wallet SP2J6Z…V9EJ7 · 4.61 STX · about 46 transactions at current fees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg>Gas wallet 4.61 STX <span class="muted">· ≈ 46 tx</span></span>
+    </div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated for this pool</div><div class="v">0.014 <span class="u">sBTC</span></div><div class="d">projected 0.0136 → got 0.0140</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0.014 <span class="u">sBTC</span></div><div class="d">Aug 20</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">38 <span class="u">of 40</span></div><div class="d">0.0122 sBTC sent · 111,452 sats waiting</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">64,300 <span class="u">sats</span></div><div class="d">of 70,179 sats · 5% locked</div></div>
+  </div>
+  <div class="tbl-wrap rw-pending-payments rw-dense">
+    <div class="tbl-toolbar">
+      <div class="filters"><div class="seg" role="tablist" aria-label="Payment status"><button class="on" type="button" role="tab" aria-selected="true">Outstanding · 2</button><button type="button" role="tab">Paid · 38</button><button type="button" role="tab">Arriving · 0</button></div></div>
+      <div class="total">2 payments · 111,452 sats</div>
+    </div>
+    <table>
+      <thead><tr><th scope="col">Staker</th><th scope="col" class="right">Gross</th><th scope="col" class="right rw-hide-sm">Fee</th><th scope="col" class="right">To staker</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+        <tr><td><span class="staker"><span class="avatar">1Q</span><span class="identifier">SP1QW8…V2TD</span><button class="rw-l1" type="button" aria-label="L1 payout · bc1q…c41e · copy address" title="L1 payout · bc1q…c41e · click to copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 7.5h4.2a2.2 2.2 0 0 1 0 4.4H9zM9 11.9h4.8a2.3 2.3 0 0 1 0 4.6H9zM10.5 6v1.5M10.5 16.5V18"></path></svg></button></span></td><td class="mono right">91,800 sats</td><td class="mono right rw-hide-sm">4,590 sats</td><td class="mono right">77,210 sats</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+        <tr><td><span class="staker"><span class="avatar">2E</span><span class="identifier">SP2EJL…P8LM</span></span></td><td class="mono right">36,044 sats</td><td class="mono right rw-hide-sm">1,802 sats</td><td class="mono right">34,242 sats</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card-standout rw-now rw-pending" aria-labelledby="rw-pending-141-2">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · Second Distribution <span class="badge b-success"><span class="dot"></span>Ready</span></div>
+      <h2 class="rw-status" id="rw-pending-141-2">Ready to collect &amp; distribute</h2>
+      <p class="rw-status-sub">Calculated Aug 27 by another caller <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Calculated Aug 27, 06:12 UTC · by another caller · tx 0x51aa…90de · pool 1,410,246 sats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-primary lg" type="button">Collect &amp; distribute<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      <span class="muted rw-run-note">Queued behind the First Distribution.</span>
+    </div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated for this pool</div><div class="v">0.0141 <span class="u">sBTC</span></div><div class="d">projected 0.0140 → got 0.0141</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0 <span class="u">sats</span></div><div class="d">not yet collected</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">0 <span class="u">of 40</span></div><div class="d">0.0134 sBTC to stakers</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">70,512 <span class="u">sats</span></div><div class="d">5% locked</div></div>
+  </div>
+</section>
+
+<div class="section-title rw-past-title" id="rw-past">Past cycles</div>
+<section class="card rw-ledger" aria-label="Past cycles">
+  <table class="rw-ledger-table">
+    <thead><tr><th scope="col">Cycle</th><th scope="col">Dates</th><th scope="col" class="right">To stakers</th><th scope="col" class="right">Your fee</th><th scope="col" class="right">Payments</th><th scope="col" class="rw-ledger-toggle"><span class="sr-only">Expand</span></th></tr></thead>
+    <tbody>
+      
+<tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 140</span> <span class="badge b-success">Complete</span></td><td class="mono">Jul 30 – Aug 13</td><td class="mono right">0.0232 sBTC</td><td class="mono right">0.00122 sBTC</td><td class="mono right">80 of 80</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>      <tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 139</span> <span class="badge b-success">Complete</span></td><td class="mono">Jul 16 – Jul 30</td><td class="mono right">0.0220 sBTC</td><td class="mono right">0.00116 sBTC</td><td class="mono right">80 of 80</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>      <tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 138</span> <span class="badge b-success">Complete</span></td><td class="mono">Jul 2 – Jul 16</td><td class="mono right">0.0211 sBTC</td><td class="mono right">0.00111 sBTC</td><td class="mono right">80 of 80</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>      <tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 137</span> <span class="badge b-success">Complete</span></td><td class="mono">Jun 18 – Jul 2</td><td class="mono right">0.0198 sBTC</td><td class="mono right">0.00104 sBTC</td><td class="mono right">78 of 78</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>      <tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 136</span> <span class="badge b-success">Complete</span></td><td class="mono">Jun 4 – Jun 18</td><td class="mono right">0.0187 sBTC</td><td class="mono right">0.00098 sBTC</td><td class="mono right">76 of 76</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>      <tr class="rw-ledger-row"><td><span class="rw-ledger-cycle">Cycle 135</span> <span class="badge b-success">Complete</span></td><td class="mono">May 21 – Jun 4</td><td class="mono right">0.0175 sBTC</td><td class="mono right">0.00092 sBTC</td><td class="mono right">76 of 76</td><td class="right rw-ledger-toggle"><button class="btn-icon" type="button" aria-label="Show distributions" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></td></tr>
+    </tbody>
+  </table>
+  <div class="rw-table-foot"><span>6 of 14 cycles</span><button class="btn btn-tertiary sm" type="button">Show older</button></div>
+</section>
+
+<div class="section-title" id="rw-accounting">Accounting</div>
+<section class="card rw-fee-card" aria-labelledby="rw-fee-title">
+  <div class="card-head"><h2 id="rw-fee-title">Your fee ledger</h2><span class="badge b-info">5% locked</span></div>
+  <dl class="rw-fee-grid">
+    <div><dt>Earned this cycle</dt><dd>0.00127 <span class="u">sBTC</span></dd></div>
+    <div><dt>Earned all time</dt><dd>0.0160 <span class="u">sBTC</span></dd></div>
+    <div><dt>Withdrawn <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Last withdrawal Jul 30, 16:20 UTC · 0.0110 sBTC · tx 0x2fa9…d6e1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></dt><dd>0.0110 <span class="u">sBTC</span></dd></div>
+    <div><dt>Balance in manager</dt><dd>0.00504 <span class="u">sBTC</span><small><a href="#" title="Settings › Manager">Withdraw ›</a></small></dd></div>
+  </dl>
+  <div class="rw-export-all">
+    <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>Export all history</button>
+    <div class="seg" aria-label="Format"><button class="on" type="button">CSV</button><button type="button">JSON</button></div>
+    <span class="muted">14 cycles · distributions, payments, fees · through Aug 22</span>
+  </div>
+</section>
+
+    </main>
+  </div>
+</div>
+
+
+</body>
+</html>

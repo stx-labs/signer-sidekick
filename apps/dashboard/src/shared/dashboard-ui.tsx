@@ -99,14 +99,14 @@ export function PageHead({
   actions,
 }: {
   title: string;
-  lede: string;
+  lede?: string;
   actions?: React.ReactNode;
 }) {
   return (
     <div className="page-head">
       <div>
         <h1>{title}</h1>
-        <p className="lede">{lede}</p>
+        {lede ? <p className="lede">{lede}</p> : null}
       </div>
       {actions ? <div className="actions">{actions}</div> : null}
     </div>

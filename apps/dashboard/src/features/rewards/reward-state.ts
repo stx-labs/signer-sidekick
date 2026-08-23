@@ -11,6 +11,7 @@ import type {
 import {
   amount,
   amountParts,
+  compactDuration,
   exactSats,
   feePercent,
   shortUtc,
@@ -19,8 +20,9 @@ import {
 import { IN_PROGRESS_RUN_STATUSES, operationsForKind, type RewardRunKind } from "./run-api.js";
 
 /**
- * Pure derivation of the Rewards "Now" card (plan §6) from the ledger, the projection outlook,
- * the gas wallet, and an active run. Keeping it data-only makes every status line testable
+ * Pure derivations for the Rewards page (plan §6, v2 layout): the Earning card (orientation for
+ * the accruing cycle), one Distribute card per distribution that still needs the operator, and the
+ * payment-row vocabulary shared by every table. Keeping this data-only makes every line testable
  * without rendering, and lets the Overview card reuse the same words.
  */
 
@@ -30,9 +32,8 @@ export interface RewardTile {
   label: string;
   value: string;
   unit: string | null;
-  detail: string;
+  detail: string | null;
   tooltip: string | null;
-  hero?: boolean;
 }
 
 export interface RewardPrimaryAction {
@@ -42,8 +43,9 @@ export interface RewardPrimaryAction {
   operations: RewardRunOperation[];
   /** Transactions this action is expected to take, for the gas check and the confirm sheet. */
   transactions: number;
-  /** Distribution the action targets when it is not the current one (e.g. the prior distribution). */
-  distribution: 1 | 2 | null;
+  /** The distribution the action targets; every action is explicit about it. */
+  cycle: number;
+  distribution: 1 | 2;
 }
 
 export interface RewardExecutionAvailability {
@@ -58,53 +60,20 @@ export interface RewardExecutionAvailability {
   walletFallback: boolean;
 }
 
-export interface RewardNowModel {
-  cycle: number | null;
-  distribution: 1 | 2 | null;
-  eyebrow: string;
-  badge: { tone: Tone; label: string; live?: boolean };
-  headline: string;
-  sub: string;
-  subTooltip: string | null;
-  primary: RewardPrimaryAction | null;
-  secondary: { kind: RewardRunKind; label: string; tooltip: string | null } | null;
-  tiles: RewardTile[];
-  cycleLine: { cycle: number; amount: string; text: string } | null;
-  previous:
-    | { kind: "cycle-complete"; cycle: number; text: string }
-    | {
-        kind: "prior-outstanding";
-        distribution: 1 | 2;
-        count: number;
-        amountSats: string;
-        text: string;
-      }
-    | null;
-  /** A newer live cycle waiting behind the current distribution (its turn comes next). */
-  next: { cycle: number; distribution: 1 | 2; text: string } | null;
-  attention: { title: string; text: string } | null;
-  progress: {
-    done: number;
-    total: number;
-    text: string;
-    right: string;
-    /** The run the progress line describes; halted/paused runs expose Resume/Cancel. */
-    runId: string;
-    status: RewardRun["status"];
-    canPause: boolean;
-    canResume: boolean;
-    canCancel: boolean;
-  } | null;
-  execution: RewardExecutionAvailability;
-  coverage: RewardLedgerDistribution["coverage"] | null;
-}
-
 export function distributionName(distribution: 1 | 2 | null): string {
   return distribution === 1
     ? "First Distribution"
     : distribution === 2
       ? "Second Distribution"
       : "Distribution";
+}
+
+export function halfLabel(index: 1 | 2): string {
+  return index === 1 ? "First half" : "Second half";
+}
+
+export function checkpointIndex(checkpoint: "first-half" | "second-half"): 1 | 2 {
+  return checkpoint === "first-half" ? 1 : 2;
 }
 
 function plural(count: number, singular: string, pluralWord = `${singular}s`): string {
@@ -117,6 +86,16 @@ function big(value: string | null | undefined): bigint {
 
 function text(value: bigint): string {
   return value.toString();
+}
+
+function blocks(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+/** "Aug 19" — the date half of `shortUtc`, for surfaces where the time belongs in a tooltip. */
+export function shortDate(iso: string | null | undefined): string {
+  const full = shortUtc(iso);
+  return full === "—" ? full : (full.split(",")[0] ?? full);
 }
 
 export function paymentTotal(distribution: RewardLedgerDistribution): number {
@@ -170,19 +149,6 @@ export function distributionTooltip(distribution: RewardLedgerDistribution): str
   return lines.length === 0 ? null : lines.join("\n");
 }
 
-export interface RewardStateInput {
-  ledger: RewardLedger;
-  /** Payments of the selected distribution, when loaded (route counts, arrived/rejected detail). */
-  payments?: readonly RewardLedgerPayment[];
-  snapshot: Pick<DashboardSnapshot, "rewardOutlook" | "rewards"> | null;
-  gasWallet: GasWalletStatus | null;
-  engineMode: "observe" | "operator-run" | null;
-  activeRun: RewardRun | null;
-  /** Expected wall-clock for the next calculation ("about 2 days"), when known. */
-  nextCalculationIn?: string | null;
-  now?: Date;
-}
-
 function currentCycle(ledger: RewardLedger): RewardLedgerCycle | null {
   return ledger.cycles.find((cycle) => cycle.cycle === ledger.current.cycle) ?? null;
 }
@@ -197,9 +163,9 @@ export function currentDistribution(ledger: RewardLedger): RewardLedgerDistribut
   );
 }
 
-function execution(
+export function execution(
   gasWallet: GasWalletStatus | null,
-  engineMode: RewardStateInput["engineMode"],
+  engineMode: "observe" | "operator-run" | null,
   neededTransactions: number,
 ): RewardExecutionAvailability {
   if (engineMode !== "operator-run") {
@@ -288,412 +254,688 @@ function execution(
   };
 }
 
-function feeLabel(distribution: RewardLedgerDistribution, cycle: RewardLedgerCycle | null): string {
-  const bips = distribution.feeBips ?? cycle?.feeBips ?? null;
-  if (bips === null) return "fee locks at the first collect";
-  return distribution.feeEvidence === "locked" || cycle?.feeEvidence === "locked"
-    ? `fee locked ${feePercent(bips)}`
-    : `${feePercent(bips)} locks at the first collect`;
-}
-
 function routeSummary(payments: readonly RewardLedgerPayment[] | undefined): string | null {
   if (!payments || payments.length === 0) return null;
-  const paid = payments.filter((p) => p.paymentTxId !== null);
+  const paid = payments.filter((p) => p.paymentTxId !== null && p.status !== "rolled-forward");
   if (paid.length === 0) return null;
   const bitcoin = paid.filter((p) => p.route === "bitcoin").length;
   const sbtc = paid.length - bitcoin;
   return bitcoin === 0 ? null : `${sbtc} in sBTC, ${bitcoin} over Bitcoin`;
 }
 
-export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null {
-  const { ledger, snapshot, gasWallet, engineMode, activeRun } = input;
-  const cycle = currentCycle(ledger);
-  const distribution = currentDistribution(ledger);
-  if (!cycle || !distribution) return null;
-  const outlook = snapshot?.rewardOutlook ?? null;
-  const forecast = outlook?.forecast ?? null;
-  const poolEstimate = outlook?.poolEstimate ?? null;
-  const operatorFeeForecast = outlook?.operatorFeeForecast ?? null;
-  const operatorFeeEstimate = outlook?.operatorFeeEstimate ?? null;
-  const p = distribution.payments;
-  const total = paymentTotal(distribution);
-  const calculated = distribution.calculation.state === "done";
-  const poolSats = distribution.calculation.poolSats;
-  const available = big(distribution.availableToCollectSats);
-  const outstandingSats = big(p.outstandingSats);
-  const payments = input.payments ?? [];
-  const arrived = payments.filter((row) => row.status === "arrived").length;
-  const rejected = p.rejected;
-  const eyebrow = `Cycle ${cycle.cycle} · ${distributionName(distribution.distribution)}`;
-  const sibling =
-    cycle.distributions.find((d) => d.distribution !== distribution.distribution) ?? null;
-  const priorOutstanding =
-    distribution.distribution === 2 && sibling && sibling.payments.outstanding > 0 ? sibling : null;
-  const previousCycle =
-    distribution.distribution === 1
-      ? (ledger.cycles.find((c) => c.cycle === cycle.cycle - 1) ?? null)
-      : null;
+// ---------------------------------------------------------------------------------------------
+// Cycle geometry — where the burn tip sits inside the accruing cycle
+// ---------------------------------------------------------------------------------------------
 
-  // ---- primary action ----
-  let primary: RewardPrimaryAction | null = null;
-  let secondary: RewardNowModel["secondary"] = null;
-  if (distribution.status === "calculation-overdue") {
-    primary = {
-      kind: "calculate",
-      label: "Run calculation",
-      operations: operationsForKind("calculate"),
-      transactions: 1,
-      distribution: null,
-    };
-  } else if (rejected > 0 || arrived > 0) {
-    const action = {
-      kind: "finish-bitcoin-payouts" as const,
-      label: "Finish Bitcoin payouts",
-      operations: operationsForKind("finish-bitcoin-payouts"),
-      transactions: rejected + arrived,
-      distribution: null,
-    };
-    if (rejected > 0) primary = action;
-    else
-      secondary = {
-        ...action,
-        tooltip: `Retire ${plural(arrived, "settled payout")} — nothing moves. A rejected payout would return sBTC to the staker.`,
-      };
-  }
-  if (primary === null && calculated) {
-    if (available > 0n && p.outstanding > 0) {
-      primary = {
-        kind: "collect-and-distribute",
-        label: "Collect & distribute",
-        operations: operationsForKind("collect-and-distribute"),
-        transactions: 1 + p.outstanding,
-        distribution: null,
-      };
-    } else if (available > 0n) {
-      primary = {
-        kind: "collect",
-        label: "Collect",
-        operations: operationsForKind("collect"),
-        transactions: 1,
-        distribution: null,
-      };
-    } else if (p.outstanding > 0 && !activeRun) {
-      primary = {
-        kind: "distribute",
-        label: `Distribute ${plural(p.outstanding, "payment")}`,
-        operations: operationsForKind("distribute"),
-        transactions: p.outstanding,
-        distribution: null,
-      };
-    }
-  }
-  if (primary === null && priorOutstanding && !activeRun) {
-    secondary = {
-      kind: "distribute",
-      label: `Distribute ${plural(priorOutstanding.payments.outstanding, "payment")}`,
-      tooltip: `${distributionName(priorOutstanding.distribution)} · ${amount(priorOutstanding.payments.outstandingSats)} outstanding`,
-    };
-  }
-  const neededTransactions = primary?.transactions ?? (secondary ? 1 : 0);
-  const executionState = execution(gasWallet, engineMode, Math.max(neededTransactions, 1));
+export interface CycleGeometry {
+  cycle: number;
+  burnHeight: number;
+  /** First burn block of the cycle. */
+  cycleStart: number;
+  /** First burn block of the second half. */
+  halfBoundary: number;
+  /** First burn block of the next cycle (exclusive end). */
+  cycleEnd: number;
+  length: number;
+  prepareStart: number | null;
+  blocksUntilPrepare: number | null;
+  inPreparePhase: boolean;
+  liveHalf: 1 | 2;
+}
 
-  // ---- headline / badge / sub ----
-  const running = activeRun !== null && IN_PROGRESS_RUN_STATUSES.has(activeRun.status);
-  let badge: RewardNowModel["badge"];
-  let headline: string;
-  let sub: string;
-  let attention: RewardNowModel["attention"] = null;
-  let progress: RewardNowModel["progress"] = null;
-  const yourFee = calculated
-    ? text(
-        big(p.operatorFeeSats) +
-          (poolSats
-            ? big(poolSats) - big(p.distributedSats) - big(p.operatorFeeSats) - outstandingSats
-            : 0n),
-      )
-    : null;
-  if (running && activeRun) {
-    const done = activeRun.progress.completed;
-    const all = Math.max(activeRun.progress.total, 1);
-    const current = activeRun.children[activeRun.cursor] ?? null;
-    const sent = activeRun.children
-      .filter((child) => child.operation === "claim-staker-rewards" && child.status === "confirmed")
-      .reduce((sum, child) => sum + big(child.materializedAmountSats), 0n);
-    const halted = activeRun.status === "halted";
-    const paused = activeRun.status === "paused";
-    badge = halted
-      ? { tone: "error", label: "Run halted" }
-      : paused
-        ? { tone: "neutral", label: "Paused" }
-        : { tone: "accent", label: "In progress", live: true };
-    headline = halted
-      ? "Run halted"
-      : paused
-        ? `Paused · ${done} of ${all} done`
-        : `Distributing… ${done} of ${all} payments`;
-    sub = halted
-      ? `${activeRun.failureReason ?? "Sidekick stopped the run"}. Nothing was signed after the halt; resume to rebuild the next step from current chain facts, or cancel.`
-      : paused
-        ? "The run is paused between transactions. Resume to continue, or cancel to release the gas wallet."
-        : `Sidekick is submitting one transaction at a time; the manager sends each payout and the gas wallet pays the network fees.${current?.status === "broadcast" ? " Waiting for the current transaction to confirm." : ""} You can close this page.`;
-    attention = halted
-      ? { title: "Run halted", text: activeRun.failureReason ?? "Sidekick stopped the run" }
-      : null;
-    progress = {
-      done,
-      total: all,
-      text: `${done} of ${all} transactions${sent > 0n ? ` · ${amount(text(sent))} sent` : ""}`,
-      right: `${stxAmount(activeRun.gasSpentUstx)} gas used`,
-      runId: activeRun.runId,
-      status: activeRun.status,
-      canPause: activeRun.status === "running" && activeRun.progress.inFlight === 0,
-      canResume: halted || paused,
-      canCancel:
-        (halted || paused || activeRun.status === "approved") && activeRun.progress.inFlight === 0,
-    };
-  } else if (distribution.status === "needs-attention" || rejected > 0) {
-    badge = { tone: "error", label: "Needs attention" };
-    headline =
-      rejected > 0
-        ? `${plural(rejected, "Bitcoin payout was", "Bitcoin payouts were")} rejected`
-        : "Needs attention";
-    sub =
-      rejected > 0
-        ? `The sBTC protocol rejected ${plural(rejected, "withdrawal")}. The amount is back in the manager and owed to the staker; return it as sBTC with Finish Bitcoin payouts.`
-        : distribution.statusDetail;
-    attention =
-      rejected > 0
-        ? {
-            title: `${plural(rejected, "rejected withdrawal")}`,
-            text: "Finishing returns the full entitlement directly to the staker as sBTC. Their future payouts keep the configured Bitcoin route unless they change it — Sidekick does not change a staker's route.",
-          }
-        : null;
-  } else if (!calculated) {
-    const overdue = distribution.status === "calculation-overdue";
-    badge = overdue
-      ? { tone: "caution", label: "Calculation overdue" }
-      : { tone: "neutral", label: "Accruing" };
-    const quiet =
-      previousCycle !== null &&
-      previousCycle.coverage !== "historical-coverage-incomplete" &&
-      previousCycle.outstandingSats === "0";
-    headline = overdue
-      ? "Calculation is overdue — you can run it"
-      : quiet
-        ? "Nothing to do — accruing for the next distribution"
-        : "Accruing — waiting on the network calculation";
-    const expected = input.nextCalculationIn
-      ? ` Expected in about ${input.nextCalculationIn}.`
-      : "";
-    sub = overdue
-      ? "The network calculation for this distribution has not happened yet. Anyone can run it; Sidekick can do it from here."
-      : `${quiet ? `Cycle ${previousCycle?.cycle} is fully distributed. ` : "Usually automatic."}${expected} Nothing to do yet.`;
-  } else if (p.outstanding === 0 && available === 0n) {
-    const arriving = p.arriving;
-    badge = { tone: "success", label: arriving > 0 ? "All distributed" : "Complete" };
-    headline =
-      arriving > 0
-        ? `All distributed · ${plural(arriving, "payout")} arriving over Bitcoin`
-        : arrived > 0
-          ? `All distributed · ${plural(arrived, "payout")} arrived`
-          : "All distributed";
-    sub =
-      arriving > 0
-        ? "Every payment for this distribution went out. Bitcoin payouts are still on their way; Sidekick will show when they arrive."
-        : "Every payment for this distribution went out.";
-  } else if (p.made > 0 && p.outstanding > 0) {
-    badge = { tone: "info", label: "Distributing" };
-    headline = `Distributing · ${p.made} of ${total} paid`;
-    sub = `${amount(p.outstandingSats)} is still waiting for ${plural(p.outstanding, "staker")}.${available > 0n ? ` ${amount(text(available))} is still waiting to be collected.` : ""}`;
-  } else {
-    badge = { tone: "success", label: "Ready", live: false };
-    headline =
-      available > 0n && p.outstanding > 0
-        ? "Ready to collect & distribute"
-        : available > 0n
-          ? "Ready to collect"
-          : "Ready to distribute";
-    const fee = yourFee && big(yourFee) > 0n ? ` and ${amount(yourFee)} is yours` : "";
-    sub = `The network calculated this distribution. ${amount(text(outstandingSats + available - big(yourFee ?? "0")))} is waiting for your stakers across ${plural(total, "payment")}${fee}.`;
-  }
+type GeometrySnapshot = Pick<DashboardSnapshot, "preflight"> | null | undefined;
 
-  // ---- tiles ----
-  const tiles: RewardTile[] = [];
-  if (calculated) {
-    const parts = amountParts(poolSats);
-    tiles.push({
-      label: "Calculated for this pool",
-      value: parts?.value ?? "—",
-      unit: parts?.unit ?? null,
-      detail: "exact · from the network calculation",
-      tooltip: poolSats
-        ? `Exact, from the network calculation · ${exactSats(poolSats)}`
-        : distribution.calculation.poolSatsUnavailableReason,
-    });
-  } else {
-    const point = forecast?.poolSats.point ?? poolEstimate?.grossSats ?? null;
-    const parts = amountParts(point);
-    tiles.push({
-      label: "Projected for this distribution",
-      value: parts?.value ?? "—",
-      unit: parts?.unit ?? null,
-      detail: forecast
-        ? `earned so far ${amount(poolEstimate?.grossSats ?? null)} · ${forecast.confidence} confidence`
-        : poolEstimate
-          ? "if the network calculated now"
-          : "projection unavailable",
-      tooltip: forecast
-        ? `${forecast.confidence} confidence · ${forecast.sample.observations} observations across ${forecast.sample.sampleBlocks} Bitcoin blocks · range ${amount(forecast.poolSats.low)} – ${amount(forecast.poolSats.high)}`
-        : null,
-      hero: true,
-    });
-  }
-  const collectedParts = amountParts(distribution.collectedSats);
-  tiles.push({
-    label: "Collected",
-    value: calculated ? (collectedParts?.value ?? "0") : "—",
-    unit: calculated ? (collectedParts?.unit ?? "sBTC") : null,
-    detail: calculated
-      ? available > 0n
-        ? `${amount(text(available))} ready to collect · ${feeLabel(distribution, cycle)}`
-        : feeLabel(distribution, cycle)
-      : `after the calculation · ${feeLabel(distribution, cycle)}`,
-    tooltip: distribution.collects.length > 0 ? distributionTooltip(distribution) : null,
-  });
-  const routes = routeSummary(payments);
-  tiles.push({
-    label: "Distributed",
-    value: calculated ? String(p.made) : "—",
-    unit: calculated ? `of ${total}` : null,
-    detail: calculated
-      ? p.outstanding > 0
-        ? `${amount(p.outstandingSats)} waiting for stakers`
-        : `${amount(p.distributedSats)}${routes ? ` · ${routes}` : ""}${p.rolledForward > 0 ? ` · ${p.rolledForward} rolled forward` : ""}`
-      : `${plural(total || (snapshot?.rewards?.totals.stakers ?? 0), "payment")} expected`,
-    tooltip: null,
-  });
-  const feeSats = calculated
-    ? yourFee
-    : (operatorFeeForecast?.sats.point ?? operatorFeeEstimate?.sats ?? null);
-  const feeParts = amountParts(feeSats);
-  tiles.push({
-    label: "Your fee",
-    value: feeParts?.value ?? "—",
-    unit: feeParts?.unit ?? null,
-    detail: calculated
-      ? `${feeLabel(distribution, cycle)} · ${p.made === total && total > 0 ? "paid" : "paid as you distribute"}`
-      : `projected · ${feeLabel(distribution, cycle)}`,
-    tooltip: feeSats ? exactSats(feeSats) : null,
-  });
-
-  // ---- cycle line ----
-  const cycleCalculated = cycle.distributions.reduce(
-    (sum, d) => sum + big(d.calculation.poolSats),
-    0n,
-  );
-  const projectedMissing = cycle.distributions.some((d) => d.calculation.state !== "done")
-    ? big(forecast?.poolSats.point ?? poolEstimate?.grossSats ?? null)
-    : 0n;
-  const cycleAmount = cycleCalculated + projectedMissing;
-  // Fee across the cycle: what each calculated distribution will credit you (pool minus what goes
-  // to stakers), plus the projection for a distribution that is not calculated yet.
-  const cycleFee = cycle.distributions.reduce((sum, d) => {
-    if (d.calculation.state === "done" && d.calculation.poolSats) {
-      const expected =
-        big(d.calculation.poolSats) -
-        big(d.payments.distributedSats) -
-        big(d.payments.outstandingSats);
-      return sum + (expected > 0n ? expected : big(d.payments.operatorFeeSats));
-    }
-    return sum + (d.distribution === distribution.distribution ? big(feeSats) : 0n);
-  }, 0n);
-  const siblingState =
-    sibling === null
-      ? null
-      : sibling.status === "complete" || sibling.status === "all-distributed"
-        ? `${distributionName(sibling.distribution)} complete`
-        : sibling.calculation.state !== "done"
-          ? `${distributionName(sibling.distribution)} not calculated yet`
-          : sibling.status === "ready"
-            ? `${distributionName(sibling.distribution)} ready to ${big(sibling.availableToCollectSats ?? "0") > 0n ? "collect" : "distribute"}`
-            : `${distributionName(sibling.distribution)} ${sibling.payments.outstanding > 0 ? `has ${plural(sibling.payments.outstanding, "payment")} outstanding` : "in progress"}`;
-  const cycleLine =
-    cycleAmount > 0n
-      ? {
-          cycle: cycle.cycle,
-          amount: amount(text(cycleAmount)),
-          text: `${projectedMissing > 0n ? "projected for this pool across both distributions" : "calculated for this pool across both distributions"} · your fee ${amount(text(cycleFee))}${siblingState ? ` · ${siblingState}` : ""}`,
-        }
-      : null;
-
-  // ---- previous ----
-  let previous: RewardNowModel["previous"] = null;
-  if (priorOutstanding) {
-    previous = {
-      kind: "prior-outstanding",
-      distribution: priorOutstanding.distribution,
-      count: priorOutstanding.payments.outstanding,
-      amountSats: priorOutstanding.payments.outstandingSats,
-      text: `${distributionName(priorOutstanding.distribution)} still has ${plural(priorOutstanding.payments.outstanding, "payment")} outstanding · ${amount(priorOutstanding.payments.outstandingSats)}`,
-    };
-  } else if (previousCycle && !calculated) {
-    const completeDistributions = previousCycle.distributions.filter(
-      (d) => d.status === "complete" || d.status === "all-distributed",
-    ).length;
-    previous = {
-      kind: "cycle-complete",
-      cycle: previousCycle.cycle,
-      text: `Cycle ${previousCycle.cycle} ${completeDistributions === previousCycle.distributions.length ? "complete" : "in progress"} · ${amount(previousCycle.distributedSats)} to stakers · your fee ${amount(previousCycle.operatorFeeSats)} · ${completeDistributions} of ${previousCycle.distributions.length} distributions`,
-    };
-  }
-
-  // ---- up next: a newer live cycle (the chain moved on while this one still needs work) ----
-  const laterCycle = ledger.cycles
-    .filter((candidate) => candidate.cycle > cycle.cycle)
-    .sort((left, right) => left.cycle - right.cycle)[0];
-  const laterDistribution = laterCycle?.distributions[0] ?? null;
-  const next =
-    laterCycle && laterDistribution
-      ? {
-          cycle: laterCycle.cycle,
-          distribution: laterDistribution.distribution,
-          text: `Up next · Cycle ${laterCycle.cycle} · ${distributionName(laterDistribution.distribution)} ${
-            laterDistribution.status === "ready"
-              ? "is ready"
-              : laterDistribution.status === "calculation-overdue"
-                ? "calculation is overdue"
-                : laterDistribution.status === "waiting-calculation"
-                  ? "is waiting on the network calculation"
-                  : laterDistribution.status === "accruing"
-                    ? "is accruing"
-                    : laterDistribution.statusDetail.toLowerCase()
-          }`,
-        }
-      : null;
-
+export function deriveCycleGeometry(snapshot: GeometrySnapshot): CycleGeometry | null {
+  const cycle = snapshot?.preflight?.cycle ?? null;
+  const burnHeight = snapshot?.preflight?.node?.burnBlockHeight ?? null;
+  if (!cycle || typeof burnHeight !== "number" || typeof cycle.currentId !== "number") return null;
+  const length = cycle.rewardCycleLength ?? null;
+  const start =
+    cycle.currentCycleStartBurnHeight ??
+    (length !== null && cycle.rewardPhaseStartBurnHeight !== null
+      ? cycle.rewardPhaseStartBurnHeight - length
+      : null);
+  if (length === null || start === null || length <= 0) return null;
+  const halfBoundary = start + Math.floor(length / 2);
   return {
-    cycle: cycle.cycle,
-    distribution: distribution.distribution,
-    eyebrow,
-    badge,
-    headline,
-    sub,
-    subTooltip: distributionTooltip(distribution),
-    primary,
-    secondary,
-    tiles,
-    cycleLine,
-    previous,
-    next,
-    attention,
-    progress,
-    execution: executionState,
-    coverage: distribution.coverage,
+    cycle: cycle.currentId,
+    burnHeight,
+    cycleStart: start,
+    halfBoundary,
+    cycleEnd: start + length,
+    length,
+    prepareStart: cycle.preparePhaseStartBurnHeight,
+    blocksUntilPrepare: cycle.blocksUntilPreparePhase,
+    inPreparePhase: cycle.isPreparePhase === true || cycle.blocksUntilPreparePhase === 0,
+    liveHalf: burnHeight < halfBoundary ? 1 : 2,
   };
 }
 
-/** Payment status tabs for the selected distribution, with counts that sum to the table. */
-export type PaymentTab = "outstanding" | "paid" | "arriving" | "rejected" | "all";
+// ---------------------------------------------------------------------------------------------
+// Earning card — the accruing cycle: identity, three facts, two halves
+// ---------------------------------------------------------------------------------------------
+
+export interface EarningHalf {
+  index: 1 | 2;
+  label: string;
+  /** 0–100; the live half's progress, 100 once finished, 0 before it starts. */
+  percent: number;
+  status: { text: string; tone: "done" | "live" | "ready" | "idle" | "attention" };
+  note: string;
+}
+
+export interface EarningFact {
+  label: string;
+  value: string;
+  unit: string | null;
+  sub: string | null;
+  tooltip: string | null;
+}
+
+export interface EarningModel {
+  cycle: number;
+  badge: { tone: Tone; label: string; live?: boolean };
+  /** "Second half · 3d 23h left · ends at block 964,249" */
+  when: string;
+  /** "Prepare phase in 3d 6h · block 964,150" */
+  prepare: string | null;
+  facts: EarningFact[];
+  halves: EarningHalf[];
+  coverage: RewardLedgerDistribution["coverage"] | null;
+}
+
+type NextCalculation = NonNullable<
+  NonNullable<DashboardSnapshot["rewards"]>["calculation"]["next"]
+>;
+
+export interface EarningInput {
+  ledger: RewardLedger;
+  snapshot: Pick<DashboardSnapshot, "rewardOutlook" | "rewards" | "preflight"> | null;
+  /** Average seconds per Bitcoin block, for "left" and "in" durations (defaults to 10 minutes). */
+  burnBlockSeconds?: number | null;
+  now?: Date;
+}
+
+function nextCalculation(snapshot: EarningInput["snapshot"]): NextCalculation | null {
+  return snapshot?.rewardOutlook?.calculation?.next ?? snapshot?.rewards?.calculation?.next ?? null;
+}
+
+function halfStatus(distribution: RewardLedgerDistribution | null): EarningHalf["status"] {
+  if (distribution?.calculation.state !== "done") {
+    return distribution?.status === "calculation-overdue"
+      ? { text: "Ready to calculate", tone: "ready" }
+      : { text: "Waiting on calculation", tone: "idle" };
+  }
+  const p = distribution.payments;
+  switch (distribution.status) {
+    case "needs-attention":
+      return { text: "Needs attention", tone: "attention" };
+    case "ready":
+      return {
+        text:
+          big(distribution.availableToCollectSats) > 0n
+            ? "Ready to collect"
+            : "Ready to distribute",
+        tone: "ready",
+      };
+    case "distributing":
+      return { text: `Distributing · ${p.made} of ${paymentTotal(distribution)}`, tone: "ready" };
+    case "all-distributed":
+      return { text: "Distributed · payouts arriving", tone: "done" };
+    case "complete":
+      return { text: "Distributed", tone: "done" };
+    default:
+      return { text: distribution.statusDetail, tone: "idle" };
+  }
+}
+
+export function deriveEarning(input: EarningInput): EarningModel | null {
+  const { ledger, snapshot } = input;
+  const geometry = deriveCycleGeometry(snapshot);
+  const cycleNumber = geometry?.cycle ?? ledger.current.cycle;
+  if (cycleNumber === null) return null;
+  const ledgerCycle = ledger.cycles.find((entry) => entry.cycle === cycleNumber) ?? null;
+  const distributionFor = (index: 1 | 2) =>
+    ledgerCycle?.distributions.find((d) => d.distribution === index) ?? null;
+  const seconds = input.burnBlockSeconds ?? 600;
+  const duration = (count: number) => compactDuration(Math.max(0, count) * seconds);
+  const now = input.now ?? new Date();
+  const next = nextCalculation(snapshot);
+  const outlook = snapshot?.rewardOutlook ?? null;
+  const liveHalf: 1 | 2 =
+    geometry?.liveHalf ??
+    (next && next.targetRewardCycle === cycleNumber ? checkpointIndex(next.targetCheckpoint) : 2);
+  const targetMatchesLive =
+    next !== null &&
+    next.targetRewardCycle === cycleNumber &&
+    checkpointIndex(next.targetCheckpoint) === liveHalf;
+  const forecast = targetMatchesLive ? (outlook?.forecast ?? null) : null;
+  const poolEstimate = targetMatchesLive ? (outlook?.poolEstimate ?? null) : null;
+  const feeForecast = targetMatchesLive
+    ? (outlook?.operatorFeeForecast?.sats.point ?? outlook?.operatorFeeEstimate?.sats ?? null)
+    : null;
+
+  // ---- identity lines ----
+  let when: string;
+  let prepare: string | null = null;
+  if (geometry) {
+    const halfEnd = liveHalf === 1 ? geometry.halfBoundary : geometry.cycleEnd;
+    when = `${halfLabel(liveHalf)} · ${duration(halfEnd - geometry.burnHeight)} left · ends at block ${blocks(halfEnd - 1)}`;
+    if (geometry.inPreparePhase) {
+      prepare = `Prepare phase · Cycle ${cycleNumber + 1} starts in ${duration(geometry.cycleEnd - geometry.burnHeight)} · block ${blocks(geometry.cycleEnd)}`;
+    } else if (geometry.blocksUntilPrepare !== null && geometry.prepareStart !== null) {
+      prepare = `Prepare phase in ${duration(geometry.blocksUntilPrepare)} · block ${blocks(geometry.prepareStart)}`;
+    }
+  } else {
+    when = `${halfLabel(liveHalf)}${next && targetMatchesLive ? ` · calculation ${next.state === "due" ? "due now" : `in ${duration(next.blocksRemaining)}`}` : ""}`;
+  }
+
+  // ---- facts ----
+  const facts: EarningFact[] = [];
+  const networkAccrued =
+    outlook?.accrued.globalSats ?? snapshot?.rewards?.global.globalAccruedRewardsSats ?? null;
+  const networkParts = amountParts(networkAccrued);
+  facts.push({
+    label: "Network earned this half",
+    value: networkParts?.value ?? "—",
+    unit: networkParts?.unit ?? null,
+    sub: forecast
+      ? `${amount(forecast.globalSats.point)} projected at calculation`
+      : targetMatchesLive
+        ? "since the last network calculation"
+        : next
+          ? `includes Cycle ${next.targetRewardCycle} ${next.targetCheckpoint === "first-half" ? "first" : "second"} half until it is calculated`
+          : null,
+    tooltip: networkAccrued ? exactSats(networkAccrued) : null,
+  });
+  const poolPoint = forecast?.poolSats.point ?? poolEstimate?.grossSats ?? null;
+  const poolParts = amountParts(poolPoint);
+  facts.push({
+    label: "Pool projected this half",
+    value: poolParts?.value ?? "—",
+    unit: poolParts?.unit ?? null,
+    sub: forecast
+      ? `${amount(poolEstimate?.grossSats ?? null)} accrued · ${amount(forecast.poolSats.low)} – ${amount(forecast.poolSats.high)} · ${forecast.confidence} confidence`
+      : poolEstimate
+        ? "if the network calculated now"
+        : targetMatchesLive || next === null
+          ? "projection unavailable"
+          : `after the Cycle ${next.targetRewardCycle} calculation`,
+    tooltip: forecast
+      ? `${forecast.sample.observations} observations across ${forecast.sample.sampleBlocks} Bitcoin blocks`
+      : null,
+  });
+  const done = (index: 1 | 2) => distributionFor(index)?.calculation.state === "done";
+  const calculatedSum = ([1, 2] as const).reduce(
+    (sum, index) => sum + big(distributionFor(index)?.calculation.poolSats ?? null),
+    0n,
+  );
+  const uncalculated = ([1, 2] as const).filter((index) => !done(index));
+  const projectedSum = poolPoint === null ? null : big(poolPoint) * BigInt(uncalculated.length);
+  const cycleTotal =
+    projectedSum === null
+      ? uncalculated.length === 0
+        ? calculatedSum
+        : calculatedSum > 0n
+          ? calculatedSum
+          : null
+      : calculatedSum + projectedSum;
+  const calculatedFee = ([1, 2] as const).reduce((sum, index) => {
+    const d = distributionFor(index);
+    if (d?.calculation.state !== "done" || !d.calculation.poolSats) return sum;
+    const expected =
+      big(d.calculation.poolSats) -
+      big(d.payments.distributedSats) -
+      big(d.payments.outstandingSats);
+    return sum + (expected > 0n ? expected : big(d.payments.operatorFeeSats));
+  }, 0n);
+  const cycleFee =
+    calculatedFee + (feeForecast === null ? 0n : big(feeForecast) * BigInt(uncalculated.length));
+  const cycleParts = amountParts(cycleTotal === null ? null : text(cycleTotal));
+  const cycleSub: string[] = [];
+  if (calculatedSum > 0n && projectedSum !== null && uncalculated.length > 0) {
+    cycleSub.push(
+      `${amount(text(calculatedSum))} calculated + ${amount(text(projectedSum))} projected`,
+    );
+  } else if (projectedSum !== null && uncalculated.length === 2) {
+    cycleSub.push("both halves projected");
+  } else if (calculatedSum > 0n && uncalculated.length > 0 && projectedSum === null) {
+    cycleSub.push(`${halfLabel(uncalculated[0] ?? 2).toLowerCase()} projection unavailable`);
+  } else if (uncalculated.length === 0) {
+    cycleSub.push("both halves calculated");
+  }
+  if (cycleTotal !== null && cycleTotal > 0n) cycleSub.push(`your fee ${amount(text(cycleFee))}`);
+  facts.push({
+    label: "Pool projected this cycle",
+    value: cycleParts?.value ?? "—",
+    unit: cycleParts?.unit ?? null,
+    sub: cycleSub.length > 0 ? cycleSub.join(" · ") : null,
+    tooltip: cycleTotal === null ? null : exactSats(text(cycleTotal)),
+  });
+
+  // ---- halves ----
+  const halves: EarningHalf[] = ([1, 2] as const).map((index) => {
+    const d = distributionFor(index);
+    const label = halfLabel(index);
+    if (!geometry) {
+      const live = index === liveHalf;
+      const finished = index < liveHalf || (d !== null && d.calculation.state === "done");
+      return {
+        index,
+        label,
+        percent: finished ? 100 : live ? 50 : 0,
+        status: finished
+          ? halfStatus(d)
+          : live
+            ? { text: "Accruing", tone: "live" }
+            : { text: "Not started", tone: "idle" },
+        note:
+          d?.calculation.state === "done"
+            ? `calculated ${shortDate(d.calculation.observedAt)} · ${amount(d.calculation.poolSats)}`
+            : "",
+      };
+    }
+    const start = index === 1 ? geometry.cycleStart : geometry.halfBoundary;
+    const end = index === 1 ? geometry.halfBoundary : geometry.cycleEnd;
+    if (geometry.burnHeight >= end) {
+      const note = [
+        `ended at block ${blocks(end - 1)}`,
+        d?.calculation.state === "done"
+          ? `calculated ${shortDate(d.calculation.observedAt)} · ${amount(d.calculation.poolSats)}`
+          : null,
+        d && d.payments.made > 0 ? `${plural(d.payments.made, "payment")}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return { index, label, percent: 100, status: halfStatus(d), note };
+    }
+    if (geometry.burnHeight < start) {
+      return {
+        index,
+        label,
+        percent: 0,
+        status: { text: "Not started", tone: "idle" },
+        note: `starts at block ${blocks(start)}`,
+      };
+    }
+    const percent = Math.min(
+      99,
+      Math.max(0, Math.round(((geometry.burnHeight - start) / (end - start)) * 100)),
+    );
+    const expected =
+      next &&
+      next.targetRewardCycle === cycleNumber &&
+      checkpointIndex(next.targetCheckpoint) === index
+        ? next.state === "due"
+          ? "calculation due now"
+          : `calculation expected ${shortUtc(new Date(now.getTime() + next.blocksRemaining * seconds * 1000).toISOString()).replace(",", " ~")}`
+        : null;
+    return {
+      index,
+      label,
+      percent,
+      status: {
+        text: `Accruing · ${percent}% · ${duration(end - geometry.burnHeight)} left`,
+        tone: "live",
+      },
+      note: [`ends at block ${blocks(end - 1)}`, expected].filter(Boolean).join(" · "),
+    };
+  });
+
+  return {
+    cycle: cycleNumber,
+    badge: { tone: "neutral", label: "Accruing", live: true },
+    when,
+    prepare,
+    facts,
+    halves,
+    coverage: ledgerCycle?.coverage ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Distribute — one card per distribution that still needs the operator
+// ---------------------------------------------------------------------------------------------
+
+export interface DistributionCardModel {
+  key: string;
+  cycle: number;
+  distribution: 1 | 2;
+  eyebrow: string;
+  badge: { tone: Tone; label: string; live?: boolean };
+  headline: string;
+  sub: string;
+  subTooltip: string | null;
+  primary: RewardPrimaryAction | null;
+  secondary: { action: RewardPrimaryAction; tooltip: string | null } | null;
+  tiles: RewardTile[];
+  attention: { title: string; text: string } | null;
+  progress: {
+    done: number;
+    total: number;
+    text: string;
+    right: string;
+    runId: string;
+    status: RewardRun["status"];
+    canPause: boolean;
+    canResume: boolean;
+    canCancel: boolean;
+  } | null;
+  /** Another run owns the gas wallet; this card waits ("Queued behind Cycle 141 · First Distribution"). */
+  queued: string | null;
+  execution: RewardExecutionAvailability;
+  coverage: RewardLedgerDistribution["coverage"];
+  calculated: boolean;
+}
+
+export function distributionKey(cycle: number, distribution: 1 | 2): string {
+  return `${cycle}:${distribution}`;
+}
+
+const pendingStatuses: ReadonlySet<RewardLedgerDistribution["status"]> = new Set([
+  "needs-attention",
+  "calculation-overdue",
+  "ready",
+  "distributing",
+]);
+
+/** Distributions that still need the operator, oldest first. */
+export function pendingDistributions(
+  ledger: RewardLedger,
+): Array<{ cycle: RewardLedgerCycle; distribution: RewardLedgerDistribution }> {
+  return ledger.cycles
+    .flatMap((cycle) => cycle.distributions.map((distribution) => ({ cycle, distribution })))
+    .filter(
+      ({ distribution }) =>
+        pendingStatuses.has(distribution.status) ||
+        (distribution.status === "all-distributed" && distribution.payments.arriving > 0),
+    )
+    .sort(
+      (left, right) =>
+        left.cycle.cycle - right.cycle.cycle ||
+        left.distribution.distribution - right.distribution.distribution,
+    );
+}
+
+export interface DistributeInput {
+  ledger: RewardLedger;
+  /** Payments per `distributionKey`, when loaded (route counts, arrived/rejected detail). */
+  paymentsByKey?: ReadonlyMap<string, readonly RewardLedgerPayment[]>;
+  gasWallet: GasWalletStatus | null;
+  engineMode: "observe" | "operator-run" | null;
+  activeRun: RewardRun | null;
+}
+
+export function deriveDistributionCards(input: DistributeInput): DistributionCardModel[] {
+  const { ledger, gasWallet, engineMode } = input;
+  const activeRun =
+    input.activeRun && IN_PROGRESS_RUN_STATUSES.has(input.activeRun.status)
+      ? input.activeRun
+      : null;
+  return pendingDistributions(ledger).map(({ cycle, distribution }) => {
+    const key = distributionKey(cycle.cycle, distribution.distribution);
+    const target = { cycle: cycle.cycle, distribution: distribution.distribution };
+    const p = distribution.payments;
+    const total = paymentTotal(distribution);
+    const calculated = distribution.calculation.state === "done";
+    const poolSats = distribution.calculation.poolSats;
+    const available = big(distribution.availableToCollectSats);
+    const outstandingSats = big(p.outstandingSats);
+    const payments = input.paymentsByKey?.get(key) ?? [];
+    const arrived = payments.filter((row) => row.status === "arrived").length;
+    const rejected = p.rejected;
+    const eyebrow = `Cycle ${cycle.cycle} · ${distributionName(distribution.distribution)}`;
+    const runForThis =
+      activeRun !== null &&
+      activeRun.recipe.cycle === cycle.cycle &&
+      activeRun.recipe.distribution === distribution.distribution
+        ? activeRun
+        : null;
+    const queued =
+      activeRun !== null && runForThis === null
+        ? `Queued behind Cycle ${activeRun.recipe.cycle} · ${distributionName(activeRun.recipe.distribution)} — one run at a time`
+        : null;
+
+    // ---- actions ----
+    let primary: RewardPrimaryAction | null = null;
+    let secondary: DistributionCardModel["secondary"] = null;
+    if (distribution.status === "calculation-overdue") {
+      primary = {
+        kind: "calculate",
+        label: "Run calculation",
+        operations: operationsForKind("calculate"),
+        transactions: 1,
+        ...target,
+      };
+    } else if (rejected > 0 || arrived > 0) {
+      const action: RewardPrimaryAction = {
+        kind: "finish-bitcoin-payouts",
+        label: "Finish Bitcoin payouts",
+        operations: operationsForKind("finish-bitcoin-payouts"),
+        transactions: rejected + arrived,
+        ...target,
+      };
+      if (rejected > 0) primary = action;
+      else
+        secondary = {
+          action,
+          tooltip: `Retire ${plural(arrived, "settled payout")} — nothing moves. A rejected payout would return sBTC to the staker.`,
+        };
+    }
+    if (primary === null && calculated) {
+      if (available > 0n && p.outstanding > 0) {
+        primary = {
+          kind: "collect-and-distribute",
+          label: "Collect & distribute",
+          operations: operationsForKind("collect-and-distribute"),
+          transactions: 1 + p.outstanding,
+          ...target,
+        };
+      } else if (available > 0n) {
+        primary = {
+          kind: "collect",
+          label: "Collect",
+          operations: operationsForKind("collect"),
+          transactions: 1,
+          ...target,
+        };
+      } else if (p.outstanding > 0 && runForThis === null) {
+        primary = {
+          kind: "distribute",
+          label: `Distribute ${plural(p.outstanding, "payment")}`,
+          operations: operationsForKind("distribute"),
+          transactions: p.outstanding,
+          ...target,
+        };
+      }
+    }
+    const neededTransactions = primary?.transactions ?? secondary?.action.transactions ?? 1;
+    const executionState = execution(gasWallet, engineMode, Math.max(neededTransactions, 1));
+
+    // ---- headline / badge / sub ----
+    let badge: DistributionCardModel["badge"];
+    let headline: string;
+    let sub: string;
+    let attention: DistributionCardModel["attention"] = null;
+    let progress: DistributionCardModel["progress"] = null;
+    const yourFee = calculated
+      ? text(
+          big(p.operatorFeeSats) +
+            (poolSats
+              ? big(poolSats) - big(p.distributedSats) - big(p.operatorFeeSats) - outstandingSats
+              : 0n),
+        )
+      : null;
+    const calculatedLine = calculated
+      ? `Calculated ${shortDate(distribution.calculation.observedAt)} ${provenance(distribution.calculation.by)}`
+      : null;
+    const lastCollect = distribution.collects.at(-1) ?? null;
+    if (runForThis) {
+      const done = runForThis.progress.completed;
+      const all = Math.max(runForThis.progress.total, 1);
+      const current = runForThis.children[runForThis.cursor] ?? null;
+      const sent = runForThis.children
+        .filter(
+          (child) => child.operation === "claim-staker-rewards" && child.status === "confirmed",
+        )
+        .reduce((sum, child) => sum + big(child.materializedAmountSats), 0n);
+      const halted = runForThis.status === "halted";
+      const paused = runForThis.status === "paused";
+      badge = halted
+        ? { tone: "error", label: "Run halted" }
+        : paused
+          ? { tone: "neutral", label: "Paused" }
+          : { tone: "accent", label: "In progress", live: true };
+      headline = halted
+        ? "Run halted"
+        : paused
+          ? `Paused · ${done} of ${all} done`
+          : `Distributing… ${done} of ${all} payments`;
+      sub = halted
+        ? `${runForThis.failureReason ?? "Sidekick stopped the run"}. Nothing was signed after the halt; resume to rebuild the next step from current chain facts, or cancel.`
+        : paused
+          ? "The run is paused between transactions. Resume to continue, or cancel to release the gas wallet."
+          : `One transaction at a time; the manager sends each payout and the gas wallet pays the network fees.${current?.status === "broadcast" ? " Waiting for the current transaction to confirm." : ""} You can close this page.`;
+      attention = halted
+        ? { title: "Run halted", text: runForThis.failureReason ?? "Sidekick stopped the run" }
+        : null;
+      progress = {
+        done,
+        total: all,
+        text: `${done} of ${all} transactions${sent > 0n ? ` · ${amount(text(sent))} sent` : ""}`,
+        right: `${stxAmount(runForThis.gasSpentUstx)} gas used`,
+        runId: runForThis.runId,
+        status: runForThis.status,
+        canPause: runForThis.status === "running" && runForThis.progress.inFlight === 0,
+        canResume: halted || paused,
+        canCancel:
+          (halted || paused || runForThis.status === "approved") &&
+          runForThis.progress.inFlight === 0,
+      };
+    } else if (distribution.status === "needs-attention" || rejected > 0) {
+      badge = { tone: "error", label: "Needs attention" };
+      headline =
+        rejected > 0
+          ? `${plural(rejected, "Bitcoin payout was", "Bitcoin payouts were")} rejected`
+          : "Needs attention";
+      sub =
+        rejected > 0
+          ? `The sBTC protocol rejected ${plural(rejected, "withdrawal")}. The amount is back in the manager and owed to the staker; return it as sBTC with Finish Bitcoin payouts.`
+          : distribution.statusDetail;
+      attention =
+        rejected > 0
+          ? {
+              title: `${plural(rejected, "rejected withdrawal")}`,
+              text: "Finishing returns the full entitlement directly to the staker as sBTC. Their future payouts keep the configured Bitcoin route unless they change it — Sidekick does not change a staker's route.",
+            }
+          : null;
+    } else if (!calculated) {
+      badge = { tone: "caution", label: "Calculation overdue" };
+      headline = "Calculation is overdue — you can run it";
+      sub =
+        "The network calculation for this distribution has not happened yet. Anyone can run it; Sidekick can do it from here.";
+    } else if (p.outstanding === 0 && available === 0n) {
+      badge = { tone: "success", label: "All distributed" };
+      headline =
+        arrived > 0
+          ? `All distributed · ${plural(arrived, "payout")} arrived`
+          : `All distributed · ${plural(p.arriving, "payout")} arriving over Bitcoin`;
+      sub = `${calculatedLine ?? ""}${lastCollect ? ` · collected ${provenance(lastCollect.by)}` : ""}`;
+    } else if (p.made > 0 && p.outstanding > 0) {
+      badge = { tone: "info", label: "In progress" };
+      headline = `${plural(p.outstanding, "payment")} still outstanding`;
+      sub = `${lastCollect ? `Collected ${provenance(lastCollect.by)} · ` : ""}${p.made} of ${total} paid${available > 0n ? ` · ${amount(text(available))} still to collect` : ""}`;
+    } else {
+      badge = { tone: "success", label: "Ready" };
+      headline =
+        available > 0n && p.outstanding > 0
+          ? "Ready to collect & distribute"
+          : available > 0n
+            ? "Ready to collect"
+            : "Ready to distribute";
+      sub = calculatedLine ?? distribution.statusDetail;
+    }
+
+    // ---- tiles ----
+    const tiles: RewardTile[] = [];
+    if (calculated) {
+      const parts = amountParts(poolSats);
+      tiles.push({
+        label: "Calculated for this pool",
+        value: parts?.value ?? "—",
+        unit: parts?.unit ?? null,
+        detail: null,
+        tooltip: poolSats
+          ? `Exact, from the network calculation · ${exactSats(poolSats)}`
+          : distribution.calculation.poolSatsUnavailableReason,
+      });
+      const collectedParts = amountParts(distribution.collectedSats);
+      const collected = big(distribution.collectedSats);
+      tiles.push({
+        label: "Collected",
+        value: collectedParts?.value ?? "0",
+        unit: collectedParts?.unit ?? "sBTC",
+        detail:
+          collected > 0n
+            ? lastCollect
+              ? provenance(lastCollect.by)
+              : null
+            : available > 0n
+              ? `${amount(text(available))} ready to collect`
+              : "not yet collected",
+        tooltip: distribution.collects.length > 0 ? distributionTooltip(distribution) : null,
+      });
+      const routes = routeSummary(payments);
+      tiles.push({
+        label: "Distributed",
+        value: String(p.made),
+        unit: `of ${total}`,
+        detail:
+          p.outstanding > 0
+            ? `${amount(p.outstandingSats)} ${p.made > 0 ? "waiting" : "to stakers"}`
+            : `${amount(p.distributedSats)}${routes ? ` · ${routes}` : ""}${p.rolledForward > 0 ? ` · ${p.rolledForward} rolled forward` : ""}`,
+        tooltip: null,
+      });
+      const feeParts = amountParts(yourFee);
+      const bips = distribution.feeBips ?? cycle.feeBips ?? null;
+      const locked = distribution.feeEvidence === "locked" || cycle.feeEvidence === "locked";
+      tiles.push({
+        label: "Your fee",
+        value: feeParts?.value ?? "—",
+        unit: feeParts?.unit ?? null,
+        detail: bips ? `${feePercent(bips)}${locked ? " locked" : ""}` : null,
+        tooltip: yourFee ? exactSats(yourFee) : null,
+      });
+    }
+
+    return {
+      key,
+      cycle: cycle.cycle,
+      distribution: distribution.distribution,
+      eyebrow,
+      badge,
+      headline,
+      sub,
+      subTooltip: distributionTooltip(distribution),
+      primary,
+      secondary,
+      tiles,
+      attention,
+      progress,
+      queued,
+      execution: executionState,
+      coverage: distribution.coverage,
+      calculated,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Payment rows — tabs, status words, sorting
+// ---------------------------------------------------------------------------------------------
+
+/** Payment status tabs, with counts that sum to the table. */
+export type PaymentTab = "outstanding" | "paid" | "arriving" | "rejected" | "rolled" | "all";
 
 export function paymentTab(row: RewardLedgerPayment): Exclude<PaymentTab, "all"> {
   switch (row.status) {
@@ -706,6 +948,8 @@ export function paymentTab(row: RewardLedgerPayment): Exclude<PaymentTab, "all">
       return "arriving";
     case "rejected":
       return "rejected";
+    case "rolled-forward":
+      return "rolled";
     default:
       return "paid";
   }
@@ -734,12 +978,10 @@ export function paymentStatusLabel(row: RewardLedgerPayment): {
         label: "Below Bitcoin fee",
         sub: "entitlement is below the Bitcoin fee budget",
       };
+    case "rolled-forward":
+      return { tone: "caution", label: "Rolled forward → Second", sub: null };
     case "paid":
-      return {
-        tone: "success",
-        label: "Paid",
-        sub: row.paymentTxId ? shortTx(row.paymentTxId) : null,
-      };
+      return { tone: "success", label: "Paid", sub: null };
     case "sent":
       return {
         tone: "info",
@@ -753,11 +995,7 @@ export function paymentStatusLabel(row: RewardLedgerPayment): {
         sub: row.l1RequestId ? `request #${row.l1RequestId}` : null,
       };
     case "retired":
-      return {
-        tone: "success",
-        label: "Arrived",
-        sub: row.l1RequestId ? `request #${row.l1RequestId} · retired` : null,
-      };
+      return { tone: "success", label: "Arrived", sub: null };
     case "rejected":
       return {
         tone: "error",
@@ -775,6 +1013,51 @@ export function paymentStatusLabel(row: RewardLedgerPayment): {
   }
 }
 
+/** The hover detail behind a "Rolled forward" chip: what happened, and where the amount went. */
+export function rollForwardExplanation(
+  row: RewardLedgerPayment,
+): { title: string; detail: string | null; footer: string | null } | null {
+  const info = row.rollForward;
+  if (!info) return null;
+  const runRef = info.runId ? `run ${info.runId.slice(0, 8)}` : null;
+  const when = info.recordedAt ? shortDate(info.recordedAt) : null;
+  const title = (() => {
+    switch (info.reason) {
+      case "no-run":
+        return "No First Distribution payment run before the Second calculation";
+      case "not-in-recipe":
+        return when ? `Outside the ${when} run's recipe` : "Outside the run's recipe";
+      case "skipped-below-fee-budget":
+        return `Skipped${when ? ` in the ${when} run` : ""} · L1 payout below its fee budget`;
+      case "skipped":
+        return `Skipped${when ? ` in the ${when} run` : ""}`;
+      case "halted-at-this-payment":
+        return `The${when ? ` ${when}` : ""} run halted at this payment`;
+      case "not-attempted-run-halted":
+        return `Not attempted — the${when ? ` ${when}` : ""} run halted earlier`;
+      case "not-attempted-run-cancelled":
+        return `Not attempted — the${when ? ` ${when}` : ""} run was cancelled`;
+      case "not-attempted-run-expired":
+        return `Not attempted — the${when ? ` ${when}` : ""} run expired`;
+      case "not-attempted-run-open":
+        return "Not attempted — the run is still open";
+      case "broadcast-unresolved":
+        return "Broadcast but never confirmed";
+      case "paid-after-second-calculation":
+        return "Paid after the Second calculation";
+    }
+  })();
+  const footer = [
+    info.paidWith
+      ? `Paid with the Second Distribution${row.paidAt ? ` · ${shortDate(row.paidAt)}` : ""} · ${shortTx(info.paidWith.txId)}`
+      : "Still waiting on the Second Distribution payment",
+    runRef,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return { title, detail: info.detail, footer };
+}
+
 /** Sort keys compare integer sats, never rendered strings (plan acceptance #5). */
 export type PaymentSortKey = "staker" | "gross" | "fee" | "toStaker" | "status";
 
@@ -786,36 +1069,23 @@ export function comparePayments(
 ): number {
   const sign = direction === "asc" ? 1 : -1;
   const sats = (value: string | null) => (value === null ? -1n : big(value));
+  const compare = (a: bigint, b: bigint) => (a < b ? -1 : a > b ? 1 : 0);
   let result = 0;
   switch (key) {
     case "staker":
       result = left.stakerPrincipal.localeCompare(right.stakerPrincipal);
       break;
     case "gross":
-      result =
-        sats(left.grossRewardSats) < sats(right.grossRewardSats)
-          ? -1
-          : sats(left.grossRewardSats) > sats(right.grossRewardSats)
-            ? 1
-            : 0;
+      result = compare(sats(left.grossRewardSats), sats(right.grossRewardSats));
       break;
     case "fee":
-      result =
-        sats(left.operatorFeeSats) < sats(right.operatorFeeSats)
-          ? -1
-          : sats(left.operatorFeeSats) > sats(right.operatorFeeSats)
-            ? 1
-            : 0;
+      result = compare(sats(left.operatorFeeSats), sats(right.operatorFeeSats));
       break;
     case "toStaker":
-      result =
-        sats(left.payoutSats ?? left.stakerEntitlementSats) <
-        sats(right.payoutSats ?? right.stakerEntitlementSats)
-          ? -1
-          : sats(left.payoutSats ?? left.stakerEntitlementSats) >
-              sats(right.payoutSats ?? right.stakerEntitlementSats)
-            ? 1
-            : 0;
+      result = compare(
+        sats(left.payoutSats ?? left.stakerEntitlementSats),
+        sats(right.payoutSats ?? right.stakerEntitlementSats),
+      );
       break;
     case "status":
       result = paymentTab(left).localeCompare(paymentTab(right));

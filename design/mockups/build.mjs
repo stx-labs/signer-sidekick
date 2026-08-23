@@ -24,6 +24,8 @@ const tokens = read(join(root, "..", "tokens", "tokens.css"));
 const base = read(join(root, "..", "..", "apps", "dashboard", "src", "base.css"));
 const styles = read(join(root, "..", "..", "apps", "dashboard", "src", "styles.css"));
 const mock = read(join(src, "mockup.css"));
+// Cache-bust the mockup stylesheet so the local gallery always shows the current rules.
+const stamp = Date.now().toString(36);
 // The canvas cannot load the self-hosted brand fonts; drop the @font-face blocks so the token
 // fallback stacks apply, and load Instrument Sans from Google Fonts instead.
 const canvasCss = [tokens.replace(/@font-face\s*\{[^}]*\}/g, ""), base, styles, mock].join("\n");
@@ -41,7 +43,7 @@ for (const screen of screens) {
 <link rel="stylesheet" href="../../tokens/tokens.css">
 <link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
 <link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
-<link rel="stylesheet" href="../src/mockup.css">
+<link rel="stylesheet" href="../src/mockup.css?v=${stamp}">
 <script>
   const theme = new URLSearchParams(location.search).get("theme");
   if (theme === "dark") document.documentElement.dataset.theme = "dark";

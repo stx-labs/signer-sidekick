@@ -210,6 +210,15 @@ describe("reward run repository", () => {
     expect(store.rewardRuns.active(wallet)).toBeNull();
   });
 
+  it("lists the runs sealed for one distribution target, oldest first", async () => {
+    const { store } = await openSidekickStore(":memory:", now);
+    stores.push(store);
+    insertRun(store);
+    expect(store.rewardRuns.listForTarget(141, 1).map((run) => run.runId)).toEqual([runId]);
+    expect(store.rewardRuns.listForTarget(141, 2)).toEqual([]);
+    expect(store.rewardRuns.listForTarget(140, 1)).toEqual([]);
+  });
+
   it("enforces one active reward run or sweep per gas wallet", async () => {
     const { store } = await openSidekickStore(":memory:", now);
     stores.push(store);

@@ -11,8 +11,12 @@ import {
   type RewardLedgerPayment,
   type RewardLedgerPaymentStatus,
   type RewardLedgerProvenance,
+  type RewardLedgerRollForward,
+  type RewardLedgerRollForwardReason,
+  type RewardRun,
   rewardLedgerSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { poxAddressNetwork, poxAddressToBtcAddress } from "./pox-address.js";
 import type {
   StoredCycleMembership,
   StoredManagerClaim,
@@ -137,7 +141,11 @@ export interface RewardLedgerRewardStatusInput {
   } | null;
   stakers?: ReadonlyArray<{
     stakerPrincipal: string;
-    payout: { kind: "direct-sbtc" | "bitcoin-l1"; maxFeeSats: string | null };
+    payout: {
+      kind: "direct-sbtc" | "bitcoin-l1";
+      maxFeeSats: string | null;
+      poxAddress?: { versionHex: string; hashbytesHex: string } | null;
+    };
     rewards: { earnedSats: string; feeSats: string; grossSats: string };
     claimableByPolicy: boolean;
     claims?: ReadonlyArray<{
@@ -169,6 +177,11 @@ export interface BuildRewardLedgerInput {
   ownedTxids: ReadonlySet<string>;
   /** sBTC registry status for a manager-side pending request; omit when no registry is known. */
   withdrawalRequestStatus?: (requestId: string) => Promise<WithdrawalRegistryStatus>;
+  /**
+   * Operator runs sealed for a distribution, oldest first. Explains why a First-Distribution
+   * account rolled forward: the recorded skip/halt on its payment, the run's own end, or no run.
+   */
+  runHistory?: (cycle: number, distribution: RewardLedgerDistributionIndex) => readonly RewardRun[];
   now: Date;
   query?: RewardLedgerQuery;
   /**
@@ -256,6 +269,100 @@ function paymentStatusFor(l1: RewardLedgerL1Status | null): RewardLedgerPaymentS
   }
 }
 
+interface RollForwardExplanation {
+  rollForward: RewardLedgerRollForward;
+  /** Gross entitlement the sealed recipe bounded this payment to (exact at preparation). */
+  grossBoundSats: string | null;
+}
+
+/**
+ * Why a First-Distribution account was not paid before the Second calculation. Runs are the
+ * operator's own history: the latest run that named the account explains it; otherwise either no
+ * payment run existed, or the account fell outside the recipe (cap, or zero accrual when sealed).
+ */
+function explainRollForward(input: {
+  stakerPrincipal: string;
+  cycle: number;
+  bucket: string;
+  runs: readonly RewardRun[];
+  paidWith: PaymentRow | null;
+}): RollForwardExplanation {
+  const bondIndex = input.bucket === "stx" ? "stx" : input.bucket.replace(/^bond-/, "");
+  const key = `${input.stakerPrincipal}:${input.cycle}:${bondIndex}`;
+  const paidWith =
+    input.paidWith?.paymentTxId !== null && input.paidWith?.paymentTxId !== undefined
+      ? { distribution: 2 as const, txId: input.paidWith.paymentTxId }
+      : null;
+  let match: { run: RewardRun; child: RewardRun["children"][number] } | null = null;
+  for (const run of input.runs) {
+    const child = run.children.find(
+      (candidate) => candidate.operation === "claim-staker-rewards" && candidate.accountKey === key,
+    );
+    if (child) match = { run, child };
+  }
+  if (!match) {
+    const paymentRuns = input.runs.filter((run) =>
+      run.children.some((child) => child.operation === "claim-staker-rewards"),
+    );
+    const latest = paymentRuns.at(-1) ?? null;
+    return {
+      grossBoundSats: null,
+      rollForward: {
+        reason: latest === null ? "no-run" : "not-in-recipe",
+        detail:
+          latest === null
+            ? "No First Distribution payment run was made before the Second calculation"
+            : `${paymentRuns.length} payment ${paymentRuns.length === 1 ? "run was" : "runs were"} sealed without this account (recipe cap, or no accrual when sealed)`,
+        runId: latest?.runId ?? null,
+        childIndex: null,
+        recordedAt: latest?.createdAt ?? null,
+        paidWith,
+      },
+    };
+  }
+  const { run, child } = match;
+  let reason: RewardLedgerRollForwardReason;
+  let detail: string | null = child.failureReason ?? run.failureReason ?? null;
+  switch (child.status) {
+    case "skipped":
+      reason = child.provenance === "policy-exception" ? "skipped-below-fee-budget" : "skipped";
+      break;
+    case "halted":
+      reason = "halted-at-this-payment";
+      break;
+    case "broadcast":
+      reason = "broadcast-unresolved";
+      detail = child.txid ? `Broadcast as ${child.txid} and never confirmed` : detail;
+      break;
+    case "confirmed":
+    case "externally-completed":
+      reason = "paid-after-second-calculation";
+      detail = child.txid ? `Confirmed as ${child.txid} after the Second calculation` : detail;
+      break;
+    default:
+      reason =
+        run.status === "halted"
+          ? "not-attempted-run-halted"
+          : run.status === "cancelled"
+            ? "not-attempted-run-cancelled"
+            : run.status === "expired"
+              ? "not-attempted-run-expired"
+              : "not-attempted-run-open";
+      detail = run.failureReason ?? null;
+  }
+  return {
+    grossBoundSats: child.maximumAmountSats,
+    rollForward: {
+      reason,
+      detail,
+      runId: run.runId,
+      childIndex: child.index,
+      recordedAt: child.updatedAt,
+      paidWith,
+    },
+  };
+}
+
 function capabilityLevel(snapshot: RewardLedgerSnapshotInput): RewardLedgerCapabilityLevel {
   const capabilities = snapshot.manager?.capabilities ?? null;
   if (!capabilities) return "pox5-baseline";
@@ -339,6 +446,19 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     liveStatuses.set(rewardsPrevious.rewardCycle, rewardsPrevious);
   }
   const roster = new Set((snapshot.roster ?? []).map(({ stakerPrincipal }) => stakerPrincipal));
+  // Registered Bitcoin payout addresses, from the live reward status: the copyable L1 address next
+  // to a staker. Historical payments show the address registered now, when the staker is still live.
+  const l1Network = poxAddressNetwork(snapshot.network);
+  const l1AddressByStaker = new Map<string, string>();
+  for (const status of liveStatuses.values()) {
+    for (const staker of status.stakers ?? []) {
+      const pox = staker.payout.poxAddress ?? null;
+      if (staker.payout.kind !== "bitcoin-l1" || !pox) continue;
+      if (l1AddressByStaker.has(staker.stakerPrincipal)) continue;
+      const address = poxAddressToBtcAddress(pox.versionHex, pox.hashbytesHex, l1Network);
+      if (address) l1AddressByStaker.set(staker.stakerPrincipal, address);
+    }
+  }
   const recovery = snapshot.historyRecovery ?? null;
   const recoveryIncomplete =
     recovery !== null &&
@@ -455,14 +575,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
 
   const allPayments: PaymentRow[] = [];
   const cycles: RewardLedgerCycle[] = [];
-  // Current-distribution candidates per live cycle; chosen after every cycle is known.
-  const currentCandidates = new Map<
-    number,
-    {
-      actionable: RewardLedgerDistributionIndex | null;
-      fallback: RewardLedgerDistributionIndex | null;
-    }
-  >();
+  // Current-distribution candidate per live cycle; chosen after every cycle is known.
+  const currentCandidates = new Map<number, RewardLedgerDistributionIndex | null>();
 
   for (const cycle of cycleIds) {
     const calculations = calculationsByCycle.get(cycle) ?? [];
@@ -576,6 +690,9 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         settleOrReclaimTxId: withdrawal?.resolvedTxId ?? null,
         btcSweepTxId: null,
         unavailableReason: gross === null ? "gross-unavailable-without-pox5-print" : null,
+        l1Address:
+          route === "bitcoin" ? (l1AddressByStaker.get(claim.stakerPrincipal) ?? null) : null,
+        rollForward: null,
         sortKey: claim.blockHeight,
       });
     }
@@ -583,6 +700,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     // rolled forward: accounts with first-distribution accrual that were not paid before the
     // second calculation; their later payment carries both distributions.
     let rolledForward = 0;
+    const rolledRows: PaymentRow[] = [];
     const first = calculations.find(({ distribution }) => distribution === 1);
     const second = calculations.find(({ distribution }) => distribution === 2);
     if (first && second && big(first.realization.poolEstimate?.grossSats ?? "0") > 0n) {
@@ -616,6 +734,60 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
           row.includesPriorDistribution = true;
           row.coverage = "combined";
         }
+      }
+      // One First-Distribution row per rolled account: what happened to its payment, and the
+      // Second-Distribution payment that carried the amount once that was made. The first-half
+      // amount itself is not separable from chain evidence; the recipe's gross bound is kept.
+      // With incomplete history a missing first-half payment proves nothing, so no row is emitted.
+      const runs = historicallyIncomplete ? [] : (input.runHistory?.(cycle, 1) ?? []);
+      for (const account of historicallyIncomplete ? [] : [...rolled].sort()) {
+        const separator = account.lastIndexOf("|");
+        const stakerPrincipal = account.slice(0, separator);
+        const bucket = account.slice(separator + 1);
+        const paidWith =
+          paidRows.find(
+            (row) =>
+              row.distribution === 2 &&
+              row.stakerPrincipal === stakerPrincipal &&
+              row.bucket === bucket &&
+              row.paymentBlockHeight !== null &&
+              row.paymentBlockHeight >= second.realization.blockHeight,
+          ) ?? null;
+        const explanation = explainRollForward({ stakerPrincipal, cycle, bucket, runs, paidWith });
+        const route: RewardLedgerPayment["route"] =
+          paidWith?.route ?? (l1AddressByStaker.has(stakerPrincipal) ? "bitcoin" : "sbtc");
+        rolledRows.push({
+          schemaVersion: 1,
+          cycle,
+          distribution: 1,
+          bucket,
+          stakerPrincipal,
+          route,
+          grossRewardSats: explanation.grossBoundSats,
+          operatorFeeSats: null,
+          stakerEntitlementSats: "0",
+          payoutSats: null,
+          payoutAsset: null,
+          l1MaxFeeSats: null,
+          l1ActualFeeSats: null,
+          feeRefundSats: null,
+          returnedSats: null,
+          status: "rolled-forward",
+          coverage: "exact",
+          includesPriorDistribution: false,
+          paymentTxId: paidWith?.paymentTxId ?? null,
+          paymentBlockHeight: paidWith?.paymentBlockHeight ?? null,
+          paidAt: paidWith?.paidAt ?? null,
+          by: paidWith?.by ?? null,
+          l1RequestId: null,
+          l1Status: null,
+          settleOrReclaimTxId: null,
+          btcSweepTxId: null,
+          unavailableReason: "first-half-amount-carried-by-the-second-distribution-payment",
+          l1Address: route === "bitcoin" ? (l1AddressByStaker.get(stakerPrincipal) ?? null) : null,
+          rollForward: explanation.rollForward,
+          sortKey: second.realization.blockHeight,
+        });
       }
     }
 
@@ -679,6 +851,9 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
             l1Status: null,
             settleOrReclaimTxId: null,
             btcSweepTxId: null,
+            l1Address:
+              route === "bitcoin" ? (l1AddressByStaker.get(staker.stakerPrincipal) ?? null) : null,
+            rollForward: null,
             unavailableReason:
               status === "below-fee"
                 ? "entitlement-below-bitcoin-fee-budget"
@@ -693,7 +868,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         if (row.includesPriorDistribution) row.coverage = "combined";
     }
 
-    const cycleRows = [...paidRows, ...outstandingRows];
+    const cycleRows = [...paidRows, ...rolledRows, ...outstandingRows];
     if (historicallyIncomplete) {
       for (const row of cycleRows) row.coverage = "historical-coverage-incomplete";
     }
@@ -712,7 +887,6 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     if (isLive && indices.length === 0) indices.push(1);
     indices.sort();
 
-    let actionableCurrent: RewardLedgerDistributionIndex | null = null;
     let fallbackCurrent: RewardLedgerDistributionIndex | null = null;
 
     const distributions: RewardLedgerDistribution[] = indices.map((index) => {
@@ -725,6 +899,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         (total, collect) => total + big(collect.totalRewardsSats),
         0n,
       );
+      const settled = rows.filter((row) => row.status !== "rolled-forward");
       const counts = {
         made: rows.filter((row) =>
           ["paid", "sent", "arrived", "retired", "rejected", "returned"].includes(row.status),
@@ -737,17 +912,17 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         rejected: rows.filter((row) => row.status === "rejected").length,
         returned: rows.filter((row) => row.status === "returned").length,
         distributedSats: text(
-          rows
+          settled
             .filter((row) => row.paymentTxId !== null)
             .reduce((total, row) => total + big(row.stakerEntitlementSats), 0n),
         ),
         outstandingSats: text(
-          rows
+          settled
             .filter((row) => row.paymentTxId === null)
             .reduce((total, row) => total + big(row.stakerEntitlementSats), 0n),
         ),
         operatorFeeSats: text(
-          rows
+          settled
             .filter((row) => row.paymentTxId !== null)
             .reduce((total, row) => total + big(row.operatorFeeSats ?? "0"), 0n),
         ),
@@ -821,18 +996,12 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         status = "complete";
         statusDetail = "Complete";
       }
-      // Current-distribution candidates for this live cycle; the choice is made after every
-      // cycle is known so a later accruing checkpoint can never hide an earlier one that still
-      // needs the operator (see below).
+      // Current-distribution candidate for this live cycle: the latest calculated distribution, or
+      // the one whose calculation is expected next. Earlier distributions that still need the
+      // operator stay visible through their own status; the Rewards page lists them under the
+      // current one with their own action (plan §6, "Accruing" state).
       if (isLive && (isLatestCalculated || (!fact && expectedNext !== null))) {
         fallbackCurrent = index;
-      }
-      if (
-        isLive &&
-        actionableCurrent === null &&
-        (status === "ready" || status === "needs-attention" || status === "calculation-overdue")
-      ) {
-        actionableCurrent = index;
       }
       const collectRows: RewardLedgerCollect[] = distributionCollects.map((collect) => ({
         sats: collect.totalRewardsSats ?? "0",
@@ -859,8 +1028,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       };
     });
 
-    if (isLive)
-      currentCandidates.set(cycle, { actionable: actionableCurrent, fallback: fallbackCurrent });
+    if (isLive) currentCandidates.set(cycle, fallbackCurrent);
     const cycleCoverage: RewardLedgerCoverage = distributions.some(
       ({ coverage }) => coverage === "historical-coverage-incomplete",
     )
@@ -888,21 +1056,17 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   }
 
   // --- current distribution across the live window ---
-  // The earliest distribution that is ready, overdue, or needs attention wins (the previous
-  // cycle's second distribution is handled during the next cycle); otherwise the target cycle's
-  // latest calculated or expected-next distribution.
-  const liveCyclesAscending = [...currentCandidates.keys()].sort((left, right) => left - right);
+  // The Now card follows the calculation-target cycle (its latest calculated or expected-next
+  // distribution). An earlier live cycle only becomes current when the target cycle has no
+  // distribution yet; its open work otherwise surfaces through per-distribution status.
   let current: { cycle: number; distribution: RewardLedgerDistributionIndex } | null = null;
-  for (const liveCycle of liveCyclesAscending) {
-    const candidate = currentCandidates.get(liveCycle)?.actionable ?? null;
+  const liveCyclesDescending = [...currentCandidates.keys()].sort((left, right) => right - left);
+  for (const liveCycle of liveCyclesDescending) {
+    const candidate = currentCandidates.get(liveCycle) ?? null;
     if (candidate !== null) {
       current = { cycle: liveCycle, distribution: candidate };
       break;
     }
-  }
-  if (current === null && currentCycle !== null) {
-    const fallback = currentCandidates.get(currentCycle)?.fallback ?? null;
-    if (fallback !== null) current = { cycle: currentCycle, distribution: fallback };
   }
   for (const cycle of cycles) {
     for (const distribution of cycle.distributions) {
@@ -1093,6 +1257,11 @@ export function rewardLedgerPaymentsCsv(ledger: RewardLedger): string {
     "settle_or_reclaim_txid",
     "btc_sweep_txid",
     "unavailable_reason",
+    "l1_address",
+    "roll_forward_reason",
+    "roll_forward_detail",
+    "roll_forward_run_id",
+    "roll_forward_paid_with_txid",
   ];
   const rows = ledger.payments.map((p) => [
     p.cycle,
@@ -1121,6 +1290,11 @@ export function rewardLedgerPaymentsCsv(ledger: RewardLedger): string {
     p.settleOrReclaimTxId,
     p.btcSweepTxId,
     p.unavailableReason,
+    p.l1Address,
+    p.rollForward?.reason ?? null,
+    p.rollForward?.detail ?? null,
+    p.rollForward?.runId ?? null,
+    p.rollForward?.paidWith?.txId ?? null,
   ]);
   return csv([header, ...rows]);
 }

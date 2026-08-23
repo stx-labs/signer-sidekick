@@ -267,6 +267,18 @@ export class RewardRunRepository {
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
+  /** Every run sealed for one distribution target, oldest first (roll-forward reasons, audits). */
+  listForTarget(cycle: number, distribution: 1 | 2, limit = 50): RewardRun[] {
+    const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));
+    const rows = this.db
+      .prepare(
+        `SELECT run_id FROM transaction_runs WHERE reward_cycle = ? AND distribution = ?
+         ORDER BY created_at ASC, run_id ASC LIMIT ?`,
+      )
+      .all(cycle, distribution, bounded) as Array<{ run_id: string }>;
+    return rows.map(({ run_id }) => this.require(run_id));
+  }
+
   transition(input: {
     runId: string;
     from: readonly RewardRunStatus[];

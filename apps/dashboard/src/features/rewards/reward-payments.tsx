@@ -1,8 +1,5 @@
 import { MagnifyingGlass } from "@phosphor-icons/react";
-import type {
-  RewardLedgerDistribution,
-  RewardLedgerPayment,
-} from "@stx-labs/signer-sidekick-api-contracts";
+import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useMemo, useState } from "react";
 import { SortableHeader, type TableSort } from "../../shared/dashboard-ui.js";
 import { amount, exactSats } from "../../shared/format.js";
@@ -12,45 +9,70 @@ import {
   type PaymentTab,
   paymentStatusLabel,
   paymentTab,
+  rollForwardExplanation,
+  shortDate,
 } from "./reward-state.js";
-import { RouteCell, StakerCell } from "./reward-ui.js";
+import { Pager, StakerCell, StatusChip } from "./reward-ui.js";
 
-const PAGE = 25;
+const PAGE_SIZE = 10;
 const SEARCH_THRESHOLD = 10;
 
+export type PaymentsVariant = "pending" | "history";
+
 function tabCounts(payments: readonly RewardLedgerPayment[]) {
-  const counts = { outstanding: 0, paid: 0, arriving: 0, rejected: 0 };
+  const counts = { outstanding: 0, paid: 0, arriving: 0, rejected: 0, rolled: 0 };
   for (const row of payments) counts[paymentTab(row)] += 1;
   return counts;
 }
 
+function shortTx(txId: string | null): string {
+  if (!txId) return "";
+  return `${txId.slice(0, 6)}…${txId.slice(-4)}`;
+}
+
+/**
+ * Dense payment rows shared by the Distribute cards (`pending`: gross, fee, to staker, status) and
+ * the past-cycle panels (`history`: to staker, status, paid). Ten per page; Bitcoin-route stakers
+ * carry the ₿ marker with their L1 address; rolled-forward rows explain themselves on hover.
+ */
 export function PaymentsTable({
   payments,
-  compact = false,
+  variant = "pending",
   defaultTab,
   emptyText,
+  toolbarRight,
+  pageSize = PAGE_SIZE,
 }: {
   payments: readonly RewardLedgerPayment[];
-  compact?: boolean;
+  variant?: PaymentsVariant;
   defaultTab?: PaymentTab;
   emptyText?: string;
+  /** Replaces the count on the toolbar's right (past-cycle exports live here). */
+  toolbarRight?: React.ReactNode;
+  pageSize?: number;
 }) {
   const counts = useMemo(() => tabCounts(payments), [payments]);
   const initialTab: PaymentTab =
     defaultTab ??
-    (counts.rejected > 0
-      ? "rejected"
-      : counts.outstanding > 0
-        ? "outstanding"
-        : counts.arriving > 0
-          ? "arriving"
-          : counts.paid > 0
-            ? "paid"
-            : "all");
+    (variant === "history"
+      ? "all"
+      : counts.rejected > 0
+        ? "rejected"
+        : counts.outstanding > 0
+          ? "outstanding"
+          : counts.arriving > 0
+            ? "arriving"
+            : counts.paid > 0
+              ? "paid"
+              : "all");
   const [tab, setTab] = useState<PaymentTab>(initialTab);
   const [search, setSearch] = useState("");
-  const [showAll, setShowAll] = useState(false);
-  const [sort, setSort] = useState<TableSort<PaymentSortKey>>({ key: "staker", direction: "asc" });
+  const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<TableSort<PaymentSortKey>>(
+    variant === "pending"
+      ? { key: "toStaker", direction: "desc" }
+      : { key: "staker", direction: "asc" },
+  );
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return [...payments]
@@ -58,16 +80,34 @@ export function PaymentsTable({
       .filter((row) => needle === "" || row.stakerPrincipal.toLowerCase().includes(needle))
       .sort((left, right) => comparePayments(left, right, sort.key, sort.direction));
   }, [payments, tab, search, sort]);
-  const visible = showAll ? filtered : filtered.slice(0, PAGE);
-  const tabs: Array<[PaymentTab, string, number]> = [
-    ["outstanding", "Outstanding", counts.outstanding],
-    ["paid", "Paid", counts.paid],
-    ["arriving", "Arriving", counts.arriving],
-  ];
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pages - 1);
+  const visible = filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  const tabs: Array<[PaymentTab, string, number]> =
+    variant === "history"
+      ? [
+          ["all", "All", payments.length],
+          ["paid", "Paid", counts.paid],
+        ]
+      : [
+          ["outstanding", "Outstanding", counts.outstanding],
+          ["paid", "Paid", counts.paid],
+          ["arriving", "Arriving", counts.arriving],
+        ];
+  if (variant === "history" && counts.arriving > 0)
+    tabs.push(["arriving", "Arriving", counts.arriving]);
+  if (variant === "history" && counts.outstanding > 0) {
+    tabs.push(["outstanding", "Outstanding", counts.outstanding]);
+  }
+  if (counts.rolled > 0) tabs.push(["rolled", "Rolled forward", counts.rolled]);
   if (counts.rejected > 0) tabs.push(["rejected", "Rejected", counts.rejected]);
   const hasAny = payments.length > 0;
+  const selectTab = (key: PaymentTab) => {
+    setTab(key);
+    setPage(0);
+  };
   return (
-    <div className={`tbl-wrap${compact ? " rw-cycle-payments" : ""}`}>
+    <div className={`tbl-wrap rw-dense rw-payments rw-payments-${variant}`}>
       {hasAny ? (
         <div className="tbl-toolbar">
           <div className="filters">
@@ -79,10 +119,7 @@ export function PaymentsTable({
                   type="button"
                   role="tab"
                   aria-selected={tab === key}
-                  onClick={() => {
-                    setTab(key);
-                    setShowAll(false);
-                  }}
+                  onClick={() => selectTab(key)}
                 >
                   {label} · {count}
                 </button>
@@ -98,17 +135,19 @@ export function PaymentsTable({
                   value={search}
                   onChange={(event) => {
                     setSearch(event.target.value);
-                    setShowAll(false);
+                    setPage(0);
                   }}
                 />
               </label>
             ) : null}
           </div>
-          <div className="total">
-            {filtered.length === payments.length
-              ? `${payments.length} payments`
-              : `${filtered.length} of ${payments.length} payments`}
-          </div>
+          {toolbarRight ?? (
+            <div className="total">
+              {filtered.length === payments.length
+                ? `${payments.length} payments`
+                : `${filtered.length} of ${payments.length} payments`}
+            </div>
+          )}
         </div>
       ) : null}
       {!hasAny ? (
@@ -120,118 +159,128 @@ export function PaymentsTable({
           <thead>
             <tr>
               <SortableHeader label="Staker" column="staker" sort={sort} setSort={setSort} />
-              <th scope="col" className="rw-hide-sm">
-                Route
-              </th>
-              <SortableHeader
-                label="Gross"
-                column="gross"
-                sort={sort}
-                setSort={setSort}
-                align="right"
-                className="rw-hide-sm"
-              />
-              <th scope="col" className="right rw-hide-sm">
-                Fee
-              </th>
+              {variant === "pending" ? (
+                <>
+                  <SortableHeader
+                    label="Gross"
+                    column="gross"
+                    sort={sort}
+                    setSort={setSort}
+                    align="right"
+                    className="rw-hide-sm"
+                  />
+                  <th scope="col" className="right rw-hide-sm">
+                    Fee
+                  </th>
+                </>
+              ) : null}
               <SortableHeader
                 label="To staker"
                 column="toStaker"
                 sort={sort}
                 setSort={setSort}
                 align="right"
-                title="What the staker receives: sBTC directly, or BTC over Bitcoin after the Bitcoin fee budget"
+                title="What the staker receives: sBTC directly, or BTC over Bitcoin after the Bitcoin fee budget. Hover an amount for the exact sats."
               />
               <th scope="col">Status</th>
+              {variant === "history" ? (
+                <th scope="col" className="rw-hide-sm">
+                  Paid
+                </th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
             {visible.map((row) => {
               const status = paymentStatusLabel(row);
+              const rolled = row.status === "rolled-forward";
               const toStaker = row.payoutSats ?? row.stakerEntitlementSats;
               const toStakerAsset = row.payoutAsset ?? "sBTC";
-              const bitcoinNote =
-                row.route === "bitcoin" && row.l1MaxFeeSats && row.status !== "returned"
-                  ? `after ${exactSats(row.l1MaxFeeSats)} Bitcoin fee budget`
-                  : row.status === "returned"
-                    ? "returned as sBTC"
-                    : null;
+              const amountTitle = rolled
+                ? row.grossRewardSats
+                  ? `gross ${exactSats(row.grossRewardSats)} at preparation · the first-half amount was paid with the Second Distribution`
+                  : "the first-half amount was paid with the Second Distribution"
+                : `${exactSats(toStaker)}${row.route === "bitcoin" && row.l1MaxFeeSats ? ` · entitlement ${exactSats(row.stakerEntitlementSats)} minus the ${exactSats(row.l1MaxFeeSats)} Bitcoin fee budget` : ""}${row.grossRewardSats ? ` · gross ${exactSats(row.grossRewardSats)}` : ""}${row.operatorFeeSats ? ` · fee ${exactSats(row.operatorFeeSats)}` : ""}`;
+              const amountText = rolled
+                ? row.grossRewardSats
+                  ? amount(row.grossRewardSats)
+                  : "—"
+                : amount(toStaker, row.status === "returned" ? "sBTC" : toStakerAsset);
+              const paidText = row.paymentTxId
+                ? `${row.paidAt ? shortDate(row.paidAt) : row.paymentBlockHeight ? `block ${row.paymentBlockHeight.toLocaleString("en-US")}` : "paid"} · ${shortTx(row.paymentTxId)}`
+                : "—";
               return (
                 <tr
-                  key={`${row.stakerPrincipal}|${row.bucket}|${row.paymentTxId ?? "outstanding"}`}
+                  key={`${row.cycle}|${row.distribution}|${row.stakerPrincipal}|${row.bucket}|${row.paymentTxId ?? "outstanding"}`}
                 >
                   <td>
-                    <StakerCell principal={row.stakerPrincipal} bitcoin={row.route === "bitcoin"} />
+                    <StakerCell
+                      principal={row.stakerPrincipal}
+                      bitcoin={row.route === "bitcoin"}
+                      l1Address={row.l1Address}
+                    />
                     {row.bucket !== "stx" ? (
-                      <span className="rw-pay-sub">
-                        {row.bucket.replace("bond-", "Bitcoin bond ")}
-                      </span>
+                      <span className="rw-pay-sub">{row.bucket.replace("bond-", "bond ")}</span>
                     ) : null}
                     {row.includesPriorDistribution ? (
-                      <span className="rw-pay-sub">includes the First Distribution</span>
+                      <span
+                        className="rw-pay-sub"
+                        title="Carries the First Distribution amount too"
+                      >
+                        + First
+                      </span>
                     ) : null}
                   </td>
-                  <td className="rw-hide-sm">
-                    <RouteCell payment={row} />
-                  </td>
-                  <td
-                    className="mono right rw-hide-sm"
-                    title={
-                      row.grossRewardSats
-                        ? exactSats(row.grossRewardSats)
-                        : "gross unavailable without the PoX-5 print"
-                    }
-                  >
-                    {amount(row.grossRewardSats)}
-                  </td>
-                  <td
-                    className="mono right rw-hide-sm"
-                    title={row.operatorFeeSats ? exactSats(row.operatorFeeSats) : undefined}
-                  >
-                    {amount(row.operatorFeeSats)}
-                  </td>
-                  <td
-                    className="mono right"
-                    title={`${exactSats(toStaker)}${row.route === "bitcoin" && row.l1MaxFeeSats ? ` · entitlement ${exactSats(row.stakerEntitlementSats)} minus the ${exactSats(row.l1MaxFeeSats)} Bitcoin fee budget` : ""}`}
-                  >
-                    {amount(toStaker, row.status === "returned" ? "sBTC" : toStakerAsset)}
-                    {bitcoinNote ? <span className="rw-pay-sub">{bitcoinNote}</span> : null}
+                  {variant === "pending" ? (
+                    <>
+                      <td
+                        className="mono right rw-hide-sm"
+                        title={
+                          row.grossRewardSats
+                            ? exactSats(row.grossRewardSats)
+                            : "gross unavailable without the PoX-5 print"
+                        }
+                      >
+                        {amount(row.grossRewardSats)}
+                      </td>
+                      <td
+                        className="mono right rw-hide-sm"
+                        title={row.operatorFeeSats ? exactSats(row.operatorFeeSats) : undefined}
+                      >
+                        {amount(row.operatorFeeSats)}
+                      </td>
+                    </>
+                  ) : null}
+                  <td className="mono right" title={amountTitle}>
+                    {amountText}
                   </td>
                   <td>
-                    <span className={`badge b-${status.tone}`}>{status.label}</span>
-                    {status.sub ? <span className="rw-pay-sub">{status.sub}</span> : null}
+                    <StatusChip
+                      tone={status.tone}
+                      label={status.label}
+                      tooltip={status.sub}
+                      popover={rolled ? rollForwardExplanation(row) : null}
+                    />
                     {row.coverage === "historical-coverage-incomplete" ? (
                       <span className="rw-pay-sub rw-coverage">history incomplete</span>
                     ) : null}
                   </td>
+                  {variant === "history" ? (
+                    <td className="rw-hide-sm">
+                      <span className="rw-txid" title={row.paymentTxId ?? undefined}>
+                        {paidText}
+                      </span>
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
           </tbody>
         </table>
       )}
-      {filtered.length > PAGE ? (
-        <div className="rw-table-foot">
-          <span>
-            Showing {visible.length} of {filtered.length}
-          </span>
-          <button
-            className="btn btn-tertiary sm"
-            type="button"
-            onClick={() => setShowAll((value) => !value)}
-          >
-            {showAll ? "Show fewer" : `Show all ${filtered.length}`}
-          </button>
-        </div>
+      {hasAny ? (
+        <Pager page={currentPage} pageSize={pageSize} total={filtered.length} onPage={setPage} />
       ) : null}
     </div>
   );
-}
-
-export function paymentsHint(distribution: RewardLedgerDistribution | null): string {
-  if (!distribution) return "this distribution";
-  const buckets = distribution.payments;
-  return buckets.made + buckets.outstanding > 0
-    ? "this distribution · one per staker per bucket"
-    : "this distribution";
 }

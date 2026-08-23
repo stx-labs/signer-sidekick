@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="../../tokens/tokens.css">
 <link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
 <link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
-<link rel="stylesheet" href="../src/mockup.css">
+<link rel="stylesheet" href="../src/mockup.css?v=mt5tnj1l">
 <script>
   const theme = new URLSearchParams(location.search).get("theme");
   if (theme === "dark") document.documentElement.dataset.theme = "dark";
@@ -45,11 +45,7 @@
 <div class="page-head">
   <div>
     <h1>Rewards</h1>
-    <p class="lede">What the network calculated, what you collected, and what reached your stakers — for this distribution and every cycle before it.</p>
-  </div>
-  <div class="actions">
-    <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>Export</button>
-  </div>
+    </div>
 </div>
 
 <div class="callout callout-caution rw-banner" role="status">
@@ -85,7 +81,7 @@
   <p class="rw-cycle-line"><span>Cycle 141</span><strong class="mono">0.0254 sBTC</strong><span>calculated · 0.0241 sBTC owed to stakers · your fee <span class="mono">0.00127 sBTC</span> · 1 return pending</span></p>
 </section>
 <details class="card rw-details">
-  <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Projection details &amp; accuracy <span class="hint">how the projection is made, and how it has done</span></summary>
+  <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Projection details &amp; accuracy</summary>
   <div class="rw-details-body">
     <div>
       <h4>This projection</h4>
@@ -93,7 +89,7 @@
       <div class="statline"><span class="k">Projected network-wide at calculation</span><span class="v">3.81 sBTC</span></div>
       <div class="statline"><span class="k">Your pool — projected range</span><span class="v">0.0119 – 0.0136 sBTC</span></div>
       <div class="statline"><span class="k">Basis</span><span class="v"><span class="sub">developing confidence · 6 observations across 31 Bitcoin blocks</span></span></div>
-      <div class="statline"><span class="k">Fee assumption</span><span class="v"><span class="sub">5% locked at the First Distribution collect</span></span></div>
+      <div class="statline"><span class="k">Fee assumption</span><span class="v"><span class="sub">5%</span></span></div>
       <div class="statline"><span class="k">Model</span><span class="v"><span class="sub">revision 1 · developing · 3 of 6 realized calculations</span></span></div>
     </div>
     <div>
@@ -172,32 +168,22 @@
 </section>
 <div class="rw-table-foot" style="border: 1px solid var(--border-secondary); border-radius: var(--radius-md);"><span>Showing cycles 140–139 of 14 with reward activity</span><button class="btn btn-tertiary sm" type="button">Show older cycles</button></div>
 
-<div class="section-title" id="rw-accounting">Accounting <span class="hint">integer sats · every row carries its transaction ID</span></div>
-<div class="grid cols-2">
-  <section class="card" aria-labelledby="rw-export-title">
-    <div class="card-head"><h2 id="rw-export-title">Export</h2><span class="badge b-neutral">CSV · JSON</span></div>
-    <p class="card-sub">Distributions, payments, and your fee ledger — built to tie out against a block explorer.</p>
-    <div class="rw-export-row">
-      <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>This distribution</button>
-      <button class="btn btn-secondary" type="button">Cycle 141</button>
-      <button class="btn btn-secondary" type="button">All cycles</button>
-      <div class="seg" aria-label="Format"><button class="on" type="button">CSV</button><button type="button">JSON</button></div>
-    </div>
-    <div class="divider"></div>
-    <div class="statline"><span class="k">distributions.csv</span><span class="v"><span class="sub">cycle · distribution · bucket · calculated · collected · fee · distributed · outstanding</span></span></div>
-    <div class="statline"><span class="k">payments.csv</span><span class="v"><span class="sub">cycle · distribution · staker · route · gross · fee · net · status · paid at · txid</span></span></div>
-    <div class="statline"><span class="k">fees.csv</span><span class="v"><span class="sub">fee per payment · withdrawals · refunds · running balance</span></span></div>
-  </section>
-  <section class="card" aria-labelledby="rw-fee-title">
-    <div class="card-head"><h2 id="rw-fee-title">Your fee ledger</h2><span class="badge b-info">5% locked</span></div>
-    <p class="card-sub">Fees are paid to you as each payment is distributed and stay in the manager until you withdraw them.</p>
-    <div class="statline"><span class="k">Earned this cycle</span><span class="v">0.00127 sBTC</span></div>
-    <div class="statline"><span class="k">Earned all time</span><span class="v">0.0160 sBTC</span></div>
-    <div class="statline"><span class="k">Withdrawn <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Last withdrawal Jul 30, 16:20 UTC · 0.0110 sBTC · tx 0x2fa9…d6e1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
-</button></span><span class="v">0.0110 sBTC</span></div>
-    <div class="statline"><span class="k">Balance in manager</span><span class="v">0.00504 sBTC<span class="sub">withdraw from Settings › Manager</span></span></div>
-  </section>
-</div>
+<div class="section-title" id="rw-accounting">Accounting</div>
+<section class="card rw-fee-card" aria-labelledby="rw-fee-title">
+  <div class="card-head"><h2 id="rw-fee-title">Your fee ledger</h2><span class="badge b-info">5% locked</span></div>
+  <dl class="rw-fee-grid">
+    <div><dt>Earned this cycle</dt><dd>0.00127 <span class="u">sBTC</span></dd></div>
+    <div><dt>Earned all time</dt><dd>0.0160 <span class="u">sBTC</span></dd></div>
+    <div><dt>Withdrawn <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Last withdrawal Jul 30, 16:20 UTC · 0.0110 sBTC · tx 0x2fa9…d6e1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></dt><dd>0.0110 <span class="u">sBTC</span></dd></div>
+    <div><dt>Balance in manager</dt><dd>0.00504 <span class="u">sBTC</span><small><a href="#" title="Settings › Manager">Withdraw ›</a></small></dd></div>
+  </dl>
+  <div class="rw-export-all">
+    <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>Export all history</button>
+    <div class="seg" aria-label="Format"><button class="on" type="button">CSV</button><button type="button">JSON</button></div>
+    <span class="muted">14 cycles · distributions, payments, fees · through Aug 22</span>
+  </div>
+</section>
 
     </main>
   </div>

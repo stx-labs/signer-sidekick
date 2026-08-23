@@ -104,8 +104,7 @@ export function ProjectionDetails({
     <details className="card rw-details domain-section-anchor" id="rewards-outlook">
       <summary>
         <CaretRight aria-hidden="true" />
-        Projection details &amp; accuracy{" "}
-        <span className="hint">how the projection is made, and how it has done</span>
+        Projection details &amp; accuracy
       </summary>
       <div className="rw-details-body">
         <div>

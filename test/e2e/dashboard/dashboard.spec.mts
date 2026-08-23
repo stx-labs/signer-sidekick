@@ -465,7 +465,7 @@ test("keeps the single-page Settings flow responsive and preserves reward sectio
   }
 
   await openPage(page, "rewards", "Rewards");
-  const nowCard = page.locator(".rw-now");
+  const nowCard = page.locator(".rw-now").first();
   const projection = page.locator("#rewards-outlook");
   await expect(nowCard).toBeVisible();
   await expect(projection).toBeVisible();
@@ -2441,12 +2441,16 @@ test("copies the full principal from an abbreviated address", async ({ page }) =
 test("pages multi-year reward history and loads payments on demand", async ({ page }) => {
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  await expect(page.getByText("Showing cycles 139–135 of 12 with reward activity")).toBeVisible();
-  await page.getByRole("button", { name: "Show older cycles" }).click();
-  await expect(page.getByText("Showing cycles 139–130 of 12 with reward activity")).toBeVisible();
-  const cycle139 = page.getByRole("region", { name: "Cycle 139" });
-  await cycle139.getByRole("button", { name: "Show payments" }).first().click();
-  await expect(cycle139.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
+  await expect(page.getByText("6 of 12 cycles")).toBeVisible();
+  await page.getByRole("button", { name: "Show older" }).click();
+  await expect(page.getByText("12 of 12 cycles")).toBeVisible();
+  await page
+    .locator("#rewards-cycle-139")
+    .getByRole("button", { name: "Show distributions" })
+    .click();
+  const panel = page.locator(".rw-ledger-panel");
+  await expect(panel.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
+  await expect(panel.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
 });
 
 test("shows the ready distribution with payments, exports, and the wallet fallback", async ({
@@ -2466,23 +2470,31 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   await expect(now.getByText("0 of 40", { exact: true })).toBeVisible();
   await expect(page.getByText("Sign with your own wallet.")).toBeVisible();
 
-  const payments = page.locator("#rewards-claims").locator("..").locator(".tbl-wrap").first();
-  await expect(page.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
+  const payments = page.locator("#rewards-distribution-140-1 .rw-payments");
+  await expect(payments.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
   await page.getByLabel("Find a staker").fill(roster[1].stakerPrincipal);
-  await expect(page.getByText("1 of 40 payments")).toBeVisible();
+  await expect(payments.getByText("1 of 40 payments")).toBeVisible();
   await page.getByLabel("Find a staker").fill("");
-  await expect(page.getByText("Showing 25 of 40")).toBeVisible();
-  await page.getByRole("button", { name: "Show all 40" }).click();
-  await expect(page.getByText("Showing 40 of 40")).toBeVisible();
-  void payments;
+  await expect(payments.getByText("1–10 of 40 payments")).toBeVisible();
+  await payments.getByRole("button", { name: "Next page" }).click();
+  await expect(payments.getByText("11–20 of 40 payments")).toBeVisible();
 
-  await page.getByRole("button", { name: "payments.csv" }).click();
+  // Exports live with the data: a past cycle's panel exports that distribution or the cycle…
+  await page
+    .locator("#rewards-cycle-139")
+    .getByRole("button", { name: "Show distributions" })
+    .click();
+  await page.getByRole("button", { name: "This distribution" }).click();
   await expect
-    .poll(() => downloads.some((url) => url.includes("/payments.csv?cycle=140&distribution=1")))
+    .poll(() => downloads.some((url) => url.includes("/payments.csv?cycle=139&distribution=1")))
     .toBe(true);
-  await page.getByRole("button", { name: "All cycles" }).click();
+  await page.getByRole("button", { name: "Cycle 139", exact: true }).click();
+  await expect
+    .poll(() => downloads.some((url) => url.endsWith("/payments.csv?cycle=139")))
+    .toBe(true);
+  // …and the fee ledger exports the whole history.
   await page.getByRole("button", { name: "JSON" }).click();
-  await page.getByRole("button", { name: "payments.json" }).click();
+  await page.getByRole("button", { name: "Payments", exact: true }).click();
   await expect
     .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
     .toBe(true);

@@ -232,6 +232,8 @@ export async function executeCliCommand({
           observe: async (input) => await engine.observe(input),
           onError: (error) => reportTransactionEngineError(error),
         },
+        rewardRunHistory: (cycle, distribution) =>
+          store.rewardRuns.listForTarget(cycle, distribution),
       });
       const signerGrant = new SignerGrantService({
         runtimeSettings,

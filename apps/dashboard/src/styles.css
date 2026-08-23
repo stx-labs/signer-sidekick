@@ -3985,3 +3985,555 @@ td .rw-txid {
   font-size: 11px;
   color: var(--status-caution);
 }
+
+/* ============ Rewards v2: Earning card ============ */
+.rw-earning-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.5fr);
+  gap: 28px;
+  align-items: start;
+}
+.rw-earning h2.rw-cycle-number {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin: 2px 0 8px;
+}
+.rw-cycle-when {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.rw-cycle-when.muted {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+.rw-earning-facts {
+  margin: 0;
+  display: grid;
+  gap: 0;
+  border-left: 1px solid var(--border-secondary);
+  padding-left: 24px;
+}
+.rw-earning-facts > div {
+  display: grid;
+  grid-template-columns: minmax(160px, 200px) 1fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-tertiary);
+}
+.rw-earning-facts > div:last-child {
+  border-bottom: 0;
+}
+.rw-earning-facts dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rw-earning-facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.rw-earning-facts dd .u {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-left: 2px;
+}
+.rw-earning-facts dd small {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  letter-spacing: 0;
+}
+.rw-timeline {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.rw-half {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-tertiary);
+}
+.rw-half .k {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.rw-half .k span.st {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.rw-half .k span.st.ok {
+  color: var(--status-success);
+}
+.rw-half .k span.st.ready {
+  color: var(--accent-text);
+}
+.rw-half .k span.st.attention {
+  color: var(--status-error);
+}
+.rw-half .k span.st.muted {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.rw-half .bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-tertiary);
+  margin: 8px 0 6px;
+  overflow: hidden;
+}
+.rw-half .bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent-text);
+  border-radius: 999px;
+}
+.rw-half.done .bar i {
+  background: var(--status-success);
+}
+.rw-half .s {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* ============ Rewards v2: Distribute ============ */
+.rw-pending-title {
+  margin-top: var(--space-4);
+}
+.rw-pending {
+  margin-bottom: 12px;
+}
+.rw-pending .rw-pending-payments {
+  margin-top: 18px;
+}
+.rw-pending .rw-loading,
+.rw-pay-box.rw-loading {
+  padding: 14px 18px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.rw-quiet {
+  padding: 16px 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-4);
+}
+
+/* Dense payment rows (Distribute lists and past-cycle payments) */
+.rw-dense thead th {
+  padding: 8px 12px;
+}
+.rw-dense tbody td {
+  padding: 5px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.rw-dense td .staker {
+  gap: 8px;
+}
+.rw-dense td .avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 9px;
+}
+.rw-dense .badge {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+.rw-dense .rw-pay-sub {
+  display: inline;
+  margin-left: 6px;
+}
+.rw-dense .tbl-toolbar {
+  padding: 8px 12px;
+}
+.rw-dense .rw-txid {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* ₿ marker: the staker is paid over Bitcoin; hover/focus/click shows and copies the L1 address */
+.rw-l1-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.rw-l1 {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--icon-bitcoin);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rw-l1 svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-l1:hover,
+.rw-l1:focus-visible,
+.rw-l1-wrap.is-open .rw-l1 {
+  background: var(--surface-tertiary);
+}
+/* Popovers open on hover, keyboard focus, or an explicit tap; the markup is always present. */
+.rw-l1-wrap .rw-pop,
+.rw-rf .rw-pop {
+  display: none;
+}
+.rw-l1-wrap:hover .rw-pop,
+.rw-l1-wrap:focus-within .rw-pop,
+.rw-l1-wrap.is-open .rw-pop {
+  display: flex;
+}
+.rw-rf:hover .rw-pop,
+.rw-rf:focus-within .rw-pop,
+.rw-rf.is-open .rw-pop {
+  display: grid;
+}
+.rw-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--text-primary);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.rw-pop strong {
+  font-weight: 500;
+}
+.rw-pop .muted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.rw-l1-pop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+}
+.rw-l1-pop .k {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.rw-l1-pop .a {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.rw-l1-pop .copy-identifier-button {
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.rw-rf {
+  position: relative;
+  display: inline-block;
+}
+.rw-chip-button {
+  cursor: help;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+}
+
+/* Pager: "1–10 of 40 payments · ‹ 1 2 3 4 ›" */
+.rw-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-tertiary);
+  background: var(--surface-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rw-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rw-pager .pg {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rw-pager .pg.on {
+  background: var(--surface-primary);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.rw-pager .pg-gap {
+  padding: 0 4px;
+  color: var(--text-tertiary);
+}
+.rw-pager .btn-icon {
+  width: 26px;
+  height: 26px;
+  background: transparent;
+}
+.rw-pager .btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-pager .btn-icon[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ============ Rewards v2: Past cycles ledger ============ */
+.rw-past-title {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-secondary);
+}
+.rw-ledger {
+  padding: 0;
+  overflow: hidden;
+  overflow-x: auto;
+}
+.rw-ledger table {
+  width: 100%;
+}
+.rw-ledger-row > td:first-child {
+  white-space: normal;
+}
+.rw-ledger-table > thead > tr > th {
+  background: var(--surface-secondary);
+}
+.rw-ledger-row > td {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  white-space: nowrap;
+}
+.rw-ledger-cycle {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+}
+.rw-ledger-row .badge {
+  margin-left: 8px;
+}
+.rw-ledger-row .btn-icon {
+  background: transparent;
+}
+.rw-ledger-row .btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-ledger-toggle {
+  width: 44px;
+}
+.rw-ledger-row.is-open > td {
+  background: var(--surface-secondary);
+  border-bottom-color: transparent;
+}
+.rw-ledger-row.is-open .rw-ledger-cycle {
+  color: var(--accent-text);
+}
+.rw-ledger-panel-row > td {
+  padding: 0;
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border-secondary);
+}
+.rw-ledger-panel-row:hover > td,
+.rw-ledger-row.is-open:hover > td {
+  background: var(--surface-secondary);
+}
+.rw-ledger-panel {
+  padding: 2px 18px 18px;
+}
+.rw-dist-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.rw-dist-tabs button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+.rw-dist-tabs button.on {
+  border-color: var(--accent-text);
+  box-shadow: 0 1px 0 var(--border-tertiary);
+}
+.rw-dist-tabs button.on .t::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  margin-right: 8px;
+  vertical-align: 2px;
+}
+.rw-dist-tabs .t {
+  font-size: 13px;
+  font-weight: 500;
+}
+.rw-dist-tabs .m {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.rw-dist-summary {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.rw-dist-summary .rw-info {
+  vertical-align: -2px;
+}
+.rw-pay-box,
+.rw-pay-box-wrap .tbl-wrap {
+  background: var(--surface-primary);
+  border-radius: var(--radius-md);
+}
+.rw-export-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rw-export-inline .muted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-right: 2px;
+}
+.rw-export-inline .btn .rw-ico {
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+}
+
+/* ============ Rewards v2: fee ledger + export all ============ */
+.rw-fee-card .card-head {
+  margin-bottom: 10px;
+}
+.rw-fee-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+.rw-fee-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+}
+.rw-fee-grid dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rw-fee-grid dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.rw-fee-grid dd small {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.rw-fee-card .reward-admin-actions {
+  margin-top: 14px;
+}
+.rw-export-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-tertiary);
+}
+.rw-export-all-label {
+  font-size: 12px;
+  font-weight: 500;
+  margin-right: 2px;
+}
+.rw-export-all .muted {
+  font-size: 12px;
+  margin-left: auto;
+}
+@media (max-width: 900px) {
+  .rw-earning-grid {
+    grid-template-columns: 1fr;
+  }
+  .rw-earning-facts {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--border-secondary);
+    padding-top: 8px;
+  }
+  .rw-dist-tabs,
+  .rw-timeline {
+    grid-template-columns: 1fr;
+  }
+  .rw-fee-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .rw-export-all .muted {
+    margin-left: 0;
+    width: 100%;
+  }
+}

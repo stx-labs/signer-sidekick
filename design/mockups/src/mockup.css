@@ -607,3 +607,568 @@ td .rw-txid {
     padding: 16px;
   }
 }
+
+/* Earning card (orientation, always shown) and the Distribute section (only when work waits) */
+.rw-earning .rw-tiles .tile.hero {
+  background: var(--surface-secondary);
+}
+.rw-timeline {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.rw-half {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-tertiary);
+}
+.rw-half .k {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.rw-half .k span:last-child {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.rw-half .bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-tertiary);
+  margin: 8px 0 6px;
+  overflow: hidden;
+}
+.rw-half .bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent-text);
+  border-radius: 999px;
+}
+.rw-half.done .bar i {
+  background: var(--status-success);
+}
+.rw-half .s {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.rw-pending-title {
+  margin-top: var(--space-4);
+}
+.rw-pending {
+  margin-bottom: 12px;
+}
+.rw-pending .rw-pending-payments {
+  margin-top: 18px;
+}
+.rw-pending .rw-run-note {
+  font-size: 11px;
+  text-align: right;
+  max-width: 260px;
+}
+.rw-dist-open {
+  background: var(--surface-secondary);
+}
+.rw-cycle-payments .tbl-toolbar {
+  border-bottom: 1px solid var(--border-tertiary);
+}
+@media (max-width: 640px) {
+  .rw-timeline {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Earning card v2: cycle identity on the left, three facts on the right, no KPI tiles */
+.rw-earning-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.5fr);
+  gap: 28px;
+  align-items: start;
+}
+.rw-earning h2.rw-cycle-number {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin: 2px 0 8px;
+}
+.rw-cycle-when {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.rw-cycle-when.muted {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+.rw-facts {
+  margin: 0;
+  display: grid;
+  gap: 0;
+  border-left: 1px solid var(--border-secondary);
+  padding-left: 24px;
+}
+.rw-facts > div {
+  display: grid;
+  grid-template-columns: minmax(160px, 200px) 1fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-tertiary);
+}
+.rw-facts > div:last-child {
+  border-bottom: 0;
+}
+.rw-facts dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rw-facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.rw-facts dd .u {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-left: 2px;
+}
+.rw-facts dd small {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  letter-spacing: 0;
+}
+.rw-half .k span.st {
+  font-family: var(--font-body);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.rw-half .k span.st.ok {
+  color: var(--status-success);
+}
+.rw-half .k span.st.ready {
+  color: var(--accent-text);
+}
+.rw-half .k span.st.muted {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.rw-half.done .k .st.ready + .bar i,
+.rw-half.done.ready .bar i {
+  background: var(--accent-text);
+}
+@media (max-width: 900px) {
+  .rw-earning-grid {
+    grid-template-columns: 1fr;
+  }
+  .rw-facts {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--border-secondary);
+    padding-top: 8px;
+  }
+}
+
+/* Past cycles v2: a ledger, one line per cycle; a cycle opens into distribution tabs + a paged payments box */
+.rw-past-title {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-secondary);
+}
+.rw-ledger {
+  padding: 0;
+  overflow: hidden;
+}
+.rw-ledger table {
+  width: 100%;
+}
+.rw-ledger-table thead th {
+  background: var(--surface-secondary);
+}
+.rw-ledger-row td {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  white-space: nowrap;
+}
+.rw-ledger-cycle {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+}
+.rw-ledger-row .badge {
+  margin-left: 8px;
+}
+.rw-ledger-row .btn-icon {
+  background: transparent;
+}
+.rw-ledger-row .btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-ledger-toggle {
+  width: 44px;
+}
+.rw-ledger-row.is-open td {
+  background: var(--surface-secondary);
+  border-bottom-color: transparent;
+}
+.rw-ledger-row.is-open .rw-ledger-cycle {
+  color: var(--accent-text);
+}
+.rw-ledger-panel-row > td {
+  padding: 0;
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border-secondary);
+}
+.rw-ledger-panel-row:hover td,
+.rw-ledger-row.is-open:hover td {
+  background: var(--surface-secondary);
+}
+.rw-ledger-panel {
+  padding: 2px 18px 18px;
+}
+.rw-dist-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.rw-dist-tabs button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+.rw-dist-tabs button.on {
+  border-color: var(--accent-text);
+  box-shadow: 0 1px 0 var(--border-tertiary);
+}
+.rw-dist-tabs button.on .t::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  margin-right: 8px;
+  vertical-align: 2px;
+}
+.rw-dist-tabs .t {
+  font-size: 13px;
+  font-weight: 500;
+}
+.rw-dist-tabs .m {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.rw-dist-summary {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.rw-dist-summary .rw-info {
+  vertical-align: -2px;
+}
+.rw-pay-box {
+  background: var(--surface-primary);
+  border-radius: var(--radius-md);
+}
+.rw-pay-box .tbl-toolbar {
+  padding: 8px 12px;
+}
+.rw-pay-box td,
+.rw-pay-box th {
+  white-space: nowrap;
+}
+.rw-pay-box .total .btn {
+  margin: -4px 0;
+}
+.rw-pending-payments td.mono,
+.rw-pending-payments th {
+  white-space: nowrap;
+}
+.rw-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-tertiary);
+  background: var(--surface-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rw-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rw-pager .pg {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rw-pager .pg.on {
+  background: var(--surface-primary);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.rw-pager .btn-icon {
+  width: 26px;
+  height: 26px;
+  background: transparent;
+}
+.rw-pager .btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-pager .btn-icon[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+@media (max-width: 900px) {
+  .rw-dist-tabs {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Exports live with the data: inline in the open cycle panel; one export-all row in the fee ledger card */
+.rw-export-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rw-export-inline .muted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-right: 2px;
+}
+.rw-export-inline .btn .rw-ico {
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+}
+.rw-fee-card .card-head {
+  margin-bottom: 10px;
+}
+.rw-fee-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+.rw-fee-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+}
+.rw-fee-grid dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rw-fee-grid dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.rw-fee-grid dd .u {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-left: 2px;
+}
+.rw-fee-grid dd small {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.rw-fee-grid dd small a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.rw-export-all {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-tertiary);
+}
+.rw-export-all .muted {
+  font-size: 12px;
+  margin-left: auto;
+}
+@media (max-width: 900px) {
+  .rw-fee-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .rw-export-all {
+    flex-wrap: wrap;
+  }
+  .rw-export-all .muted {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* Dense payment rows (shared by the Distribute list and the past-cycle payments) */
+.rw-dense thead th {
+  padding: 8px 12px;
+}
+.rw-dense tbody td {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.rw-dense td .staker {
+  gap: 8px;
+}
+.rw-dense td .avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 9px;
+}
+.rw-dense .badge {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+.rw-dense .rw-pay-sub {
+  display: inline;
+  margin-left: 6px;
+}
+/* Bitcoin payout marker next to the Stacks address: hover shows and copies the L1 address */
+.rw-l1 {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--icon-bitcoin);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rw-l1 svg {
+  width: 14px;
+  height: 14px;
+}
+.rw-l1:hover,
+.rw-l1:focus-visible,
+.rw-l1.is-open {
+  background: var(--surface-tertiary);
+}
+.rw-l1-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  color: var(--text-primary);
+  text-align: left;
+}
+.rw-l1-pop .k {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.rw-l1-pop .a {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.rw-l1-pop .c {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.rw-l1-pop .c svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Generic hover popover (reason detail on status chips) */
+.rw-rf {
+  position: relative;
+  display: inline-block;
+}
+.rw-rf .badge {
+  cursor: help;
+}
+.rw-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--surface-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--text-primary);
+  text-align: left;
+}
+.rw-pop strong {
+  font-weight: 500;
+}
+.rw-pop .muted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
