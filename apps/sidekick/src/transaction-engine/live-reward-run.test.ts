@@ -2,6 +2,7 @@ import type { ManagerCapabilities } from "@stx-labs/signer-sidekick-api-contract
 import { describe, expect, it } from "vitest";
 import {
   calculationResultMatchesTarget,
+  factReadsForOperations,
   reviewedRewardManagerAvailable,
   selectRewardRunFee,
 } from "./live-reward-run.js";
@@ -115,5 +116,39 @@ describe("reviewedRewardManagerAvailable", () => {
         sourceSha256,
       ),
     ).toBe(false);
+  });
+});
+
+describe("factReadsForOperations", () => {
+  it("scopes preparation reads to the requested operations", () => {
+    expect(factReadsForOperations(["claim-rewards"])).toEqual({
+      calculate: false,
+      collect: true,
+      accounts: false,
+      withdrawals: false,
+    });
+    expect(factReadsForOperations(["calculate-rewards"])).toEqual({
+      calculate: true,
+      collect: false,
+      accounts: false,
+      withdrawals: false,
+    });
+    // Payouts need the bond periods the collect read provides, never the calculation target.
+    expect(factReadsForOperations(["claim-staker-rewards"])).toEqual({
+      calculate: false,
+      collect: true,
+      accounts: true,
+      withdrawals: false,
+    });
+    expect(
+      factReadsForOperations(["settle-accepted-withdrawal", "reclaim-failed-withdrawal"]),
+    ).toEqual({ calculate: false, collect: false, accounts: false, withdrawals: true });
+    // No explicit operations keeps the full discovery the default recipe needs.
+    expect(factReadsForOperations(undefined)).toEqual({
+      calculate: true,
+      collect: true,
+      accounts: true,
+      withdrawals: true,
+    });
   });
 });

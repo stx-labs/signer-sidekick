@@ -66,6 +66,14 @@ export interface SidekickTransactionEngineRuntimeComposition {
   readFreshObservation: (
     context: TransactionEngineRuntimeContext,
   ) => Promise<TransactionEngineObservationHookInput>;
+  /**
+   * Fresh anchored setup without the reward-status read. Reward runs only need the setup
+   * (contract identities, fingerprints, capabilities); skipping the per-member reward reads keeps
+   * preparation and per-child materialization fast. Falls back to `readFreshObservation`.
+   */
+  readFreshSetup?: (
+    context: TransactionEngineRuntimeContext,
+  ) => Promise<TransactionEngineObservationHookInput>;
   captureAnchor: (context: TransactionEngineRuntimeContext) => Promise<ChainAnchor>;
   now: () => Date;
   onError: (error: unknown) => void;
@@ -301,10 +309,10 @@ export class SidekickTransactionEngineRuntime {
 
   /** One current, anchor-fenced reward observation for S3/S4 recipe derivation and revalidation. */
   async readRewardRunObservation(): Promise<TransactionEngineObservationHookInput> {
-    return await this.#exclusive(async () => {
-      const context = this.#composition.runtimeContext();
-      return await this.#composition.readFreshObservation(context);
-    });
+    const context = this.#composition.runtimeContext();
+    // Setup-only reads touch no engine state, so they need not queue behind an observe pass.
+    if (this.#composition.readFreshSetup) return await this.#composition.readFreshSetup(context);
+    return await this.#exclusive(async () => await this.#composition.readFreshObservation(context));
   }
 
   /**
@@ -456,6 +464,32 @@ export async function createSidekickTransactionEngineRuntime(
           api: context.api,
           finalityDepth: runtimeConfig.finalityDepth,
         }),
+      readFreshSetup: async (context) => {
+        const observedAt = exactNow(clock).toISOString();
+        const setup = await readOperatorAnchorSnapshot({
+          config: context.config,
+          node: context.node,
+          api: context.api,
+          managerPrincipal: options.managerPrincipal,
+          managerVerification: options.managerVerification,
+          reportMissingManager: true,
+        });
+        const sourceId = createChainSourceId(context.config.network, context.config.apiUrl);
+        const rewardAnchor = await resolveRosterProjectionAnchor({
+          store: options.store,
+          api: context.api,
+          sourceId,
+          managerPrincipal: options.managerPrincipal,
+          liveAnchor: setup.chainAnchor,
+          indexedApiAvailable: indexedApiCompatible(setup.preflight),
+        });
+        return {
+          setup: anchorSetupToRewardEvidence(setup, rewardAnchor),
+          rewards: null,
+          sourceId,
+          observedAt,
+        };
+      },
       readFreshObservation: async (context) => {
         const observedAt = exactNow(clock).toISOString();
         const setup = await readOperatorAnchorSnapshot({

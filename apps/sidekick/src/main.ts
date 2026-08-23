@@ -194,6 +194,7 @@ export async function executeCliCommand({
       };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
       let warnGasWallet: (message: string) => void = (message) => console.warn(message);
+      let logRunStage: (stage: string, durationMs: number) => void = () => undefined;
       const engine = await createSidekickTransactionEngineRuntime({
         env,
         store,
@@ -350,6 +351,7 @@ export async function executeCliCommand({
           stakerClaims: async (options) => await service.stakerClaims(options),
           withdrawalRequestStatus: async (registryContract, requestId, tip) =>
             await service.withdrawalRequestStatus(registryContract, requestId, tip),
+          onStage: (stage, durationMs) => logRunStage(stage, durationMs),
         }),
         refusalChecks: async (principal, now) => await gasWallet.refusalChecks(principal, now),
         executionControl: (operations) => {
@@ -414,6 +416,8 @@ export async function executeCliCommand({
           "Transaction engine failed closed; operator reads remain available",
         );
       warnGasWallet = (message) => server.log.warn(message);
+      logRunStage = (stage, durationMs) =>
+        server.log.info({ stage, durationMs }, "reward run preparation stage");
       // Re-activate a previously enabled gas wallet; failures surface in Settings, never block boot.
       await gasWallet.startup();
       reportObserverInboxError = (error) =>

@@ -1,6 +1,7 @@
 import { cvToHex, noneCV, someCV, tupleCV, uintCV } from "@stacks/transactions";
 import type {
   ManagerCapabilities,
+  RewardRunOperation,
   RewardRunPrepareRequest,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
@@ -102,11 +103,44 @@ export interface LiveRewardRunFactsOptions {
     tip: string,
   ): Promise<WithdrawalRegistryStatus>;
   maximumAccounts?: number;
+  /** Receives each preparation stage's duration so slow reads are attributable in the logs. */
+  onStage?: (stage: string, durationMs: number) => void;
+}
+
+/**
+ * Which chain reads a prepare request needs. A collect-only run must not pay for the per-account
+ * claim scan or the withdrawal registry; a payout run needs the bond periods the collect read
+ * provides, but not the calculation target.
+ */
+export function factReadsForOperations(operations: readonly RewardRunOperation[] | undefined): {
+  calculate: boolean;
+  collect: boolean;
+  accounts: boolean;
+  withdrawals: boolean;
+} {
+  const selected = new Set(
+    operations ?? [
+      "calculate-rewards",
+      "claim-rewards",
+      "claim-staker-rewards",
+      "settle-accepted-withdrawal",
+      "reclaim-failed-withdrawal",
+    ],
+  );
+  return {
+    calculate: selected.has("calculate-rewards"),
+    collect: selected.has("claim-rewards") || selected.has("claim-staker-rewards"),
+    accounts: selected.has("claim-staker-rewards"),
+    withdrawals:
+      selected.has("settle-accepted-withdrawal") || selected.has("reclaim-failed-withdrawal"),
+  };
 }
 
 function checkpointDistribution(checkpoint: "first-half" | "second-half"): 1 | 2 {
   return checkpoint === "first-half" ? 1 : 2;
 }
+
+const registryLookupConcurrency = 8;
 
 async function managerCollectAtAnchor(input: {
   context: TransactionEngineRuntimeContext;
@@ -166,7 +200,16 @@ export function calculationResultMatchesTarget(
 /** Build the exact account/request universe from current node-anchored facts, never request data. */
 export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
   return async (request: RewardRunPrepareRequest): Promise<RewardRunDraftFacts> => {
+    const startedAt = Date.now();
+    let stageStartedAt = startedAt;
+    const stage = (name: string) => {
+      const now = Date.now();
+      options.onStage?.(name, now - stageStartedAt);
+      stageStartedAt = now;
+    };
+    const reads = factReadsForOperations(request.operations);
     const observation = await options.engine.readRewardRunObservation();
+    stage("observation");
     const { setup } = observation;
     const wallet = options.engine.gasPayerIdentity();
     if (!wallet) throw new Error("No active gas wallet identity");
@@ -199,36 +242,43 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
     }
     const context = options.runtimeContext();
     const chainAnchor = await captureNodeChainAnchor(context.node);
+    stage("anchor");
     let calculateRequired = false;
-    try {
-      const calculation = await readPox5CalculateRewardsObservation({
-        node: context.node,
-        pox5ContractId: pox5Contract,
-        sender: wallet.principal,
-        chainAnchor,
-        firstRewardCycleId: setup.preflight.pox.firstRewardCycleId,
-      });
-      calculateRequired =
-        calculation.targetRewardCycle === request.cycle &&
-        checkpointDistribution(calculation.targetCheckpoint) === request.distribution;
-    } catch (error) {
-      if (!(error instanceof Pox5CalculateRewardsError) || error.code !== "already-computed") {
-        throw error;
+    if (reads.calculate) {
+      try {
+        const calculation = await readPox5CalculateRewardsObservation({
+          node: context.node,
+          pox5ContractId: pox5Contract,
+          sender: wallet.principal,
+          chainAnchor,
+          firstRewardCycleId: setup.preflight.pox.firstRewardCycleId,
+        });
+        calculateRequired =
+          calculation.targetRewardCycle === request.cycle &&
+          checkpointDistribution(calculation.targetCheckpoint) === request.distribution;
+      } catch (error) {
+        if (!(error instanceof Pox5CalculateRewardsError) || error.code !== "already-computed") {
+          throw error;
+        }
       }
+      stage("calculation");
     }
-    const collect = await managerCollectAtAnchor({
-      context,
-      pox5Contract,
-      managerPrincipal: options.managerPrincipal,
-      rewardCycle: request.cycle,
-      chainAnchor,
-    });
+    const collect = reads.collect
+      ? await managerCollectAtAnchor({
+          context,
+          pox5Contract,
+          managerPrincipal: options.managerPrincipal,
+          rewardCycle: request.cycle,
+          chainAnchor,
+        })
+      : { bondPeriods: [], totalSats: 0n };
+    if (reads.collect) stage("collect");
     const collectRequired = collect.totalSats > 0n;
     const accounts: RewardRunDraftFacts["accounts"][number][] = [];
     let eligibleAccountCount = 0;
     let offset = 0;
     const maximumAccounts = options.maximumAccounts ?? 200;
-    while (true) {
+    while (reads.accounts) {
       const page = await options.stakerClaims({
         offset,
         limit: 100,
@@ -259,10 +309,11 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
       if (page.page.nextCursor === null) break;
       offset = Number(page.page.nextCursor);
     }
+    if (reads.accounts) stage("accounts");
     const withdrawals: RewardRunDraftFacts["withdrawals"][number][] = [];
     const eligibleWithdrawalCounts = { accepted: 0, rejected: 0 };
     let withdrawalOffset = 0;
-    while (true) {
+    while (reads.withdrawals) {
       const page = options.store.listManagerWithdrawals(
         setup.preflight.node.networkId,
         options.managerPrincipal,
@@ -274,30 +325,41 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
           direction: "asc",
         },
       );
-      for (const withdrawal of page.items) {
-        const state = await options.withdrawalRequestStatus(
-          sbtcRegistryContract,
-          withdrawal.requestId,
-          chainAnchor.indexBlockHash,
+      // Registry lookups are independent; bound the fan-out so a long pending queue stays quick.
+      for (let index = 0; index < page.items.length; index += registryLookupConcurrency) {
+        const batch = page.items.slice(index, index + registryLookupConcurrency);
+        const states = await Promise.all(
+          batch.map((withdrawal) =>
+            options.withdrawalRequestStatus(
+              sbtcRegistryContract,
+              withdrawal.requestId,
+              chainAnchor.indexBlockHash,
+            ),
+          ),
         );
-        if (state !== "accepted" && state !== "rejected") continue;
-        eligibleWithdrawalCounts[state] += 1;
-        if (withdrawals.length < maximumAccounts) {
-          withdrawals.push({
-            requestId: withdrawal.requestId,
-            stakerPrincipal: withdrawal.stakerPrincipal,
-            state,
-            withdrawalAmountSats: withdrawal.amountSats,
-            maxFeeSats: withdrawal.maxFeeSats,
-            maximumAmountSats: (
-              BigInt(withdrawal.amountSats) + BigInt(withdrawal.maxFeeSats)
-            ).toString(),
-          });
-        }
+        batch.forEach((withdrawal, offsetInBatch) => {
+          const state = states[offsetInBatch];
+          if (state !== "accepted" && state !== "rejected") return;
+          eligibleWithdrawalCounts[state] += 1;
+          if (withdrawals.length < maximumAccounts) {
+            withdrawals.push({
+              requestId: withdrawal.requestId,
+              stakerPrincipal: withdrawal.stakerPrincipal,
+              state,
+              withdrawalAmountSats: withdrawal.amountSats,
+              maxFeeSats: withdrawal.maxFeeSats,
+              maximumAmountSats: (
+                BigInt(withdrawal.amountSats) + BigInt(withdrawal.maxFeeSats)
+              ).toString(),
+            });
+          }
+        });
       }
       withdrawalOffset += page.items.length;
       if (withdrawalOffset >= page.total || page.items.length === 0) break;
     }
+    if (reads.withdrawals) stage("withdrawals");
+    options.onStage?.("total", Date.now() - startedAt);
     return {
       walletPrincipal: wallet.principal,
       managerPrincipal: options.managerPrincipal,

@@ -103,6 +103,12 @@ import { WalletIntentError, type WalletIntentService } from "./wallet-intent-ser
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
+/**
+ * Sealing a reward run re-reads the chain (fresh anchor, reward status, every account's claim) and
+ * builds each transaction before it answers; on mainnet that regularly exceeds the ordinary
+ * interactive budget, and a timed-out caller only retries into the draft it could not see.
+ */
+const REWARD_RUN_PREPARE_DEADLINE_MS = 120_000;
 const RECONCILIATION_SNAPSHOT_DEADLINE_MS = 60_000;
 
 interface RosterRow {
@@ -1228,7 +1234,11 @@ export function createServer(options: ServerOptions = {}) {
   let reconciliationController: AbortController | null = null;
   let reconciliationRetryAfterSeconds: number | null = null;
 
-  async function interactive<T>(request: FastifyRequest, work: () => Promise<T>): Promise<T> {
+  async function interactive<T>(
+    request: FastifyRequest,
+    work: () => Promise<T>,
+    deadlineMs = INTERACTIVE_REQUEST_DEADLINE_MS,
+  ): Promise<T> {
     const controller = new AbortController();
     const cancel = () => {
       if (!controller.signal.aborted) controller.abort(new InteractiveRequestCancelledError());
@@ -1239,11 +1249,7 @@ export function createServer(options: ServerOptions = {}) {
     request.raw.once("aborted", cancel);
     request.raw.once("close", cancelOnClosedConnection);
     try {
-      return await withInteractiveRequestDeadline(
-        INTERACTIVE_REQUEST_DEADLINE_MS,
-        work,
-        controller.signal,
-      );
+      return await withInteractiveRequestDeadline(deadlineMs, work, controller.signal);
     } finally {
       request.raw.off("aborted", cancel);
       request.raw.off("close", cancelOnClosedConnection);
@@ -2548,10 +2554,17 @@ export function createServer(options: ServerOptions = {}) {
     const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
     const parsed = rewardRunPrepareRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "reward_run_invalid");
-    return await interactive(
+    const startedAt = Date.now();
+    const prepared = await interactive(
       request,
       async () => await rewardRunCall(() => runs.prepare(parsed.data)),
+      REWARD_RUN_PREPARE_DEADLINE_MS,
     );
+    request.log.info(
+      { runId: prepared.runId, cycle: parsed.data.cycle, durationMs: Date.now() - startedAt },
+      "reward run prepared",
+    );
+    return prepared;
   });
   server.get("/api/v1/rewards/runs/:runId", async (request, reply) => {
     const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
