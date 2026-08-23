@@ -1,7 +1,7 @@
 import { ArrowClockwise, Copy, Wallet } from "@phosphor-icons/react";
 import type { GasWalletStatus, GasWalletSweep } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Badge, ErrorCallout, StatLine } from "../../shared/dashboard-ui.js";
+import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
 import { short, shortUtc, stxAmount } from "../../shared/format.js";
 import { operatorErrorSentence } from "../../shared/operator-error.js";
 import {
@@ -14,6 +14,7 @@ import {
   prepareGasWalletSweep,
   refreshGasWalletSweep,
 } from "./gas-wallet-api.js";
+import { SettingsInfo, SettingsRow } from "./settings-ui.js";
 
 const SWEEP_POLL_MS = 10_000;
 
@@ -21,7 +22,7 @@ function signerBadge(status: GasWalletStatus): {
   tone: "success" | "caution" | "error" | "neutral";
   label: string;
 } {
-  if (!status.configured) return { tone: "neutral", label: "Not set up" };
+  if (!status.configured) return { tone: "neutral", label: "Optional" };
   if (status.engineMode !== "operator-run") return { tone: "caution", label: "Observe mode" };
   switch (status.signer) {
     case "ready":
@@ -43,12 +44,9 @@ function sweepBadge(sweep: GasWalletSweep): {
 } {
   switch (sweep.status) {
     case "planned":
-      return { tone: "info", label: "Awaiting your approval" };
+      return { tone: "info", label: "Awaiting approval" };
     case "broadcast":
-      return {
-        tone: "info",
-        label: sweep.broadcastAmbiguous ? "Broadcast · confirming" : "Broadcast",
-      };
+      return { tone: "info", label: sweep.broadcastAmbiguous ? "Confirming" : "Broadcast" };
     case "confirmed":
       return { tone: "success", label: "Confirmed" };
     case "failed":
@@ -60,10 +58,19 @@ function sweepBadge(sweep: GasWalletSweep): {
   }
 }
 
+function afterFee(balance: string | null, fee: string): string | null {
+  if (balance === null) return null;
+  const remaining = BigInt(balance) - BigInt(fee);
+  return remaining > 0n ? remaining.toString() : "0";
+}
+
+/** Embedded gas-wallet block for the unified Reward runs Settings card. */
 export function GasWalletSettings({
+  onStatus,
   token,
   readOnly = false,
 }: {
+  onStatus?: (status: GasWalletStatus | null) => void;
   token: string;
   readOnly?: boolean;
 }) {
@@ -74,6 +81,7 @@ export function GasWalletSettings({
   const [busy, setBusy] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");
   const [copied, setCopied] = useState(false);
+  const [sweepOpen, setSweepOpen] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -85,13 +93,14 @@ export function GasWalletSettings({
       if (request.signal.aborted) return;
       setUnavailable(result === null);
       setStatus(result);
+      onStatus?.(result);
       setError(null);
     } catch (cause) {
       if (!request.signal.aborted) setError(operatorErrorSentence(cause));
     } finally {
       if (controller.current === request) setLoading(false);
     }
-  }, [token]);
+  }, [onStatus, token]);
 
   useEffect(() => {
     void load();
@@ -132,26 +141,23 @@ export function GasWalletSettings({
 
   if (loading && !status) {
     return (
-      <section className="card set-section" id="gas-wallet" aria-labelledby="gas-wallet-title">
-        <div className="card-head">
-          <h2 id="gas-wallet-title">Gas wallet</h2>
-        </div>
-        <p className="tertiary" role="status">
-          Loading the gas wallet…
-        </p>
-      </section>
+      <SettingsRow
+        name="Gas wallet"
+        status="Loading"
+        value={<span className="muted">Loading gas wallet</span>}
+      />
     );
   }
   if (unavailable || !status) {
     return (
-      <section className="card set-section" id="gas-wallet" aria-labelledby="gas-wallet-title">
-        <div className="card-head">
-          <h2 id="gas-wallet-title">Gas wallet</h2>
-          <Badge state="neutral">Unavailable</Badge>
-        </div>
-        <p className="tertiary">This Sidekick build does not expose a gas wallet.</p>
+      <>
+        <SettingsRow
+          name="Gas wallet"
+          status="Unavailable"
+          value={<span className="muted">This Sidekick build does not expose a gas wallet</span>}
+        />
         <ErrorCallout error={error} />
-      </section>
+      </>
     );
   }
   const badge = signerBadge(status);
@@ -159,7 +165,7 @@ export function GasWalletSettings({
   const estimate =
     status.estimatedTransactions === null
       ? "balance unavailable"
-      : `about ${status.estimatedTransactions.toLocaleString("en-US")} transactions at the fee cap`;
+      : `≈ ${status.estimatedTransactions.toLocaleString("en-US")} transactions at the fee cap`;
   const refusal = status.refusal;
   const dedicatedCheck =
     refusal.refusalReason === null
@@ -169,320 +175,214 @@ export function GasWalletSettings({
         : { tone: "error" as const, label: "Refused" };
   const sweepAvailable =
     status.enabled && status.signer === "ready" && status.activeSweepId === null;
+  const sweepAmount = afterFee(status.balanceUstx, status.feeBasisUstx);
 
   if (!status.configured) {
     return (
-      <section
-        className="card-standout set-section"
-        id="gas-wallet"
-        aria-labelledby="gas-wallet-title"
-      >
-        <div className="card-head">
-          <div>
-            <h2 id="gas-wallet-title">Gas wallet</h2>
-            <p className="muted">Not set up</p>
-          </div>
-          <Badge state="neutral">Optional</Badge>
-        </div>
-        <p
-          style={{
-            fontSize: 13,
-            color: "var(--text-secondary)",
-            margin: "0 0 14px",
-            maxWidth: 640,
-          }}
-        >
-          Create a small STX wallet that lives on this machine. Sidekick uses it only to pay gas for
-          the permissionless reward calls when you click — it holds nothing else, and Sidekick
-          checks before every run that it is not currently the signer or an admin. Without it, you
-          keep signing each call with your own wallet.
-        </p>
-        {observe ? (
-          <div className="callout callout-neutral" role="status">
-            <div className="body">
-              This Sidekick runs in Observe mode. Set <code>SIDEKICK_ENGINE_MODE=operator-run</code>{" "}
-              and restart before enabling a gas wallet; you can create it now.
-            </div>
-          </div>
-        ) : null}
-        <div className="pill-row">
-          <button
-            className="btn btn-primary"
-            type="button"
-            disabled={readOnly || busy !== null}
-            onClick={() => act("create", () => createGasWallet(token))}
-          >
-            {busy === "create" ? "Creating…" : "Create gas wallet"}
-          </button>
-        </div>
+      <>
+        <SettingsRow
+          actions={
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={readOnly || busy !== null}
+              onClick={() => act("create", () => createGasWallet(token))}
+            >
+              {busy === "create" ? "Creating…" : "Create gas wallet"}
+            </button>
+          }
+          detail="create it now; it signs nothing until operator-run is on and you enable it"
+          help="A small STX account Sidekick keeps in its data directory. It pays only network fees for approved reward calls and can never be the signer or a manager admin."
+          name="Gas wallet"
+          status="Optional"
+          value={<span className="muted">Not set up</span>}
+        />
         <ErrorCallout error={error} />
-      </section>
+      </>
     );
   }
 
   return (
-    <section
-      className="card-standout set-section"
-      id="gas-wallet"
-      aria-labelledby="gas-wallet-title"
-    >
-      <div className="card-head">
-        <div>
-          <h2 id="gas-wallet-title">Gas wallet</h2>
-          <p className="muted">
-            {status.source === "generated"
-              ? "Created on this machine · the key stays in Sidekick's data directory"
-              : "Configured through the environment"}
-          </p>
+    <div className="st-wallet">
+      <div className="st-wallet-id">
+        <div className="rw-eyebrow">
+          Gas wallet <Badge state={badge.tone}>{badge.label}</Badge>
         </div>
-        <Badge state={badge.tone}>{badge.label}</Badge>
-      </div>
-      <div className="rw-wallet-grid">
-        <div>
-          <div className="rw-wallet-address">
-            <Wallet className="rw-ico" aria-hidden="true" />
-            <span>{status.principal}</span>
-            <button
-              className="btn-icon"
-              type="button"
-              aria-label="Copy address"
-              onClick={() => void copy()}
-            >
-              <Copy aria-hidden="true" />
-            </button>
-            {copied ? <span className="muted">copied</span> : null}
-          </div>
-          <StatLine label="Balance">
-            {stxAmount(status.balanceUstx)}
-            <span className="sub">
-              {status.balanceError ? `balance unavailable: ${status.balanceError}` : estimate}
-            </span>
-          </StatLine>
-          <StatLine label="Fee cap per transaction">{stxAmount(status.feeBasisUstx)}</StatLine>
+        <div className="rw-wallet-address">
+          <Wallet className="rw-ico" aria-hidden="true" />
+          <span>{status.principal}</span>
+          <button className="btn-icon" type="button" aria-label="Copy address" onClick={copy}>
+            <Copy aria-hidden="true" />
+          </button>
+          {copied ? <span className="muted">copied</span> : null}
+        </div>
+        <p className="st-wallet-sub">
+          {stxAmount(status.balanceUstx)} · {estimate}
+          {status.createdAt ? ` · created ${shortUtc(status.createdAt)}` : ""} ·{" "}
+          {status.source === "generated" ? "on this machine" : "from the environment"}{" "}
           {status.secretFilePath ? (
-            <StatLine label="Key file">
-              <span className="identifier">{status.secretFilePath}</span>
-              <span className="sub">
-                owner-only · part of your host backups · losing it loses only gas
-              </span>
-            </StatLine>
+            <SettingsInfo
+              text={`Key file ${status.secretFilePath} · owner-only · include it with the database backup · losing it loses only gas`}
+            />
           ) : null}
-          {status.signerError ? (
-            <StatLine label="Key status">
-              <span className="sub">{status.signerError}</span>
-            </StatLine>
-          ) : null}
-        </div>
-        <div>
-          <div className="callout callout-neutral">
-            <div className="body">
-              <strong>Fund it.</strong> Send STX to the address on the left from any wallet. Each
-              transaction is capped at {stxAmount(status.feeBasisUstx)}; real fees are usually far
-              lower.
-            </div>
-          </div>
-          {observe ? (
-            <div className="rw-setting-row">
-              <span>
-                Engine mode
-                <span className="muted">
-                  Observe — set SIDEKICK_ENGINE_MODE=operator-run and restart to enable runs
-                </span>
-              </span>
-              <Badge state="caution">Observe</Badge>
-            </div>
-          ) : (
-            <div className="rw-setting-row">
-              <span>
-                {status.enabled ? "Enabled" : "Disabled"}
-                <span className="muted">
-                  {status.enabled
-                    ? "Sidekick can sign reward calls you approve"
-                    : "Enable to let Sidekick sign reward calls you approve"}
-                </span>
-              </span>
+        </p>
+        <ErrorCallout error={error} />
+      </div>
+      <div className="st-rows st-wallet-rows">
+        <SettingsRow
+          actions={
+            <button
+              className="btn btn-tertiary sm"
+              type="button"
+              disabled={readOnly || observe || busy !== null}
+              onClick={() =>
+                act(status.enabled ? "disable" : "enable", () =>
+                  status.enabled ? disableGasWallet(token) : enableGasWallet(token),
+                )
+              }
+            >
+              {busy === "enable"
+                ? "Enabling…"
+                : busy === "disable"
+                  ? "Disabling…"
+                  : status.enabled
+                    ? "Disable"
+                    : "Enable"}
+            </button>
+          }
+          detail={
+            observe
+              ? "enable operator-run in the deployment and restart before signing"
+              : "signs only reward calls in a run you approve"
+          }
+          name="Signing"
+          status={observe ? "Observe mode" : status.enabled ? "Enabled" : "Disabled"}
+        />
+        <SettingsRow
+          detail={refusal.checkedAt ? `checked ${shortUtc(refusal.checkedAt)}` : "not checked yet"}
+          help="Runs before every signature and refuses if this address is the signer, a manager admin, or a contract."
+          name="Dedicated-key check"
+          statusNode={<Badge state={dedicatedCheck.tone}>{dedicatedCheck.label}</Badge>}
+        />
+        <SettingsRow
+          actions={
+            <button
+              aria-expanded={sweepOpen || activeSweep !== null}
+              className="btn btn-tertiary sm"
+              disabled={readOnly && activeSweep === null}
+              onClick={() => setSweepOpen((value) => !value)}
+              type="button"
+            >
+              Sweep remaining STX
+            </button>
+          }
+          detail={
+            sweepAmount === null
+              ? "balance unavailable"
+              : `${stxAmount(sweepAmount)} after the network fee`
+          }
+          help="Sends everything except the network fee to an address you enter. Runs stay disabled until you fund it again."
+          name="Sweep"
+        >
+          {sweepOpen || activeSweep ? (
+            <div className="st-wallet-disclosure">
+              <div className="field">
+                <label htmlFor="sweep-to">Send all remaining STX to</label>
+                <div className="input-group">
+                  <input
+                    id="sweep-to"
+                    type="text"
+                    value={recipient}
+                    spellCheck={false}
+                    placeholder={status.network === "mainnet" ? "SP…" : "ST…"}
+                    onChange={(event) => setRecipient(event.target.value)}
+                    disabled={readOnly || !sweepAvailable}
+                  />
+                  <span className="suffix">{status.network}</span>
+                </div>
+              </div>
               <button
                 className="btn btn-secondary sm"
                 type="button"
-                disabled={readOnly || busy !== null}
-                onClick={() =>
-                  act(status.enabled ? "disable" : "enable", () =>
-                    status.enabled ? disableGasWallet(token) : enableGasWallet(token),
-                  )
-                }
+                disabled={readOnly || busy !== null || !sweepAvailable || recipient.trim() === ""}
+                onClick={() => act("sweep", () => prepareGasWalletSweep(token, recipient.trim()))}
               >
-                {busy === "enable"
-                  ? "Enabling…"
-                  : busy === "disable"
-                    ? "Disabling…"
-                    : status.enabled
-                      ? "Disable"
-                      : "Enable"}
+                {busy === "sweep" ? "Preparing…" : "Prepare sweep"}
               </button>
+              {activeSweep ? (
+                <div className="callout callout-info" role="status">
+                  <div className="body">
+                    <strong>
+                      {activeSweep.status === "planned"
+                        ? "Sweep ready for approval."
+                        : "Sweep broadcast."}
+                    </strong>{" "}
+                    {stxAmount(activeSweep.amountUstx)} to{" "}
+                    <span className="identifier">{short(activeSweep.recipient, 8, 6)}</span>
+                    <div className="actions">
+                      {activeSweep.status === "planned" ? (
+                        <>
+                          <button
+                            className="btn btn-primary sm"
+                            type="button"
+                            disabled={readOnly || busy !== null}
+                            onClick={() =>
+                              act("approve", () =>
+                                approveGasWalletSweep(token, activeSweep.sweepId),
+                              )
+                            }
+                          >
+                            {busy === "approve" ? "Sending…" : "Approve sweep"}
+                          </button>
+                          <button
+                            className="btn btn-tertiary sm"
+                            type="button"
+                            disabled={readOnly || busy !== null}
+                            onClick={() =>
+                              act("cancel", () => cancelGasWalletSweep(token, activeSweep.sweepId))
+                            }
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="btn btn-tertiary sm"
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() =>
+                            act("refresh", () => refreshGasWalletSweep(token, activeSweep.sweepId))
+                          }
+                        >
+                          <ArrowClockwise aria-hidden="true" /> Check status
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {status.sweeps.filter((sweep) => sweep.sweepId !== status.activeSweepId).length ? (
+                <details className="st-sweep-history">
+                  <summary>Sweep history</summary>
+                  {status.sweeps
+                    .filter((sweep) => sweep.sweepId !== status.activeSweepId)
+                    .slice(0, 5)
+                    .map((sweep) => {
+                      const state = sweepBadge(sweep);
+                      return (
+                        <div className="st-sweep-history-row" key={sweep.sweepId}>
+                          <span className="mono">{shortUtc(sweep.createdAt)}</span>
+                          <span>{stxAmount(sweep.amountUstx)}</span>
+                          <Badge state={state.tone}>{state.label}</Badge>
+                        </div>
+                      );
+                    })}
+                </details>
+              ) : null}
             </div>
-          )}
-          <div className="rw-setting-row">
-            <span>
-              Setup banner on Rewards
-              <span className="muted">
-                {status.banners.setupDismissedAt
-                  ? `Dismissed ${shortUtc(status.banners.setupDismissedAt)}`
-                  : "Shown until you dismiss it"}
-              </span>
-            </span>
-          </div>
-          <div className="rw-setting-row">
-            <span>
-              Dedicated-key check
-              <span className="muted">
-                Run before every signature · refuses if this address is currently the signer or a
-                manager admin
-              </span>
-            </span>
-            <Badge state={dedicatedCheck.tone}>{dedicatedCheck.label}</Badge>
-          </div>
-        </div>
+          ) : null}
+        </SettingsRow>
       </div>
-      <div className="divider" />
-      <div className="rw-sweep">
-        <div>
-          <h3>Sweep remaining STX</h3>
-          <p className="muted">
-            Sends everything in the gas wallet except the network fee to an address you enter. Runs
-            stay disabled until you fund it again. Not available while a run or another sweep is in
-            progress.
-          </p>
-        </div>
-        <div className="field">
-          <label htmlFor="sweep-to">Send all remaining STX to</label>
-          <div className="input-group">
-            <input
-              id="sweep-to"
-              type="text"
-              value={recipient}
-              spellCheck={false}
-              aria-describedby="sweep-help"
-              placeholder={status.network === "mainnet" ? "SP…" : "ST…"}
-              onChange={(event) => setRecipient(event.target.value)}
-              disabled={readOnly || !sweepAvailable}
-            />
-            <span className="suffix">{status.network}</span>
-          </div>
-          <span className="help" id="sweep-help">
-            {stxAmount(status.balanceUstx)} available · must be a standard {status.network} address,
-            not a contract
-          </span>
-        </div>
-        <div className="rw-sweep-action">
-          <button
-            className="btn btn-secondary"
-            type="button"
-            disabled={readOnly || busy !== null || !sweepAvailable || recipient.trim() === ""}
-            onClick={() => act("sweep", () => prepareGasWalletSweep(token, recipient.trim()))}
-          >
-            {busy === "sweep" ? "Preparing…" : "Prepare sweep"}
-          </button>
-        </div>
-      </div>
-      {activeSweep ? (
-        <div className="callout callout-info" role="status" style={{ marginTop: 16 }}>
-          <div className="body">
-            <strong>
-              {activeSweep.status === "planned"
-                ? "Sweep ready for your approval."
-                : "Sweep broadcast."}
-            </strong>{" "}
-            {stxAmount(activeSweep.amountUstx)} to{" "}
-            <span className="identifier">{short(activeSweep.recipient, 8, 6)}</span> · fee{" "}
-            {stxAmount(activeSweep.feeUstx)}
-            {activeSweep.status === "planned"
-              ? ` · approve by ${shortUtc(activeSweep.expiresAt)}`
-              : activeSweep.txid
-                ? ` · ${short(activeSweep.txid, 8, 6)}`
-                : ""}
-            {activeSweep.status === "planned" ? (
-              <div className="actions">
-                <button
-                  className="btn btn-primary sm"
-                  type="button"
-                  disabled={readOnly || busy !== null}
-                  onClick={() =>
-                    act("approve", () => approveGasWalletSweep(token, activeSweep.sweepId))
-                  }
-                >
-                  {busy === "approve" ? "Sending…" : `Sweep ${stxAmount(activeSweep.amountUstx)}`}
-                </button>
-                <button
-                  className="btn btn-tertiary sm"
-                  type="button"
-                  disabled={readOnly || busy !== null}
-                  onClick={() =>
-                    act("cancel", () => cancelGasWalletSweep(token, activeSweep.sweepId))
-                  }
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <div className="actions">
-                <button
-                  className="btn btn-tertiary sm"
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={() =>
-                    act("refresh", () => refreshGasWalletSweep(token, activeSweep.sweepId))
-                  }
-                >
-                  <ArrowClockwise aria-hidden="true" /> Check status
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
-      {status.sweeps.filter((sweep) => sweep.sweepId !== status.activeSweepId).length > 0 ? (
-        <div className="tbl-wrap" style={{ marginTop: 16 }}>
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Sweep</th>
-                <th scope="col">To</th>
-                <th scope="col" className="right">
-                  Amount
-                </th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.sweeps
-                .filter((sweep) => sweep.sweepId !== status.activeSweepId)
-                .slice(0, 5)
-                .map((sweep) => {
-                  const sweepState = sweepBadge(sweep);
-                  return (
-                    <tr key={sweep.sweepId}>
-                      <td className="mono">{shortUtc(sweep.createdAt)}</td>
-                      <td className="mono" title={sweep.recipient}>
-                        {short(sweep.recipient, 8, 6)}
-                      </td>
-                      <td className="mono right">{stxAmount(sweep.amountUstx)}</td>
-                      <td>
-                        <Badge state={sweepState.tone}>{sweepState.label}</Badge>
-                        {sweep.failureReason ? (
-                          <span className="rw-pay-sub">{sweep.failureReason}</span>
-                        ) : null}
-                        {sweep.txid ? (
-                          <span className="rw-pay-sub">{short(sweep.txid, 8, 6)}</span>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-      <ErrorCallout error={error} />
-    </section>
+    </div>
   );
 }

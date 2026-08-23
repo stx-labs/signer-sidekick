@@ -66,7 +66,6 @@ export function RewardsOverviewCard({
   const [gasWallet, setGasWallet] = useState<GasWalletStatus | null>(null);
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
-  const [failed, setFailed] = useState(false);
   useEffect(() => {
     void generatedAt;
     const controller = new AbortController();
@@ -75,12 +74,9 @@ export function RewardsOverviewCard({
         .then((result) => {
           if (!controller.signal.aborted) {
             setLedger(result);
-            setFailed(false);
           }
         })
-        .catch(() => {
-          if (!controller.signal.aborted) setFailed(true);
-        });
+        .catch(() => undefined);
       loadGasWalletStatus(token, controller.signal)
         .then((status) => {
           if (!controller.signal.aborted) setGasWallet(status);
@@ -110,7 +106,7 @@ export function RewardsOverviewCard({
     };
   }, [token, generatedAt]);
 
-  if (!ledger) return <>{failed ? fallback : fallback}</>;
+  if (!ledger) return <>{fallback}</>;
   const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
   const card = cards[0] ?? null;
   const state = cardState(card);

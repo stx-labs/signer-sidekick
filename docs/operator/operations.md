@@ -64,15 +64,18 @@ The Rewards page is one view of the reward cycle:
   rolled forward to the Second Distribution, and CSV export of that distribution or cycle.
 - **Accounting** — your fee ledger and the export of the whole history.
 
-A ₿ beside a staker marks a Bitcoin payout; hover it to see and copy their registered address.
+A ₿ beside a staker marks a Bitcoin payout; hover it to see and copy their currently registered
+address. Historical manager events do not prove which address was registered when an older payout
+was initiated.
 
 ## Reward runs
 
-A run starts from a Distribute card: review the sealed recipe and its transaction count, then Go.
-It executes server-side, one transaction at a time; closing the browser does not stop it. Progress,
-Pause, Resume, and Cancel stay on the same card, and Activity keeps the record. Pause or cancel
-only between transactions; cancellation cannot undo a broadcast transaction. Another run cannot
-start until the current one finishes.
+A run starts from a Distribute card. Sidekick first prepares its sealed recipe in the background;
+large pools can take a few minutes, survive a closed browser, and resume preparation after restart.
+Review the resulting transaction count, then Go. Execution is also server-side, one transaction at
+a time. Progress, Pause, Resume, and Cancel stay on the card, and Activity keeps the record. Pause
+or cancel only between transactions; cancellation cannot undo a broadcast transaction. Another
+run cannot start until the current one finishes.
 
 The gas wallet pays only network fees. A banner on Rewards warns when its balance cannot cover the
 next run — top it up from any wallet. **Settings → Transaction capabilities → Force Observe**

@@ -1028,8 +1028,15 @@ describe("buildRewardLedger", () => {
       query: { scope: "all" },
     });
     expect(all.query.scope).toBe("all");
-    expect(all.payments.length).toBe(10_000);
+    expect(all.payments.length).toBe(15_000);
     expect(all.paymentsTruncated).toBe(false);
+    expect(all.evidenceWindow.truncated).toBe(false);
+    expect(all.fees).toMatchObject({
+      earnedIndexedSats: "75000000",
+      indexedPaymentCount: 15_000,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
+    });
   });
 });
 

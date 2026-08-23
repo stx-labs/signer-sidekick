@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings v2 · Observe, no gas wallet, one requirement open · reward operations mockup</title>
+<link rel="stylesheet" href="../../tokens/tokens.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
+<link rel="stylesheet" href="../src/mockup.css?v=mt5w7q2b">
+<script>
+  const theme = new URLSearchParams(location.search).get("theme");
+  if (theme === "dark") document.documentElement.dataset.theme = "dark";
+</script>
+</head>
+<body>
+<div class="app" data-network="mainnet">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6-4 6 4M6 15l6 4 6-4M5 12h14"></path></svg></div>
+      <div class="name">Signer Sidekick<small>PoX-5 · v1</small></div>
+    </div>
+    <nav aria-label="Primary">
+      <div class="nav-label">Operate</div>
+      <a class="item" href="#overview"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a8 8 0 0 1 16 0"></path><path d="M12 14l4-4"></path><circle cx="12" cy="14" r="1"></circle></svg>Overview<span class="count alert">1</span></a>
+      <a class="item" href="#pool"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3 19a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 6 0"></path></svg>Pool</a>
+      <a class="item" href="#rewards"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="10" cy="8" rx="6" ry="3"></ellipse><path d="M4 8v5c0 1.7 2.7 3 6 3s6-1.3 6-3V8"></path><path d="M14 11c3.3 0 6 1.3 6 3v5c0 1.7-2.7 3-6 3s-6-1.3-6-3v-2"></path></svg>Rewards</a>
+      <a class="item" href="#activity"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg>Activity</a>
+      <a class="item" href="#health"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>Signer Health</a>
+      <div class="nav-label">Configure</div>
+      <a class="item active" href="#settings" aria-current="page"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"></path></svg>Settings</a>
+    </nav>
+    <div class="spacer"></div>
+  </aside>
+  <div class="content">
+    <div class="topbar">
+      <div class="crumbs"><strong>Settings</strong></div>
+      <div class="right">
+        <span class="net net-mainnet"><span class="dot"></span>Mainnet</span>
+        <button class="chip-btn" type="button" aria-label="Toggle theme"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg></button>
+      </div>
+    </div>
+    <main class="main">
+
+<div class="page-head">
+  <div><h1>Settings</h1></div>
+  <div class="actions">
+    <button class="btn btn-secondary" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"></path></svg>Run checks</button>
+    <button class="btn btn-secondary" type="button" title="Redacted snapshot of Sidekick, manager, node, signer, observer, reconciliation, and operation evidence — no keys, credentials, signed bytes, or raw logs"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>Support bundle</button>
+    <a class="btn btn-tertiary" href="#" title="Install, upgrade, restore, diagnose">Operator guide <svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg></a>
+  </div>
+</div>
+<nav class="st-jump" aria-label="Settings sections">
+  <a class="on" href="#st-deployment">Deployment</a>
+  <a href="#st-connections">Connections</a>
+  <a href="#st-requirements">Requirements</a>
+  <a href="#st-manager">Manager</a>
+  <a href="#st-runs">Reward runs</a>
+  <a href="#st-preferences">Preferences</a>
+  <a href="#st-access">Access</a>
+</nav>
+
+<section class="card-standout st-deploy" id="st-deployment" aria-labelledby="st-deploy-title">
+  <div class="st-deploy-grid">
+    <div class="st-deploy-id">
+      <div class="rw-eyebrow">This deployment <span class="badge b-caution">1 item needs attention</span></div>
+      <h2 id="st-deploy-title">SP1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM<wbr>.signer-manager <button class="btn-icon" type="button" aria-label="Copy manager principal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></h2>
+      <p class="st-deploy-when">Node transaction index is not enabled — indexed manager events cannot be confirmed locally until it is (see Requirements).</p>
+    </div>
+    <dl class="st-deploy-facts">
+      <div><dt>Network</dt><dd>Mainnet <small>chain 0x00000001 · PoX-5 SP000000000000000000002Q6VF78.pox-5</small></dd></div>
+      <div><dt>Engine</dt><dd>Observe <small>set by the deployment · signs nothing · reward calls use your own wallet</small></dd></div>
+      <div><dt>Sidekick</dt><dd>v1.0.0 <small>node stacks-node 3.3.0 (8f1c2d4) · compatibility profile mainnet-2026-08 r3 · built in</small></dd></div>
+      <div><dt>Last check</dt><dd>Aug 22, 12:04 UTC <small>connections, requirements, and manager attachment · re-run with Run checks</small></dd></div>
+    </dl>
+  </div>
+</section>
+
+<div class="section-title st-title" id="st-connections">Connections <span class="hint">what Sidekick reads</span></div>
+<section class="card st-card" aria-label="Connections">
+  <div class="st-rows">
+
+<div class="st-row">
+  <div class="n">Stacks node <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Current chain state and PoX-5 reads. Required."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div>
+  <div class="v"><span class="mono">http://stacks-node:20443</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Node monitoring <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Prometheus metrics from stacks-core, used for local node diagnosis. Recommended."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div>
+  <div class="v"><span class="mono">http://stacks-node:9153</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Signer monitoring <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Signer metrics for participation and latency diagnosis. Recommended."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div>
+  <div class="v"><span class="mono">http://stacks-signer:30001</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Indexed chain API <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Roster, activity, and historical chain data. Required; a Hiro key avoids public rate limits."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div>
+  <div class="v"><span class="mono">https://api.mainnet.hiro.so</span><span class="st-cred">key saved in Sidekick</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Network comparison API <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="External reference used only to diagnose local node health. Optional; a same-origin key is reused."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div>
+  <div class="v"><span class="mono">—</span></div>
+  <div class="s"><span class="badge b-neutral">Not configured</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Add</button></div>
+</div>
+  </div>
+</section>
+
+<div class="section-title st-title" id="st-requirements">Node &amp; signer requirements <span class="hint">what the host must provide · checked Aug 22, 12:04 UTC</span></div>
+<section class="card st-card" aria-label="Node and signer requirements">
+  <div class="st-rows">
+
+<div class="st-row has-more">
+  <div class="n">Node transaction index <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">HTTP 501 transaction-index-unavailable</span></div>
+  <div class="s"><span class="badge b-caution">Not configured</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Resolve</button></div>
+</div><details class="st-resolve"><summary>How to resolve</summary><ol><li>Set <code>stacks_node.txindex = true</code> in the node configuration.</li><li>Restart stacks-node; the index backfills from the node's own chainstate.</li></ol><pre class="code command-code">[node]
+txindex = true</pre><p class="help">Restart after changing configuration: stacks-node.</p><a href="#">Full node and signer requirements ↗</a></details>    <div class="st-row">
+  <div class="n">Event observer <span class="st-imp">recommended</span></div>
+  <div class="v"><span class="mono">4,200 events · latest block 964,150</span><span class="st-cred">callbacks from the node · polling covers gaps</span></div>
+  <div class="s"><span class="badge b-success">Verified</span></div>
+  <div class="a"></div>
+</div>    <div class="st-row">
+  <div class="n">Node version <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">stacks-node 3.3.0 · tested with this release</span></div>
+  <div class="s"><span class="badge b-success">Ready</span></div>
+  <div class="a"></div>
+</div>    <div class="st-row">
+  <div class="n">Signer version <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">stacks-signer 3.3.0</span></div>
+  <div class="s"><span class="badge b-success">Ready</span></div>
+  <div class="a"></div>
+</div>
+  </div>
+</section>
+
+<div class="section-title st-title st-title-actions" id="st-manager"><span>Manager <span class="hint">attached · published at block 212,640</span></span><button class="btn btn-tertiary sm" type="button"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"></path></svg>Refresh attachment</button></div>
+<section class="card st-card" aria-label="Manager">
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Source <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="The deployed source hashes to the pinned upstream signer-manager (built-in reference, compatibility profile mainnet-2026-08 r3). Verify it yourself against the hash."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">ca97d964…1e2b <button class="btn-icon" type="button" aria-label="Copy source hash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></span><span class="st-cred">built-in reference · profile mainnet-2026-08 r3</span></div><div class="s"><span class="badge b-success">Verified</span></div><div class="a"></div></div>
+    <div class="st-row"><div class="n">Reward calls <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Reviewed adapters exist for register-self, update-admin, update-fees, withdraw-fees, sweep-fee-refunds, and reference-reward-claims, so Sidekick can run them from a gas wallet. Without them it only observes."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">6 reviewed adapters</span></div><div class="s"><span class="badge b-success">Available</span></div><div class="a"></div></div>
+    <div class="st-row"><div class="n">Signer key <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="The signer public key registered with this manager; the grant is what lets it sign for the pool in a cycle."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">021212121212…12121212 <button class="btn-icon" type="button" aria-label="Copy signer public key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></span><span class="st-cred">registered · grant valid for cycle 141</span></div><div class="s"><span class="badge b-success">Registered</span></div><div class="a"><a class="btn btn-tertiary sm" href="#action/register-self">Rotate</a></div></div>
+    <div class="st-row"><div class="n">Admins <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Reconstructed from the deploying account and verified manager events."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">SP1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM <button class="btn-icon" type="button" aria-label="Copy admin principal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></span><span class="st-cred">1 admin · synced Aug 22</span></div><div class="s"></div><div class="a"><a class="btn btn-tertiary sm" href="#action/add-admin">Add</a><a class="btn btn-tertiary sm" href="#action/remove-admin">Remove</a></div></div>
+  </div>
+</section>
+
+<div class="section-title st-title" id="st-runs">Reward runs <span class="hint">how Sidekick signs the permissionless reward calls</span></div>
+<section class="card st-card" aria-label="Reward runs">
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Engine mode <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Set by the deployment (SIDEKICK_ENGINE_MODE) so a dashboard session cannot arm signing. Observe plans and verifies but never signs; operator-run signs only a recipe you approve, with the gas wallet."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">Observe</span><span class="st-cred">set SIDEKICK_ENGINE_MODE=operator-run and restart to run reward calls from here</span></div><div class="s"><span class="badge b-neutral">Observe</span></div><div class="a"></div></div>
+    <div class="st-row"><div class="n">Gas wallet <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="A small STX account Sidekick generates and keeps in its data directory. It pays only network fees for reward calls you approve; the contract fixes every payout. It can never be the signer or a manager admin."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="muted">Not set up</span><span class="st-cred">create it now; it signs nothing until operator-run is on and you enable it</span></div><div class="s"><span class="badge b-neutral">Optional</span></div><div class="a"><button class="btn btn-secondary sm" type="button">Create gas wallet</button></div></div>
+    <div class="st-row"><div class="n">Operations <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="The five reviewed reward adapters. Each has exactly one signer method; there is no generic signing path."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="st-chips"><span class="st-chip">calculate</span><span class="st-chip">collect</span><span class="st-chip">distribute</span><span class="st-chip">settle</span><span class="st-chip">reclaim</span></span></div><div class="s"><span class="badge b-neutral">Observe only</span></div><div class="a"><a class="btn btn-tertiary sm" href="#activity">Activity</a></div></div>
+  </div>
+</section>
+
+<div class="section-title st-title" id="st-preferences">Preferences</div>
+<section class="card st-card" aria-label="Preferences">
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Forecast horizon <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="How many future cycles the pool forecast projects. 1–96."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="input-group st-inline-input"><input type="number" min="1" max="96" value="6" aria-label="Forecast horizon"><span class="suffix">cycles</span></span></div><div class="s"></div><div class="a"><button class="btn btn-tertiary sm" type="button" disabled>Save</button></div></div>
+    <div class="st-row"><div class="n">Theme</div><div class="v"><span class="seg" role="radiogroup" aria-label="Theme"><button class="on" type="button">System</button><button type="button">Light</button><button type="button">Dark</button></span></div><div class="s"></div><div class="a"></div></div>
+  </div>
+</section>
+
+<div class="section-title st-title" id="st-access">Access &amp; audit</div>
+<section class="card st-card" aria-label="Access and audit">
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Dashboard access <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Bearer token set by the deployment (SIDEKICK_AUTH_TOKEN). Trusted-header and Basic modes are deployment settings too."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">bearer token · listener 127.0.0.1:3998</span></div><div class="s"><span class="badge b-success">Authenticated</span></div><div class="a"></div></div>
+    <div class="st-row"><div class="n">Keys held <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Sidekick never stores signer or manager-admin keys; the only key it holds is the gas wallet's."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+</button></div><div class="v"><span class="mono">gas wallet only</span></div><div class="s"></div><div class="a"></div></div>
+    <div class="st-row"><div class="n">Settings revision</div><div class="v"><span class="mono">r12</span><span class="st-cred">last change Aug 15 · indexed API key replaced</span></div><div class="s"></div><div class="a"><button class="btn btn-tertiary sm" type="button">History</button></div></div>
+  </div>
+</section>
+
+    </main>
+  </div>
+</div>
+
+
+</body>
+</html>

@@ -4,8 +4,12 @@ import {
   type RewardRunChild,
   type RewardRunChildStatus,
   type RewardRunOperation,
+  type RewardRunPreparation,
+  type RewardRunPrepareRequest,
   type RewardRunRecipe,
   type RewardRunStatus,
+  rewardRunPreparationSchema,
+  rewardRunPrepareRequestSchema,
   rewardRunRecipeSchema,
   rewardRunSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -81,6 +85,19 @@ const attemptRowSchema = z.object({
   updated_at: z.string(),
 });
 
+const preparationRowSchema = z.object({
+  preparation_id: z.string().uuid(),
+  status: z.enum(["queued", "preparing", "ready", "failed"]),
+  request_sha256: z.string().length(64),
+  request_json: z.string(),
+  run_id: z.string().uuid().nullable(),
+  failure_reason: z.string().nullable(),
+  created_at: z.string(),
+  started_at: z.string().nullable(),
+  completed_at: z.string().nullable(),
+  updated_at: z.string(),
+});
+
 const terminalRunStatuses = new Set<RewardRunStatus>(["completed", "cancelled", "expired"]);
 
 function transaction<T>(db: DatabaseSync, operation: () => T): T {
@@ -123,6 +140,163 @@ export interface StoredRewardRunAttempt {
 
 export class RewardRunRepository {
   constructor(private readonly db: DatabaseSync) {}
+
+  createPreparation(input: {
+    preparationId: string;
+    requestSha256: string;
+    request: RewardRunPrepareRequest;
+    now: string;
+  }): RewardRunPreparation {
+    const request = rewardRunPrepareRequestSchema.parse(input.request);
+    const byId = this.getPreparation(input.preparationId);
+    if (byId) {
+      if (byId.requestSha256 !== input.requestSha256) {
+        throw new RewardRunRepositoryError(
+          "recipe-conflict",
+          "This reward-run preparation ID was already used with different inputs",
+        );
+      }
+      return byId;
+    }
+    const active = this.#activePreparationForRequest(input.requestSha256);
+    if (active) return active;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO reward_run_preparations (
+             preparation_id, status, request_sha256, request_json, created_at, updated_at
+           ) VALUES (?, 'queued', ?, ?, ?, ?)`,
+        )
+        .run(
+          input.preparationId,
+          input.requestSha256,
+          JSON.stringify(request),
+          input.now,
+          input.now,
+        );
+    } catch (error) {
+      const raced = this.#activePreparationForRequest(input.requestSha256);
+      if (raced) return raced;
+      throw error;
+    }
+    return this.requirePreparation(input.preparationId);
+  }
+
+  getPreparation(preparationId: string): RewardRunPreparation | null {
+    const row = this.db
+      .prepare(
+        `SELECT preparation_id, status, request_sha256, request_json, run_id, failure_reason,
+          created_at, started_at, completed_at, updated_at
+         FROM reward_run_preparations WHERE preparation_id = ?`,
+      )
+      .get(preparationId);
+    if (row === undefined) return null;
+    return this.#toPreparation(row);
+  }
+
+  requirePreparation(preparationId: string): RewardRunPreparation {
+    const preparation = this.getPreparation(preparationId);
+    if (!preparation) {
+      throw new RewardRunRepositoryError("run-not-found", "Reward-run preparation does not exist");
+    }
+    return preparation;
+  }
+
+  pendingPreparations(): RewardRunPreparation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT preparation_id FROM reward_run_preparations
+         WHERE status = 'queued' ORDER BY created_at ASC, preparation_id ASC`,
+      )
+      .all() as Array<{ preparation_id: string }>;
+    return rows.map(({ preparation_id }) => this.requirePreparation(preparation_id));
+  }
+
+  resetInterruptedPreparations(now: string): number {
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE reward_run_preparations
+           SET status = 'queued', started_at = NULL, updated_at = ?
+           WHERE status = 'preparing'`,
+        )
+        .run(now).changes,
+    );
+  }
+
+  claimPreparation(preparationId: string, now: string): RewardRunPreparation | null {
+    const changed = this.db
+      .prepare(
+        `UPDATE reward_run_preparations
+         SET status = 'preparing', started_at = COALESCE(started_at, ?), updated_at = ?
+         WHERE preparation_id = ? AND status = 'queued'`,
+      )
+      .run(now, now, preparationId).changes;
+    return changed === 0 ? null : this.requirePreparation(preparationId);
+  }
+
+  completePreparation(preparationId: string, runId: string, now: string): RewardRunPreparation {
+    const changed = this.db
+      .prepare(
+        `UPDATE reward_run_preparations
+         SET status = 'ready', run_id = ?, failure_reason = NULL, completed_at = ?, updated_at = ?
+         WHERE preparation_id = ? AND status = 'preparing'`,
+      )
+      .run(runId, now, now, preparationId).changes;
+    if (changed === 0) {
+      throw new RewardRunRepositoryError(
+        "state-conflict",
+        "Reward-run preparation is no longer active",
+      );
+    }
+    return this.requirePreparation(preparationId);
+  }
+
+  failPreparation(preparationId: string, reason: string, now: string): RewardRunPreparation {
+    const failureReason = reason.trim().slice(0, 2_000) || "Reward-run preparation failed";
+    const changed = this.db
+      .prepare(
+        `UPDATE reward_run_preparations
+         SET status = 'failed', run_id = NULL, failure_reason = ?, completed_at = ?, updated_at = ?
+         WHERE preparation_id = ? AND status = 'preparing'`,
+      )
+      .run(failureReason, now, now, preparationId).changes;
+    if (changed === 0) {
+      throw new RewardRunRepositoryError(
+        "state-conflict",
+        "Reward-run preparation is no longer active",
+      );
+    }
+    return this.requirePreparation(preparationId);
+  }
+
+  #activePreparationForRequest(requestSha256: string): RewardRunPreparation | null {
+    const row = this.db
+      .prepare(
+        `SELECT preparation_id FROM reward_run_preparations
+         WHERE request_sha256 = ? AND status IN ('queued', 'preparing')
+         ORDER BY created_at ASC LIMIT 1`,
+      )
+      .get(requestSha256) as { preparation_id: string } | undefined;
+    return row ? this.requirePreparation(row.preparation_id) : null;
+  }
+
+  #toPreparation(row: unknown): RewardRunPreparation {
+    const value = preparationRowSchema.parse(row);
+    return rewardRunPreparationSchema.parse({
+      schemaVersion: 1,
+      preparationId: value.preparation_id,
+      status: value.status,
+      requestSha256: value.request_sha256,
+      request: JSON.parse(value.request_json),
+      runId: value.run_id,
+      failureReason: value.failure_reason,
+      createdAt: value.created_at,
+      startedAt: value.started_at,
+      completedAt: value.completed_at,
+      updatedAt: value.updated_at,
+    });
+  }
 
   insert(input: {
     runId: string;

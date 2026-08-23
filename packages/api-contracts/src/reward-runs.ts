@@ -33,6 +33,27 @@ export const rewardRunPrepareRequestSchema = z
   .strict();
 export type RewardRunPrepareRequest = z.infer<typeof rewardRunPrepareRequestSchema>;
 
+export const rewardRunPreparationStatusSchema = z.enum(["queued", "preparing", "ready", "failed"]);
+export type RewardRunPreparationStatus = z.infer<typeof rewardRunPreparationStatusSchema>;
+
+/** Durable background work that seals one reward recipe from anchored chain facts. */
+export const rewardRunPreparationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    preparationId: z.string().uuid(),
+    status: rewardRunPreparationStatusSchema,
+    requestSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    request: rewardRunPrepareRequestSchema,
+    runId: z.string().uuid().nullable(),
+    failureReason: z.string().min(1).nullable(),
+    createdAt: z.iso.datetime(),
+    startedAt: z.iso.datetime().nullable(),
+    completedAt: z.iso.datetime().nullable(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict();
+export type RewardRunPreparation = z.infer<typeof rewardRunPreparationSchema>;
+
 export const rewardRunApproveRequestSchema = z
   .object({ recipeSha256: z.string().regex(/^[0-9a-f]{64}$/) })
   .strict();

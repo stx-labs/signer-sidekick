@@ -2251,7 +2251,7 @@ export class SidekickStore {
       .number()
       .int()
       .min(1)
-      .max(10_001)
+      .max(100_001)
       .parse(options.limit ?? 10_001);
     const rows = this.db
       .prepare(
@@ -2309,7 +2309,7 @@ export class SidekickStore {
   ): StoredManagerClaim[] {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
-    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
     const rows = this.db
       .prepare(
         `SELECT m.tx_id, m.event_index, m.block_height, m.staker_principal, m.reward_cycle,
@@ -2348,13 +2348,71 @@ export class SidekickStore {
     }));
   }
 
+  /**
+   * Complete indexed operator-fee aggregate, independent of the bounded ledger display window.
+   * A payment without its matching PoX-5 print is counted but excluded from the fee sum so callers
+   * can refuse to describe a partial total as complete.
+   */
+  getManagerRewardFeeTotals(
+    chainId: number,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): { earnedIndexedSats: string; paymentCount: number; unmatchedPaymentCount: number } {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const pox5 = principalSchema.parse(pox5ContractId);
+    const row = this.db
+      .prepare(
+        `WITH claims AS (
+           SELECT tx_id, staker_principal, bond_index, CAST(amount_sats AS INTEGER) AS net_sats
+           FROM manager_activity_events
+           WHERE chain_id = ? AND manager_principal = ? AND canonical = 1
+             AND kind = 'claim-staker-rewards'
+         ), prints AS (
+           SELECT tx_id,
+             json_extract(decoded_payload_json, '$.event.stakerPrincipal') AS staker_principal,
+             json_extract(decoded_payload_json, '$.event.bondIndex') AS bond_index,
+             MAX(CAST(json_extract(decoded_payload_json, '$.event.rewardsClaimedSats') AS INTEGER))
+               AS gross_sats
+           FROM chain_events
+           WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+             AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+             AND json_extract(decoded_payload_json, '$.event.kind') =
+               'claim-staker-rewards-for-signer'
+             AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
+           GROUP BY tx_id, staker_principal, bond_index
+         )
+         SELECT COUNT(*) AS payment_count,
+           COALESCE(SUM(CASE WHEN prints.gross_sats IS NULL THEN 1 ELSE 0 END), 0)
+             AS unmatched_count,
+           COALESCE(SUM(CASE
+             WHEN prints.gross_sats >= claims.net_sats THEN prints.gross_sats - claims.net_sats
+             ELSE 0
+           END), 0) AS earned_sats
+         FROM claims
+         LEFT JOIN prints ON prints.tx_id = claims.tx_id
+           AND prints.staker_principal = claims.staker_principal
+           AND prints.bond_index IS claims.bond_index`,
+      )
+      .get(parsedChainId, manager, parsedChainId, pox5, manager) as {
+      payment_count: number;
+      unmatched_count: number;
+      earned_sats: number;
+    };
+    return {
+      earnedIndexedSats: BigInt(row.earned_sats).toString(),
+      paymentCount: z.number().int().nonnegative().parse(row.payment_count),
+      unmatchedPaymentCount: z.number().int().nonnegative().parse(row.unmatched_count),
+    };
+  }
+
   /** Every Bitcoin withdrawal request the manager initiated, with its latest manager-side state. */
   listManagerWithdrawalRecords(
     chainId: number,
     managerPrincipal: string,
     limit = 10_001,
   ): StoredManagerWithdrawal[] {
-    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
     const records: StoredManagerWithdrawal[] = [];
     for (let offset = 0; records.length < parsedLimit; offset += 200) {
       const page = this.listManagerWithdrawals(chainId, managerPrincipal, {

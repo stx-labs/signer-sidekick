@@ -38,6 +38,8 @@ operator-triggered, occasional, permissionless calls.
    recipient or increases an approved amount. One active authorization per gas wallet (run or
    sweep). Approval must start within 30 minutes; a run may take at most 6 hours; a fee-cap change
    requires re-approval; the per-run transaction cap is presented honestly.
+   Preparation is durable and asynchronous because discovering a large pool can outlive an HTTP
+   request; interrupted work is requeued, and the approval window starts only once sealing succeeds.
 
 4. **Execution.** Sequential, one transaction in flight, last-moment authoritative revalidation
    before each child, deny-mode post-conditions per adapter (including the reclaim refund), no

@@ -682,7 +682,7 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     const available = big(distribution.availableToCollectSats);
     const outstandingSats = big(p.outstandingSats);
     const payments = input.paymentsByKey?.get(key) ?? [];
-    const arrived = payments.filter((row) => row.status === "arrived").length;
+    const arrived = p.arrived;
     const rejected = p.rejected;
     const eyebrow = `Cycle ${cycle.cycle} · ${distributionName(distribution.distribution)}`;
     const runForThis =
@@ -766,9 +766,7 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
               : 0n),
         )
       : null;
-    const calculatedLine = calculated
-      ? `Calculated ${shortDate(distribution.calculation.observedAt)} ${provenance(distribution.calculation.by)}`
-      : null;
+    const calculatedLine = calculated ? "Calculation confirmed" : null;
     const lastCollect = distribution.collects.at(-1) ?? null;
     if (runForThis) {
       const done = runForThis.progress.completed;
@@ -840,11 +838,11 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
         arrived > 0
           ? `All distributed · ${plural(arrived, "payout")} arrived`
           : `All distributed · ${plural(p.arriving, "payout")} arriving over Bitcoin`;
-      sub = `${calculatedLine ?? ""}${lastCollect ? ` · collected ${provenance(lastCollect.by)}` : ""}`;
+      sub = `${calculatedLine ?? ""}${lastCollect ? " · rewards collected" : ""}`;
     } else if (p.made > 0 && p.outstanding > 0) {
       badge = { tone: "info", label: "In progress" };
       headline = `${plural(p.outstanding, "payment")} still outstanding`;
-      sub = `${lastCollect ? `Collected ${provenance(lastCollect.by)} · ` : ""}${p.made} of ${total} paid${available > 0n ? ` · ${amount(text(available))} still to collect` : ""}`;
+      sub = `${lastCollect ? "Rewards collected · " : ""}${p.made} of ${total} paid${available > 0n ? ` · ${amount(text(available))} still to collect` : ""}`;
     } else {
       badge = { tone: "success", label: "Ready" };
       headline =
@@ -877,9 +875,7 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
         unit: collectedParts?.unit ?? "sBTC",
         detail:
           collected > 0n
-            ? lastCollect
-              ? provenance(lastCollect.by)
-              : null
+            ? null
             : available > 0n
               ? `${amount(text(available))} ready to collect`
               : "not yet collected",

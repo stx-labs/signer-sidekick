@@ -2,6 +2,7 @@ import { getAddressFromPublicKey, privateKeyToPublic } from "@stacks/transaction
 import type { GasWalletRefusal, RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
 import { planRewardOperation } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { currentInteractiveRequestSignal } from "../request-context.js";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import {
@@ -323,6 +324,85 @@ describe("reward run coordinator", () => {
     expect(store.rewardRuns.active(wallet)).toBeNull();
   });
 
+  it("returns a durable preparation immediately and seals its run in the background", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const readFacts = vi.fn(async () => facts());
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: driver().implementation,
+      facts: readFacts,
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const queued = service.enqueuePreparation({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    expect(queued).toMatchObject({ status: "queued", runId: null });
+    await vi.waitFor(() => {
+      expect(service.getPreparation(queued.preparationId)).toMatchObject({
+        status: "ready",
+        runId: queued.preparationId,
+      });
+    });
+    expect(readFacts).toHaveBeenCalledTimes(1);
+    expect(service.get(queued.preparationId)).toMatchObject({ status: "awaiting-approval" });
+  });
+
+  it("leaves an interrupted preparation recoverable across a clean restart", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    let entered: (() => void) | undefined;
+    const preparing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const first = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: driver().implementation,
+      facts: async () => {
+        const signal = currentInteractiveRequestSignal();
+        if (!signal) throw new Error("Background preparation has no cancellation signal");
+        entered?.();
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const queued = first.enqueuePreparation({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await preparing;
+    expect(first.getPreparation(queued.preparationId).status).toBe("preparing");
+    await first.stop();
+    expect(first.getPreparation(queued.preparationId).status).toBe("preparing");
+
+    const second = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: driver().implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      pollIntervalMs: 60_000,
+      now: () => started,
+    });
+    await second.start();
+    await vi.waitFor(() => {
+      expect(second.getPreparation(queued.preparationId).status).toBe("ready");
+    });
+    await second.stop();
+  });
+
   it("enforces emergency controls before preparation and again at the signature boundary", async () => {
     const { store } = await openSidekickStore(":memory:", started.toISOString());
     stores.push(store);
@@ -466,7 +546,7 @@ describe("reward run coordinator", () => {
     ]);
     expect(approvals.every(({ runId }) => runId === first.runId)).toBe(true);
     await service.recover();
-    service.stop();
+    await service.stop();
   });
 
   it("recovers a broadcast child after restart without signing or broadcasting it again", async () => {
@@ -494,7 +574,7 @@ describe("reward run coordinator", () => {
       progress: { inFlight: 1 },
     });
     expect(pending.broadcasts).toHaveLength(1);
-    first.stop();
+    await first.stop();
 
     const recovered = driver();
     const second = new RewardRunService({

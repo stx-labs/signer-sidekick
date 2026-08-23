@@ -49,6 +49,8 @@ function distribution(
       notPayable: 0,
       belowFee: 0,
       rolledForward: 0,
+      sent: 0,
+      arrived: 0,
       arriving: 0,
       rejected: 0,
       returned: 0,
@@ -84,6 +86,8 @@ function complete(cycle: number, index: 1 | 2): RewardLedgerDistribution {
       notPayable: 0,
       belowFee: 0,
       rolledForward: 0,
+      sent: 0,
+      arrived: 0,
       arriving: 0,
       rejected: 0,
       returned: 0,
@@ -117,6 +121,8 @@ function accruing(cycle: number, index: 1 | 2, overdue = false): RewardLedgerDis
       notPayable: 0,
       belowFee: 0,
       rolledForward: 0,
+      sent: 0,
+      arrived: 0,
       arriving: 0,
       rejected: 0,
       returned: 0,
@@ -174,6 +180,9 @@ function ledger(
     fees: {
       feeBips: "500",
       earnedIndexedSats: "0",
+      indexedPaymentCount: 0,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
       balanceInManagerSats: null,
       withdrawnDerivedSats: null,
       refunds: [],
@@ -432,7 +441,7 @@ describe("deriveDistributionCards", () => {
     expect(card?.eyebrow).toBe("Cycle 141 · Second Distribution");
     expect(card?.badge).toMatchObject({ tone: "success", label: "Ready" });
     expect(card?.headline).toBe("Ready to collect & distribute");
-    expect(card?.sub).toBe("Calculated Aug 19 by another caller");
+    expect(card?.sub).toBe("Calculation confirmed");
     expect(card?.primary).toMatchObject({
       kind: "collect-and-distribute",
       transactions: 41,
@@ -471,6 +480,8 @@ describe("deriveDistributionCards", () => {
         notPayable: 0,
         belowFee: 0,
         rolledForward: 0,
+        sent: 0,
+        arrived: 0,
         arriving: 0,
         rejected: 0,
         returned: 0,
@@ -506,7 +517,7 @@ describe("deriveDistributionCards", () => {
     });
     expect(idle[0]).toMatchObject({
       headline: "2 payments still outstanding",
-      sub: "Collected by you · 38 of 40 paid",
+      sub: "Rewards collected · 38 of 40 paid",
       badge: { label: "In progress" },
     });
     expect(idle[0]?.primary).toMatchObject({ kind: "distribute", transactions: 2 });
@@ -524,6 +535,8 @@ describe("deriveDistributionCards", () => {
         notPayable: 0,
         belowFee: 0,
         rolledForward: 0,
+        sent: 0,
+        arrived: 0,
         arriving: 0,
         rejected: 1,
         returned: 0,
@@ -547,6 +560,47 @@ describe("deriveDistributionCards", () => {
     expect(cards[0]?.attention?.title).toBe("1 rejected withdrawal");
     expect(cards[1]?.tiles).toEqual([]);
     expect(cards[1]?.calculated).toBe(false);
+  });
+
+  it("offers Bitcoin payout retirement from aggregate ledger counts without loaded payment rows", () => {
+    const settled = distribution({
+      cycle: 140,
+      distribution: 2,
+      availableToCollectSats: "0",
+      collectedSats: "1400000",
+      payments: {
+        made: 40,
+        outstanding: 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        sent: 0,
+        arrived: 1,
+        arriving: 1,
+        rejected: 0,
+        returned: 0,
+        distributedSats: "1330000",
+        outstandingSats: "0",
+        operatorFeeSats: "70000",
+      },
+      status: "all-distributed",
+      statusDetail: "All payments distributed · Bitcoin payout arrived",
+    });
+    const cards = deriveDistributionCards({
+      ledger: ledger(accruing(141, 1), [settled]),
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: null,
+    });
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      key: "140:2",
+      primary: null,
+      secondary: {
+        action: { kind: "finish-bitcoin-payouts", transactions: 1 },
+      },
+    });
   });
 
   it("leaves complete and accruing distributions out of Distribute", () => {

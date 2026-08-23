@@ -104,7 +104,8 @@ are never accepted through the environment, and Observe remains the default.
 
 1. Set `SIDEKICK_ENGINE_MODE=operator-run` in `.env` and restart.
 2. Open **Settings → Gas wallet → Create gas wallet**. The key is written once to
-   `/data/gas-wallet.key` (owner-only) and never leaves the container; Settings shows the address.
+   `/data/gas-wallet.key` (owner-only), is never exposed through the UI or API, and Settings shows
+   only the address.
 3. Fund the address with STX from any wallet. Each transaction is capped at
    `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX); a distribution of N payments takes about
    N + 1 transactions, and Settings shows how many the balance covers.

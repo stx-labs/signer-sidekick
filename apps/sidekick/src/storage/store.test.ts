@@ -71,6 +71,7 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE reward_run_preparations;
     DROP TABLE transaction_run_attempts;
     DROP TABLE transaction_run_children;
     DROP TABLE transaction_runs;
@@ -357,7 +358,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 37,
+      schemaVersion: 38,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1496,7 +1497,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 37,
+      schemaVersion: 38,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1522,7 +1523,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(38);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1605,7 +1606,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(37);
+    expect(upgraded.store.schemaVersion()).toBe(38);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1677,6 +1678,7 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE reward_run_preparations;
       DROP TABLE transaction_run_attempts;
       DROP TABLE transaction_run_children;
       DROP TABLE transaction_runs;
@@ -1714,7 +1716,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(38);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1865,7 +1867,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(38);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1988,6 +1990,7 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_run_preparations;
       DROP TABLE transaction_run_attempts;
       DROP TABLE transaction_run_children;
       DROP TABLE transaction_runs;
@@ -2020,7 +2023,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(38);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -2057,6 +2060,7 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE reward_run_preparations;
       DROP TABLE transaction_run_attempts;
       DROP TABLE transaction_run_children;
       DROP TABLE transaction_runs;
@@ -2173,5 +2177,74 @@ describe("Sidekick SQLite store", () => {
     expect(store.listManagerClaimRecords(1, manager, 2).map((row) => row.blockHeight)).toEqual([
       20, 30,
     ]);
+  });
+
+  it("aggregates complete indexed fee history independently of display limits", async () => {
+    const store = await memoryStore();
+    registerSource(store);
+    const staker = "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7";
+    const baseEvent = {
+      chainId: 1,
+      eventIndex: 0,
+      blockHash,
+      indexBlockHash,
+      microblockHash: null,
+      microblockSequence: null,
+      canonical: true,
+      microblockCanonical: true,
+      rawPayload: {},
+      decodedSchemaVersion: 1,
+      sourceId,
+      observedAt,
+    } as const;
+    const matchedTx = `0x${"44".repeat(32)}`;
+    store.putChainEvent({
+      ...baseEvent,
+      txId: matchedTx,
+      eventIndex: 1,
+      blockHeight: 40,
+      contractId: pox5,
+      topic: "print",
+      decodedPayload: {
+        transactionStatus: "success",
+        event: {
+          kind: "claim-staker-rewards-for-signer",
+          signerManager: manager,
+          stakerPrincipal: staker,
+          rewardCycle: "140",
+          bondIndex: "2",
+          rewardsClaimedSats: "100",
+        },
+      },
+    });
+    for (const [txId, blockHeight, amountSats] of [
+      [matchedTx, 40, "95"],
+      [`0x${"55".repeat(32)}`, 50, "75"],
+    ] as const) {
+      store.putChainEvent({
+        ...baseEvent,
+        txId,
+        blockHeight,
+        contractId: manager,
+        topic: "claim-staker-rewards",
+        decodedPayload: {
+          transactionStatus: "success",
+          event: {
+            kind: "claim-staker-rewards",
+            stakerPrincipal: staker,
+            rewardCycle: "140",
+            bondIndex: txId === matchedTx ? "2" : null,
+            amountSats,
+            l1Withdrawal: null,
+          },
+        },
+      });
+    }
+
+    expect(store.getManagerRewardFeeTotals(1, manager, pox5)).toEqual({
+      earnedIndexedSats: "5",
+      paymentCount: 2,
+      unmatchedPaymentCount: 1,
+    });
   });
 });

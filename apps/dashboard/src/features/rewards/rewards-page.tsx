@@ -54,6 +54,7 @@ import {
   IN_PROGRESS_RUN_STATUSES,
   listRewardRuns,
   loadRewardRun,
+  loadRewardRunPreparation,
   pauseRewardRun,
   prepareRewardRun,
   RewardRunsUnavailableError,
@@ -65,6 +66,7 @@ type Snapshot = DashboardSnapshot;
 
 const RUN_POLL_MS = 5_000;
 const LEDGER_POLL_MS = 30_000;
+const PREPARATION_POLL_MS = 1_000;
 /** Overview's "Collect & distribute" hands the same confirm sheet over through this key. */
 export const PENDING_RUN_STORAGE_KEY = "sidekick-rewards-pending-run";
 
@@ -85,6 +87,24 @@ type PaymentsCache = {
   byKey: Record<string, RewardLedgerPayment[]>;
   errors: Record<string, string>;
 };
+
+function waitForPoll(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, PREPARATION_POLL_MS);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export function Rewards({
   data,
@@ -120,9 +140,6 @@ export function Rewards({
   const walletPanelRef = useRef<HTMLDivElement | null>(null);
   const rewards = data.rewards;
   const calculation = data.rewardOutlook?.calculation ?? rewards?.calculation ?? null;
-  const calculationGrace = calculation?.next?.grace ?? null;
-  const calculationActionAvailable =
-    calculationGrace?.state === "action-required" && !operatorStateStale;
 
   const refreshLedger = useCallback(
     async (signal?: AbortSignal) => {
@@ -307,6 +324,7 @@ export function Rewards({
   );
   const seededStamp = useRef<string | null>(null);
   const fetchedStamp = useRef<Record<string, string>>({});
+  const preparationPollRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (!ledger) return;
     if (seededStamp.current !== ledger.generatedAt) {
@@ -361,10 +379,15 @@ export function Rewards({
 
   const openConfirm = useCallback(
     (action: RewardPrimaryAction) => {
+      preparationPollRef.current?.abort();
+      const controller = new AbortController();
+      preparationPollRef.current = controller;
       setConfirm({ action, state: { status: "drafting" } });
       const settle = (state: ConfirmState) =>
-        setConfirm((current) => (current?.action === action ? { action, state } : current));
-      listRewardRuns(token, 5)
+        setConfirm((current) =>
+          !controller.signal.aborted && current?.action === action ? { action, state } : current,
+        );
+      listRewardRuns(token, 5, controller.signal)
         .then(async (runs) => {
           const draft = runs.find(
             (run) =>
@@ -373,15 +396,35 @@ export function Rewards({
               run.recipe.distribution === action.distribution,
           );
           if (draft) return { run: draft, reused: true };
-          const run = await prepareRewardRun(token, {
-            cycle: action.cycle,
-            distribution: action.distribution,
-            operations: action.operations,
-          });
+          let preparation = await prepareRewardRun(
+            token,
+            {
+              cycle: action.cycle,
+              distribution: action.distribution,
+              operations: action.operations,
+            },
+            controller.signal,
+          );
+          settle({ status: "preparing", preparation });
+          while (preparation.status === "queued" || preparation.status === "preparing") {
+            await waitForPoll(controller.signal);
+            preparation = await loadRewardRunPreparation(
+              token,
+              preparation.preparationId,
+              controller.signal,
+            );
+            settle({ status: "preparing", preparation });
+          }
+          if (preparation.status === "failed") {
+            throw new Error(preparation.failureReason ?? "Reward-run preparation failed");
+          }
+          if (!preparation.runId) throw new Error("Prepared reward run has no run ID");
+          const run = await loadRewardRun(token, preparation.runId, controller.signal);
           return { run, reused: false };
         })
         .then(({ run, reused }) => settle({ status: "ready", run, reused }))
-        .catch((cause: unknown) =>
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
           settle(
             cause instanceof RewardRunsUnavailableError
               ? {
@@ -389,10 +432,23 @@ export function Rewards({
                   reason: "This Sidekick build does not include the run engine.",
                 }
               : { status: "error", message: operatorErrorSentence(cause) },
-          ),
-        );
+          );
+        });
     },
     [token],
+  );
+
+  const closeConfirm = () => {
+    preparationPollRef.current?.abort();
+    preparationPollRef.current = null;
+    setConfirm(null);
+  };
+
+  useEffect(
+    () => () => {
+      preparationPollRef.current?.abort();
+    },
+    [],
   );
 
   // Overview hands over a pending run kind; open the same sheet once the ledger is here.
@@ -478,6 +534,8 @@ export function Rewards({
   };
 
   const useWallet = () => {
+    preparationPollRef.current?.abort();
+    preparationPollRef.current = null;
     setConfirm(null);
     setWalletPanelOpen(true);
     window.requestAnimationFrame(() =>
@@ -608,20 +666,6 @@ export function Rewards({
           retry={() => setLedgerRetry((value) => value + 1)}
         />
       )}
-      {calculationActionAvailable ? (
-        <div className="callout callout-caution content-notice" role="status">
-          <div className="body">
-            <strong>Global reward calculation needs an operator.</strong> PoX-5 credits nothing for
-            cycle {calculation?.targetRewardCycle ?? "—"} until someone calls{" "}
-            <code>calculate-rewards</code>. Anyone can; it moves no funds.
-            <div className="actions">
-              <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
-                Review calculation
-              </a>
-            </div>
-          </div>
-        </div>
-      ) : null}
       {walletFallback && anyAction ? (
         <div className="callout callout-neutral content-notice" role="status">
           <div className="body">
@@ -718,7 +762,7 @@ export function Rewards({
             executionAvailability(gasWallet, engineMode, confirm.action.transactions)
           }
           state={confirm.state}
-          onCancel={() => setConfirm(null)}
+          onCancel={closeConfirm}
           onGo={go}
           onDiscard={discardDraft}
           onUseWallet={useWallet}

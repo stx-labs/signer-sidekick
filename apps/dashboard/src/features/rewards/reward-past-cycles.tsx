@@ -34,14 +34,6 @@ function cycleBadge(cycle: RewardLedgerCycle): { tone: string; label: string } {
   return { tone: "neutral", label: "Open" };
 }
 
-function provenance(by: "you" | "another-caller" | "unknown" | null | undefined): string {
-  return by === "you"
-    ? "by you"
-    : by === "another-caller"
-      ? "by another caller"
-      : "by an unknown caller";
-}
-
 /** Approximate calendar span of a cycle from the current geometry and the average block time. */
 function cycleDates(
   cycle: number,
@@ -72,12 +64,12 @@ function distributionMeta(d: RewardLedgerDistribution): string {
 function distributionSummary(d: RewardLedgerDistribution): string {
   const parts: string[] = [];
   if (d.calculation.state === "done") {
-    parts.push(`Calculated ${shortDate(d.calculation.observedAt)} ${provenance(d.calculation.by)}`);
+    parts.push("Calculation confirmed");
   } else {
     parts.push(d.statusDetail);
   }
   const collect = d.collects.at(-1);
-  if (collect) parts.push(`collected ${provenance(collect.by)}`);
+  if (collect) parts.push("rewards collected");
   if (d.payments.rolledForward > 0) {
     parts.push(`${d.payments.rolledForward} rolled forward, paid with the Second Distribution`);
   }

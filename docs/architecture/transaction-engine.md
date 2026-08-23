@@ -17,7 +17,10 @@ and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-executi
 
 ## Sealed runs
 
-Preparing a run reads one stable node anchor and seals:
+Recipe preparation is a durable background job. The API returns its ID immediately; the dashboard
+polls it, duplicate requests reuse it, and startup requeues an interrupted preparation. The
+30-minute approval window begins only after one stable node anchor has been read and the recipe is
+sealed:
 
 - manager, network, cycle, distribution, adapter revisions, and source fingerprints;
 - ordered operations and at most 200 children;

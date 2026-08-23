@@ -35,6 +35,7 @@ export function RewardFeeLedger({
       .finally(() => setBusy(null));
   };
   const currentCycle = ledger.cycles.find((cycle) => cycle.cycle === ledger.current.cycle) ?? null;
+  const exportComplete = ledger.fees.historyComplete && ledger.fees.indexedPaymentCount <= 100_000;
   const facts: Array<{
     label: React.ReactNode;
     key: string;
@@ -48,9 +49,14 @@ export function RewardFeeLedger({
     },
     {
       key: "all-time",
-      label: (
+      label: ledger.fees.historyComplete ? (
         <>
           Earned all time <InfoTip text="Sum of the operator fee on every indexed payment" />
+        </>
+      ) : (
+        <>
+          Earned in indexed history{" "}
+          <InfoTip text="Sidekick is still reconstructing history or is missing payment evidence, so this is not an all-time total" />
         </>
       ),
       value: amount(ledger.fees.earnedIndexedSats),
@@ -64,6 +70,9 @@ export function RewardFeeLedger({
         </>
       ),
       value: amount(ledger.fees.withdrawnDerivedSats),
+      sub: ledger.fees.historyComplete ? undefined : (
+        <span className="muted">available after indexed history is complete</span>
+      ),
     },
     {
       key: "balance",
@@ -100,7 +109,9 @@ export function RewardFeeLedger({
         </dl>
         {feeActions ? <div className="reward-admin-actions">{feeActions}</div> : null}
         <div className="rw-export-all">
-          <span className="rw-export-all-label">Export all history</span>
+          <span className="rw-export-all-label">
+            {exportComplete ? "Export all history" : "Export indexed history"}
+          </span>
           {(["payments", "distributions", "fees"] as const).map((name) => (
             <button
               key={name}
@@ -108,7 +119,7 @@ export function RewardFeeLedger({
               type="button"
               disabled={busy !== null}
               onClick={() => download(name)}
-              title={`${name}.${format} for every cycle Sidekick has seen`}
+              title={`${name}.${format} for ${exportComplete ? "all indexed history" : "the history Sidekick has indexed so far"}`}
             >
               <DownloadSimple className="rw-ico" aria-hidden="true" />
               {busy === name ? "Preparing…" : name[0]?.toUpperCase() + name.slice(1)}
@@ -132,6 +143,13 @@ export function RewardFeeLedger({
           </div>
           <span className="muted">
             {ledger.cycles.length} cycles · through {shortDate(ledger.generatedAt)}
+            {ledger.fees.unmatchedPaymentCount > 0
+              ? ` · ${ledger.fees.unmatchedPaymentCount.toLocaleString("en-US")} payments lack fee evidence`
+              : !ledger.fees.historyComplete
+                ? " · history recovery is incomplete"
+                : !exportComplete
+                  ? ` · exports include the newest 100,000 of ${ledger.fees.indexedPaymentCount.toLocaleString("en-US")} payments`
+                  : ""}
             {ledger.evidenceWindow.truncated
               ? ` · history before block ${ledger.evidenceWindow.oldestRetainedBlockHeight?.toLocaleString("en-US")} is marked incomplete`
               : ""}

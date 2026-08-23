@@ -36,9 +36,11 @@ import type {
  */
 
 const maximumPayments = 10_000;
+const maximumExportPayments = 100_000;
 const maximumCycles = 200;
-/** Newest evidence rows retained per stream; store reads accept at most 10,001. */
+/** Interactive views retain a bounded newest window; accounting exports may read a larger window. */
 const maximumEvidenceRows = 10_000;
+const maximumExportEvidenceRows = 100_000;
 const registryLookupConcurrency = 8;
 
 export type RewardLedgerDistributionIndex = 1 | 2;
@@ -60,6 +62,11 @@ export interface RewardLedgerStore {
     managerPrincipal: string,
     limit?: number,
   ): StoredManagerClaim[];
+  getManagerRewardFeeTotals?(
+    chainId: number,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): { earnedIndexedSats: string; paymentCount: number; unmatchedPaymentCount: number };
   listManagerWithdrawalRecords(
     chainId: number,
     managerPrincipal: string,
@@ -436,6 +443,7 @@ export function previousCycleOpen(
 export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<RewardLedger> {
   const { store, chainId, managerPrincipal, pox5ContractId, snapshot, ownedTxids } = input;
   const query = input.query ?? {};
+  const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const rewards = snapshot.rewards ?? null;
   const currentCycle = rewards?.rewardCycle ?? null;
   // Live window: the calculation-target cycle plus the previous cycle while it still has open work.
@@ -446,8 +454,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     liveStatuses.set(rewardsPrevious.rewardCycle, rewardsPrevious);
   }
   const roster = new Set((snapshot.roster ?? []).map(({ stakerPrincipal }) => stakerPrincipal));
-  // Registered Bitcoin payout addresses, from the live reward status: the copyable L1 address next
-  // to a staker. Historical payments show the address registered now, when the staker is still live.
+  // Current Bitcoin payout registrations from live reward status. Historical claim events do not
+  // carry their original destination, so the API and UI must not present this as historical proof.
   const l1Network = poxAddressNetwork(snapshot.network);
   const l1AddressByStaker = new Map<string, string>();
   for (const status of liveStatuses.values()) {
@@ -472,9 +480,11 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         canonicalOnly: true,
       })
     : [];
+  const maximumRequestedEvidence =
+    scope === "all" ? maximumExportEvidenceRows : maximumEvidenceRows;
   const evidenceLimit = Math.max(
     1,
-    Math.min(maximumEvidenceRows, input.evidenceLimit ?? maximumEvidenceRows),
+    Math.min(maximumRequestedEvidence, input.evidenceLimit ?? maximumRequestedEvidence),
   );
   const printsRead = pox5ContractId
     ? store.listPox5RewardPrints(chainId, pox5ContractId, managerPrincipal, {
@@ -500,7 +510,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   };
   const withdrawals = new Map(
     store
-      .listManagerWithdrawalRecords(chainId, managerPrincipal)
+      .listManagerWithdrawalRecords(chainId, managerPrincipal, evidenceLimit + 1)
       .map((withdrawal) => [withdrawal.requestId, withdrawal] as const),
   );
   const registryStatus = new Map<string, WithdrawalRegistryStatus>();
@@ -908,6 +918,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         notPayable: rows.filter((row) => row.status === "not-payable").length,
         belowFee: rows.filter((row) => row.status === "below-fee").length,
         rolledForward: index === 1 ? rolledForward : 0,
+        sent: rows.filter((row) => row.status === "sent").length,
+        arrived: rows.filter((row) => row.status === "arrived").length,
         arriving: rows.filter((row) => row.status === "sent" || row.status === "arrived").length,
         rejected: rows.filter((row) => row.status === "rejected").length,
         returned: rows.filter((row) => row.status === "returned").length,
@@ -1078,7 +1090,6 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   }
 
   // --- payment selection: outstanding first, then newest paid ---
-  const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const selectedCycle =
     scope === "all"
       ? null
@@ -1103,15 +1114,31 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       (left, right) =>
         right.sortKey - left.sortKey || left.stakerPrincipal.localeCompare(right.stakerPrincipal),
     );
-  const payments = filtered.slice(0, maximumPayments).map(({ sortKey: _sortKey, ...row }) => row);
+  const paymentLimit = scope === "all" ? maximumExportPayments : maximumPayments;
+  const payments = filtered.slice(0, paymentLimit).map(({ sortKey: _sortKey, ...row }) => row);
 
   // --- fees ---
-  const earnedIndexed = allPayments
-    .filter((row) => row.paymentTxId !== null)
-    .reduce((total, row) => total + big(row.operatorFeeSats ?? "0"), 0n);
+  const boundedFeeRows = allPayments.filter((row) => row.paymentTxId !== null);
+  const aggregate =
+    pox5ContractId && store.getManagerRewardFeeTotals
+      ? store.getManagerRewardFeeTotals(chainId, managerPrincipal, pox5ContractId)
+      : null;
+  const earnedIndexed = aggregate
+    ? big(aggregate.earnedIndexedSats)
+    : boundedFeeRows.reduce((total, row) => total + big(row.operatorFeeSats ?? "0"), 0n);
+  const indexedPaymentCount = aggregate?.paymentCount ?? boundedFeeRows.length;
+  const unmatchedPaymentCount =
+    aggregate?.unmatchedPaymentCount ??
+    boundedFeeRows.filter((row) => row.operatorFeeSats === null).length;
+  const historyComplete =
+    !recoveryIncomplete &&
+    unmatchedPaymentCount === 0 &&
+    (aggregate !== null || !evidenceWindow.truncated);
   const balance = rewards?.manager?.earnedFeesSats ?? null;
   const withdrawnDerived =
-    balance !== null && earnedIndexed >= big(balance) ? text(earnedIndexed - big(balance)) : null;
+    historyComplete && balance !== null && earnedIndexed >= big(balance)
+      ? text(earnedIndexed - big(balance))
+      : null;
   const refunds = store
     .listManagerTopicEvents(chainId, managerPrincipal, "sweep-fee-refunds", 1_000)
     .map((event) => ({ txId: event.txId, blockHeight: event.blockHeight, amountSats: null }));
@@ -1143,10 +1170,14 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     },
     cycles,
     payments,
-    paymentsTruncated: filtered.length > maximumPayments,
+    paymentsTruncated:
+      filtered.length > paymentLimit || (scope === "all" && evidenceWindow.truncated),
     fees: {
       feeBips: rewards?.manager?.feeSnapshotBips ?? rewards?.manager?.configuredFeeBips ?? null,
       earnedIndexedSats: text(earnedIndexed),
+      indexedPaymentCount,
+      unmatchedPaymentCount,
+      historyComplete,
       balanceInManagerSats: balance,
       withdrawnDerivedSats: withdrawnDerived,
       refunds,

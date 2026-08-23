@@ -1,7 +1,9 @@
 import {
   type RewardRun,
   type RewardRunOperation,
+  type RewardRunPreparation,
   type RewardRunPrepareRequest,
+  rewardRunPreparationSchema,
   rewardRunSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { ApiRequestError, apiJson, type ResponseSchema } from "../../api-client.js";
@@ -99,11 +101,26 @@ export async function listRewardRuns(
 export async function prepareRewardRun(
   token: string,
   request: RewardRunPrepareRequest,
-): Promise<RewardRun> {
-  return apiJson(token, "/api/v1/rewards/runs", rewardRunSchema, {
+  signal?: AbortSignal,
+): Promise<RewardRunPreparation> {
+  return apiJson(token, "/api/v1/rewards/runs", rewardRunPreparationSchema, {
     method: "POST",
     body: JSON.stringify(request),
+    ...(signal ? { signal } : {}),
   }).catch(unavailable);
+}
+
+export async function loadRewardRunPreparation(
+  token: string,
+  preparationId: string,
+  signal?: AbortSignal,
+): Promise<RewardRunPreparation> {
+  return apiJson(
+    token,
+    `/api/v1/rewards/run-preparations/${encodeURIComponent(preparationId)}`,
+    rewardRunPreparationSchema,
+    signal ? { signal } : {},
+  ).catch(unavailable);
 }
 
 export async function approveRewardRun(

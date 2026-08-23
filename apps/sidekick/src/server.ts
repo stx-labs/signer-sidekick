@@ -37,6 +37,7 @@ import {
   type ReconciliationOperation,
   type ReconciliationSummary,
   type RewardRun,
+  type RewardRunPreparation,
   reconciliationSummarySchema,
   rewardLedgerSchema,
   rewardRunApproveRequestSchema,
@@ -103,12 +104,6 @@ import { WalletIntentError, type WalletIntentService } from "./wallet-intent-ser
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
-/**
- * Sealing a reward run re-reads the chain (fresh anchor, reward status, every account's claim) and
- * builds each transaction before it answers; on mainnet that regularly exceeds the ordinary
- * interactive budget, and a timed-out caller only retries into the draft it could not see.
- */
-const REWARD_RUN_PREPARE_DEADLINE_MS = 120_000;
 const RECONCILIATION_SNAPSHOT_DEADLINE_MS = 60_000;
 
 interface RosterRow {
@@ -426,7 +421,8 @@ export interface GasWalletApi {
 
 /** Recipe-scoped operator-run API (plan S3). */
 export interface RewardRunApi {
-  prepare(input: z.infer<typeof rewardRunPrepareRequestSchema>): Promise<RewardRun>;
+  enqueuePreparation(input: z.infer<typeof rewardRunPrepareRequestSchema>): RewardRunPreparation;
+  getPreparation(preparationId: string): RewardRunPreparation;
   approve(runId: string, recipeSha256: string): Promise<RewardRun>;
   pause(runId: string): RewardRun;
   resume(runId: string): RewardRun;
@@ -2341,19 +2337,23 @@ export function createServer(options: ServerOptions = {}) {
   for (const ledgerExport of ledgerExports) {
     server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.csv`, async (request, reply) => {
       const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
+      const complete = ledger.fees.historyComplete && !ledger.paymentsTruncated;
       reply.type("text/csv; charset=utf-8");
+      reply.header("x-sidekick-history-complete", String(complete));
       reply.header(
         "content-disposition",
-        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}.csv"`,
+        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}${complete ? "" : "-partial"}.csv"`,
       );
       return ledgerExport.csv(ledger);
     });
     server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.json`, async (request, reply) => {
       const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
+      const complete = ledger.fees.historyComplete && !ledger.paymentsTruncated;
       reply.type("application/json; charset=utf-8");
+      reply.header("x-sidekick-history-complete", String(complete));
       reply.header(
         "content-disposition",
-        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}.json"`,
+        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}${complete ? "" : "-partial"}.json"`,
       );
       return ledgerExport.name === "distributions"
         ? ledger.cycles.flatMap((cycle) => cycle.distributions)
@@ -2550,21 +2550,23 @@ export function createServer(options: ServerOptions = {}) {
     reply.header("cache-control", "no-store");
     return await rewardRunCall(() => runs.list(query.data.limit));
   });
-  server.post("/api/v1/rewards/runs", async (request) => {
+  server.post("/api/v1/rewards/runs", async (request, reply) => {
     const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
     const parsed = rewardRunPrepareRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new OperatorApiError(400, "reward_run_invalid");
-    const startedAt = Date.now();
-    const prepared = await interactive(
-      request,
-      async () => await rewardRunCall(() => runs.prepare(parsed.data)),
-      REWARD_RUN_PREPARE_DEADLINE_MS,
+    const preparation = await interactive(request, async () =>
+      rewardRunCall(() => runs.enqueuePreparation(parsed.data)),
     );
-    request.log.info(
-      { runId: prepared.runId, cycle: parsed.data.cycle, durationMs: Date.now() - startedAt },
-      "reward run prepared",
-    );
-    return prepared;
+    reply.code(202);
+    reply.header("location", `/api/v1/rewards/run-preparations/${preparation.preparationId}`);
+    return preparation;
+  });
+  server.get("/api/v1/rewards/run-preparations/:preparationId", async (request, reply) => {
+    const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+    const params = z.object({ preparationId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "reward_run_invalid");
+    reply.header("cache-control", "no-store");
+    return await rewardRunCall(() => runs.getPreparation(params.data.preparationId));
   });
   server.get("/api/v1/rewards/runs/:runId", async (request, reply) => {
     const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");

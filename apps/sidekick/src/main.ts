@@ -511,7 +511,7 @@ export async function executeCliCommand({
       server.addHook("onClose", async () => {
         snapshotRefresh?.stop();
         health.stop();
-        rewardRuns.stop();
+        await rewardRuns.stop();
         try {
           await observerServer?.close();
           observerListening = false;

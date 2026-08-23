@@ -1,6 +1,6 @@
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SortableHeader, type TableSort } from "../../shared/dashboard-ui.js";
 import { amount, exactSats } from "../../shared/format.js";
 import {
@@ -23,6 +23,15 @@ function tabCounts(payments: readonly RewardLedgerPayment[]) {
   const counts = { outstanding: 0, paid: 0, arriving: 0, rejected: 0, rolled: 0 };
   for (const row of payments) counts[paymentTab(row)] += 1;
   return counts;
+}
+
+function preferredTab(variant: PaymentsVariant, counts: ReturnType<typeof tabCounts>): PaymentTab {
+  if (variant === "history") return "all";
+  if (counts.rejected > 0) return "rejected";
+  if (counts.outstanding > 0) return "outstanding";
+  if (counts.arriving > 0) return "arriving";
+  if (counts.paid > 0) return "paid";
+  return "all";
 }
 
 function shortTx(txId: string | null): string {
@@ -52,19 +61,7 @@ export function PaymentsTable({
   pageSize?: number;
 }) {
   const counts = useMemo(() => tabCounts(payments), [payments]);
-  const initialTab: PaymentTab =
-    defaultTab ??
-    (variant === "history"
-      ? "all"
-      : counts.rejected > 0
-        ? "rejected"
-        : counts.outstanding > 0
-          ? "outstanding"
-          : counts.arriving > 0
-            ? "arriving"
-            : counts.paid > 0
-              ? "paid"
-              : "all");
+  const initialTab: PaymentTab = defaultTab ?? preferredTab(variant, counts);
   const [tab, setTab] = useState<PaymentTab>(initialTab);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -73,6 +70,11 @@ export function PaymentsTable({
       ? { key: "toStaker", direction: "desc" }
       : { key: "staker", direction: "asc" },
   );
+  useEffect(() => {
+    if (tab === "all" || counts[tab] > 0 || payments.length === 0) return;
+    setTab(defaultTab ?? preferredTab(variant, counts));
+    setPage(0);
+  }, [counts, defaultTab, payments.length, tab, variant]);
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return [...payments]

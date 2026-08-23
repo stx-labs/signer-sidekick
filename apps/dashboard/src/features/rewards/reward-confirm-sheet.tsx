@@ -1,5 +1,5 @@
 import { ArrowRight } from "@phosphor-icons/react";
-import type { RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
+import type { RewardRun, RewardRunPreparation } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useRef } from "react";
 import { amount, shortUtc, stxAmount } from "../../shared/format.js";
 import type { RewardExecutionAvailability, RewardPrimaryAction } from "./reward-state.js";
@@ -37,6 +37,7 @@ export function runLede(kind: RewardRunKind): string {
 
 export type ConfirmState =
   | { status: "drafting" }
+  | { status: "preparing"; preparation: RewardRunPreparation }
   | { status: "ready"; run: RewardRun; reused: boolean }
   | { status: "approving"; run: RewardRun }
   | { status: "unavailable"; reason: string }
@@ -83,9 +84,13 @@ export function RewardConfirmSheet({
         <p className="muted" style={{ margin: "0 0 14px", fontSize: 13 }}>
           {runLede(action.kind)}
         </p>
-        {state.status === "drafting" ? (
+        {state.status === "drafting" || state.status === "preparing" ? (
           <p className="tertiary" role="status">
-            Sealing the run from the current chain facts…
+            {state.status === "drafting"
+              ? "Starting durable preparation…"
+              : state.preparation.status === "queued"
+                ? "Preparation is queued. Sidekick will continue if you close this page."
+                : "Reading the current pool and sealing the exact recipe. Large pools can take a few minutes; Sidekick will continue if you close this page."}
           </p>
         ) : null}
         {steps.length > 0 ? (

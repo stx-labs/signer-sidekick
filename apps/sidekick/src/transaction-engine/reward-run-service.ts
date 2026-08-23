@@ -4,6 +4,7 @@ import type {
   RewardRun,
   RewardRunChild,
   RewardRunOperation,
+  RewardRunPreparation,
   RewardRunPrepareRequest,
   RewardRunRecipe,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -11,6 +12,7 @@ import {
   REWARD_OPERATION_ADAPTER_REVISIONS,
   type RewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
+import { withOperatorRequestSignal } from "../request-context.js";
 import type { RewardRunRepository } from "../storage/reward-run-repository.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import type { TransactionBroadcastResult } from "./transaction-broadcaster.js";
@@ -375,6 +377,8 @@ export function buildRewardRunRecipe(input: {
 export class RewardRunService {
   readonly #options: RewardRunServiceOptions;
   #tail: Promise<void> = Promise.resolve();
+  #preparationTail: Promise<void> = Promise.resolve();
+  #preparationController = new AbortController();
   #timer: NodeJS.Timeout | null = null;
   #closed = false;
 
@@ -384,6 +388,17 @@ export class RewardRunService {
 
   async start(): Promise<void> {
     if (this.#closed || this.#timer) return;
+    const recoveredPreparations = this.#options.repository.resetInterruptedPreparations(
+      this.#now().toISOString(),
+    );
+    if (recoveredPreparations > 0) {
+      this.#options.logger?.warn(
+        `Re-queued ${recoveredPreparations} interrupted reward-run preparation${recoveredPreparations === 1 ? "" : "s"}`,
+      );
+    }
+    for (const preparation of this.#options.repository.pendingPreparations()) {
+      this.#queuePreparation(preparation.preparationId);
+    }
     await this.recover();
     this.#timer = setInterval(() => {
       void this.recover().catch((error) =>
@@ -393,10 +408,40 @@ export class RewardRunService {
     this.#timer.unref?.();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    this.#preparationController.abort(new Error("Reward-run preparation stopped"));
+    await this.#preparationTail;
+  }
+
+  enqueuePreparation(request: RewardRunPrepareRequest): RewardRunPreparation {
+    this.#assertExecutionAllowed(request.operations ?? operationOrder);
+    if (!this.#options.signer.gasWalletSignerReady()) {
+      throw new RewardRunError(
+        "reward_run_unavailable",
+        "Enable and fund the gas wallet before preparing a reward run",
+      );
+    }
+    const preparationId = request.requestId ?? randomUUID();
+    const normalized = { ...request, requestId: preparationId };
+    const preparation = this.#options.repository.createPreparation({
+      preparationId,
+      requestSha256: rewardRunPrepareRequestSha256(normalized),
+      request: normalized,
+      now: this.#now().toISOString(),
+    });
+    if (preparation.status === "queued") this.#queuePreparation(preparation.preparationId);
+    return preparation;
+  }
+
+  getPreparation(preparationId: string): RewardRunPreparation {
+    const preparation = this.#options.repository.getPreparation(preparationId);
+    if (!preparation) {
+      throw new RewardRunError("reward_run_not_found", "Reward-run preparation does not exist");
+    }
+    return preparation;
   }
 
   async prepare(request: RewardRunPrepareRequest): Promise<RewardRun> {
@@ -454,6 +499,44 @@ export class RewardRunService {
       const raced = this.#options.repository.get(runId);
       if (raced?.recipe.prepareRequestSha256 === requestSha256) return raced;
       throw new RewardRunError("reward_run_conflict", String(error));
+    }
+  }
+
+  #queuePreparation(preparationId: string): void {
+    const task = this.#preparationTail.then(
+      async () => await this.#prepareInBackground(preparationId),
+    );
+    this.#preparationTail = task.catch((error) => {
+      this.#options.logger?.warn(
+        `Reward-run preparation ${preparationId} worker failed: ${String(error)}`,
+      );
+    });
+  }
+
+  async #prepareInBackground(preparationId: string): Promise<void> {
+    if (this.#closed) return;
+    const preparation = this.#options.repository.claimPreparation(
+      preparationId,
+      this.#now().toISOString(),
+    );
+    if (!preparation) return;
+    try {
+      const run = await withOperatorRequestSignal(this.#preparationController.signal, async () =>
+        this.prepare(preparation.request),
+      );
+      this.#options.repository.completePreparation(
+        preparationId,
+        run.runId,
+        this.#now().toISOString(),
+      );
+    } catch (error) {
+      // Leave interrupted work in `preparing`; startup resets it to queued before reopening the DB.
+      if (this.#preparationController.signal.aborted) return;
+      this.#options.repository.failPreparation(
+        preparationId,
+        error instanceof Error ? error.message : String(error),
+        this.#now().toISOString(),
+      );
     }
   }
 

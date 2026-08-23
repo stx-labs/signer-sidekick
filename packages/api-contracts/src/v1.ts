@@ -3030,7 +3030,7 @@ export const rewardLedgerPaymentSchema = z
     settleOrReclaimTxId: ledgerTxIdSchema.nullable(),
     btcSweepTxId: z.string().min(1).max(128).nullable(),
     unavailableReason: z.string().min(1).max(200).nullable(),
-    /** The staker's registered Bitcoin payout address (encoded), when the route is Bitcoin and known. */
+    /** The staker's currently registered Bitcoin payout address, not historical destination proof. */
     l1Address: z.string().min(1).max(128).nullable(),
     /** Set on `rolled-forward` rows: why the First-Distribution amount moved to the Second. */
     rollForward: rewardLedgerRollForwardSchema.nullable(),
@@ -3085,6 +3085,11 @@ export const rewardLedgerDistributionSchema = z
         notPayable: z.number().int().nonnegative(),
         belowFee: z.number().int().nonnegative(),
         rolledForward: z.number().int().nonnegative(),
+        /** Withdrawal broadcast but not yet accepted by the Bitcoin protocol. */
+        sent: z.number().int().nonnegative(),
+        /** Accepted withdrawal whose manager-side request can now be retired. */
+        arrived: z.number().int().nonnegative(),
+        /** Compatibility total: `sent + arrived`. */
         arriving: z.number().int().nonnegative(),
         rejected: z.number().int().nonnegative(),
         returned: z.number().int().nonnegative(),
@@ -3160,7 +3165,7 @@ export const rewardLedgerSchema = z
       })
       .strict(),
     cycles: z.array(rewardLedgerCycleSchema).max(200),
-    payments: z.array(rewardLedgerPaymentSchema).max(10_000),
+    payments: z.array(rewardLedgerPaymentSchema).max(100_000),
     paymentsTruncated: z.boolean(),
     fees: z
       .object({
@@ -3169,6 +3174,9 @@ export const rewardLedgerSchema = z
           .regex(/^(?:0|[1-9][0-9]*)$/)
           .nullable(),
         earnedIndexedSats: ledgerSatsSchema,
+        indexedPaymentCount: z.number().int().nonnegative(),
+        unmatchedPaymentCount: z.number().int().nonnegative(),
+        historyComplete: z.boolean(),
         balanceInManagerSats: ledgerSatsSchema.nullable(),
         withdrawnDerivedSats: ledgerSatsSchema.nullable(),
         refunds: z

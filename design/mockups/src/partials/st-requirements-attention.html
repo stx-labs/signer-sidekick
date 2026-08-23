@@ -1,0 +1,28 @@
+<div class="section-title st-title" id="st-requirements">Node &amp; signer requirements <span class="hint">what the host must provide · checked Aug 22, 12:04 UTC</span></div>
+<section class="card st-card" aria-label="Node and signer requirements">
+  <div class="st-rows">
+
+<div class="st-row has-more">
+  <div class="n">Node transaction index <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">HTTP 501 transaction-index-unavailable</span></div>
+  <div class="s"><span class="badge b-caution">Not configured</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Resolve</button></div>
+</div><details class="st-resolve"><summary>How to resolve</summary><ol><li>Set <code>stacks_node.txindex = true</code> in the node configuration.</li><li>Restart stacks-node; the index backfills from the node's own chainstate.</li></ol><pre class="code command-code">[node]
+txindex = true</pre><p class="help">Restart after changing configuration: stacks-node.</p><a href="#">Full node and signer requirements ↗</a></details>    <div class="st-row">
+  <div class="n">Event observer <span class="st-imp">recommended</span></div>
+  <div class="v"><span class="mono">4,200 events · latest block 964,150</span><span class="st-cred">callbacks from the node · polling covers gaps</span></div>
+  <div class="s"><span class="badge b-success">Verified</span></div>
+  <div class="a"></div>
+</div>    <div class="st-row">
+  <div class="n">Node version <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">stacks-node 3.3.0 · tested with this release</span></div>
+  <div class="s"><span class="badge b-success">Ready</span></div>
+  <div class="a"></div>
+</div>    <div class="st-row">
+  <div class="n">Signer version <span class="st-imp">required</span></div>
+  <div class="v"><span class="mono">stacks-signer 3.3.0</span></div>
+  <div class="s"><span class="badge b-success">Ready</span></div>
+  <div class="a"></div>
+</div>
+  </div>
+</section>

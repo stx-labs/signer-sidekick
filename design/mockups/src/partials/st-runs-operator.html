@@ -1,0 +1,21 @@
+<div class="section-title st-title" id="st-runs">Reward runs <span class="hint">how Sidekick signs the permissionless reward calls</span></div>
+<section class="card st-card" aria-label="Reward runs">
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Engine mode <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Set by the deployment (SIDEKICK_ENGINE_MODE). Force Observe stops all signing immediately and stays until the deployment restarts; running attempts are still verified."><!-- @include icon-info --></button></div><div class="v"><span class="mono">Operator-run</span><span class="st-cred">0 runs active · 0 awaiting approval · 0 ambiguous</span></div><div class="s"><span class="badge b-accent">Operator-run</span></div><div class="a"><button class="btn btn-tertiary sm" type="button">Force Observe</button></div></div>
+  </div>
+  <div class="st-wallet">
+    <div class="st-wallet-id">
+      <div class="rw-eyebrow">Gas wallet <span class="badge b-success">Ready</span></div>
+      <div class="rw-wallet-address"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg><span>SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7</span><button class="btn-icon" type="button" aria-label="Copy address"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></div>
+      <p class="st-wallet-sub">12.48 STX · ≈ 124 transactions at the 0.10 STX cap · created Aug 20 on this machine <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Key file /data/gas-wallet.key · owner-only · back it up with the database · losing it loses only gas"><!-- @include icon-info --></button></p>
+    </div>
+    <div class="st-rows st-wallet-rows">
+      <div class="st-row"><div class="n">Signing</div><div class="v"><span class="st-cred">signs reward calls you approve · one run at a time</span></div><div class="s"><span class="badge b-success">Enabled</span></div><div class="a"><button class="btn btn-tertiary sm" type="button">Disable</button></div></div>
+      <div class="st-row"><div class="n">Dedicated-key check <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Runs before every signature: refuses if this address is currently the signer, a manager admin, or a contract."><!-- @include icon-info --></button></div><div class="v"><span class="st-cred">checked Aug 22, 12:04 UTC</span></div><div class="s"><span class="badge b-success">Passed</span></div><div class="a"></div></div>
+      <div class="st-row"><div class="n">Sweep <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Sends everything except the network fee to an address you enter; runs stay disabled until you fund it again. Not available while a run is in progress."><!-- @include icon-info --></button></div><div class="v"><span class="st-cred">12.47 STX after the network fee</span></div><div class="s"></div><div class="a"><button class="btn btn-tertiary sm" type="button">Sweep remaining STX</button></div></div>
+    </div>
+  </div>
+  <div class="st-rows">
+    <div class="st-row"><div class="n">Operations <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="The five reviewed reward adapters. Disabling one stops new signing for it until the deployment restarts; existing attempts stay observable."><!-- @include icon-info --></button></div><div class="v"><span class="st-chips"><span class="st-chip ok">calculate</span><span class="st-chip ok">collect</span><span class="st-chip ok">distribute</span><span class="st-chip ok">settle</span><span class="st-chip ok">reclaim</span></span></div><div class="s"><span class="badge b-success">Available</span></div><div class="a"><button class="btn btn-tertiary sm" type="button">Manage</button><a class="btn btn-tertiary sm" href="#activity">Activity</a></div></div>
+  </div>
+</section>

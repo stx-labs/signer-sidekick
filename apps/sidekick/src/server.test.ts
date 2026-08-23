@@ -4,6 +4,7 @@ import {
   type DeploymentRequirements,
   overviewPageSchema,
   type RewardRun,
+  type RewardRunPreparation,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
@@ -2677,6 +2678,9 @@ describe("reward ledger routes", () => {
     fees: {
       feeBips: "500",
       earnedIndexedSats: "0",
+      indexedPaymentCount: 0,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
       balanceInManagerSats: null,
       withdrawnDerivedSats: null,
       refunds: [],
@@ -2717,6 +2721,7 @@ describe("reward ledger routes", () => {
     expect(csv.statusCode).toBe(200);
     expect(csv.headers["content-type"]).toContain("text/csv");
     expect(csv.headers["content-disposition"]).toContain("signer-sidekick-reward-payments.csv");
+    expect(csv.headers["x-sidekick-history-complete"]).toBe("true");
     expect(csv.body.split("\n")[0]).toContain("staker_entitlement_sats");
 
     const fees = await server.inject({
@@ -2732,6 +2737,21 @@ describe("reward ledger routes", () => {
       ]),
     });
 
+    service.rewardLedger.mockResolvedValueOnce({
+      ...ledger,
+      fees: { ...ledger.fees, historyComplete: false },
+    });
+    const partial = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/payments.csv?scope=all",
+      headers,
+    });
+    expect(partial.statusCode).toBe(200);
+    expect(partial.headers["x-sidekick-history-complete"]).toBe("false");
+    expect(partial.headers["content-disposition"]).toContain(
+      "signer-sidekick-reward-payments-partial.csv",
+    );
+
     const invalid = await server.inject({
       method: "GET",
       url: "/api/v1/rewards/ledger?distribution=3",
@@ -2744,12 +2764,27 @@ describe("reward ledger routes", () => {
 
 describe("reward run routes", () => {
   const runId = "00000000-0000-4000-8000-000000000001";
+  const preparationId = "00000000-0000-4000-8000-000000000002";
   const recipeSha256 = "ab".repeat(32);
   const run = { runId, recipeSha256, status: "awaiting-approval" } as RewardRun;
+  const preparation = {
+    schemaVersion: 1,
+    preparationId,
+    status: "queued",
+    requestSha256: "cd".repeat(32),
+    request: { cycle: 141, distribution: 1, maxTransactions: 150 },
+    runId: null,
+    failureReason: null,
+    createdAt: "2026-08-22T12:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  } satisfies RewardRunPreparation;
 
   function api(): RewardRunApi {
     return {
-      prepare: vi.fn().mockResolvedValue(run),
+      enqueuePreparation: vi.fn().mockReturnValue(preparation),
+      getPreparation: vi.fn().mockReturnValue(preparation),
       approve: vi.fn().mockResolvedValue({ ...run, status: "approved" }),
       pause: vi.fn().mockReturnValue({ ...run, status: "paused" }),
       resume: vi.fn().mockReturnValue({ ...run, status: "running" }),
@@ -2776,12 +2811,23 @@ describe("reward run routes", () => {
       headers,
       payload: { cycle: 141, distribution: 1, maxTransactions: 150 },
     });
-    expect(prepared.statusCode).toBe(200);
-    expect(rewardRuns.prepare).toHaveBeenCalledWith({
+    expect(prepared.statusCode).toBe(202);
+    expect(prepared.headers.location).toBe(`/api/v1/rewards/run-preparations/${preparationId}`);
+    expect(prepared.json()).toEqual(preparation);
+    expect(rewardRuns.enqueuePreparation).toHaveBeenCalledWith({
       cycle: 141,
       distribution: 1,
       maxTransactions: 150,
     });
+
+    const preparationStatus = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/run-preparations/${preparationId}`,
+      headers,
+    });
+    expect(preparationStatus.statusCode).toBe(200);
+    expect(preparationStatus.json()).toEqual(preparation);
+    expect(rewardRuns.getPreparation).toHaveBeenCalledWith(preparationId);
 
     const approved = await server.inject({
       method: "POST",

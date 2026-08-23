@@ -68,13 +68,33 @@ export function StatusBadge({ status }: { status: string }) {
     "eligible",
     "activation scheduled",
     "signer active",
+    "verified",
+    "available",
+    "registered",
+    "authenticated",
+    "enabled",
+    "passed",
   ].includes(normalized)
     ? "b-success"
-    : ["blocked", "fail", "unavailable", "grant not verified", "needs attention"].includes(
-          normalized,
-        )
+    : [
+          "blocked",
+          "fail",
+          "unavailable",
+          "grant not verified",
+          "needs attention",
+          "forced observe",
+        ].includes(normalized)
       ? "b-error"
-      : "b-caution";
+      : [
+            "not configured",
+            "observe",
+            "observe mode",
+            "observe only",
+            "optional",
+            "disabled",
+          ].includes(normalized)
+        ? "b-neutral"
+        : "b-caution";
   return <span className={`badge ${state}`}>{status.replaceAll("-", " ")}</span>;
 }
 

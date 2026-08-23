@@ -1267,6 +1267,8 @@ function ledgerDistribution(cycle, distribution, status, stakers) {
         notPayable: 0,
         belowFee: 0,
         rolledForward: 0,
+        sent: 0,
+        arrived: 0,
         arriving: 0,
         rejected: 0,
         returned: 0,
@@ -1362,6 +1364,9 @@ export function rewardLedger(url) {
       earnedIndexedSats: ledgerCycles
         .reduce((sum, { cycle }) => sum + BigInt(cycle.operatorFeeSats), 0n)
         .toString(),
+      indexedPaymentCount: 0,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
       balanceInManagerSats: "504000",
       withdrawnDerivedSats: "1100000",
       refunds: [],
@@ -1555,6 +1560,27 @@ export function rewardRunFixture(status = "awaiting-approval", overrides = {}) {
   };
 }
 
+export function rewardRunPreparationFixture(status = "queued") {
+  return {
+    schemaVersion: 1,
+    preparationId: "00000000-0000-4000-8000-00000000a002",
+    status,
+    requestSha256: "12".repeat(32),
+    request: {
+      requestId: "00000000-0000-4000-8000-00000000a002",
+      cycle: 140,
+      distribution: 1,
+      operations: ["claim-rewards", "claim-staker-rewards"],
+    },
+    runId: status === "ready" ? "00000000-0000-4000-8000-00000000a001" : null,
+    failureReason: status === "failed" ? "Fixture preparation failed" : null,
+    createdAt: "2026-08-14T17:04:00.000Z",
+    startedAt: status === "queued" ? null : "2026-08-14T17:04:01.000Z",
+    completedAt: status === "ready" || status === "failed" ? "2026-08-14T17:05:00.000Z" : null,
+    updatedAt: "2026-08-14T17:05:00.000Z",
+  };
+}
+
 export function responseFor(url) {
   const request = new URL(url);
   const offset = Number(request.searchParams.get("offset") ?? 0);
@@ -1664,6 +1690,13 @@ export function responseFor(url) {
   if (request.pathname === "/api/v1/settings/gas-wallet") return gasWalletStatus;
   if (request.pathname.startsWith("/api/v1/settings/gas-wallet/")) return gasWalletStatus;
   if (request.pathname === "/api/v1/rewards/runs") return [];
+  if (request.pathname.startsWith("/api/v1/rewards/run-preparations/")) {
+    return {
+      fixtureStatus: 404,
+      error: "reward_run_not_found",
+      message: "Reward-run preparation does not exist",
+    };
+  }
   if (request.pathname.startsWith("/api/v1/rewards/runs/")) {
     return {
       fixtureStatus: 404,

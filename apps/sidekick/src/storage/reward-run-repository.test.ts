@@ -101,6 +101,34 @@ describe("reward run repository", () => {
     for (const store of stores.splice(0)) store.close();
   });
 
+  it("persists and re-queues interrupted background preparation", async () => {
+    const { store } = await openSidekickStore(":memory:", now);
+    stores.push(store);
+    const request = { requestId: runId, cycle: 141, distribution: 1 as const };
+    const queued = store.rewardRuns.createPreparation({
+      preparationId: runId,
+      requestSha256: "78".repeat(32),
+      request,
+      now,
+    });
+    expect(queued).toMatchObject({ status: "queued", request, runId: null });
+    expect(store.rewardRuns.claimPreparation(runId, now)).toMatchObject({
+      status: "preparing",
+    });
+    expect(store.rewardRuns.resetInterruptedPreparations(now)).toBe(1);
+    expect(store.rewardRuns.pendingPreparations()).toMatchObject([
+      { preparationId: runId, status: "queued" },
+    ]);
+    const run = insertRun(store);
+    expect(store.rewardRuns.claimPreparation(runId, now)).toMatchObject({
+      status: "preparing",
+    });
+    expect(store.rewardRuns.completePreparation(runId, run.runId, now)).toMatchObject({
+      status: "ready",
+      runId,
+    });
+  });
+
   it("persists a sealed recipe, durable cursor, attempts, and bounded child materialization", async () => {
     const { store } = await openSidekickStore(":memory:", now);
     stores.push(store);

@@ -1,0 +1,32 @@
+<div class="section-title st-title" id="st-connections">Connections <span class="hint">what Sidekick reads</span></div>
+<section class="card st-card" aria-label="Connections">
+  <div class="st-rows">
+
+<div class="st-row">
+  <div class="n">Stacks node <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Current chain state and PoX-5 reads. Required."><!-- @include icon-info --></button></div>
+  <div class="v"><span class="mono">http://stacks-node:20443</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Node monitoring <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Prometheus metrics from stacks-core, used for local node diagnosis. Recommended."><!-- @include icon-info --></button></div>
+  <div class="v"><span class="mono">http://stacks-node:9153</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Signer monitoring <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Signer metrics for participation and latency diagnosis. Recommended."><!-- @include icon-info --></button></div>
+  <div class="v"><span class="mono">http://stacks-signer:30001</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Indexed chain API <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Roster, activity, and historical chain data. Required; a Hiro key avoids public rate limits."><!-- @include icon-info --></button></div>
+  <div class="v"><span class="mono">https://api.mainnet.hiro.so</span><span class="st-cred">key saved in Sidekick</span></div>
+  <div class="s"><span class="badge b-success">Connected</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Edit</button></div>
+</div>    <div class="st-row">
+  <div class="n">Network comparison API <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="External reference used only to diagnose local node health. Optional; a same-origin key is reused."><!-- @include icon-info --></button></div>
+  <div class="v"><span class="mono">—</span></div>
+  <div class="s"><span class="badge b-neutral">Not configured</span></div>
+  <div class="a"><button class="btn btn-tertiary sm" type="button">Add</button></div>
+</div>
+  </div>
+</section>

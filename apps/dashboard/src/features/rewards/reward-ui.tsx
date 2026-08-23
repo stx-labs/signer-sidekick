@@ -28,8 +28,8 @@ export function GasChip({ execution }: { execution: RewardExecutionAvailability 
 }
 
 /**
- * The ₿ marker beside a staker who is paid out over Bitcoin. Hover or focus shows the registered
- * L1 address with a copy button; click toggles it for touch.
+ * The ₿ marker beside a staker who is paid out over Bitcoin. Hover or focus shows the currently
+ * registered L1 address with a copy button; click toggles it for touch.
  */
 export function L1Marker({ address, principal }: { address: string | null; principal: string }) {
   const [open, setOpen] = useState(false);
@@ -41,7 +41,7 @@ export function L1Marker({ address, principal }: { address: string | null; princ
         className="rw-l1"
         aria-label={
           address
-            ? `L1 payout for ${short(principal, 4, 4)}: ${address}`
+            ? `Current registered Bitcoin address for ${short(principal, 4, 4)}: ${address}`
             : `L1 payout for ${short(principal, 4, 4)} over Bitcoin`
         }
         aria-expanded={open}
@@ -51,7 +51,7 @@ export function L1Marker({ address, principal }: { address: string | null; princ
         <CurrencyBtc aria-hidden="true" weight="bold" />
       </button>
       <span className="rw-pop rw-l1-pop" role="tooltip" id={id}>
-        <span className="k">L1 payout</span>
+        <span className="k">Current registered address</span>
         {address ? (
           <>
             <span className="a">{address}</span>

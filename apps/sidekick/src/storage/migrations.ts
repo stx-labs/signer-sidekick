@@ -2339,4 +2339,33 @@ export const migrations: readonly Migration[] = [
       LIMIT 1;
     `,
   },
+  {
+    version: 38,
+    name: "durable_reward_run_preparations",
+    sql: `
+      -- Recipe discovery can require hundreds of anchored read-only calls for a large pool. Keep it
+      -- outside the HTTP request lifetime and recover interrupted work after a Sidekick restart.
+      CREATE TABLE reward_run_preparations (
+        preparation_id TEXT PRIMARY KEY CHECK (length(preparation_id) = 36),
+        status TEXT NOT NULL CHECK (status IN ('queued', 'preparing', 'ready', 'failed')),
+        request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+        request_json TEXT NOT NULL CHECK (json_valid(request_json)),
+        run_id TEXT REFERENCES transaction_runs(run_id),
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK ((status = 'ready') = (run_id IS NOT NULL)),
+        CHECK ((status = 'failed') = (failure_reason IS NOT NULL)),
+        CHECK ((status IN ('ready', 'failed')) = (completed_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE UNIQUE INDEX reward_run_preparations_active_request
+        ON reward_run_preparations (request_sha256)
+        WHERE status IN ('queued', 'preparing');
+      CREATE INDEX reward_run_preparations_created
+        ON reward_run_preparations (created_at DESC, preparation_id DESC);
+    `,
+  },
 ];
