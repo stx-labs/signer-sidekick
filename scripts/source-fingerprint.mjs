@@ -24,6 +24,10 @@ const sourceFiles = [
   "pnpm-workspace.yaml",
   "tsconfig.base.json",
 ];
+// Test-only tooling never ships and must not invalidate an approval: script unit tests and the
+// released-Devnet harness (`e2e-devnet.mjs`, `devnet-*.mjs`, `verify-devnet-lock.mjs`).
+const ignoredScriptFile =
+  /^scripts\/(?:.*\.test\.mjs|e2e-devnet\.mjs|devnet-[a-z-]+\.mjs|verify-devnet-lock\.mjs)$/;
 const ignoredDirectoryNames = new Set([
   "node_modules",
   "dist",
@@ -46,6 +50,7 @@ function ignored(path, directory) {
   const parts = relativePath.split("/");
   if (directory && ignoredDirectoryNames.has(parts.at(-1))) return true;
   if (!directory && relativePath.endsWith(".md")) return true;
+  if (!directory && ignoredScriptFile.test(relativePath)) return true;
   return /^trusted-managers\/[^/]+\.json$/.test(relativePath);
 }
 

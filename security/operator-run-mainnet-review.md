@@ -18,13 +18,21 @@ Review the exact fingerprint for:
 ## Approval
 
 1. Finish and commit all in-scope changes.
-2. Run `pnpm security:operator-run:fingerprint` and put the result in
+2. From a clean checkout of that commit (no untracked files under `apps`, `packages`, `contracts`,
+   `network-compatibility`, `trusted-managers`, or `scripts`), run
+   `pnpm security:operator-run:fingerprint` and put the result in
    `security/operator-run-mainnet-review.json` with `status: "pending"`.
 3. An independent reviewer audits that fingerprint and runs the normal release checks.
 4. The reviewer changes the record to `approved` and supplies the last in-scope commit, review time,
    reviewer identity, and durable review URL.
-5. Run `pnpm security:operator-run:verify`. Tag only while it passes.
+5. Run `pnpm security:operator-run:verify`; it must print the approved fingerprint. Tag the
+   reviewed release only while it passes.
 
-The review record itself is excluded from the fingerprint so approval can be recorded afterward.
-Runtime, dependencies, build inputs, and the release gate are included. Any later in-scope change
-changes the fingerprint and makes the approval stale.
+The release workflow runs the same check with `--allow-pending`: a pending record does not block
+releases (the runtime refuses mainnet operator-run until the record is approved), but an invalid or
+stale-approved record fails the release.
+
+The review record itself is excluded from the fingerprint so approval can be recorded afterward, as
+are documentation, script unit tests, and the released-Devnet harness under `scripts/`. Runtime,
+dependencies, build inputs, and the release gate are included. Any later in-scope change changes
+the fingerprint and makes the approval stale.

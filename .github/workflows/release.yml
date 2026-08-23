@@ -57,8 +57,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # A pending review does not block releases: the runtime refuses mainnet operator-run until
+      # the record is approved. Invalid or stale-approved records still fail the release.
       - name: Verify mainnet operator-run security review
-        run: pnpm security:operator-run:verify
+        run: pnpm security:operator-run:verify --allow-pending
 
       - name: Validate release
         run: |

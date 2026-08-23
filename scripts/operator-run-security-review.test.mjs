@@ -48,9 +48,54 @@ test("rejects pending and stale review records", async () => {
       /review is pending/,
     );
   });
+  await withRecord(record({ reviewer: null }), async (reviewPath) => {
+    await assert.rejects(
+      verifyOperatorRunSecurityReview({ reviewPath, sourceFingerprint: fingerprint }),
+      /review is pending/,
+    );
+  });
   await withRecord(record(), async (reviewPath) => {
     await assert.rejects(
       verifyOperatorRunSecurityReview({ reviewPath, sourceFingerprint: "cd".repeat(32) }),
+      /review is stale/,
+    );
+  });
+});
+
+test("allowPending passes a pending record through but never an invalid or stale one", async () => {
+  await withRecord(
+    record({
+      status: "pending",
+      reviewedCommit: null,
+      reviewedAt: null,
+      reviewer: null,
+      reviewUrl: null,
+    }),
+    async (reviewPath) => {
+      const review = await verifyOperatorRunSecurityReview({
+        reviewPath,
+        sourceFingerprint: "cd".repeat(32),
+        allowPending: true,
+      });
+      assert.equal(review.status, "pending");
+    },
+  );
+  await withRecord(
+    record({ status: "pending", reviewUrl: "http://example.test/review" }),
+    async (reviewPath) => {
+      await assert.rejects(
+        verifyOperatorRunSecurityReview({ reviewPath, allowPending: true }),
+        /record is invalid/,
+      );
+    },
+  );
+  await withRecord(record(), async (reviewPath) => {
+    await assert.rejects(
+      verifyOperatorRunSecurityReview({
+        reviewPath,
+        sourceFingerprint: "cd".repeat(32),
+        allowPending: true,
+      }),
       /review is stale/,
     );
   });
@@ -66,7 +111,7 @@ test("rejects fields or review URLs the runtime parser would reject", async () =
   await withRecord(record({ reviewUrl: "http://example.test/review" }), async (reviewPath) => {
     await assert.rejects(
       verifyOperatorRunSecurityReview({ reviewPath, sourceFingerprint: fingerprint }),
-      /review is pending/,
+      /record is invalid/,
     );
   });
 });
