@@ -71,6 +71,10 @@ function registerNodeSource(store: SidekickStore): void {
 
 function revertMigration14(database: DatabaseSync): void {
   database.exec(`
+    DROP TABLE transaction_run_attempts;
+    DROP TABLE transaction_run_children;
+    DROP TABLE transaction_runs;
+    DROP TABLE gas_wallet_authorizations;
     DROP TABLE gas_wallet_sweeps;
     DROP TABLE gas_wallet_banners;
     DROP TABLE gas_wallet;
@@ -353,7 +357,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 36,
+      schemaVersion: 37,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1492,7 +1496,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 36,
+      schemaVersion: 37,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1518,7 +1522,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1601,7 +1605,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(36);
+    expect(upgraded.store.schemaVersion()).toBe(37);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1673,6 +1677,10 @@ describe("Sidekick SQLite store", () => {
       );
       CREATE UNIQUE INDEX gas_payer_nonce_historical_v14
         ON gas_payer_nonce_reservations (gas_payer_principal, nonce);
+      DROP TABLE transaction_run_attempts;
+      DROP TABLE transaction_run_children;
+      DROP TABLE transaction_runs;
+      DROP TABLE gas_wallet_authorizations;
       DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;
@@ -1706,7 +1714,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1857,7 +1865,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -1980,6 +1988,10 @@ describe("Sidekick SQLite store", () => {
         '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'awaiting_approval', 3, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE transaction_run_attempts;
+      DROP TABLE transaction_run_children;
+      DROP TABLE transaction_runs;
+      DROP TABLE gas_wallet_authorizations;
       DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;
@@ -2008,7 +2020,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(36);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(37);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -2045,6 +2057,10 @@ describe("Sidekick SQLite store", () => {
         '{}', '{}', '{}', 'stacks-labs', 1, '${"dd".repeat(32)}',
         'reconciled', 7, '${observedAt}', '${observedAt}'
       );
+      DROP TABLE transaction_run_attempts;
+      DROP TABLE transaction_run_children;
+      DROP TABLE transaction_runs;
+      DROP TABLE gas_wallet_authorizations;
       DROP TABLE gas_wallet_sweeps;
       DROP TABLE gas_wallet_banners;
       DROP TABLE gas_wallet;

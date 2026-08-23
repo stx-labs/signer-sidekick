@@ -74,7 +74,7 @@ export function RewardConfirmSheet({
   const run = state.status === "ready" || state.status === "approving" ? state.run : null;
   const steps = run ? summarizeRunSteps(run) : [];
   const transactions = run?.recipe.children.length ?? action.transactions;
-  const truncated = run ? run.recipe.children.length >= run.recipe.maxTransactions : false;
+  const truncated = run?.recipe.truncated ?? false;
   return (
     <div className="rw-backdrop" role="presentation">
       <div className="rw-sheet" role="dialog" aria-modal="true" aria-labelledby="rw-sheet-title">
@@ -136,9 +136,10 @@ export function RewardConfirmSheet({
         {truncated && run ? (
           <div className="callout callout-caution" role="status" style={{ marginTop: 12 }}>
             <div className="body">
-              This run covers the first {run.recipe.maxTransactions.toLocaleString("en-US")}{" "}
-              transactions. Run it again afterwards for the rest; Sidekick skips what is already
-              done.
+              This run covers {run.recipe.children.length.toLocaleString("en-US")} of{" "}
+              {run.recipe.eligibleTransactions.toLocaleString("en-US")} eligible transactions;{" "}
+              {run.recipe.remainingTransactions.toLocaleString("en-US")} remain. Run it again
+              afterwards — Sidekick skips what is already done.
             </div>
           </div>
         ) : null}

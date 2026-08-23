@@ -22,7 +22,10 @@ import {
   GasWalletSweepPlanError,
   planGasWalletSweep,
 } from "./gas-wallet-sweep.js";
-import type { StoredGasWalletSweep } from "./storage/gas-wallet-sweep-repository.js";
+import {
+  GasWalletSweepRepositoryError,
+  type StoredGasWalletSweep,
+} from "./storage/gas-wallet-sweep-repository.js";
 import type { SidekickStore } from "./storage/store.js";
 import type { SignedGasWalletSweepTransaction } from "./transaction-engine/gas-payer-signer.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
@@ -431,12 +434,23 @@ export class GasWalletService {
       }
       throw error;
     }
-    const stored = this.#options.store.gasWalletSweeps.insert({
-      sweepId: randomUUID(),
-      walletPrincipal: wallet.principal,
-      plan,
-      createdAt: now.toISOString(),
-    });
+    let stored: StoredGasWalletSweep;
+    try {
+      stored = this.#options.store.gasWalletSweeps.insert({
+        sweepId: randomUUID(),
+        walletPrincipal: wallet.principal,
+        plan,
+        createdAt: now.toISOString(),
+      });
+    } catch (error) {
+      if (error instanceof GasWalletSweepRepositoryError) {
+        throw new GasWalletError(
+          "gas_wallet_sweep_blocked",
+          "The gas wallet already has an active reward run or sweep",
+        );
+      }
+      throw error;
+    }
     return toSweep(stored);
   }
 

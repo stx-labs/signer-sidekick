@@ -15,6 +15,11 @@ import {
   type ManagerClaimRewardsPlan,
   planManagerClaimRewards,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import {
+  type RewardOperationKind,
+  type RewardOperationPlan,
+  revalidateRewardOperationPlan,
+} from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { type GasWalletSweepPlan, revalidateGasWalletSweepPlan } from "../gas-wallet-sweep.js";
 
 export type GasPayerSignerErrorCode =
@@ -52,6 +57,7 @@ export interface GasPayerSignerOptions {
 
 const signedTransactionCapability = Symbol("signed-manager-claim-rewards");
 const signedSweepCapability = Symbol("signed-gas-wallet-sweep");
+const signedRewardOperationCapability = Symbol("signed-reward-operation");
 
 /**
  * Opaque signed output from {@link GasPayerSigner}. Its constructor cannot be used without the
@@ -126,6 +132,46 @@ export class SignedGasWalletSweepTransaction {
   toJSON(): Record<string, string> {
     return {
       kind: this.kind,
+      planSha256: this.planSha256,
+      unsignedTransactionSha256: this.unsignedTransactionSha256,
+      precomputedTxid: this.precomputedTxid,
+      nonce: this.nonce,
+      fee: this.fee,
+    };
+  }
+}
+
+/** Opaque output for the closed S4 reward adapter registry. */
+export class SignedRewardOperationTransaction {
+  readonly kind = "signed-reward-operation" as const;
+
+  #signedTransactionBytes: Uint8Array;
+
+  constructor(
+    capability: typeof signedRewardOperationCapability,
+    signedTransactionBytes: Uint8Array,
+    readonly operationKind: RewardOperationKind,
+    readonly planSha256: string,
+    readonly unsignedTransactionSha256: string,
+    readonly precomputedTxid: `0x${string}`,
+    readonly nonce: string,
+    readonly fee: string,
+  ) {
+    if (capability !== signedRewardOperationCapability) {
+      throw new GasPayerSignerError("signing-failed", "Signed operation construction is sealed");
+    }
+    this.#signedTransactionBytes = Uint8Array.from(signedTransactionBytes);
+    Object.freeze(this);
+  }
+
+  get signedTransactionBytes(): Uint8Array {
+    return Uint8Array.from(this.#signedTransactionBytes);
+  }
+
+  toJSON(): Record<string, string> {
+    return {
+      kind: this.kind,
+      operationKind: this.operationKind,
       planSha256: this.planSha256,
       unsignedTransactionSha256: this.unsignedTransactionSha256,
       precomputedTxid: this.precomputedTxid,
@@ -443,6 +489,82 @@ export class GasPayerSigner {
     } catch {
       throw signerError("signing-failed", "Gas wallet sweep transaction could not be signed");
     }
+  }
+
+  async #signRewardOperation(
+    plan: RewardOperationPlan,
+    expectedKind: RewardOperationKind,
+  ): Promise<SignedRewardOperationTransaction> {
+    if (this.#destroyed) {
+      throw signerError("signer-destroyed", "Gas-payer signer has been destroyed");
+    }
+    let validated: RewardOperationPlan;
+    try {
+      validated = await revalidateRewardOperationPlan(plan);
+    } catch {
+      throw signerError(
+        "sealed-plan-invalid",
+        `${expectedKind} plan failed sealed adapter revalidation`,
+      );
+    }
+    if (validated.material.kind !== expectedKind) {
+      throw signerError("sealed-plan-invalid", `${expectedKind} signer received another adapter`);
+    }
+    if (
+      validated.material.network.kind !== this.network ||
+      validated.material.sender.principal !== this.principal ||
+      validated.material.sender.publicKey !== this.publicKey
+    ) {
+      throw signerError(
+        "plan-signer-mismatch",
+        `${expectedKind} plan does not belong to the loaded gas wallet`,
+      );
+    }
+    try {
+      const transaction = deserializeTransaction(validated.unsignedTransactionHex);
+      const transactionSigner = new TransactionSigner(transaction);
+      transactionSigner.signOrigin(this.#privateKey);
+      return new SignedRewardOperationTransaction(
+        signedRewardOperationCapability,
+        transaction.serializeBytes(),
+        expectedKind,
+        validated.planSha256,
+        validated.unsignedTransactionSha256,
+        `0x${transaction.txid()}`,
+        validated.material.transaction.nonce,
+        validated.material.transaction.feeUstx,
+      );
+    } catch {
+      throw signerError("signing-failed", `${expectedKind} transaction could not be signed`);
+    }
+  }
+
+  signPox5CalculateRewardsPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation(plan, "calculate-rewards");
+  }
+
+  signManagerClaimRewardsRunPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation(plan, "claim-rewards");
+  }
+
+  signClaimStakerRewardsPlan(plan: RewardOperationPlan): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation(plan, "claim-staker-rewards");
+  }
+
+  signSettleAcceptedWithdrawalPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation(plan, "settle-accepted-withdrawal");
+  }
+
+  signReclaimFailedWithdrawalPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation(plan, "reclaim-failed-withdrawal");
   }
 
   destroy(): void {

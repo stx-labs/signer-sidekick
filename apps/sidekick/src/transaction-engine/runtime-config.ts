@@ -21,6 +21,8 @@ export interface TransactionEngineRuntimeConfig {
   finalityDepth: number;
   maximumFeeUstx: bigint;
   maximumApprovalMinutes: number;
+  maximumRunHours: number;
+  maximumRunTransactions: number;
 }
 
 const compressedPublicKeySchema = z
@@ -147,6 +149,20 @@ export function loadTransactionEngineRuntimeConfig(
       .min(1)
       .max(24 * 60)
       .default(30)
-      .parse(env.SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES),
+      .parse(env.SIDEKICK_ENGINE_RUN_START_MINUTES ?? env.SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES),
+    maximumRunHours: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24)
+      .default(6)
+      .parse(env.SIDEKICK_ENGINE_MAX_RUN_HOURS),
+    maximumRunTransactions: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .default(200)
+      .parse(env.SIDEKICK_ENGINE_MAX_RUN_TRANSACTIONS),
   };
 }

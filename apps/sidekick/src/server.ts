@@ -42,8 +42,11 @@ import {
   overviewPageSchema,
   type ReconciliationOperation,
   type ReconciliationSummary,
+  type RewardRun,
   reconciliationSummarySchema,
   rewardLedgerSchema,
+  rewardRunApproveRequestSchema,
+  rewardRunPrepareRequestSchema,
   signerGrantVerifyRequestSchema,
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
@@ -98,6 +101,10 @@ import {
   operatorSupportApplication,
 } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import {
+  RewardRunError,
+  type RewardRunErrorCode,
+} from "./transaction-engine/reward-run-service.js";
 import { WalletIntentError, type WalletIntentService } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -405,6 +412,7 @@ export interface ServerOptions {
   };
   engine?: TransactionEngineApiService;
   gasWallet?: GasWalletApi;
+  rewardRuns?: RewardRunApi;
   supportApplication?(): OperatorSupportApplication;
   databaseStatus?(): unknown;
   observerStatus?(): ObserverRuntimeStatus;
@@ -424,6 +432,17 @@ export interface GasWalletApi {
   approveSweep(sweepId: string): Promise<GasWalletSweep>;
   cancelSweep(sweepId: string): Promise<GasWalletSweep>;
   refreshSweep(sweepId: string): Promise<GasWalletSweep>;
+}
+
+/** Recipe-scoped operator-run API (plan S3). */
+export interface RewardRunApi {
+  prepare(input: z.infer<typeof rewardRunPrepareRequestSchema>): Promise<RewardRun>;
+  approve(runId: string, recipeSha256: string): Promise<RewardRun>;
+  pause(runId: string): RewardRun;
+  resume(runId: string): RewardRun;
+  cancel(runId: string): RewardRun;
+  get(runId: string): RewardRun;
+  list(limit?: number): RewardRun[];
 }
 
 class OperatorApiError extends Error {
@@ -518,6 +537,16 @@ const SAFE_OPERATOR_API_MESSAGES: Readonly<Record<string, string>> = {
     "The node could not be read to prepare or settle the sweep. Reconnect and retry.",
   invalid_gas_wallet_sweep_recipient:
     "Enter a standard Stacks address on this network that is not the gas wallet itself.",
+  reward_run_unavailable:
+    "Reward runs are unavailable. Enable and fund the gas wallet, then recheck the deployment.",
+  reward_run_not_found: "This reward run no longer exists. Refresh Rewards.",
+  reward_run_invalid:
+    "The reward run no longer matches current chain evidence. Prepare and review a new run.",
+  reward_run_conflict:
+    "The gas wallet or reward run is already busy. Refresh the run before trying again.",
+  reward_run_expired: "The reward run approval or runtime window elapsed. Prepare a new run.",
+  reward_run_refused:
+    "The gas wallet no longer passes its dedicated-key checks. Review Settings before retrying.",
   signer_grant_sources_incompatible:
     "Signer grant preparation is blocked by node, API, or PoX-5 compatibility checks. Review preflight, resolve the failures, and retry.",
   signer_grant_unavailable:
@@ -863,6 +892,26 @@ async function gasWalletCall<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof GasWalletError) {
       throw new OperatorApiError(GAS_WALLET_ERROR_STATUS[error.code], error.code);
+    }
+    throw error;
+  }
+}
+
+const REWARD_RUN_ERROR_STATUS: Readonly<Record<RewardRunErrorCode, number>> = {
+  reward_run_unavailable: 503,
+  reward_run_not_found: 404,
+  reward_run_invalid: 409,
+  reward_run_conflict: 409,
+  reward_run_expired: 409,
+  reward_run_refused: 409,
+};
+
+async function rewardRunCall<T>(operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof RewardRunError) {
+      throw new OperatorApiError(REWARD_RUN_ERROR_STATUS[error.code], error.code);
     }
     throw error;
   }
@@ -2521,6 +2570,52 @@ export function createServer(options: ServerOptions = {}) {
     if (!params.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
     return await gasWalletCall(() => gasWallet.cancelSweep(params.data.sweepId));
   });
+  server.get("/api/v1/rewards/runs", async (request, reply) => {
+    const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+    const query = z
+      .object({ limit: z.coerce.number().int().min(1).max(200).optional() })
+      .safeParse(request.query);
+    if (!query.success) throw new OperatorApiError(400, "reward_run_invalid");
+    reply.header("cache-control", "no-store");
+    return await rewardRunCall(() => runs.list(query.data.limit));
+  });
+  server.post("/api/v1/rewards/runs", async (request) => {
+    const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+    const parsed = rewardRunPrepareRequestSchema.safeParse(request.body);
+    if (!parsed.success) throw new OperatorApiError(400, "reward_run_invalid");
+    return await interactive(
+      request,
+      async () => await rewardRunCall(() => runs.prepare(parsed.data)),
+    );
+  });
+  server.get("/api/v1/rewards/runs/:runId", async (request, reply) => {
+    const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+    const params = z.object({ runId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) throw new OperatorApiError(400, "reward_run_invalid");
+    reply.header("cache-control", "no-store");
+    return await rewardRunCall(() => runs.get(params.data.runId));
+  });
+  server.post("/api/v1/rewards/runs/:runId/approve", async (request) => {
+    const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+    const params = z.object({ runId: z.string().uuid() }).safeParse(request.params);
+    const approval = rewardRunApproveRequestSchema.safeParse(request.body);
+    if (!params.success || !approval.success) {
+      throw new OperatorApiError(400, "reward_run_invalid");
+    }
+    return await interactive(
+      request,
+      async () =>
+        await rewardRunCall(() => runs.approve(params.data.runId, approval.data.recipeSha256)),
+    );
+  });
+  for (const action of ["pause", "resume", "cancel"] as const) {
+    server.post(`/api/v1/rewards/runs/:runId/${action}`, async (request) => {
+      const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");
+      const params = z.object({ runId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) throw new OperatorApiError(400, "reward_run_invalid");
+      return await rewardRunCall(() => runs[action](params.data.runId));
+    });
+  }
   server.post("/api/v1/manager/signer-grant/prepare", async (request) => {
     const signerGrant = requireFeature(options.signerGrant, "signer_grant_unavailable");
     const parsed = managerSignerGrantPrepareRequestSchema.safeParse(request.body);

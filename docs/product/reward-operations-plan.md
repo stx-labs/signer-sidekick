@@ -518,7 +518,11 @@ accounts.
 > the button's operations, approve with `recipeSha256`, recipe-based confirm sheet (grouped children, reviewed
 > totals, gas budget, approval deadline, draft reuse/discard), progress from `run.progress`/`children`,
 > pause/resume/cancel, run discovery via `GET /rewards/runs` so progress shows from any tab/Overview. S3/S4 in
-> progress (other agent; see §10.0). S6 not started; **S1.1** (below) is queued.
+> **S3/S4 merged** (2026-08-22): durable reward runs (`bf9e3f5` + review fixes), five sealed adapters, run
+> routes, regtest round-trip, Devnet calculate + collect run; the dashboard reads the real run contract
+> (recipe `truncated` / `eligibleTransactions` / `remainingTransactions`). Pending: one Devnet run of the
+> extended harness (distribute ≥2 payments incl. Bitcoin route + Finish Bitcoin payouts); S3.1 legacy-path
+> retirement; S6 docs. **S1.1** (below) is queued.
 
 ### 10.0 S3/S4 integration checklist (branch `codex/reward-operations-s3-s4` → this branch)
 
@@ -533,37 +537,15 @@ facts (anchored node reads, fee selection, registry status), explicit signer met
 regtest adapter round-trip, Devnet gas-wallet calculate+collect scenario. It does not touch
 `apps/dashboard`, so it composes with S5 without conflicts.
 
-Before merge (small, in the S3/S4 worktree):
-
-1. Commit the work; rebase onto this branch head (no overlapping files).
-2. Drop the unused `draft` run status; keep one refusal check per child (at the signature
-   boundary) instead of two.
-3. `LiveRewardRunDriver.materialize` must not call `readRewardRunObservation()` per child — the
-   contract identities/fingerprints in the recipe are immutable once deployed; keep the canonical
-   anchor proof + per-child node reads only (same for `#desiredState`). This is the main
-   cost/over-engineering item for a 150-payment run.
-4. Surface recipe truncation (`maximumAccounts`/`maxTransactions`) in the run response
-   (`truncated: true`, remaining count) so the UI can say "first 200 of N".
-5. Reuse the ledger's registry-status read (`operator-service.withdrawalRequestStatus`) instead of
-   a second copy in `live-reward-run.ts`.
-6. Devnet scenario: add a distribute run with ≥2 payments including one Bitcoin-route payment,
-   and a Finish Bitcoin payouts run (settle + reclaim), so the adapters are exercised end-to-end on
-   Devnet, not only in regtest.
-
-On this branch after merge (S5 binding):
-
-7. Replace the permissive `apps/dashboard/src/features/rewards/run-api.ts` reader with the real
-   `rewardRunSchema`; map the primary-button kinds to `operations` (Collect & distribute →
-   calculate? + claim-rewards + claim-staker-rewards; Distribute → claim-staker-rewards; Collect →
-   claim-rewards; Run calculation → calculate-rewards; Finish Bitcoin payouts → settle + reclaim);
-   approve with `recipeSha256`; progress from `run.progress` / `children`; wire pause/resume/cancel.
-8. Confirm sheet: steps from `recipe.children` grouped by operation (counts, reviewed totals,
-   `gasBudgetUstx` as "up to"); show `approvalExpiresAt`.
-9. Rewards page: poll the active run from `GET /rewards/runs` (status in
-   `approved|running|paused|halted`) so a run started from another tab/Overview shows progress;
-   halted → needs-attention copy with Resume/Cancel.
-10. e2e fixture + specs for distributing / halted / complete run states; then retire the
-    "runs not available" fallback copy.
+Done (merged 2026-08-22): 1 commit `bf9e3f5` + staged review fixes applied; 2 `draft` removed, one
+refusal check at the signature boundary; 3 per-child observation reads removed (kept only for the
+calculate adapter's first-cycle fact); 4 recipe carries `eligibleTransactions` / `truncated` /
+`remainingTransactions`; 5 registry status reused from the operator service; 6 harness extended
+(distribute ≥2 incl. Bitcoin route, then settle + reclaim) — **one Devnet run of the extended scenario
+still to pass**; 7–10 dashboard bound to the contract (prepare with operations, approve with
+`recipeSha256`, recipe-based sheet incl. draft reuse and truncation copy, run discovery/polling,
+pause/resume/cancel, lifecycle e2e). Remaining: the Devnet run above; the "runs not available" copy
+stays as the graceful message for builds without the engine.
 
 Later (S3.1 / S6): retire the legacy attestation-gated single-job engine path (assist coordinator,
 admission attestation checks, legacy approvals) now that recipe runs replace it.

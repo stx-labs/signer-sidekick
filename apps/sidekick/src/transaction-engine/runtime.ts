@@ -4,6 +4,7 @@ import {
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
   type ManagerClaimRewardsPlan,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+import type { RewardOperationPlan } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "../chain-anchor.js";
 import {
@@ -38,7 +39,11 @@ import {
   proveCanonicalAnchorRelationship,
   proveCanonicalInclusionRelationship,
 } from "./canonical-anchor-proof.js";
-import { GasPayerSigner, type SignedGasWalletSweepTransaction } from "./gas-payer-signer.js";
+import {
+  GasPayerSigner,
+  type SignedGasWalletSweepTransaction,
+  type SignedRewardOperationTransaction,
+} from "./gas-payer-signer.js";
 import { LiveTransactionReader } from "./live-transaction-reader.js";
 import {
   ManagerClaimAssistCoordinator,
@@ -729,6 +734,18 @@ export class SidekickTransactionEngineRuntime {
     return this.#composition.runtimeConfig.maximumFeeUstx;
   }
 
+  get maximumApprovalMinutes(): number {
+    return this.#composition.runtimeConfig.maximumApprovalMinutes;
+  }
+
+  get maximumRunHours(): number {
+    return this.#composition.runtimeConfig.maximumRunHours;
+  }
+
+  get maximumRunTransactions(): number {
+    return this.#composition.runtimeConfig.maximumRunTransactions;
+  }
+
   /** Whether a gas-wallet signer is currently loaded in this process. */
   gasWalletSignerReady(): boolean {
     return this.#composition.signerHolder.current !== null;
@@ -737,6 +754,14 @@ export class SidekickTransactionEngineRuntime {
   /** Public identity of the active gas payer (configured or activated), if any. */
   gasPayerIdentity(): GasPayerIdentity | null {
     return publicGasPayer(this.#composition.signerHolder);
+  }
+
+  /** One current, anchor-fenced reward observation for S3/S4 recipe derivation and revalidation. */
+  async readRewardRunObservation(): Promise<TransactionEngineObservationHookInput> {
+    return await this.#exclusive(async () => {
+      const context = this.#composition.runtimeContext();
+      return await this.#composition.readFreshObservation(context);
+    });
   }
 
   /**
@@ -785,6 +810,45 @@ export class SidekickTransactionEngineRuntime {
       if (signer === null) throw new Error("No gas wallet signer is loaded");
       return await signer.signGasWalletSweepPlan(plan);
     });
+  }
+
+  async #signRewardOperation(
+    operation: (signer: GasPayerSigner) => Promise<SignedRewardOperationTransaction>,
+  ): Promise<SignedRewardOperationTransaction> {
+    if (this.#closed) throw new Error("Transaction engine runtime is closed");
+    return await this.#exclusive(async () => {
+      const signer = this.#composition.signerHolder.current;
+      if (signer === null) throw new Error("No gas wallet signer is loaded");
+      return await operation(signer);
+    });
+  }
+
+  signPox5CalculateRewardsPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation((signer) => signer.signPox5CalculateRewardsPlan(plan));
+  }
+
+  signManagerClaimRewardsRunPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation((signer) => signer.signManagerClaimRewardsRunPlan(plan));
+  }
+
+  signClaimStakerRewardsPlan(plan: RewardOperationPlan): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation((signer) => signer.signClaimStakerRewardsPlan(plan));
+  }
+
+  signSettleAcceptedWithdrawalPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation((signer) => signer.signSettleAcceptedWithdrawalPlan(plan));
+  }
+
+  signReclaimFailedWithdrawalPlan(
+    plan: RewardOperationPlan,
+  ): Promise<SignedRewardOperationTransaction> {
+    return this.#signRewardOperation((signer) => signer.signReclaimFailedWithdrawalPlan(plan));
   }
 
   /** Legacy engine jobs that are executing or ambiguous; sweeps refuse while any exist. */

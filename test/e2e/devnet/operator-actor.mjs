@@ -2,12 +2,15 @@ import { createNetwork } from "@stacks/network";
 import {
   broadcastTransaction,
   Cl,
+  ClarityType,
   ClarityVersion,
+  cvToHex,
   fetchNonce,
   getAddressFromPrivateKey,
   hexToCV,
   makeContractCall,
   makeContractDeploy,
+  makeSTXTokenTransfer,
   PostConditionMode,
   privateKeyToPublic,
 } from "@stacks/transactions";
@@ -33,6 +36,23 @@ export const DEVNET_ACCOUNTS = Object.freeze({
 
 export const DEVNET_MANAGER_PRINCIPAL = `${DEVNET_ACCOUNTS.deployer.address}.signer-manager`;
 export const DEVNET_POX5_PRINCIPAL = "ST000000000000000000002AMW42H.pox-5";
+
+const DEVNET_SBTC_DEPOSIT_SOURCE = `(define-public (mint (amount uint) (recipient principal))
+  (contract-call? .sbtc-token protocol-mint amount recipient 0x01)
+)`;
+
+function bitcoinPayoutCalldata(maxFeeSats) {
+  const encoded = cvToHex(
+    Cl.tuple({
+      "pox-addr": Cl.tuple({
+        version: Cl.buffer(new Uint8Array([0])),
+        hashbytes: Cl.buffer(new Uint8Array(20).fill(7)),
+      }),
+      "max-fee": Cl.uint(maxFeeSats),
+    }),
+  ).replace(/^0x/, "");
+  return Cl.some(Cl.buffer(Uint8Array.from(Buffer.from(encoded, "hex"))));
+}
 
 function splitContract(principal) {
   const separator = principal.indexOf(".");
@@ -224,6 +244,106 @@ export function createOperatorActor(options = {}) {
     return await submit(transaction);
   }
 
+  async function fundGasWallet(
+    recipient,
+    amountUstx = 25_000_000n,
+    account = DEVNET_ACCOUNTS.deployer,
+  ) {
+    const nonce = await fetchNonce({ address: account.address, network });
+    const transaction = await makeSTXTokenTransfer({
+      recipient,
+      amount: amountUstx,
+      senderKey: account.privateKey,
+      fee,
+      nonce,
+      network,
+    });
+    return await submit(transaction);
+  }
+
+  async function fundPox5Rewards(amountSats = 10_000_000n, account = DEVNET_ACCOUNTS.deployer) {
+    const deposit = await deployContract("sbtc-deposit", DEVNET_SBTC_DEPOSIT_SOURCE, 3, account);
+    const contract = splitContract(deposit.principal);
+    const nonce = await fetchNonce({ address: account.address, network });
+    const transaction = await makeContractCall({
+      contractAddress: contract.address,
+      contractName: contract.name,
+      functionName: "mint",
+      functionArgs: [Cl.uint(amountSats), Cl.principal(DEVNET_POX5_PRINCIPAL)],
+      senderKey: account.privateKey,
+      fee,
+      nonce,
+      postConditionMode: PostConditionMode.Allow,
+      network,
+    });
+    return await submit(transaction);
+  }
+
+  async function completeWithdrawalRequests({ rejectedRequestId, acceptedRequestId }) {
+    const account = DEVNET_ACCOUNTS.deployer;
+    const withdrawal = splitContract(`${account.address}.sbtc-withdrawal`);
+    const rejectedNonce = await fetchNonce({ address: account.address, network });
+    const rejected = await makeContractCall({
+      contractAddress: withdrawal.address,
+      contractName: withdrawal.name,
+      functionName: "reject-withdrawal-request",
+      functionArgs: [Cl.uint(rejectedRequestId), Cl.uint(0)],
+      senderKey: account.privateKey,
+      fee,
+      nonce: rejectedNonce,
+      postConditionMode: PostConditionMode.Allow,
+      network,
+    });
+    const rejectedResult = await submit(rejected);
+
+    const burnHeight = BigInt((await nodeInfo()).burn_block_height - 1);
+    const burnResponse = await fetch(
+      `${nodeUrl}/v2/contracts/call-read/${withdrawal.address}/${withdrawal.name}/get-burn-header`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sender: account.address,
+          arguments: [cvToHex(Cl.uint(burnHeight))],
+        }),
+      },
+    );
+    const burnBody = await burnResponse.json();
+    if (!burnResponse.ok || burnBody.okay !== true) {
+      throw new Error(`Could not read the Devnet burn header: ${JSON.stringify(burnBody)}`);
+    }
+    const burnHeader = hexToCV(burnBody.result);
+    if (
+      burnHeader.type !== ClarityType.OptionalSome ||
+      burnHeader.value.type !== ClarityType.Buffer
+    ) {
+      throw new Error(`Devnet burn header was unavailable at ${burnHeight}`);
+    }
+    const acceptedNonce = await fetchNonce({ address: account.address, network });
+    const accepted = await makeContractCall({
+      contractAddress: withdrawal.address,
+      contractName: withdrawal.name,
+      functionName: "accept-withdrawal-request",
+      functionArgs: [
+        Cl.uint(acceptedRequestId),
+        Cl.buffer(new Uint8Array(32).fill(1)),
+        Cl.uint(0),
+        Cl.uint(0),
+        Cl.uint(0),
+        Cl.bufferFromHex(burnHeader.value.value),
+        Cl.uint(burnHeight),
+        Cl.buffer(new Uint8Array(32).fill(2)),
+      ],
+      senderKey: account.privateKey,
+      fee,
+      nonce: acceptedNonce,
+      postConditionMode: PostConditionMode.Allow,
+      network,
+    });
+    const acceptedResult = await submit(accepted);
+    return { rejected: rejectedResult, accepted: acceptedResult };
+  }
+
   async function browserWalletRequest(method, parameters = {}) {
     const account = DEVNET_ACCOUNTS.deployer;
     if (method === "getAddresses" || method === "stx_getAddresses") {
@@ -279,7 +399,12 @@ export function createOperatorActor(options = {}) {
 
   async function stake(
     account,
-    { managerPrincipal = DEVNET_MANAGER_PRINCIPAL, amountUstx = 60_000_000_000n, cycles = 2 } = {},
+    {
+      managerPrincipal = DEVNET_MANAGER_PRINCIPAL,
+      amountUstx = 60_000_000_000n,
+      cycles = 2,
+      bitcoinPayoutMaxFeeSats = null,
+    } = {},
   ) {
     const pox = await json(`${nodeUrl}/v2/pox`);
     const nonce = await fetchNonce({ address: account.address, network });
@@ -292,7 +417,9 @@ export function createOperatorActor(options = {}) {
         Cl.uint(amountUstx),
         Cl.uint(cycles),
         Cl.uint(pox.current_burnchain_block_height),
-        Cl.none(),
+        bitcoinPayoutMaxFeeSats === null
+          ? Cl.none()
+          : bitcoinPayoutCalldata(BigInt(bitcoinPayoutMaxFeeSats)),
       ],
       senderKey: account.privateKey,
       fee,
@@ -309,6 +436,7 @@ export function createOperatorActor(options = {}) {
       managerPrincipal = DEVNET_MANAGER_PRINCIPAL,
       cyclesToExtend = 1,
       amountIncrease = 1_000_000n,
+      bitcoinPayoutMaxFeeSats = null,
     } = {},
   ) {
     const pox5 = splitContract(DEVNET_POX5_PRINCIPAL);
@@ -322,7 +450,9 @@ export function createOperatorActor(options = {}) {
         Cl.principal(managerPrincipal),
         Cl.uint(cyclesToExtend),
         Cl.uint(amountIncrease),
-        Cl.none(),
+        bitcoinPayoutMaxFeeSats === null
+          ? Cl.none()
+          : bitcoinPayoutCalldata(BigInt(bitcoinPayoutMaxFeeSats)),
       ],
       senderKey: account.privateKey,
       fee,
@@ -353,8 +483,11 @@ export function createOperatorActor(options = {}) {
   return {
     apiStatus,
     browserWalletRequest,
+    completeWithdrawalRequests,
     deployContract,
     deployManager,
+    fundGasWallet,
+    fundPox5Rewards,
     mineBurnBlock,
     nodeInfo,
     registerManager,

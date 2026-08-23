@@ -3,6 +3,7 @@ import {
   type ConnectionAssessment,
   type DeploymentRequirements,
   overviewPageSchema,
+  type RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
@@ -13,10 +14,11 @@ import { HealthSourceError } from "./health-http.js";
 import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
 import type { HealthObservation, SignerMetricValues } from "./health-monitoring-types.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
-import { createServer, type TransactionEngineApiService } from "./server.js";
+import { createServer, type RewardRunApi, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { RewardRunError } from "./transaction-engine/reward-run-service.js";
 import { WalletIntentError } from "./wallet-intent-service.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -2765,6 +2767,119 @@ describe("reward ledger routes", () => {
     });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json()).toMatchObject({ error: "invalid_reward_ledger_query" });
+  });
+});
+
+describe("reward run routes", () => {
+  const runId = "00000000-0000-4000-8000-000000000001";
+  const recipeSha256 = "ab".repeat(32);
+  const run = { runId, recipeSha256, status: "awaiting-approval" } as RewardRun;
+
+  function api(): RewardRunApi {
+    return {
+      prepare: vi.fn().mockResolvedValue(run),
+      approve: vi.fn().mockResolvedValue({ ...run, status: "approved" }),
+      pause: vi.fn().mockReturnValue({ ...run, status: "paused" }),
+      resume: vi.fn().mockReturnValue({ ...run, status: "running" }),
+      cancel: vi.fn().mockReturnValue({ ...run, status: "cancelled" }),
+      get: vi.fn().mockReturnValue(run),
+      list: vi.fn().mockReturnValue([run]),
+    };
+  }
+
+  it("exposes prepare, sealed approval, status, and lifecycle controls", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const rewardRuns = api();
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, rewardRuns, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const prepared = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers,
+      payload: { cycle: 141, distribution: 1, maxTransactions: 150 },
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(rewardRuns.prepare).toHaveBeenCalledWith({
+      cycle: 141,
+      distribution: 1,
+      maxTransactions: 150,
+    });
+
+    const approved = await server.inject({
+      method: "POST",
+      url: `/api/v1/rewards/runs/${runId}/approve`,
+      headers,
+      payload: { recipeSha256 },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(rewardRuns.approve).toHaveBeenCalledWith(runId, recipeSha256);
+
+    for (const action of ["pause", "resume", "cancel"] as const) {
+      const response = await server.inject({
+        method: "POST",
+        url: `/api/v1/rewards/runs/${runId}/${action}`,
+        headers,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(rewardRuns[action]).toHaveBeenCalledWith(runId);
+    }
+    const detail = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/runs/${runId}`,
+      headers,
+    });
+    expect(detail.statusCode).toBe(200);
+    const list = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/runs?limit=5",
+      headers,
+    });
+    expect(list.statusCode).toBe(200);
+    expect(rewardRuns.list).toHaveBeenCalledWith(5);
+  });
+
+  it("validates requests, applies CSRF protection, and maps run failures safely", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const rewardRuns = api();
+    vi.mocked(rewardRuns.get).mockImplementation(() => {
+      throw new RewardRunError("reward_run_not_found", "internal detail must not leak");
+    });
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, rewardRuns, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const invalid = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers,
+      payload: { cycle: -1, distribution: 3 },
+    });
+    expect(invalid.statusCode).toBe(400);
+    const crossSite = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers: { ...headers, origin: "https://evil.example" },
+      payload: { cycle: 141, distribution: 1 },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    const missing = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/runs/${runId}`,
+      headers,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "reward_run_not_found" });
+    expect(JSON.stringify(missing.json())).not.toContain("internal detail");
   });
 });
 

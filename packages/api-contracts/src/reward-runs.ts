@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const rewardRunStatusSchema = z.enum([
-  "draft",
   "awaiting-approval",
   "approved",
   "running",
@@ -86,6 +85,9 @@ export const rewardRunRecipeSchema = z
     reviewedTotalSats: z.string().regex(/^\d+$/),
     reviewedPaymentCount: z.number().int().nonnegative().max(200),
     maxTransactions: z.number().int().min(1).max(200),
+    eligibleTransactions: z.number().int().positive(),
+    truncated: z.boolean(),
+    remainingTransactions: z.number().int().nonnegative(),
     feeCapUstx: z.string().regex(/^\d+$/),
     gasBudgetUstx: z.string().regex(/^\d+$/),
     managerSourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
