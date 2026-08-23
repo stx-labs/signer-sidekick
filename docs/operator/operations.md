@@ -51,11 +51,32 @@ docker compose run --rm --no-deps sidekick doctor
 docker compose up -d
 ```
 
+## Rewards
+
+The Rewards page is one view of the reward cycle:
+
+- **Earning** — the accruing cycle: time left in the half, the next prepare phase, what the network
+  and this pool have earned or are projected to earn, and each half's distribution status.
+- **Distribute** — one card per distribution that still needs you, oldest first, with its single
+  next action (Collect & distribute, Distribute, Collect, Run calculation, Finish Bitcoin payouts),
+  its four figures, and its payments ten per page.
+- **Past cycles** — one line per cycle; open it for each distribution's payments, why a payment
+  rolled forward to the Second Distribution, and CSV export of that distribution or cycle.
+- **Accounting** — your fee ledger and the export of the whole history.
+
+A ₿ beside a staker marks a Bitcoin payout; hover it to see and copy their registered address.
+
 ## Reward runs
 
-A run executes server-side, one transaction at a time, after one recipe approval. Closing the
-browser does not stop it. Pause or cancel only between transactions; cancellation cannot undo a
-broadcast transaction.
+A run starts from a Distribute card: review the sealed recipe and its transaction count, then Go.
+It executes server-side, one transaction at a time; closing the browser does not stop it. Progress,
+Pause, Resume, and Cancel stay on the same card, and Activity keeps the record. Pause or cancel
+only between transactions; cancellation cannot undo a broadcast transaction. Another run cannot
+start until the current one finishes.
+
+The gas wallet pays only network fees. A banner on Rewards warns when its balance cannot cover the
+next run — top it up from any wallet. **Settings → Transaction capabilities → Force Observe**
+halts all signing at once; **Settings → Gas wallet** disables the wallet or sweeps its STX.
 
 If a run halts after an ambiguous broadcast, inspect its recorded transaction ID and chain evidence.
 Do not send a replacement. Resume makes Sidekick reconcile the existing attempt before continuing.

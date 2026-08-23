@@ -93,11 +93,27 @@ reverse_proxy 127.0.0.1:3998 {
 Set `SIDEKICK_AUTH_BASIC_USERNAME` to use the token as an HTTP Basic password. Keep mainnet in the
 default `observe` engine mode.
 
-## Reward runs
+## Gas wallet and reward runs
 
-To run reward calls from Sidekick, set `SIDEKICK_ENGINE_MODE=operator-run` before starting, then
-open **Settings → Gas wallet** to generate, fund, and enable a dedicated low-balance wallet. The
-wallet signs only an approved reward recipe; signer and manager-admin keys remain external, and the
-contract — not the caller — fixes every payout recipient and amount. Observe remains the default.
+Sidekick can run the permissionless PoX-5 reward calls — calculate, collect, distribute, settle,
+reclaim — from one operator-approved recipe at a time. Those calls need a key that pays network
+fees, and Sidekick must never hold the signer or manager-admin key, so it generates a dedicated
+**gas wallet**: a low-balance STX account that signs only the sealed recipe you approve. The
+contract fixes every payout recipient and amount; the wallet's whole exposure is its balance. Keys
+are never accepted through the environment, and Observe remains the default.
+
+1. Set `SIDEKICK_ENGINE_MODE=operator-run` in `.env` and restart.
+2. Open **Settings → Gas wallet → Create gas wallet**. The key is written once to
+   `/data/gas-wallet.key` (owner-only) and never leaves the container; Settings shows the address.
+3. Fund the address with STX from any wallet. Each transaction is capped at
+   `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX); a distribution of N payments takes about
+   N + 1 transactions, and Settings shows how many the balance covers.
+4. **Enable**. Before every signature Sidekick re-checks that the address is not the signer, a
+   manager admin, or a contract, and refuses otherwise.
+
+Back up `gas-wallet.key` with the database (see Operations); losing it loses only the gas balance.
+**Sweep remaining STX** returns the balance to an address you name. **Disable**, **Force Observe**
+(Settings → Transaction capabilities), or `SIDEKICK_ENGINE_MODE=observe` stop signing without
+deleting the key.
 
 See [Operations](operations.md) for upgrades, restore, diagnosis, and support collection.
