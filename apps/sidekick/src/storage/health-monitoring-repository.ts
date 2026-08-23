@@ -329,8 +329,10 @@ export class HealthMonitoringRepository {
             Date.parse(at) - Date.parse(existing.resolved_at) <=
               HEALTH_EPISODE_RECURRENCE_WINDOW_MS,
         );
+        const evidenceAt = z.iso.datetime().parse(findingInput.lastObservedAt);
         const retainedWithoutNewEvidence =
-          existing?.status === "active" && findingInput.lastObservedAt !== at;
+          existing?.status === "active" &&
+          Date.parse(evidenceAt) <= Date.parse(existing.last_observed_at);
         if (retainedWithoutNewEvidence) continue;
         const episodeId =
           existing && (existing.status === "active" || reopenRecent)
@@ -341,7 +343,7 @@ export class HealthMonitoringRepository {
           ...findingInput,
           episodeId,
           firstObservedAt: continuingEpisode ? existing?.opened_at : findingInput.firstObservedAt,
-          lastObservedAt: at,
+          lastObservedAt: evidenceAt,
         });
         if (existing?.status === "active" || reopenRecent) {
           this.db
@@ -351,7 +353,7 @@ export class HealthMonitoringRepository {
                    occurrences = occurrences + 1, updated_at = ?
                WHERE episode_id = ?`,
             )
-            .run(JSON.stringify(finding), at, at, episodeId);
+            .run(JSON.stringify(finding), evidenceAt, at, episodeId);
         } else {
           this.db
             .prepare(
@@ -366,7 +368,7 @@ export class HealthMonitoringRepository {
               finding.id,
               JSON.stringify(finding),
               finding.firstObservedAt,
-              at,
+              evidenceAt,
               at,
             );
         }

@@ -20,6 +20,7 @@ import { managerActionAvailability } from "../../shared/manager-action-availabil
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
 import {
+  cachedGasWalletStatus,
   createGasWallet,
   dismissGasWalletBanner,
   loadGasWalletStatus,
@@ -122,7 +123,9 @@ export function Rewards({
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [ledgerRetry, setLedgerRetry] = useState(0);
-  const [gasWallet, setGasWallet] = useState<GasWalletStatus | null>(null);
+  const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
+    cachedGasWalletStatus(),
+  );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
   const [realizations, setRealizations] = useState<RewardCalculationRealization[]>([]);
@@ -185,7 +188,10 @@ export function Rewards({
         if (!controller.signal.aborted) setGasWallet(status);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setGasWallet(null);
+        if (!controller.signal.aborted) {
+          // Keep verified cache data; without any cache, preserve the existing fallback behavior.
+          setGasWallet((current) => (current === undefined ? null : current));
+        }
       });
     void loadEngineStatus(token, controller.signal)
       .then((status) => {

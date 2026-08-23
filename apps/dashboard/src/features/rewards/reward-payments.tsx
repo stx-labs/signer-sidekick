@@ -121,6 +121,8 @@ export function PaymentsTable({
                   type="button"
                   role="tab"
                   aria-selected={tab === key}
+                  aria-disabled={count === 0}
+                  disabled={count === 0}
                   onClick={() => selectTab(key)}
                 >
                   {label} · {count}

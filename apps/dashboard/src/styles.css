@@ -4790,7 +4790,12 @@ td .rw-txid {
   display: flex;
   align-items: center;
   gap: 10px;
+  max-width: calc(100vw - 32px);
   padding: 7px 10px;
+  top: auto;
+  right: auto;
+  bottom: calc(100% + 6px);
+  left: 0;
 }
 .rw-l1-pop .k {
   font-size: 11px;
@@ -4803,6 +4808,119 @@ td .rw-txid {
 .rw-l1-pop .copy-identifier-button {
   color: var(--accent-text);
   font-weight: 500;
+}
+
+.seg button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.pool-roster-mobile-sort {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .overview-attention,
+  .overview-attention .body,
+  .overview-attention-head {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .overview-attention .actions {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .rw-l1-pop {
+    align-items: flex-start;
+    flex-direction: column;
+    left: -48px;
+    width: min(280px, calc(100vw - 48px));
+    white-space: normal;
+  }
+
+  .rw-l1-pop .a {
+    overflow-wrap: anywhere;
+  }
+
+  .pool-roster-wrap {
+    overflow: hidden;
+  }
+
+  .pool-roster-table {
+    display: block;
+  }
+
+  .pool-roster-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
+  }
+
+  .pool-roster-table tbody {
+    display: grid;
+  }
+
+  .pool-roster-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--border-secondary);
+    background: var(--surface-primary);
+  }
+
+  .pool-roster-wrap .pool-roster-table td {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+
+  .pool-roster-wrap .pool-roster-table td::before {
+    content: attr(data-label);
+    color: var(--text-tertiary);
+    font-family: var(--font-sans);
+    font-size: 10px;
+    font-weight: 400;
+    text-transform: uppercase;
+  }
+
+  .pool-roster-wrap .pool-roster-table td[data-label="Staker"],
+  .pool-roster-wrap .pool-roster-table td[data-label="Status"] {
+    grid-column: 1 / -1;
+  }
+
+  .pool-roster-wrap .pool-roster-table td[data-label="Status"] {
+    justify-items: start;
+  }
+
+  .pool-roster-mobile-sort {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2);
+  }
+
+  .pool-roster-mobile-sort label {
+    display: grid;
+    gap: 4px;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+
+  .pool-roster-mobile-sort select {
+    width: 100%;
+    min-height: 34px;
+  }
 }
 .rw-rf {
   position: relative;

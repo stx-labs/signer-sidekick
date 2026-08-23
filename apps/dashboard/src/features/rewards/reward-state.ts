@@ -164,7 +164,7 @@ export function currentDistribution(ledger: RewardLedger): RewardLedgerDistribut
 }
 
 export function execution(
-  gasWallet: GasWalletStatus | null,
+  gasWallet: GasWalletStatus | null | undefined,
   engineMode: "observe" | "operator-run" | null,
   neededTransactions: number,
 ): RewardExecutionAvailability {
@@ -179,6 +179,16 @@ export function execution(
       chipTone: "none",
       chipTooltip: null,
       walletFallback: true,
+    };
+  }
+  if (gasWallet === undefined) {
+    return {
+      available: false,
+      reason: "Sidekick is checking the gas wallet",
+      chip: "Checking gas wallet",
+      chipTone: "none",
+      chipTooltip: "Using the last verified status while Sidekick refreshes the wallet",
+      walletFallback: false,
     };
   }
   if (!gasWallet?.configured) {
@@ -661,7 +671,7 @@ export interface DistributeInput {
   ledger: RewardLedger;
   /** Payments per `distributionKey`, when loaded (route counts, arrived/rejected detail). */
   paymentsByKey?: ReadonlyMap<string, readonly RewardLedgerPayment[]>;
-  gasWallet: GasWalletStatus | null;
+  gasWallet: GasWalletStatus | null | undefined;
   engineMode: "observe" | "operator-run" | null;
   activeRun: RewardRun | null;
 }

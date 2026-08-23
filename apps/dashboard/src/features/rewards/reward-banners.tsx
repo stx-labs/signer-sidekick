@@ -10,7 +10,7 @@ export function GasWalletBanners({
   onDismiss,
   onFundInstructions,
 }: {
-  gasWallet: GasWalletStatus | null;
+  gasWallet: GasWalletStatus | null | undefined;
   engineMode: "observe" | "operator-run" | null;
   neededTransactions: number;
   onCreate: () => void;

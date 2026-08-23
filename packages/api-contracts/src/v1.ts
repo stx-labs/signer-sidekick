@@ -1965,7 +1965,7 @@ export const activityGroupSummarySchema = z
     deadline: operatorDeadlineSchema.nullable(),
     urgencyAt: z.iso.datetime().nullable(),
     actorPrincipal: z.string().min(1).max(500).nullable(),
-    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(100),
+    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(200),
     anchor: engineChainAnchorSchema.nullable(),
     supersedesActivityId: z.string().min(1).max(500).nullable(),
     supersededByActivityId: z.string().min(1).max(500).nullable(),

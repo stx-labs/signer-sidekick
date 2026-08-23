@@ -19,7 +19,7 @@ import {
 } from "../rewards/reward-state.js";
 import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
 import { IN_PROGRESS_RUN_STATUSES, listRewardRuns } from "../rewards/run-api.js";
-import { loadGasWalletStatus } from "../settings/gas-wallet-api.js";
+import { cachedGasWalletStatus, loadGasWalletStatus } from "../settings/gas-wallet-api.js";
 
 const CARD_POLL_MS = 30_000;
 
@@ -63,7 +63,9 @@ export function RewardsOverviewCard({
   fallback: React.ReactNode;
 }) {
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
-  const [gasWallet, setGasWallet] = useState<GasWalletStatus | null>(null);
+  const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
+    cachedGasWalletStatus(),
+  );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
   useEffect(() => {
@@ -81,7 +83,11 @@ export function RewardsOverviewCard({
         .then((status) => {
           if (!controller.signal.aborted) setGasWallet(status);
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setGasWallet((current) => (current === undefined ? null : current));
+          }
+        });
       loadEngineStatus(token, controller.signal)
         .then((status) => {
           if (!controller.signal.aborted)

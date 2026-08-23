@@ -441,6 +441,25 @@ export class RewardRunRepository {
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
+  /** Bounded newest-first read for the unified Activity projection. */
+  listForActivity(limit = 201): RewardRun[] {
+    const bounded = Math.max(1, Math.min(10_001, Math.trunc(limit)));
+    const rows = this.db
+      .prepare("SELECT run_id FROM transaction_runs ORDER BY created_at DESC, run_id DESC LIMIT ?")
+      .all(bounded) as Array<{ run_id: string }>;
+    return rows.map(({ run_id }) => this.require(run_id));
+  }
+
+  getByTxid(txid: string): RewardRun | null {
+    const row = this.db
+      .prepare(
+        `SELECT run_id FROM transaction_run_children
+         WHERE txid = ? ORDER BY updated_at DESC, run_id DESC LIMIT 1`,
+      )
+      .get(txid) as { run_id: string } | undefined;
+    return row ? this.get(row.run_id) : null;
+  }
+
   /** Every run sealed for one distribution target, oldest first (roll-forward reasons, audits). */
   listForTarget(cycle: number, distribution: 1 | 2, limit = 50): RewardRun[] {
     const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));

@@ -57,6 +57,7 @@ export function ManagerSettings({
   );
   const actions = data.manager.capabilities.actions;
   const reviewedCalls = actions.filter(({ executionAvailable }) => executionAvailable).length;
+  const rewardCallsAvailable = reviewedCalls > 0;
   const sourceVerified = data.manager.capabilities.signerManagerTrait.compatible;
   const admins = data.activity.admins;
 
@@ -114,9 +115,9 @@ export function ManagerSettings({
             }
           />
           <SettingsRow
-            help={data.manager.automationEligibilityReason}
+            help="Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs."
             name="Reward calls"
-            status={data.manager.automationEligible ? "Available" : "Observe only"}
+            status={rewardCallsAvailable ? "Supported" : "Unavailable"}
             value={
               <span className="mono">
                 {reviewedCalls} reviewed {reviewedCalls === 1 ? "adapter" : "adapters"}

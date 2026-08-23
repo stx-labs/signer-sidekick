@@ -9,7 +9,6 @@ export function SettingsInfo({ label = "Details", text }: { label?: string; text
       type="button"
       aria-label={label}
       data-tooltip={text}
-      title={text}
     >
       <Info aria-hidden="true" />
     </button>

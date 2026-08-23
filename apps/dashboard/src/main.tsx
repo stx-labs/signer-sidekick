@@ -679,7 +679,7 @@ function App() {
               ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
               : data.preflight.api.position === "ahead"
                 ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Indexed API current · ${ageLabel}`
         : "loading status";
   const showFreshnessRefresh =
     (connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited;

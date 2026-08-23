@@ -99,6 +99,15 @@ function credentialSourceLabel(
   return "no API key configured";
 }
 
+function isHiroApi(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "hiro.so" || hostname.endsWith(".hiro.so");
+  } catch {
+    return false;
+  }
+}
+
 const settingsTargetBySection: Record<SettingsSection, SettingsAnchor> = {
   requirements: "st-requirements",
   attachment: "st-manager",
@@ -593,6 +602,10 @@ export function SettingsPage({
     sourceTests["hiro-reference"],
     requirementStatus(requirementById.get("hiro-reference"), referenceApiConfigured),
   );
+  const hiroKeyRecommended =
+    (isHiroApi(settings.dataSources.apiUrl) && !settings.dataSources.apiKeyConfigured) ||
+    (isHiroApi(settings.dataSources.hiroReferenceApiUrl) &&
+      !settings.dataSources.hiroReferenceApiKeyConfigured);
   const failingChecks =
     deploymentRequirements?.checks.filter(({ status }) => status !== "pass") ?? [];
   const attachmentFailed = data ? !data.manager.attachAllowed : true;
@@ -603,7 +616,6 @@ export function SettingsPage({
       ? "The configured manager attachment needs attention."
       : "All deployment checks passed.");
   const latestAudit = settings.audit[0] ?? null;
-  const observerAttention = Boolean(data?.alerts.some(({ id }) => id.startsWith("observer:")));
   const authLabel = authMethod
     ? authMethod.replace("trusted-header", "trusted header")
     : "authenticated session";
@@ -757,6 +769,18 @@ export function SettingsPage({
           Connections
         </SettingsSectionTitle>
         <section className="card st-card" aria-label="Connections">
+          {hiroKeyRecommended ? (
+            <div className="callout callout-caution st-inline-callout" role="status">
+              <div className="body">
+                <strong>Add a Hiro API key for reliable history sync.</strong> The public endpoint
+                can rate-limit roster backfill and network comparison. Free keys are available at{" "}
+                <a href="https://platform.hiro.so/" rel="noreferrer" target="_blank">
+                  platform.hiro.so <ArrowSquareOut aria-hidden="true" />
+                </a>
+                .
+              </div>
+            </div>
+          ) : null}
           <div className="st-rows">
             <ConnectionRow
               configured
@@ -1125,9 +1149,6 @@ export function SettingsPage({
         </section>
 
         <DeploymentRequirementsPanel
-          eventCount={data?.activity.eventCount ?? null}
-          latestBlockHeight={data?.activity.latestBlockHeight ?? null}
-          observerAttention={observerAttention}
           onLoadingChange={setRunningChecks}
           onRequirements={recordDeploymentRequirements}
           readOnly={readOnly}

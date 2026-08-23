@@ -7,7 +7,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
 import { ErrorCallout } from "../../shared/dashboard-ui.js";
-import { number, shortUtc } from "../../shared/format.js";
+import { shortUtc } from "../../shared/format.js";
 import { operatorActionError } from "../../shared/operator-error.js";
 import { SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
 
@@ -74,18 +74,12 @@ function RequirementRow({ check }: { check: DeploymentRequirement }) {
 }
 
 export function DeploymentRequirementsPanel({
-  eventCount,
-  latestBlockHeight,
-  observerAttention,
   onLoadingChange,
   onRequirements,
   readOnly,
   refreshRevision,
   token,
 }: {
-  eventCount: number | null;
-  latestBlockHeight: number | null;
-  observerAttention: boolean;
   onLoadingChange?: (loading: boolean) => void;
   onRequirements?: (requirements: DeploymentRequirements) => void;
   readOnly: boolean;
@@ -152,11 +146,6 @@ export function DeploymentRequirementsPanel({
     "hiro-reference",
   ]);
   const runtimeChecks = requirements?.checks.filter(({ id }) => !connectionCheckIds.has(id)) ?? [];
-  const observerValue =
-    eventCount === null && latestBlockHeight === null
-      ? "Evidence unavailable"
-      : `${number(eventCount)} events · latest block ${number(latestBlockHeight)}`;
-
   return (
     <>
       <SettingsSectionTitle
@@ -178,14 +167,6 @@ export function DeploymentRequirementsPanel({
           {runtimeChecks.map((check) => (
             <RequirementRow check={check} key={check.id} />
           ))}
-          <SettingsRow
-            detail="callbacks from the node · polling covers gaps"
-            help="Verified node callbacks accelerate reconciliation; bounded polling covers delivery gaps. Recommended."
-            importance="recommended"
-            name="Event observer"
-            status={observerAttention ? "Attention" : "Verified"}
-            value={<span className="mono">{observerValue}</span>}
-          />
           {!loading && runtimeChecks.length === 0 ? (
             <SettingsRow
               name="Runtime checks"

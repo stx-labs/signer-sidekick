@@ -1484,6 +1484,12 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
       .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").position))
       .toBe("fixed");
   }
+  const rewardInfo = page.locator(".rw-now .rw-info").first();
+  await rewardInfo.focus();
+  await expect(rewardInfo).toHaveAttribute("data-tooltip", /.+/);
+  await expect
+    .poll(() => rewardInfo.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
 
   await openPage(page, "activity", "Activity");
   const buttonLink = page.locator("a.btn").first();
@@ -1647,6 +1653,14 @@ test("shows successful live checks as connected in every connection summary", as
   await expect(comparison.locator(".badge")).toHaveText("Connected");
   await comparison.getByRole("button", { name: "Test saved connection" }).click();
   await expect(comparison.locator(".badge")).toHaveText("Connected");
+
+  await page.evaluate(() => {
+    location.hash = "#settings?section=requirements";
+  });
+  await expect(page.getByRole("heading", { name: /Node & signer requirements/ })).toBeVisible();
+  await expect(page.locator(".st-requirement", { hasText: "Stacks event observer" })).toHaveCount(
+    1,
+  );
 });
 
 test("starts an admin-history sync from Settings", async ({ page }) => {
@@ -2119,10 +2133,10 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(manager).toContainText("reviewed · profile operator-reference-render");
   await openSettingsSection(page, "capabilities", "Manager");
   const rewardCalls = manager.locator(".st-row", { hasText: "Reward calls" });
-  await expect(rewardCalls.getByText("Observe only", { exact: true })).toBeVisible();
+  await expect(rewardCalls.getByText("Supported", { exact: true })).toBeVisible();
   await expect(rewardCalls.getByRole("button", { name: "Details" })).toHaveAttribute(
-    "title",
-    "Reviewed reward calls are disabled for this manager",
+    "data-tooltip",
+    "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs.",
   );
   await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
@@ -2177,16 +2191,26 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   const forecastBox = await forecast.boundingBox();
   expect(forecastBox?.height).toBeLessThan(340);
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
-  const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
-  await expect(amountSort).toHaveCount(1);
-  await amountSort.click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await page.getByLabel("Sort roster by").selectOption("amount");
+  } else {
+    const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
+    await expect(amountSort).toHaveCount(1);
+    await amountSort.click();
+  }
   const rows = page.locator("tbody tr");
   await expect(rows).toHaveCount(50);
   const smallestStaker = roster[0]?.stakerPrincipal ?? "";
   await expect(rows.nth(0).locator(`[data-copy-value="${smallestStaker}"]`)).toHaveCount(1);
-  const descendingAmountSort = page.getByRole("button", { name: "Sort by Amount, descending" });
-  await expect(descendingAmountSort).toHaveCount(1);
-  await descendingAmountSort.click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await page.getByRole("button", { name: "Sort direction: ascending" }).click();
+  } else {
+    const descendingAmountSort = page.getByRole("button", {
+      name: "Sort by Amount, descending",
+    });
+    await expect(descendingAmountSort).toHaveCount(1);
+    await descendingAmountSort.click();
+  }
   const largestStaker = roster.at(-1)?.stakerPrincipal ?? "";
   await expect(rows.nth(0).locator(`[data-copy-value="${largestStaker}"]`)).toHaveCount(1);
   await page.getByRole("button", { name: "Next" }).click();
@@ -2456,6 +2480,22 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
 
   const payments = page.locator("#rewards-distribution-140-1 .rw-payments");
   await expect(payments.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
+  await expect(payments.getByRole("tab", { name: "Paid · 0" })).toBeDisabled();
+  await expect(payments.getByRole("tab", { name: "Arriving · 0" })).toBeDisabled();
+  const l1Marker = payments.locator(".rw-l1").last();
+  await l1Marker.click();
+  const l1Popover = l1Marker.locator("xpath=following-sibling::*[contains(@class, 'rw-l1-pop')]");
+  await expect(l1Popover).toBeVisible();
+  const popoverBox = await l1Popover.boundingBox();
+  const viewport = page.viewportSize();
+  expect(popoverBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(popoverBox?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((popoverBox?.y ?? 0) + (popoverBox?.height ?? 0)).toBeLessThanOrEqual(
+    viewport?.height ?? 0,
+  );
+  expect(popoverBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((popoverBox?.x ?? 0) + (popoverBox?.width ?? 0)).toBeLessThanOrEqual(viewport?.width ?? 0);
   await page.getByLabel("Find a staker").fill(roster[1].stakerPrincipal);
   await expect(payments.getByText("1 of 40 payments")).toBeVisible();
   await page.getByLabel("Find a staker").fill("");
@@ -2556,6 +2596,44 @@ test("seals, approves, and follows a reward run from the Rewards page", async ({
   ).toBeVisible();
   await now.getByRole("button", { name: "Resume" }).click();
   await expect(now.getByRole("heading", { name: /Distributing… 13 of 41 payments/ })).toBeVisible();
+});
+
+test("renders the last verified gas-wallet status immediately across a page reload", async ({
+  page,
+}) => {
+  const operatorRunEngine = { ...engineStatus, mode: "operator-run" };
+  const readyWallet = { ...gasWalletCreated, enabled: true, signer: "ready" };
+  let holdWalletStatus = false;
+  let releaseWalletStatus: (() => void) | null = null;
+  const walletStatusReleased = new Promise<void>((resolve) => {
+    releaseWalletStatus = resolve;
+  });
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/engine") {
+      await route.fulfill(fixtureFulfillment(operatorRunEngine));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      if (holdWalletStatus) await walletStatusReleased;
+      await route.fulfill(fixtureFulfillment(readyWallet));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+
+  try {
+    await login(page);
+    await openPage(page, "rewards", "Rewards");
+    await expect(page.getByText(/Gas wallet 12\.48 STX/).first()).toBeVisible();
+    holdWalletStatus = true;
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+    await expect(page.getByText(/Gas wallet 12\.48 STX/).first()).toBeVisible({ timeout: 2_000 });
+  } finally {
+    releaseWalletStatus?.();
+  }
 });
 
 test("creates a gas wallet from Settings", async ({ page }) => {

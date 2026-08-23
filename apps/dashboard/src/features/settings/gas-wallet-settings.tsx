@@ -6,6 +6,7 @@ import { short, shortUtc, stxAmount } from "../../shared/format.js";
 import { operatorErrorSentence } from "../../shared/operator-error.js";
 import {
   approveGasWalletSweep,
+  cachedGasWalletStatus,
   cancelGasWalletSweep,
   createGasWallet,
   disableGasWallet,
@@ -74,9 +75,10 @@ export function GasWalletSettings({
   token: string;
   readOnly?: boolean;
 }) {
-  const [status, setStatus] = useState<GasWalletStatus | null>(null);
+  const cachedStatus = cachedGasWalletStatus();
+  const [status, setStatus] = useState<GasWalletStatus | null>(cachedStatus ?? null);
   const [unavailable, setUnavailable] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedStatus === undefined);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");

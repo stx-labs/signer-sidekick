@@ -8,7 +8,12 @@ import type { RewardExecutionAvailability, Tone } from "./reward-state.js";
 export function InfoTip({ text, label = "Details" }: { text: string | null; label?: string }) {
   if (!text) return null;
   return (
-    <button className="tooltip-trigger rw-info" type="button" aria-label={label} title={text}>
+    <button
+      className="tooltip-trigger rw-info"
+      type="button"
+      aria-label={label}
+      data-tooltip={text}
+    >
       <Info aria-hidden="true" weight="regular" />
     </button>
   );
@@ -19,7 +24,7 @@ export function GasChip({ execution }: { execution: RewardExecutionAvailability 
   return (
     <span
       className={`rw-gas${execution.chipTone === "low" ? " low" : ""}`}
-      title={execution.chipTooltip ?? undefined}
+      data-tooltip={execution.chipTooltip ?? undefined}
     >
       <Wallet aria-hidden="true" />
       {execution.chip}

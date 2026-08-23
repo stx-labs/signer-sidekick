@@ -34,6 +34,27 @@ type RosterSort =
   | "bond"
   | "status";
 
+const rosterSortLabels: Record<RosterSort, string> = {
+  staker: "Staker",
+  amount: "Amount",
+  "first-cycle": "First cycle",
+  "last-cycle": "Last cycle",
+  "unlock-height": "Unlock block",
+  bond: "Bond",
+  status: "Status",
+};
+
+function rosterStatus(entry: Snapshot["roster"][number]): {
+  state: "caution" | "success";
+  label: string;
+} {
+  return entry.stxNodeVerified === false
+    ? { state: "caution", label: "Not node-verified" }
+    : entry.stxNodeVerified === null && entry.bond
+      ? { state: "success", label: "Bond verified" }
+      : { state: "success", label: "Verified" };
+}
+
 export function Pool({
   data,
   token,
@@ -228,7 +249,7 @@ export function Pool({
           Refreshing roster…
         </div>
       ) : null}
-      <div className="tbl-wrap" aria-busy={rosterLoading}>
+      <div className="tbl-wrap pool-roster-wrap" aria-busy={rosterLoading}>
         <div className="tbl-toolbar">
           <div className="search-inline">
             <input
@@ -241,13 +262,48 @@ export function Pool({
               }}
             />
           </div>
+          <div className="pool-roster-mobile-sort">
+            <label>
+              <span>Sort by</span>
+              <select
+                aria-label="Sort roster by"
+                value={sort.key}
+                onChange={(event) => {
+                  setSort({ key: event.target.value as RosterSort, direction: "asc" });
+                  setPage(0);
+                }}
+              >
+                {(Object.entries(rosterSortLabels) as Array<[RosterSort, string]>).map(
+                  ([value, label]) => (
+                    <option value={value} key={value}>
+                      {label}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+            <button
+              className="btn btn-tertiary sm"
+              type="button"
+              aria-label={`Sort direction: ${sort.direction === "asc" ? "ascending" : "descending"}`}
+              onClick={() => {
+                setSort((current) => ({
+                  ...current,
+                  direction: current.direction === "asc" ? "desc" : "asc",
+                }));
+                setPage(0);
+              }}
+            >
+              {sort.direction === "asc" ? "Ascending" : "Descending"}
+            </button>
+          </div>
           <div className="total">
             {rosterLoading ? "Loading…" : rosterError ? "Unavailable" : `${rosterTotal} stakers`}
           </div>
         </div>
         {!rosterLoading && !rosterError ? (
           <>
-            <table>
+            <table className="pool-roster-table">
               <thead>
                 <tr>
                   <SortableHeader
@@ -320,9 +376,10 @@ export function Pool({
                 {roster.map((entry) => {
                   const position = entry.position;
                   const lastCycle = position ? BigInt(position.unlockCycle) - 1n : null;
+                  const status = rosterStatus(entry);
                   return (
                     <tr key={entry.stakerPrincipal}>
-                      <td>
+                      <td data-label="Staker">
                         <div className="staker">
                           <span className="avatar">SP</span>
                           <CopyableIdentifier
@@ -333,11 +390,19 @@ export function Pool({
                           />
                         </div>
                       </td>
-                      <td className="right mono">{stx(position?.amountUstx)}</td>
-                      <td className="mono">{position?.firstRewardCycle ?? "—"}</td>
-                      <td className="mono">{lastCycle?.toString() ?? "—"}</td>
-                      <td className="mono">{number(position?.unlockBurnHeight)}</td>
-                      <td>
+                      <td className="right mono" data-label="Amount">
+                        {stx(position?.amountUstx)} STX
+                      </td>
+                      <td className="mono" data-label="First cycle">
+                        {position?.firstRewardCycle ?? "—"}
+                      </td>
+                      <td className="mono" data-label="Last cycle">
+                        {lastCycle?.toString() ?? "—"}
+                      </td>
+                      <td className="mono" data-label="Unlock block">
+                        {number(position?.unlockBurnHeight)}
+                      </td>
+                      <td data-label="Bond">
                         {entry.bond ? (
                           // Read from PoX-5 `get-bond-membership`, not the indexer's type label.
                           <Badge state={entry.bond.isL1Lock ? "accent" : "info"}>
@@ -347,14 +412,8 @@ export function Pool({
                           "—"
                         )}
                       </td>
-                      <td>
-                        <Badge state={entry.stxNodeVerified === false ? "caution" : "success"}>
-                          {entry.stxNodeVerified === false
-                            ? "Not node-verified"
-                            : entry.stxNodeVerified === null && entry.bond
-                              ? "Bond verified"
-                              : "Verified"}
-                        </Badge>
+                      <td data-label="Status">
+                        <Badge state={status.state}>{status.label}</Badge>
                       </td>
                     </tr>
                   );

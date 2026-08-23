@@ -207,6 +207,20 @@ describe("gas wallet service", () => {
     await expect(service.create()).rejects.toThrow("already exists at");
   });
 
+  it("reuses recent public status and coalesces concurrent refreshes", async () => {
+    const { service, state, callReadOnly } = await fixture();
+    await service.create();
+    callReadOnly.mockClear();
+
+    await service.status();
+    await service.status();
+    expect(callReadOnly).not.toHaveBeenCalled();
+
+    state.now = new Date(state.now.getTime() + 31_000);
+    await Promise.all([service.status(), service.status()]);
+    expect(callReadOnly).toHaveBeenCalledTimes(1);
+  });
+
   it("enables only after the refusal checks pass and activates the engine", async () => {
     const { service, engine, store, options, state } = await fixture();
     await service.create();

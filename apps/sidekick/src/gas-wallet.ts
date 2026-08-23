@@ -133,6 +133,7 @@ export interface GasWalletServiceOptions {
 const LOW_BALANCE_DISMISSAL_HOURS = 24;
 const DEFAULT_SWEEP_APPROVAL_MINUTES = 30;
 const SWEEP_LIST_LIMIT = 20;
+const STATUS_CACHE_MS = 30_000;
 
 function shortMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -155,6 +156,9 @@ function toSweep(stored: StoredGasWalletSweep): GasWalletSweep {
 export class GasWalletService {
   readonly #options: GasWalletServiceOptions;
   #lastActivationError: string | null = null;
+  #statusCache: { expiresAt: number; value: GasWalletStatus } | null = null;
+  #statusInFlight: Promise<GasWalletStatus> | null = null;
+  #statusRevision = 0;
 
   constructor(options: GasWalletServiceOptions) {
     this.#options = options;
@@ -162,6 +166,7 @@ export class GasWalletService {
 
   /** Re-activates a previously enabled wallet after a restart. Never throws. */
   async startup(): Promise<void> {
+    this.#invalidateStatus();
     const stored = this.#options.store.gasWallet.get();
     if (!stored?.enabled) return;
     if (this.#options.engineMode !== "operator-run" || this.#options.engine === null) {
@@ -184,8 +189,28 @@ export class GasWalletService {
     }
   }
 
-  async status(): Promise<GasWalletStatus> {
+  async status(force = false): Promise<GasWalletStatus> {
     const now = this.#now();
+    if (!force && this.#statusCache && this.#statusCache.expiresAt > now.getTime()) {
+      return this.#statusCache.value;
+    }
+    if (!force && this.#statusInFlight) return await this.#statusInFlight;
+    const revision = this.#statusRevision;
+    const request = this.#buildStatus(now)
+      .then((value) => {
+        if (revision === this.#statusRevision) {
+          this.#statusCache = { expiresAt: now.getTime() + STATUS_CACHE_MS, value };
+        }
+        return value;
+      })
+      .finally(() => {
+        if (this.#statusInFlight === request) this.#statusInFlight = null;
+      });
+    this.#statusInFlight = request;
+    return await request;
+  }
+
+  async #buildStatus(now: Date): Promise<GasWalletStatus> {
     const stored = this.#options.store.gasWallet.get();
     const banners = this.#options.store.gasWallet.banners();
     const engine = this.#options.engine;
@@ -206,20 +231,22 @@ export class GasWalletService {
               : this.#lastActivationError
                 ? "unreadable"
                 : "not-loaded";
-    const balance =
+    const [balance, refusal] =
       identity === null
-        ? { balanceUstx: null, observedAt: null, error: null }
-        : await this.#balance(identity.principal, now);
-    const refusal: GasWalletRefusal =
-      identity === null
-        ? {
-            checkedAt: null,
-            isManagerAdmin: null,
-            isSignerKey: null,
-            isContract: false,
-            refusalReason: null,
-          }
-        : await this.refusalChecks(identity.principal, now);
+        ? [
+            { balanceUstx: null, observedAt: null, error: null },
+            {
+              checkedAt: null,
+              isManagerAdmin: null,
+              isSignerKey: null,
+              isContract: false,
+              refusalReason: null,
+            } satisfies GasWalletRefusal,
+          ]
+        : await Promise.all([
+            this.#balance(identity.principal, now),
+            this.refusalChecks(identity.principal, now),
+          ]);
     const feeBasis = this.#options.maximumFeeUstx;
     this.#expirePlannedSweeps(now);
     const sweeps = this.#options.store.gasWalletSweeps.list(SWEEP_LIST_LIMIT).map(toSweep);
@@ -256,6 +283,7 @@ export class GasWalletService {
 
   /** Generates a new wallet key, writes it once, and records the public identity (disabled). */
   async create(): Promise<GasWalletStatus> {
+    this.#invalidateStatus();
     const existing = this.#options.store.gasWallet.get();
     if (existing !== null) {
       throw new GasWalletError(
@@ -304,11 +332,12 @@ export class GasWalletService {
       await unlink(secretFilePath).catch(() => undefined);
       throw error;
     }
-    return await this.status();
+    return await this.status(true);
   }
 
   /** Runs the refusal checks, loads the secret into the engine, and records the wallet as enabled. */
   async enable(): Promise<GasWalletStatus> {
+    this.#invalidateStatus();
     if (this.#options.engineMode !== "operator-run") {
       throw new GasWalletError(
         "gas_wallet_engine_mode",
@@ -340,10 +369,11 @@ export class GasWalletService {
       );
     }
     this.#options.store.gasWallet.setEnabled(true, this.#now().toISOString());
-    return await this.status();
+    return await this.status(true);
   }
 
   async disable(): Promise<GasWalletStatus> {
+    this.#invalidateStatus();
     const stored = this.#options.store.gasWallet.get();
     if (stored === null) {
       throw new GasWalletError("gas_wallet_missing", "No gas wallet is recorded");
@@ -351,10 +381,11 @@ export class GasWalletService {
     await this.#options.engine?.deactivateGasWallet();
     this.#lastActivationError = null;
     this.#options.store.gasWallet.setEnabled(false, this.#now().toISOString());
-    return await this.status();
+    return await this.status(true);
   }
 
   async dismissBanner(kind: "setup" | "low-balance"): Promise<GasWalletStatus> {
+    this.#invalidateStatus();
     const now = this.#now();
     if (kind === "setup") {
       this.#options.store.gasWallet.dismissSetupBanner(now.toISOString(), now.toISOString());
@@ -362,7 +393,7 @@ export class GasWalletService {
       const until = new Date(now.getTime() + LOW_BALANCE_DISMISSAL_HOURS * 60 * 60 * 1000);
       this.#options.store.gasWallet.dismissLowBalance(until.toISOString(), now.toISOString());
     }
-    return await this.status();
+    return await this.status(true);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -374,6 +405,7 @@ export class GasWalletService {
    * explicit approval inside the approval window; nothing is signed here.
    */
   async prepareSweep(input: { recipient: string }): Promise<GasWalletSweep> {
+    this.#invalidateStatus();
     const now = this.#now();
     const wallet = this.#requireWallet();
     this.#requireNoActiveWork(now);
@@ -459,6 +491,7 @@ export class GasWalletService {
    * balance that no longer covers the sealed amount fails closed instead of signing.
    */
   async approveSweep(sweepId: string): Promise<GasWalletSweep> {
+    this.#invalidateStatus();
     const now = this.#now();
     const engine = this.#requireEngine();
     if (!engine.gasWalletSignerReady()) {
@@ -581,6 +614,7 @@ export class GasWalletService {
   }
 
   async cancelSweep(sweepId: string): Promise<GasWalletSweep> {
+    this.#invalidateStatus();
     const sweep = this.#requireSweep(sweepId);
     if (sweep.status !== "planned") {
       throw new GasWalletError(
@@ -593,6 +627,7 @@ export class GasWalletService {
 
   /** Re-reads the node for a broadcast sweep and settles it when the chain has decided. */
   async refreshSweep(sweepId: string): Promise<GasWalletSweep> {
+    this.#invalidateStatus();
     const now = this.#now();
     const sweep = this.#requireSweep(sweepId);
     if (sweep.status === "planned" && Date.parse(sweep.expiresAt) <= now.getTime()) {
@@ -642,6 +677,14 @@ export class GasWalletService {
   async listSweeps(limit = SWEEP_LIST_LIMIT): Promise<GasWalletSweep[]> {
     this.#expirePlannedSweeps(this.#now());
     return this.#options.store.gasWalletSweeps.list(limit).map(toSweep);
+  }
+
+  #invalidateStatus(): void {
+    this.#statusCache = null;
+    // The underlying read cannot be cancelled, but callers after a mutation must not join it.
+    // The revision guard above also prevents the superseded result from repopulating the cache.
+    this.#statusInFlight = null;
+    this.#statusRevision += 1;
   }
 
   /**
