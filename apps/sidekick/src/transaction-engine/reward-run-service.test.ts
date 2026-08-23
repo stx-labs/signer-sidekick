@@ -323,6 +323,59 @@ describe("reward run coordinator", () => {
     expect(store.rewardRuns.active(wallet)).toBeNull();
   });
 
+  it("enforces emergency controls before preparation and again at the signature boundary", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let blocked = true;
+    const readFacts = vi.fn(async () => facts());
+    const executionControl = vi.fn((operations: readonly string[]) => ({
+      allowed: !blocked,
+      reason: blocked ? `Execution is disabled for ${operations.join(",")}` : null,
+    }));
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: {
+        ...live.implementation,
+        async materialize(input) {
+          const materialized = await live.implementation.materialize(input);
+          blocked = true;
+          return materialized;
+        },
+      },
+      facts: readFacts,
+      refusalChecks: async () => goodRefusal,
+      executionControl,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+
+    await expect(
+      service.prepare({ cycle: 141, distribution: 1, operations: ["claim-rewards"] }),
+    ).rejects.toMatchObject({
+      code: "reward_run_unavailable",
+      message: "Execution is disabled for claim-rewards",
+    });
+    expect(readFacts).not.toHaveBeenCalled();
+
+    blocked = false;
+    const prepared = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(prepared.runId, prepared.recipeSha256);
+    const halted = await settle(service, prepared.runId);
+    expect(halted).toMatchObject({
+      status: "halted",
+      cursor: 0,
+      failureReason: "Execution is disabled for claim-rewards",
+    });
+    expect(live.materialized).toEqual(["claim-rewards"]);
+    expect(live.broadcasts).toEqual([]);
+  });
+
   it("reuses the same rejected attempt when an explicit resume rebuilds identical bytes", async () => {
     const { store } = await openSidekickStore(":memory:", started.toISOString());
     stores.push(store);

@@ -144,8 +144,7 @@ const observedBlockMessages: Readonly<Record<string, string>> = {
 const approvalRevalidationMessages: Readonly<Record<string, string>> = {
   "approval-binding-changed": "Approval no longer matches this job",
   "planned-anchor-noncanonical": "The approved chain anchor is no longer canonical",
-  "runtime-mode-changed":
-    "The runtime is no longer in Assist mode; restore Assist first if intended",
+  "runtime-mode-changed": "The retired execution mode changed",
   "network-identity-changed": "The configured network changed",
   "contract-identity-changed": "The PoX-5 or sBTC contract changed",
   "manager-identity-changed": "The manager identity or source changed",
@@ -155,16 +154,15 @@ const approvalRevalidationMessages: Readonly<Record<string, string>> = {
   "claim-amount-changed": "The claim amount or no-bond proof changed",
   "fee-snapshot-changed": "The manager fee changed",
   "rewards-paused": "PoX-5 rewards were paused after approval; wait until rewards resume",
-  "gas-payer-changed":
-    "The configured gas-payer identity changed; check Assist configuration first",
+  "gas-payer-changed": "The retired job's gas-payer identity changed",
   "gas-nonce-changed": "The gas-payer nonce changed after approval",
   "gas-balance-insufficient":
     "The gas-payer balance no longer covers the approved fee; fund the gas payer first",
-  "fee-policy-changed": "The Assist fee policy changed; review configuration first",
+  "fee-policy-changed": "The retired job's fee policy changed",
 };
 
 const newCurrentJobGuidance =
-  "Sync chain data to prepare a new current job, then review and approve it";
+  "This retired job is read-only; prepare a current operation from Rewards";
 
 function operatorJobBlockReason(value: string | null): string | null {
   const reason = boundedReason(value);
@@ -178,7 +176,7 @@ function operatorJobBlockReason(value: string | null): string | null {
   if (reason.startsWith("approval-revalidation:")) {
     const code = reason.slice("approval-revalidation:".length);
     if (code === "adapter-disabled") {
-      return "Assist or manager-claim transactions were disabled. This job cannot continue. If Assist becomes available later, sync chain data to prepare a new current job, then review and approve it";
+      return `The retired job's adapter was disabled. ${newCurrentJobGuidance}`;
     }
     const cause = approvalRevalidationMessages[code] ?? "The approved job failed revalidation";
     return boundedReason(`${cause}. ${newCurrentJobGuidance}`);
@@ -188,15 +186,15 @@ function operatorJobBlockReason(value: string | null): string | null {
     return `Approval changed before broadcast. ${newCurrentJobGuidance}`;
   }
   if (reason.startsWith("broadcast-rejected:")) {
-    return `Broadcast was rejected by the node. Review the rejection. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`;
+    return `Broadcast was rejected by the node. Review the rejection. ${newCurrentJobGuidance}`;
   }
   if (reason === "foreign-gas-payer-nonce-activity") {
-    return `Another transaction used the Assist gas-payer nonce. Resolve the nonce conflict. ${newCurrentJobGuidance}`;
+    return `Another transaction used the retired job's gas-payer nonce. ${newCurrentJobGuidance}`;
   }
   if (reason.startsWith("canonical-transaction-")) {
     const executionStatus = reason.slice("canonical-transaction-".length).replaceAll("_", " ");
     return boundedReason(
-      `The transaction failed on-chain: ${executionStatus}. Review the failure. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`,
+      `The transaction failed on-chain: ${executionStatus}. Review the failure. ${newCurrentJobGuidance}`,
     );
   }
   return reason;
@@ -538,7 +536,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         eligible: false,
         expiresAt: approval?.expiresAt ?? null,
         reason:
-          "This job is blocked. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+          "This retired job is blocked and read-only; prepare a current operation from Rewards",
       };
     }
     if (approval !== null) {

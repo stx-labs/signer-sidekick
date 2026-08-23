@@ -62,7 +62,7 @@ describe("transaction-engine runtime config", () => {
       gasPayer: null,
       finalityDepth: 6,
       maximumFeeUstx: 100_000n,
-      maximumApprovalMinutes: 30,
+      runStartWindowMinutes: 30,
       maximumRunHours: 6,
       maximumRunTransactions: 200,
     });

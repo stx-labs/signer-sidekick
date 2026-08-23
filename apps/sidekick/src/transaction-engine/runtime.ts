@@ -1,7 +1,3 @@
-import {
-  MANAGER_CLAIM_REWARDS_ADAPTER_ID,
-  MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-} from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import type { RewardOperationPlan } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { z } from "zod";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "../chain-anchor.js";
@@ -32,18 +28,11 @@ import {
   type SignedGasWalletSweepTransaction,
   type SignedRewardOperationTransaction,
 } from "./gas-payer-signer.js";
-import { LiveTransactionReader } from "./live-transaction-reader.js";
 import {
   type ManagerClaimObservationInput,
   type ManagerClaimObservationOutcome,
   ManagerClaimObservationService,
 } from "./manager-claim-observation-service.js";
-import { managerClaimOperationScopeKey } from "./manager-claim-observer.js";
-import type { ManagerClaimProposal } from "./manager-claim-proposal.js";
-import {
-  type ManagerClaimWalletAuthoritativeObservation,
-  ManagerClaimWalletIntentError,
-} from "./manager-claim-wallet-intent.js";
 import {
   loadTransactionEngineRuntimeConfig,
   type TransactionEngineMode,
@@ -92,14 +81,6 @@ export interface CreateTransactionEngineRuntimeOptions {
   onError?: (error: unknown) => void;
 }
 
-const _maximumRecoveryJobsPerPass = 8;
-const _recoverableJobStates = [
-  "nonce_reserved",
-  "broadcast",
-  "ambiguous",
-  "confirmed",
-  "noncanonical_reobserve",
-] as const;
 const defaultMaintenanceIntervalMs = 15_000;
 
 function exactNow(clock: () => Date): Date {
@@ -144,7 +125,7 @@ function publicGasPayer(holder: GasPayerSignerHolder): GasPayerIdentity | null {
 
 /**
  * Owns the small amount of mutable orchestration around the durable transaction engine.
- * Observations, approval execution, and recovery are serialized so compare-and-swap transitions
+ * Legacy evidence maintenance and recipe-run signing are serialized so durable state transitions
  * cannot race inside one Sidekick process.
  */
 export class SidekickTransactionEngineRuntime {
@@ -216,83 +197,6 @@ export class SidekickTransactionEngineRuntime {
     }
   }
 
-  /**
-   * Refresh the normal engine observation and return the exact still-current Observe job binding.
-   * This uses the existing planner and safety controls; it never constructs a wallet transaction.
-   */
-  async observeManagerClaimWalletJob(
-    jobIdInput: string,
-  ): Promise<ManagerClaimWalletAuthoritativeObservation> {
-    const jobId = z.string().uuid().parse(jobIdInput);
-    return await this.#exclusive(async () => {
-      if (this.#composition.runtimeConfig.requestedMode !== "observe") {
-        throw new ManagerClaimWalletIntentError(
-          "unavailable",
-          "Browser-wallet claims require Observe mode. Use the gas wallet or switch modes",
-        );
-      }
-      const context = this.#composition.runtimeContext();
-      const fresh = await this.#composition.readFreshObservation(context);
-      const outcome = await this.#observeWithContext(context, fresh);
-      if (
-        outcome.status !== "planned" ||
-        outcome.result.job.jobId !== jobId ||
-        outcome.result.job.state !== "preflighted" ||
-        this.#composition.store.transactionEngine.getActiveLogicalJobForScope(
-          outcome.result.job.operationScopeKey,
-        )?.jobId !== jobId
-      ) {
-        throw new ManagerClaimWalletIntentError(
-          "superseded",
-          "This claim job changed. Refresh Operations and select the current job",
-        );
-      }
-      const job = outcome.result.job;
-      return {
-        observedAt: fresh.observedAt,
-        job: {
-          jobId: job.jobId,
-          operationScopeKey: job.operationScopeKey,
-          intentSha256: job.intentSha256,
-          policySha256: job.policySha256,
-          stateVersion: job.stateVersion,
-          attestation: { ...job.attestation },
-        },
-      };
-    });
-  }
-
-  /**
-   * Serialize behind any in-progress observation and prefer its exact current Observe job over a
-   * second direct wallet proposal for the same reward checkpoint.
-   */
-  async findEligibleManagerClaimWalletJob(
-    proposal: ManagerClaimProposal,
-  ): Promise<{ jobId: string } | null> {
-    return await this.#exclusive(async () => {
-      if (this.#composition.runtimeConfig.requestedMode !== "observe") return null;
-      const operationScopeKey = managerClaimOperationScopeKey({
-        network: proposal.network,
-        managerContract: proposal.manager.contract,
-        rewardCycle: BigInt(proposal.rewardCheckpoint.rewardCycle),
-        calculationCheckpoint: proposal.rewardCheckpoint.calculationCheckpoint,
-        lastRewardComputeBurnHeight: proposal.rewardCheckpoint.lastRewardComputeBurnHeight,
-        rewardsPerToken: BigInt(proposal.rewardCheckpoint.rewardsPerToken),
-      });
-      const job =
-        this.#composition.store.transactionEngine.getActiveLogicalJobForScope(operationScopeKey);
-      if (
-        job?.state !== "preflighted" ||
-        job.adapterId !== MANAGER_CLAIM_REWARDS_ADAPTER_ID ||
-        job.adapterRevision !== MANAGER_CLAIM_REWARDS_ADAPTER_REVISION ||
-        job.managerPrincipal !== proposal.manager.contract
-      ) {
-        return null;
-      }
-      return { jobId: job.jobId };
-    });
-  }
-
   async #observeWithContext(
     context: TransactionEngineRuntimeContext,
     input: TransactionEngineObservationHookInput,
@@ -309,16 +213,9 @@ export class SidekickTransactionEngineRuntime {
     }
     void observedAt;
     const service = this.#composition.createObservationService(context);
-    // Observe-only planning: the attestation-gated Assist execution path is retired (ADR 0010);
-    // operator-run signing happens through sealed reward runs, never through engine jobs.
     const outcome = await service.observe({
       setup: input.setup,
       rewards: input.rewards,
-      sourceId: input.sourceId,
-      requestedMode: "observe",
-      gasPayer: publicGasPayer(this.#composition.signerHolder),
-      maximumFeeUstx: this.#composition.runtimeConfig.maximumFeeUstx,
-      attestation: null,
       observedAt: input.observedAt,
       samePassConfirmedJobIds: [],
       ...(maintenanceOnly ? { reconcileOnly: true } : {}),
@@ -380,8 +277,8 @@ export class SidekickTransactionEngineRuntime {
     return this.#composition.runtimeConfig.maximumFeeUstx;
   }
 
-  get maximumApprovalMinutes(): number {
-    return this.#composition.runtimeConfig.maximumApprovalMinutes;
+  get runStartWindowMinutes(): number {
+    return this.#composition.runtimeConfig.runStartWindowMinutes;
   }
 
   get maximumRunHours(): number {
@@ -447,7 +344,7 @@ export class SidekickTransactionEngineRuntime {
 
   /**
    * Signs a sealed gas-wallet sweep (plan §7.6) under the same mutex that serializes reward
-   * execution, so a sweep and a legacy approval can never sign concurrently.
+   * execution, so a sweep and a reward run can never sign concurrently.
    */
   async signGasWalletSweep(plan: GasWalletSweepPlan): Promise<SignedGasWalletSweepTransaction> {
     if (this.#closed) throw new Error("Transaction engine runtime is closed");
@@ -513,10 +410,6 @@ export class SidekickTransactionEngineRuntime {
   }
 }
 
-function readerFor(context: TransactionEngineRuntimeContext): LiveTransactionReader {
-  return new LiveTransactionReader({ baseUrl: context.config.nodeRpcUrl });
-}
-
 export async function createSidekickTransactionEngineRuntime(
   options: CreateTransactionEngineRuntimeOptions,
 ): Promise<SidekickTransactionEngineRuntime> {
@@ -560,10 +453,7 @@ export async function createSidekickTransactionEngineRuntime(
       createObservationService: (context) =>
         new ManagerClaimObservationService({
           repository: options.store.transactionEngine,
-          evidenceStore: options.store,
-          node: context.node,
           api: context.api,
-          liveReader: readerFor(context),
           finalityDepth: runtimeConfig.finalityDepth,
         }),
       readFreshObservation: async (context) => {

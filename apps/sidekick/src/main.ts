@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { MANAGER_CLAIM_REWARDS_ADAPTER_ID } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { ActivityProjectionService } from "./activity-projection.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
@@ -239,12 +240,7 @@ export async function executeCliCommand({
         store,
         runtimeSettings,
         managerVerification,
-        transactionEngineRequestedMode: engine.requestedMode,
-        observeManagerClaimWalletJob: async (jobId) =>
-          await engine.observeManagerClaimWalletJob(jobId),
         readManagerClaimEvidence: async () => await service.managerClaimWalletEvidence(),
-        findEligibleManagerClaimWalletJob: async (proposal) =>
-          await engine.findEligibleManagerClaimWalletJob(proposal),
         readState: () => signerGrant.walletState(),
         canRepairSignerRegistration: async () => {
           const current = await service.snapshot(true);
@@ -356,9 +352,28 @@ export async function executeCliCommand({
             await service.withdrawalRequestStatus(registryContract, requestId, tip),
         }),
         refusalChecks: async (principal, now) => await gasWallet.refusalChecks(principal, now),
+        executionControl: (operations) => {
+          const forceObserve = store.transactionEngine.getForceObserveControl();
+          if (forceObserve) {
+            return {
+              allowed: false,
+              reason: `Force Observe is active: ${forceObserve.reason}`,
+            };
+          }
+          const managerClaimDisabled =
+            operations.includes("claim-rewards") &&
+            store.transactionEngine.getDisabledAdapterControl(MANAGER_CLAIM_REWARDS_ADAPTER_ID);
+          if (managerClaimDisabled) {
+            return {
+              allowed: false,
+              reason: `The manager collect adapter is disabled: ${managerClaimDisabled.reason}`,
+            };
+          }
+          return { allowed: true, reason: null };
+        },
         maximumFeeUstx: engine.maximumFeeUstx,
         maximumTransactions: engine.maximumRunTransactions,
-        approvalStartMinutes: engine.maximumApprovalMinutes,
+        approvalStartMinutes: engine.runStartWindowMinutes,
         maximumRunHours: engine.maximumRunHours,
         logger: { warn: (message) => warnGasWallet(message) },
       });

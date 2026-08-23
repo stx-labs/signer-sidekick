@@ -65,15 +65,9 @@ import {
   LiveTransactionReader,
   type UnconfirmedTransactionObservation,
 } from "./transaction-engine/live-transaction-reader.js";
+import { buildManagerClaimProposal } from "./transaction-engine/manager-claim-proposal.js";
 import {
-  buildManagerClaimProposal,
-  type ManagerClaimProposal,
-} from "./transaction-engine/manager-claim-proposal.js";
-import {
-  type ManagerClaimWalletAuthoritativeObservation,
-  ManagerClaimWalletIntentError,
   managerClaimWalletJobStatus,
-  prepareManagerClaimWalletIntent,
   readBoundManagerClaimWalletIntent,
 } from "./transaction-engine/manager-claim-wallet-intent.js";
 import {
@@ -340,14 +334,7 @@ export class WalletIntentService {
       managerVerification?: ManagerVerificationContext;
       readState: () => WalletIntentRuntimeState;
       canRepairSignerRegistration: () => Promise<boolean>;
-      transactionEngineRequestedMode?: "observe" | "operator-run";
-      observeManagerClaimWalletJob?: (
-        jobId: string,
-      ) => Promise<ManagerClaimWalletAuthoritativeObservation>;
       readManagerClaimEvidence?: () => Promise<ManagerClaimWalletEvidence>;
-      findEligibleManagerClaimWalletJob?: (
-        proposal: ManagerClaimProposal,
-      ) => Promise<{ jobId: string } | null>;
       readerFactory?: (nodeRpcUrl: string) => WalletReader;
     },
   ) {}
@@ -893,7 +880,13 @@ export class WalletIntentService {
     };
 
     const managerPrincipal = state.managerPrincipal;
-    const directManagerClaim = action === "claim-rewards" && request.jobId === undefined;
+    if (action === "claim-rewards" && request.jobId !== undefined) {
+      throw new WalletIntentError(
+        "wallet_intent_invalid",
+        "Legacy manager-claim jobs are read-only; prepare a current claim from Rewards",
+      );
+    }
+    const directManagerClaim = action === "claim-rewards";
     const managerClaimEvidence = directManagerClaim
       ? await (() => {
           if (!this.options.readManagerClaimEvidence) {
@@ -983,13 +976,6 @@ export class WalletIntentService {
         throw new WalletIntentError(
           "wallet_intent_conflict",
           "The manager claim proposal does not match the configured network and manager",
-        );
-      }
-      const eligibleJob = await this.options.findEligibleManagerClaimWalletJob?.(proposal);
-      if (eligibleJob) {
-        throw new WalletIntentError(
-          "wallet_intent_conflict",
-          `An eligible Observe claim job already exists (${eligibleJob.jobId}). Open Activity and use that job instead`,
         );
       }
       const rewardsPaused = decodeBoolean(
@@ -1144,70 +1130,6 @@ export class WalletIntentService {
             : "wallet_execution_unavailable",
           error.message,
         );
-      }
-    }
-    if (action === "claim-rewards") {
-      const jobId = request.jobId;
-      if (!jobId) {
-        throw new WalletIntentError(
-          "wallet_intent_conflict",
-          "The manual claim proposal lost its execution context. Prepare it again",
-        );
-      }
-      const profileId = snapshot.manager.source.profileId;
-      if (!profileId) {
-        throw new WalletIntentError(
-          "wallet_execution_unavailable",
-          "The trusted manager profile is unavailable for this claim job",
-        );
-      }
-      try {
-        const observeManagerClaimWalletJob = this.options.observeManagerClaimWalletJob;
-        if (!observeManagerClaimWalletJob) {
-          throw new WalletIntentError(
-            "wallet_execution_unavailable",
-            "Browser-wallet claims are unavailable because the transaction engine is not running",
-          );
-        }
-        const observation = await observeManagerClaimWalletJob(jobId);
-        if (!observation) {
-          throw new Error("Manager-claim wallet observation returned no result");
-        }
-        const prepared = await prepareManagerClaimWalletIntent({
-          repository: this.options.store.transactionEngine,
-          jobId,
-          actorPrincipal,
-          observation,
-          live: {
-            // Historical wallet-intent records use the legacy `assist` literal for any non-Observe mode.
-            requestedMode:
-              this.options.transactionEngineRequestedMode === "observe" ? "observe" : "assist",
-            network: {
-              name: network.network,
-              kind: config.network === "mainnet" ? "mainnet" : "testnet",
-              chainId: network.chainId,
-            },
-            manager: {
-              principal: managerPrincipal,
-              profileId,
-              sourceSha256: snapshot.manager.source.sha256,
-            },
-          },
-        });
-        assertStateUnchanged();
-        return prepared;
-      } catch (error) {
-        if (error instanceof WalletIntentError) throw error;
-        if (error instanceof ManagerClaimWalletIntentError) {
-          throw new WalletIntentError(
-            error.code === "unavailable"
-              ? "wallet_execution_unavailable"
-              : "wallet_intent_conflict",
-            error.message,
-            error.retryable,
-          );
-        }
-        throw error;
       }
     }
     const authority = walletOperationContract(action).authority;

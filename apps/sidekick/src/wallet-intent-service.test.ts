@@ -912,33 +912,32 @@ describe("manager wallet action preparation", () => {
     ).rejects.toThrow("manager reward claims are currently paused");
   });
 
-  it("defers a manual manager claim to an eligible Observe job for the same checkpoint", async () => {
+  it("rejects a retired single-job manager-claim binding", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
-    const getDataVar = vi.fn();
-    const findEligibleManagerClaimWalletJob = vi.fn(async () => ({
-      jobId: "9284f4f4-7277-57f3-a251-08e9daf5f28a",
-    }));
     const wallet = new WalletIntentService({
       store,
       runtimeSettings: {
         clients: () => ({
           config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
-          node: { getDataVar },
+          node: {},
           api: {},
         }),
       } as unknown as RuntimeSettingsController,
       readState: deploymentFreshState,
       canRepairSignerRegistration,
       readManagerClaimEvidence: async () => currentManagerClaimEvidence(),
-      findEligibleManagerClaimWalletJob,
     });
 
     await expect(
-      wallet.prepare({ action: "claim-rewards", actorPrincipal: requiredSender }),
-    ).rejects.toThrow("eligible Observe claim job already exists");
-    expect(findEligibleManagerClaimWalletJob).toHaveBeenCalledOnce();
-    expect(getDataVar).not.toHaveBeenCalled();
+      wallet.prepare({
+        action: "claim-rewards",
+        actorPrincipal: requiredSender,
+        jobId: "9284f4f4-7277-57f3-a251-08e9daf5f28a",
+      }),
+    ).rejects.toThrow(
+      "Legacy manager-claim jobs are read-only; prepare a current claim from Rewards",
+    );
   });
 
   it("seals an actor-authorized fee update in a V2 manifest", async () => {

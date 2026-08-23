@@ -1,12 +1,3 @@
-import { generateKeyPairSync, sign } from "node:crypto";
-import { getAddressFromPublicKey, privateKeyToPublic } from "@stacks/transactions";
-import {
-  type CompatibilityAttestationPayload,
-  compatibilityAttestationPayloadSha256,
-  compatibilityAttestationSigningBytes,
-  type SignedCompatibilityAttestation,
-} from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
-import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import {
   MANAGER_CLAIM_REWARDS_ADAPTER_ID,
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
@@ -15,143 +6,45 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import { RepositoryTransactionEngineApiService } from "./api-service.js";
 import {
-  type ManagerClaimObserveFacts,
-  ObserveManagerClaimPlanner,
-} from "./manager-claim-observer.js";
+  legacyClaimAttestationDigest,
+  legacyClaimGasPayer,
+  legacyClaimManager,
+  legacyManagerClaimFacts,
+  seedLegacyApproval,
+  seedLegacyManagerClaimJob,
+} from "./legacy-manager-claim.fixture.js";
 import { transactionEngineDocumentSha256 } from "./repository.js";
 
 const initial = "2026-07-17T12:00:00.000Z";
 const awaitingAt = "2026-07-17T12:01:00.000Z";
 const initialNow = "2026-07-17T12:05:00.000Z";
-const manager = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager";
-const publicKey = privateKeyToPublic(`${"11".repeat(32)}01`);
-const gasPayer = getAddressFromPublicKey(publicKey, "testnet");
-const attestationKeys = generateKeyPairSync("ed25519");
+const retiredGuidance = "This retired job is read-only; prepare a current operation from Rewards";
 const openStores: SidekickStore[] = [];
 
 afterEach(() => {
   for (const store of openStores.splice(0)) store.close();
 });
 
-function attestationPayload(): CompatibilityAttestationPayload {
-  return {
-    schemaVersion: 1,
-    issuer: "stacks-labs",
-    revision: 1,
-    issuedAt: "2026-07-17T00:00:00.000Z",
-    notBefore: "2026-07-17T00:00:00.000Z",
-    expiresAt: "2026-07-18T00:00:00.000Z",
-    profile: POX5_TESTNET_COMPATIBILITY,
-  };
-}
-
-function signedAttestation(): SignedCompatibilityAttestation {
-  const payload = attestationPayload();
-  return {
-    schemaVersion: 1,
-    algorithm: "ed25519",
-    keyId: "release-a",
-    payload,
-    signature: sign(
-      null,
-      compatibilityAttestationSigningBytes(payload),
-      attestationKeys.privateKey,
-    ).toString("base64"),
-  };
-}
-
-async function memoryStore(): Promise<{ store: SidekickStore; digest: string }> {
+async function memoryStore(): Promise<SidekickStore> {
   const opened = await openSidekickStore(":memory:", initial);
   openStores.push(opened.store);
-  const document = signedAttestation();
-  const digest = compatibilityAttestationPayloadSha256(document.payload);
-  await opened.store.transactionEngine.accept(
-    {
-      acceptedState: {
-        issuer: document.payload.issuer,
-        revision: document.payload.revision,
-        payloadSha256: digest,
-        verifiedAt: initial,
-      },
-      document,
-      acceptedAt: initial,
-    },
-    null,
-  );
-  return { store: opened.store, digest };
+  return opened.store;
 }
 
-function facts(digest: string, observedAt = initial): ManagerClaimObserveFacts {
-  return {
-    schemaVersion: 1,
+/** Historical Assist jobs are the ones that carry approvals; their policy still reads `assist`. */
+function assistFacts(observedAt = initial) {
+  return legacyManagerClaimFacts({
     observedAt,
-    network: { kind: "testnet", chainId: 0x8000_0005 },
-    manager: {
-      contract: manager,
-      profile: {
-        id: "reference-testnet",
-        recognitionTier: "reference-render",
-        sourceSha256: "12".repeat(32),
-      },
-      observedSourceSha256: "12".repeat(32),
-    },
-    chainAnchor: {
-      stacksBlockHeight: 9_000,
-      indexBlockHash: `0x${"ab".repeat(32)}`,
-      burnBlockHeight: 4_100,
-      rewardCycle: 5,
-      rewardCycleLength: 100,
-      prepareCycleLength: 10,
-      cyclePosition: 50,
-      phase: "reward",
-      checkpoint: "second-half",
-    },
-    acceptedAttestation: {
-      issuer: "stacks-labs",
-      revision: 1,
-      payloadSha256: digest,
-      current: true,
-    },
-    contracts: {
-      pox5: "ST000000000000000000002AMW42H.pox-5",
-      sbtcToken: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
-    },
-    rewardCheckpoint: {
-      rewardCycle: 5n,
-      calculationCheckpoint: "first-half",
-      lastRewardComputeBurnHeight: 4_099,
-      rewardsPerToken: 123_456_789n,
-    },
-    stxEarnedSats: 1_234n,
-    bondBuckets: [],
-    observedSignerEarnedSats: 1_234n,
-    feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
-    expectedSignerOutflowSats: 1_234n,
-    gasPayer: {
-      principal: gasPayer,
-      publicKey,
-      observedNonce: 7n,
-      estimatedFeeUstx: 1_000n,
-      maximumFeeUstx: 2_000n,
-    },
     controls: { mode: "assist", adapterEnabled: true, rewardsPaused: false },
-    effect: { remaining: true, completionEvidenceSha256: null },
-    authoritative: { complete: true, canonical: true, finalityDepth: 1 },
-  };
+  });
 }
 
-async function awaitingJob(store: SidekickStore, digest: string) {
-  const planned = await new ObserveManagerClaimPlanner(store.transactionEngine).observe(
-    facts(digest),
-  );
-  const job = store.transactionEngine.transitionLogicalJob({
-    jobId: planned.job.jobId,
-    expectedState: "preflighted",
-    expectedStateVersion: planned.job.stateVersion,
-    nextState: "awaiting_approval",
-    changedAt: awaitingAt,
+async function awaitingJob(store: SidekickStore) {
+  return await seedLegacyManagerClaimJob(store, {
+    facts: assistFacts(awaitingAt),
+    state: "awaiting_approval",
+    stateVersion: 2,
   });
-  return { planned, job };
 }
 
 function service(
@@ -168,55 +61,29 @@ function service(
   });
 }
 
-/**
- * Records a stored approval directly (single-job approvals no longer have an API path, ADR 0010)
- * so the read-side mapping of historical approvals stays covered.
- */
-function recordApproval(
-  store: SidekickStore,
-  job: Awaited<ReturnType<typeof awaitingJob>>["job"],
-  actor: string,
-  expiresAt = "2026-07-17T12:31:00.000Z",
-) {
-  const approval = {
-    schemaVersion: 1,
-    decision: "approve",
-    jobId: job.jobId,
-    intentSha256: job.intentSha256,
-    policySha256: job.policySha256,
-    attestationSha256: job.attestation.payloadSha256,
-    expiresAt,
-  };
-  return store.transactionEngine.createApproval({
-    jobId: job.jobId,
-    expectedJobStateVersion: job.stateVersion,
-    intentSha256: job.intentSha256,
-    policySha256: job.policySha256,
-    approval,
-    approvalSha256: transactionEngineDocumentSha256(approval),
-    actor,
-    createdAt: initialNow,
-    expiresAt,
-  });
-}
-
 describe("repository transaction-engine API service", () => {
   it("maps effective status and stable cursor pages from strict stored manager-claim records", async () => {
-    const { store, digest } = await memoryStore();
-    const planner = new ObserveManagerClaimPlanner(store.transactionEngine);
-    const first = await planner.observe(facts(digest));
-    const changed = structuredClone(facts(digest, awaitingAt));
-    changed.chainAnchor.stacksBlockHeight += 1;
-    changed.chainAnchor.burnBlockHeight += 1;
-    changed.chainAnchor.cyclePosition += 1;
-    changed.chainAnchor.indexBlockHash = `0x${"bc".repeat(32)}`;
-    const second = await planner.observe(changed);
-    const awaiting = store.transactionEngine.transitionLogicalJob({
-      jobId: second.job.jobId,
-      expectedState: "preflighted",
-      expectedStateVersion: second.job.stateVersion,
-      nextState: "awaiting_approval",
-      changedAt: "2026-07-17T12:02:00.000Z",
+    const store = await memoryStore();
+    const replacementFacts = assistFacts(awaitingAt);
+    replacementFacts.chainAnchor = {
+      ...replacementFacts.chainAnchor,
+      stacksBlockHeight: 9_001,
+      burnBlockHeight: 4_101,
+      cyclePosition: 51,
+      indexBlockHash: `0x${"bc".repeat(32)}`,
+    };
+    const { job: awaiting } = await seedLegacyManagerClaimJob(store, {
+      facts: replacementFacts,
+      state: "awaiting_approval",
+      stateVersion: 2,
+      updatedAt: "2026-07-17T12:02:00.000Z",
+    });
+    const { job: superseded } = await seedLegacyManagerClaimJob(store, {
+      facts: assistFacts(initial),
+      state: "superseded",
+      stateVersion: 1,
+      supersessionReason: "authoritative-manager-claim-facts-changed",
+      supersededByJobId: awaiting.jobId,
     });
     const api = service(store, { value: initialNow });
 
@@ -248,7 +115,7 @@ describe("repository transaction-engine API service", () => {
     expect(secondPage).toMatchObject({
       total: 2,
       nextCursor: null,
-      items: [{ jobId: first.job.jobId, state: "superseded" }],
+      items: [{ jobId: superseded.jobId, state: "superseded" }],
     });
 
     await expect(
@@ -271,11 +138,11 @@ describe("repository transaction-engine API service", () => {
           id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
           revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
         },
-        managerPrincipal: manager,
+        managerPrincipal: legacyClaimManager,
         hashes: {
           intentSha256: awaiting.intentSha256,
           policySha256: awaiting.policySha256,
-          attestationSha256: digest,
+          attestationSha256: legacyClaimAttestationDigest,
         },
       },
       approvalWindow: {
@@ -293,7 +160,7 @@ describe("repository transaction-engine API service", () => {
   });
 
   it("reports fail-closed live prerequisite availability without disabling the adapter", async () => {
-    const { store } = await memoryStore();
+    const store = await memoryStore();
     const api = service(store, { value: initialNow }, () => ({
       available: false,
       reason: "Complete anchored no-bond proof is unavailable",
@@ -315,27 +182,27 @@ describe("repository transaction-engine API service", () => {
     ],
     [
       "approval-revalidation:attestation-expired",
-      "The approval or compatibility attestation expired. Sync chain data to prepare a new current job, then review and approve it",
+      `The approval or compatibility attestation expired. ${retiredGuidance}`,
     ],
     [
       "approval-invalid-before-broadcast-commitment",
-      "Approval changed before broadcast. Sync chain data to prepare a new current job, then review and approve it",
+      `Approval changed before broadcast. ${retiredGuidance}`,
     ],
     [
       "broadcast-rejected:node-rejection",
-      "Broadcast was rejected by the node. Review the rejection. If the claim is still needed, sync chain data to prepare a new current job, then review and approve it",
+      `Broadcast was rejected by the node. Review the rejection. ${retiredGuidance}`,
     ],
     [
       "foreign-gas-payer-nonce-activity",
-      "Another transaction used the Assist gas-payer nonce. Resolve the nonce conflict. Sync chain data to prepare a new current job, then review and approve it",
+      `Another transaction used the retired job's gas-payer nonce. ${retiredGuidance}`,
     ],
     [
       "canonical-transaction-abort_by_response",
-      "The transaction failed on-chain: abort by response. Review the failure. If the claim is still needed, sync chain data to prepare a new current job, then review and approve it",
+      `The transaction failed on-chain: abort by response. Review the failure. ${retiredGuidance}`,
     ],
-  ])("preserves durable block classification %s while displaying recovery guidance", async (blockReason, displayReason) => {
-    const { store, digest } = await memoryStore();
-    const { job } = await awaitingJob(store, digest);
+  ])("preserves durable block classification %s while displaying read-only guidance", async (blockReason, displayReason) => {
+    const store = await memoryStore();
+    const { job } = await awaitingJob(store);
     const api = service(store, { value: initialNow });
     const blocked = store.transactionEngine.transitionLogicalJob({
       jobId: job.jobId,
@@ -353,7 +220,7 @@ describe("repository transaction-engine API service", () => {
       approvalWindow: {
         eligible: false,
         reason:
-          "This job is blocked. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+          "This retired job is blocked and read-only; prepare a current operation from Rewards",
       },
     });
     await expect(api.listJobs({ cursor: null, limit: 1 })).resolves.toMatchObject({
@@ -362,23 +229,17 @@ describe("repository transaction-engine API service", () => {
   });
 
   it("exposes nonce, txid, and whitelisted reconciliation evidence without signed material", async () => {
-    const { store, digest } = await memoryStore();
-    const { planned, job } = await awaitingJob(store, digest);
-    const clock = { value: initialNow };
-    const api = service(store, clock);
-    recordApproval(store, job, "operator:a");
-    const approval = store.transactionEngine.getActiveApproval(
-      job.jobId,
-      "2026-07-17T12:06:00.000Z",
-    );
-    if (approval === null) throw new Error("Expected active approval");
+    const store = await memoryStore();
+    const { job, records } = await awaitingJob(store);
+    const api = service(store, { value: initialNow });
+    const approval = seedLegacyApproval(store, job, { actor: "operator:a", createdAt: initialNow });
     const signed = store.transactionEngine.commitApprovedSignedAttempt({
       jobId: job.jobId,
       expectedJobStateVersion: job.stateVersion,
       approvalId: approval.approvalId,
       expectedApprovalVersion: approval.approvalVersion,
       expectedApprovalSha256: approval.approvalSha256,
-      gasPayerPrincipal: gasPayer,
+      gasPayerPrincipal: legacyClaimGasPayer,
       nonce: "7",
       observedAccountNonce: "7",
       feeUstx: "1000",
@@ -400,8 +261,8 @@ describe("repository transaction-engine API service", () => {
     });
     store.transactionEngine.appendReconciliationObservation({
       jobId: job.jobId,
-      predicate: planned.records.reconciliation,
-      predicateSha256: transactionEngineDocumentSha256(planned.records.reconciliation),
+      predicate: records.reconciliation,
+      predicateSha256: transactionEngineDocumentSha256(records.reconciliation),
       chainAnchor: job.chainAnchor,
       authoritative: true,
       canonical: true,
@@ -442,11 +303,11 @@ describe("repository transaction-engine API service", () => {
   });
 
   it("maps irreversible Force Observe and adapter disable controls without reviving authority", async () => {
-    const { store, digest } = await memoryStore();
-    const { job } = await awaitingJob(store, digest);
+    const store = await memoryStore();
+    const { job } = await awaitingJob(store);
     const clock = { value: initialNow };
     const api = service(store, clock);
-    recordApproval(store, job, "operator:a");
+    seedLegacyApproval(store, job, { actor: "operator:a", createdAt: initialNow });
 
     const forced = await api.forceObserve(
       { decision: "force-observe", reason: "Emergency stop" },

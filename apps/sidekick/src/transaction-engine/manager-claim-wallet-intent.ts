@@ -18,7 +18,6 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { z } from "zod";
-import { parseCanonicalInstant } from "../time.js";
 import {
   parseManagerClaimIntentRecord,
   parseManagerClaimPolicyRecord,
@@ -113,15 +112,7 @@ const sealedPlanSchema = z
 
 type ClaimWalletRepository = Pick<
   TransactionEngineRepository,
-  | "getLogicalJob"
-  | "getActiveLogicalJobForScope"
-  | "getDisabledAdapterControl"
-  | "getForceObserveControl"
-  | "getLatestApproval"
-  | "getNonceReservationForJob"
-  | "get"
-  | "listAttempts"
-  | "listReconciliationObservations"
+  "getLogicalJob" | "getActiveLogicalJobForScope" | "listReconciliationObservations"
 >;
 
 export class ManagerClaimWalletIntentError extends Error {
@@ -136,29 +127,12 @@ export class ManagerClaimWalletIntentError extends Error {
 }
 
 export interface ManagerClaimWalletLiveIdentity {
-  requestedMode: "observe" | "assist";
   network: {
     name: BrowserWalletIntentNetwork;
     kind: "mainnet" | "testnet";
     chainId: number;
   };
   manager: { principal: string; profileId: string; sourceSha256: string };
-}
-
-export interface ManagerClaimWalletAuthoritativeObservation {
-  observedAt: string;
-  job: {
-    jobId: string;
-    operationScopeKey: string;
-    intentSha256: string;
-    policySha256: string;
-    stateVersion: number;
-    attestation: {
-      issuer: string;
-      revision: number;
-      payloadSha256: string;
-    };
-  };
 }
 
 export interface ManagerClaimWalletJobBinding {
@@ -301,59 +275,18 @@ function exactJob(
   return job;
 }
 
-async function assertCurrentEligibility(input: {
-  repository: ClaimWalletRepository;
-  jobId: string;
-  observation: ManagerClaimWalletAuthoritativeObservation;
-}): Promise<void> {
-  const job = exactJob(input.repository, input.jobId);
-  const observedAt = parseCanonicalInstant(input.observation.observedAt);
-  if (
-    !observedAt ||
-    input.observation.job.jobId !== job.jobId ||
-    input.observation.job.operationScopeKey !== job.operationScopeKey ||
-    input.observation.job.intentSha256 !== job.intentSha256 ||
-    input.observation.job.policySha256 !== job.policySha256 ||
-    input.observation.job.stateVersion !== job.stateVersion ||
-    input.observation.job.attestation.issuer !== job.attestation.issuer ||
-    input.observation.job.attestation.revision !== job.attestation.revision ||
-    input.observation.job.attestation.payloadSha256 !== job.attestation.payloadSha256
-  ) {
-    unavailable("This claim job changed. Sync chain data and select the current job");
-  }
-  const accepted = await input.repository.get(job.attestation.issuer);
-  if (
-    accepted === null ||
-    accepted.acceptedState.revision !== job.attestation.revision ||
-    accepted.acceptedState.payloadSha256 !== job.attestation.payloadSha256 ||
-    Date.parse(accepted.document.payload.expiresAt) <= observedAt.getTime()
-  ) {
-    unavailable("This claim job's compatibility attestation expired or changed. Sync chain data");
-  }
-  if (input.repository.getDisabledAdapterControl(MANAGER_CLAIM_REWARDS_ADAPTER_ID) !== null) {
-    unavailable("The manager-claim adapter is disabled");
-  }
-  if (input.repository.getForceObserveControl() !== null) {
-    unavailable("Emergency Observe mode blocks new browser-wallet claims");
-  }
-}
-
 /**
- * Convert an existing immutable Observe job into a browser-wallet request without replanning it.
- * The exact contract call, arguments, and postcondition are extracted from the sealed unsigned
- * transaction. The browser wallet remains responsible only for its own sender, nonce, fee, and
- * signature.
+ * Reconstruct the browser-wallet request an immutable Observe job was bound to, without replanning
+ * it. The exact contract call, arguments, and postcondition are extracted from the sealed unsigned
+ * transaction. New preparation is retired (ADR 0010); this only re-derives stored facts so an
+ * already-submitted claim keeps reconciling.
  */
 function resolveManagerClaimWalletIntent(input: {
   repository: ClaimWalletRepository;
   jobId: string;
   actorPrincipal: string;
   live: ManagerClaimWalletLiveIdentity;
-  requirePrepared: boolean;
 }): ManagerClaimWalletIntentFacts {
-  if (input.requirePrepared && input.live.requestedMode !== "observe") {
-    unavailable("Browser-wallet claims require Observe mode. Use Assist or switch modes");
-  }
   const job = exactJob(input.repository, input.jobId);
   const intent = parseManagerClaimIntentRecord(job.intent);
   const policy = parseManagerClaimPolicyRecord(job.policy);
@@ -368,23 +301,6 @@ function resolveManagerClaimWalletIntent(input: {
   ) {
     unavailable("This claim job is not ready for browser-wallet execution. Refresh Operations");
   }
-  if (input.requirePrepared && job.state !== "preflighted") {
-    throw new ManagerClaimWalletIntentError(
-      "superseded",
-      "This claim job is no longer ready for browser-wallet execution. Refresh Operations",
-    );
-  }
-  if (
-    input.requirePrepared &&
-    ((job.state === "preflighted" &&
-      input.repository.getActiveLogicalJobForScope(job.operationScopeKey)?.jobId !== job.jobId) ||
-      input.repository.getLatestApproval(job.jobId) !== null ||
-      input.repository.getNonceReservationForJob(job.jobId) !== null ||
-      input.repository.listAttempts(job.jobId).length !== 0)
-  ) {
-    unavailable("This claim job already has Assist or transaction activity. Refresh Operations");
-  }
-
   const planResult = sealedPlanSchema.safeParse(intent.sealedPlan);
   if (!planResult.success)
     invalid("This claim job failed its sealed-plan integrity check. Do not sign it");
@@ -563,22 +479,6 @@ function resolveManagerClaimWalletIntent(input: {
   };
 }
 
-export async function prepareManagerClaimWalletIntent(
-  input: Omit<Parameters<typeof resolveManagerClaimWalletIntent>[0], "requirePrepared"> & {
-    observation: ManagerClaimWalletAuthoritativeObservation;
-  },
-): Promise<ManagerClaimWalletIntentFacts> {
-  await assertCurrentEligibility(input);
-  return resolveManagerClaimWalletIntent({ ...input, requirePrepared: true });
-}
-
-/** Reconstruct the same immutable facts while an externally submitted job reconciles. */
-export function readManagerClaimWalletIntent(
-  input: Omit<Parameters<typeof resolveManagerClaimWalletIntent>[0], "requirePrepared">,
-): ManagerClaimWalletIntentFacts {
-  return resolveManagerClaimWalletIntent({ ...input, requirePrepared: false });
-}
-
 /**
  * Reconstruct an already-submitted claim from its immutable job identity. Capability and source
  * review are new-work gates; they must not make canonical observation disappear after broadcast.
@@ -601,7 +501,6 @@ export function readBoundManagerClaimWalletIntent(input: {
     jobId: input.jobId,
     actorPrincipal: input.actorPrincipal,
     live: {
-      requestedMode: "observe",
       network: input.network,
       manager: {
         principal: job.managerPrincipal,
@@ -609,7 +508,6 @@ export function readBoundManagerClaimWalletIntent(input: {
         sourceSha256: intent.managerProfile.expectedSourceSha256,
       },
     },
-    requirePrepared: false,
   });
 }
 

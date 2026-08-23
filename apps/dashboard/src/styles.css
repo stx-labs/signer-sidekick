@@ -1559,7 +1559,7 @@
   }
 }
 
-.engine-wallet-claim {
+.action-engine-current-path {
   display: grid;
   gap: var(--space-3);
   margin-top: var(--space-4);
@@ -1567,8 +1567,7 @@
   border-top: 1px solid var(--border-secondary);
 }
 
-.engine-wallet-claim h3,
-.engine-wallet-claim p {
+.action-engine-current-path p {
   margin: 0;
 }
 

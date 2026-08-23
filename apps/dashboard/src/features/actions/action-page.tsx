@@ -5,7 +5,7 @@ import type {
   EngineStatus,
   OperatorOperationCode,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import {
   type ActionContext,
@@ -25,7 +25,6 @@ import {
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import { loadEngineJob, loadEngineStatus } from "../operations/engine-api.js";
 import { EngineJobReview } from "../operations/engine-job-review.js";
-import { EngineWalletClaim } from "../operations/engine-wallet-claim.js";
 import { rewardManagerCapabilityId } from "../rewards/reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;
@@ -167,7 +166,6 @@ function EngineClaimOperation({
   chainId,
   context,
   data,
-  network,
   onOperatorStateChanged,
   operatorStateStale,
   token,
@@ -175,7 +173,6 @@ function EngineClaimOperation({
   chainId: number;
   context: ActionContext;
   data: Snapshot;
-  network: string;
   onOperatorStateChanged: () => void | Promise<void>;
   operatorStateStale: boolean;
   token: string;
@@ -186,9 +183,7 @@ function EngineClaimOperation({
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [loading, setLoading] = useState(jobId !== null);
   const [error, setError] = useState<string | null>(null);
-  const [action, _setAction] = useState<"approve" | "invalidate" | null>(null);
   const [revision, setRevision] = useState(0);
-  const _actionPending = useRef(false);
   const actor = actorPrincipal.trim().toUpperCase();
   const actorValid = standardManagerActionPrincipal(actor, data.network);
   const availability = managerActionAvailability(
@@ -307,17 +302,16 @@ function EngineClaimOperation({
   return (
     <section className="card-standout action-engine-review">
       <ErrorCallout error={error} />
-      <EngineJobReview actionsEnabled={!loading && action === null} job={job} />
-      <EngineWalletClaim
-        chainId={chainId}
-        job={job}
-        network={network}
-        status={status}
-        token={token}
-      />
+      <EngineJobReview actionsEnabled={!loading} job={job} />
+      <div className="action-engine-current-path">
+        <p className="muted">This retired job is read-only.</p>
+        <a className="btn btn-secondary sm" href="#action/claim-rewards">
+          Prepare a current browser-wallet claim
+        </a>
+      </div>
       <button
         className="btn btn-tertiary sm action-recheck"
-        disabled={loading || action !== null}
+        disabled={loading}
         onClick={() => setRevision((value) => value + 1)}
         type="button"
       >
@@ -567,7 +561,6 @@ export function ActionPage({
           chainId={data.preflight.node.networkId}
           context={context}
           data={data}
-          network={data.network}
           onOperatorStateChanged={onOperatorStateChanged}
           operatorStateStale={operatorStateStale}
           token={token}

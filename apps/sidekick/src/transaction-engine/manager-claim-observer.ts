@@ -1,4 +1,3 @@
-import { Cl, cvToHex } from "@stacks/transactions";
 import {
   type EngineApprovalReview,
   engineApprovalReviewSchema,
@@ -6,9 +5,7 @@ import {
 import {
   MANAGER_CLAIM_REWARDS_ADAPTER_ID,
   MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-  MANAGER_CLAIM_REWARDS_FUNCTION_NAME,
   type ManagerClaimRewardsPlan,
-  planManagerClaimRewards,
 } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { MAX_BOND_PERIODS_PER_CYCLE } from "@stx-labs/signer-sidekick-protocol/pox5-bonds";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
@@ -248,14 +245,7 @@ export const managerClaimObserveFactsSchema = z
 export type ManagerClaimObserveFacts = z.input<typeof managerClaimObserveFactsSchema>;
 type ParsedManagerClaimObserveFacts = z.output<typeof managerClaimObserveFactsSchema>;
 
-export type ManagerClaimObserveBlockCode =
-  | "adapter-disabled"
-  | "manager-profile-ineligible"
-  | "manager-source-mismatch"
-  | "attestation-not-current"
-  | "rewards-paused"
-  | "fee-cap-exceeded"
-  | "external-completion-mismatch";
+export type ManagerClaimObserveBlockCode = "external-completion-mismatch";
 
 export interface ManagerClaimObserveBlock {
   code: ManagerClaimObserveBlockCode;
@@ -490,44 +480,6 @@ function operationScopeKey(value: ParsedManagerClaimObserveFacts): string {
   });
 }
 
-function blocksFor(value: ParsedManagerClaimObserveFacts): ManagerClaimObserveBlock[] {
-  const blocks: ManagerClaimObserveBlock[] = [];
-  if (!value.controls.adapterEnabled) {
-    blocks.push({ code: "adapter-disabled", message: "Manager-claim transactions are disabled" });
-  }
-  if (
-    value.manager.profile.recognitionTier !== "reference-built-in" &&
-    value.manager.profile.recognitionTier !== "reference-render"
-  ) {
-    blocks.push({
-      code: "manager-profile-ineligible",
-      message: "Reward claims require a verified reference manager",
-    });
-  }
-  if (value.manager.profile.sourceSha256 !== value.manager.observedSourceSha256) {
-    blocks.push({
-      code: "manager-source-mismatch",
-      message: "Manager source does not match its verified profile",
-    });
-  }
-  if (!value.acceptedAttestation.current) {
-    blocks.push({
-      code: "attestation-not-current",
-      message: "Compatibility attestation expired. Install a current attestation",
-    });
-  }
-  if (value.controls.rewardsPaused) {
-    blocks.push({ code: "rewards-paused", message: "Manager rewards are paused" });
-  }
-  if (value.gasPayer.estimatedFeeUstx > value.gasPayer.maximumFeeUstx) {
-    blocks.push({
-      code: "fee-cap-exceeded",
-      message: "Estimated claim fee exceeds the configured cap",
-    });
-  }
-  return blocks;
-}
-
 function deterministicUuid(material: unknown): string {
   const hash = transactionEngineDocumentSha256(material);
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(
@@ -633,189 +585,6 @@ export class ObserveManagerClaimPlanner {
       .min(1)
       .max(144)
       .parse(options.finalityDepth ?? 1);
-  }
-
-  private async assertAcceptedAttestation(value: ParsedManagerClaimObserveFacts): Promise<void> {
-    const accepted = await this.repository.get(value.acceptedAttestation.issuer);
-    if (
-      accepted === null ||
-      accepted.acceptedState.revision !== value.acceptedAttestation.revision ||
-      accepted.acceptedState.payloadSha256 !== value.acceptedAttestation.payloadSha256
-    ) {
-      throw new ManagerClaimObserveError(
-        "Manager-claim facts do not reference the currently accepted attestation",
-      );
-    }
-  }
-
-  private async buildRecords(
-    value: ParsedManagerClaimObserveFacts,
-    scopeKey: string,
-  ): Promise<{
-    plan: ManagerClaimRewardsPlan;
-    records: ManagerClaimObserveResult["records"];
-    idempotencyKey: string;
-  }> {
-    const plan = await planManagerClaimRewards({
-      schemaVersion: 1,
-      adapterRevision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-      network: value.network,
-      managerContract: value.manager.contract,
-      pox5Contract: value.contracts.pox5,
-      sbtcTokenContract: value.contracts.sbtcToken,
-      rewardCycle: value.rewardCheckpoint.rewardCycle,
-      expectedSbtcOutflow: value.expectedSignerOutflowSats,
-      chainAnchor: {
-        ...value.chainAnchor,
-        rewardCycle: BigInt(value.chainAnchor.rewardCycle),
-      },
-      attestationDigest: value.acceptedAttestation.payloadSha256,
-      managerSourceFingerprint: value.manager.observedSourceSha256,
-      rewardObservation: {
-        calculationCheckpoint: value.rewardCheckpoint.calculationCheckpoint,
-        lastRewardComputeBurnHeight: value.rewardCheckpoint.lastRewardComputeBurnHeight,
-        rewardsPerToken: value.rewardCheckpoint.rewardsPerToken,
-      },
-      stxEarnedSats: value.stxEarnedSats,
-      bondBuckets: value.bondBuckets,
-      feeSnapshot: value.feeSnapshot,
-      sender: {
-        principal: value.gasPayer.principal,
-        publicKey: value.gasPayer.publicKey,
-      },
-      nonce: value.gasPayer.observedNonce,
-      fee: value.gasPayer.estimatedFeeUstx,
-    });
-    const reconciliation: ManagerClaimReconciliationPredicate = {
-      schemaVersion: 1,
-      kind: "reference-manager-claim-rewards",
-      managerContract: value.manager.contract,
-      rewardCycle: value.rewardCheckpoint.rewardCycle.toString(),
-      rewardCheckpoint: {
-        calculationCheckpoint: value.rewardCheckpoint.calculationCheckpoint,
-        lastRewardComputeBurnHeight: value.rewardCheckpoint.lastRewardComputeBurnHeight,
-        rewardsPerToken: value.rewardCheckpoint.rewardsPerToken.toString(),
-      },
-      bondBucketsSha256: bondBucketsDigest(value),
-      expectedFeeSnapshot: {
-        state: "present",
-        effectiveFeeBips: value.feeSnapshot.effectiveFeeBips.toString(),
-      },
-      expectedEffect: {
-        asset: plan.material.expectedEffect.asset,
-        sender: plan.material.expectedEffect.sender,
-        recipient: plan.material.expectedEffect.recipient,
-        amountSats: plan.material.expectedEffect.amount,
-      },
-    };
-    const intent: ManagerClaimIntentRecord = {
-      schemaVersion: 1,
-      kind: "reference-manager-claim-rewards",
-      operationScopeKey: scopeKey,
-      managerProfile: {
-        id: value.manager.profile.id,
-        recognitionTier: value.manager.profile.recognitionTier,
-        expectedSourceSha256: value.manager.profile.sourceSha256,
-        observedSourceSha256: value.manager.observedSourceSha256,
-      },
-      acceptedAttestation: {
-        issuer: value.acceptedAttestation.issuer,
-        revision: value.acceptedAttestation.revision,
-        payloadSha256: value.acceptedAttestation.payloadSha256,
-      },
-      review: managerClaimReviewMaterialSchema.parse({
-        adapter: {
-          id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
-          revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-        },
-        network: `${value.network.kind}:${value.network.chainId}`,
-        managerPrincipal: value.manager.contract,
-        call: {
-          contract: value.manager.contract,
-          functionName: MANAGER_CLAIM_REWARDS_FUNCTION_NAME,
-          arguments: [
-            {
-              name: "bond-periods",
-              clarityValue: cvToHex(
-                Cl.list(value.bondBuckets.map(({ bondIndex }) => Cl.uint(bondIndex))),
-              ),
-              displayValue: `[${value.bondBuckets.map(({ bondIndex }) => bondIndex).join(", ")}]`,
-            },
-            {
-              name: "reward-cycle",
-              clarityValue: `u${value.rewardCheckpoint.rewardCycle}`,
-              displayValue: value.rewardCheckpoint.rewardCycle.toString(),
-            },
-          ],
-        },
-        anchor: value.chainAnchor,
-        checkpoint: {
-          rewardCycle: Number(value.rewardCheckpoint.rewardCycle),
-          calculationCheckpoint: value.rewardCheckpoint.calculationCheckpoint,
-          lastRewardComputeHeight: value.rewardCheckpoint.lastRewardComputeBurnHeight,
-          rewardsPerToken: value.rewardCheckpoint.rewardsPerToken.toString(),
-        },
-        expectedEffect: {
-          recipient: { kind: "manager", principal: value.manager.contract },
-          asset: {
-            assetId: plan.material.expectedEffect.asset,
-            symbol: "sBTC",
-            maximumOutflow: plan.material.expectedEffect.amount,
-            unit: "sats",
-          },
-          postconditions: [
-            `${plan.material.expectedEffect.sender} sends exactly ${plan.material.expectedEffect.amount} sats of ${plan.material.expectedEffect.asset}`,
-          ],
-          reconciliationPredicate: JSON.stringify(reconciliation),
-        },
-        fee: {
-          snapshot: {
-            state: value.feeSnapshot.state === "absent" ? "missing" : "present",
-            feeBips: Number(value.feeSnapshot.effectiveFeeBips),
-            source: `manager-profile:${value.manager.profile.id}`,
-          },
-          estimatedFeeUstx: value.gasPayer.estimatedFeeUstx.toString(),
-          maximumFeeUstx: value.gasPayer.maximumFeeUstx.toString(),
-          policyRevision: 1,
-        },
-        expectedPostState: JSON.stringify({
-          predicate: reconciliation,
-          effectRemaining: false,
-        }),
-      }),
-      sealedPlan: plan,
-      reconciliation,
-    };
-    const policy: ManagerClaimPolicyRecord = {
-      schemaVersion: 1,
-      kind: "reference-manager-claim-rewards-policy",
-      mode: value.controls.mode,
-      adapterEnabled: value.controls.adapterEnabled,
-      rewardsPaused: value.controls.rewardsPaused,
-      maximumFeeUstx: value.gasPayer.maximumFeeUstx.toString(),
-      estimatedFeeUstx: value.gasPayer.estimatedFeeUstx.toString(),
-      approvalRequired: value.controls.mode === "assist",
-      nonceReservationAllowed: value.controls.mode === "assist",
-      signingAllowed: value.controls.mode === "assist",
-      broadcastAllowed: value.controls.mode === "assist",
-    };
-    const intentSha256 = transactionEngineDocumentSha256(intent);
-    const policySha256 = transactionEngineDocumentSha256(policy);
-    return {
-      plan,
-      records: {
-        intent,
-        intentSha256,
-        policy,
-        policySha256,
-        reconciliation,
-        reconciliationSha256: transactionEngineDocumentSha256(reconciliation),
-      },
-      idempotencyKey: `manager-claim-job:${transactionEngineDocumentSha256({
-        intentSha256,
-        policySha256,
-      })}`,
-    };
   }
 
   private appendObservation(
@@ -977,65 +746,8 @@ export class ObserveManagerClaimPlanner {
       );
     }
 
-    await this.assertAcceptedAttestation(value);
-    const built = await this.buildRecords(value, scopeKey);
-    const durable = this.repository.createOrSupersedeLogicalJob(
-      {
-        idempotencyKey: built.idempotencyKey,
-        operationScopeKey: scopeKey,
-        adapterId: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
-        adapterRevision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-        managerPrincipal: value.manager.contract,
-        intent: built.records.intent,
-        intentSha256: built.records.intentSha256,
-        policy: built.records.policy,
-        policySha256: built.records.policySha256,
-        chainAnchor: value.chainAnchor,
-        attestation: value.acceptedAttestation,
-        createdAt: value.observedAt,
-      },
-      { changedAt: value.observedAt, reason: "authoritative-manager-claim-facts-changed" },
+    throw new ManagerClaimObserveError(
+      "Legacy manager-claim jobs are read-only; prepare a current operation from Rewards",
     );
-    const blocks = blocksFor(value);
-    let job = durable.job;
-    if (job.state === "prepared") {
-      if (blocks.length === 0) {
-        job = this.repository.transitionLogicalJob({
-          jobId: job.jobId,
-          expectedState: "prepared",
-          expectedStateVersion: job.stateVersion,
-          nextState: "preflighted",
-          changedAt: value.observedAt,
-        });
-      } else {
-        const blockReason = observationReason(blocks);
-        if (blockReason === undefined) throw new Error("Planning block reason is missing");
-        job = this.repository.transitionLogicalJob({
-          jobId: job.jobId,
-          expectedState: "prepared",
-          expectedStateVersion: job.stateVersion,
-          nextState: "blocked",
-          blockReason,
-          changedAt: value.observedAt,
-        });
-      }
-    }
-    this.appendObservation(
-      job,
-      value,
-      built.records,
-      blocks.length === 0 ? "pending" : "blocked",
-      true,
-      blocks,
-    );
-    return {
-      status: blocks.length === 0 ? "planned" : "blocked",
-      job,
-      created: durable.created,
-      supersededJobId: durable.supersededJobId,
-      blocks,
-      plan: built.plan,
-      records: built.records,
-    };
   }
 }

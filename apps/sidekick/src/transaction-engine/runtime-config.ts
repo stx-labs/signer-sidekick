@@ -17,7 +17,7 @@ export interface TransactionEngineRuntimeConfig {
   };
   finalityDepth: number;
   maximumFeeUstx: bigint;
-  maximumApprovalMinutes: number;
+  runStartWindowMinutes: number;
   maximumRunHours: number;
   maximumRunTransactions: number;
 }
@@ -128,7 +128,7 @@ export function loadTransactionEngineRuntimeConfig(
         .default("100000")
         .parse(env.SIDEKICK_ENGINE_MAXIMUM_FEE_USTX),
     ),
-    maximumApprovalMinutes: z.coerce
+    runStartWindowMinutes: z.coerce
       .number()
       .int()
       .min(1)

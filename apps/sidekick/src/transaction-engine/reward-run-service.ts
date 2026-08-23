@@ -130,6 +130,10 @@ export interface RewardRunServiceOptions {
   driver: RewardRunDriver;
   facts(request: RewardRunPrepareRequest): Promise<RewardRunDraftFacts>;
   refusalChecks(principal: string, now: Date): Promise<GasWalletRefusal>;
+  executionControl?(operations: readonly RewardRunOperation[]): {
+    allowed: boolean;
+    reason: string | null;
+  };
   maximumFeeUstx: bigint;
   maximumTransactions?: number;
   approvalStartMinutes?: number;
@@ -409,6 +413,7 @@ export class RewardRunService {
       }
       return existing;
     }
+    this.#assertExecutionAllowed(request.operations ?? operationOrder);
     if (!this.#options.signer.gasWalletSignerReady()) {
       throw new RewardRunError(
         "reward_run_unavailable",
@@ -423,6 +428,7 @@ export class RewardRunService {
       feeCapUstx: this.#options.maximumFeeUstx,
       maximumTransactions: this.#options.maximumTransactions ?? 200,
     });
+    this.#assertExecutionAllowed(recipe.orderedOperations);
     const recipeSha256 = rewardRunRecipeSha256(recipe);
     const now = this.#now();
     const approvalExpiresAt = new Date(
@@ -479,6 +485,7 @@ export class RewardRunService {
       }
       return run;
     }
+    this.#assertExecutionAllowed(run.recipe.orderedOperations);
     if (Date.parse(run.approvalExpiresAt) <= now.getTime()) {
       this.#options.repository.transition({
         runId,
@@ -534,6 +541,7 @@ export class RewardRunService {
   resume(runId: string): RewardRun {
     const now = this.#now();
     const run = this.get(runId);
+    this.#assertExecutionAllowed(run.recipe.orderedOperations);
     if (run.runtimeExpiresAt && Date.parse(run.runtimeExpiresAt) <= now.getTime()) {
       this.#options.repository.transition({
         runId,
@@ -739,6 +747,7 @@ export class RewardRunService {
       );
       return;
     }
+    this.#assertExecutionAllowed([child.operation]);
     const materialized = await this.#options.driver.materialize({ run, child });
     if (materialized.status === "skip") {
       this.#options.repository.updateChild({
@@ -776,7 +785,8 @@ export class RewardRunService {
       now: now.toISOString(),
     });
     // Adapter reads and fee estimation may take long enough for this role to change, so repeat the
-    // dedicated-key refusal check at the actual signature boundary.
+    // execution-control and dedicated-key refusal checks at the actual signature boundary.
+    this.#assertExecutionAllowed([storedChild.operation]);
     await this.#assertDedicatedWallet(run.walletPrincipal, this.#now());
     const signed = await this.#sign(storedChild.operation, materialized.plan);
     const fee = BigInt(signed.fee);
@@ -1005,6 +1015,16 @@ export class RewardRunService {
       throw new RewardRunError(
         "reward_run_refused",
         `The gas wallet failed its per-transaction refusal check (${refusal.refusalReason})`,
+      );
+    }
+  }
+
+  #assertExecutionAllowed(operations: readonly RewardRunOperation[]): void {
+    const control = this.#options.executionControl?.(operations);
+    if (control?.allowed === false) {
+      throw new RewardRunError(
+        "reward_run_unavailable",
+        control.reason ?? "Reward-run execution is disabled by an emergency control",
       );
     }
   }
