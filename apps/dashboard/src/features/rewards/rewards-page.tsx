@@ -665,11 +665,9 @@ export function Rewards({
     (distribution) => distribution.status === "complete",
   );
   const quietDistributionCopy =
-    completedCurrentDistributions.length === 2
-      ? "Both distributions are complete. There is nothing waiting to distribute."
-      : completedCurrentDistributions.some((distribution) => distribution.distribution === 1)
-        ? "The First Distribution is complete. The Second Distribution will appear here after the network calculates it."
-        : "Nothing to distribute right now — the next distribution appears here once the network calculates it.";
+    completedCurrentDistributions.length > 0
+      ? "All available distributions have been completed."
+      : "Nothing to distribute right now — the next distribution appears here once the network calculates it.";
   const leadCard = cards.find((card) => card.primary !== null) ?? cards[0] ?? null;
   const anyAction = cards.some((card) => card.primary !== null || card.secondary !== null);
   const walletFallback = leadCard?.execution.walletFallback ?? engineMode !== "operator-run";

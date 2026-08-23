@@ -2483,11 +2483,7 @@ test("keeps a completed current-cycle distribution accessible during the second 
   await expect(currentCycle.getByText(/40 of 40 paid/)).toBeVisible();
   const view = currentCycle.getByRole("button", { name: "View payments" });
   await expect(view).toHaveAttribute("aria-expanded", "false");
-  await expect(
-    page.getByText(
-      "The First Distribution is complete. The Second Distribution will appear here after the network calculates it.",
-    ),
-  ).toBeVisible();
+  await expect(page.getByText("All available distributions have been completed.")).toBeVisible();
 
   await view.click();
   await expect(view).toHaveAttribute("aria-expanded", "true");
@@ -2495,6 +2491,13 @@ test("keeps a completed current-cycle distribution accessible during the second 
   await expect(details.getByRole("heading", { name: "First Distribution details" })).toBeVisible();
   await expect(details.getByText(/Calculation confirmed · rewards collected/)).toBeVisible();
   await expect(details.getByRole("tab", { name: "Paid · 40" })).toBeVisible();
+  const detailsBox = await details.boundingBox();
+  const projectionBox = await page.locator("#rewards-outlook").boundingBox();
+  expect(detailsBox).not.toBeNull();
+  expect(projectionBox).not.toBeNull();
+  expect(
+    (projectionBox?.y ?? 0) - ((detailsBox?.y ?? 0) + (detailsBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(12);
   await details.getByRole("button", { name: "Close" }).click();
   await expect(details).toHaveCount(0);
   await expect(view).toBeFocused();

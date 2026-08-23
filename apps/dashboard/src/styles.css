@@ -4679,7 +4679,7 @@ td .rw-txid {
   white-space: nowrap;
 }
 .rw-current-distribution {
-  margin-top: 12px;
+  margin: 12px 0 var(--space-4);
   padding: 18px;
 }
 .rw-current-distribution-head {
