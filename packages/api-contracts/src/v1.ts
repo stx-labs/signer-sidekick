@@ -269,6 +269,15 @@ const runtimeSettingsShape = z
       .strict(),
     forecast: z.object({ horizonCycles: z.number().int().nonnegative() }).strict(),
     embed: z.object({ publicApiUrl: z.string() }),
+    /** Reward-run fee band plus the deployment cap; absent on Sidekicks that predate it. */
+    engine: z
+      .object({
+        minimumFeeUstx: z.number().int().nonnegative(),
+        standardFeeUstx: z.number().int().nonnegative(),
+        maximumFeeUstx: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
     audit: z.array(
       z
         .object({

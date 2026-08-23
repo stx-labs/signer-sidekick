@@ -15,6 +15,7 @@ export interface TransactionEngineRuntimeConfig {
     secretFilePath: string | null;
   };
   finalityDepth: number;
+  /** Hard per-transaction fee cap sealed into every recipe and sweep; the band lives in Settings. */
   maximumFeeUstx: bigint;
   runStartWindowMinutes: number;
   maximumRunHours: number;

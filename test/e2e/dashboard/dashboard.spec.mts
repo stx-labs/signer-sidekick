@@ -1326,6 +1326,8 @@ test("edits indexed and comparison API credentials independently", async ({ page
 
   await login(page);
   await openSettingsSection(page, "sources", "Connections");
+  await expect(page.getByLabel("Minimum fee")).toHaveValue("0.003");
+  await expect(page.getByLabel("Standard fee")).toHaveValue("0.01");
   await page.getByLabel("Forecast horizon").fill("12");
   const indexed = await editConnection(page, "Indexed chain API");
   await expect(indexed.getByText("provided by the environment", { exact: true })).toBeVisible();

@@ -106,9 +106,13 @@ are never accepted through the environment, and Observe remains the default.
 2. Open **Settings → Gas wallet → Create gas wallet**. The key is written once to
    `/data/gas-wallet.key` (owner-only), is never exposed through the UI or API, and Settings shows
    only the address.
-3. Fund the address with STX from any wallet. Each transaction is capped at
-   `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX); a distribution of N payments takes about
-   N + 1 transactions, and Settings shows how many the balance covers.
+3. Fund the address with STX from any wallet. For every transaction Sidekick asks the local node
+   to estimate the exact payload and pays the estimate within the **fee band** in Settings →
+   Reward runs (default 0.003–0.01 STX, the Leather wallet's standard contract-call band; the floor
+   is also paid when the node has no estimate), so bot-driven estimate spikes are neither paid nor
+   halted on. `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX) is the deployment's hard
+   per-transaction cap sealed into every run; a distribution of N payments takes about N + 1
+   transactions, and Settings shows how many the balance covers at the cap.
 4. **Enable**. Before every signature Sidekick re-checks that the address is not the signer, a
    manager admin, or a contract, and refuses otherwise.
 

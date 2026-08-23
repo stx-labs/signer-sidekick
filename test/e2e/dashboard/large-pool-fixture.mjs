@@ -198,6 +198,7 @@ export const runtimeSettings = {
   },
   forecast: { horizonCycles: 6 },
   embed: { publicApiUrl: "https://pool.example/sidekick" },
+  engine: { minimumFeeUstx: 3000, standardFeeUstx: 10000, maximumFeeUstx: 100000 },
   audit: [
     { revision: 12, changedFields: ["pool.displayName"], changedAt: "2026-07-15T12:00:00.000Z" },
   ],

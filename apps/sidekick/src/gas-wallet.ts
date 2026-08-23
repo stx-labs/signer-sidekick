@@ -27,6 +27,10 @@ import {
   type StoredGasWalletSweep,
 } from "./storage/gas-wallet-sweep-repository.js";
 import type { SidekickStore } from "./storage/store.js";
+import {
+  selectTransactionFee,
+  type TransactionFeePolicy,
+} from "./transaction-engine/fee-policy.js";
 import type { SignedGasWalletSweepTransaction } from "./transaction-engine/gas-payer-signer.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
 import type { TransactionEngineRuntimeContext } from "./transaction-engine/runtime.js";
@@ -116,6 +120,8 @@ export interface GasWalletServiceOptions {
   secretFilePath: string;
   /** Conservative per-transaction fee basis and the sweep fee ceiling. */
   maximumFeeUstx: bigint;
+  /** Live standard-band fee policy for sweeps; without it a sweep pays the node estimate up to the cap. */
+  feePolicy?: () => TransactionFeePolicy;
   /** The pool's registered signer key, used to refuse a wallet that is also the signer. */
   signerKeyHex: () => Promise<string | null> | string | null;
   /** Sweep approval window; defaults to 30 minutes (plan §8.6). */
@@ -761,14 +767,16 @@ export class GasWalletService {
   }
 
   async #estimateFee(reader: GasWalletReader, unsignedHex: string, cap: bigint): Promise<bigint> {
+    const policy = this.#options.feePolicy?.();
     try {
       const estimate = await reader.estimateUnsignedTransactionFee(unsignedHex);
+      if (policy) return selectTransactionFee(estimate, policy).feeUstx;
       if (estimate.status !== "observed") return cap;
       const middle = estimate.value.estimates.middle.feeUstx;
       if (middle <= 0n) return cap;
       return middle > cap ? cap : middle;
     } catch {
-      return cap;
+      return policy ? selectTransactionFee(null, policy).feeUstx : cap;
     }
   }
 

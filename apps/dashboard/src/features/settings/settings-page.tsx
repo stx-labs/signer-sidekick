@@ -47,7 +47,7 @@ type ConnectionEditor =
   | "signer-monitoring"
   | "indexed-api"
   | "hiro-reference";
-type SettingsSaveSection = "dataSources" | "forecast";
+type SettingsSaveSection = "dataSources" | "forecast" | "engine";
 type SourceTestResult = { state: "testing" | "connected" | "failed"; detail: string };
 
 type AuthSession = {
@@ -223,6 +223,7 @@ export function SettingsPage({
   const [savedSection, setSavedSection] = useState<SettingsSaveSection | null>(null);
   const [dataSourcesDirty, setDataSourcesDirty] = useState(false);
   const [forecastDirty, setForecastDirty] = useState(false);
+  const [engineDirty, setEngineDirty] = useState(false);
   const [themeBusy, setThemeBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [themeError, setThemeError] = useState<string | null>(null);
@@ -331,12 +332,12 @@ export function SettingsPage({
   }, [settings]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (!dataSourcesDirty && !forecastDirty) return;
+      if (!dataSourcesDirty && !forecastDirty && !engineDirty) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dataSourcesDirty, forecastDirty]);
+  }, [dataSourcesDirty, forecastDirty, engineDirty]);
 
   const saveSection = async (section: SettingsSaveSection) => {
     if (!settings || !persistedSettings) return;
@@ -352,6 +353,7 @@ export function SettingsPage({
       const dataSources =
         section === "dataSources" ? settings.dataSources : persistedSettings.dataSources;
       const forecast = section === "forecast" ? settings.forecast : persistedSettings.forecast;
+      const engine = section === "engine" ? settings.engine : undefined;
       const result = await apiJson(token, "/api/v1/settings", runtimeSettingsSchema, {
         method: "PUT",
         body: JSON.stringify({
@@ -376,6 +378,14 @@ export function SettingsPage({
           },
           forecast,
           embed: persistedSettings.embed,
+          ...(engine
+            ? {
+                engine: {
+                  minimumFeeUstx: engine.minimumFeeUstx,
+                  standardFeeUstx: engine.standardFeeUstx,
+                },
+              }
+            : {}),
         }),
       });
       setPersistedSettings(result);
@@ -383,9 +393,12 @@ export function SettingsPage({
         if (!current) return result;
         return {
           ...result,
-          ...(section === "dataSources" && forecastDirty ? { forecast: current.forecast } : {}),
-          ...(section === "forecast" && dataSourcesDirty
+          ...(section !== "forecast" && forecastDirty ? { forecast: current.forecast } : {}),
+          ...(section !== "dataSources" && dataSourcesDirty
             ? { dataSources: current.dataSources }
+            : {}),
+          ...(section !== "engine" && engineDirty && current.engine
+            ? { engine: current.engine }
             : {}),
         };
       });
@@ -398,8 +411,10 @@ export function SettingsPage({
         setReferenceApiDirty(false);
         setDataSourcesDirty(false);
         setDeploymentCheckRevision((revision) => revision + 1);
-      } else {
+      } else if (section === "forecast") {
         setForecastDirty(false);
+      } else {
+        setEngineDirty(false);
       }
       setSavedSection(section);
       await onSaved?.();
@@ -408,7 +423,11 @@ export function SettingsPage({
         section,
         message: operatorActionError(
           cause,
-          section === "dataSources" ? "Could not save connections" : "Could not save forecast",
+          section === "dataSources"
+            ? "Could not save connections"
+            : section === "forecast"
+              ? "Could not save forecast"
+              : "Could not save the fee band",
           "Review the fields, then retry; saving again is safe",
         ),
       });
@@ -452,6 +471,7 @@ export function SettingsPage({
               ...result,
               ...(dataSourcesDirty ? { dataSources: current.dataSources } : {}),
               ...(forecastDirty ? { forecast: current.forecast } : {}),
+              ...(engineDirty && current.engine ? { engine: current.engine } : {}),
             }
           : result,
       );
@@ -489,6 +509,7 @@ export function SettingsPage({
       setDataSourcesDirty(true);
     }
     if (section === "forecast") setForecastDirty(true);
+    if (section === "engine") setEngineDirty(true);
     setSavedSection(null);
     setSectionError(null);
     setSettings({ ...settings, [section]: value });
@@ -1179,6 +1200,13 @@ export function SettingsPage({
         )}
 
         <EngineSettings
+          feeBand={settings.engine ?? null}
+          feeBandDirty={engineDirty}
+          feeBandError={sectionError?.section === "engine" ? sectionError.message : null}
+          feeBandSaved={savedSection === "engine"}
+          feeBandSaving={savingSection === "engine"}
+          onFeeBandChange={(value) => update("engine", value)}
+          onFeeBandSave={() => void saveSection("engine")}
           onGasWalletStatus={setGasWalletStatus}
           onStatus={setEngineStatus}
           readOnly={readOnly}

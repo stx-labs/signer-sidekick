@@ -4292,15 +4292,20 @@ td .rw-txid {
 }
 .st-wallet-id .rw-wallet-address {
   background: var(--surface-primary);
+  width: 100%;
 }
 .st-wallet-sub {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
 }
+.st-wallet-rows {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-tertiary);
+}
 .st-wallet-rows .st-row {
   padding: 9px 0;
-  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto auto;
 }
 .st-wallet-rows .st-row:last-of-type {
   border-bottom: 0;
@@ -5197,4 +5202,11 @@ td .rw-txid {
     margin-left: 0;
     width: 100%;
   }
+}
+
+.st-fee-band {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }

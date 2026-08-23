@@ -1,8 +1,9 @@
-import { Warning } from "@phosphor-icons/react";
+import { Check, Warning } from "@phosphor-icons/react";
 import type {
   EngineStatus,
   GasWalletStatus,
   OperationReadiness,
+  RuntimeSettings,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityHash, settingsHash } from "../../dashboard-route.js";
@@ -18,6 +19,120 @@ import { GasWalletSettings } from "./gas-wallet-settings.js";
 import { SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
 
 type EngineControlAction = "force-observe" | `disable:${string}`;
+
+type FeeBand = NonNullable<RuntimeSettings["engine"]>;
+
+const stxText = (ustx: number) => (ustx / 1_000_000).toString();
+const ustxValue = (text: string) => Math.round(Number(text) * 1_000_000);
+const feeBandValid = (band: FeeBand) =>
+  Number.isInteger(band.minimumFeeUstx) &&
+  Number.isInteger(band.standardFeeUstx) &&
+  band.minimumFeeUstx >= 1 &&
+  band.minimumFeeUstx <= band.standardFeeUstx &&
+  band.standardFeeUstx <= band.maximumFeeUstx;
+
+/**
+ * Reward-run fee band: the node's estimate for the exact call is paid within this band; the floor
+ * is also paid when the node has no estimate. Inputs keep their own text so partial entries
+ * ("0.00") do not fight the stored micro-STX value.
+ */
+function FeeBandRow({
+  band,
+  dirty,
+  error,
+  onChange,
+  onSave,
+  readOnly,
+  saved,
+  saving,
+}: {
+  band: FeeBand;
+  dirty: boolean;
+  error: string | null;
+  onChange: (band: FeeBand) => void;
+  onSave: () => void;
+  readOnly: boolean;
+  saved: boolean;
+  saving: boolean;
+}) {
+  const [draft, setDraft] = useState<{ minimum: string; standard: string } | null>(null);
+  useEffect(() => {
+    if (!dirty) setDraft(null);
+  }, [dirty]);
+  const minimum = draft?.minimum ?? stxText(band.minimumFeeUstx);
+  const standard = draft?.standard ?? stxText(band.standardFeeUstx);
+  const valid = feeBandValid(band);
+  const change = (field: "minimum" | "standard", text: string) => {
+    const next = { minimum, standard, [field]: text };
+    setDraft(next);
+    onChange({
+      ...band,
+      minimumFeeUstx: ustxValue(next.minimum),
+      standardFeeUstx: ustxValue(next.standard),
+    });
+  };
+  return (
+    <>
+      <SettingsRow
+        actions={
+          <button
+            className="btn btn-tertiary sm"
+            disabled={readOnly || !dirty || !valid || saving}
+            onClick={onSave}
+            type="button"
+          >
+            {saving ? "Saving" : "Save"}
+          </button>
+        }
+        detail={
+          valid
+            ? `paid per transaction · hard cap ${stxText(band.maximumFeeUstx)} STX set by the deployment`
+            : `minimum must not exceed standard, and standard must not exceed the ${stxText(band.maximumFeeUstx)} STX cap`
+        }
+        help="The local node estimates each exact call; Sidekick pays that estimate clamped to this band, and the minimum when the node has no estimate — the Leather wallet's standard method, so bot-driven fee spikes are neither paid nor halted on. SIDEKICK_ENGINE_MAXIMUM_FEE_USTX is the deployment's hard cap."
+        name="Fee band"
+        {...(valid ? {} : { status: "Invalid" })}
+        value={
+          <span className="st-fee-band">
+            <span className="input-group st-inline-input">
+              <input
+                aria-label="Minimum fee"
+                disabled={readOnly}
+                inputMode="decimal"
+                min={0.000001}
+                onChange={(event) => change("minimum", event.target.value)}
+                step={0.001}
+                type="number"
+                value={minimum}
+              />
+              <span className="suffix">STX</span>
+            </span>
+            <span className="muted">to</span>
+            <span className="input-group st-inline-input">
+              <input
+                aria-label="Standard fee"
+                disabled={readOnly}
+                inputMode="decimal"
+                min={0.000001}
+                onChange={(event) => change("standard", event.target.value)}
+                step={0.001}
+                type="number"
+                value={standard}
+              />
+              <span className="suffix">STX</span>
+            </span>
+          </span>
+        }
+      />
+      <ErrorCallout error={error} />
+      {saved ? (
+        <div className="settings-section-saved" role="status">
+          <Check /> Fee band saved.
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 const operationChips = [
   ["pox5-calculate-rewards", "calculate"],
@@ -47,11 +162,26 @@ function adapterTone(availability: EngineStatus["adapters"][number]["availabilit
 }
 
 export function EngineSettings({
+  feeBand = null,
+  feeBandDirty = false,
+  feeBandError = null,
+  feeBandSaved = false,
+  feeBandSaving = false,
+  onFeeBandChange,
+  onFeeBandSave,
   onGasWalletStatus,
   onStatus,
   readOnly,
   token,
 }: {
+  /** Stored reward-run fee band with the deployment cap; null on Sidekicks that predate it. */
+  feeBand?: FeeBand | null;
+  feeBandDirty?: boolean;
+  feeBandError?: string | null;
+  feeBandSaved?: boolean;
+  feeBandSaving?: boolean;
+  onFeeBandChange?: (band: FeeBand) => void;
+  onFeeBandSave?: () => void;
   onGasWalletStatus?: (status: GasWalletStatus | null) => void;
   onStatus?: (status: EngineStatus | null) => void;
   readOnly: boolean;
@@ -243,6 +373,18 @@ export function EngineSettings({
           readOnly={readOnly}
         />
         <div className="st-rows">
+          {feeBand && onFeeBandChange && onFeeBandSave ? (
+            <FeeBandRow
+              band={feeBand}
+              dirty={feeBandDirty}
+              error={feeBandError}
+              onChange={onFeeBandChange}
+              onSave={onFeeBandSave}
+              readOnly={readOnly}
+              saved={feeBandSaved}
+              saving={feeBandSaving}
+            />
+          ) : null}
           <SettingsRow
             actions={
               <>

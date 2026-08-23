@@ -12,6 +12,7 @@ import { indexedWorkflowsReady, runOperatorPreflight } from "./preflight.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
 import type { RuntimeApiCredentials } from "./storage/runtime-settings-repository.js";
 import type { SidekickStore } from "./storage/store.js";
+import type { TransactionFeePolicy } from "./transaction-engine/fee-policy.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
 const optionalUrlSchema = z
@@ -28,6 +29,20 @@ const supportContactSchema = z
     (value) => value === "" || z.email().safeParse(value).success || isHttpUrl(value),
     "Expected an email address or HTTP(S) URL",
   );
+
+const feeUstxSchema = z.number().int().min(1).max(10_000_000);
+/**
+ * Reward-run fee band (Settings → Reward runs). The engine pays the local node's estimate for the
+ * exact transaction clamped into this band, and the floor when the node has no estimate; the
+ * deployment's SIDEKICK_ENGINE_MAXIMUM_FEE_USTX stays the hard cap. The defaults mirror the Leather
+ * wallet's standard contract-call band (0.003–0.01 STX), which is what clears on mainnet while
+ * bot-driven estimate spikes come and go.
+ */
+const engineSettingsSchema = z
+  .object({ minimumFeeUstx: feeUstxSchema, standardFeeUstx: feeUstxSchema })
+  .strict();
+export const DEFAULT_ENGINE_SETTINGS = { minimumFeeUstx: 3_000, standardFeeUstx: 10_000 } as const;
+export type EngineRuntimeSettings = z.infer<typeof engineSettingsSchema>;
 
 const legacyPersistedRuntimeSettingsSchema = z
   .object({
@@ -90,6 +105,8 @@ const persistedRuntimeSettingsSchema = z
       .strict(),
     forecast: legacyPersistedRuntimeSettingsSchema.shape.forecast,
     embed: legacyPersistedRuntimeSettingsSchema.shape.embed,
+    // Rows written before the band existed read back with the defaults; no schema bump needed.
+    engine: engineSettingsSchema.default({ ...DEFAULT_ENGINE_SETTINGS }),
   })
   .strict();
 
@@ -110,6 +127,8 @@ export const runtimeSettingsUpdateSchema = persistedRuntimeSettingsSchema
         hiroReferenceApiKeyAction: apiKeyActionSchema.default({ action: "keep" }),
       })
       .strict(),
+    // Omitted by older dashboards: keep the stored band rather than resetting it to the default.
+    engine: engineSettingsSchema.optional(),
   })
   .strict();
 
@@ -133,6 +152,8 @@ export interface PublicRuntimeSettings {
   };
   forecast: PersistedRuntimeSettings["forecast"];
   embed: PersistedRuntimeSettings["embed"];
+  /** Stored fee band plus the deployment's hard cap, so the UI can show the whole policy. */
+  engine: EngineRuntimeSettings & { maximumFeeUstx: number };
   audit: Array<{ revision: number; changedFields: string[]; changedAt: string }>;
 }
 
@@ -165,6 +186,7 @@ function defaults(config: SidekickConfig): PersistedRuntimeSettings {
     },
     forecast: { horizonCycles: config.forecastHorizonCycles },
     embed: { publicApiUrl: publicApiDefault(config) },
+    engine: { ...DEFAULT_ENGINE_SETTINGS },
   };
 }
 
@@ -210,7 +232,14 @@ function changedFields(
   changedCredentialSources: ReadonlySet<keyof RuntimeApiCredentials>,
 ): string[] {
   const fields: string[] = [];
-  for (const section of ["pool", "display", "dataSources", "forecast", "embed"] as const) {
+  for (const section of [
+    "pool",
+    "display",
+    "dataSources",
+    "forecast",
+    "embed",
+    "engine",
+  ] as const) {
     const before = previous[section] as Record<string, unknown>;
     const after = next[section] as Record<string, unknown>;
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
@@ -253,6 +282,8 @@ export class RuntimeSettingsController {
         );
       }
     },
+    /** Deployment bounds the stored settings may not exceed. */
+    private readonly bounds: { engineMaximumFeeUstx: bigint } = { engineMaximumFeeUstx: 100_000n },
   ) {
     const stored = store.runtimeSettings.get();
     this.settings = stored
@@ -265,6 +296,15 @@ export class RuntimeSettingsController {
 
   effectiveConfig(): SidekickConfig {
     return this.configFor(this.settings, this.apiCredentials);
+  }
+
+  /** Live reward-run fee policy: the stored band under the deployment's hard cap. */
+  feePolicy(): TransactionFeePolicy {
+    return {
+      minimumFeeUstx: BigInt(this.settings.engine.minimumFeeUstx),
+      standardFeeUstx: BigInt(this.settings.engine.standardFeeUstx),
+      maximumFeeUstx: this.bounds.engineMaximumFeeUstx,
+    };
   }
 
   private configFor(
@@ -390,6 +430,10 @@ export class RuntimeSettingsController {
       },
       forecast: this.settings.forecast,
       embed: this.settings.embed,
+      engine: {
+        ...this.settings.engine,
+        maximumFeeUstx: Number(this.bounds.engineMaximumFeeUstx),
+      },
       audit: this.store.runtimeSettings.listAudit(),
     };
   }
@@ -409,6 +453,17 @@ export class RuntimeSettingsController {
       );
     }
     const value = parsed.data;
+    const engine = value.engine ?? this.settings.engine;
+    if (
+      engine.minimumFeeUstx > engine.standardFeeUstx ||
+      BigInt(engine.standardFeeUstx) > this.bounds.engineMaximumFeeUstx
+    ) {
+      throw new OperatorWorkflowError(
+        400,
+        "invalid_runtime_settings",
+        `Fee band must satisfy minimum ≤ standard ≤ the deployment cap of ${Number(this.bounds.engineMaximumFeeUstx) / 1_000_000} STX`,
+      );
+    }
     let nodeRpcUrl: string;
     let apiUrl: string;
     let publicApiUrl: string;
@@ -497,6 +552,7 @@ export class RuntimeSettingsController {
         hiroReferenceApiKeyHeader,
       },
       embed: { publicApiUrl },
+      engine,
     });
     const fields = changedFields(this.settings, next, changedCredentialSources);
     if (fields.length === 0) return this.publicSettings();

@@ -30,6 +30,11 @@ import {
 import type { WithdrawalRegistryStatus } from "../reward-ledger.js";
 import type { SidekickStore } from "../storage/store.js";
 import {
+  type FeeSelection,
+  selectTransactionFee,
+  type TransactionFeePolicy,
+} from "./fee-policy.js";
+import {
   type LiveObservation,
   LiveTransactionReader,
   type TransactionFeeObservation,
@@ -62,15 +67,12 @@ export function reviewedRewardManagerAvailable(
   return capability.executionAvailable && capability.adapter?.reviewedSourceSha256 === sourceSha256;
 }
 
+/** Fee for one reward-run child under the engine's fee policy; see `selectTransactionFee`. */
 export function selectRewardRunFee(
-  estimate: LiveObservation<TransactionFeeObservation>,
-  maximumFeeUstx: bigint,
-): { status: "ready"; feeUstx: bigint } | { status: "blocked" } {
-  if (estimate.status !== "observed" || estimate.value.estimates.middle.feeUstx <= 0n) {
-    return { status: "ready", feeUstx: maximumFeeUstx };
-  }
-  const feeUstx = estimate.value.estimates.middle.feeUstx;
-  return feeUstx > maximumFeeUstx ? { status: "blocked" } : { status: "ready", feeUstx };
+  estimate: LiveObservation<TransactionFeeObservation> | null,
+  policy: TransactionFeePolicy,
+): FeeSelection {
+  return selectTransactionFee(estimate, policy);
 }
 
 interface StakerClaimsPage {
@@ -391,7 +393,8 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
 export interface LiveRewardRunDriverOptions {
   engine: Pick<SidekickTransactionEngineRuntime, "readRewardRunObservation" | "gasPayerIdentity">;
   runtimeContext: () => TransactionEngineRuntimeContext;
-  maximumFeeUstx: bigint;
+  /** Live fee policy (Settings → Reward runs band under the deployment cap), read per child. */
+  feePolicy: () => TransactionFeePolicy;
   withdrawalRequestStatus(
     registryContract: string,
     requestId: string,
@@ -441,7 +444,7 @@ export class LiveRewardRunDriver implements RewardRunDriver {
       sender: wallet,
       managerSourceFingerprint: input.run.recipe.managerSourceFingerprint,
       nonce: account.value.nonce,
-      feeUstx: this.options.maximumFeeUstx,
+      feeUstx: this.options.feePolicy().maximumFeeUstx,
     } as const;
     const recipeChild = input.run.recipe.children[input.child.index];
     if (!recipeChild) return { status: "halt", reason: "Recipe child is missing" };
@@ -679,24 +682,19 @@ export class LiveRewardRunDriver implements RewardRunDriver {
       }
     }
     const draft = await planRewardOperation(planInput);
-    let feeDecision: ReturnType<typeof selectRewardRunFee>;
+    let estimate: LiveObservation<TransactionFeeObservation> | null = null;
     try {
-      feeDecision = selectRewardRunFee(
-        await reader.estimateUnsignedTransactionFee(draft.unsignedTransactionHex),
-        this.options.maximumFeeUstx,
-      );
+      estimate = await reader.estimateUnsignedTransactionFee(draft.unsignedTransactionHex);
     } catch {
-      feeDecision = { status: "ready", feeUstx: this.options.maximumFeeUstx };
+      estimate = null;
     }
-    if (feeDecision.status === "blocked") {
-      return { status: "halt", reason: "Current network fee exceeds the approved fee cap" };
-    }
-    const fee = feeDecision.feeUstx;
+    const feePolicy = this.options.feePolicy();
+    const fee = selectRewardRunFee(estimate, feePolicy).feeUstx;
     if (account.value.balanceUstx < fee) {
       return { status: "halt", reason: "The gas wallet does not cover the next transaction fee" };
     }
     const plan =
-      fee === this.options.maximumFeeUstx
+      fee === feePolicy.maximumFeeUstx
         ? draft
         : await planRewardOperation({ ...planInput, feeUstx: fee });
     return { status: "plan", plan, amountSats };

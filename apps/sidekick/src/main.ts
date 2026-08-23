@@ -70,6 +70,7 @@ import {
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
 import { RewardRunService } from "./transaction-engine/reward-run-service.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
+import { loadTransactionEngineRuntimeConfig } from "./transaction-engine/runtime-config.js";
 import { WalletIntentService } from "./wallet-intent-service.js";
 
 function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
@@ -164,7 +165,16 @@ export async function executeCliCommand({
       store.close();
     };
     try {
-      const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+      const runtimeSettings = new RuntimeSettingsController(
+        config,
+        store,
+        managerPrincipal,
+        undefined,
+        {
+          engineMaximumFeeUstx: loadTransactionEngineRuntimeConfig(env, config.network)
+            .maximumFeeUstx,
+        },
+      );
       const { config: effectiveConfig, node, api } = runtimeSettings.clients();
       const connection = new ConnectionAssessmentService({
         config: effectiveConfig,
@@ -322,6 +332,8 @@ export async function executeCliCommand({
         getConnection: () => connection.current(),
         getObserverStatus: currentObserverStatus,
       });
+      // Live: the fee band is a setting (Settings → Reward runs); only the cap is deployment env.
+      const feePolicy = () => runtimeSettings.feePolicy();
       const gasWallet = new GasWalletService({
         store,
         engineMode: engine.requestedMode,
@@ -332,6 +344,7 @@ export async function executeCliCommand({
         chainId,
         secretFilePath: join(dirname(resolve(config.databasePath)), "gas-wallet.key"),
         maximumFeeUstx: engine.maximumFeeUstx,
+        feePolicy,
         signerKeyHex: async () => (await service.snapshot()).registration?.signerKeyHex ?? null,
         logger: { warn: (message) => warnGasWallet(message) },
       });
@@ -341,7 +354,7 @@ export async function executeCliCommand({
         driver: new LiveRewardRunDriver({
           engine,
           runtimeContext: connectedRuntimeContext,
-          maximumFeeUstx: engine.maximumFeeUstx,
+          feePolicy,
           withdrawalRequestStatus: async (registryContract, requestId, tip) =>
             await service.withdrawalRequestStatus(registryContract, requestId, tip),
         }),
@@ -978,7 +991,16 @@ export async function executeCliCommand({
     await withStore(
       () => openSidekickStore(config.databasePath),
       async ({ store }) => {
-        const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+        const runtimeSettings = new RuntimeSettingsController(
+          config,
+          store,
+          managerPrincipal,
+          undefined,
+          {
+            engineMaximumFeeUstx: loadTransactionEngineRuntimeConfig(env, config.network)
+              .maximumFeeUstx,
+          },
+        );
         const { config: effectiveConfig, node, api } = runtimeSettings.clients();
         const connection = new ConnectionAssessmentService({
           config: effectiveConfig,

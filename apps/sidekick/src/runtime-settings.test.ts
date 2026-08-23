@@ -432,3 +432,75 @@ describe("runtime settings", () => {
     ).rejects.toThrow("Expected an HTTP(S) URL");
   });
 });
+
+describe("runtime settings fee band", () => {
+  async function baseUpdate(runtime: RuntimeSettingsController) {
+    const current = runtime.publicSettings();
+    return {
+      pool: current.pool,
+      display: current.display,
+      dataSources: {
+        nodeRpcUrl: current.dataSources.nodeRpcUrl,
+        apiUrl: current.dataSources.apiUrl,
+        apiKeyHeader: current.dataSources.apiKeyHeader,
+        nodeMetricsUrl: current.dataSources.nodeMetricsUrl,
+        signerMonitoringUrl: current.dataSources.signerMonitoringUrl,
+        hiroReferenceApiUrl: current.dataSources.hiroReferenceApiUrl,
+        hiroReferenceApiKeyHeader: current.dataSources.hiroReferenceApiKeyHeader,
+      },
+      forecast: current.forecast,
+      embed: current.embed,
+    };
+  }
+
+  it("defaults to the Leather standard band under the deployment cap", async () => {
+    const runtime = await controller();
+    expect(runtime.publicSettings().engine).toEqual({
+      minimumFeeUstx: 3_000,
+      standardFeeUstx: 10_000,
+      maximumFeeUstx: 100_000,
+    });
+    expect(runtime.feePolicy()).toEqual({
+      minimumFeeUstx: 3_000n,
+      standardFeeUstx: 10_000n,
+      maximumFeeUstx: 100_000n,
+    });
+  });
+
+  it("stores an edited band, audits it, and keeps it when other sections save", async () => {
+    const runtime = await controller();
+    const body = await baseUpdate(runtime);
+    const updated = await runtime.update(
+      { ...body, engine: { minimumFeeUstx: 2_500, standardFeeUstx: 20_000 } },
+      "2026-07-15T12:01:00.000Z",
+    );
+    expect(updated.engine).toEqual({
+      minimumFeeUstx: 2_500,
+      standardFeeUstx: 20_000,
+      maximumFeeUstx: 100_000,
+    });
+    expect(updated.audit[0]?.changedFields).toEqual([
+      "engine.minimumFeeUstx",
+      "engine.standardFeeUstx",
+    ]);
+    expect(runtime.feePolicy().standardFeeUstx).toBe(20_000n);
+    // An older dashboard that omits the section must not reset it.
+    const again = await runtime.update(
+      { ...body, forecast: { horizonCycles: 12 } },
+      "2026-07-15T12:02:00.000Z",
+    );
+    expect(again.engine).toMatchObject({ minimumFeeUstx: 2_500, standardFeeUstx: 20_000 });
+    expect(again.forecast.horizonCycles).toBe(12);
+  });
+
+  it("rejects a band outside minimum ≤ standard ≤ cap", async () => {
+    const runtime = await controller();
+    const body = await baseUpdate(runtime);
+    await expect(
+      runtime.update({ ...body, engine: { minimumFeeUstx: 20_000, standardFeeUstx: 10_000 } }),
+    ).rejects.toMatchObject({ responseCode: "invalid_runtime_settings" });
+    await expect(
+      runtime.update({ ...body, engine: { minimumFeeUstx: 3_000, standardFeeUstx: 200_000 } }),
+    ).rejects.toMatchObject({ responseCode: "invalid_runtime_settings" });
+  });
+});

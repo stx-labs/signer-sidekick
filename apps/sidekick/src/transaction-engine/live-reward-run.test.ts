@@ -34,25 +34,31 @@ function observedFee(feeUstx: bigint): LiveObservation<TransactionFeeObservation
 }
 
 describe("selectRewardRunFee", () => {
-  it("uses an observed fee within the approved ceiling", () => {
-    expect(selectRewardRunFee(observedFee(400n), 1_000n)).toEqual({
-      status: "ready",
-      feeUstx: 400n,
+  const policy = { minimumFeeUstx: 3_000n, standardFeeUstx: 10_000n, maximumFeeUstx: 100_000n };
+
+  it("pays the node's middle estimate inside the standard band", () => {
+    expect(selectRewardRunFee(observedFee(7_014n), policy)).toEqual({
+      feeUstx: 7_014n,
+      basis: "estimate",
+      estimateUstx: 7_014n,
     });
   });
 
-  it("uses the approved ceiling when estimation is unavailable", () => {
+  it("clamps a spiking estimate to the standard ceiling instead of halting the run", () => {
+    expect(selectRewardRunFee(observedFee(83_000n), policy)).toEqual({
+      feeUstx: 10_000n,
+      basis: "standard-ceiling",
+      estimateUstx: 83_000n,
+    });
+  });
+
+  it("pays the band floor when estimation is unavailable", () => {
+    const expected = { feeUstx: 3_000n, basis: "default", estimateUstx: null };
     expect(
-      selectRewardRunFee({ status: "unavailable", httpStatus: 500, reason: "http-error" }, 1_000n),
-    ).toEqual({ status: "ready", feeUstx: 1_000n });
-    expect(selectRewardRunFee(observedFee(0n), 1_000n)).toEqual({
-      status: "ready",
-      feeUstx: 1_000n,
-    });
-  });
-
-  it("refuses a positive estimate above the approved ceiling", () => {
-    expect(selectRewardRunFee(observedFee(1_001n), 1_000n)).toEqual({ status: "blocked" });
+      selectRewardRunFee({ status: "unavailable", httpStatus: 500, reason: "http-error" }, policy),
+    ).toEqual(expected);
+    expect(selectRewardRunFee(observedFee(0n), policy)).toEqual(expected);
+    expect(selectRewardRunFee(null, policy)).toEqual(expected);
   });
 });
 
