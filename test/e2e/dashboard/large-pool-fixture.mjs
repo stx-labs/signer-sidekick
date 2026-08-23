@@ -1191,6 +1191,7 @@ function ledgerPayment(cycle, distribution, index, staker, status, overrides = {
     l1Status: bitcoin && paid ? "retired" : null,
     settleOrReclaimTxId: null,
     btcSweepTxId: null,
+    btcSweepBlockHeight: null,
     unavailableReason: null,
     l1Address: bitcoin ? "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" : null,
     rollForward: null,

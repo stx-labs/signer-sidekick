@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { bufferCV, someCV, trueCV, tupleCV, uintCV } from "@stacks/transactions";
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   REFERENCE_MANAGER_PUBLIC_FUNCTIONS,
@@ -128,6 +129,48 @@ describe("operator service", () => {
     expect(
       sortRewardStakers(stakers, "net", "desc").map(({ stakerPrincipal }) => stakerPrincipal),
     ).toEqual(["SPA", "SPZ"]);
+  });
+
+  it("persists and reuses the node-readable Bitcoin payout transaction", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const registry = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-registry";
+    const callReadOnly = vi
+      .fn()
+      .mockResolvedValueOnce(someCV(tupleCV({ status: someCV(trueCV()) })))
+      .mockResolvedValueOnce(
+        someCV(
+          tupleCV({
+            "sweep-txid": bufferCV(Uint8Array.from({ length: 32 }, () => 0x44)),
+            "sweep-burn-height": uintCV(963_758),
+            "sweep-burn-hash": bufferCV(Uint8Array.from({ length: 32 }, () => 0x55)),
+          }),
+        ),
+      );
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://127.0.0.1:20443",
+        apiUrl: "https://api.mainnet.hiro.so",
+        apiKeyHeader: "x-api-key",
+        maxApiBurnBlockLag: 12,
+        forecastHorizonCycles: 6,
+        databasePath: ":memory:",
+      },
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: { callReadOnly } as unknown as StacksNodeClient,
+      api: {} as StacksApiClient,
+    });
+    const requests = [{ requestId: "2684", initiatedBlockHeight: 8_800_000 }];
+    const first = await service.withdrawalRequestEvidence(registry, requests, undefined);
+    expect(first.get("2684")).toMatchObject({
+      status: "accepted",
+      completion: { sweepTxId: `0x${"44".repeat(32)}`, bitcoinBlockHeight: 963_758 },
+    });
+    const second = await service.withdrawalRequestEvidence(registry, requests, undefined);
+    expect(second).toEqual(first);
+    expect(callReadOnly).toHaveBeenCalledTimes(2);
   });
 
   it("contains transaction-engine failures at the optional observation boundary", async () => {

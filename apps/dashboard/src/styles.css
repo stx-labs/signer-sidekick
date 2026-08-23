@@ -4279,10 +4279,10 @@ td .rw-txid {
 .st-chip.off {
   color: var(--status-error);
 }
+/* One column: the wallet address runs across the block; its rows sit beneath it. */
 .st-wallet {
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr);
-  gap: 0 24px;
+  grid-template-columns: minmax(0, 1fr);
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-tertiary);
   background: var(--surface-secondary);
@@ -4724,6 +4724,11 @@ td .rw-txid {
   position: relative;
   display: inline-flex;
 }
+.rw-payment-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .rw-l1 {
   display: inline-flex;
   align-items: center;
@@ -4749,6 +4754,7 @@ td .rw-txid {
 }
 /* Popovers open on hover, keyboard focus, or an explicit tap; the markup is always present. */
 .rw-l1-wrap .rw-pop,
+.rw-tx-wrap .rw-pop,
 .rw-rf .rw-pop {
   display: none;
 }
@@ -4756,6 +4762,11 @@ td .rw-txid {
 .rw-l1-wrap:focus-within .rw-pop,
 .rw-l1-wrap.is-open .rw-pop {
   display: flex;
+}
+.rw-tx-wrap:hover .rw-pop,
+.rw-tx-wrap:focus-within .rw-pop,
+.rw-tx-wrap.is-open .rw-pop {
+  display: grid;
 }
 .rw-rf:hover .rw-pop,
 .rw-rf:focus-within .rw-pop,
@@ -4814,6 +4825,55 @@ td .rw-txid {
   color: var(--accent-text);
   font-weight: 500;
 }
+.rw-tx-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.rw-tx-badge {
+  padding: 2px 6px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 999px;
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+.rw-tx-badge:hover,
+.rw-tx-badge:focus-visible,
+.rw-tx-wrap.is-open .rw-tx-badge {
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+.rw-tx-pop {
+  right: 0;
+  bottom: calc(100% + 6px);
+  left: auto;
+  top: auto;
+  width: min(620px, calc(100vw - 32px));
+  white-space: normal;
+}
+.rw-tx-entry {
+  display: grid;
+  grid-template-columns: minmax(130px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.rw-tx-entry .k {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.rw-tx-entry .a {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.rw-tx-entry .copy-identifier-button {
+  color: var(--accent-text);
+  font-weight: 500;
+}
 
 .seg button:disabled {
   cursor: default;
@@ -4847,6 +4907,20 @@ td .rw-txid {
 
   .rw-l1-pop .a {
     overflow-wrap: anywhere;
+  }
+
+  .rw-tx-pop {
+    right: -16px;
+    width: min(330px, calc(100vw - 48px));
+  }
+
+  .rw-tx-entry {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .rw-tx-entry .k,
+  .rw-tx-entry .a {
+    grid-column: 1 / -1;
   }
 
   .pool-roster-wrap {

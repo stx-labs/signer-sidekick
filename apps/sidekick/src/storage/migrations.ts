@@ -2368,4 +2368,26 @@ export const migrations: readonly Migration[] = [
         ON reward_run_preparations (created_at DESC, preparation_id DESC);
     `,
   },
+  {
+    version: 39,
+    name: "sbtc_withdrawal_completion_evidence",
+    sql: `
+      -- The manager payout transaction proves an L1 withdrawal request, not the later Bitcoin
+      -- payment. Persist the registry's node-readable completion proof separately.
+      CREATE TABLE sbtc_withdrawal_completions (
+        chain_id INTEGER NOT NULL CHECK (chain_id >= 0),
+        registry_contract TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        sweep_txid TEXT NOT NULL CHECK (length(sweep_txid) = 66),
+        bitcoin_block_height INTEGER NOT NULL CHECK (bitcoin_block_height >= 0),
+        bitcoin_block_hash TEXT NOT NULL CHECK (length(bitcoin_block_hash) = 66),
+        observed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (chain_id, registry_contract, request_id)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX sbtc_withdrawal_completions_sweep_tx
+        ON sbtc_withdrawal_completions (sweep_txid);
+    `,
+  },
 ];

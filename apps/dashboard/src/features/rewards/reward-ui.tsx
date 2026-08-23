@@ -1,4 +1,5 @@
 import { CaretLeft, CaretRight, CurrencyBtc, Info, Wallet } from "@phosphor-icons/react";
+import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useId, useRef, useState } from "react";
 import { CopyIdentifierButton } from "../../copyable-identifier.js";
 import { short } from "../../shared/format.js";
@@ -32,27 +33,20 @@ export function GasChip({ execution }: { execution: RewardExecutionAvailability 
   );
 }
 
-/**
- * The ₿ marker beside a staker who is paid out over Bitcoin. Hover or focus shows the currently
- * registered L1 address with a copy button; click toggles it for touch.
- */
-export function L1Marker({ address, principal }: { address: string | null; principal: string }) {
-  const [open, setOpen] = useState(false);
-  const id = useId();
+function useDismissablePopover(open: boolean, close: () => void) {
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Node && wrapperRef.current?.contains(target)) return;
-      setOpen(false);
+      close();
       triggerRef.current?.blur();
     };
     const dismissWithKeyboard = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setOpen(false);
+      close();
       triggerRef.current?.blur();
     };
     document.addEventListener("pointerdown", dismiss);
@@ -61,7 +55,18 @@ export function L1Marker({ address, principal }: { address: string | null; princ
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", dismissWithKeyboard);
     };
-  }, [open]);
+  }, [open, close]);
+  return { wrapperRef, triggerRef };
+}
+
+/**
+ * The ₿ marker beside a staker who is paid out over Bitcoin. Hover or focus shows the currently
+ * registered L1 address with a copy button; click toggles it for touch.
+ */
+export function L1Marker({ address, principal }: { address: string | null; principal: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const { wrapperRef, triggerRef } = useDismissablePopover(open, () => setOpen(false));
 
   return (
     <span className={`rw-l1-wrap${open ? " is-open" : ""}`} ref={wrapperRef}>
@@ -91,6 +96,59 @@ export function L1Marker({ address, principal }: { address: string | null; princ
         ) : (
           <span className="a muted">registered address not available</span>
         )}
+      </span>
+    </span>
+  );
+}
+
+/** Transaction evidence beside a payment status. The Bitcoin sweep replaces the Stacks request
+ * as the primary payout transaction once an L1 withdrawal completes. */
+export function TxIdMarker({ payment }: { payment: RewardLedgerPayment }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const { wrapperRef, triggerRef } = useDismissablePopover(open, () => setOpen(false));
+  const entries =
+    payment.route === "bitcoin"
+      ? [
+          payment.btcSweepTxId ? { label: "Bitcoin payout", txid: payment.btcSweepTxId } : null,
+          payment.paymentTxId
+            ? { label: "Stacks withdrawal request", txid: payment.paymentTxId }
+            : null,
+          payment.settleOrReclaimTxId
+            ? {
+                label: payment.status === "returned" ? "Stacks return" : "Stacks retirement",
+                txid: payment.settleOrReclaimTxId,
+              }
+            : null,
+        ].filter((entry): entry is { label: string; txid: string } => entry !== null)
+      : payment.paymentTxId
+        ? [{ label: "sBTC payout", txid: payment.paymentTxId }]
+        : [];
+  if (entries.length === 0) return null;
+  const primary = entries[0];
+  if (!primary) return null;
+  return (
+    <span className={`rw-tx-wrap${open ? " is-open" : ""}`} ref={wrapperRef}>
+      <button
+        type="button"
+        className="rw-tx-badge"
+        aria-label={`${primary.label} transaction ID`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={id}
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+      >
+        txid
+      </button>
+      <span className="rw-pop rw-tx-pop" role="dialog" aria-label="Transaction IDs" id={id}>
+        {entries.map((entry) => (
+          <span className="rw-tx-entry" key={`${entry.label}:${entry.txid}`}>
+            <span className="k">{entry.label}</span>
+            <span className="a">{entry.txid}</span>
+            <CopyIdentifierButton value={entry.txid} label="transaction ID" showLabel />
+          </span>
+        ))}
       </span>
     </span>
   );

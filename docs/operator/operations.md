@@ -66,7 +66,10 @@ The Rewards page is one view of the reward cycle:
 
 A ₿ beside a staker marks a Bitcoin payout; hover it to see and copy their currently registered
 address. Historical manager events do not prove which address was registered when an older payout
-was initiated.
+was initiated. Once the sBTC signers sweep an accepted withdrawal, the payment shows the Bitcoin
+transaction and block (read from the registry on the local node and kept), and the `txid` marker
+beside a status lists every transaction behind a payment — for a Bitcoin payout, the sweep plus its
+Stacks request and retirement.
 
 ## Reward runs
 

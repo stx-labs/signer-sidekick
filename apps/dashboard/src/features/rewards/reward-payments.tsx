@@ -12,7 +12,7 @@ import {
   rollForwardExplanation,
   shortDate,
 } from "./reward-state.js";
-import { Pager, StakerCell, StatusChip } from "./reward-ui.js";
+import { Pager, StakerCell, StatusChip, TxIdMarker } from "./reward-ui.js";
 
 const PAGE_SIZE = 10;
 const SEARCH_THRESHOLD = 10;
@@ -210,8 +210,12 @@ export function PaymentsTable({
                   ? amount(row.grossRewardSats)
                   : "—"
                 : amount(toStaker, row.status === "returned" ? "sBTC" : toStakerAsset);
-              const paidText = row.paymentTxId
-                ? `${row.paidAt ? shortDate(row.paidAt) : row.paymentBlockHeight ? `block ${row.paymentBlockHeight.toLocaleString("en-US")}` : "paid"} · ${shortTx(row.paymentTxId)}`
+              const displayTxId =
+                row.route === "bitcoin" ? (row.btcSweepTxId ?? row.paymentTxId) : row.paymentTxId;
+              const paidText = displayTxId
+                ? row.route === "bitcoin" && row.btcSweepTxId
+                  ? `Bitcoin${row.btcSweepBlockHeight ? ` block ${row.btcSweepBlockHeight.toLocaleString("en-US")}` : ""} · ${shortTx(row.btcSweepTxId)}`
+                  : `${row.paidAt ? shortDate(row.paidAt) : row.paymentBlockHeight ? `block ${row.paymentBlockHeight.toLocaleString("en-US")}` : "paid"} · ${shortTx(displayTxId)}`
                 : "—";
               return (
                 <tr
@@ -259,19 +263,26 @@ export function PaymentsTable({
                     {amountText}
                   </td>
                   <td>
-                    <StatusChip
-                      tone={status.tone}
-                      label={status.label}
-                      tooltip={status.sub}
-                      popover={rolled ? rollForwardExplanation(row) : null}
-                    />
+                    <span className="rw-payment-status">
+                      <StatusChip
+                        tone={status.tone}
+                        label={status.label}
+                        tooltip={status.sub}
+                        popover={rolled ? rollForwardExplanation(row) : null}
+                      />
+                      {/* History rows already print the payout tx in the Paid column; the marker
+                          earns its place there only for Bitcoin rows, which carry 2–3 transactions. */}
+                      {variant === "history" && row.route !== "bitcoin" ? null : (
+                        <TxIdMarker payment={row} />
+                      )}
+                    </span>
                     {row.coverage === "historical-coverage-incomplete" ? (
                       <span className="rw-pay-sub rw-coverage">history incomplete</span>
                     ) : null}
                   </td>
                   {variant === "history" ? (
                     <td className="rw-hide-sm">
-                      <span className="rw-txid" title={row.paymentTxId ?? undefined}>
+                      <span className="rw-txid" title={displayTxId ?? undefined}>
                         {paidText}
                       </span>
                     </td>

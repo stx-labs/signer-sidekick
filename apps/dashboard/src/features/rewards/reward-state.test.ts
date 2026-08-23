@@ -260,6 +260,7 @@ function payment(overrides: Partial<RewardLedgerPayment>): RewardLedgerPayment {
     l1Status: null,
     settleOrReclaimTxId: null,
     btcSweepTxId: null,
+    btcSweepBlockHeight: null,
     unavailableReason: null,
     l1Address: null,
     rollForward: null,

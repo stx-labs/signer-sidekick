@@ -222,6 +222,7 @@ describe("reward run repository", () => {
       provenance: "you",
       now,
     });
+    expect(store.rewardRuns.listOwnedTransactionIds()).toEqual([`0x${"cd".repeat(32)}`]);
     const advanced = store.rewardRuns.advanceCursor(runId, 0, "500", now);
     expect(advanced).toMatchObject({
       cursor: 1,

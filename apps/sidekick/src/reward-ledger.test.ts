@@ -658,8 +658,25 @@ describe("buildRewardLedger", () => {
         rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
       }),
       query: { cycle: 140 },
-      withdrawalRequestStatus: async (id) =>
-        id === "1" ? "accepted" : id === "2" ? "rejected" : "unknown",
+      withdrawalRequestEvidence: async (requests) =>
+        new Map(
+          requests.map(({ requestId }) => [
+            requestId,
+            requestId === "1"
+              ? {
+                  status: "accepted" as const,
+                  completion: {
+                    sweepTxId: tx(91),
+                    bitcoinBlockHeight: 901_234,
+                    bitcoinBlockHash: tx(92),
+                  },
+                }
+              : {
+                  status: requestId === "2" ? ("rejected" as const) : ("unknown" as const),
+                  completion: null,
+                },
+          ]),
+        ),
     });
     const byStaker = Object.fromEntries(ledger.payments.map((p) => [p.stakerPrincipal, p]));
     expect(byStaker[alice]).toMatchObject({
@@ -667,6 +684,8 @@ describe("buildRewardLedger", () => {
       l1Status: "accepted-ready-to-retire",
       payoutSats: "162235",
       payoutAsset: "BTC",
+      btcSweepTxId: tx(91),
+      btcSweepBlockHeight: 901_234,
     });
     expect(byStaker[bob]).toMatchObject({
       status: "rejected",

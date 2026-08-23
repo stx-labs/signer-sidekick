@@ -28,6 +28,7 @@ import { type Migration, migrations } from "./migrations.js";
 import { ObserverInboxRepository } from "./observer-inbox-repository.js";
 import { RewardRunRepository } from "./reward-run-repository.js";
 import { RuntimeSettingsRepository } from "./runtime-settings-repository.js";
+import { SbtcWithdrawalCompletionRepository } from "./sbtc-withdrawal-completion-repository.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
 
 const hashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
@@ -1690,6 +1691,7 @@ export class SidekickStore {
   readonly rewardRuns: RewardRunRepository;
   readonly managerTrust: ManagerTrustRepository;
   readonly chainState: ChainStateRepository;
+  readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.transactionEngine = new TransactionEngineRepository(db);
@@ -1703,6 +1705,7 @@ export class SidekickStore {
     this.rewardRuns = new RewardRunRepository(db);
     this.managerTrust = new ManagerTrustRepository(db);
     this.chainState = new ChainStateRepository(db);
+    this.sbtcWithdrawalCompletions = new SbtcWithdrawalCompletionRepository(db);
   }
 
   close(): void {

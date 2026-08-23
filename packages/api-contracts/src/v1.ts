@@ -3038,6 +3038,8 @@ export const rewardLedgerPaymentSchema = z
     l1Status: rewardLedgerL1StatusSchema.nullable(),
     settleOrReclaimTxId: ledgerTxIdSchema.nullable(),
     btcSweepTxId: z.string().min(1).max(128).nullable(),
+    /** Bitcoin block height of the sweep that paid an L1 withdrawal, when known. */
+    btcSweepBlockHeight: z.number().int().nonnegative().nullable(),
     unavailableReason: z.string().min(1).max(200).nullable(),
     /** The staker's currently registered Bitcoin payout address, not historical destination proof. */
     l1Address: z.string().min(1).max(128).nullable(),

@@ -51,6 +51,7 @@ import {
   previousCycleOpen,
   type RewardLedgerQuery,
   type RewardLedgerSnapshotInput,
+  type WithdrawalRegistryEvidence,
   type WithdrawalRegistryStatus,
 } from "./reward-ledger.js";
 import {
@@ -65,6 +66,7 @@ import {
   type StxRewardStatus,
 } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
+import { decodeSbtcWithdrawalCompletion } from "./sbtc-withdrawal-evidence.js";
 import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import type { ManagerTrustTransition } from "./storage/manager-trust-repository.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
@@ -1007,8 +1009,9 @@ export class OperatorService {
       query,
       ...(registry
         ? {
-            withdrawalRequestStatus: (requestId: string) =>
-              this.withdrawalRequestStatus(registry, requestId, tip),
+            withdrawalRequestEvidence: (
+              requests: readonly { requestId: string; initiatedBlockHeight: number }[],
+            ) => this.withdrawalRequestEvidence(registry, requests, tip),
           }
         : {}),
       ...(this.options.rewardRunHistory ? { runHistory: this.options.rewardRunHistory } : {}),
@@ -1045,7 +1048,89 @@ export class OperatorService {
       .values()) {
       for (const attempt of attempts) owned.add(attempt.precomputedTxid);
     }
+    for (const txid of this.options.store.rewardRuns.listOwnedTransactionIds()) owned.add(txid);
     return owned;
+  }
+
+  /**
+   * Read current registry state and persist the node-readable Bitcoin sweep proof. The manager's
+   * Stacks transaction only opens the withdrawal; this proof identifies the later L1 payout.
+   */
+  async withdrawalRequestEvidence(
+    registryContract: string,
+    requests: readonly { requestId: string; initiatedBlockHeight: number }[],
+    tip: string | undefined,
+  ): Promise<ReadonlyMap<string, WithdrawalRegistryEvidence>> {
+    const config = this.runtimeContext().config;
+    const chainId =
+      config.expectedNetworkId ??
+      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const observedAt = new Date().toISOString();
+    const result = new Map<string, WithdrawalRegistryEvidence>();
+    for (let index = 0; index < requests.length; index += 8) {
+      const batch = requests.slice(index, index + 8);
+      const evidence = await Promise.all(
+        batch.map(async ({ requestId }): Promise<[string, WithdrawalRegistryEvidence]> => {
+          const stored = this.options.store.sbtcWithdrawalCompletions.get(
+            chainId,
+            registryContract,
+            requestId,
+          );
+          if (stored) {
+            return [
+              requestId,
+              {
+                status: "accepted",
+                completion: {
+                  sweepTxId: stored.sweepTxId,
+                  bitcoinBlockHeight: stored.bitcoinBlockHeight,
+                  bitcoinBlockHash: stored.bitcoinBlockHash,
+                },
+              },
+            ];
+          }
+          try {
+            const status = await this.withdrawalRequestStatus(registryContract, requestId, tip);
+            if (status !== "accepted") return [requestId, { status, completion: null }];
+            try {
+              const value = await this.options.node.callReadOnly(
+                registryContract,
+                "get-completed-withdrawal-sweep-data",
+                this.options.managerPrincipal,
+                [encodeUIntHex(BigInt(requestId))],
+                tip ? { tip } : undefined,
+              );
+              const completion = decodeSbtcWithdrawalCompletion(value);
+              if (!completion) return [requestId, { status, completion: null }];
+              const persisted = this.options.store.sbtcWithdrawalCompletions.upsert({
+                chainId,
+                registryContract,
+                requestId,
+                ...completion,
+                observedAt,
+              });
+              return [
+                requestId,
+                {
+                  status,
+                  completion: {
+                    sweepTxId: persisted.sweepTxId,
+                    bitcoinBlockHeight: persisted.bitcoinBlockHeight,
+                    bitcoinBlockHash: persisted.bitcoinBlockHash,
+                  },
+                },
+              ];
+            } catch {
+              return [requestId, { status, completion: null }];
+            }
+          } catch {
+            return [requestId, { status: "unknown", completion: null }];
+          }
+        }),
+      );
+      for (const [requestId, value] of evidence) result.set(requestId, value);
+    }
+    return result;
   }
 
   /** sBTC registry status for one withdrawal request id, read at the snapshot anchor. */

@@ -450,6 +450,22 @@ export class RewardRunRepository {
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
+  /** Bounded transaction IDs signed by operator runs, without hydrating every run and child. */
+  listOwnedTransactionIds(limit = 10_001): string[] {
+    const bounded = Math.max(1, Math.min(100_001, Math.trunc(limit)));
+    const rows = this.db
+      .prepare(
+        `SELECT txid FROM (
+           SELECT txid, updated_at FROM transaction_run_children WHERE txid IS NOT NULL
+           UNION ALL
+           SELECT precomputed_txid AS txid, updated_at FROM transaction_run_attempts
+         )
+         GROUP BY txid ORDER BY max(updated_at) DESC, txid DESC LIMIT ?`,
+      )
+      .all(bounded) as Array<{ txid: string }>;
+    return rows.map(({ txid }) => txid);
+  }
+
   getByTxid(txid: string): RewardRun | null {
     const row = this.db
       .prepare(

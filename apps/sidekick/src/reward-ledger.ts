@@ -165,6 +165,15 @@ export interface RewardLedgerRewardStatusInput {
 
 export type WithdrawalRegistryStatus = "pending" | "accepted" | "rejected" | "unknown";
 
+export interface WithdrawalRegistryEvidence {
+  status: WithdrawalRegistryStatus;
+  completion: null | {
+    sweepTxId: string;
+    bitcoinBlockHeight: number;
+    bitcoinBlockHash: string;
+  };
+}
+
 export interface RewardLedgerQuery {
   cycle?: number | null;
   distribution?: RewardLedgerDistributionIndex | null;
@@ -184,6 +193,10 @@ export interface BuildRewardLedgerInput {
   ownedTxids: ReadonlySet<string>;
   /** sBTC registry status for a manager-side pending request; omit when no registry is known. */
   withdrawalRequestStatus?: (requestId: string) => Promise<WithdrawalRegistryStatus>;
+  /** Batched node-first status and durable Bitcoin sweep evidence for relevant L1 payouts. */
+  withdrawalRequestEvidence?: (
+    requests: readonly Pick<StoredManagerWithdrawal, "requestId" | "initiatedBlockHeight">[],
+  ) => Promise<ReadonlyMap<string, WithdrawalRegistryEvidence>>;
   /**
    * Operator runs sealed for a distribution, oldest first. Explains why a First-Distribution
    * account rolled forward: the recorded skip/halt on its payment, the run's own end, or no run.
@@ -514,9 +527,49 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       .map((withdrawal) => [withdrawal.requestId, withdrawal] as const),
   );
   const registryStatus = new Map<string, WithdrawalRegistryStatus>();
+  const completionByRequest = new Map<
+    string,
+    NonNullable<WithdrawalRegistryEvidence["completion"]>
+  >();
+  if (input.withdrawalRequestEvidence) {
+    const liveCycles = new Set<number>(
+      [snapshot.rewards?.rewardCycle, snapshot.rewardsPrevious?.rewardCycle].filter(
+        (cycle): cycle is number => cycle !== undefined,
+      ),
+    );
+    if (query.cycle !== null && query.cycle !== undefined) liveCycles.add(query.cycle);
+    if (liveCycles.size === 0) {
+      for (const cycle of claims
+        .map(({ rewardCycle }) => Number(rewardCycle))
+        .filter(Number.isSafeInteger)
+        .sort((left, right) => right - left)
+        .slice(0, 2)) {
+        liveCycles.add(cycle);
+      }
+    }
+    const relevantRequestIds = new Set(
+      claims
+        .filter(({ rewardCycle }) => liveCycles.has(Number(rewardCycle)))
+        .flatMap(({ withdrawalRequestId }) =>
+          withdrawalRequestId === null ? [] : [withdrawalRequestId],
+        ),
+    );
+    const targets = [...withdrawals.values()].filter(
+      ({ requestId, state }) => state === "pending" || relevantRequestIds.has(requestId),
+    );
+    const evidence = await input
+      .withdrawalRequestEvidence(targets)
+      .catch(() => new Map<string, WithdrawalRegistryEvidence>());
+    for (const [requestId, result] of evidence) {
+      registryStatus.set(requestId, result.status);
+      if (result.completion) completionByRequest.set(requestId, result.completion);
+    }
+  }
   if (input.withdrawalRequestStatus) {
     const lookup = input.withdrawalRequestStatus;
-    const pending = [...withdrawals.values()].filter(({ state }) => state === "pending");
+    const pending = [...withdrawals.values()].filter(
+      ({ requestId, state }) => state === "pending" && !registryStatus.has(requestId),
+    );
     // Bounded concurrency: a mature pool can hold many in-flight Bitcoin payouts.
     for (let index = 0; index < pending.length; index += registryLookupConcurrency) {
       const batch = pending.slice(index, index + registryLookupConcurrency);
@@ -666,6 +719,10 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       );
       const route = claim.destination === "bitcoin-l1" ? "bitcoin" : "sbtc";
       const status = paymentStatusFor(l1);
+      const completion =
+        claim.withdrawalRequestId === null
+          ? null
+          : (completionByRequest.get(claim.withdrawalRequestId) ?? null);
       const payoutSats =
         route === "sbtc"
           ? text(entitlement)
@@ -698,7 +755,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         l1RequestId: claim.withdrawalRequestId,
         l1Status: l1,
         settleOrReclaimTxId: withdrawal?.resolvedTxId ?? null,
-        btcSweepTxId: null,
+        btcSweepTxId: completion?.sweepTxId ?? null,
+        btcSweepBlockHeight: completion?.bitcoinBlockHeight ?? null,
         unavailableReason: gross === null ? "gross-unavailable-without-pox5-print" : null,
         l1Address:
           route === "bitcoin" ? (l1AddressByStaker.get(claim.stakerPrincipal) ?? null) : null,
@@ -793,6 +851,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
           l1Status: null,
           settleOrReclaimTxId: null,
           btcSweepTxId: null,
+          btcSweepBlockHeight: null,
           unavailableReason: "first-half-amount-carried-by-the-second-distribution-payment",
           l1Address: route === "bitcoin" ? (l1AddressByStaker.get(stakerPrincipal) ?? null) : null,
           rollForward: explanation.rollForward,
@@ -861,6 +920,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
             l1Status: null,
             settleOrReclaimTxId: null,
             btcSweepTxId: null,
+            btcSweepBlockHeight: null,
             l1Address:
               route === "bitcoin" ? (l1AddressByStaker.get(staker.stakerPrincipal) ?? null) : null,
             rollForward: null,
