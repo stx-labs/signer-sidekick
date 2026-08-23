@@ -250,6 +250,56 @@ describe("deriveRewardNow", () => {
     expect(model?.sub).toContain("40 payments");
   });
 
+  it("points at a newer live cycle waiting behind the current distribution", () => {
+    // Late window: cycle 142 already accrues its first distribution while 141's second is still
+    // ready to collect and distribute; the ledger keeps 141 current and 142 waits behind it.
+    const current = distribution({ cycle: 141, distribution: 2 });
+    const later = distribution({
+      cycle: 142,
+      distribution: 1,
+      calculation: {
+        state: "waiting",
+        txId: null,
+        blockHeight: null,
+        calculationBurnHeight: null,
+        observedAt: null,
+        poolSats: null,
+        poolSatsUnavailableReason: null,
+        by: null,
+      },
+      availableToCollectSats: null,
+      payments: {
+        made: 0,
+        outstanding: 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        arriving: 0,
+        rejected: 0,
+        returned: 0,
+        distributedSats: "0",
+        outstandingSats: "0",
+        operatorFeeSats: "0",
+      },
+      status: "accruing",
+      statusDetail: "Accruing before the network calculation",
+    });
+    const model = deriveRewardNow({
+      ledger: ledger(current, [later]),
+      snapshot: null,
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: null,
+    });
+    expect(model?.eyebrow).toBe("Cycle 141 · Second Distribution");
+    expect(model?.primary).toMatchObject({ kind: "collect-and-distribute" });
+    expect(model?.next).toEqual({
+      cycle: 142,
+      distribution: 1,
+      text: "Up next · Cycle 142 · First Distribution is accruing",
+    });
+  });
+
   it("disables the run but keeps the financial state when the gas wallet cannot cover it", () => {
     const current = distribution({ cycle: 141, distribution: 2, current: true });
     const low = deriveRewardNow({

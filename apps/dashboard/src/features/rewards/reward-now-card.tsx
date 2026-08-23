@@ -177,6 +177,11 @@ export function RewardNowCard({
           <span>{model.cycleLine.text}</span>
         </p>
       ) : null}
+      {model.next ? (
+        <p className="rw-cycle-line rw-next">
+          <span>{model.next.text}</span>
+        </p>
+      ) : null}
       {model.previous ? (
         <div className="rw-prev">
           <span>{model.previous.text}</span>

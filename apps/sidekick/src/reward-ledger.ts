@@ -103,6 +103,12 @@ export interface RewardLedgerSnapshotInput {
     } | null;
   } | null;
   rewards?: RewardLedgerRewardStatusInput | null;
+  /**
+   * Live reward status for the previous calculation-target cycle while evidence shows it still has
+   * open work (see `previousCycleOpen`). The second distribution of a cycle can only be collected
+   * and distributed during the next cycle, so the live window must span both.
+   */
+  rewardsPrevious?: RewardLedgerRewardStatusInput | null;
   rewardOutlook?: { calculation?: RewardLedgerCalculationInput | null } | null;
 }
 
@@ -259,11 +265,79 @@ function capabilityLevel(snapshot: RewardLedgerSnapshotInput): RewardLedgerCapab
   return "manager-readable";
 }
 
+/**
+ * Whether a cycle's latest calculated distribution still has open work by evidence alone: the
+ * calculated pool is not fully collected, or a member of that cycle has no payment after the latest
+ * calculation. Used to decide when the previous calculation-target cycle needs live reward reads
+ * (its second distribution is collected and distributed during the next cycle).
+ */
+export function previousCycleOpen(
+  store: Pick<
+    RewardLedgerStore,
+    | "listRewardCalculationRealizations"
+    | "listPox5RewardPrints"
+    | "listManagerClaimRecords"
+    | "listCycleMembershipsForCycle"
+  >,
+  input: {
+    chainId: number;
+    managerPrincipal: string;
+    pox5ContractId: string;
+    sourceId: string | null;
+    cycle: number;
+  },
+): boolean {
+  const facts = store
+    .listRewardCalculationRealizations(input.managerPrincipal, input.pox5ContractId, {
+      limit: 500,
+      canonicalOnly: true,
+    })
+    .filter((realization) => realization.targetRewardCycle === input.cycle)
+    .sort((left, right) => left.blockHeight - right.blockHeight);
+  const latest = facts.at(-1);
+  if (!latest) return false;
+  const poolSats = big(latest.poolEstimate?.grossSats ?? "0");
+  const collected = store
+    .listPox5RewardPrints(input.chainId, input.pox5ContractId, input.managerPrincipal, {
+      kinds: ["claim-rewards"],
+      limit: maximumEvidenceRows,
+    })
+    .filter(
+      (print) =>
+        print.kind === "claim-rewards" &&
+        Number(print.rewardCycle) === input.cycle &&
+        print.blockHeight >= latest.blockHeight,
+    )
+    .reduce((total, print) => total + big(print.totalRewardsSats ?? "0"), 0n);
+  if (poolSats > collected) return true;
+  const paidAfterLatest = new Set(
+    store
+      .listManagerClaimRecords(input.chainId, input.managerPrincipal, maximumEvidenceRows)
+      .filter(
+        (claim) =>
+          Number(claim.rewardCycle) === input.cycle && claim.blockHeight >= latest.blockHeight,
+      )
+      .map((claim) => claim.stakerPrincipal),
+  );
+  return store
+    .listCycleMembershipsForCycle(input.managerPrincipal, input.cycle, input.sourceId)
+    .some(
+      ({ stakerPrincipal, amountUstx }) => amountUstx > 0n && !paidAfterLatest.has(stakerPrincipal),
+    );
+}
+
 export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<RewardLedger> {
   const { store, chainId, managerPrincipal, pox5ContractId, snapshot, ownedTxids } = input;
   const query = input.query ?? {};
   const rewards = snapshot.rewards ?? null;
   const currentCycle = rewards?.rewardCycle ?? null;
+  // Live window: the calculation-target cycle plus the previous cycle while it still has open work.
+  const liveStatuses = new Map<number, RewardLedgerRewardStatusInput>();
+  if (rewards) liveStatuses.set(rewards.rewardCycle, rewards);
+  const rewardsPrevious = snapshot.rewardsPrevious ?? null;
+  if (rewardsPrevious && !liveStatuses.has(rewardsPrevious.rewardCycle)) {
+    liveStatuses.set(rewardsPrevious.rewardCycle, rewardsPrevious);
+  }
   const roster = new Set((snapshot.roster ?? []).map(({ stakerPrincipal }) => stakerPrincipal));
   const recovery = snapshot.historyRecovery ?? null;
   const recoveryIncomplete =
@@ -370,7 +444,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       ...calculationsByCycle.keys(),
       ...collectsByCycle.keys(),
       ...claimsByCycle.keys(),
-      ...(currentCycle === null ? [] : [currentCycle]),
+      ...liveStatuses.keys(),
       ...(query.cycle === null || query.cycle === undefined ? [] : [query.cycle]),
     ]),
   ]
@@ -378,24 +452,32 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     .slice(0, maximumCycles);
 
   const next = rewards?.calculation?.next ?? snapshot.rewardOutlook?.calculation?.next ?? null;
-  const availableToCollect = rewards?.buckets
-    ? text(
-        rewards.buckets.reduce(
-          (total, bucket) => total + big(bucket.signerEarnedBeforeManagerClaimSats),
-          0n,
-        ),
-      )
-    : null;
 
   const allPayments: PaymentRow[] = [];
   const cycles: RewardLedgerCycle[] = [];
-  let currentDistribution: RewardLedgerDistributionIndex | null = null;
+  // Current-distribution candidates per live cycle; chosen after every cycle is known.
+  const currentCandidates = new Map<
+    number,
+    {
+      actionable: RewardLedgerDistributionIndex | null;
+      fallback: RewardLedgerDistributionIndex | null;
+    }
+  >();
 
   for (const cycle of cycleIds) {
     const calculations = calculationsByCycle.get(cycle) ?? [];
     const collects = collectsByCycle.get(cycle) ?? [];
     const cycleClaims = claimsByCycle.get(cycle) ?? [];
-    const isCurrent = cycle === currentCycle;
+    const live = liveStatuses.get(cycle) ?? null;
+    const isLive = live !== null;
+    const availableToCollect = live?.buckets
+      ? text(
+          live.buckets.reduce(
+            (total, bucket) => total + big(bucket.signerEarnedBeforeManagerClaimSats),
+            0n,
+          ),
+        )
+      : null;
     const memberships = store.listCycleMembershipsForCycle(managerPrincipal, cycle, input.sourceId);
     const departedMembers = memberships.some(
       ({ stakerPrincipal, amountUstx }) => amountUstx > 0n && !roster.has(stakerPrincipal),
@@ -409,7 +491,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     ];
     const evidenceIncomplete =
       evidenceWindow.truncated &&
-      !isCurrent &&
+      !isLive &&
       (cycleEvidenceHeights.some(
         (height) => height <= (evidenceWindow.oldestRetainedBlockHeight ?? 0),
       ) ||
@@ -417,16 +499,16 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     // Recovery gaps apply to the current cycle too: a fresh install may not yet have seen payments
     // made earlier in this cycle. Departed members and the evidence window only concern history.
     const historicallyIncomplete =
-      recoveryIncomplete || (!isCurrent && (departedMembers || evidenceIncomplete));
+      recoveryIncomplete || (!isLive && (departedMembers || evidenceIncomplete));
 
     // fee evidence for the cycle
-    const feeBips = isCurrent
-      ? (rewards?.manager?.feeSnapshotBips ?? rewards?.manager?.configuredFeeBips ?? null)
+    const feeBips = isLive
+      ? (live?.manager?.feeSnapshotBips ?? live?.manager?.configuredFeeBips ?? null)
       : null;
-    const feeEvidence: RewardLedgerDistribution["feeEvidence"] = isCurrent
-      ? rewards?.manager?.feeSnapshotBips
+    const feeEvidence: RewardLedgerDistribution["feeEvidence"] = isLive
+      ? live?.manager?.feeSnapshotBips
         ? "locked"
-        : rewards?.manager?.configuredFeeBips
+        : live?.manager?.configuredFeeBips
           ? "provisional"
           : "unknown"
       : collects.length > 0
@@ -537,13 +619,13 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       }
     }
 
-    // outstanding payments: live entitlements for the current cycle only
+    // outstanding payments: live entitlements for the live cycles only
     const outstandingRows: PaymentRow[] = [];
     const latestCalculated = calculations.at(-1)?.distribution ?? null;
-    if (isCurrent && rewards?.stakers) {
+    if (isLive && live?.stakers) {
       // Live reads already reflect earlier payments (a paid account reads back zero), so a
       // nonzero entitlement here is genuinely outstanding.
-      for (const staker of rewards.stakers) {
+      for (const staker of live.stakers) {
         const entries = staker.claims?.length
           ? staker.claims
           : [{ bondIndex: null, rewards: staker.rewards, claimable: staker.claimableByPolicy }];
@@ -622,13 +704,16 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     if (calculations.length > 0 || cycleRows.length > 0 || collects.length > 0) indices.push(1);
     if (
       second ||
-      (isCurrent && next?.targetRewardCycle === cycle && next.targetCheckpoint === "second-half") ||
-      (first && (isCurrent || collects.some((c) => attribute(calculations, c.blockHeight) === 2)))
+      (isLive && next?.targetRewardCycle === cycle && next.targetCheckpoint === "second-half") ||
+      (first && (isLive || collects.some((c) => attribute(calculations, c.blockHeight) === 2)))
     ) {
       if (!indices.includes(2)) indices.push(2);
     }
-    if (isCurrent && indices.length === 0) indices.push(1);
+    if (isLive && indices.length === 0) indices.push(1);
     indices.sort();
+
+    let actionableCurrent: RewardLedgerDistributionIndex | null = null;
+    let fallbackCurrent: RewardLedgerDistributionIndex | null = null;
 
     const distributions: RewardLedgerDistribution[] = indices.map((index) => {
       const fact = calculations.find(({ distribution }) => distribution === index);
@@ -668,7 +753,6 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         ),
       };
       const expectedNext =
-        isCurrent &&
         next !== null &&
         next.targetRewardCycle === cycle &&
         checkpointIndex(next.targetCheckpoint) === index
@@ -737,8 +821,18 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         status = "complete";
         statusDetail = "Complete";
       }
-      if (isCurrent && (isLatestCalculated || (!fact && expectedNext !== null))) {
-        currentDistribution = index;
+      // Current-distribution candidates for this live cycle; the choice is made after every
+      // cycle is known so a later accruing checkpoint can never hide an earlier one that still
+      // needs the operator (see below).
+      if (isLive && (isLatestCalculated || (!fact && expectedNext !== null))) {
+        fallbackCurrent = index;
+      }
+      if (
+        isLive &&
+        actionableCurrent === null &&
+        (status === "ready" || status === "needs-attention" || status === "calculation-overdue")
+      ) {
+        actionableCurrent = index;
       }
       const collectRows: RewardLedgerCollect[] = distributionCollects.map((collect) => ({
         sats: collect.totalRewardsSats ?? "0",
@@ -751,11 +845,11 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         schemaVersion: 1,
         cycle,
         distribution: index,
-        current: isCurrent && currentDistribution === index,
+        current: false,
         calculation,
         collects: collectRows.slice(0, 50),
         collectedSats: text(collectedSats),
-        availableToCollectSats: isCurrent && isLatestCalculated ? availableToCollect : null,
+        availableToCollectSats: isLive && isLatestCalculated ? availableToCollect : null,
         feeBips,
         feeEvidence,
         payments: counts,
@@ -765,6 +859,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       };
     });
 
+    if (isLive)
+      currentCandidates.set(cycle, { actionable: actionableCurrent, fallback: fallbackCurrent });
     const cycleCoverage: RewardLedgerCoverage = distributions.some(
       ({ coverage }) => coverage === "historical-coverage-incomplete",
     )
@@ -791,6 +887,32 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     });
   }
 
+  // --- current distribution across the live window ---
+  // The earliest distribution that is ready, overdue, or needs attention wins (the previous
+  // cycle's second distribution is handled during the next cycle); otherwise the target cycle's
+  // latest calculated or expected-next distribution.
+  const liveCyclesAscending = [...currentCandidates.keys()].sort((left, right) => left - right);
+  let current: { cycle: number; distribution: RewardLedgerDistributionIndex } | null = null;
+  for (const liveCycle of liveCyclesAscending) {
+    const candidate = currentCandidates.get(liveCycle)?.actionable ?? null;
+    if (candidate !== null) {
+      current = { cycle: liveCycle, distribution: candidate };
+      break;
+    }
+  }
+  if (current === null && currentCycle !== null) {
+    const fallback = currentCandidates.get(currentCycle)?.fallback ?? null;
+    if (fallback !== null) current = { cycle: currentCycle, distribution: fallback };
+  }
+  for (const cycle of cycles) {
+    for (const distribution of cycle.distributions) {
+      distribution.current =
+        current !== null &&
+        cycle.cycle === current.cycle &&
+        distribution.distribution === current.distribution;
+    }
+  }
+
   // --- payment selection: outstanding first, then newest paid ---
   const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const selectedCycle =
@@ -798,7 +920,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       ? null
       : query.cycle !== null && query.cycle !== undefined
         ? query.cycle
-        : (currentCycle ?? cycleIds[0] ?? null);
+        : (current?.cycle ?? currentCycle ?? cycleIds[0] ?? null);
   const filtered = allPayments
     .filter((row) => selectedCycle === null || row.cycle === selectedCycle)
     .filter(
@@ -851,7 +973,10 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       currentMemberHistory: recoveryStatus(recovery?.currentMemberHistory.status),
     },
     evidenceWindow,
-    current: { cycle: currentCycle, distribution: currentDistribution },
+    current: {
+      cycle: current?.cycle ?? currentCycle,
+      distribution: current?.distribution ?? null,
+    },
     cycles,
     payments,
     paymentsTruncated: filtered.length > maximumPayments,

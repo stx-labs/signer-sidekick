@@ -43,6 +43,7 @@ import {
 } from "./preflight.js";
 import {
   buildRewardLedger,
+  previousCycleOpen,
   type RewardLedgerQuery,
   type RewardLedgerSnapshotInput,
   type WithdrawalRegistryStatus,
@@ -298,6 +299,8 @@ export function buildAlerts(snapshot: {
   readiness: Awaited<ReturnType<typeof readOperatorReadiness>> | null;
   forecast: Awaited<ReturnType<typeof readPoolForecast>> | null;
   rewards: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
+  /** Live status for the previous calculation-target cycle while it still has open work. */
+  rewardsPrevious?: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
   activity: ReturnType<typeof readManagerActivity>;
   trustTransition?: {
     transition: "gained" | "lost" | "degraded";
@@ -980,6 +983,7 @@ export class OperatorService {
       historyRecovery: snapshot.historyRecovery ?? null,
       manager: { capabilities: snapshot.manager?.capabilities ?? null },
       rewards: snapshot.rewards ?? null,
+      rewardsPrevious: snapshot.rewardsPrevious ?? null,
       rewardOutlook: snapshot.rewardOutlook ?? null,
     };
     const ledger = await buildRewardLedger({
@@ -1519,6 +1523,37 @@ export class OperatorService {
             rewardOutlook,
           })
         : null;
+    // The second distribution of a cycle is collected and distributed during the next cycle, and
+    // an operator may be later still. Keep the previous target cycle live while evidence shows it
+    // has open work so the ledger can present it; otherwise skip the extra per-staker reads.
+    const previousCycle = rewards ? rewards.rewardCycle - 1 : null;
+    const rewardsPrevious =
+      rewards &&
+      rewardOutlook &&
+      previousCycle !== null &&
+      previousCycle >= (preflight.pox.firstRewardCycleId ?? 0) &&
+      previousCycleOpen(store, {
+        chainId: preflight.node.networkId,
+        managerPrincipal,
+        pox5ContractId: rewardOutlook.pox5ContractId,
+        sourceId,
+        cycle: previousCycle,
+      })
+        ? await readStxRewardStatus({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId: rewardOutlook.pox5ContractId,
+            rewardCycle: previousCycle,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
+            rewardOutlook,
+          }).catch(() => null)
+        : null;
     const managerClaimSetup = anchorSetupToRewardEvidence(operatorSnapshot, projectionAnchor);
     this.latestManagerClaimWalletEvidence = {
       observedAt: generatedAt,
@@ -1603,6 +1638,7 @@ export class OperatorService {
       forecast,
       rewardOutlook,
       rewards,
+      rewardsPrevious,
       activity,
       roster,
       trustTransition,

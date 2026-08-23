@@ -80,6 +80,8 @@ export interface RewardNowModel {
         text: string;
       }
     | null;
+  /** A newer live cycle waiting behind the current distribution (its turn comes next). */
+  next: { cycle: number; distribution: 1 | 2; text: string } | null;
   attention: { title: string; text: string } | null;
   progress: {
     done: number;
@@ -612,7 +614,9 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
         ? `${distributionName(sibling.distribution)} complete`
         : sibling.calculation.state !== "done"
           ? `${distributionName(sibling.distribution)} not calculated yet`
-          : `${distributionName(sibling.distribution)} ${sibling.payments.outstanding > 0 ? `has ${plural(sibling.payments.outstanding, "payment")} outstanding` : "in progress"}`;
+          : sibling.status === "ready"
+            ? `${distributionName(sibling.distribution)} ready to ${big(sibling.availableToCollectSats ?? "0") > 0n ? "collect" : "distribute"}`
+            : `${distributionName(sibling.distribution)} ${sibling.payments.outstanding > 0 ? `has ${plural(sibling.payments.outstanding, "payment")} outstanding` : "in progress"}`;
   const cycleLine =
     cycleAmount > 0n
       ? {
@@ -643,6 +647,30 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
     };
   }
 
+  // ---- up next: a newer live cycle (the chain moved on while this one still needs work) ----
+  const laterCycle = ledger.cycles
+    .filter((candidate) => candidate.cycle > cycle.cycle)
+    .sort((left, right) => left.cycle - right.cycle)[0];
+  const laterDistribution = laterCycle?.distributions[0] ?? null;
+  const next =
+    laterCycle && laterDistribution
+      ? {
+          cycle: laterCycle.cycle,
+          distribution: laterDistribution.distribution,
+          text: `Up next · Cycle ${laterCycle.cycle} · ${distributionName(laterDistribution.distribution)} ${
+            laterDistribution.status === "ready"
+              ? "is ready"
+              : laterDistribution.status === "calculation-overdue"
+                ? "calculation is overdue"
+                : laterDistribution.status === "waiting-calculation"
+                  ? "is waiting on the network calculation"
+                  : laterDistribution.status === "accruing"
+                    ? "is accruing"
+                    : laterDistribution.statusDetail.toLowerCase()
+          }`,
+        }
+      : null;
+
   return {
     cycle: cycle.cycle,
     distribution: distribution.distribution,
@@ -656,6 +684,7 @@ export function deriveRewardNow(input: RewardStateInput): RewardNowModel | null 
     tiles,
     cycleLine,
     previous,
+    next,
     attention,
     progress,
     execution: executionState,

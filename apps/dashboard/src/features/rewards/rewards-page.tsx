@@ -460,9 +460,13 @@ export function Rewards({
     </>
   );
 
-  const pastCycles = ledger
-    ? ledger.cycles.filter((cycle) => cycle.cycle !== ledger.current.cycle)
-    : [];
+  // Newer live cycles wait behind the current distribution (shown on the Now card as "up next");
+  // only strictly older cycles are history.
+  const currentCycleNumber = ledger?.current.cycle ?? null;
+  const pastCycles =
+    ledger && currentCycleNumber !== null
+      ? ledger.cycles.filter((cycle) => cycle.cycle < currentCycleNumber)
+      : (ledger?.cycles ?? []);
   const paymentsForTable =
     ledger && distribution && ledger.query.cycle === null ? payments : payments;
   const walletFallback = model?.execution.walletFallback ?? engineMode !== "operator-run";

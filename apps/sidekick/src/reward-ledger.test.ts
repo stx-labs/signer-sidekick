@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRewardLedger,
   csvSafeCell,
+  previousCycleOpen,
   type RewardLedgerSnapshotInput,
   type RewardLedgerStore,
   rewardLedgerDistributionsCsv,
@@ -295,6 +296,221 @@ describe("buildRewardLedger", () => {
         BigInt(row.operatorFeeSats ?? "0") + BigInt(row.stakerEntitlementSats),
       );
     }
+  });
+
+  it("keeps an earlier ready distribution current while the next checkpoint is accruing", async () => {
+    // Live mainnet shape (cycle 141): the first-half calculation landed, nothing was collected yet,
+    // and the second-half checkpoint is already the "next" calculation. The operator must still be
+    // pointed at the first distribution, which is ready to collect.
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "first-half", 4_000, "1403581", tx(9))],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: {
+          rewardCycle: 141,
+          calculation: {
+            next: {
+              targetRewardCycle: 141,
+              targetCheckpoint: "second-half",
+              state: "scheduled",
+              grace: null,
+            },
+          },
+          buckets: [
+            {
+              bondIndex: null,
+              signerEarnedBeforeManagerClaimSats: "1403581",
+              feeSnapshotBips: "500",
+            },
+          ],
+          manager: { configuredFeeBips: "500", feeSnapshotBips: "500", earnedFeesSats: "0" },
+          stakers: [
+            {
+              stakerPrincipal: alice,
+              payout: { kind: "direct-sbtc", maxFeeSats: null },
+              rewards: { earnedSats: "1333401", feeSats: "70180", grossSats: "1403581" },
+              claimableByPolicy: true,
+            },
+          ],
+        },
+      }),
+    });
+    expect(ledger.current).toEqual({ cycle: 141, distribution: 1 });
+    const [cycle] = ledger.cycles;
+    expect(cycle?.distributions.map((d) => [d.distribution, d.status, d.current])).toEqual([
+      [1, "ready", true],
+      [2, "accruing", false],
+    ]);
+    expect(cycle?.distributions[0]).toMatchObject({
+      availableToCollectSats: "1403581",
+      calculation: { state: "done", poolSats: "1403581" },
+    });
+  });
+
+  it("keeps the previous cycle's open second distribution current after the target cycle moves on", async () => {
+    // Late window: the chain passed the midpoint of cycle 142, so the calculation target (and the
+    // primary live status) is 142's first distribution, while 141's second distribution is still
+    // uncollected. The operator snapshot carries a second live status for 141.
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "second-half", 4_100, "1403581", tx(9))],
+        memberships: { 141: [membership(alice, 141)], 142: [membership(alice, 142)] },
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: {
+          rewardCycle: 142,
+          calculation: {
+            next: {
+              targetRewardCycle: 142,
+              targetCheckpoint: "first-half",
+              state: "scheduled",
+              grace: null,
+            },
+          },
+          buckets: [
+            { bondIndex: null, signerEarnedBeforeManagerClaimSats: "0", feeSnapshotBips: null },
+          ],
+          manager: { configuredFeeBips: "500", feeSnapshotBips: null, earnedFeesSats: "0" },
+          stakers: [],
+        },
+        rewardsPrevious: {
+          rewardCycle: 141,
+          buckets: [
+            {
+              bondIndex: null,
+              signerEarnedBeforeManagerClaimSats: "1403581",
+              feeSnapshotBips: "500",
+            },
+          ],
+          manager: { configuredFeeBips: "500", feeSnapshotBips: "500", earnedFeesSats: "0" },
+          stakers: [
+            {
+              stakerPrincipal: alice,
+              payout: { kind: "direct-sbtc", maxFeeSats: null },
+              rewards: { earnedSats: "1333401", feeSats: "70180", grossSats: "1403581" },
+              claimableByPolicy: true,
+            },
+          ],
+        },
+      }),
+    });
+    expect(ledger.current).toEqual({ cycle: 141, distribution: 2 });
+    const previous = ledger.cycles.find((cycle) => cycle.cycle === 141);
+    const target = ledger.cycles.find((cycle) => cycle.cycle === 142);
+    expect(previous?.distributions.find((d) => d.distribution === 2)).toMatchObject({
+      status: "ready",
+      current: true,
+      availableToCollectSats: "1403581",
+      feeEvidence: "locked",
+      payments: { outstanding: 1, outstandingSats: "1333401" },
+      coverage: "exact",
+    });
+    expect(target?.distributions.map((d) => [d.distribution, d.status, d.current])).toEqual([
+      [1, "accruing", false],
+    ]);
+    expect(ledger.payments.find((row) => row.stakerPrincipal === alice)).toMatchObject({
+      cycle: 141,
+      distribution: 2,
+      status: "outstanding",
+    });
+  });
+
+  it("falls back to the target cycle once the previous cycle has nothing left to do", async () => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "second-half", 4_100, "1403581", tx(9))],
+        prints: [collectPrint(20, 141, 4_110, "1403581")],
+        claims: [claim(21, alice, 141, 4_120, "1333401")],
+        memberships: { 141: [membership(alice, 141)] },
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: {
+          rewardCycle: 142,
+          calculation: {
+            next: {
+              targetRewardCycle: 142,
+              targetCheckpoint: "first-half",
+              state: "scheduled",
+              grace: null,
+            },
+          },
+          buckets: [
+            { bondIndex: null, signerEarnedBeforeManagerClaimSats: "0", feeSnapshotBips: null },
+          ],
+          manager: { configuredFeeBips: "500", feeSnapshotBips: null, earnedFeesSats: "0" },
+          stakers: [],
+        },
+      }),
+    });
+    expect(ledger.current).toEqual({ cycle: 142, distribution: 1 });
+    expect(
+      ledger.cycles
+        .find((cycle) => cycle.cycle === 141)
+        ?.distributions.find((d) => d.distribution === 2),
+    ).toMatchObject({ status: "complete", current: false });
+  });
+
+  it("reports whether the previous cycle still has open work from evidence alone", () => {
+    const base = {
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      cycle: 141,
+    };
+    const calculated = [realization(141, "second-half", 4_100, "1403581", tx(9))];
+    // not calculated → nothing separately actionable (the next calculation absorbs it)
+    expect(previousCycleOpen(fakeStore({}), base)).toBe(false);
+    // calculated, nothing collected → open
+    expect(
+      previousCycleOpen(
+        fakeStore({ realizations: calculated, memberships: { 141: [membership(alice, 141)] } }),
+        base,
+      ),
+    ).toBe(true);
+    // collected in full, a member still unpaid → open
+    expect(
+      previousCycleOpen(
+        fakeStore({
+          realizations: calculated,
+          prints: [collectPrint(20, 141, 4_110, "1403581")],
+          memberships: { 141: [membership(alice, 141), membership(bob, 141)] },
+          claims: [claim(21, alice, 141, 4_120, "1333401")],
+        }),
+        base,
+      ),
+    ).toBe(true);
+    // collected and every member paid after the calculation → closed
+    expect(
+      previousCycleOpen(
+        fakeStore({
+          realizations: calculated,
+          prints: [collectPrint(20, 141, 4_110, "1403581")],
+          memberships: { 141: [membership(alice, 141)] },
+          claims: [claim(21, alice, 141, 4_120, "1333401")],
+        }),
+        base,
+      ),
+    ).toBe(false);
   });
 
   it("applies the seam rule, rolled-forward counts, combined coverage, and provenance", async () => {
