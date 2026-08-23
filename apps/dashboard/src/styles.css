@@ -3430,6 +3430,10 @@
   gap: 10px;
   flex-shrink: 0;
 }
+.rw-now-actions [data-tooltip]::after {
+  right: 0;
+  left: auto;
+}
 .rw-gas {
   display: inline-flex;
   align-items: center;

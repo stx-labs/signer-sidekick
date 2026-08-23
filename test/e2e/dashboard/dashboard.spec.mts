@@ -2538,10 +2538,37 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
     .toBe(true);
   // …and the fee ledger exports the whole history.
   await page.getByRole("button", { name: "JSON" }).click();
-  await page.getByRole("button", { name: "Payments", exact: true }).click();
+  await page.getByRole("button", { name: "Staker Payments", exact: true }).click();
   await expect
     .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
     .toBe(true);
+});
+
+test("keeps the reward action tooltip inside intermediate desktop viewports", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Intermediate desktop regression");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route("**/api/v1/engine", async (route) => {
+    await route.fulfill(fixtureFulfillment({ ...engineStatus, mode: "operator-run" }));
+  });
+  await page.route("**/api/v1/settings/gas-wallet", async (route) => {
+    await route.fulfill(
+      fixtureFulfillment({ ...gasWalletCreated, enabled: true, signer: "ready" }),
+    );
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.locator(".rw-now-actions .rw-gas")).toBeVisible();
+  for (const width of [1081, 1152, 1280, 1366]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+  }
 });
 
 test("seals, approves, and follows a reward run from the Rewards page", async ({ page }) => {
