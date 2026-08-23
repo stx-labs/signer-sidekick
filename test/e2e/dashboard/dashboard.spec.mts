@@ -2133,7 +2133,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(manager).toContainText("reviewed · profile operator-reference-render");
   await openSettingsSection(page, "capabilities", "Manager");
   const rewardCalls = manager.locator(".st-row", { hasText: "Reward calls" });
-  await expect(rewardCalls.getByText("Supported", { exact: true })).toBeVisible();
+  await expect(rewardCalls.getByText("Available", { exact: true })).toBeVisible();
   await expect(rewardCalls.getByRole("button", { name: "Details" })).toHaveAttribute(
     "data-tooltip",
     "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs.",

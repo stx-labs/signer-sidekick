@@ -78,7 +78,7 @@ or cancel only between transactions; cancellation cannot undo a broadcast transa
 run cannot start until the current one finishes.
 
 The gas wallet pays only network fees. A banner on Rewards warns when its balance cannot cover the
-next run — top it up from any wallet. **Settings → Transaction capabilities → Force Observe**
+next run — top it up from any wallet. **Settings → Reward runs → Force Observe**
 halts all signing at once; **Settings → Gas wallet** disables the wallet or sweeps its STX.
 
 If a run halts after an ambiguous broadcast, inspect its recorded transaction ID and chain evidence.

@@ -699,7 +699,7 @@ export function SettingsPage({
                 <Badge state={attentionCount === 0 ? "success" : "caution"}>
                   {attentionCount === 0
                     ? "Ready"
-                    : `${attentionCount} ${attentionCount === 1 ? "item" : "items"} need attention`}
+                    : `${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`}
                 </Badge>
               </div>
               <h2 id="st-deploy-title">
@@ -742,7 +742,7 @@ export function SettingsPage({
                 </dd>
               </div>
               <div>
-                <dt>Sidekick</dt>
+                <dt>Profile</dt>
                 <dd>
                   {data?.preflight.compatibility.profileLabel ??
                     data?.preflight.compatibility.profileId ??

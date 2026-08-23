@@ -114,7 +114,7 @@ are never accepted through the environment, and Observe remains the default.
 
 Back up `gas-wallet.key` with the database (see Operations); losing it loses only the gas balance.
 **Sweep remaining STX** returns the balance to an address you name. **Disable**, **Force Observe**
-(Settings → Transaction capabilities), or `SIDEKICK_ENGINE_MODE=observe` stop signing without
+(Settings → Reward runs), or `SIDEKICK_ENGINE_MODE=observe` stop signing without
 deleting the key.
 
 See [Operations](operations.md) for upgrades, restore, diagnosis, and support collection.

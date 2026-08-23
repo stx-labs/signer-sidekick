@@ -87,6 +87,7 @@ export function StatusBadge({ status }: { status: string }) {
       ? "b-error"
       : [
             "not configured",
+            "configured",
             "observe",
             "observe mode",
             "observe only",

@@ -172,19 +172,30 @@ export function EngineSettings({
         ? `${status.jobs.active} runs active · ${status.jobs.awaitingApproval} awaiting approval · ${status.jobs.ambiguous} ambiguous`
         : "set SIDEKICK_ENGINE_MODE=operator-run and restart to run reward calls from here"
     : "engine status unavailable";
-  const available =
-    status?.adapters.filter(({ availability }) => availability === "available").length ?? 0;
-  const disabled =
-    status?.adapters.filter(({ availability }) => availability === "disabled").length ?? 0;
+  // The five reviewed reward adapters are a closed registry executed by the run engine. The legacy
+  // `/api/v1/engine` adapter list knows only the collect adapter (the one with a disable control),
+  // so availability comes from the engine mode, with collect honouring its own control.
+  const operatorRun = Boolean(
+    status && status.mode === "operator-run" && !status.forcedObserve.active,
+  );
+  const collectAdapter =
+    status?.adapters.find((item) => item.adapter.id === "reference-manager-claim-rewards") ?? null;
+  const chipState = (id: (typeof operationChips)[number][0]): "ok" | "off" | "" => {
+    if (!operatorRun) return "";
+    if (id === "reference-manager-claim-rewards" && collectAdapter) {
+      return collectAdapter.availability === "available" ? "ok" : "off";
+    }
+    return "ok";
+  };
   const operationStatus = unavailable
     ? "Unavailable"
-    : status?.mode !== "operator-run"
+    : !operatorRun
       ? "Observe only"
-      : disabled > 0
-        ? "Disabled"
-        : available > 0
-          ? "Available"
-          : "Observe only";
+      : collectAdapter?.availability === "disabled"
+        ? "Collect disabled"
+        : collectAdapter?.availability === "blocked"
+          ? "Attention"
+          : "Available";
 
   return (
     <>
@@ -250,22 +261,16 @@ export function EngineSettings({
                 </a>
               </>
             }
-            help="Five reviewed reward adapters, each with one explicit signer method and no generic signing path."
+            help="Five reviewed reward adapters, each with one explicit signer method and no generic signing path. Force Observe stops all of them; collect also has its own disable control."
             name="Operations"
             status={operationStatus}
             value={
               <span className="st-chips">
-                {operationChips.map(([id, label]) => {
-                  const adapter = status?.adapters.find((item) => item.adapter.id === id);
-                  return (
-                    <span
-                      className={`st-chip ${adapter?.availability === "available" ? "ok" : adapter?.availability === "disabled" ? "off" : ""}`}
-                      key={id}
-                    >
-                      {label}
-                    </span>
-                  );
-                })}
+                {operationChips.map(([id, label]) => (
+                  <span className={`st-chip ${chipState(id)}`} key={id}>
+                    {label}
+                  </span>
+                ))}
               </span>
             }
           >

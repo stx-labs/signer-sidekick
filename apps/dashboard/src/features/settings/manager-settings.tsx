@@ -57,7 +57,9 @@ export function ManagerSettings({
   );
   const actions = data.manager.capabilities.actions;
   const reviewedCalls = actions.filter(({ executionAvailable }) => executionAvailable).length;
-  const rewardCallsAvailable = reviewedCalls > 0;
+  // The run engine gates on this one capability (reference-reward-claims); surface exactly that.
+  const rewardCalls = actions.find(({ id }) => id === "reference-reward-claims") ?? null;
+  const rewardCallsAvailable = Boolean(rewardCalls?.executionAvailable);
   const sourceVerified = data.manager.capabilities.signerManagerTrait.compatible;
   const admins = data.activity.admins;
 
@@ -115,9 +117,15 @@ export function ManagerSettings({
             }
           />
           <SettingsRow
-            help="Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs."
+            help={
+              rewardCallsAvailable
+                ? "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs."
+                : (rewardCalls?.reason ??
+                  data.manager.automationEligibilityReason ??
+                  "Reward calls are not available for this manager.")
+            }
             name="Reward calls"
-            status={rewardCallsAvailable ? "Supported" : "Unavailable"}
+            status={rewardCallsAvailable ? "Available" : "Observe only"}
             value={
               <span className="mono">
                 {reviewedCalls} reviewed {reviewedCalls === 1 ? "adapter" : "adapters"}

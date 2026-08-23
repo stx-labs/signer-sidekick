@@ -776,7 +776,9 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
               : 0n),
         )
       : null;
-    const calculatedLine = calculated ? "Calculation confirmed" : null;
+    const calculatedLine = calculated
+      ? `Calculated ${shortDate(distribution.calculation.observedAt)} ${provenance(distribution.calculation.by)}`
+      : null;
     const lastCollect = distribution.collects.at(-1) ?? null;
     if (runForThis) {
       const done = runForThis.progress.completed;
@@ -848,11 +850,11 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
         arrived > 0
           ? `All distributed · ${plural(arrived, "payout")} arrived`
           : `All distributed · ${plural(p.arriving, "payout")} arriving over Bitcoin`;
-      sub = `${calculatedLine ?? ""}${lastCollect ? " · rewards collected" : ""}`;
+      sub = `${calculatedLine ?? ""}${lastCollect ? ` · collected ${provenance(lastCollect.by)}` : ""}`;
     } else if (p.made > 0 && p.outstanding > 0) {
       badge = { tone: "info", label: "In progress" };
       headline = `${plural(p.outstanding, "payment")} still outstanding`;
-      sub = `${lastCollect ? "Rewards collected · " : ""}${p.made} of ${total} paid${available > 0n ? ` · ${amount(text(available))} still to collect` : ""}`;
+      sub = `${lastCollect ? `Collected ${provenance(lastCollect.by)} · ` : ""}${p.made} of ${total} paid${available > 0n ? ` · ${amount(text(available))} still to collect` : ""}`;
     } else {
       badge = { tone: "success", label: "Ready" };
       headline =
@@ -885,7 +887,9 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
         unit: collectedParts?.unit ?? "sBTC",
         detail:
           collected > 0n
-            ? null
+            ? lastCollect
+              ? provenance(lastCollect.by)
+              : null
             : available > 0n
               ? `${amount(text(available))} ready to collect`
               : "not yet collected",

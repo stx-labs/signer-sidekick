@@ -441,7 +441,7 @@ describe("deriveDistributionCards", () => {
     expect(card?.eyebrow).toBe("Cycle 141 · Second Distribution");
     expect(card?.badge).toMatchObject({ tone: "success", label: "Ready" });
     expect(card?.headline).toBe("Ready to collect & distribute");
-    expect(card?.sub).toBe("Calculation confirmed");
+    expect(card?.sub).toBe("Calculated Aug 19 by another caller");
     expect(card?.primary).toMatchObject({
       kind: "collect-and-distribute",
       transactions: 41,
@@ -517,7 +517,7 @@ describe("deriveDistributionCards", () => {
     });
     expect(idle[0]).toMatchObject({
       headline: "2 payments still outstanding",
-      sub: "Rewards collected · 38 of 40 paid",
+      sub: "Collected by you · 38 of 40 paid",
       badge: { label: "In progress" },
     });
     expect(idle[0]?.primary).toMatchObject({ kind: "distribute", transactions: 2 });
