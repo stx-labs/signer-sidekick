@@ -95,12 +95,9 @@ default `observe` engine mode.
 
 ## Reward runs
 
-An official release enables mainnet `operator-run` only after its exact source fingerprint passes
-the scoped security review. To use it, set `SIDEKICK_ENGINE_MODE=operator-run` before starting, then
+To run reward calls from Sidekick, set `SIDEKICK_ENGINE_MODE=operator-run` before starting, then
 open **Settings → Gas wallet** to generate, fund, and enable a dedicated low-balance wallet. The
-wallet signs only an approved reward recipe; signer and manager-admin keys remain external.
-
-Sidekick refuses to start mainnet operator-run if the bundled review is missing or stale. Do not
-override its review or fingerprint paths in a normal deployment. Observe remains available.
+wallet signs only an approved reward recipe; signer and manager-admin keys remain external, and the
+contract — not the caller — fixes every payout recipient and amount. Observe remains the default.
 
 See [Operations](operations.md) for upgrades, restore, diagnosis, and support collection.

@@ -1,8 +1,5 @@
 .git
-.github/*
-!.github/workflows/
-.github/workflows/*
-!.github/workflows/release.yml
+.github
 .env
 .env.*
 .ai-runs

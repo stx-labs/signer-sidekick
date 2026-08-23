@@ -60,9 +60,10 @@ operator-triggered, occasional, permissionless calls.
    sats, otherwise 3 significant figures with the unit word (sBTC on Stacks, BTC once out over
    Bitcoin); sorting, filtering, and totals always on integer sats.
 
-8. **Mainnet gate.** A scoped security review approves the exact source fingerprint before
-   mainnet operator-run can start. Any source change invalidates that approval automatically;
-   Observe and non-mainnet evaluation remain available.
+8. **Review.** Signing-path changes are reviewed against the checklist in
+   `security/operator-run-mainnet-review.md` in the pull request that ships them; the repository's
+   required second approver is the control. No runtime record gates operator-run: the contract fixes
+   payout recipients and amounts, and the gas wallet holds no admin or signer authority.
 
 ## Consequences
 

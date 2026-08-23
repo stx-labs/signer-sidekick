@@ -14,8 +14,6 @@ and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-executi
   generic signing or contract-call API.
 - Manager source, PoX-5 source, network, chain ID, and contract principals must match reviewed
   capability evidence. A data profile cannot add executable behavior.
-- Mainnet operator-run requires an approved security-review record for the build's exact source
-  fingerprint. Observe and non-mainnet evaluation do not require that approval.
 
 ## Sealed runs
 

@@ -1,6 +1,6 @@
 # Reward operations delivery status
 
-- Status: S0–S5, S3.1, and S3.2 implemented; S6 awaits independent mainnet review.
+- Status: S0–S6 implemented.
 - Branch: `codex/reward-forecast-and-overview-clarity`
 - Mockups: `design/mockups/`
 
@@ -27,7 +27,7 @@ This file tracks delivery only. Current behavior is defined by:
 | S3.2 | Retired-engine remnants removed (planner create path, approval and attestation writes, browser-wallet job binding); Force Observe and adapter disable now gate reward runs; the read-only history path is covered by seeded-history tests |
 | S4 | Calculate, collect, distribute, settle, and reclaim adapters with exact effects |
 | S5 | Rewards, Overview, Activity, Settings, responsive flows, and recipe approval UI |
-| S6 | Concise operator docs and exact-source review gate implemented; approval still pending |
+| S6 | Concise operator docs and the signing-path review checklist; review happens in the repository's required PR review |
 
 ## Release gates
 
@@ -37,12 +37,11 @@ Before mainnet operator-run:
    Bitcoin route, settle, reclaim, browser closure, and restart recovery — passed 2026-08-22 on
    `141eb8c` (artifact `1787449724061-64391`) and again on the S3.2 tree (artifact
    `1787455273537-89556`), full `pnpm e2e:devnet:test` suite;
-2. complete the independent review in
-   [security/operator-run-mainnet-review.md](../../security/operator-run-mainnet-review.md); and
+2. review signing-path changes against
+   [security/operator-run-mainnet-review.md](../../security/operator-run-mainnet-review.md) in the
+   pull request that ships them (the repository requires a second approver for every merge); and
 3. keep `pnpm check`, `pnpm test:coverage`, `pnpm test:regtest`, and the dashboard browser suite
-   green on the approved fingerprint.
-
-Observe and non-mainnet evaluation remain available while the review is pending.
+   green on the released commit.
 
 ## Scale follow-ups
 

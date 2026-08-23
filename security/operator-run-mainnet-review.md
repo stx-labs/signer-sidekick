@@ -1,38 +1,26 @@
-# Mainnet operator-run review
+# Operator-run signing-path review
 
-Mainnet operator-run is fail-closed at release and startup. Observe and non-mainnet evaluation do
-not require this approval.
+Changes to the operator-run signing path land through the repository's required pull-request
+review (a second person must approve every merge to `main`). There is no runtime record and no
+fingerprint gate: the contract, not the caller, fixes every payout recipient and amount, and the gas
+wallet holds no admin or signer authority, so the review's job is to keep Sidekick's key narrow and
+unprivileged, not to ration when it may run.
 
 ## Review scope
 
-Review the exact fingerprint for:
+When a pull request touches any of the following, review it against this list before approving:
 
-- gas-wallet generation, storage, activation, refusal checks, and sweep;
-- recipe bounds, approval expiry, transaction/gas caps, and one-active-run exclusion;
-- every adapter's anchored inputs, exact signer method, postconditions, and completion proof;
+- gas-wallet generation, storage, activation, refusal checks (never the signer key, never a manager
+  admin), and sweep;
+- recipe bounds (never add a recipient, never increase an amount), approval expiry,
+  transaction/gas caps, and one-active-run exclusion;
+- every adapter's anchored inputs, exact signer method, deny-mode postconditions, and completion
+  proof — there must be no generic signing or contract-call path;
 - one-in-flight nonce handling, external completion, ambiguous broadcast, restart, and resume;
 - CSRF/auth boundaries and exclusion of keys or signed bytes from APIs, logs, Activity, and support
   exports; and
 - regtest/Devnet coverage for calculate, collect, distribute, settle, reclaim, pause, and recovery.
 
-## Approval
-
-1. Finish and commit all in-scope changes.
-2. From a clean checkout of that commit (no untracked files under `apps`, `packages`, `contracts`,
-   `network-compatibility`, `trusted-managers`, or `scripts`), run
-   `pnpm security:operator-run:fingerprint` and put the result in
-   `security/operator-run-mainnet-review.json` with `status: "pending"`.
-3. An independent reviewer audits that fingerprint and runs the normal release checks.
-4. The reviewer changes the record to `approved` and supplies the last in-scope commit, review time,
-   reviewer identity, and durable review URL.
-5. Run `pnpm security:operator-run:verify`; it must print the approved fingerprint. Tag the
-   reviewed release only while it passes.
-
-The release workflow runs the same check with `--allow-pending`: a pending record does not block
-releases (the runtime refuses mainnet operator-run until the record is approved), but an invalid or
-stale-approved record fails the release.
-
-The review record itself is excluded from the fingerprint so approval can be recorded afterward, as
-are documentation, script unit tests, and the released-Devnet harness under `scripts/`. Runtime,
-dependencies, build inputs, and the release gate are included. Any later in-scope change changes
-the fingerprint and makes the approval stale.
+Paths that usually carry these changes: `apps/sidekick/src/transaction-engine/**`,
+`apps/sidekick/src/gas-wallet*`, `packages/protocol/src/reward-operation-plan.ts`, and the
+adapter sources under `packages/protocol/src/`.

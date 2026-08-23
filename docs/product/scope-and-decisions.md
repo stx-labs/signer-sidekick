@@ -113,9 +113,9 @@ products. The Overview answers “what needs attention now?”; other pages expl
 ## Still open
 
 - Operational-latency validation for the observer path.
-- Operational validation of operator-run against mainnet after its independent security review.
-- A non-reference executable capability adapter, which requires the adapter approver plus the
-  source-fingerprint review process.
+- Operational validation of operator-run against mainnet.
+- A non-reference executable capability adapter, which requires the adapter approver and a
+  signing-path review in its pull request.
 - Squashing the pre-release SQLite migration history into the first release schema after live
   testing is complete. Forward migrations preserve the active development database until then.
 - Removal of the shared `/api/v1/status` alert projection after every remaining consumer has an

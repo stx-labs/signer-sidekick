@@ -12,7 +12,7 @@
 - [Development](operator/development.md)
 - [Architecture](architecture/README.md)
 - [Product contracts](product/scope-and-decisions.md)
-- [Mainnet operator-run security review](../security/operator-run-mainnet-review.md)
+- [Operator-run signing-path review checklist](../security/operator-run-mainnet-review.md)
 - [Signer Health model and Core-team review questions](product/signer-health-diagnosis-model.md)
 - [UI design contract](../design/README.md)
 

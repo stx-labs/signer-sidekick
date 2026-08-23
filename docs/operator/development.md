@@ -66,10 +66,8 @@ For restart or ambiguity tests, preserve the database, WAL, gas-wallet key, and 
 across the simulated crash. Deleting state between nonce reservation and reconciliation invalidates
 the test. The [engine contract](../architecture/transaction-engine.md) is normative.
 
-Mainnet operator-run additionally requires the exact-source review in
-[`security/operator-run-mainnet-review.md`](../../security/operator-run-mainnet-review.md). Any
-in-scope change invalidates approval. The record intentionally remains `pending` until an independent
-reviewer approves that fingerprint.
+Pull requests that touch the operator-run signing path are reviewed against
+[`security/operator-run-mainnet-review.md`](../../security/operator-run-mainnet-review.md).
 
 ## Released Devnet
 

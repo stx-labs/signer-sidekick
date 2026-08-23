@@ -12,7 +12,11 @@ WORKDIR /workspace
 RUN corepack enable
 
 COPY . .
-RUN node scripts/source-fingerprint.mjs /workspace/SOURCE_FINGERPRINT \
+RUN find apps packages contracts network-compatibility trusted-managers scripts -type f -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  | sha256sum \
+  | cut -d ' ' -f 1 > /workspace/SOURCE_FINGERPRINT \
   && pnpm install --frozen-lockfile \
   && pnpm protocol:verify \
   && pnpm check \
@@ -37,7 +41,6 @@ ENV NODE_ENV=production \
   SIDEKICK_BUILD_VERSION=${VERSION} \
   SIDEKICK_BUILD_COMMIT=${VCS_REF} \
   SIDEKICK_SOURCE_FINGERPRINT_PATH=/app/SOURCE_FINGERPRINT \
-  SIDEKICK_OPERATOR_RUN_REVIEW_PATH=/app/OPERATOR_RUN_SECURITY_REVIEW.json \
   SIDEKICK_HTTP_HOST=0.0.0.0 \
   SIDEKICK_HTTP_PORT=3998 \
   SIDEKICK_EVENT_HTTP_HOST=0.0.0.0 \
@@ -53,7 +56,6 @@ RUN groupadd --system --gid 10001 sidekick \
 
 COPY --from=build --chown=sidekick:sidekick /opt/sidekick /app
 COPY --from=build --chown=sidekick:sidekick /workspace/SOURCE_FINGERPRINT /app/SOURCE_FINGERPRINT
-COPY --from=build --chown=sidekick:sidekick /workspace/security/operator-run-mainnet-review.json /app/OPERATOR_RUN_SECURITY_REVIEW.json
 COPY --from=build --chown=sidekick:sidekick /workspace/apps/dashboard/dist /app/dashboard
 COPY --from=build --chown=sidekick:sidekick /workspace/contracts /app/contracts
 COPY --from=build /workspace/LICENSE /workspace/NOTICE.md /workspace/dist/THIRD_PARTY_LICENSES.txt /usr/share/doc/signer-sidekick/
