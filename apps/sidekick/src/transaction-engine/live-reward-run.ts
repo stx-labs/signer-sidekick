@@ -19,6 +19,7 @@ import {
   planRewardOperation,
   type RewardOperationPlanInput,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
+import { lookupCanonicalApiTransaction } from "../canonical-api-transaction.js";
 import { proveCanonicalNodeBlock } from "../canonical-node-block.js";
 import type { ChainAnchor } from "../chain-anchor.js";
 import { captureNodeChainAnchor } from "../chain-clients.js";
@@ -38,6 +39,7 @@ import {
   type LiveObservation,
   LiveTransactionReader,
   type TransactionFeeObservation,
+  transactionIndexCannotAnswer,
 } from "./live-transaction-reader.js";
 import type {
   RewardRunDraftFacts,
@@ -716,14 +718,36 @@ export class LiveRewardRunDriver implements RewardRunDriver {
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
     const indexed = await reader.lookupIndexedTransaction(input.txid);
+    let confirmed: { success: boolean; resultRepr: string; blockHeight: number } | undefined;
     if (indexed.status === "observed") {
       if (!indexed.value.isCanonical)
         return { status: "halt", reason: "Transaction became noncanonical" };
-      if (indexed.value.resultRepr.trim().startsWith("(ok")) {
+      confirmed = {
+        success: indexed.value.resultRepr.trim().startsWith("(ok"),
+        resultRepr: indexed.value.resultRepr,
+        blockHeight: Number(indexed.value.blockHeight ?? 0n),
+      };
+    } else if (transactionIndexCannotAnswer(indexed)) {
+      const apiTransaction = await lookupCanonicalApiTransaction({
+        api: context.api,
+        node: context.node,
+        chainId: input.run.recipe.chainId,
+        txId: input.txid,
+      });
+      if (apiTransaction.status === "observed") {
+        confirmed = {
+          success: apiTransaction.value.success,
+          resultRepr: apiTransaction.value.resultRepr,
+          blockHeight: apiTransaction.value.blockHeight,
+        };
+      }
+    }
+    if (confirmed) {
+      if (confirmed.success) {
         if (
           input.plan.material.kind === "calculate-rewards" &&
           !calculationResultMatchesTarget(
-            indexed.value.resultRepr,
+            confirmed.resultRepr,
             input.plan.material.targetRewardCycle,
             input.plan.material.expectedLastRewardComputeBurnHeight,
           )
@@ -733,12 +757,12 @@ export class LiveRewardRunDriver implements RewardRunDriver {
             reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
           };
         }
-        return { status: "confirmed", blockHeight: Number(indexed.value.blockHeight ?? 0n) };
+        return { status: "confirmed", blockHeight: confirmed.blockHeight };
       }
       const completed = await this.#desiredState(input);
       return completed
         ? { status: "externally-completed", reason: "Another caller completed the same operation" }
-        : { status: "halt", reason: `Transaction aborted: ${indexed.value.resultRepr}` };
+        : { status: "halt", reason: `Transaction aborted: ${confirmed.resultRepr}` };
     }
     const unconfirmed = await reader.lookupUnconfirmedTransaction(input.txid);
     if (unconfirmed.status === "observed") return { status: "pending" };

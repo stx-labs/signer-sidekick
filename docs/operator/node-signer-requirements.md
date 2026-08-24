@@ -9,7 +9,7 @@ These are the Sidekick-specific additions to an existing Stacks node and signer.
 | Capability | Requirement | Effect |
 | --- | --- | --- |
 | Node RPC | Required | Current chain, PoX-5, manager, and operation state |
-| Node transaction index | Required | Canonical manager and reward transaction verification |
+| Node transaction index | Recommended | Faster canonical manager and reward transaction verification |
 | Node Prometheus | Recommended | Node progress, peers, errors, and latency |
 | Signer monitoring | Recommended | Signer identity, heartbeat, proposals, and validation |
 | Sidekick event observer | Recommended | Event-driven refresh instead of polling alone |
@@ -31,9 +31,16 @@ txindex = true
 prometheus_bind = "127.0.0.1:9153"
 ```
 
-Use addresses reachable from the Sidekick container. Keep the node working directory, including the
-transaction index, on the chainstate volume. Historical verification remains incomplete until the
-index catches up.
+Use addresses reachable from the Sidekick container.
+
+`txindex` is optional. Without it the node answers transaction lookups with HTTP 501, and Sidekick
+verifies manager activity and reward realization by reading the canonical block at the transaction's
+height and confirming the transaction is in it. That is equally authoritative — block bytes are
+primary consensus data — but deserializes a block per check instead of doing a single-row lookup.
+
+Enabling it trades storage for that speed. The index only covers blocks the node processes after you
+turn it on; it does not backfill, so transactions confirmed earlier keep using block reads. Keep the
+node working directory, including the index, on the chainstate volume.
 
 ```dotenv
 STACKS_NODE_RPC_URL=http://127.0.0.1:20443

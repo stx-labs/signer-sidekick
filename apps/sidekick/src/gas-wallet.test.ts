@@ -5,6 +5,7 @@ import {
   boolCV,
   compressPublicKey,
   getAddressFromPublicKey,
+  makeSTXTokenTransfer,
   privateKeyToPublic,
 } from "@stacks/transactions";
 import {
@@ -12,6 +13,7 @@ import {
   gasWalletSweepSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UpstreamHttpError } from "./chain-clients.js";
 import {
   type GasWalletEngine,
   GasWalletError,
@@ -30,7 +32,39 @@ const publicKey = compressPublicKey(privateKeyToPublic(privateKey)).toLowerCase(
 const principal = getAddressFromPublicKey(publicKey, "testnet");
 const managerPrincipal = "ST000000000000000000002AMW42H.signer-manager";
 const recipient = "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG";
-const txid = `0x${"cd".repeat(32)}` as const;
+const proofTransaction = await makeSTXTokenTransfer({
+  recipient,
+  amount: 1n,
+  senderKey: privateKey,
+  nonce: 1n,
+  fee: 1_000n,
+  network: "testnet",
+});
+const txid = `0x${proofTransaction.txid()}` as const;
+const blockHash = `0x${"22".repeat(32)}` as const;
+const indexBlockHash = `0x${"33".repeat(32)}` as const;
+const blockHeight = 1_234;
+
+function nakamotoBlockBytes(): Uint8Array {
+  const body = proofTransaction.serializeBytes();
+  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
+  const view = new DataView(bytes.buffer);
+  bytes.fill(0xab, 0, 206);
+  view.setUint8(0, 1);
+  let offset = 206;
+  view.setUint32(offset, 0);
+  offset += 4;
+  view.setUint16(offset, 8);
+  offset += 2;
+  view.setUint32(offset, 1);
+  offset += 5;
+  view.setUint32(offset, 0);
+  offset += 4;
+  view.setUint32(offset, 1);
+  offset += 4;
+  bytes.set(body, offset);
+  return bytes;
+}
 
 interface Harness {
   now: Date;
@@ -43,6 +77,7 @@ interface Harness {
   broadcast: TransactionBroadcastResult;
   indexed: unknown;
   unconfirmed: unknown;
+  apiTransaction: "not-found" | "success";
 }
 
 function harness(): Harness {
@@ -57,6 +92,7 @@ function harness(): Harness {
     broadcast: { status: "accepted", txid, httpStatus: 200 },
     indexed: { status: "not-found", httpStatus: 404 },
     unconfirmed: { status: "observed", httpStatus: 200, value: { location: { kind: "mempool" } } },
+    apiTransaction: "not-found",
   };
 }
 
@@ -98,12 +134,43 @@ function engineStub(state: Harness) {
 
 function runtimeContextStub(state: Harness) {
   const callReadOnly = vi.fn(async () => boolCV(state.isAdmin));
+  const blockBytes = nakamotoBlockBytes();
   const runtimeContext = (): TransactionEngineRuntimeContext => {
     if (state.disconnected) throw new Error("The configured connection is not current");
     return {
       config: { network: "testnet", nodeRpcUrl: "http://127.0.0.1:20443" },
-      node: { callReadOnly, getTenureInfo: async () => ({ tip_block_id: "ab".repeat(32) }) },
-      api: {},
+      node: {
+        callReadOnly,
+        getTenureInfo: async () => ({
+          tip_block_id: `0x${"ab".repeat(32)}`,
+          tip_height: blockHeight + 10,
+          reward_cycle: 141,
+        }),
+        getNakamotoBlockById: async () => blockBytes,
+        getNakamotoBlockAtHeight: async () => blockBytes,
+      },
+      api: {
+        getNodeInfo: async () => ({ network_id: 0x8000_0000 }),
+        getTransactionDetails: async () => {
+          if (state.apiTransaction === "not-found") {
+            throw new UpstreamHttpError("not found", 404);
+          }
+          return {
+            tx_id: txid,
+            tx_status: "success",
+            tx_result: { hex: "0x0703", repr: "(ok true)" },
+            canonical: true,
+            block_hash: blockHash,
+            block_height: blockHeight,
+          };
+        },
+        getBlock: async () => ({
+          canonical: true,
+          height: blockHeight,
+          hash: blockHash,
+          index_block_hash: indexBlockHash,
+        }),
+      },
     } as unknown as TransactionEngineRuntimeContext;
   };
   return { runtimeContext, callReadOnly };
@@ -355,10 +422,12 @@ describe("gas wallet service", () => {
     // Still in the mempool: nothing settles yet.
     expect((await service.refreshSweep(planned.sweepId)).status).toBe("broadcast");
     state.indexed = {
-      status: "observed",
-      httpStatus: 200,
-      value: { isCanonical: true, resultRepr: "(ok true)", blockHeight: 1234n },
+      status: "unavailable",
+      httpStatus: 501,
+      reason: "transaction-index-unavailable",
     };
+    state.unconfirmed = { status: "not-found", httpStatus: 404 };
+    state.apiTransaction = "success";
     const confirmed = await service.refreshSweep(planned.sweepId);
     expect(confirmed).toMatchObject({
       status: "confirmed",

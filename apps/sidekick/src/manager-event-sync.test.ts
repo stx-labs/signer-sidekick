@@ -1,6 +1,7 @@
 import {
   contractPrincipalCV,
   cvToHex,
+  makeSTXTokenTransfer,
   noneCV,
   stringAsciiCV,
   tupleCV,
@@ -16,8 +17,41 @@ const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const staker = "SP000000000000000000002Q6VF78.staker";
 const apiUrl = "https://api.mainnet.hiro.so";
 const sourceId = createChainSourceId("mainnet", apiUrl);
-const txOne = `0x${"11".repeat(32)}`;
+
+// The block-read fallback deserializes the block the node serves, so the fixtures have to be
+// real transactions in a real block rather than sentinel bytes.
+const transactionOne = await makeSTXTokenTransfer({
+  recipient: "ST000000000000000000002AMW42H",
+  amount: 1n,
+  senderKey: `${"11".repeat(32)}01`,
+  nonce: 1n,
+  fee: 1_000n,
+  network: "testnet",
+});
+const txOne = `0x${transactionOne.txid()}`;
 const txTwo = `0x${"22".repeat(32)}`;
+
+/** A Nakamoto block (version 1 header, no signer signatures) carrying `transactionOne`. */
+function blockBytes(): Uint8Array {
+  const body = transactionOne.serializeBytes();
+  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
+  const view = new DataView(bytes.buffer);
+  bytes.fill(0xab, 0, 206);
+  view.setUint8(0, 1); // header version 1
+  let offset = 206;
+  view.setUint32(offset, 0); // signer_signature count
+  offset += 4;
+  view.setUint16(offset, 8); // pox_treatment BitVec.len
+  offset += 2;
+  view.setUint32(offset, 1); // BitVec.data length
+  offset += 4 + 1;
+  view.setUint32(offset, 0); // problematic_txs count
+  offset += 4;
+  view.setUint32(offset, 1); // transaction count
+  offset += 4;
+  bytes.set(body, offset);
+  return bytes;
+}
 const cursorTwo = "8599999:2147483647:2:0";
 const openStores: SidekickStore[] = [];
 
@@ -126,9 +160,9 @@ function nodeBlocks(canonical = true) {
       tip_height: 8_700_000,
       reward_cycle: 141,
     })),
-    getNakamotoBlockById: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    getNakamotoBlockById: vi.fn(async () => blockBytes()),
     getNakamotoBlockAtHeight: vi.fn(async () =>
-      canonical ? Uint8Array.of(1, 2, 3) : Uint8Array.of(4, 5, 6),
+      canonical ? blockBytes() : Uint8Array.of(4, 5, 6),
     ),
   };
 }
@@ -248,6 +282,78 @@ describe("manager event synchronization", () => {
     });
     expect(blocks.getTenureInfo).toHaveBeenCalledTimes(1);
     expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
+  });
+
+  it("verifies from canonical block reads when the node runs without txindex", async () => {
+    const sidekickStore = await store();
+    const blocks = nodeBlocks();
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          // Stacks Core answers 501 for every lookup when txindex is disabled.
+          lookupIndexedTransaction: vi.fn().mockResolvedValue({
+            status: "unavailable",
+            httpStatus: 501,
+            reason: "transaction-index-unavailable",
+          }),
+        },
+        nodeBlocks: blocks,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).resolves.toMatchObject({ newEvents: 1, nodeVerifiedTransactions: 1 });
+    expect(blocks.getNakamotoBlockById).toHaveBeenCalledWith(`0x${"44".repeat(32)}`, {});
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).not.toBeNull();
+  });
+
+  it("rejects an event whose transaction is absent from the canonical block it claims", async () => {
+    const sidekickStore = await store();
+    const blocks = nodeBlocks();
+    // A canonical block that simply does not carry the transaction the API reported.
+    const empty = blockBytes().slice(0, 206 + 4 + 2 + 4 + 1 + 4);
+    const emptyBlock = new Uint8Array(empty.byteLength + 4);
+    emptyBlock.set(empty);
+    blocks.getNakamotoBlockById.mockResolvedValue(emptyBlock);
+    blocks.getNakamotoBlockAtHeight.mockResolvedValue(emptyBlock);
+
+    await expect(
+      syncManagerEvents({
+        store: sidekickStore,
+        api: {
+          getSmartContractLogs: vi
+            .fn()
+            .mockResolvedValue(page(txOne, 1, claimEventHex(), "8600000:2147483647:3:1", null)),
+          getTransaction: vi.fn().mockResolvedValue(transaction(txOne, 8_600_000)),
+        },
+        nodeTransactions: {
+          lookupIndexedTransaction: vi.fn().mockResolvedValue({
+            status: "unavailable",
+            httpStatus: 501,
+            reason: "transaction-index-unavailable",
+          }),
+        },
+        nodeBlocks: blocks,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+        observedAt,
+        pageLimit: 100,
+      }),
+    ).rejects.toThrow(/absent from the local node's canonical block/);
+    expect(sidekickStore.getChainEvent(1, txOne, 1)).toBeNull();
   });
 
   it("rejects an API event when its historical block is not canonical on the local node", async () => {

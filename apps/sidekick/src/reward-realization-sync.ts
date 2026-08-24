@@ -9,7 +9,10 @@ import {
   type Pox5CalculateRewardsEvent,
 } from "@stx-labs/signer-sidekick-protocol/pox5-events";
 import { z } from "zod";
-import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
+import {
+  checkTransactionInCanonicalBlock,
+  proveTransactionInCanonicalBlock,
+} from "./canonical-node-block.js";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   createChainAnchor,
@@ -37,6 +40,7 @@ import type {
   IndexedTransactionObservation,
   LiveLookup,
 } from "./transaction-engine/live-transaction-reader.js";
+import { transactionIndexCannotAnswer } from "./transaction-engine/live-transaction-reader.js";
 
 const cursorStateSchema = z
   .object({
@@ -111,7 +115,7 @@ export interface SyncRewardRealizationsOptions {
   api: RewardRealizationApi;
   node: RewardRealizationNode;
   nodeTransactions: RewardRealizationNodeTransactions;
-  nodeBlocks?: ManagerEventNodeBlocks;
+  nodeBlocks: ManagerEventNodeBlocks;
   sourceId: string;
   chainId: number;
   managerPrincipal: string;
@@ -253,7 +257,21 @@ async function revalidateCalibrationWindow(
       canonical.push(realization);
       continue;
     }
-    if (lookup.status !== "observed" && lookup.status !== "not-found") {
+    if (transactionIndexCannotAnswer(lookup)) {
+      // The index cannot speak for this transaction — either it predates the index or the
+      // node runs without `txindex`. Read the canonical block instead of assuming a reorg;
+      // treating an unanswerable lookup as noncanonical would invalidate good realizations.
+      const proof = await checkTransactionInCanonicalBlock(options.nodeBlocks, {
+        blockHeight: realization.blockHeight,
+        indexBlockHash: realization.indexBlockHash,
+        txId: realization.txId,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (proof.status === "included") {
+        canonical.push(realization);
+        continue;
+      }
+    } else if (lookup.status !== "observed") {
       throw new Error(
         `Local node could not revalidate reward calculation ${realization.txId}: ${lookup.status}:${lookup.reason}`,
       );
@@ -292,15 +310,16 @@ async function nodeTransaction(
     }
     return { evidenceLevel: "node-index-verified", observation: lookup.value };
   }
-  if (lookup.status === "not-found" && options.nodeBlocks) {
-    await proveCanonicalNodeBlock(options.nodeBlocks, {
+  if (transactionIndexCannotAnswer(lookup)) {
+    await proveTransactionInCanonicalBlock(options.nodeBlocks, {
       blockHeight: transaction.block.height,
       indexBlockHash: transaction.block.index_hash,
+      txId: transaction.tx_id,
       ...(options.signal ? { signal: options.signal } : {}),
     });
     return { evidenceLevel: "canonical-block-correlated", observation: null };
   }
-  const reason = lookup.status === "not-found" ? "not-found" : `${lookup.status}:${lookup.reason}`;
+  const reason = `${lookup.status}:${lookup.reason}`;
   throw new Error(`Local node could not verify reward calculation ${transaction.tx_id}: ${reason}`);
 }
 

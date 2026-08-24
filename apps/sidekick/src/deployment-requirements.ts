@@ -182,7 +182,7 @@ function transactionIndexCheck(
     return {
       id: "node-transaction-index",
       component: "node",
-      importance: "required",
+      importance: "recommended",
       status: "pass",
       title: "Node transaction index",
       summary:
@@ -195,16 +195,16 @@ function transactionIndexCheck(
   return {
     id: "node-transaction-index",
     component: "node",
-    importance: "required",
+    importance: "recommended",
     status: disabled ? "not-configured" : "unavailable",
     title: "Node transaction index",
     summary: disabled
-      ? "Stacks Core returned HTTP 501 because transaction indexing is disabled. Manager activity and reward realization cannot be independently verified."
+      ? "Transaction indexing is disabled, so Sidekick verifies manager activity and reward realization by reading canonical blocks from the node instead. That is equally authoritative but deserializes a block per check; enabling the index makes those verifications single-row lookups."
       : "Sidekick could not determine whether the local transaction index is enabled.",
     observed: disabled ? "HTTP 501 transaction-index-unavailable" : null,
     remediation: remediation({
       steps: [
-        "Add txindex = true to the node's existing [node] table. It uses additional chain-data storage; keep that data on the same durable fast volume as chainstate.",
+        "Optional: add txindex = true to the node's existing [node] table to verify from the index instead of from block reads. It uses additional chain-data storage; keep that data on the same durable fast volume as chainstate.",
         "Restart stacks-node and allow its transaction index to catch up before rerunning this check.",
       ],
       configuration: [

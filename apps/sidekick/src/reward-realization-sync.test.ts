@@ -2,6 +2,7 @@ import {
   cvToHex,
   falseCV,
   listCV,
+  makeSTXTokenTransfer,
   noneCV,
   stringAsciiCV,
   tupleCV,
@@ -15,7 +16,39 @@ import type { StoredRewardCalculationRealization } from "./storage/store.js";
 
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const pox5 = "SP000000000000000000002Q6VF78.pox-5";
-const txId = `0x${"11".repeat(32)}` as const;
+// The block-read fallback deserializes the block the node serves, so the realization's
+// transaction has to be a real one that a real block can carry.
+const realizationTransaction = await makeSTXTokenTransfer({
+  recipient: "ST000000000000000000002AMW42H",
+  amount: 1n,
+  senderKey: `${"11".repeat(32)}01`,
+  nonce: 1n,
+  fee: 1_000n,
+  network: "testnet",
+});
+const txId = `0x${realizationTransaction.txid()}` as const;
+
+/** A Nakamoto block (version 1 header, no signer signatures) carrying `realizationTransaction`. */
+function canonicalBlockBytes(): Uint8Array {
+  const body = realizationTransaction.serializeBytes();
+  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
+  const view = new DataView(bytes.buffer);
+  bytes.fill(0xab, 0, 206);
+  view.setUint8(0, 1); // header version 1
+  let offset = 206;
+  view.setUint32(offset, 0); // signer_signature count
+  offset += 4;
+  view.setUint16(offset, 8); // pox_treatment BitVec.len
+  offset += 2;
+  view.setUint32(offset, 1); // BitVec.data length
+  offset += 4 + 1;
+  view.setUint32(offset, 0); // problematic_txs count
+  offset += 4;
+  view.setUint32(offset, 1); // transaction count
+  offset += 4;
+  bytes.set(body, offset);
+  return bytes;
+}
 const txBlockHash = `0x${"22".repeat(32)}` as const;
 const txIndexHash = `0x${"33".repeat(32)}` as const;
 const parentBlockHash = `0x${"44".repeat(32)}` as const;
@@ -166,6 +199,7 @@ function store() {
 }
 
 function environment(txIndex = 0, postManagerSharesUstx?: number) {
+  const blockBytes = canonicalBlockBytes();
   const page = {
     limit: 100,
     offset: 0,
@@ -222,6 +256,13 @@ function environment(txIndex = 0, postManagerSharesUstx?: number) {
         blocks_until_reward_phase: 1_050,
       },
     }),
+    getTenureInfo: vi.fn().mockResolvedValue({
+      tip_block_id: `0x${"99".repeat(32)}`,
+      tip_height: 8_700_000,
+      reward_cycle: 141,
+    }),
+    getNakamotoBlockById: vi.fn().mockResolvedValue(blockBytes),
+    getNakamotoBlockAtHeight: vi.fn().mockResolvedValue(blockBytes),
     callReadOnly: vi.fn(
       async (
         _contract: string,
@@ -274,6 +315,7 @@ function environment(txIndex = 0, postManagerSharesUstx?: number) {
       ),
     },
     node,
+    nodeBlocks: node,
     nodeTransactions: {
       lookupIndexedTransaction: vi.fn().mockResolvedValue({
         status: "observed",
@@ -375,7 +417,7 @@ describe("PoX-5 reward realization synchronization", () => {
         ],
       };
     });
-    const blockBytes = new Uint8Array([1, 2, 3]);
+    const blockBytes = canonicalBlockBytes();
     const nodeBlocks = {
       getTenureInfo: vi.fn().mockResolvedValue({
         tip_block_id: `0x${"99".repeat(32)}` as `0x${string}`,
@@ -460,6 +502,9 @@ describe("PoX-5 reward realization synchronization", () => {
       status: "not-found",
       httpStatus: 404,
     });
+    const orphanedBlock = canonicalBlockBytes();
+    orphanedBlock[orphanedBlock.length - 1] ^= 0xff;
+    runtime.nodeBlocks.getNakamotoBlockAtHeight.mockResolvedValue(orphanedBlock);
     runtime.api.getSmartContractLogs.mockResolvedValue({
       limit: 100,
       offset: 0,
@@ -487,6 +532,33 @@ describe("PoX-5 reward realization synchronization", () => {
       eventIndex: 0,
       updatedAt: observedAt,
     });
+  });
+
+  it("preserves a realization when its required canonical-block witness is unavailable", async () => {
+    const repository = store();
+    const runtime = environment();
+    repository.value.listRewardCalculationRealizations.mockReturnValue([storedRealization()]);
+    runtime.nodeTransactions.lookupIndexedTransaction.mockResolvedValue({
+      status: "unavailable",
+      httpStatus: 501,
+      reason: "transaction-index-unavailable",
+    });
+    runtime.nodeBlocks.getNakamotoBlockById.mockRejectedValue(
+      new Error("canonical block witness unavailable"),
+    );
+
+    await expect(
+      syncRewardRealizations({
+        store: repository.value,
+        ...runtime,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        observedAt,
+      }),
+    ).rejects.toThrow("canonical block witness unavailable");
+    expect(repository.value.markRewardRealizationNoncanonical).not.toHaveBeenCalled();
   });
 
   it("retries a canonical realization whose anchored pool reads were temporarily unavailable", async () => {

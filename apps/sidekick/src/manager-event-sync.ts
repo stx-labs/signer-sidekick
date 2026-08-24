@@ -3,7 +3,7 @@ import {
   decodeManagerPrintEvent,
   type ManagerPrintEvent,
 } from "@stx-labs/signer-sidekick-protocol/manager-events";
-import { proveCanonicalNodeBlock } from "./canonical-node-block.js";
+import { proveTransactionInCanonicalBlock } from "./canonical-node-block.js";
 import type {
   SmartContractLogPage,
   StacksNodeClient,
@@ -22,6 +22,7 @@ import type {
   IndexedTransactionObservation,
   LiveLookup,
 } from "./transaction-engine/live-transaction-reader.js";
+import { transactionIndexCannotAnswer } from "./transaction-engine/live-transaction-reader.js";
 import { loadTransactionSummaries } from "./transaction-enrichment.js";
 
 export interface ManagerEventApi {
@@ -118,10 +119,14 @@ export async function verifyIndexedApiTransactionEvidenceWithNode(
     await Promise.all(
       batch.map(async ([txId, transaction]) => {
         const observation = await node.lookupIndexedTransaction(txId);
-        if (observation.status === "not-found" && nodeBlocks) {
-          await proveCanonicalNodeBlock(nodeBlocks, {
+        // The index answers neither for transactions that predate it nor on a node
+        // running without `txindex` at all. Both fall back to reading the canonical
+        // block itself, which proves inclusion from primary consensus data.
+        if (transactionIndexCannotAnswer(observation) && nodeBlocks) {
+          await proveTransactionInCanonicalBlock(nodeBlocks, {
             blockHeight: transaction.block.height,
             indexBlockHash: transaction.block.index_hash,
+            txId,
             ...(signal ? { signal } : {}),
           });
           evidence.set(txId, "canonical-block-correlated");
