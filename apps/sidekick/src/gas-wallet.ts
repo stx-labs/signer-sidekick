@@ -16,6 +16,7 @@ import {
   decodeBoolean,
   encodePrincipalHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
 import type { SidekickNetwork } from "./config.js";
 import {
   type GasWalletSweepPlan,
@@ -32,7 +33,10 @@ import {
   type TransactionFeePolicy,
 } from "./transaction-engine/fee-policy.js";
 import type { SignedGasWalletSweepTransaction } from "./transaction-engine/gas-payer-signer.js";
-import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
+import {
+  LiveTransactionReader,
+  transactionIndexCannotAnswer,
+} from "./transaction-engine/live-transaction-reader.js";
 import type { TransactionEngineRuntimeContext } from "./transaction-engine/runtime.js";
 import type { TransactionEngineMode } from "./transaction-engine/runtime-config.js";
 import {
@@ -643,18 +647,40 @@ export class GasWalletService {
     const context = this.#connectedContext();
     const reader = (this.#options.createReader ?? defaultReader)(context.config.nodeRpcUrl);
     const indexed = await reader.lookupIndexedTransaction(sweep.txid);
+    let confirmed: { success: boolean; resultRepr: string; blockHeight: number | null } | undefined;
     if (indexed.status === "observed" && indexed.value.isCanonical) {
-      const success = indexed.value.resultRepr.trim().startsWith("(ok");
+      confirmed = {
+        success: indexed.value.resultRepr.trim().startsWith("(ok"),
+        resultRepr: indexed.value.resultRepr,
+        blockHeight: indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
+      };
+    } else if (transactionIndexCannotAnswer(indexed)) {
+      const apiTransaction = await lookupCanonicalApiTransaction({
+        api: context.api,
+        node: context.node,
+        chainId: this.#options.chainId,
+        txId: sweep.txid as `0x${string}`,
+      });
+      if (apiTransaction.status === "observed") {
+        confirmed = {
+          success: apiTransaction.value.success,
+          resultRepr: apiTransaction.value.resultRepr,
+          blockHeight: apiTransaction.value.blockHeight,
+        };
+      }
+    }
+    if (confirmed) {
       const at = now.toISOString();
       return toSweep(
         this.#options.store.gasWalletSweeps.update(
           sweepId,
           {
-            status: success ? "confirmed" : "failed",
+            status: confirmed.success ? "confirmed" : "failed",
             resolvedAt: at,
-            blockHeight:
-              indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
-            failureReason: success ? null : `Sweep aborted on chain: ${indexed.value.resultRepr}`,
+            blockHeight: confirmed.blockHeight,
+            failureReason: confirmed.success
+              ? null
+              : `Sweep aborted on chain: ${confirmed.resultRepr}`,
           },
           at,
         ),

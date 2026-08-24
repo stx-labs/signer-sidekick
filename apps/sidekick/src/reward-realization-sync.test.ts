@@ -199,6 +199,7 @@ function store() {
 }
 
 function environment(txIndex = 0, postManagerSharesUstx?: number) {
+  const blockBytes = canonicalBlockBytes();
   const page = {
     limit: 100,
     offset: 0,
@@ -255,6 +256,13 @@ function environment(txIndex = 0, postManagerSharesUstx?: number) {
         blocks_until_reward_phase: 1_050,
       },
     }),
+    getTenureInfo: vi.fn().mockResolvedValue({
+      tip_block_id: `0x${"99".repeat(32)}`,
+      tip_height: 8_700_000,
+      reward_cycle: 141,
+    }),
+    getNakamotoBlockById: vi.fn().mockResolvedValue(blockBytes),
+    getNakamotoBlockAtHeight: vi.fn().mockResolvedValue(blockBytes),
     callReadOnly: vi.fn(
       async (
         _contract: string,
@@ -307,6 +315,7 @@ function environment(txIndex = 0, postManagerSharesUstx?: number) {
       ),
     },
     node,
+    nodeBlocks: node,
     nodeTransactions: {
       lookupIndexedTransaction: vi.fn().mockResolvedValue({
         status: "observed",
@@ -493,6 +502,9 @@ describe("PoX-5 reward realization synchronization", () => {
       status: "not-found",
       httpStatus: 404,
     });
+    const orphanedBlock = canonicalBlockBytes();
+    orphanedBlock[orphanedBlock.length - 1] ^= 0xff;
+    runtime.nodeBlocks.getNakamotoBlockAtHeight.mockResolvedValue(orphanedBlock);
     runtime.api.getSmartContractLogs.mockResolvedValue({
       limit: 100,
       offset: 0,
@@ -520,6 +532,33 @@ describe("PoX-5 reward realization synchronization", () => {
       eventIndex: 0,
       updatedAt: observedAt,
     });
+  });
+
+  it("preserves a realization when its required canonical-block witness is unavailable", async () => {
+    const repository = store();
+    const runtime = environment();
+    repository.value.listRewardCalculationRealizations.mockReturnValue([storedRealization()]);
+    runtime.nodeTransactions.lookupIndexedTransaction.mockResolvedValue({
+      status: "unavailable",
+      httpStatus: 501,
+      reason: "transaction-index-unavailable",
+    });
+    runtime.nodeBlocks.getNakamotoBlockById.mockRejectedValue(
+      new Error("canonical block witness unavailable"),
+    );
+
+    await expect(
+      syncRewardRealizations({
+        store: repository.value,
+        ...runtime,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        pox5ContractId: pox5,
+        observedAt,
+      }),
+    ).rejects.toThrow("canonical block witness unavailable");
+    expect(repository.value.markRewardRealizationNoncanonical).not.toHaveBeenCalled();
   });
 
   it("retries a canonical realization whose anchored pool reads were temporarily unavailable", async () => {

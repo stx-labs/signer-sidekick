@@ -411,6 +411,7 @@ async function proveRecurringManagerAction(input: {
       sponsored: input.apiDetails?.sponsored ?? false,
       anchor_mode: input.apiDetails?.anchorMode ?? "any",
       post_condition_mode: input.apiDetails?.postConditionMode ?? "deny",
+      tx_result: { hex: "0x0703", repr: "(ok true)" },
       canonical: true,
       block_hash: blockHash,
       block_height: blockHeight,

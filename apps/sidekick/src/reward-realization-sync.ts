@@ -115,7 +115,7 @@ export interface SyncRewardRealizationsOptions {
   api: RewardRealizationApi;
   node: RewardRealizationNode;
   nodeTransactions: RewardRealizationNodeTransactions;
-  nodeBlocks?: ManagerEventNodeBlocks;
+  nodeBlocks: ManagerEventNodeBlocks;
   sourceId: string;
   chainId: number;
   managerPrincipal: string;
@@ -261,17 +261,15 @@ async function revalidateCalibrationWindow(
       // The index cannot speak for this transaction — either it predates the index or the
       // node runs without `txindex`. Read the canonical block instead of assuming a reorg;
       // treating an unanswerable lookup as noncanonical would invalidate good realizations.
-      if (options.nodeBlocks) {
-        const proof = await checkTransactionInCanonicalBlock(options.nodeBlocks, {
-          blockHeight: realization.blockHeight,
-          indexBlockHash: realization.indexBlockHash,
-          txId: realization.txId,
-          ...(options.signal ? { signal: options.signal } : {}),
-        });
-        if (proof.status === "included") {
-          canonical.push(realization);
-          continue;
-        }
+      const proof = await checkTransactionInCanonicalBlock(options.nodeBlocks, {
+        blockHeight: realization.blockHeight,
+        indexBlockHash: realization.indexBlockHash,
+        txId: realization.txId,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (proof.status === "included") {
+        canonical.push(realization);
+        continue;
       }
     } else if (lookup.status !== "observed") {
       throw new Error(
@@ -312,7 +310,7 @@ async function nodeTransaction(
     }
     return { evidenceLevel: "node-index-verified", observation: lookup.value };
   }
-  if (transactionIndexCannotAnswer(lookup) && options.nodeBlocks) {
+  if (transactionIndexCannotAnswer(lookup)) {
     await proveTransactionInCanonicalBlock(options.nodeBlocks, {
       blockHeight: transaction.block.height,
       indexBlockHash: transaction.block.index_hash,
@@ -321,7 +319,7 @@ async function nodeTransaction(
     });
     return { evidenceLevel: "canonical-block-correlated", observation: null };
   }
-  const reason = lookup.status === "not-found" ? "not-found" : `${lookup.status}:${lookup.reason}`;
+  const reason = `${lookup.status}:${lookup.reason}`;
   throw new Error(`Local node could not verify reward calculation ${transaction.tx_id}: ${reason}`);
 }
 

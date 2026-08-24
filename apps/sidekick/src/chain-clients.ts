@@ -365,6 +365,12 @@ const transactionDetailSchema = z
     sponsored: z.boolean(),
     anchor_mode: z.enum(["any", "on_chain_only", "off_chain_only"]),
     post_condition_mode: z.enum(["allow", "deny"]),
+    tx_result: z
+      .object({
+        hex: z.string().regex(clarityHexPattern),
+        repr: z.string(),
+      })
+      .strip(),
     canonical: z.boolean(),
     block_hash: canonicalHex.nullable(),
     block_height: z.number().int().nonnegative().safe(),

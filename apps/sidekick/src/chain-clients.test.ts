@@ -397,6 +397,7 @@ describe("Stacks API client", () => {
           sponsored: false,
           anchor_mode: "any",
           post_condition_mode: "deny",
+          tx_result: { hex: "0x0703", repr: "(ok true)" },
           canonical: true,
           block_hash: blockHash.toUpperCase().replace("0X", "0x"),
           block_height: 8_600_000,
@@ -413,6 +414,7 @@ describe("Stacks API client", () => {
         contract_id: "SP000000000000000000002Q6VF78.pox-5",
         function_args: [{ hex: "0x01000000000000000000000000000001f4" }],
       },
+      tx_result: { hex: "0x0703", repr: "(ok true)" },
       block_hash: blockHash,
     });
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -440,6 +442,7 @@ describe("Stacks API client", () => {
           sponsored: false,
           anchor_mode: "any",
           post_condition_mode: "deny",
+          tx_result: { hex: "0x0703", repr: "(ok true)" },
           canonical: true,
           block_hash: blockHash,
           block_height: 8_600_000,
