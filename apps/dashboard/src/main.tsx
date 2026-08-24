@@ -207,11 +207,31 @@ function Login({
             if (token.length >= 24) onLogin(token);
           }}
         >
+          {/*
+            Password managers only offer to store a credential when they can pair a username
+            with a password. This form has one secret and no account, so the instance host
+            stands in as the username: it is stable, it is what an operator would recognize,
+            and it keeps separate entries for separate instances. It has to be a real rendered
+            field — Chrome ignores `display: none` inputs when pairing credentials.
+          */}
+          <label htmlFor="instance">Instance</label>
+          <input
+            id="instance"
+            name="username"
+            className="input mono"
+            type="text"
+            autoComplete="username"
+            value={location.host}
+            readOnly
+            tabIndex={-1}
+          />
           <label htmlFor="token">Operator credential</label>
           <input
             id="token"
+            name="password"
             className="input mono"
             type="password"
+            autoComplete="current-password"
             value={token}
             onChange={(event) => setToken(event.target.value)}
           />
