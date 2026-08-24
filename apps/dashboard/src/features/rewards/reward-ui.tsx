@@ -33,7 +33,7 @@ export function GasChip({ execution }: { execution: RewardExecutionAvailability 
   );
 }
 
-function useDismissablePopover(open: boolean, close: () => void) {
+export function useDismissablePopover(open: boolean, close: () => void) {
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {

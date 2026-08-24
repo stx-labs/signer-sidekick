@@ -220,45 +220,47 @@ export function RewardsOverviewCard({
           </div>
         ) : null}
       </dl>
-      <div className="rw-overview-actions">
-        {state === "ready" || state === "attention" || state === "overdue" ? (
-          <>
-            {primaryAction ? (
-              <button
-                className="btn btn-primary"
-                type="button"
-                onClick={startRun}
-                disabled={!execution?.available || card?.queued !== null}
-                title={
-                  card?.queued ??
-                  (execution?.available ? undefined : (execution?.reason ?? undefined))
-                }
-              >
-                {primaryAction.label}
-                <ArrowRight className="rw-ico" aria-hidden="true" />
-              </button>
-            ) : null}
-            <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
-              Review payments
-            </a>
-          </>
-        ) : state === "distributing" ? (
-          <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
-            View progress
-          </a>
-        ) : state === "complete" ? (
-          <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
-            Review payments
-          </a>
-        ) : (
-          <a className="btn btn-tertiary" href={domainHash("rewards", "outlook")}>
-            View projection
-          </a>
-        )}
+      {state === "accruing" ? (
         <a className="btn btn-tertiary" href={dashboardHash("rewards")}>
           Open Rewards
         </a>
-      </div>
+      ) : (
+        <div className="rw-overview-actions">
+          {state === "ready" || state === "attention" || state === "overdue" ? (
+            <>
+              {primaryAction ? (
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  onClick={startRun}
+                  disabled={!execution?.available || card?.queued !== null}
+                  title={
+                    card?.queued ??
+                    (execution?.available ? undefined : (execution?.reason ?? undefined))
+                  }
+                >
+                  {primaryAction.label}
+                  <ArrowRight className="rw-ico" aria-hidden="true" />
+                </button>
+              ) : null}
+              <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
+                Review payments
+              </a>
+            </>
+          ) : state === "distributing" ? (
+            <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
+              View progress
+            </a>
+          ) : (
+            <a className="btn btn-tertiary" href={domainHash("rewards", "claims")}>
+              Review payments
+            </a>
+          )}
+          <a className="btn btn-tertiary" href={dashboardHash("rewards")}>
+            Open Rewards
+          </a>
+        </div>
+      )}
     </section>
   );
 }

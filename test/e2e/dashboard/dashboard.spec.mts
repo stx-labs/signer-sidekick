@@ -224,6 +224,38 @@ test("loads the independent operator Overview without the shared status endpoint
   await expect.poll(() => statusRequests).toBe(0);
 });
 
+test("uses one Pool-style Rewards action while rewards accrue", async ({ page }) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
+  });
+
+  await login(page);
+
+  const rewardsSummary = page.locator("#overview-rewards");
+  await expect(rewardsSummary.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(rewardsSummary.getByRole("link", { name: "View projection" })).toHaveCount(0);
+  const openRewards = rewardsSummary.getByRole("link", { name: "Open Rewards" });
+  await expect(openRewards).toHaveCount(1);
+  expect(await openRewards.evaluate((element) => element.parentElement?.id)).toBe(
+    "overview-rewards",
+  );
+
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    const widths = await rewardsSummary.evaluate((card) => {
+      const action = card.querySelector<HTMLElement>(":scope > .btn");
+      const style = getComputedStyle(card);
+      return {
+        action: action?.getBoundingClientRect().width ?? 0,
+        content:
+          card.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight),
+      };
+    });
+    expect(Math.abs(widths.action - widths.content)).toBeLessThanOrEqual(1);
+  }
+});
+
 test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
   const expectNoConcatenatedStrongSpanPairs = async () => {
     const violations = await page
@@ -2195,7 +2227,7 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   expect(forecastBox?.height).toBeLessThan(340);
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
   if ((page.viewportSize()?.width ?? 0) <= 640) {
-    await page.getByLabel("Sort roster by").selectOption("amount");
+    await page.getByLabel("Sort roster").selectOption("amount:asc");
   } else {
     const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
     await expect(amountSort).toHaveCount(1);
@@ -2206,7 +2238,12 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   const smallestStaker = roster[0]?.stakerPrincipal ?? "";
   await expect(rows.nth(0).locator(`[data-copy-value="${smallestStaker}"]`)).toHaveCount(1);
   if ((page.viewportSize()?.width ?? 0) <= 640) {
-    await page.getByRole("button", { name: "Sort direction: ascending" }).click();
+    expect((await rows.first().boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      145,
+    );
+    await expect(rows.first()).toContainText("Cycles");
+    await expect(rows.first()).toContainText("Unlock");
+    await page.getByLabel("Sort roster").selectOption("amount:desc");
   } else {
     const descendingAmountSort = page.getByRole("button", {
       name: "Sort by Amount, descending",
@@ -2484,6 +2521,21 @@ test("keeps a completed current-cycle distribution accessible during the second 
   const view = currentCycle.getByRole("button", { name: "View payments" });
   await expect(view).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByText("All available distributions have been completed.")).toBeVisible();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    const distributionFact = currentCycle.locator('[data-earning-fact="distribution"]');
+    const cycleFact = currentCycle.locator('[data-earning-fact="cycle"]');
+    const networkFact = currentCycle.locator('[data-earning-fact="network"]');
+    await expect(distributionFact).toContainText("Projected this distribution");
+    expect((await distributionFact.boundingBox())?.y ?? 0).toBeLessThan(
+      (await cycleFact.boundingBox())?.y ?? 0,
+    );
+    expect((await cycleFact.boundingBox())?.y ?? 0).toBeLessThan(
+      (await networkFact.boundingBox())?.y ?? 0,
+    );
+    expect((await currentCycle.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      500,
+    );
+  }
 
   await view.click();
   await expect(view).toHaveAttribute("aria-expanded", "true");
@@ -2576,22 +2628,60 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
   await payments.getByRole("button", { name: "Next" }).click();
   await expect(payments.getByText("11–20 of 40")).toBeVisible();
 
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await expect(payments.getByLabel("Sort payments")).toBeVisible();
+    expect(
+      (await payments.locator("tbody tr").first().boundingBox())?.height ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(150);
+    const feeCard = page.locator(".rw-fee-card");
+    const withdraw = feeCard.getByRole("button", { name: "Withdraw earned fees" });
+    const update = feeCard.getByRole("button", { name: "Update manager fee" });
+    const sweep = feeCard.getByRole("button", { name: "Sweep fee refunds" });
+    const feeCardBox = await feeCard.boundingBox();
+    const withdrawBox = await withdraw.boundingBox();
+    const updateBox = await update.boundingBox();
+    const sweepBox = await sweep.boundingBox();
+    expect(Math.abs((withdrawBox?.width ?? 0) - (feeCardBox?.width ?? 0) + 28)).toBeLessThanOrEqual(
+      2,
+    );
+    expect(Math.abs((updateBox?.y ?? 0) - (sweepBox?.y ?? 0))).toBeLessThanOrEqual(1);
+    expect(feeCardBox?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(520);
+  }
+
   // Exports live with the data: a past cycle's panel exports that distribution or the cycle…
   await page
     .locator("#rewards-cycle-139")
     .getByRole("button", { name: "Show distributions" })
     .click();
-  await page.getByRole("button", { name: "This distribution" }).click();
+  const cyclePanel = page.locator(".rw-ledger-panel");
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await cyclePanel.getByRole("button", { name: "Export payments" }).click();
+    await cyclePanel.getByRole("menuitem", { name: "This distribution" }).click();
+  } else {
+    await cyclePanel.getByRole("button", { name: "This distribution" }).click();
+  }
   await expect
     .poll(() => downloads.some((url) => url.includes("/payments.csv?cycle=139&distribution=1")))
     .toBe(true);
-  await page.getByRole("button", { name: "Cycle 139", exact: true }).click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await cyclePanel.getByRole("button", { name: "Export payments" }).click();
+    await cyclePanel.getByRole("menuitem", { name: "Cycle 139", exact: true }).click();
+  } else {
+    await cyclePanel.getByRole("button", { name: "Cycle 139", exact: true }).click();
+  }
   await expect
     .poll(() => downloads.some((url) => url.endsWith("/payments.csv?cycle=139")))
     .toBe(true);
   // …and the fee ledger exports the whole history.
-  await page.getByRole("button", { name: "JSON" }).click();
-  await page.getByRole("button", { name: "Staker Payments", exact: true }).click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await page.getByLabel("Export format").selectOption("json");
+    await page.getByLabel("Export dataset").selectOption("payments");
+    await page.getByRole("button", { name: "Download history" }).click();
+  } else {
+    await page.getByRole("button", { name: "JSON" }).click();
+    await page.getByRole("button", { name: "Staker Payments", exact: true }).click();
+  }
   await expect
     .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
     .toBe(true);

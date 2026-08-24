@@ -25,6 +25,7 @@ export function RewardFeeLedger({
   feeActions?: React.ReactNode;
 }) {
   const [format, setFormat] = useState<RewardLedgerExportFormat>("csv");
+  const [exportName, setExportName] = useState<RewardLedgerExportName>("payments");
   const [busy, setBusy] = useState<RewardLedgerExportName | null>(null);
   const [error, setError] = useState<string | null>(null);
   const download = (name: RewardLedgerExportName) => {
@@ -98,7 +99,7 @@ export function RewardFeeLedger({
         </div>
         <dl className="rw-fee-grid">
           {facts.map((fact) => (
-            <div key={fact.key}>
+            <div key={fact.key} data-fee-fact={fact.key}>
               <dt>{fact.label}</dt>
               <dd>
                 {fact.value}
@@ -121,7 +122,7 @@ export function RewardFeeLedger({
           ).map(([name, label]) => (
             <button
               key={name}
-              className="btn btn-secondary sm"
+              className="btn btn-secondary sm rw-export-wide"
               type="button"
               disabled={busy !== null}
               onClick={() => download(name)}
@@ -131,7 +132,7 @@ export function RewardFeeLedger({
               {busy === name ? "Preparing…" : label}
             </button>
           ))}
-          <div className="seg">
+          <div className="seg rw-export-wide">
             <button
               className={format === "csv" ? "on" : undefined}
               type="button"
@@ -145,6 +146,34 @@ export function RewardFeeLedger({
               onClick={() => setFormat("json")}
             >
               JSON
+            </button>
+          </div>
+          <div className="rw-export-compact rw-show-sm">
+            <select
+              aria-label="Export dataset"
+              value={exportName}
+              onChange={(event) => setExportName(event.target.value as RewardLedgerExportName)}
+            >
+              <option value="payments">Staker payments</option>
+              <option value="distributions">Distribution cycles</option>
+              <option value="fees">Signer fees</option>
+            </select>
+            <select
+              aria-label="Export format"
+              value={format}
+              onChange={(event) => setFormat(event.target.value as RewardLedgerExportFormat)}
+            >
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              aria-label="Download history"
+              disabled={busy !== null}
+              onClick={() => download(exportName)}
+            >
+              <DownloadSimple className="rw-ico" aria-hidden="true" />
             </button>
           </div>
           <span className="muted">

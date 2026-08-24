@@ -337,11 +337,15 @@ export interface EarningHalf {
 }
 
 export interface EarningFact {
+  key: "network" | "distribution" | "cycle";
   label: string;
   value: string;
   unit: string | null;
   sub: string | null;
   tooltip: string | null;
+  mobileLabel: string;
+  mobileValue: string;
+  mobileSub: string | null;
 }
 
 export interface EarningModel {
@@ -352,6 +356,7 @@ export interface EarningModel {
   /** "Prepare phase in 3d 6h · block 964,150" */
   prepare: string | null;
   facts: EarningFact[];
+  mobileFee: string | null;
   halves: EarningHalf[];
   coverage: RewardLedgerDistribution["coverage"] | null;
 }
@@ -448,6 +453,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
     outlook?.accrued.globalSats ?? snapshot?.rewards?.global.globalAccruedRewardsSats ?? null;
   const networkParts = amountParts(networkAccrued);
   facts.push({
+    key: "network",
     label: "Network earned this half",
     value: networkParts?.value ?? "—",
     unit: networkParts?.unit ?? null,
@@ -459,10 +465,14 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
           ? `includes Cycle ${next.targetRewardCycle} ${next.targetCheckpoint === "first-half" ? "first" : "second"} half until it is calculated`
           : null,
     tooltip: networkAccrued ? exactSats(networkAccrued) : null,
+    mobileLabel: "Network-wide this distribution",
+    mobileValue: `${amount(networkAccrued)} earned${forecast ? ` · ${amount(forecast.globalSats.point)} projected` : ""}`,
+    mobileSub: null,
   });
   const poolPoint = forecast?.poolSats.point ?? poolEstimate?.grossSats ?? null;
   const poolParts = amountParts(poolPoint);
   facts.push({
+    key: "distribution",
     label: "Pool projected this half",
     value: poolParts?.value ?? "—",
     unit: poolParts?.unit ?? null,
@@ -476,6 +486,13 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
     tooltip: forecast
       ? `${forecast.sample.observations} observations across ${forecast.sample.sampleBlocks} Bitcoin blocks`
       : null,
+    mobileLabel: "Projected this distribution",
+    mobileValue: amount(poolPoint),
+    mobileSub: forecast
+      ? `${amount(poolEstimate?.grossSats ?? null)} earned so far · ${forecast.confidence} confidence`
+      : poolEstimate
+        ? "if the network calculated now"
+        : null,
   });
   const done = (index: 1 | 2) => distributionFor(index)?.calculation.state === "done";
   const calculatedSum = ([1, 2] as const).reduce(
@@ -518,11 +535,15 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
   }
   if (cycleTotal !== null && cycleTotal > 0n) cycleSub.push(`your fee ${amount(text(cycleFee))}`);
   facts.push({
+    key: "cycle",
     label: "Pool projected this cycle",
     value: cycleParts?.value ?? "—",
     unit: cycleParts?.unit ?? null,
     sub: cycleSub.length > 0 ? cycleSub.join(" · ") : null,
     tooltip: cycleTotal === null ? null : exactSats(text(cycleTotal)),
+    mobileLabel: "Projected cycle total",
+    mobileValue: amount(cycleTotal === null ? null : text(cycleTotal)),
+    mobileSub: null,
   });
 
   // ---- halves ----
@@ -609,6 +630,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
     when,
     prepare,
     facts,
+    mobileFee: cycleTotal !== null && cycleTotal > 0n ? amount(text(cycleFee)) : null,
     halves,
     coverage: ledgerCycle?.coverage ?? null,
   };

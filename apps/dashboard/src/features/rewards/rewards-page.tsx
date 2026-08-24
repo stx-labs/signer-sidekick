@@ -617,18 +617,7 @@ export function Rewards({
     <>
       <button
         type="button"
-        className="btn btn-secondary sm"
-        disabled={!updateFees.available}
-        title={updateFees.available ? undefined : updateFees.reason}
-        onClick={() => {
-          location.hash = actionHash("update-fees");
-        }}
-      >
-        <Percent /> Update manager fee
-      </button>
-      <button
-        type="button"
-        className="btn btn-secondary sm"
+        className="btn btn-secondary sm reward-admin-action-primary"
         disabled={!withdrawFees.available || BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n}
         title={withdrawFees.available ? undefined : withdrawFees.reason}
         onClick={() => {
@@ -639,7 +628,18 @@ export function Rewards({
       </button>
       <button
         type="button"
-        className="btn btn-secondary sm"
+        className="btn btn-secondary sm reward-admin-action-secondary"
+        disabled={!updateFees.available}
+        title={updateFees.available ? undefined : updateFees.reason}
+        onClick={() => {
+          location.hash = actionHash("update-fees");
+        }}
+      >
+        <Percent /> Update manager fee
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary sm reward-admin-action-secondary"
         disabled={!sweepRefunds.available}
         title={sweepRefunds.available ? undefined : sweepRefunds.reason}
         onClick={() => {

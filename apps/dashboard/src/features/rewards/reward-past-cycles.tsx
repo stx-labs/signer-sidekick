@@ -1,4 +1,3 @@
-import { DownloadSimple } from "@phosphor-icons/react";
 import type {
   RewardLedgerCycle,
   RewardLedgerDistribution,
@@ -10,6 +9,7 @@ import {
   DistributionHistoryDetails,
   type DistributionPaymentsState,
 } from "./reward-distribution-history.js";
+import { DistributionExportControls } from "./reward-export-controls.js";
 import { type CycleGeometry, distributionName, paymentTotal, shortDate } from "./reward-state.js";
 import { ChevronButton } from "./reward-ui.js";
 
@@ -222,32 +222,12 @@ export function PastCyclesLedger({
                           distribution={active}
                           state={state}
                           toolbarRight={
-                            <div className="rw-export-inline">
-                              <span className="muted">Export</span>
-                              <button
-                                className="btn btn-tertiary sm"
-                                type="button"
-                                disabled={exportBusy}
-                                onClick={() =>
-                                  onExport({
-                                    cycle: cycle.cycle,
-                                    distribution: active.distribution,
-                                  })
-                                }
-                              >
-                                <DownloadSimple className="rw-ico" aria-hidden="true" />
-                                This distribution
-                              </button>
-                              <button
-                                className="btn btn-tertiary sm"
-                                type="button"
-                                disabled={exportBusy}
-                                onClick={() => onExport({ cycle: cycle.cycle })}
-                              >
-                                <DownloadSimple className="rw-ico" aria-hidden="true" />
-                                Cycle {cycle.cycle}
-                              </button>
-                            </div>
+                            <DistributionExportControls
+                              cycle={cycle.cycle}
+                              distribution={active.distribution}
+                              busy={exportBusy}
+                              onExport={onExport}
+                            />
                           }
                         />
                       </div>

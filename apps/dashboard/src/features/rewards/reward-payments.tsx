@@ -1,6 +1,11 @@
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useState } from "react";
-import { Pagination, SortableHeader, type TableSort } from "../../shared/dashboard-ui.js";
+import {
+  MobileSortSelect,
+  Pagination,
+  SortableHeader,
+  type TableSort,
+} from "../../shared/dashboard-ui.js";
 import { amount, exactSats } from "../../shared/format.js";
 import {
   comparePayments,
@@ -154,39 +159,15 @@ export function PaymentsTable({
               />
             </div>
           </div>
-          <div className="responsive-table-mobile-sort">
-            <label>
-              <span>Sort by</span>
-              <select
-                aria-label="Sort payments by"
-                value={sort.key}
-                onChange={(event) => {
-                  setSort({ key: event.target.value as PaymentSortKey, direction: "asc" });
-                  setPage(0);
-                }}
-              >
-                {sortOptions.map(([value, label]) => (
-                  <option value={value} key={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="btn btn-tertiary sm"
-              type="button"
-              aria-label={`Sort direction: ${sort.direction === "asc" ? "ascending" : "descending"}`}
-              onClick={() => {
-                setSort((current) => ({
-                  ...current,
-                  direction: current.direction === "asc" ? "desc" : "asc",
-                }));
-                setPage(0);
-              }}
-            >
-              {sort.direction === "asc" ? "Ascending" : "Descending"}
-            </button>
-          </div>
+          <MobileSortSelect
+            label="Sort payments"
+            options={sortOptions}
+            sort={sort}
+            setSort={(next) => {
+              setSort(next);
+              setPage(0);
+            }}
+          />
           {toolbarRight ?? (
             <div className="total">
               {filtered.length === payments.length
@@ -258,7 +239,7 @@ export function PaymentsTable({
                 <tr
                   key={`${row.cycle}|${row.distribution}|${row.stakerPrincipal}|${row.bucket}|${row.paymentTxId ?? "outstanding"}`}
                 >
-                  <td data-label="Staker" data-table-span="full">
+                  <td className="rw-payment-staker" data-label="Staker">
                     <StakerCell
                       principal={row.stakerPrincipal}
                       bitcoin={row.route === "bitcoin"}
@@ -279,7 +260,7 @@ export function PaymentsTable({
                   {variant === "pending" ? (
                     <>
                       <td
-                        className="mono right"
+                        className="mono right rw-payment-gross"
                         data-label="Gross"
                         title={
                           row.grossRewardSats
@@ -290,7 +271,7 @@ export function PaymentsTable({
                         {amount(row.grossRewardSats)}
                       </td>
                       <td
-                        className="mono right"
+                        className="mono right rw-payment-fee"
                         data-label="Fee"
                         title={row.operatorFeeSats ? exactSats(row.operatorFeeSats) : undefined}
                       >
@@ -298,10 +279,14 @@ export function PaymentsTable({
                       </td>
                     </>
                   ) : null}
-                  <td className="mono right" data-label="To staker" title={amountTitle}>
+                  <td
+                    className="mono right rw-payment-to-staker"
+                    data-label="To staker"
+                    title={amountTitle}
+                  >
                     {amountText}
                   </td>
-                  <td data-label="Status">
+                  <td className="rw-payment-status-cell" data-label="Status">
                     <span className="rw-payment-status">
                       <StatusChip
                         tone={status.tone}
@@ -320,7 +305,7 @@ export function PaymentsTable({
                     ) : null}
                   </td>
                   {variant === "history" ? (
-                    <td data-label="Paid" data-table-span="full">
+                    <td className="rw-payment-paid" data-label="Paid">
                       <span className="rw-txid" title={displayTxId ?? undefined}>
                         {paidText}
                       </span>

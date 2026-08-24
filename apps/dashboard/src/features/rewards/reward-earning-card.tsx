@@ -21,6 +21,9 @@ export function EarningCard({
   openDistribution: 1 | 2 | null;
   onViewDistribution: (distribution: 1 | 2) => void;
 }) {
+  const mobileWhen = model.when
+    .replace(/^First half/, "First Distribution")
+    .replace(/^Second half/, "Second Distribution");
   return (
     <section
       className="card-standout rw-now rw-earning domain-section-anchor"
@@ -30,7 +33,7 @@ export function EarningCard({
       <div className="rw-earning-grid">
         <div className="rw-cycle-id">
           <div className="rw-eyebrow">
-            Current cycle
+            <span className="rw-earning-cycle-label">Current cycle</span>
             <span className={`badge b-${model.badge.tone}`}>
               {model.badge.live ? <span className="live-dot" /> : null}
               {model.badge.label}
@@ -47,61 +50,83 @@ export function EarningCard({
           <h2 className="rw-cycle-number" id="rw-earning-title">
             Cycle {model.cycle}
           </h2>
-          <p className="rw-cycle-when">{model.when}</p>
+          <p className="rw-cycle-when rw-earning-desktop-only">{model.when}</p>
+          <p className="rw-cycle-when rw-earning-mobile-only">{mobileWhen}</p>
           {model.prepare ? <p className="rw-cycle-when muted">{model.prepare}</p> : null}
         </div>
         <dl className="rw-earning-facts">
           {model.facts.map((fact) => (
-            <div key={fact.label}>
-              <dt>{fact.label}</dt>
+            <div key={fact.key} data-earning-fact={fact.key}>
+              <dt>
+                <span className="rw-earning-desktop-only">{fact.label}</span>
+                <span className="rw-earning-mobile-only">{fact.mobileLabel}</span>
+              </dt>
               <dd title={fact.tooltip ?? undefined}>
-                {fact.value}
-                {fact.unit ? <span className="u"> {fact.unit}</span> : null}
-                {fact.sub ? <small>{fact.sub}</small> : null}
+                <span className="rw-earning-desktop-only">
+                  {fact.value}
+                  {fact.unit ? <span className="u"> {fact.unit}</span> : null}
+                  {fact.sub ? <small>{fact.sub}</small> : null}
+                </span>
+                <span className="rw-earning-mobile-only rw-earning-mobile-value">
+                  {fact.mobileValue}
+                  {fact.mobileSub ? <small>{fact.mobileSub}</small> : null}
+                </span>
               </dd>
             </div>
           ))}
+          {model.mobileFee ? (
+            <div className="rw-earning-mobile-only" data-earning-fact="fee">
+              <dt>Your projected fee</dt>
+              <dd className="rw-earning-mobile-value">{model.mobileFee}</dd>
+            </div>
+          ) : null}
         </dl>
       </div>
       <div className="rw-timeline">
-        {model.halves.map((half) => (
-          <div
-            className={`rw-half${half.percent >= 100 ? " done" : ""}${half.status.tone === "live" ? " live" : ""}`}
-            key={half.index}
-          >
-            <div className="k">
-              <span>{half.label}</span>
-              <span className={`st ${statusClass[half.status.tone]}`}>{half.status.text}</span>
-            </div>
+        {model.halves.map((half) => {
+          const mobileLabel = half.index === 1 ? "First Distribution" : "Second Distribution";
+          return (
             <div
-              className="bar"
-              role="progressbar"
-              aria-label={`${half.label} progress`}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={half.percent}
+              className={`rw-half${half.percent >= 100 ? " done" : ""}${half.status.tone === "live" ? " live" : ""}`}
+              key={half.index}
             >
-              <i style={{ width: `${half.percent}%` }} />
-            </div>
-            {half.note || half.detailsAvailable ? (
-              <div className="rw-half-foot">
-                {half.note ? <div className="s">{half.note}</div> : null}
-                {half.detailsAvailable ? (
-                  <button
-                    className="btn btn-tertiary sm rw-half-view"
-                    id={`rewards-view-distribution-${model.cycle}-${half.index}`}
-                    type="button"
-                    aria-expanded={openDistribution === half.index}
-                    aria-controls={`rewards-current-distribution-${model.cycle}-${half.index}`}
-                    onClick={() => onViewDistribution(half.index)}
-                  >
-                    View payments
-                  </button>
-                ) : null}
+              <div className="k">
+                <span>
+                  <span className="rw-earning-desktop-only">{half.label}</span>
+                  <span className="rw-earning-mobile-only">{mobileLabel}</span>
+                </span>
+                <span className={`st ${statusClass[half.status.tone]}`}>{half.status.text}</span>
               </div>
-            ) : null}
-          </div>
-        ))}
+              <div
+                className="bar"
+                role="progressbar"
+                aria-label={`${half.label} progress`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={half.percent}
+              >
+                <i style={{ width: `${half.percent}%` }} />
+              </div>
+              {half.note || half.detailsAvailable ? (
+                <div className="rw-half-foot">
+                  {half.note ? <div className="s">{half.note}</div> : null}
+                  {half.detailsAvailable ? (
+                    <button
+                      className="btn btn-tertiary sm rw-half-view"
+                      id={`rewards-view-distribution-${model.cycle}-${half.index}`}
+                      type="button"
+                      aria-expanded={openDistribution === half.index}
+                      aria-controls={`rewards-current-distribution-${model.cycle}-${half.index}`}
+                      onClick={() => onViewDistribution(half.index)}
+                    >
+                      View payments
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </section>
   );

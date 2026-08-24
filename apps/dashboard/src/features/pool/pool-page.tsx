@@ -9,6 +9,7 @@ import { CopyableIdentifier } from "../../copyable-identifier.js";
 import type { DomainSection } from "../../dashboard-route.js";
 import {
   Badge,
+  MobileSortSelect,
   PageHead,
   Pagination,
   SortableHeader,
@@ -262,41 +263,15 @@ export function Pool({
               }}
             />
           </div>
-          <div className="responsive-table-mobile-sort">
-            <label>
-              <span>Sort by</span>
-              <select
-                aria-label="Sort roster by"
-                value={sort.key}
-                onChange={(event) => {
-                  setSort({ key: event.target.value as RosterSort, direction: "asc" });
-                  setPage(0);
-                }}
-              >
-                {(Object.entries(rosterSortLabels) as Array<[RosterSort, string]>).map(
-                  ([value, label]) => (
-                    <option value={value} key={value}>
-                      {label}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-            <button
-              className="btn btn-tertiary sm"
-              type="button"
-              aria-label={`Sort direction: ${sort.direction === "asc" ? "ascending" : "descending"}`}
-              onClick={() => {
-                setSort((current) => ({
-                  ...current,
-                  direction: current.direction === "asc" ? "desc" : "asc",
-                }));
-                setPage(0);
-              }}
-            >
-              {sort.direction === "asc" ? "Ascending" : "Descending"}
-            </button>
-          </div>
+          <MobileSortSelect
+            label="Sort roster"
+            options={Object.entries(rosterSortLabels) as Array<[RosterSort, string]>}
+            sort={sort}
+            setSort={(next) => {
+              setSort(next);
+              setPage(0);
+            }}
+          />
           <div className="total">
             {rosterLoading ? "Loading…" : rosterError ? "Unavailable" : `${rosterTotal} stakers`}
           </div>
@@ -379,7 +354,7 @@ export function Pool({
                   const status = rosterStatus(entry);
                   return (
                     <tr key={entry.stakerPrincipal}>
-                      <td data-label="Staker" data-table-span="full">
+                      <td className="pool-roster-staker" data-label="Staker">
                         <div className="staker">
                           <span className="avatar">SP</span>
                           <CopyableIdentifier
@@ -390,19 +365,25 @@ export function Pool({
                           />
                         </div>
                       </td>
-                      <td className="right mono" data-label="Amount">
+                      <td className="right mono pool-roster-amount" data-label="Amount">
                         {stx(position?.amountUstx)} STX
                       </td>
-                      <td className="mono" data-label="First cycle">
-                        {position?.firstRewardCycle ?? "—"}
+                      <td className="mono pool-roster-cycles" data-label="Cycles">
+                        <span className="responsive-table-desktop-value">
+                          {position?.firstRewardCycle ?? "—"}
+                        </span>
+                        <span className="responsive-table-mobile-value">
+                          Cycles {position?.firstRewardCycle ?? "—"}–{lastCycle?.toString() ?? "—"}
+                        </span>
                       </td>
-                      <td className="mono" data-label="Last cycle">
+                      <td className="mono pool-roster-last-cycle" data-label="Last cycle">
                         {lastCycle?.toString() ?? "—"}
                       </td>
-                      <td className="mono" data-label="Unlock block">
+                      <td className="mono pool-roster-unlock" data-label="Unlock">
+                        <span className="responsive-table-mobile-value">Unlock </span>
                         {number(position?.unlockBurnHeight)}
                       </td>
-                      <td data-label="Bond">
+                      <td className="pool-roster-bond" data-label="Bond">
                         {entry.bond ? (
                           // Read from PoX-5 `get-bond-membership`, not the indexer's type label.
                           <Badge state={entry.bond.isL1Lock ? "accent" : "info"}>
@@ -412,7 +393,7 @@ export function Pool({
                           "—"
                         )}
                       </td>
-                      <td data-label="Status" data-table-span="full">
+                      <td className="pool-roster-status" data-label="Status">
                         <Badge state={status.state}>{status.label}</Badge>
                       </td>
                     </tr>

@@ -1,4 +1,3 @@
-import { DownloadSimple } from "@phosphor-icons/react";
 import type {
   RewardLedgerDistribution,
   RewardLedgerPayment,
@@ -9,6 +8,7 @@ import {
   DistributionHistoryDetails,
   type DistributionPaymentsState,
 } from "./reward-distribution-history.js";
+import { DistributionExportControls } from "./reward-export-controls.js";
 import type { PastCyclesExportQuery } from "./reward-past-cycles.js";
 import { distributionName } from "./reward-state.js";
 
@@ -68,27 +68,12 @@ export function CurrentDistributionDetails({
         distribution={distribution}
         state={state}
         toolbarRight={
-          <div className="rw-export-inline">
-            <span className="muted">Export</span>
-            <button
-              className="btn btn-tertiary sm"
-              type="button"
-              disabled={exportBusy}
-              onClick={() => onExport({ cycle, distribution: distribution.distribution })}
-            >
-              <DownloadSimple className="rw-ico" aria-hidden="true" />
-              This distribution
-            </button>
-            <button
-              className="btn btn-tertiary sm"
-              type="button"
-              disabled={exportBusy}
-              onClick={() => onExport({ cycle })}
-            >
-              <DownloadSimple className="rw-ico" aria-hidden="true" />
-              Cycle {cycle}
-            </button>
-          </div>
+          <DistributionExportControls
+            cycle={cycle}
+            distribution={distribution.distribution}
+            busy={exportBusy}
+            onExport={onExport}
+          />
         }
       />
     </section>

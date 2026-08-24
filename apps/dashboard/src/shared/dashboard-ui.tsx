@@ -7,6 +7,39 @@ export interface TableSort<Key extends string> {
   direction: SortDirection;
 }
 
+/** One compact mobile control for the field and direction that desktop headers express separately. */
+export function MobileSortSelect<Key extends string>({
+  label,
+  options,
+  sort,
+  setSort,
+}: {
+  label: string;
+  options: ReadonlyArray<readonly [Key, string]>;
+  sort: TableSort<Key>;
+  setSort: (sort: TableSort<Key>) => void;
+}) {
+  return (
+    <select
+      aria-label={label}
+      className="responsive-table-mobile-sort"
+      value={`${sort.key}:${sort.direction}`}
+      onChange={(event) => {
+        const [key, direction] = event.target.value.split(":") as [Key, SortDirection];
+        setSort({ key, direction });
+      }}
+    >
+      {options.flatMap(([key, optionLabel]) =>
+        (["asc", "desc"] as const).map((direction) => (
+          <option key={`${key}:${direction}`} value={`${key}:${direction}`}>
+            {optionLabel} {direction === "asc" ? "↑" : "↓"}
+          </option>
+        )),
+      )}
+    </select>
+  );
+}
+
 export function SortableHeader<Key extends string>({
   label,
   column,
