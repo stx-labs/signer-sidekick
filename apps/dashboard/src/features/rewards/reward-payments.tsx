@@ -1,5 +1,6 @@
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { useEffect, useMemo, useState } from "react";
+import { CopyableIdentifier } from "../../copyable-identifier.js";
 import {
   MobileSortSelect,
   Pagination,
@@ -294,11 +295,9 @@ export function PaymentsTable({
                         tooltip={status.sub}
                         popover={rolled ? rollForwardExplanation(row) : null}
                       />
-                      {/* History rows already print the payout tx in the Paid column; the marker
-                          earns its place there only for Bitcoin rows, which carry 2–3 transactions. */}
-                      {variant === "history" && row.route !== "bitcoin" ? null : (
-                        <TxIdMarker payment={row} />
-                      )}
+                      {/* Completed rows expose the payout transaction consistently in the Paid
+                          column. Keep the evidence popover only where that column is absent. */}
+                      {variant === "history" ? null : <TxIdMarker payment={row} />}
                     </span>
                     {row.coverage === "historical-coverage-incomplete" ? (
                       <span className="rw-pay-sub rw-coverage">history incomplete</span>
@@ -306,9 +305,16 @@ export function PaymentsTable({
                   </td>
                   {variant === "history" ? (
                     <td className="rw-payment-paid" data-label="Paid">
-                      <span className="rw-txid" title={displayTxId ?? undefined}>
-                        {paidText}
-                      </span>
+                      {displayTxId ? (
+                        <CopyableIdentifier
+                          value={displayTxId}
+                          display={paidText}
+                          label="transaction ID"
+                          className="rw-txid"
+                        />
+                      ) : (
+                        <span className="rw-txid">—</span>
+                      )}
                     </td>
                   ) : null}
                 </tr>

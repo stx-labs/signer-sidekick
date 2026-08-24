@@ -2511,6 +2511,14 @@ test("keeps a completed current-cycle distribution accessible during the second 
   });
 
   await login(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-payment-txid", value),
+      },
+    });
+  });
   await openPage(page, "rewards", "Rewards");
 
   const currentCycle = page.locator("#rewards-calculation");
@@ -2543,21 +2551,20 @@ test("keeps a completed current-cycle distribution accessible during the second 
   await expect(details.getByRole("heading", { name: "First Distribution details" })).toBeVisible();
   await expect(details.getByText(/Calculation confirmed · rewards collected/)).toBeVisible();
   await expect(details.getByRole("tab", { name: "Paid · 40" })).toBeVisible();
-  const transactionMarker = details.locator(".rw-tx-badge").first();
-  await transactionMarker.click();
-  const transactionPopover = transactionMarker.locator(
-    "xpath=following-sibling::*[contains(@class, 'rw-tx-pop')]",
+  await expect(details.locator(".rw-tx-badge")).toHaveCount(0);
+  const transactionCopies = details.locator(".rw-payment-paid .copy-identifier-button");
+  await expect(transactionCopies).toHaveCount(10);
+  const firstTransactionCopy = transactionCopies.first();
+  const firstTransactionId = await firstTransactionCopy.getAttribute("data-copy-value");
+  expect(firstTransactionId).toMatch(/^0x[0-9a-f]{64}$/);
+  await expect(firstTransactionCopy).toHaveAttribute(
+    "aria-label",
+    new RegExp(`^Copy transaction ID: ${firstTransactionId}$`),
   );
-  await expect(transactionPopover).toBeVisible();
-  expect(
-    await transactionPopover.evaluate((element) => {
-      const box = element.getBoundingClientRect();
-      const target = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
-      return target === element || element.contains(target);
-    }),
-  ).toBe(true);
-  await page.getByRole("heading", { name: "First Distribution details" }).click();
-  await expect(transactionPopover).toBeHidden();
+  await firstTransactionCopy.click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("copied-payment-txid")))
+    .toBe(firstTransactionId);
   const detailsBox = await details.boundingBox();
   const projectionBox = await page.locator("#rewards-outlook").boundingBox();
   expect(detailsBox).not.toBeNull();

@@ -1,6 +1,7 @@
 import type { RewardLedgerPayment } from "@stx-labs/signer-sidekick-api-contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { PaymentsTable } from "./reward-payments.js";
 import { StakerCell, TxIdMarker } from "./reward-ui.js";
 
 const stacksTxId = `0x${"11".repeat(32)}`;
@@ -70,6 +71,33 @@ describe("reward transaction marker", () => {
     expect(html).toContain(bitcoinTxId);
     expect(html).toContain(stacksTxId);
     expect(html).toContain(retirementTxId);
+  });
+});
+
+describe("reward payment history", () => {
+  it("makes every displayed payout transaction copyable without a duplicate marker", () => {
+    const html = renderToStaticMarkup(
+      <PaymentsTable
+        variant="history"
+        payments={[
+          payment(),
+          payment({
+            stakerPrincipal: "SP000000000000000000002Q6VF79",
+            route: "bitcoin",
+            payoutAsset: "BTC",
+            status: "retired",
+            btcSweepTxId: bitcoinTxId,
+            btcSweepBlockHeight: 963_758,
+          }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain(`data-copy-value="${stacksTxId}"`);
+    expect(html).toContain(`data-copy-value="${bitcoinTxId}"`);
+    expect(html).toContain(`aria-label="Copy transaction ID: ${stacksTxId}"`);
+    expect(html).toContain(`aria-label="Copy transaction ID: ${bitcoinTxId}"`);
+    expect(html).not.toContain("rw-tx-badge");
   });
 });
 

@@ -4728,6 +4728,9 @@ td .rw-txid {
   font-size: 11px;
   color: var(--text-tertiary);
 }
+.rw-payment-paid .copy-identifier-button {
+  opacity: 1;
+}
 .rw-payments {
   /* Payment evidence can be taller than a row. Keep it above the table shell instead of
      clipping it at the first or last row; the narrow layout uses viewport-fixed popovers. */
