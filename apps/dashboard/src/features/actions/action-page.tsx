@@ -1,12 +1,11 @@
 import { ArrowClockwise, ArrowLeft, ShieldCheck, WarningCircle } from "@phosphor-icons/react";
 import type {
   DashboardSnapshot,
-  EngineApprovalRequest,
   EngineJobDetail,
   EngineStatus,
   OperatorOperationCode,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import {
   type ActionContext,
@@ -16,7 +15,7 @@ import {
 } from "../../dashboard-route.js";
 import { ErrorCallout, Field, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
-import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
+import { operatorErrorDetail } from "../../shared/operator-error.js";
 import { standardManagerActionPrincipal } from "../manager/manager-action-principal.js";
 import {
   ManagerActionWorkspace,
@@ -24,14 +23,8 @@ import {
   managerCapabilityIdForAction,
 } from "../manager/manager-page.js";
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
-import {
-  approveEngineJob,
-  invalidateEngineApproval,
-  loadEngineJob,
-  loadEngineStatus,
-} from "../operations/engine-api.js";
+import { loadEngineJob, loadEngineStatus } from "../operations/engine-api.js";
 import { EngineJobReview } from "../operations/engine-job-review.js";
-import { EngineWalletClaim } from "../operations/engine-wallet-claim.js";
 import { rewardManagerCapabilityId } from "../rewards/reward-action-capabilities.js";
 
 type Snapshot = DashboardSnapshot;
@@ -51,7 +44,7 @@ const operationCopy: Record<
   },
   "claim-rewards": {
     title: "Claim manager rewards",
-    detail: "Review and execute one previously prepared manager reward claim.",
+    detail: "Review and execute the current manager funding claim.",
     returnPage: "rewards",
   },
   "claim-staker-rewards": {
@@ -172,22 +165,32 @@ function ManagerOperation({
 function EngineClaimOperation({
   chainId,
   context,
-  network,
+  data,
+  onOperatorStateChanged,
+  operatorStateStale,
   token,
 }: {
   chainId: number;
   context: ActionContext;
-  network: string;
+  data: Snapshot;
+  onOperatorStateChanged: () => void | Promise<void>;
+  operatorStateStale: boolean;
   token: string;
 }) {
   const jobId = context.kind === "engine-job" ? context.jobId : null;
+  const [actorPrincipal, setActorPrincipal] = useState("");
   const [job, setJob] = useState<EngineJobDetail | null>(null);
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [loading, setLoading] = useState(jobId !== null);
   const [error, setError] = useState<string | null>(null);
-  const [action, setAction] = useState<"approve" | "invalidate" | null>(null);
   const [revision, setRevision] = useState(0);
-  const actionPending = useRef(false);
+  const actor = actorPrincipal.trim().toUpperCase();
+  const actorValid = standardManagerActionPrincipal(actor, data.network);
+  const availability = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("claim-rewards"),
+    operatorStateStale,
+  );
 
   const load = useCallback(async () => {
     if (!jobId) return;
@@ -221,65 +224,64 @@ function EngineClaimOperation({
     void load();
   }, [load, revision]);
 
-  const approve = async () => {
-    if (!job?.approvalWindow.expiresAt || action !== null || actionPending.current) return;
-    const request: EngineApprovalRequest = {
-      decision: "approve",
-      intentSha256: job.review.hashes.intentSha256,
-      policySha256: job.review.hashes.policySha256,
-      expiresAt: job.approvalWindow.expiresAt,
-    };
-    actionPending.current = true;
-    setAction("approve");
-    setError(null);
-    try {
-      setJob((await approveEngineJob(token, job.jobId, request)).job);
-    } catch (cause) {
-      setError(
-        operatorActionError(
-          cause,
-          "Could not confirm transaction approval",
-          "Refresh the exact job before approving again",
-        ),
-      );
-    } finally {
-      actionPending.current = false;
-      setAction(null);
-    }
-  };
-
-  const invalidate = async () => {
-    if (!job?.approval || action !== null || actionPending.current) return;
-    if (!window.confirm("Invalidate this exact approval? It cannot be restored.")) return;
-    actionPending.current = true;
-    setAction("invalidate");
-    setError(null);
-    try {
-      setJob(
-        (
-          await invalidateEngineApproval(token, job.jobId, {
-            decision: "invalidate",
-            reason: "Operator invalidated approval from the action workspace",
-          })
-        ).job,
-      );
-    } catch (cause) {
-      setError(
-        operatorActionError(
-          cause,
-          "Could not confirm approval invalidation",
-          "Refresh the exact job before trying again",
-        ),
-      );
-    } finally {
-      actionPending.current = false;
-      setAction(null);
-    }
-  };
-
   if (!jobId) {
+    const managerClaimableSats = data.rewards?.global.signerEarnedAcrossBucketsSats ?? null;
+    if (!availability.available) return <UnavailableAction reason={availability.reason} />;
+    if (managerClaimableSats === null || BigInt(managerClaimableSats) === 0n) {
+      return (
+        <UnavailableAction reason="No manager reward balance is currently claimable across the observed reward buckets." />
+      );
+    }
+    const request = actorValid
+      ? ({ action: "claim-rewards", actorPrincipal: actor } as const)
+      : null;
     return (
-      <UnavailableAction reason="Open the exact active reward claim from Activity so Sidekick can bind this workspace to its reviewed engine job." />
+      <section className="card-standout action-engine-review">
+        <div className="card-head">
+          <div>
+            <span className="eyebrow">MANUAL · OBSERVE</span>
+            <h2>Review manager funding claim</h2>
+          </div>
+        </div>
+        <StatLine label="Claimable across all buckets">{managerClaimableSats} sats</StatLine>
+        <p className="muted">
+          Sidekick re-reads one anchored reward checkpoint, includes every participating bond
+          period, and pins the exact PoX-5 sBTC outflow. Your browser wallet chooses the fee and
+          nonce, signs, and broadcasts; the Sidekick gas wallet is not used.
+        </p>
+        <Field
+          label="Signing account"
+          help="This permissionless caller pays only the transaction fee; manager-admin authority is not required."
+        >
+          <input
+            autoComplete="off"
+            className="input mono"
+            placeholder={data.network === "mainnet" ? "SP…" : "ST…"}
+            value={actorPrincipal}
+            onChange={(event) => setActorPrincipal(event.target.value.toUpperCase())}
+          />
+          {actorPrincipal && !actorValid ? (
+            <span className="field-error">Enter a valid Stacks account principal.</span>
+          ) : null}
+        </Field>
+        {request ? (
+          <BrowserWalletActionPanel
+            chainId={chainId}
+            createRequest={request}
+            managerPrincipal={data.managerPrincipal}
+            network={data.network}
+            onVerified={onOperatorStateChanged}
+            token={token}
+          />
+        ) : (
+          <div className="callout callout-neutral" role="status">
+            <ShieldCheck className="ic" />
+            <div className="body">
+              Enter the public signing account to request a fresh anchored transaction review.
+            </div>
+          </div>
+        )}
+      </section>
     );
   }
   if (loading && !job) return <div className="loading-state">Loading transaction review</div>;
@@ -300,23 +302,16 @@ function EngineClaimOperation({
   return (
     <section className="card-standout action-engine-review">
       <ErrorCallout error={error} />
-      <EngineJobReview
-        action={action}
-        actionsEnabled={!loading && action === null}
-        job={job}
-        onApprove={() => void approve()}
-        onInvalidate={() => void invalidate()}
-      />
-      <EngineWalletClaim
-        chainId={chainId}
-        job={job}
-        network={network}
-        status={status}
-        token={token}
-      />
+      <EngineJobReview actionsEnabled={!loading} job={job} />
+      <div className="action-engine-current-path">
+        <p className="muted">This retired job is read-only.</p>
+        <a className="btn btn-secondary sm" href="#action/claim-rewards">
+          Prepare a current browser-wallet claim
+        </a>
+      </div>
       <button
         className="btn btn-tertiary sm action-recheck"
-        disabled={loading || action !== null}
+        disabled={loading}
         onClick={() => setRevision((value) => value + 1)}
         type="button"
       >
@@ -565,7 +560,9 @@ export function ActionPage({
         <EngineClaimOperation
           chainId={data.preflight.node.networkId}
           context={context}
-          network={data.network}
+          data={data}
+          onOperatorStateChanged={onOperatorStateChanged}
+          operatorStateStale={operatorStateStale}
           token={token}
         />
       ) : operation === "claim-staker-rewards" ? (

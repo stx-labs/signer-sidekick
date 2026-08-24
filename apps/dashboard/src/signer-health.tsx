@@ -694,7 +694,8 @@ export function SignerHealthPage({
                   <strong>{episode.title}</strong>{" "}
                   <span className="mono muted">
                     Opened {displayTime(episode.firstObservedAt)} · last seen{" "}
-                    {displayTime(episode.lastObservedAt)} · {episode.occurrences} observations
+                    {displayTime(episode.lastObservedAt)} · {episode.occurrences}{" "}
+                    {episode.occurrences === 1 ? "observation" : "observations"}
                   </span>
                 </div>
                 <span className="mono">

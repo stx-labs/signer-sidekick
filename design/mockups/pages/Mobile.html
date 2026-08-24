@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewards · Mobile (390) · reward operations mockup</title>
+<link rel="stylesheet" href="../../tokens/tokens.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
+<link rel="stylesheet" href="../src/mockup.css?v=mt5w7q2b">
+<script>
+  const theme = new URLSearchParams(location.search).get("theme");
+  if (theme === "dark") document.documentElement.dataset.theme = "dark";
+</script>
+</head>
+<body>
+<div class="app" data-network="mainnet">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6-4 6 4M6 15l6 4 6-4M5 12h14"></path></svg></div>
+      <div class="name">Signer Sidekick<small>PoX-5 · v1</small></div>
+    </div>
+    <nav aria-label="Primary">
+      <div class="nav-label">Operate</div>
+      <a class="item" href="#overview"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a8 8 0 0 1 16 0"></path><path d="M12 14l4-4"></path><circle cx="12" cy="14" r="1"></circle></svg>Overview<span class="count alert">1</span></a>
+      <a class="item" href="#pool"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3 19a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 6 0"></path></svg>Pool</a>
+      <a class="item active" href="#rewards" aria-current="page"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="10" cy="8" rx="6" ry="3"></ellipse><path d="M4 8v5c0 1.7 2.7 3 6 3s6-1.3 6-3V8"></path><path d="M14 11c3.3 0 6 1.3 6 3v5c0 1.7-2.7 3-6 3s-6-1.3-6-3v-2"></path></svg>Rewards</a>
+      <a class="item" href="#activity"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg>Activity</a>
+      <a class="item" href="#health"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>Signer Health</a>
+      <div class="nav-label">Configure</div>
+      <a class="item" href="#settings"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"></path></svg>Settings</a>
+    </nav>
+    <div class="spacer"></div>
+  </aside>
+  <div class="content">
+    <div class="topbar">
+      <div class="crumbs"><strong>Rewards</strong></div>
+      <div class="right">
+        <span class="net net-mainnet"><span class="dot"></span>Mainnet</span>
+        <button class="chip-btn" type="button" aria-label="Toggle theme"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg></button>
+      </div>
+    </div>
+    <main class="main">
+
+<div class="page-head"><div><h1>Rewards</h1></div></div>
+<section class="card-standout rw-now" aria-labelledby="rw-now-title">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · Second Distribution <span class="badge b-success"><span class="dot"></span>Ready</span></div>
+      <h2 class="rw-status" id="rw-now-title">Ready to collect &amp; distribute</h2>
+      <p class="rw-status-sub">0.0122 sBTC waiting for 40 payments · 64,350 sats is yours.</p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-primary lg" type="button">Collect &amp; distribute<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      <span class="rw-gas" title="Gas wallet SP2J6Z…V9EJ7 · 12.48 STX · about 1,200 transactions at current fees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg>Gas wallet 12.48 STX <span class="muted">· ≈ 1,200 tx</span></span>
+
+    </div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">projected 0.0125</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0 <span class="u">sBTC</span></div><div class="d">fee locked 5%</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">0 <span class="u">of 40</span></div><div class="d">0.0122 sBTC waiting</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">64,350 <span class="u">sats</span></div><div class="d">5% locked</div></div>
+  </div>
+  <p class="rw-cycle-line"><span>Cycle 141</span><strong class="mono">0.0254 sBTC</strong><span>across both distributions · your fee <span class="mono">0.00127 sBTC</span></span></p>
+</section>
+<div class="section-title" id="rw-payments">Payments <span class="hint">40 · one per staker</span></div>
+<div class="tbl-wrap">
+  <div class="tbl-toolbar"><div class="filters"><div class="seg" role="tablist" aria-label="Payment status"><button class="on" type="button" role="tab" aria-selected="true">Outstanding · 40</button><button type="button" role="tab">Paid</button><button type="button" role="tab">Arriving</button></div></div></div>
+  <table>
+    <thead><tr><th scope="col">Staker</th><th scope="col" class="right" title="What the staker receives">To staker</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="staker"><span class="avatar">1A</span><span class="identifier">SP1A…7QZD</span></span></td><td class="mono right">0.00234 sBTC</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">2K</span><span class="identifier">SP2K…M3XW</span><span class="rw-route btc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 7.5h4.2a2.2 2.2 0 0 1 0 4.4H9zM9 11.9h4.8a2.3 2.3 0 0 1 0 4.6H9zM10.5 6v1.5M10.5 16.5V18"></path></svg></span></span></td><td class="mono right">0.00162 BTC</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">3F</span><span class="identifier">SP3F…K9QR</span></span></td><td class="mono right">7,742 sats</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">1Q</span><span class="identifier">SP1Q…V2TD</span></span></td><td class="mono right">93,214 sats</td><td><span class="badge b-pending">Outstanding</span></td></tr>
+    </tbody>
+  </table>
+  <div class="rw-table-foot"><span>4 of 40</span><button class="btn btn-tertiary sm" type="button">Show all</button></div>
+</div>
+<div class="section-title" id="rw-past">Past cycles</div>
+<section class="card rw-cycle" aria-label="Cycle 140">
+  <div class="rw-cycle-head"><h3>Cycle 140 <span class="badge b-success">Complete</span></h3><div class="rw-totals"><span>to stakers <strong>0.0232 sBTC</strong></span></div></div>
+  <div class="rw-dist"><div class="rw-dist-name">First Distribution</div><div class="rw-dist-fact"><span>Distributed</span><strong>38 of 40 <span class="rw-roll">· 2 rolled</span></strong></div></div>
+  <div class="rw-dist"><div class="rw-dist-name">Second Distribution</div><div class="rw-dist-fact"><span>Distributed</span><strong>40 of 40</strong></div></div>
+</section>
+<div class="section-title" id="rw-accounting">Accounting</div>
+<section class="card"><div class="card-head"><h2>Export</h2><span class="badge b-neutral">CSV · JSON</span></div><div class="rw-export-row"><button class="btn btn-secondary" type="button">This distribution</button><button class="btn btn-secondary" type="button">Cycle 141</button><button class="btn btn-secondary" type="button">All</button></div></section>
+    </main>
+  </div>
+</div>
+
+
+</body>
+</html>

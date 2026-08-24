@@ -243,6 +243,32 @@ describe("HealthMonitoringRepository", () => {
     });
   });
 
+  it("advances an episode from fresh evidence even when reconciliation runs later", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-14T12:00:00.000Z");
+    stores.push(store);
+    const repository = store.healthMonitoring;
+    const openedAt = "2026-08-14T12:00:00.000Z";
+    const opened = repository.reconcileFindingEpisodes(
+      "config-a",
+      [finding(openedAt)],
+      "2026-08-14T12:00:01.000Z",
+    )[0];
+    if (!opened) throw new Error("expected active finding episode");
+
+    const evidenceAt = "2026-08-14T12:00:05.000Z";
+    const advanced = repository.reconcileFindingEpisodes(
+      "config-a",
+      [finding(evidenceAt)],
+      "2026-08-14T12:00:06.000Z",
+    )[0];
+    expect(advanced).toMatchObject({
+      episodeId: opened.episodeId,
+      status: "active",
+      occurrences: 2,
+      lastObservedAt: evidenceAt,
+    });
+  });
+
   it("prunes raw evidence after 72 hours and rollups after 90 days", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-14T12:00:00.000Z");
     stores.push(store);

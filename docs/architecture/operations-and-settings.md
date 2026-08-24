@@ -28,19 +28,18 @@ start, stop, install, or configure it.
 
 ## Custody and transaction safety
 
-Sidekick accepts public principals and public signer-grant output, but never a signer private key,
-manager-admin private key, mnemonic, or arbitrary signing request. In Assist it may hold a
-dedicated, low-balance gas-payer key and sign only a fixed reviewed transaction vector. Signer
-registration, manager administration, and Observe reward claims remain externally signed.
+Sidekick never accepts a signer key, manager-admin key, mnemonic, or arbitrary signing request.
+Wallet actions use sealed, expiring intents and return only a transaction ID; Sidekick verifies the
+canonical bytes and expected poststate.
 
-Wallet intents are versioned, sealed, expiring, and stored separately from Assist. The API accepts
-only a transaction ID after signing; it never accepts signed bytes or wallet credentials. Sidekick
-then verifies the fetched transaction's sender, chain binding, function, arguments, postconditions,
-canonical inclusion, and expected poststate.
+Operator-run may generate one dedicated, low-balance gas wallet. Its key stays in
+`/data/gas-wallet.key` and signs only the explicit permissionless reward adapters in one approved,
+bounded recipe. The gas wallet cannot be a manager admin or signer. Sweeping its remaining STX is a
+separate, exact-recipient action. See the [engine contract](transaction-engine.md).
 
 Manager source identity is not a universal gate. Sidekick detects the baseline PoX-5 interface and
 enables supported actions by capability. A custom manager remains observable and usable for those
-baseline features; optional semantics and Assist require a reviewed adapter.
+baseline features; optional semantics and execution require a reviewed adapter.
 
 ## Durable reconciliation
 
@@ -76,15 +75,16 @@ contract deployment, staking, or public enrollment route.
 
 Operators may change the theme; Stacks API, node RPC, node metrics, signer-monitoring, and Hiro
 reference endpoints; API credentials; and forecast horizon. Candidate endpoint changes must pass
-preflight before becoming active. Transaction-engine policy and gas-payer identity are
-deployment-only configuration.
+preflight before becoming active. Engine mode and safety caps are deployment settings. Gas-wallet
+generation, enablement, disablement, and sweep are explicit Settings actions.
 
 Each API has its own write-only credential. Environment variables supply deployment defaults; a
 key entered in Settings overrides only that source. Removing the saved override returns to the
 environment default. A reference API may reuse the indexed API key only when their URL origins are
 identical. Every stored key is origin-bound, so editing a URL cannot forward an existing secret to
 a different host. Keys are stored separately from public settings in SQLite, making the database
-and backups secret-bearing. Signer, manager-admin, and gas-payer private keys remain forbidden.
+and backups secret-bearing. Signer and manager-admin keys remain forbidden; the gas-wallet key is a
+separate file and must be backed up with the database.
 
 Saved URLs and headers take precedence over later environment changes. Ingestion cursors remain
 scoped to their source endpoint, preventing one provider's checkpoint from being reused for

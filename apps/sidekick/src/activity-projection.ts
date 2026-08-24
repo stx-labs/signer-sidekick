@@ -13,6 +13,7 @@ import {
   activityResponseSchema,
   type EngineChainAnchor,
   type OperatorDeadline,
+  type RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import { managerEventStream } from "./manager-event-vocabulary.js";
@@ -810,6 +811,161 @@ function engineRecord(
   };
 }
 
+function rewardRunState(run: RewardRun): {
+  displayStatus: ActivityDisplayStatus;
+  outcome: ActivityOutcome;
+  stage: ActivityStage;
+} {
+  switch (run.status) {
+    case "awaiting-approval":
+      return { displayStatus: "action-required", outcome: "pending", stage: "awaiting-approval" };
+    case "approved":
+      return { displayStatus: "in-progress", outcome: "pending", stage: "preflighted" };
+    case "running":
+      return { displayStatus: "in-progress", outcome: "pending", stage: "broadcast" };
+    case "paused":
+      return { displayStatus: "needs-attention", outcome: "pending", stage: "blocked" };
+    case "halted":
+      return { displayStatus: "needs-attention", outcome: "failed", stage: "failed" };
+    case "completed":
+      return { displayStatus: "complete", outcome: "succeeded", stage: "complete" };
+    case "cancelled":
+    case "expired":
+      return { displayStatus: "superseded", outcome: "superseded", stage: "superseded" };
+    default:
+      return assertNever(run.status);
+  }
+}
+
+function rewardRunTitle(run: RewardRun): string {
+  const operations = new Set(run.recipe.orderedOperations);
+  if (
+    operations.has("claim-rewards") &&
+    (operations.has("claim-staker-rewards") ||
+      operations.has("settle-accepted-withdrawal") ||
+      operations.has("reclaim-failed-withdrawal"))
+  ) {
+    return "Collect and distribute rewards";
+  }
+  if (operations.has("calculate-rewards")) return "Calculate rewards";
+  if (operations.has("claim-rewards")) return "Collect rewards";
+  if (operations.has("claim-staker-rewards")) return "Distribute staker rewards";
+  if (operations.has("settle-accepted-withdrawal") || operations.has("reclaim-failed-withdrawal")) {
+    return "Finish Bitcoin payouts";
+  }
+  return "Reward run";
+}
+
+function rewardRunRecord(
+  run: RewardRun,
+  sourceCoverage: ActivityCoverage,
+  readOnly: boolean,
+  includeTimeline: boolean,
+  chainId: number,
+): ActivityRecord {
+  const activityId = `reward-run:${run.runId}`;
+  const state = rewardRunState(run);
+  const txids = [...new Set(run.children.flatMap(({ txid }) => (txid === null ? [] : [txid])))];
+  const distribution = run.recipe.distribution === 1 ? "First Distribution" : "Second Distribution";
+  const progress = `${run.progress.completed} of ${run.progress.total} calls complete`;
+  const summary = run.failureReason
+    ? `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}. ${run.failureReason}`
+    : `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}.`;
+  const deadlineAt =
+    run.status === "awaiting-approval" ? run.approvalExpiresAt : run.runtimeExpiresAt;
+  const timeline: ActivityTimelineEntry[] = [];
+  if (includeTimeline) {
+    timeline.push({
+      schemaVersion: 1,
+      eventId: `${activityId}:created`,
+      code: "recipe-sealed",
+      title: "Reward recipe sealed",
+      detail: `Sidekick sealed ${run.progress.total} calls for Cycle ${run.recipe.cycle}, ${distribution}.`,
+      occurredAt: run.createdAt,
+      source: "transaction-engine",
+      txid: null,
+      stacksBlockHeight: run.recipe.preparedAnchor.stacksBlockHeight,
+      indexBlockHash: run.recipe.preparedAnchor.indexBlockHash,
+      canonical: true,
+      finalized: null,
+    });
+    if (run.approvedAt) {
+      timeline.push({
+        schemaVersion: 1,
+        eventId: `${activityId}:approved`,
+        code: "recipe-approved",
+        title: "Reward run approved",
+        detail: "The operator approved this sealed reward recipe.",
+        occurredAt: run.approvedAt,
+        source: "transaction-engine",
+        txid: null,
+        stacksBlockHeight: null,
+        indexBlockHash: null,
+        canonical: null,
+        finalized: null,
+      });
+    }
+    timeline.push(
+      ...run.children
+        .filter(({ status }) => status !== "pending")
+        .map(
+          (child): ActivityTimelineEntry => ({
+            schemaVersion: 1,
+            eventId: `${activityId}:child:${child.index}:${child.status}`,
+            code: `run-child-${child.status}`,
+            title: `${child.operation.replaceAll("-", " ")} ${child.status.replaceAll("-", " ")}`,
+            detail:
+              child.failureReason ??
+              `Call ${child.index + 1} of ${run.progress.total} is ${child.status.replaceAll("-", " ")}.`,
+            occurredAt: child.updatedAt,
+            source: "transaction-engine",
+            txid: child.txid,
+            stacksBlockHeight: null,
+            indexBlockHash: null,
+            canonical: null,
+            // Run reconciliation proves the expected effect, but the child row does not retain a
+            // finality depth. Canonical chain evidence is merged into this timeline when present.
+            finalized: null,
+          }),
+        ),
+    );
+    timeline.sort(timelineOrder);
+  }
+  return {
+    summary: {
+      schemaVersion: 1,
+      activityId,
+      kind: "operation",
+      domain: "rewards",
+      code: "reward-run",
+      title: rewardRunTitle(run),
+      summary,
+      stage: state.stage,
+      operationScope: `reward-run:${run.recipe.cycle}:${run.recipe.distribution}`,
+      displayStatus: state.displayStatus,
+      outcome: state.outcome,
+      occurredAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      deadline: deadlineAt ? { kind: "time", at: deadlineAt } : null,
+      urgencyAt: deadlineAt,
+      actorPrincipal: run.walletPrincipal,
+      txids,
+      // The sealed recipe stores the exact block anchor but not the PoX phase fields required by
+      // EngineChainAnchor. Keep the summary unanchored; the creation evidence retains height/hash.
+      anchor: null,
+      supersedesActivityId: null,
+      supersededByActivityId: null,
+      primaryAction:
+        readOnly || !isActive(state.displayStatus)
+          ? null
+          : { kind: "open-domain", page: "rewards", section: "claims", label: "Open reward run" },
+      coverage: [sourceCoverage],
+    },
+    timeline,
+    aliases: [activityId, ...txids.map((txid) => chainActivityId(chainId, txid))].sort(),
+  };
+}
+
 function chainActivityId(chainId: number, txid: string): string {
   return `chain-tx:${chainId}:${txid}`;
 }
@@ -877,7 +1033,8 @@ function eventTitle(kind: string | null, decodedPayload: unknown): string {
   if (kind === "unstake-sbtc") return "Bond participant reduced locked sBTC";
   if (kind === "announce-l1-early-exit") return "Bond participant announced an early exit";
   if (kind === "claim-staker-rewards-for-signer") return "Staker reward payout recorded";
-  return kind ? kind.replaceAll("-", " ") : "Manager contract activity";
+  if (kind === "claim-rewards") return "Rewards collected into the manager";
+  return kind && kind !== "other" ? kind.replaceAll("-", " ") : "Manager contract activity";
 }
 
 function chainEventOccurredAt(event: StoredActivityChainEvent): string {
@@ -1138,15 +1295,25 @@ export class ActivityProjectionService {
       return job ? this.engineDetailRecord(job, readOnly, now) : null;
     }
 
+    const rewardRunMatch = /^reward-run:(.+)$/.exec(requestedActivityId);
+    if (rewardRunMatch?.[1]) {
+      const parsedId = z.string().uuid().safeParse(rewardRunMatch[1]);
+      if (!parsedId.success) return null;
+      const run = this.options.store.rewardRuns.get(parsedId.data);
+      return run ? this.rewardRunDetailRecord(run, readOnly) : null;
+    }
+
     const chainMatch = /^chain-tx:(\d+):(0x[0-9a-f]{64})$/.exec(requestedActivityId);
     if (chainMatch?.[1] && chainMatch[2]) {
       const chainId = Number(chainMatch[1]);
       if (!Number.isSafeInteger(chainId) || chainId !== this.options.chainId) return null;
       const txid = chainMatch[2];
-      // Match the full projection's deterministic authority precedence: wallet intent, engine job,
-      // then a standalone verified chain record.
+      // Match the full projection's deterministic authority precedence: wallet intent, recipe run,
+      // legacy engine job, then a standalone verified chain record.
       const intent = this.options.store.walletIntents.getByTxid(txid);
       if (intent) return this.walletDetailRecord(intent, readOnly);
+      const run = this.options.store.rewardRuns.getByTxid(txid);
+      if (run) return this.rewardRunDetailRecord(run, readOnly);
       const job = this.options.store.transactionEngine.getLogicalJobByTxid(txid);
       if (job) return this.engineDetailRecord(job, readOnly, now);
       const events = this.detailChainEvents(txid);
@@ -1214,6 +1381,18 @@ export class ActivityProjectionService {
       record.summary.activityId,
       ...record.summary.txids.map((txid) => chainActivityId(this.options.chainId, txid)),
     ].sort();
+    this.mergeDetailChainEvents(record);
+    return record;
+  }
+
+  private rewardRunDetailRecord(run: RewardRun, readOnly: boolean): ActivityRecord {
+    const record = rewardRunRecord(
+      run,
+      coverage("transaction-engine", "current", run.updatedAt),
+      readOnly,
+      true,
+      this.options.chainId,
+    );
     this.mergeDetailChainEvents(record);
     return record;
   }
@@ -1315,6 +1494,11 @@ export class ActivityProjectionService {
         ]),
       ).values(),
     ];
+    const recentRewardRuns = this.options.store.rewardRuns.listForActivity(
+      maximumAuthorityRecords + 1,
+    );
+    const rewardRunHistoryTruncated = recentRewardRuns.length > maximumAuthorityRecords;
+    const rewardRuns = recentRewardRuns.slice(0, maximumAuthorityRecords);
 
     const recentChainEvents = this.options.store.listManagerActivityChainEvents(
       this.options.chainId,
@@ -1337,11 +1521,11 @@ export class ActivityProjectionService {
       walletHistoryTruncated,
     );
     const walletRecordCoverage = coverage("wallet-intents", "current", walletObservedAt);
-    const engineObservedAt = latestObservedAt(jobs);
+    const engineObservedAt = latestObservedAt([...jobs, ...rewardRuns]);
     const engineCoverage = historyCoverage(
       "transaction-engine",
       engineObservedAt,
-      engineHistoryTruncated,
+      engineHistoryTruncated || rewardRunHistoryTruncated,
     );
     const engineRecordCoverage = coverage("transaction-engine", "current", engineObservedAt);
     const indexedCoverage = this.indexedCoverage(chainEvents, chainHistoryTruncated);
@@ -1421,6 +1605,9 @@ export class ActivityProjectionService {
         includeTimelines,
       ),
     );
+    const rewardRunRecords = rewardRuns.map((run) =>
+      rewardRunRecord(run, engineRecordCoverage, readOnly, includeTimelines, this.options.chainId),
+    );
 
     const groupedEvents = new Map<string, StoredActivityChainEvent[]>();
     for (const event of chainEvents) {
@@ -1439,11 +1626,11 @@ export class ActivityProjectionService {
     }
 
     const operationByTxid = new Map<string, ActivityRecord>();
-    for (const record of [...walletRecords, ...engineRecords]) {
+    for (const record of [...walletRecords, ...rewardRunRecords, ...engineRecords]) {
       for (const txid of record.summary.txids) {
-        // Wallet intents and engine jobs are separate operation authorities. If corrupt or
-        // unexpected data assigns one transaction to more than one operation, keep the first
-        // deterministic owner rather than duplicating verified chain evidence across the feed.
+        // Wallet intents, recipe runs, and legacy engine jobs are separate operation authorities.
+        // If corrupt or unexpected data assigns one transaction to more than one operation, keep
+        // the first deterministic owner rather than duplicating verified chain evidence.
         if (!operationByTxid.has(txid)) operationByTxid.set(txid, record);
       }
     }
@@ -1470,7 +1657,13 @@ export class ActivityProjectionService {
     );
 
     return {
-      records: [...walletRecords, ...engineRecords, ...chainRecords, ...settingsRecords],
+      records: [
+        ...walletRecords,
+        ...rewardRunRecords,
+        ...engineRecords,
+        ...chainRecords,
+        ...settingsRecords,
+      ],
       coverage: [
         walletCoverage,
         engineCoverage,

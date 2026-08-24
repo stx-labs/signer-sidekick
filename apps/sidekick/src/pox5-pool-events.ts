@@ -10,16 +10,24 @@ export const pox5PoolActivityTopics = [
   "unstake-sbtc",
   "announce-l1-early-exit",
   "claim-staker-rewards-for-signer",
+  "claim-rewards",
 ] as const;
 
 export type Pox5PoolActivityTopic = (typeof pox5PoolActivityTopics)[number];
-export type Pox5PoolRelationship = "joined" | "updated" | "leaving" | "left" | "rewarded";
+export type Pox5PoolRelationship =
+  | "joined"
+  | "updated"
+  | "leaving"
+  | "left"
+  | "rewarded"
+  | "collected";
 
 export interface Pox5PoolActivityEvent {
   kind: Pox5PoolActivityTopic;
   topic: Pox5PoolActivityTopic;
   relationship: Pox5PoolRelationship;
-  stakerPrincipal: string;
+  /** Null only for the manager-level `claim-rewards` collect print. */
+  stakerPrincipal: string | null;
   signer: string | null;
   oldSigner: string | null;
   signerManager: string | null;
@@ -29,6 +37,11 @@ export interface Pox5PoolActivityEvent {
   amountWithdrawnSats: string | null;
   amountSatsReleased: string | null;
   rewardsClaimedSats: string | null;
+  /** `reward-cycle` on reward prints (`claim-rewards`, `claim-staker-rewards-for-signer`). */
+  rewardCycle: string | null;
+  /** `claim-rewards` collect print: the manager's total pulled from PoX-5 for the cycle. */
+  totalRewardsSats: string | null;
+  stxRewardsSats: string | null;
   firstRewardCycle: string | null;
   unlockCycle: string | null;
   bondIndex: string | null;
@@ -54,6 +67,12 @@ function uintText(value: ClarityValue | undefined): string | null {
   return value?.type === ClarityType.UInt ? BigInt(value.value).toString() : null;
 }
 
+/** PoX-5 prints `stx-rewards` as the claimable-rewards tuple (`{ earned, ... }`), not a bare uint. */
+function nestedUintText(value: ClarityValue | undefined, key: string): string | null {
+  if (value?.type !== ClarityType.Tuple) return null;
+  return uintText(value.value[key]);
+}
+
 function isPoolTopic(value: string): value is Pox5PoolActivityTopic {
   return (pox5PoolActivityTopics as readonly string[]).includes(value);
 }
@@ -64,6 +83,7 @@ function relationship(
   signer: string | null,
   oldSigner: string | null,
 ): Pox5PoolRelationship {
+  if (topic === "claim-rewards") return "collected";
   if (topic === "claim-staker-rewards-for-signer") return "rewarded";
   if (oldSigner === managerPrincipal && signer !== managerPrincipal) return "left";
   if (signer === managerPrincipal && oldSigner !== null && oldSigner !== managerPrincipal) {
@@ -94,7 +114,7 @@ export function decodePox5PoolActivityEvent(
   if (![signer, oldSigner, signerManager].includes(managerPrincipal)) return null;
 
   const stakerPrincipal = principal(tuple.staker);
-  if (!stakerPrincipal) {
+  if (!stakerPrincipal && topic !== "claim-rewards") {
     throw new ClarityCodecError("expected staker principal", `${path}.staker`);
   }
 
@@ -112,6 +132,10 @@ export function decodePox5PoolActivityEvent(
     amountWithdrawnSats: uintText(tuple["amount-withdrawn-sats"]),
     amountSatsReleased: uintText(tuple["amount-sats-released"]),
     rewardsClaimedSats: uintText(tuple["rewards-claimed"]),
+    rewardCycle: uintText(tuple["reward-cycle"]),
+    totalRewardsSats: uintText(tuple["total-rewards"]),
+    stxRewardsSats:
+      uintText(tuple["stx-rewards"]) ?? nestedUintText(tuple["stx-rewards"], "earned"),
     firstRewardCycle: uintText(tuple["first-reward-cycle"]),
     unlockCycle: uintText(tuple["unlock-cycle"]),
     bondIndex: uintText(tuple["bond-index"]),

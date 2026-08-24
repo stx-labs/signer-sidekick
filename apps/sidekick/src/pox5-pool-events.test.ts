@@ -93,3 +93,68 @@ describe("decodePox5PoolActivityEvent", () => {
     });
   });
 });
+
+describe("decodePox5PoolActivityEvent — reward prints", () => {
+  it("decodes the manager-level collect print without a staker", () => {
+    const event = decodePox5PoolActivityEvent(
+      tupleCV({
+        topic: stringAsciiCV("claim-rewards"),
+        "reward-cycle": uintCV(141),
+        "signer-manager": contract(manager),
+        "stx-rewards": tupleCV({ earned: uintCV(1_200_000), "reward-cycle": uintCV(141) }),
+        "total-rewards": uintCV(1_287_000),
+      }),
+      manager,
+    );
+    expect(event).toMatchObject({
+      kind: "claim-rewards",
+      relationship: "collected",
+      stakerPrincipal: null,
+      signerManager: manager,
+      rewardCycle: "141",
+      totalRewardsSats: "1287000",
+      stxRewardsSats: "1200000",
+    });
+  });
+
+  it("ignores another manager's collect and keeps requiring a staker on other topics", () => {
+    expect(
+      decodePox5PoolActivityEvent(
+        tupleCV({
+          topic: stringAsciiCV("claim-rewards"),
+          "reward-cycle": uintCV(141),
+          "signer-manager": contract(otherManager),
+          "total-rewards": uintCV(1),
+        }),
+        manager,
+      ),
+    ).toBeNull();
+    expect(() =>
+      decodePox5PoolActivityEvent(
+        tupleCV({ topic: stringAsciiCV("stake"), signer: contract(manager) }),
+        manager,
+      ),
+    ).toThrow(/staker principal/);
+  });
+
+  it("carries the reward cycle on staker payout prints", () => {
+    const event = decodePox5PoolActivityEvent(
+      tupleCV({
+        topic: stringAsciiCV("claim-staker-rewards-for-signer"),
+        "signer-manager": contract(manager),
+        staker: standardPrincipalCV(staker),
+        "reward-cycle": uintCV(141),
+        "bond-index": uintCV(3),
+        "rewards-claimed": uintCV(245_900),
+      }),
+      manager,
+    );
+    expect(event).toMatchObject({
+      relationship: "rewarded",
+      stakerPrincipal: staker,
+      rewardCycle: "141",
+      bondIndex: "3",
+      rewardsClaimedSats: "245900",
+    });
+  });
+});

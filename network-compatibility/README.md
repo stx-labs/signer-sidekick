@@ -8,8 +8,8 @@ not compatibility gates. Invalid, ambiguous, duplicate, oversized, or symlinked 
 reported and ignored without replacing built-in data.
 
 V1 profiles are operator configuration. They may guide read-only inspection and deterministic
-setup artifacts, but cannot enable Assist. Assist separately requires a current signed
-compatibility attestation that binds reviewed identities to the fixed code-backed adapter.
+setup artifacts, but cannot enable executable behavior. Operator-run separately requires a
+code-backed capability adapter and an exact-source-reviewed Sidekick release.
 
 See [deployment](../docs/operator/deployment.md) and
 [ADR 0007](../docs/architecture/decisions/0007-network-compatibility.md).

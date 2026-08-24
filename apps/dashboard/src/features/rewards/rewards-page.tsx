@@ -1,162 +1,111 @@
 import { Coins, Percent } from "@phosphor-icons/react";
 import {
   type DashboardSnapshot,
+  type GasWalletStatus,
   type HealthSnapshot,
   healthSnapshotSchema,
   type RewardCalculationRealization,
-  type RewardCycleSummary,
-  rewardHistoryResponseSchema,
-  rewardsActivityResponseSchema,
+  type RewardLedger,
+  type RewardLedgerPayment,
+  type RewardRun,
   rewardsPageResponseSchema,
-  stakerClaimsResponseSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../../api-client.js";
-import { CopyableIdentifier } from "../../copyable-identifier.js";
-import { actionHash, type DomainSection } from "../../dashboard-route.js";
-import {
-  Badge,
-  PageHead,
-  Pagination,
-  SortableHeader,
-  StatLine,
-  type TableSort,
-} from "../../shared/dashboard-ui.js";
+import { actionHash, type DomainSection, settingsHash } from "../../dashboard-route.js";
+import { PageHead } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
-import { compactDuration, number, sbtc, short } from "../../shared/format.js";
+import { compactDuration } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
-import { PipelineStage } from "../../shared/pipeline-stage.js";
+import { loadEngineStatus } from "../operations/engine-api.js";
+import {
+  cachedGasWalletStatus,
+  createGasWallet,
+  dismissGasWalletBanner,
+  loadGasWalletStatus,
+} from "../settings/gas-wallet-api.js";
+import { RewardFeeLedger } from "./reward-accounting.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
+import { GasWalletBanners } from "./reward-banners.js";
+import { type ConfirmState, RewardConfirmSheet } from "./reward-confirm-sheet.js";
+import { CurrentDistributionDetails } from "./reward-current-distribution.js";
+import { DistributionCard } from "./reward-distribution-card.js";
+import { EarningCard } from "./reward-earning-card.js";
+import {
+  downloadRewardLedgerExport,
+  loadRewardLedger,
+  type RewardLedgerQuery,
+} from "./reward-ledger-api.js";
+import { PastCyclesLedger } from "./reward-past-cycles.js";
+import { ProjectionDetails } from "./reward-projection-details.js";
+import {
+  deriveCycleGeometry,
+  deriveDistributionCards,
+  deriveEarning,
+  distributionKey,
+  distributionName,
+  execution as executionAvailability,
+  pendingDistributions,
+  type RewardPrimaryAction,
+} from "./reward-state.js";
+import {
+  ACTIVE_RUN_STATUSES,
+  approveRewardRun,
+  cancelRewardRun,
+  IN_PROGRESS_RUN_STATUSES,
+  listRewardRuns,
+  loadRewardRun,
+  loadRewardRunPreparation,
+  pauseRewardRun,
+  prepareRewardRun,
+  RewardRunsUnavailableError,
+  resumeRewardRun,
+} from "./run-api.js";
+import { RequestState, StakerSettlementPanel } from "./staker-settlement-panel.js";
 
 type Snapshot = DashboardSnapshot;
-type BucketSort = "bucket" | "shares" | "earned" | "fee" | "included";
-type RewardHistorySort =
-  | "cycle"
-  | "status"
-  | "stakers"
-  | "gross"
-  | "net"
-  | "fee"
-  | "configured-fee"
-  | "effective-fee"
-  | "actionable"
-  | "bitcoin-block";
-type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "status";
-type ClaimSort = "cycle" | "staker" | "amount" | "destination" | "block" | "transaction";
-type WithdrawalSort = "request" | "staker" | "amount" | "max-fee" | "state" | "block";
 
-const rewardTerms = {
-  network:
-    "Total sBTC accumulated by PoX-5 for the next network calculation, shared across eligible signers and pools.",
-  pool: "Estimated amount allocated to this signer-manager before operator fees.",
-  fee: "Estimated portion earned by this pool operator, using per-staker and per-bucket integer rounding.",
-  net: "Estimated amount remaining for this pool's stakers after operator fees.",
-  payout:
-    "Stakers whose settled reward bucket can be paid after the manager claim, fee, and dust checks.",
-} as const;
+const RUN_POLL_MS = 5_000;
+const LEDGER_POLL_MS = 30_000;
+const PREPARATION_POLL_MS = 1_000;
+/** Overview's "Collect & distribute" hands the same confirm sheet over through this key. */
+export const PENDING_RUN_STORAGE_KEY = "sidekick-rewards-pending-run";
 
-function RewardTerm({ label, help }: { label: string; help: string }) {
-  return (
-    <button
-      aria-label={`${label}: ${help}`}
-      className="tooltip-trigger reward-term"
-      data-tooltip={help}
-      type="button"
-    >
-      {label}
-    </button>
-  );
-}
-
-function subtractSats(gross: string | null, fee: string | null): string | null {
-  if (gross === null || fee === null) return null;
-  return (BigInt(gross) - BigInt(fee)).toString();
-}
-
-function poolEstimateUnavailableDetail(
-  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["poolEstimateUnavailableReason"],
-): string {
-  switch (reason) {
-    case "chain-anchor-unavailable":
-      return "A stable local-node anchor is required.";
-    case "calculation-target-unavailable":
-      return "PoX-5 does not expose a valid next calculation target at this anchor.";
-    case "incomplete-active-bond-state":
-      return "The complete active bond set could not be proven at this anchor.";
-    case "anchored-inputs-unavailable":
-      return "One or more anchored share inputs could not be read from the local node.";
-    case "contract-simulation-failed":
-      return "The observed inputs could not produce a valid PoX-5 integer calculation.";
-    case null:
-      return "The current pool estimate is unavailable.";
+function terminalRunNotice(run: RewardRun): string {
+  switch (run.status) {
+    case "completed":
+      return "Run finished. The ledger below reflects what reached the chain.";
+    case "cancelled":
+      return "Run cancelled; the gas wallet is free again.";
+    case "expired":
+      return run.failureReason ? `Run expired: ${run.failureReason}` : "Run expired.";
+    default:
+      return `Run ${run.status}.`;
   }
 }
 
-function rewardForecastUnavailableDetail(
-  reason: NonNullable<DashboardSnapshot["rewardOutlook"]>["forecastUnavailableReason"],
-): string {
-  switch (reason) {
-    case "chain-anchor-unavailable":
-      return "A stable local-node anchor is required.";
-    case "calculation-target-unavailable":
-      return "PoX-5 does not expose a valid next calculation target at this anchor.";
-    case "current-pool-estimate-unavailable":
-      return "The current anchored pool inputs are incomplete.";
-    case "insufficient-samples":
-      return "Sidekick is collecting enough observed accrual history to project the next allocation. The first PoX-5 calculation requires at least 24 Bitcoin blocks of observations.";
-    case "non-monotonic-accrual":
-      return "The cumulative reward balance changed unexpectedly inside this interval.";
-    case "forecast-inputs-unavailable":
-      return "The durable observation window could not be read safely.";
-    case "contract-simulation-failed":
-      return "A projected bound could not produce a valid PoX-5 integer calculation.";
-    case null:
-      return "The checkpoint forecast is unavailable.";
-  }
-}
+type PaymentsCache = {
+  byKey: Record<string, RewardLedgerPayment[]>;
+  errors: Record<string, string>;
+};
 
-function compareSortValues(
-  left: bigint | number | string | boolean | null,
-  right: bigint | number | string | boolean | null,
-  direction: "asc" | "desc",
-): number {
-  if (left === null) return right === null ? 0 : 1;
-  if (right === null) return -1;
-  const compared = left < right ? -1 : left > right ? 1 : 0;
-  return direction === "asc" ? compared : -compared;
-}
-
-function RequestState({
-  label,
-  loading,
-  error,
-  retry,
-}: {
-  label: string;
-  loading: boolean;
-  error: string | null;
-  retry: () => void;
-}) {
-  if (error) {
-    return (
-      <div className="callout callout-critical content-notice" role="alert">
-        <div className="body">
-          <strong>Could not refresh {label}.</strong> {operatorErrorSentence(error)}
-          <div className="actions">
-            <button type="button" className="btn btn-secondary sm" onClick={retry}>
-              Retry
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  return loading ? (
-    <div className="callout callout-neutral content-notice" role="status">
-      Refreshing {label}…
-    </div>
-  ) : null;
+function waitForPoll(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, PREPARATION_POLL_MS);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function Rewards({
@@ -171,1402 +120,719 @@ export function Rewards({
   token: string;
 }) {
   useDomainSection("rewards", section);
-  const rewards = data.rewards;
-  const rewardOutlook = data.rewardOutlook ?? null;
-  const calculation = rewardOutlook?.calculation ?? rewards?.calculation ?? null;
-  const calculationGrace = calculation?.next?.grace ?? null;
-  const calculationActionAvailable =
-    calculationGrace?.state === "action-required" && !operatorStateStale;
-  const calculationNeedsAttention =
-    calculationGrace?.state === "action-required" && operatorStateStale;
-  const globalAccruedSats =
-    rewardOutlook?.accrued.globalSats ?? rewards?.global.globalAccruedRewardsSats ?? null;
-  const poolEstimate = rewardOutlook?.poolEstimate ?? null;
-  const rewardForecast = rewardOutlook?.forecast ?? null;
-  const operatorFeeForecast = rewardOutlook?.operatorFeeForecast ?? null;
-  const operatorFeeEstimate = rewardOutlook?.operatorFeeEstimate ?? null;
-  const rewardCalibration = rewardOutlook?.calibration ?? null;
+  const [ledger, setLedger] = useState<RewardLedger | null>(null);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(true);
+  const [ledgerRetry, setLedgerRetry] = useState(0);
+  const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
+    cachedGasWalletStatus(),
+  );
+  const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
-  const lastRewardComputeBurnHeight =
-    rewardOutlook?.calculation.observedLastRewardComputeBurnHeight ??
-    rewards?.global.lastRewardComputeBurnHeight ??
-    null;
-  const [rewardsFreshness, setRewardsFreshness] = useState(data.freshness ?? null);
-  const rewardClaimsAvailability = managerActionAvailability(
-    data,
-    rewardManagerCapabilityId("claim-rewards"),
-    operatorStateStale,
+  const [realizations, setRealizations] = useState<RewardCalculationRealization[]>([]);
+  const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
+  const [confirm, setConfirm] = useState<{
+    action: RewardPrimaryAction;
+    state: ConfirmState;
+  } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [runControlBusy, setRunControlBusy] = useState<"pause" | "resume" | "cancel" | null>(null);
+  const [runsUnavailable, setRunsUnavailable] = useState(false);
+  const [walletPanelOpen, setWalletPanelOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [currentDistributionView, setCurrentDistributionView] = useState<1 | 2 | null>(null);
+  const [cardPayments, setCardPayments] = useState<PaymentsCache>({ byKey: {}, errors: {} });
+  const walletPanelRef = useRef<HTMLDivElement | null>(null);
+  const rewards = data.rewards;
+  const calculation = data.rewardOutlook?.calculation ?? rewards?.calculation ?? null;
+
+  const refreshLedger = useCallback(
+    async (signal?: AbortSignal) => {
+      const result = await loadRewardLedger(token, {}, signal);
+      if (signal?.aborted) return;
+      setLedger(result);
+      setLedgerError(null);
+    },
+    [token],
   );
-  const updateFeesAvailability = managerActionAvailability(
-    data,
-    rewardManagerCapabilityId("update-fees"),
-    operatorStateStale,
-  );
-  const withdrawFeesAvailability = managerActionAvailability(
-    data,
-    rewardManagerCapabilityId("withdraw-fees"),
-    operatorStateStale,
-  );
-  const sweepFeeRefundsAvailability = managerActionAvailability(
-    data,
-    rewardManagerCapabilityId("sweep-fee-refunds"),
-    operatorStateStale,
-  );
-  const managerActionsAvailable = rewardClaimsAvailability.available;
-  const [activity, setActivity] = useState(data.activity);
-  const [stakerPage, setStakerPage] = useState(0);
-  const [bucketSort, setBucketSort] = useState<TableSort<BucketSort>>({
-    key: "bucket",
-    direction: "asc",
-  });
-  const [historySort, setHistorySort] = useState<TableSort<RewardHistorySort>>({
-    key: "cycle",
-    direction: "desc",
-  });
-  const [stakerSort, setStakerSort] = useState<TableSort<RewardStakerSort>>({
-    key: "staker",
-    direction: "asc",
-  });
-  const [claimPage, setClaimPage] = useState(0);
-  const [claimSort, setClaimSort] = useState<TableSort<ClaimSort>>({
-    key: "block",
-    direction: "desc",
-  });
-  const [claimCycle, setClaimCycle] = useState("");
-  const [withdrawalPage, setWithdrawalPage] = useState(0);
-  const [withdrawalSort, setWithdrawalSort] = useState<TableSort<WithdrawalSort>>({
-    key: "block",
-    direction: "desc",
-  });
-  const [cycleHistoryPage, setCycleHistoryPage] = useState(0);
-  const [cycleHistory, setCycleHistory] = useState<RewardCycleSummary[]>([]);
-  const [cycleHistoryTotal, setCycleHistoryTotal] = useState(0);
-  const pageSize = 50;
-  const cycleHistoryPageSize = 10;
-  const [rewardStakers, setRewardStakers] = useState(rewards?.stakers ?? []);
-  const [rewardStakerTotal, setRewardStakerTotal] = useState(rewards?.totals.stakers ?? 0);
-  const [rewardRealizations, setRewardRealizations] = useState<RewardCalculationRealization[]>([]);
-  const [stakersLoading, setStakersLoading] = useState(true);
-  const [stakersError, setStakersError] = useState<string | null>(null);
-  const [stakersRetry, setStakersRetry] = useState(0);
-  const [activityLoading, setActivityLoading] = useState(true);
-  const [activityError, setActivityError] = useState<string | null>(null);
-  const [activityRetry, setActivityRetry] = useState(0);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyRetry, setHistoryRetry] = useState(0);
-  const stakersRefreshKey = `${data.generatedAt}:${stakersRetry}:${stakerSort.key}:${stakerSort.direction}`;
-  const activityRefreshKey = `${data.generatedAt}:${activityRetry}:${claimSort.key}:${claimSort.direction}:${withdrawalSort.key}:${withdrawalSort.direction}`;
-  const historyRefreshKey = `${data.generatedAt}:${historyRetry}:${historySort.key}:${historySort.direction}`;
-  const withdrawals = activity.withdrawals;
-  const nextCalculationEstimate =
-    calculation?.next?.state === "scheduled" && burnBlockTiming
-      ? compactDuration(calculation.next.blocksRemaining * burnBlockTiming.averageSeconds)
-      : null;
-  const buckets = useMemo(() => {
-    const values = [...(rewards?.buckets ?? [])];
-    return values.sort((left, right) => {
-      const value = (bucket: (typeof values)[number]) => {
-        switch (bucketSort.key) {
-          case "bucket":
-            return bucket.bondIndex === null ? -1 : Number(bucket.bondIndex);
-          case "shares":
-            return BigInt(bucket.managerSharesSats);
-          case "earned":
-            return BigInt(bucket.signerEarnedBeforeManagerClaimSats);
-          case "fee":
-            return bucket.feeSnapshotBips === null ? null : BigInt(bucket.feeSnapshotBips);
-          case "included":
-            return bucket.participating ? 1 : 0;
-        }
-      };
-      return compareSortValues(value(left), value(right), bucketSort.direction);
-    });
-  }, [bucketSort, rewards?.buckets]);
+
+  // Ledger: the page's single source for cycles, the pending distributions, their payments, fees.
   useEffect(() => {
-    void stakersRefreshKey;
+    void ledgerRetry;
+    void data.generatedAt;
     const controller = new AbortController();
-    let correctingPage = false;
-    const query = new URLSearchParams({
-      limit: String(pageSize),
-      offset: String(stakerPage * pageSize),
-      sort: stakerSort.key,
-      direction: stakerSort.direction,
-    });
-    setStakersLoading(true);
-    setStakersError(null);
-    void apiJson(token, `/api/v1/rewards?${query}`, rewardsPageResponseSchema, {
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        const total = result.rewards?.totals.stakers ?? 0;
-        const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-        setRewardsFreshness(result.freshness ?? null);
-        setRewardRealizations(result.rewardRealizations ?? []);
-        setRewardStakerTotal(total);
-        if (stakerPage > lastPage) {
-          correctingPage = true;
-          setStakerPage(lastPage);
-          return;
-        }
-        setRewardStakers(result.rewards?.stakers ?? []);
-      })
-      .catch((cause) => {
-        if (!controller.signal.aborted) {
-          setStakersError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
-        }
+    setLedgerLoading(true);
+    refreshLedger(controller.signal)
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted)
+          setLedgerError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
       })
       .finally(() => {
-        if (!controller.signal.aborted && !correctingPage) setStakersLoading(false);
+        if (!controller.signal.aborted) setLedgerLoading(false);
       });
-    return () => controller.abort();
-  }, [stakerPage, stakersRefreshKey, stakerSort, token]);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        refreshLedger(controller.signal).catch(() => undefined);
+      }
+    }, LEDGER_POLL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [data.generatedAt, ledgerRetry, refreshLedger]);
+
+  // Execution availability: gas wallet + engine mode.
   useEffect(() => {
-    void activityRefreshKey;
+    void data.generatedAt;
     const controller = new AbortController();
-    let correctingPage = false;
-    const query = new URLSearchParams({
-      claimLimit: String(pageSize),
-      claimOffset: String(claimPage * pageSize),
-      claimSort: claimSort.key,
-      claimDirection: claimSort.direction,
-      withdrawalLimit: String(pageSize),
-      withdrawalOffset: String(withdrawalPage * pageSize),
-      withdrawalSort: withdrawalSort.key,
-      withdrawalDirection: withdrawalSort.direction,
-    });
-    if (claimCycle) query.set("rewardCycle", claimCycle);
-    setActivityLoading(true);
-    setActivityError(null);
-    void apiJson(token, `/api/v1/rewards/activity?${query}`, rewardsActivityResponseSchema, {
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        const lastClaimPage = Math.max(0, Math.ceil(result.claimTotal / pageSize) - 1);
-        const lastWithdrawalPage = Math.max(0, Math.ceil(result.withdrawalTotal / pageSize) - 1);
-        if (claimPage > lastClaimPage || withdrawalPage > lastWithdrawalPage) {
-          correctingPage = true;
-          if (claimPage > lastClaimPage) setClaimPage(lastClaimPage);
-          if (withdrawalPage > lastWithdrawalPage) setWithdrawalPage(lastWithdrawalPage);
-          return;
-        }
-        setActivity(result);
+    void loadGasWalletStatus(token, controller.signal)
+      .then((status) => {
+        if (!controller.signal.aborted) setGasWallet(status);
       })
-      .catch((cause) => {
+      .catch(() => {
         if (!controller.signal.aborted) {
-          setActivityError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+          // Keep verified cache data; without any cache, preserve the existing fallback behavior.
+          setGasWallet((current) => (current === undefined ? null : current));
         }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && !correctingPage) setActivityLoading(false);
       });
-    return () => controller.abort();
-  }, [activityRefreshKey, claimCycle, claimPage, claimSort, token, withdrawalPage, withdrawalSort]);
-  useEffect(() => {
-    void historyRefreshKey;
-    const controller = new AbortController();
-    let correctingPage = false;
-    const query = new URLSearchParams({
-      limit: String(cycleHistoryPageSize),
-      offset: String(cycleHistoryPage * cycleHistoryPageSize),
-      sort: historySort.key,
-      direction: historySort.direction,
-    });
-    setHistoryLoading(true);
-    setHistoryError(null);
-    void apiJson(token, `/api/v1/rewards/history?${query}`, rewardHistoryResponseSchema, {
-      signal: controller.signal,
-    })
-      .then((result) => {
+    void loadEngineStatus(token, controller.signal)
+      .then((status) => {
         if (controller.signal.aborted) return;
-        const lastPage = Math.max(0, Math.ceil(result.total / cycleHistoryPageSize) - 1);
-        setCycleHistoryTotal(result.total);
-        if (cycleHistoryPage > lastPage) {
-          correctingPage = true;
-          setCycleHistoryPage(lastPage);
-          return;
-        }
-        setCycleHistory(result.items);
+        setEngineMode(
+          status ? (status.mode === "operator-run" ? "operator-run" : "observe") : "observe",
+        );
       })
-      .catch((cause) => {
-        if (!controller.signal.aborted) {
-          setHistoryError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && !correctingPage) setHistoryLoading(false);
+      .catch(() => {
+        if (!controller.signal.aborted) setEngineMode(null);
       });
     return () => controller.abort();
-  }, [cycleHistoryPage, historyRefreshKey, historySort, token]);
+  }, [token, data.generatedAt]);
+
+  // Projection accuracy + Bitcoin block timing for "left" / "in about …".
   useEffect(() => {
+    void data.generatedAt;
     const controller = new AbortController();
-    void apiJson(token, "/api/v1/health", healthSnapshotSchema, {
-      signal: controller.signal,
-    })
+    void apiJson(token, "/api/v1/health", healthSnapshotSchema, { signal: controller.signal })
       .then((result) => {
         if (!controller.signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
       })
       .catch(() => {
         if (!controller.signal.aborted) setBurnBlockTiming(null);
       });
+    void apiJson(token, "/api/v1/rewards?limit=1&offset=0", rewardsPageResponseSchema, {
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (!controller.signal.aborted) setRealizations(result.rewardRealizations ?? []);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setRealizations([]);
+      });
     return () => controller.abort();
-  }, [token]);
+  }, [token, data.generatedAt]);
+
+  // Active run discovery + polling (S3): a run started from Overview, another tab, or before a
+  // restart shows its progress here; terminal states refresh the ledger and leave a notice.
+  const activeRunRef = useRef<RewardRun | null>(null);
+  activeRunRef.current = activeRun;
+  const activeRunId = activeRun?.runId ?? null;
+  useEffect(() => {
+    const controller = new AbortController();
+    const tick = () => {
+      const current = activeRunRef.current;
+      const request = current
+        ? loadRewardRun(token, current.runId, controller.signal).then((run) => [run])
+        : listRewardRuns(token, 5, controller.signal);
+      request
+        .then((runs) => {
+          if (controller.signal.aborted) return;
+          setRunsUnavailable(false);
+          const inFlight = runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null;
+          if (inFlight) {
+            setActiveRun(inFlight);
+            return;
+          }
+          if (current) {
+            const finished = runs.find((run) => run.runId === current.runId) ?? null;
+            if (finished && !ACTIVE_RUN_STATUSES.has(finished.status)) {
+              setNotice(terminalRunNotice(finished));
+              refreshLedger().catch(() => undefined);
+            }
+            setActiveRun(null);
+          }
+        })
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
+          if (cause instanceof RewardRunsUnavailableError) setRunsUnavailable(true);
+        });
+    };
+    tick();
+    const interval = window.setInterval(
+      () => {
+        if (document.visibilityState === "visible") tick();
+      },
+      activeRunId ? RUN_POLL_MS : LEDGER_POLL_MS,
+    );
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [token, refreshLedger, activeRunId]);
+
+  const nextCalculationIn =
+    calculation?.next?.state === "scheduled" && burnBlockTiming
+      ? compactDuration(calculation.next.blocksRemaining * burnBlockTiming.averageSeconds)
+      : null;
+  const geometry = useMemo(() => deriveCycleGeometry(data), [data]);
+  const earning = useMemo(
+    () =>
+      ledger
+        ? deriveEarning({
+            ledger,
+            snapshot: data,
+            burnBlockSeconds: burnBlockTiming?.averageSeconds ?? null,
+          })
+        : null,
+    [ledger, data, burnBlockTiming],
+  );
+  const currentDistributionDetails = useMemo(() => {
+    if (!ledger || !earning || currentDistributionView === null) return null;
+    return (
+      ledger.cycles
+        .find((cycle) => cycle.cycle === earning.cycle)
+        ?.distributions.find(
+          (distribution) =>
+            distribution.distribution === currentDistributionView &&
+            distribution.status === "complete",
+        ) ?? null
+    );
+  }, [ledger, earning, currentDistributionView]);
+  useEffect(() => {
+    if (currentDistributionView !== null && currentDistributionDetails === null) {
+      setCurrentDistributionView(null);
+    }
+  }, [currentDistributionDetails, currentDistributionView]);
+  const closeCurrentDistributionDetails = useCallback(() => {
+    const distribution = currentDistributionView;
+    setCurrentDistributionView(null);
+    if (distribution !== null && earning) {
+      window.requestAnimationFrame(() =>
+        document
+          .getElementById(`rewards-view-distribution-${earning.cycle}-${distribution}`)
+          ?.focus(),
+      );
+    }
+  }, [currentDistributionView, earning]);
+  const paymentsByKey = useMemo(() => {
+    const map = new Map<string, readonly RewardLedgerPayment[]>();
+    for (const [key, rows] of Object.entries(cardPayments.byKey)) map.set(key, rows);
+    return map;
+  }, [cardPayments.byKey]);
+  const inProgressRun =
+    activeRun && IN_PROGRESS_RUN_STATUSES.has(activeRun.status) ? activeRun : null;
+  const cards = useMemo(
+    () =>
+      ledger
+        ? deriveDistributionCards({
+            ledger,
+            paymentsByKey,
+            gasWallet,
+            engineMode,
+            activeRun: inProgressRun,
+          })
+        : [],
+    [ledger, paymentsByKey, gasWallet, engineMode, inProgressRun],
+  );
+
+  // Payments per Distribute card. The ledger read carries the selected cycle's rows; every other
+  // card fetches its own distribution and refreshes whenever the ledger does. Targets come from the
+  // ledger alone so this effect never depends on the payments it stores.
+  const pendingTargets = useMemo(
+    () =>
+      ledger
+        ? pendingDistributions(ledger).map(({ cycle, distribution }) => ({
+            key: distributionKey(cycle.cycle, distribution.distribution),
+            cycle: cycle.cycle,
+            distribution: distribution.distribution,
+          }))
+        : [],
+    [ledger],
+  );
+  const seededStamp = useRef<string | null>(null);
+  const fetchedStamp = useRef<Record<string, string>>({});
+  const preparationPollRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!ledger) return;
+    if (seededStamp.current !== ledger.generatedAt) {
+      seededStamp.current = ledger.generatedAt;
+      const seeded: Record<string, RewardLedgerPayment[]> = {};
+      if (ledger.query.scope === "selection" && ledger.query.cycle !== null) {
+        const cycle = ledger.cycles.find((entry) => entry.cycle === ledger.query.cycle) ?? null;
+        const covered = (cycle?.distributions ?? [])
+          .map((d) => d.distribution)
+          .filter((d) => ledger.query.distribution === null || ledger.query.distribution === d);
+        for (const distribution of covered) {
+          const key = distributionKey(ledger.query.cycle, distribution);
+          seeded[key] = ledger.payments.filter(
+            (row) => row.cycle === ledger.query.cycle && row.distribution === distribution,
+          );
+          fetchedStamp.current[key] = ledger.generatedAt;
+        }
+      }
+      if (Object.keys(seeded).length > 0) {
+        setCardPayments((current) => ({ ...current, byKey: { ...current.byKey, ...seeded } }));
+      }
+    }
+    const controller = new AbortController();
+    for (const target of pendingTargets) {
+      if (fetchedStamp.current[target.key] === ledger.generatedAt) continue;
+      fetchedStamp.current[target.key] = ledger.generatedAt;
+      loadRewardLedger(
+        token,
+        { cycle: target.cycle, distribution: target.distribution },
+        controller.signal,
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setCardPayments((current) => ({
+            byKey: { ...current.byKey, [target.key]: result.payments },
+            errors: Object.fromEntries(
+              Object.entries(current.errors).filter(([key]) => key !== target.key),
+            ),
+          }));
+        })
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
+          delete fetchedStamp.current[target.key];
+          setCardPayments((current) => ({
+            ...current,
+            errors: { ...current.errors, [target.key]: operatorErrorSentence(cause) },
+          }));
+        });
+    }
+    return () => controller.abort();
+  }, [ledger, pendingTargets, token]);
+
+  const openConfirm = useCallback(
+    (action: RewardPrimaryAction) => {
+      preparationPollRef.current?.abort();
+      const controller = new AbortController();
+      preparationPollRef.current = controller;
+      setConfirm({ action, state: { status: "drafting" } });
+      const settle = (state: ConfirmState) =>
+        setConfirm((current) =>
+          !controller.signal.aborted && current?.action === action ? { action, state } : current,
+        );
+      listRewardRuns(token, 5, controller.signal)
+        .then(async (runs) => {
+          const draft = runs.find(
+            (run) =>
+              run.status === "awaiting-approval" &&
+              run.recipe.cycle === action.cycle &&
+              run.recipe.distribution === action.distribution,
+          );
+          if (draft) return { run: draft, reused: true };
+          let preparation = await prepareRewardRun(
+            token,
+            {
+              cycle: action.cycle,
+              distribution: action.distribution,
+              operations: action.operations,
+            },
+            controller.signal,
+          );
+          settle({ status: "preparing", preparation });
+          while (preparation.status === "queued" || preparation.status === "preparing") {
+            await waitForPoll(controller.signal);
+            preparation = await loadRewardRunPreparation(
+              token,
+              preparation.preparationId,
+              controller.signal,
+            );
+            settle({ status: "preparing", preparation });
+          }
+          if (preparation.status === "failed") {
+            throw new Error(preparation.failureReason ?? "Reward-run preparation failed");
+          }
+          if (!preparation.runId) throw new Error("Prepared reward run has no run ID");
+          const run = await loadRewardRun(token, preparation.runId, controller.signal);
+          return { run, reused: false };
+        })
+        .then(({ run, reused }) => settle({ status: "ready", run, reused }))
+        .catch((cause: unknown) => {
+          if (controller.signal.aborted) return;
+          settle(
+            cause instanceof RewardRunsUnavailableError
+              ? {
+                  status: "unavailable",
+                  reason: "This Sidekick build does not include the run engine.",
+                }
+              : { status: "error", message: operatorErrorSentence(cause) },
+          );
+        });
+    },
+    [token],
+  );
+
+  const closeConfirm = () => {
+    preparationPollRef.current?.abort();
+    preparationPollRef.current = null;
+    setConfirm(null);
+  };
+
+  useEffect(
+    () => () => {
+      preparationPollRef.current?.abort();
+    },
+    [],
+  );
+
+  // Overview hands over a pending run kind; open the same sheet once the ledger is here.
+  useEffect(() => {
+    if (!ledger || cards.length === 0) return;
+    const pending = sessionStorage.getItem(PENDING_RUN_STORAGE_KEY);
+    if (!pending) return;
+    sessionStorage.removeItem(PENDING_RUN_STORAGE_KEY);
+    const match =
+      cards.find((card) => card.primary?.kind === pending)?.primary ??
+      cards.find((card) => card.secondary?.action.kind === pending)?.secondary?.action ??
+      null;
+    if (match) openConfirm(match);
+  }, [ledger, cards, openConfirm]);
+
+  const go = (run: RewardRun) => {
+    setConfirm((current) =>
+      current ? { ...current, state: { status: "approving", run } } : current,
+    );
+    approveRewardRun(token, run.runId, run.recipeSha256)
+      .then((started) => {
+        setConfirm(null);
+        setActiveRun(started);
+        setNotice(null);
+      })
+      .catch((cause: unknown) =>
+        setConfirm((current) =>
+          current
+            ? { ...current, state: { status: "error", message: operatorErrorSentence(cause) } }
+            : current,
+        ),
+      );
+  };
+
+  const discardDraft = (run: RewardRun) => {
+    const action = confirm?.action;
+    cancelRewardRun(token, run.runId)
+      .then(() => {
+        if (action) openConfirm(action);
+      })
+      .catch((cause: unknown) =>
+        setConfirm((current) =>
+          current
+            ? { ...current, state: { status: "error", message: operatorErrorSentence(cause) } }
+            : current,
+        ),
+      );
+  };
+
+  const runControl = (runId: string, control: "pause" | "resume" | "cancel") => {
+    setRunControlBusy(control);
+    const operation =
+      control === "pause"
+        ? pauseRewardRun
+        : control === "resume"
+          ? resumeRewardRun
+          : cancelRewardRun;
+    operation(token, runId)
+      .then((run) => {
+        if (IN_PROGRESS_RUN_STATUSES.has(run.status)) setActiveRun(run);
+        else {
+          setActiveRun(null);
+          setNotice(terminalRunNotice(run));
+          refreshLedger().catch(() => undefined);
+        }
+      })
+      .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)))
+      .finally(() => setRunControlBusy(null));
+  };
+
+  const dismissBanner = (kind: "setup" | "low-balance") => {
+    dismissGasWalletBanner(token, kind)
+      .then((status) => setGasWallet(status))
+      .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)));
+  };
+  const createWallet = () => {
+    createGasWallet(token)
+      .then((status) => {
+        setGasWallet(status);
+        location.hash = settingsHash("gas-wallet");
+      })
+      .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)));
+  };
+
+  const useWallet = () => {
+    preparationPollRef.current?.abort();
+    preparationPollRef.current = null;
+    setConfirm(null);
+    setWalletPanelOpen(true);
+    window.requestAnimationFrame(() =>
+      walletPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  };
+
+  const loadDistributionPayments = useCallback(
+    async (cycle: number, distributionIndex: 1 | 2) =>
+      (await loadRewardLedger(token, { cycle, distribution: distributionIndex })).payments,
+    [token],
+  );
+
+  const exportPayments = (query: RewardLedgerQuery) => {
+    setExportBusy(true);
+    downloadRewardLedgerExport(token, "payments", "csv", query)
+      .catch((cause: unknown) => setNotice(operatorErrorSentence(cause)))
+      .finally(() => setExportBusy(false));
+  };
+
+  // Legacy manager fee actions (browser wallet) stay reachable from the fee ledger card.
+  const updateFees = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("update-fees"),
+    operatorStateStale,
+  );
+  const withdrawFees = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("withdraw-fees"),
+    operatorStateStale,
+  );
+  const sweepRefunds = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("sweep-fee-refunds"),
+    operatorStateStale,
+  );
+  const claimRewards = managerActionAvailability(
+    data,
+    rewardManagerCapabilityId("claim-rewards"),
+    operatorStateStale,
+  );
+  const feeActions = (
+    <>
+      <button
+        type="button"
+        className="btn btn-secondary sm reward-admin-action-primary"
+        disabled={!withdrawFees.available || BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n}
+        title={withdrawFees.available ? undefined : withdrawFees.reason}
+        onClick={() => {
+          location.hash = actionHash("withdraw-fees");
+        }}
+      >
+        <Coins /> Withdraw earned fees
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary sm reward-admin-action-secondary"
+        disabled={!updateFees.available}
+        title={updateFees.available ? undefined : updateFees.reason}
+        onClick={() => {
+          location.hash = actionHash("update-fees");
+        }}
+      >
+        <Percent /> Update manager fee
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary sm reward-admin-action-secondary"
+        disabled={!sweepRefunds.available}
+        title={sweepRefunds.available ? undefined : sweepRefunds.reason}
+        onClick={() => {
+          location.hash = actionHash("sweep-fee-refunds");
+        }}
+      >
+        Sweep fee refunds
+      </button>
+    </>
+  );
+
+  // Past cycles: strictly older than the accruing cycle, and not still in Distribute. A cycle with
+  // a distribution that needs the operator is listed there until it is finished.
+  const accruingCycle = earning?.cycle ?? ledger?.current.cycle ?? null;
+  const pendingCycles = new Set(cards.map((card) => card.cycle));
+  const pastCycles = (ledger?.cycles ?? []).filter(
+    (cycle) =>
+      (accruingCycle === null || cycle.cycle < accruingCycle) && !pendingCycles.has(cycle.cycle),
+  );
+  const currentCycleDistributions =
+    ledger?.cycles.find((cycle) => cycle.cycle === accruingCycle)?.distributions ?? [];
+  const completedCurrentDistributions = currentCycleDistributions.filter(
+    (distribution) => distribution.status === "complete",
+  );
+  const quietDistributionCopy =
+    completedCurrentDistributions.length > 0
+      ? "All available distributions have been completed."
+      : "Nothing to distribute right now — the next distribution appears here once the network calculates it.";
+  const leadCard = cards.find((card) => card.primary !== null) ?? cards[0] ?? null;
+  const anyAction = cards.some((card) => card.primary !== null || card.secondary !== null);
+  const walletFallback = leadCard?.execution.walletFallback ?? engineMode !== "operator-run";
+  const confirmCard = confirm
+    ? (cards.find(
+        (card) =>
+          card.cycle === confirm.action.cycle && card.distribution === confirm.action.distribution,
+      ) ?? null)
+    : null;
+
   return (
     <>
-      <PageHead
-        title="Rewards"
-        lede={`sBTC rewards and Bitcoin withdrawals for cycle ${rewards?.rewardCycle ?? data.preflight.cycle.currentId}.`}
-      />
-      {rewardsFreshness?.status === "stale" ? (
+      <PageHead title="Rewards" />
+      {data.freshness?.status === "stale" ? (
         <div className="callout callout-caution content-notice" role="status">
           Showing last known reward data while Sidekick refreshes chain data.
         </div>
       ) : null}
-      <div className="grid cols-2 reward-outlook domain-section-anchor" id="rewards-outlook">
-        <section className="card">
-          <div className="card-head">
-            <h2>Accrued so far</h2>
-            <Badge state={poolEstimate ? "info" : "neutral"}>
-              {poolEstimate ? "Current estimate" : "Unavailable"}
-            </Badge>
-          </div>
-          <p className="card-sub">Estimated allocation if the network calculation ran now.</p>
-          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
-            <span className="btc-value src src-chain">
-              {globalAccruedSats === null ? "Unavailable" : `${sbtc(globalAccruedSats)} sBTC`}
-            </span>
-          </StatLine>
-          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
-            {poolEstimate ? `${sbtc(poolEstimate.grossSats)} sBTC` : "Unavailable"}
-          </StatLine>
-          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
-            {operatorFeeEstimate ? `${sbtc(operatorFeeEstimate.sats)} sBTC` : "Unavailable"}
-          </StatLine>
-          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
-            {poolEstimate && operatorFeeEstimate
-              ? `${sbtc(subtractSats(poolEstimate.grossSats, operatorFeeEstimate.sats) ?? "0")} sBTC`
-              : "Unavailable"}
-          </StatLine>
-          {poolEstimate ? (
-            <StatLine label="Pool allocation — STX / Bitcoin bonds">
-              <span className="mono">
-                {sbtc(poolEstimate.stxSats)} / {sbtc(poolEstimate.bondSats)} sBTC
-              </span>
-            </StatLine>
-          ) : null}
-          <p className="tertiary balance-note">
-            {poolEstimate
-              ? "Contract-exact for the current accrued rewards, pool shares, and active Bitcoin bonds."
-              : poolEstimateUnavailableDetail(
-                  rewardOutlook?.poolEstimateUnavailableReason ?? "anchored-inputs-unavailable",
-                )}
-          </p>
-        </section>
-        <section className="card">
-          <div className="card-head">
-            <h2>Projected next allocation</h2>
-            <Badge state={rewardForecast ? "info" : "neutral"}>
-              {rewardForecast ? `${rewardForecast.confidence} confidence` : "Collecting data"}
-            </Badge>
-          </div>
-          <p className="card-sub">
-            {calculation?.next
-              ? calculation.next.state === "due"
-                ? `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}; calculation is eligible now.`
-                : `For cycle ${calculation.next.targetRewardCycle} ${calculation.next.targetCheckpoint}, in ${number(String(calculation.next.blocksRemaining))} Bitcoin blocks${nextCalculationEstimate ? ` · about ${nextCalculationEstimate}` : ""}.`
-              : "A valid anchored PoX-5 checkpoint is required."}
-          </p>
-          <StatLine label={<RewardTerm label="Network-wide rewards" help={rewardTerms.network} />}>
-            {rewardForecast ? `${sbtc(rewardForecast.globalSats.point)} sBTC` : "Unavailable"}
-          </StatLine>
-          <StatLine label={<RewardTerm label="Your pool — gross" help={rewardTerms.pool} />}>
-            {rewardForecast ? `${sbtc(rewardForecast.poolSats.point)} sBTC` : "Unavailable"}
-          </StatLine>
-          <StatLine label={<RewardTerm label="Operator fee estimate" help={rewardTerms.fee} />}>
-            {operatorFeeForecast ? `${sbtc(operatorFeeForecast.sats.point)} sBTC` : "Unavailable"}
-          </StatLine>
-          <StatLine label={<RewardTerm label="Net for your stakers" help={rewardTerms.net} />}>
-            {rewardForecast && operatorFeeForecast
-              ? `${sbtc(subtractSats(rewardForecast.poolSats.point, operatorFeeForecast.sats.point) ?? "0")} sBTC`
-              : "Unavailable"}
-          </StatLine>
-          {rewardForecast ? (
-            <>
-              <StatLine label="Pool projection range">
-                <span className="mono">
-                  {sbtc(rewardForecast.poolSats.low)}–{sbtc(rewardForecast.poolSats.high)} sBTC
-                </span>
-              </StatLine>
-              <p className="tertiary balance-note">
-                {rewardForecast.confidence === "calibrated"
-                  ? "Calibrated"
-                  : rewardForecast.confidence === "developing"
-                    ? "Developing"
-                    : "Low"}{" "}
-                confidence from {rewardForecast.sample.observations} observations across{" "}
-                {rewardForecast.sample.sampleBlocks} Bitcoin blocks. The range replays observed
-                global accrual rates through exact PoX-5 arithmetic using current shares.
-              </p>
-              {operatorFeeForecast ? (
-                <p className="tertiary balance-note">
-                  Operator fees apply the reviewed manager’s per-staker, per-bucket integer rounding
-                  across {operatorFeeForecast.inputs.stakers} stakers.
-                  {operatorFeeForecast.assumptions.includes("configured-fee-until-claim")
-                    ? " At least one cycle fee snapshot does not exist yet, so that bucket explicitly assumes the currently configured fee until the first manager claim pins it."
-                    : " Every bucket uses its authoritative cycle fee snapshot."}
-                </p>
-              ) : (
-                <p className="tertiary balance-note">
-                  Operator fee forecast omitted:{" "}
-                  {rewardOutlook?.operatorFeeForecastUnavailableReason ??
-                    "reviewed fee semantics are unavailable"}
-                  .
-                </p>
-              )}
-              <p className="tertiary balance-note">
-                Model revision {rewardCalibration?.modelRevision ?? 1} is{" "}
-                {rewardCalibration?.status ?? "collecting"} with{" "}
-                {rewardCalibration?.eligibleRealizations ?? 0} of{" "}
-                {rewardCalibration?.requirements.realizations ?? 6} eligible realized calculations.
-              </p>
-            </>
-          ) : (
-            <p className="tertiary balance-note">
-              {rewardForecastUnavailableDetail(
-                rewardOutlook?.forecastUnavailableReason ?? "forecast-inputs-unavailable",
-              )}
-            </p>
-          )}
-        </section>
-      </div>
-      <div className="card-standout pipeline-wrap">
-        <div className="pipeline">
-          <PipelineStage
-            done={calculation?.state === "completed" || calculation?.state === "ahead"}
-            title="Global calculated"
-            value={
-              calculation?.state === "pending"
-                ? "Not run yet"
-                : BigInt(lastRewardComputeBurnHeight ?? 0) === 0n
-                  ? "Waiting"
-                  : `Bitcoin block #${number(lastRewardComputeBurnHeight)}`
-            }
-            detail={
-              calculation?.state === "pending"
-                ? "nobody has called calculate-rewards"
-                : "last reward calculation"
-            }
-          />
-          <PipelineStage
-            done={BigInt(rewards?.global.signerEarnedAcrossBucketsSats ?? 0) === 0n}
-            title="Manager claimed"
-            value={`${sbtc(rewards?.global.signerEarnedAcrossBucketsSats)} sBTC`}
-            detail={
-              (rewards?.buckets.filter(({ bondIndex }) => bondIndex !== null).length ?? 0) > 0
-                ? "earned across all buckets"
-                : "currently earned"
-            }
-          />
-          <PipelineStage
-            done={(rewards?.totals.actionableClaims ?? 0) === 0}
-            title="Stakers paid"
-            value={`${activity.claimTotal} recorded`}
-            detail={`${rewards?.totals.actionableClaims ?? 0} ready for payout`}
-          />
-          <PipelineStage
-            done={activity.pendingWithdrawalTotal === 0}
-            title="Bitcoin withdrawals"
-            value={`${activity.withdrawalTotal - activity.pendingWithdrawalTotal} / ${activity.withdrawalTotal}`}
-            detail="completed requests"
-          />
-        </div>
-      </div>
-      {calculation?.state === "pending" ? (
-        <div
-          className={`callout ${calculationGrace?.state === "action-required" ? "callout-caution" : "callout-neutral"} balance-note`}
-          role="status"
-        >
-          <div className="body">
-            <strong>
-              {calculationActionAvailable
-                ? "Global reward calculation needs an operator."
-                : calculationNeedsAttention
-                  ? "Reward calculation needs current chain evidence."
-                  : "Awaiting permissionless reward calculation."}
-            </strong>{" "}
-            PoX-5 credits nothing for cycle {calculation.targetRewardCycle ?? "—"} until someone
-            calls <code>calculate-rewards</code> after Bitcoin block #
-            {number(String(calculation.expectedLastRewardComputeBurnHeight ?? 0))}.
-            {calculationGrace ? (
-              <span className="tertiary">
-                {" "}
-                Observed for {calculationGrace.elapsedMinutes} minutes and{" "}
-                {calculationGrace.canonicalStacksBlocks} canonical Stacks blocks.
-              </span>
-            ) : null}
-            {calculationNeedsAttention ? (
-              <span className="tertiary">
-                {" "}
-                Sidekick will not offer a transaction until the local snapshot and action witnesses
-                are current.
-              </span>
-            ) : null}
-            {calculationActionAvailable ? (
-              <div className="actions">
-                <a className="btn btn-primary sm" href={actionHash("calculate-rewards")}>
-                  Review calculation
-                </a>
-              </div>
-            ) : null}
-          </div>
+      {notice ? (
+        <div className="callout callout-neutral content-notice" role="status">
+          <div className="body">{notice}</div>
         </div>
       ) : null}
-      <StakerSettlementPanel calculationPending={calculation?.state === "pending"} token={token} />
-      {buckets.some(({ bondIndex }) => bondIndex !== null) ? (
-        <section className="card reward-buckets" aria-labelledby="reward-buckets">
-          <h2 id="reward-buckets">Reward buckets</h2>
-          <p className="tertiary">
-            PoX-5 keys rewards by bond period. A manager claim names every participating bucket in
-            one transaction, which is what pins the same fee across the pool.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <SortableHeader
-                  column="bucket"
-                  label="Bucket"
-                  setSort={setBucketSort}
-                  sort={bucketSort}
-                />
-                <SortableHeader
-                  column="shares"
-                  label="Manager shares"
-                  setSort={setBucketSort}
-                  sort={bucketSort}
-                />
-                <SortableHeader
-                  column="earned"
-                  label="Earned"
-                  setSort={setBucketSort}
-                  sort={bucketSort}
-                />
-                <SortableHeader
-                  column="fee"
-                  label="Fee snapshot"
-                  setSort={setBucketSort}
-                  sort={bucketSort}
-                />
-                <SortableHeader
-                  column="included"
-                  label="In next claim"
-                  setSort={setBucketSort}
-                  sort={bucketSort}
-                />
-              </tr>
-            </thead>
-            <tbody>
-              {buckets.map((bucket) => (
-                <tr key={bucket.bondIndex ?? "stx"}>
-                  <th scope="row">
-                    {bucket.bondIndex === null ? "STX-only" : `Bond period ${bucket.bondIndex}`}
-                  </th>
-                  <td>
-                    {bucket.bondIndex === null ? "—" : `${number(bucket.managerSharesSats)} sats`}
-                  </td>
-                  <td>{sbtc(bucket.signerEarnedBeforeManagerClaimSats)} sBTC</td>
-                  <td>
-                    {bucket.feeSnapshotBips === null ? (
-                      <Badge state="caution">Not pinned</Badge>
-                    ) : (
-                      `${bucket.feeSnapshotBips} bips`
-                    )}
-                  </td>
-                  <td>
-                    {bucket.participating ? (
-                      <Badge state="success">Included</Badge>
-                    ) : (
-                      <Badge state="neutral">Empty</Badge>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-      {!managerActionsAvailable ? (
-        <p className="tertiary balance-note" role="status">
-          <strong>Guided reward claims are unavailable.</strong> {rewardClaimsAvailability.reason}
-        </p>
-      ) : null}
-      {rewardClaimsAvailability.warning ? (
-        <p className="tertiary balance-note" role="status">
-          <strong>Unverified manager source.</strong> {rewardClaimsAvailability.warning}
-        </p>
-      ) : null}
-      <div className="grid cols-2 reward-ledger">
-        <div className="card domain-section-anchor" id="rewards-fees">
-          <div className="card-head">
-            <h2>Reward ledger</h2>
-          </div>
-          <StatLine label="Gross currently claimable">
-            <span className="btc-value src src-chain">{sbtc(rewards?.totals.grossSats)} sBTC</span>
-          </StatLine>
-          <StatLine label="Staker net">
-            <span className="mono">{sbtc(rewards?.totals.earnedSats)} sBTC</span>
-          </StatLine>
-          <StatLine label="Fee">
-            <span className="mono">{sbtc(rewards?.totals.feeSats)} sBTC</span>
-          </StatLine>
-          <StatLine label="Configured fee · current">
-            <span className="mono src src-chain">
-              {Number(rewards?.manager.configuredFeeBips ?? 0) / 100}%
-            </span>
-          </StatLine>
-          <StatLine label={`Effective fee · cycle ${rewards?.rewardCycle ?? "—"}`}>
-            <span className="mono src src-chain">
-              {rewards?.manager.feeSnapshotBips === null || !rewards
-                ? "Not recorded"
-                : `${Number(rewards.manager.feeSnapshotBips) / 100}%`}
-            </span>
-          </StatLine>
-          <p className="tertiary balance-note">A cycle’s fee is set by its first manager claim.</p>
-          <div className="reward-admin-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={!updateFeesAvailability.available}
-              title={updateFeesAvailability.available ? undefined : updateFeesAvailability.reason}
-              onClick={() => {
-                location.hash = actionHash("update-fees");
-              }}
-            >
-              <Percent /> Update manager fee
-            </button>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <h2>Balance &amp; liability</h2>
-          </div>
-          <StatLine label="Unclaimed staker rewards">
-            <span className="mono">{sbtc(rewards?.manager.unclaimedStakerRewardsSats)} sBTC</span>
-          </StatLine>
-          <StatLine label="Earned fees">
-            <span className="mono">{sbtc(rewards?.manager.earnedFeesSats)} sBTC</span>
-          </StatLine>
-          <StatLine label="Bitcoin withdrawal liability">
-            <span className="mono">{sbtc(rewards?.manager.withdrawalLiabilitySats)} sBTC</span>
-          </StatLine>
-          <p className="tertiary balance-note">
-            Pending Bitcoin withdrawals are shown separately and excluded from expected balance.
-          </p>
-          <div className="reward-admin-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={
-                !withdrawFeesAvailability.available ||
-                BigInt(rewards?.manager.earnedFeesSats ?? 0) === 0n
-              }
-              title={
-                withdrawFeesAvailability.available ? undefined : withdrawFeesAvailability.reason
-              }
-              onClick={() => {
-                location.hash = actionHash("withdraw-fees");
-              }}
-            >
-              <Coins /> Withdraw earned fees
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={!sweepFeeRefundsAvailability.available}
-              title={
-                sweepFeeRefundsAvailability.available
-                  ? undefined
-                  : sweepFeeRefundsAvailability.reason
-              }
-              onClick={() => {
-                location.hash = actionHash("sweep-fee-refunds");
-              }}
-            >
-              Sweep fee refunds
-            </button>
-          </div>
-        </div>
-      </div>
-      <div className="section-title">Realized calculations &amp; model accuracy</div>
-      <div className="tbl-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Cycle</th>
-              <th>Checkpoint</th>
-              <th className="right">Pool allocation</th>
-              <th className="right">Point error</th>
-              <th>Range result</th>
-              <th>Transaction</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rewardRealizations.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="tertiary">
-                  No node-verified reward calculations have closed a recorded forecast yet.
-                </td>
-              </tr>
-            ) : (
-              rewardRealizations.map((realization) => (
-                <tr key={`${realization.txId}:${realization.eventIndex}`}>
-                  <td className="mono">{realization.targetRewardCycle}</td>
-                  <td>
-                    {realization.targetCheckpoint === "first-half" ? "First half" : "Second half"}
-                  </td>
-                  <td className="right mono">
-                    {realization.poolSats === null
-                      ? "Unavailable"
-                      : `${sbtc(realization.poolSats)} sBTC`}
-                  </td>
-                  <td className="right mono">
-                    {realization.evaluation?.pointErrorBips === null || !realization.evaluation
-                      ? "—"
-                      : `${(Number(realization.evaluation.pointErrorBips) / 100).toFixed(1)}%`}
-                  </td>
-                  <td>
-                    {realization.evaluation ? (
-                      <Badge
-                        state={realization.evaluation.rangeContainsActual ? "success" : "caution"}
-                      >
-                        {realization.evaluation.rangeContainsActual
-                          ? "Inside range"
-                          : "Outside range"}
-                      </Badge>
-                    ) : (
-                      <Badge state="neutral">Not evaluated</Badge>
-                    )}
-                  </td>
-                  <td>
-                    <CopyableIdentifier
-                      value={realization.txId}
-                      display={short(realization.txId, 8, 5)}
-                      label="reward calculation transaction"
-                      className="mono"
-                    />
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-      <div className="section-title domain-section-anchor" id="rewards-history">
-        Reward cycle ledger
-      </div>
-      <RequestState
-        label="reward cycle history"
-        loading={historyLoading}
-        error={historyError}
-        retry={() => setHistoryRetry((value) => value + 1)}
+      <GasWalletBanners
+        gasWallet={gasWallet}
+        engineMode={engineMode}
+        neededTransactions={leadCard?.primary?.transactions ?? 0}
+        onCreate={createWallet}
+        onDismiss={dismissBanner}
+        onFundInstructions={() => {
+          location.hash = settingsHash("gas-wallet");
+        }}
       />
-      <div className="tbl-wrap" aria-busy={historyLoading}>
-        {!historyLoading && !historyError ? (
-          <>
-            <table>
-              <thead>
-                <tr>
-                  <SortableHeader
-                    column="cycle"
-                    label="Cycle"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    column="status"
-                    label="Status"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="stakers"
-                    label="Stakers"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="gross"
-                    label="Gross"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="net"
-                    label="Net"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="fee"
-                    label="Fee"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="configured-fee"
-                    label="Configured fee"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="effective-fee"
-                    label="Effective fee"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="actionable"
-                    label="Ready for payout"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                  <SortableHeader
-                    column="bitcoin-block"
-                    label="Observed Bitcoin block"
-                    setSort={(sort) => {
-                      setHistorySort(sort);
-                      setCycleHistoryPage(0);
-                    }}
-                    sort={historySort}
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {cycleHistory.map((cycle) => (
-                  <tr key={cycle.rewardCycle}>
-                    <td className="mono">{cycle.rewardCycle}</td>
-                    <td>
-                      <Badge state={cycle.status === "ready" ? "success" : "caution"}>
-                        {cycle.status}
-                      </Badge>
-                    </td>
-                    <td className="right mono">{number(cycle.stakerCount)}</td>
-                    <td className="right mono">{sbtc(cycle.grossSats)}</td>
-                    <td className="right mono">{sbtc(cycle.earnedSats)}</td>
-                    <td className="right mono">{sbtc(cycle.feeSats)}</td>
-                    <td className="right mono">
-                      {cycle.configuredFeeBips === null
-                        ? "—"
-                        : `${Number(cycle.configuredFeeBips) / 100}%`}
-                    </td>
-                    <td className="right mono">
-                      {cycle.feeSnapshotBips === null
-                        ? "Not recorded"
-                        : `${Number(cycle.feeSnapshotBips) / 100}%`}
-                    </td>
-                    <td className="right mono">{number(cycle.actionableClaims)}</td>
-                    <td className="mono">{number(cycle.observedBurnBlockHeight)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {cycleHistory.length === 0 ? (
-              <div className="empty-table">No reward cycle history yet</div>
-            ) : null}
-            <Pagination
-              page={cycleHistoryPage}
-              pageSize={cycleHistoryPageSize}
-              total={cycleHistoryTotal}
-              setPage={setCycleHistoryPage}
-            />
-          </>
-        ) : null}
-      </div>
-      <div className="section-title domain-section-anchor" id="rewards-claims">
-        Per-staker claims
-      </div>
-      <RequestState
-        label="per-staker rewards"
-        loading={stakersLoading}
-        error={stakersError}
-        retry={() => setStakersRetry((value) => value + 1)}
-      />
-      <div className="tbl-wrap" aria-busy={stakersLoading}>
-        {!stakersLoading && !stakersError ? (
-          <>
-            <table>
-              <thead>
-                <tr>
-                  <SortableHeader
-                    column="staker"
-                    label="Staker"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="gross"
-                    label="Gross"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="fee"
-                    label="Fee"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="net"
-                    label="Net"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                  <SortableHeader
-                    column="destination"
-                    label="Destination"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                  <SortableHeader
-                    column="status"
-                    label="Status"
-                    setSort={(sort) => {
-                      setStakerSort(sort);
-                      setStakerPage(0);
-                    }}
-                    sort={stakerSort}
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {rewardStakers.map((entry) => (
-                  <tr key={entry.stakerPrincipal}>
-                    <td>
-                      <CopyableIdentifier
-                        value={entry.stakerPrincipal}
-                        display={short(entry.stakerPrincipal, 8, 5)}
-                        label="staker principal"
-                        className="mono"
-                      />
-                    </td>
-                    <td className="right mono">{sbtc(entry.rewards.grossSats)}</td>
-                    <td className="right mono">{sbtc(entry.rewards.feeSats)}</td>
-                    <td className="right mono">{sbtc(entry.rewards.earnedSats)}</td>
-                    <td>
-                      <Badge state="neutral">
-                        {entry.payout.kind === "bitcoin-l1" ? "Bitcoin L1" : "Direct sBTC"}
-                      </Badge>
-                    </td>
-                    <td>
-                      <Badge state={entry.claimableByPolicy ? "info" : "neutral"}>
-                        {entry.claimableByPolicy ? "Claimable" : "No action"}
-                      </Badge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {rewardStakerTotal === 0 ? (
-              <div className="empty-table">No per-staker rewards for this cycle</div>
-            ) : null}
-            <Pagination
-              page={stakerPage}
-              pageSize={pageSize}
-              total={rewardStakerTotal}
-              setPage={setStakerPage}
-            />
-          </>
-        ) : null}
-      </div>
-      <div className="section-title split-title">
-        <span>Claim history</span>
-        <label className="cycle-filter">
-          <span>Reward cycle</span>
-          <select
-            value={claimCycle}
-            onChange={(event) => {
-              setClaimCycle(event.target.value);
-              setClaimPage(0);
-            }}
-          >
-            <option value="">All cycles</option>
-            {Array.from(
-              { length: Math.min(96, data.preflight.cycle.currentId + 1) },
-              (_, index) => data.preflight.cycle.currentId - index,
-            ).map((cycle) => (
-              <option key={cycle} value={cycle}>
-                {cycle}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <RequestState
-        label="claim and withdrawal history"
-        loading={activityLoading}
-        error={activityError}
-        retry={() => setActivityRetry((value) => value + 1)}
-      />
-      <div className="tbl-wrap" aria-busy={activityLoading}>
-        {!activityLoading && !activityError ? (
-          <>
-            <table>
-              <thead>
-                <tr>
-                  <SortableHeader
-                    column="cycle"
-                    label="Cycle"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                  <SortableHeader
-                    column="staker"
-                    label="Staker"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="amount"
-                    label="Amount"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                  <SortableHeader
-                    column="destination"
-                    label="Destination"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                  <SortableHeader
-                    column="block"
-                    label="Stacks block"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                  <SortableHeader
-                    column="transaction"
-                    label="Transaction"
-                    setSort={(sort) => {
-                      setClaimSort(sort);
-                      setClaimPage(0);
-                    }}
-                    sort={claimSort}
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {activity.claims.map((claim) => (
-                  <tr key={`${claim.txId}:${claim.eventIndex}`}>
-                    <td className="mono">{claim.rewardCycle}</td>
-                    <td>
-                      <CopyableIdentifier
-                        value={claim.stakerPrincipal}
-                        display={short(claim.stakerPrincipal)}
-                        label="staker principal"
-                        className="mono"
-                      />
-                    </td>
-                    <td className="right mono btc-value">{sbtc(claim.amountSats)}</td>
-                    <td>
-                      <Badge state="neutral">
-                        {claim.destination === "bitcoin-l1" ? "Bitcoin L1" : "Direct sBTC"}
-                      </Badge>
-                    </td>
-                    <td className="mono">{number(claim.blockHeight)}</td>
-                    <td>
-                      <CopyableIdentifier
-                        value={claim.txId}
-                        display={short(claim.txId)}
-                        label="transaction ID"
-                        className="mono"
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {activity.claims.length === 0 ? (
-              <div className="empty-table">No claims recorded for this cycle</div>
-            ) : null}
-            <Pagination
-              page={claimPage}
-              pageSize={pageSize}
-              total={activity.claimTotal}
-              setPage={setClaimPage}
-            />
-          </>
-        ) : null}
-      </div>
-      <div className="section-title domain-section-anchor" id="rewards-withdrawals">
-        Bitcoin withdrawal queue
-      </div>
-      {activityLoading || activityError ? (
-        <p className={activityError ? "field-error" : "muted"} role="status">
-          {activityLoading
-            ? "Refreshing the withdrawal queue…"
-            : "Withdrawal history is temporarily unavailable. Retry above."}
-        </p>
-      ) : null}
-      <div className="tbl-wrap" aria-busy={activityLoading}>
-        {!activityLoading && !activityError ? (
-          <>
-            <table>
-              <thead>
-                <tr>
-                  <SortableHeader
-                    column="request"
-                    label="Request ID"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                  <SortableHeader
-                    column="staker"
-                    label="Staker"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="amount"
-                    label="Amount"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                  <SortableHeader
-                    align="right"
-                    column="max-fee"
-                    label="Max fee"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                  <SortableHeader
-                    column="state"
-                    label="Manager state"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                  <SortableHeader
-                    column="block"
-                    label="Initiated at Stacks block"
-                    setSort={(sort) => {
-                      setWithdrawalSort(sort);
-                      setWithdrawalPage(0);
-                    }}
-                    sort={withdrawalSort}
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {withdrawals.map((entry) => (
-                  <tr key={entry.requestId}>
-                    <td className="mono">#{entry.requestId}</td>
-                    <td>
-                      <CopyableIdentifier
-                        value={entry.stakerPrincipal}
-                        display={short(entry.stakerPrincipal)}
-                        label="staker principal"
-                        className="mono"
-                      />
-                    </td>
-                    <td className="right mono btc-value">{sbtc(entry.amountSats)}</td>
-                    <td className="right mono">{sbtc(entry.maxFeeSats)}</td>
-                    <td>
-                      <Badge state={entry.state === "pending" ? "caution" : "success"}>
-                        {entry.state}
-                      </Badge>
-                    </td>
-                    <td className="mono">{number(entry.initiatedBlockHeight)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {withdrawals.length === 0 ? (
-              <div className="empty-table">No Bitcoin withdrawal requests found</div>
-            ) : null}
-            <Pagination
-              page={withdrawalPage}
-              pageSize={pageSize}
-              total={activity.withdrawalTotal}
-              setPage={setWithdrawalPage}
-            />
-          </>
-        ) : null}
-      </div>
-    </>
-  );
-}
-
-/**
- * What settling this cycle costs, before the operator signs anything.
- *
- * `claim-staker-rewards` settles one `(staker, reward-cycle, bond-index)` per call and has no batch
- * form, so the outstanding claim count is the transaction count. Discovery is its own request
- * because it reads per staker per bucket and must not ride the operator snapshot.
- */
-type StakerClaimsResponse = ReturnType<typeof stakerClaimsResponseSchema.parse>;
-
-/** Every reason mirrors a guard the wallet-intent preparation applies before building a call. */
-function blockedLabel(reason: string | null): string {
-  if (reason === "manager-has-not-claimed") return "Manager has not claimed this bucket";
-  if (reason === "l1-below-max-fee") return "Below withdrawal fee";
-  if (reason === "l1-below-dust-limit") return "Below withdrawal dust limit";
-  return "Nothing settled";
-}
-
-function StakerSettlementPanel({
-  calculationPending,
-  token,
-}: {
-  calculationPending: boolean;
-  token: string;
-}) {
-  const [pages, setPages] = useState<StakerClaimsResponse[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const latest = pages.at(-1) ?? null;
-  // Discovery is paged on purpose, so these are running totals over the stakers actually read.
-  // Presenting them as cycle totals would understate the work on any roster past one page.
-  const scanned = pages.reduce((total, page) => total + page.settlement.stakersScanned, 0);
-  const stakersTotal = latest?.page.stakersTotal ?? 0;
-  const transactionCount = pages.reduce(
-    (total, page) => total + page.settlement.transactionCount,
-    0,
-  );
-  const blockedClaims = pages.reduce((total, page) => total + page.settlement.blockedClaims, 0);
-  const totalNetSats = pages
-    .reduce((total, page) => total + BigInt(page.settlement.totalNetSats), 0n)
-    .toString();
-  const complete = latest !== null && latest.page.nextCursor === null;
-  const candidates = pages.flatMap(({ candidates: pageCandidates }) => pageCandidates);
-  // A zero-reward tuple is neither actionable nor a blocked obligation. Avoid rendering an
-  // O(stakers) table of those rows, while keeping every payable or genuinely blocked tuple visible.
-  const candidatesWithDetails = candidates.filter(
-    (candidate) => candidate.claimable || candidate.blockedReason !== "nothing-settled",
-  );
-
-  const load = (cursor: string | null): void => {
-    setLoading(true);
-    setError(null);
-    const query = cursor === null ? "" : `?offset=${cursor}`;
-    void apiJson(token, `/api/v1/rewards/staker-claims${query}`, stakerClaimsResponseSchema)
-      .then((value) => setPages((previous) => (cursor === null ? [value] : [...previous, value])))
-      .catch((cause: unknown) => setError(operatorErrorSentence(cause)))
-      .finally(() => setLoading(false));
-  };
-
-  return (
-    <section className="card reward-settlement" aria-labelledby="staker-settlement">
-      <h2 id="staker-settlement">Settle staker rewards</h2>
-      {calculationPending ? (
-        <p className="tertiary" role="status">
-          Staker rewards become available after the global calculation runs. Sidekick observes that
-          permissionless call and will list payable rewards once it is confirmed.
-        </p>
-      ) : (
+      {ledger && earning ? (
         <>
-          <p className="tertiary">
-            Each settleable staker and bucket is its own transaction; the reference manager offers
-            no way to combine them. Sidekick lists only the calls the manager would accept.
-          </p>
-          {latest ? (
-            <>
-              <div className="stat-row">
-                <StatLine label={complete ? "Transactions to sign" : "Transactions so far"}>
-                  {transactionCount}
-                </StatLine>
-                <StatLine label={complete ? "Total payout" : "Payout so far"}>
-                  {sbtc(totalNetSats)} sBTC
-                </StatLine>
-                <StatLine label="Owed but not sendable">{blockedClaims}</StatLine>
-                <StatLine label="Stakers scanned">
-                  {scanned} of {stakersTotal}
-                </StatLine>
-              </div>
-              {!complete ? (
-                <p className="tertiary" role="status">
-                  These are running totals for the {scanned} staker{scanned === 1 ? "" : "s"}{" "}
-                  scanned so far, not the whole cycle. Keep scanning to see what settling the pool
-                  costs.
-                </p>
-              ) : null}
-              {candidatesWithDetails.length > 0 ? (
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col">Staker</th>
-                      <th scope="col">Bucket</th>
-                      <th scope="col">Payout</th>
-                      <th scope="col">Route</th>
-                      <th scope="col">Status</th>
-                      <th scope="col">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {candidatesWithDetails.map((candidate) => (
-                      <tr key={`${candidate.stakerPrincipal}:${candidate.bondIndex ?? "stx"}`}>
-                        <td>
-                          <CopyableIdentifier
-                            value={candidate.stakerPrincipal}
-                            display={short(candidate.stakerPrincipal, 8, 5)}
-                            label="staker principal"
-                            className="mono"
-                          />
-                        </td>
-                        <td>
-                          {candidate.bondIndex === null
-                            ? "STX-only"
-                            : `Bond ${candidate.bondIndex}`}
-                        </td>
-                        <td className="mono">{sbtc(candidate.rewards.earnedSats)}</td>
-                        <td>
-                          {candidate.payout.kind === "bitcoin-l1" ? "Bitcoin L1" : "Direct sBTC"}
-                        </td>
-                        <td>
-                          {candidate.claimable ? (
-                            <Badge state="success">Ready</Badge>
-                          ) : (
-                            <Badge state="neutral">{blockedLabel(candidate.blockedReason)}</Badge>
-                          )}
-                        </td>
-                        <td>
-                          {candidate.claimable ? (
-                            <button
-                              type="button"
-                              className="btn btn-secondary sm"
-                              onClick={() => {
-                                location.hash = actionHash("claim-staker-rewards", {
-                                  kind: "staker-reward",
-                                  stakerPrincipal: candidate.stakerPrincipal,
-                                  rewardCycle: String(latest?.rewardCycle ?? 0),
-                                  bondIndex: candidate.bondIndex,
-                                });
-                              }}
-                            >
-                              Settle
-                            </button>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="empty-table">
-                  {complete
-                    ? "No staker rewards are settleable for this cycle"
-                    : `No payable or blocked rewards in the ${scanned} stakers scanned so far`}
-                </div>
-              )}
-            </>
-          ) : null}
-          <RequestState
-            label="settlement plan"
-            loading={loading}
-            error={error}
-            retry={() => load(latest?.page.nextCursor ?? null)}
+          <EarningCard
+            model={earning}
+            openDistribution={currentDistributionView}
+            onViewDistribution={(distribution) =>
+              setCurrentDistributionView((current) =>
+                current === distribution ? null : distribution,
+              )
+            }
           />
-          {!loading && !error && latest && !complete ? (
-            <button
-              type="button"
-              className="btn btn-secondary sm"
-              onClick={() => load(latest.page.nextCursor)}
-            >
-              Scan the next {latest.page.limit} stakers
-            </button>
-          ) : null}
-          {pages.length === 0 && !loading && !error ? (
-            <button type="button" className="btn btn-secondary sm" onClick={() => load(null)}>
-              Check what settling this cycle costs
-            </button>
+          {currentDistributionDetails ? (
+            <CurrentDistributionDetails
+              cycle={earning.cycle}
+              distribution={currentDistributionDetails}
+              refreshKey={ledger.generatedAt}
+              loadPayments={loadDistributionPayments}
+              onExport={exportPayments}
+              exportBusy={exportBusy}
+              onClose={closeCurrentDistributionDetails}
+            />
           ) : null}
         </>
+      ) : (
+        <RequestState
+          label="the reward ledger"
+          loading={ledgerLoading}
+          error={ledgerError}
+          retry={() => setLedgerRetry((value) => value + 1)}
+        />
       )}
-    </section>
+      {walletFallback && anyAction ? (
+        <div className="callout callout-neutral content-notice" role="status">
+          <div className="body">
+            <strong>Sign with your own wallet.</strong> {leadCard?.execution.reason}
+            <div className="actions">
+              {claimRewards.available &&
+              BigInt(rewards?.global.signerEarnedAcrossBucketsSats ?? 0) > 0n ? (
+                <a className="btn btn-secondary sm" href={actionHash("claim-rewards")}>
+                  Review manager collect
+                </a>
+              ) : null}
+              <button className="btn btn-secondary sm" type="button" onClick={useWallet}>
+                Distribute with your wallet
+              </button>
+              {engineMode === "operator-run" ? (
+                <a className="btn btn-tertiary sm" href={settingsHash("gas-wallet")}>
+                  Gas wallet settings
+                </a>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <ProjectionDetails
+        snapshot={data}
+        realizations={realizations}
+        nextCalculationIn={nextCalculationIn}
+      />
+      {ledger ? (
+        <>
+          <div className="section-title rw-pending-title domain-section-anchor" id="rewards-claims">
+            Distribute{" "}
+            <span className="hint">
+              {cards.length === 0
+                ? "nothing waiting"
+                : `${cards.length} waiting${cards.length > 1 ? " · oldest first" : ""}`}
+            </span>
+          </div>
+          {cards.length === 0 ? (
+            <div className="card rw-quiet" role="status">
+              {quietDistributionCopy}
+            </div>
+          ) : (
+            cards.map((card) => (
+              <DistributionCard
+                key={card.key}
+                model={card}
+                payments={cardPayments.byKey[card.key] ?? null}
+                paymentsError={cardPayments.errors[card.key] ?? null}
+                onAction={openConfirm}
+                onRunControl={runControl}
+                runControlBusy={runControlBusy}
+                busy={confirm !== null || runsUnavailable}
+              />
+            ))
+          )}
+          <div ref={walletPanelRef} id="rewards-withdrawals" className="domain-section-anchor">
+            {walletPanelOpen || walletFallback ? (
+              <details className="card rw-details" open={walletPanelOpen}>
+                <summary>
+                  Distribute with your wallet{" "}
+                  <span className="hint">sign each staker payment yourself</span>
+                </summary>
+                <div style={{ padding: "0 20px 20px" }}>
+                  <StakerSettlementPanel
+                    calculationPending={calculation?.state === "pending"}
+                    token={token}
+                  />
+                </div>
+              </details>
+            ) : null}
+          </div>
+          <PastCyclesLedger
+            cycles={pastCycles}
+            loadPayments={loadDistributionPayments}
+            onExport={exportPayments}
+            exportBusy={exportBusy}
+            geometry={geometry}
+            burnBlockSeconds={burnBlockTiming?.averageSeconds ?? null}
+          />
+          <RewardFeeLedger token={token} ledger={ledger} feeActions={feeActions} />
+        </>
+      ) : null}
+      {confirm ? (
+        <RewardConfirmSheet
+          action={confirm.action}
+          eyebrow={
+            confirmCard?.eyebrow ??
+            `Cycle ${confirm.action.cycle} · ${distributionName(confirm.action.distribution)}`
+          }
+          execution={
+            confirmCard?.execution ??
+            executionAvailability(gasWallet, engineMode, confirm.action.transactions)
+          }
+          state={confirm.state}
+          onCancel={closeConfirm}
+          onGo={go}
+          onDiscard={discardDraft}
+          onUseWallet={useWallet}
+        />
+      ) : null}
+    </>
   );
 }

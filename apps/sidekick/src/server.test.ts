@@ -3,19 +3,23 @@ import {
   type ConnectionAssessment,
   type DeploymentRequirements,
   overviewPageSchema,
+  type RewardRun,
+  type RewardRunPreparation,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import { GasWalletError } from "./gas-wallet.js";
 import { HealthSourceError } from "./health-http.js";
 import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
 import type { HealthObservation, SignerMetricValues } from "./health-monitoring-types.js";
 import { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.js";
-import { createServer, type TransactionEngineApiService } from "./server.js";
+import { createServer, type RewardRunApi, type TransactionEngineApiService } from "./server.js";
 import { SignerStakerAnchorError } from "./signer-staker-sync.js";
 import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
+import { RewardRunError } from "./transaction-engine/reward-run-service.js";
 import { WalletIntentError } from "./wallet-intent-service.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -2424,8 +2428,6 @@ describe("local API", () => {
         .fn()
         .mockResolvedValue({ schemaVersion: 1, items: [], nextCursor: null, total: 0 }),
       getJob: vi.fn().mockResolvedValue({ schemaVersion: 1, jobId }),
-      approve: vi.fn().mockResolvedValue({ created: true }),
-      invalidateApproval: vi.fn().mockResolvedValue({}),
       forceObserve: vi.fn().mockResolvedValue({}),
       disableAdapter: vi.fn().mockResolvedValue({}),
     } as unknown as TransactionEngineApiService;
@@ -2447,32 +2449,6 @@ describe("local API", () => {
 
     await server.inject({ method: "GET", url: `/api/v1/engine/jobs/${jobId}`, headers });
     expect(engine.getJob).toHaveBeenCalledWith(jobId);
-
-    const approval = {
-      decision: "approve",
-      intentSha256: hash,
-      policySha256: hash,
-      expiresAt: "2026-07-17T19:00:00.000Z",
-    };
-    await server.inject({
-      method: "POST",
-      url: `/api/v1/engine/jobs/${jobId}/approval`,
-      headers,
-      payload: approval,
-    });
-    expect(engine.approve).toHaveBeenCalledWith(jobId, approval, "local-operator");
-
-    await server.inject({
-      method: "POST",
-      url: `/api/v1/engine/jobs/${jobId}/approval/invalidate`,
-      headers,
-      payload: { decision: "invalidate", reason: "Facts changed" },
-    });
-    expect(engine.invalidateApproval).toHaveBeenCalledWith(
-      jobId,
-      { decision: "invalidate", reason: "Facts changed" },
-      "local-operator",
-    );
 
     await server.inject({
       method: "POST",
@@ -2497,17 +2473,17 @@ describe("local API", () => {
       "local-operator",
     );
 
+    // Single-job approvals are retired (ADR 0010): the route no longer exists.
     expect(
       (
         await server.inject({
           method: "POST",
           url: `/api/v1/engine/jobs/${jobId}/approval`,
           headers,
-          payload: { decision: "broadcast", transaction: "arbitrary" },
+          payload: { decision: "approve", intentSha256: hash, policySha256: hash },
         })
       ).statusCode,
-    ).toBe(400);
-    expect(engine.approve).toHaveBeenCalledTimes(1);
+    ).toBe(404);
   });
 
   it("reports an unavailable transaction engine without weakening the operator API", async () => {
@@ -2680,5 +2656,495 @@ describe("local API", () => {
       ).json(),
     ).toEqual({ revision: 3 });
     expect(service.updateSettings).toHaveBeenCalledWith(settingsBody);
+  });
+});
+
+describe("reward ledger routes", () => {
+  const ledger = {
+    schemaVersion: 1,
+    generatedAt: "2026-08-22T12:00:00.000Z",
+    managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+    network: "mainnet",
+    pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    anchor: null,
+    capabilityLevel: "reviewed-event-vocabulary",
+    monitoringStartedAt: null,
+    recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
+    evidenceWindow: { truncated: false, oldestRetainedBlockHeight: null, limit: 10_000 },
+    current: { cycle: 141, distribution: 2 },
+    cycles: [],
+    payments: [],
+    paymentsTruncated: false,
+    fees: {
+      feeBips: "500",
+      earnedIndexedSats: "0",
+      indexedPaymentCount: 0,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
+      balanceInManagerSats: null,
+      withdrawnDerivedSats: null,
+      refunds: [],
+    },
+    query: { cycle: 141, distribution: 2, staker: "SP1", scope: "selection" },
+  };
+
+  it("forwards the parsed query and serves sanitized CSV and JSON exports", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+      rewardLedger: vi.fn().mockResolvedValue(ledger),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const page = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger?cycle=141&distribution=2&staker=SP1",
+      headers,
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["cache-control"]).toBe("no-store");
+    expect(service.rewardLedger).toHaveBeenCalledWith({
+      cycle: 141,
+      distribution: 2,
+      staker: "SP1",
+      scope: "selection",
+    });
+
+    const csv = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/payments.csv?cycle=141",
+      headers,
+    });
+    expect(csv.statusCode).toBe(200);
+    expect(csv.headers["content-type"]).toContain("text/csv");
+    expect(csv.headers["content-disposition"]).toContain("signer-sidekick-reward-payments.csv");
+    expect(csv.headers["x-sidekick-history-complete"]).toBe("true");
+    expect(csv.body.split("\n")[0]).toContain("staker_entitlement_sats");
+
+    const fees = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/fees.json",
+      headers,
+    });
+    expect(fees.statusCode).toBe(200);
+    expect(fees.json()).toMatchObject({
+      fees: { earnedIndexedSats: "0" },
+      rows: expect.arrayContaining([
+        expect.objectContaining({ kind: "earned-indexed-total", amountSats: "0" }),
+      ]),
+    });
+
+    service.rewardLedger.mockResolvedValueOnce({
+      ...ledger,
+      fees: { ...ledger.fees, historyComplete: false },
+    });
+    const partial = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/payments.csv?scope=all",
+      headers,
+    });
+    expect(partial.statusCode).toBe(200);
+    expect(partial.headers["x-sidekick-history-complete"]).toBe("false");
+    expect(partial.headers["content-disposition"]).toContain(
+      "signer-sidekick-reward-payments-partial.csv",
+    );
+
+    const invalid = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger?distribution=3",
+      headers,
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: "invalid_reward_ledger_query" });
+  });
+});
+
+describe("reward run routes", () => {
+  const runId = "00000000-0000-4000-8000-000000000001";
+  const preparationId = "00000000-0000-4000-8000-000000000002";
+  const recipeSha256 = "ab".repeat(32);
+  const run = { runId, recipeSha256, status: "awaiting-approval" } as RewardRun;
+  const preparation = {
+    schemaVersion: 1,
+    preparationId,
+    status: "queued",
+    requestSha256: "cd".repeat(32),
+    request: { cycle: 141, distribution: 1, maxTransactions: 150 },
+    runId: null,
+    failureReason: null,
+    createdAt: "2026-08-22T12:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    updatedAt: "2026-08-22T12:00:00.000Z",
+  } satisfies RewardRunPreparation;
+
+  function api(): RewardRunApi {
+    return {
+      enqueuePreparation: vi.fn().mockReturnValue(preparation),
+      getPreparation: vi.fn().mockReturnValue(preparation),
+      approve: vi.fn().mockResolvedValue({ ...run, status: "approved" }),
+      pause: vi.fn().mockReturnValue({ ...run, status: "paused" }),
+      resume: vi.fn().mockReturnValue({ ...run, status: "running" }),
+      cancel: vi.fn().mockReturnValue({ ...run, status: "cancelled" }),
+      get: vi.fn().mockReturnValue(run),
+      list: vi.fn().mockReturnValue([run]),
+    };
+  }
+
+  it("exposes prepare, sealed approval, status, and lifecycle controls", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const rewardRuns = api();
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, rewardRuns, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const prepared = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers,
+      payload: { cycle: 141, distribution: 1, maxTransactions: 150 },
+    });
+    expect(prepared.statusCode).toBe(202);
+    expect(prepared.headers.location).toBe(`/api/v1/rewards/run-preparations/${preparationId}`);
+    expect(prepared.json()).toEqual(preparation);
+    expect(rewardRuns.enqueuePreparation).toHaveBeenCalledWith({
+      cycle: 141,
+      distribution: 1,
+      maxTransactions: 150,
+    });
+
+    const preparationStatus = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/run-preparations/${preparationId}`,
+      headers,
+    });
+    expect(preparationStatus.statusCode).toBe(200);
+    expect(preparationStatus.json()).toEqual(preparation);
+    expect(rewardRuns.getPreparation).toHaveBeenCalledWith(preparationId);
+
+    const approved = await server.inject({
+      method: "POST",
+      url: `/api/v1/rewards/runs/${runId}/approve`,
+      headers,
+      payload: { recipeSha256 },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(rewardRuns.approve).toHaveBeenCalledWith(runId, recipeSha256);
+
+    for (const action of ["pause", "resume", "cancel"] as const) {
+      const response = await server.inject({
+        method: "POST",
+        url: `/api/v1/rewards/runs/${runId}/${action}`,
+        headers,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(rewardRuns[action]).toHaveBeenCalledWith(runId);
+    }
+    const detail = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/runs/${runId}`,
+      headers,
+    });
+    expect(detail.statusCode).toBe(200);
+    const list = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/runs?limit=5",
+      headers,
+    });
+    expect(list.statusCode).toBe(200);
+    expect(rewardRuns.list).toHaveBeenCalledWith(5);
+  });
+
+  it("validates requests, applies CSRF protection, and maps run failures safely", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const rewardRuns = api();
+    vi.mocked(rewardRuns.get).mockImplementation(() => {
+      throw new RewardRunError("reward_run_not_found", "internal detail must not leak");
+    });
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, rewardRuns, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const invalid = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers,
+      payload: { cycle: -1, distribution: 3 },
+    });
+    expect(invalid.statusCode).toBe(400);
+    const crossSite = await server.inject({
+      method: "POST",
+      url: "/api/v1/rewards/runs",
+      headers: { ...headers, origin: "https://evil.example" },
+      payload: { cycle: 141, distribution: 1 },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    const missing = await server.inject({
+      method: "GET",
+      url: `/api/v1/rewards/runs/${runId}`,
+      headers,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "reward_run_not_found" });
+    expect(JSON.stringify(missing.json())).not.toContain("internal detail");
+  });
+});
+
+describe("gas wallet routes", () => {
+  const status = {
+    schemaVersion: 1,
+    generatedAt: "2026-08-22T12:00:00.000Z",
+    network: "testnet",
+    engineMode: "operator-run",
+    configured: true,
+    enabled: false,
+    source: "generated",
+    principal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+    publicKey: `02${"ab".repeat(32)}`,
+    secretFilePath: "/var/lib/sidekick/gas-wallet.key",
+    createdAt: "2026-08-22T12:00:00.000Z",
+    enabledAt: null,
+    signer: "disabled",
+    signerError: null,
+    balanceUstx: "2500000",
+    balanceObservedAt: "2026-08-22T12:00:00.000Z",
+    balanceError: null,
+    feeBasisUstx: "100000",
+    feeBasis: "fee-cap",
+    estimatedTransactions: 25,
+    refusal: {
+      checkedAt: "2026-08-22T12:00:00.000Z",
+      isManagerAdmin: false,
+      isSignerKey: false,
+      isContract: false,
+      refusalReason: null,
+    },
+    banners: { setupDismissedAt: null, lowBalanceDismissedUntil: null },
+    activeSweepId: null,
+    sweeps: [],
+  };
+  const sweep = {
+    sweepId: "00000000-0000-4000-8000-000000000001",
+    status: "planned",
+    walletPrincipal: "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5",
+    recipient: "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG",
+    amountUstx: "2499750",
+    feeUstx: "250",
+    nonce: "0",
+    balanceUstx: "2500000",
+    planSha256: "ab".repeat(32),
+    txid: null,
+    broadcastAmbiguous: false,
+    createdAt: "2026-08-22T12:00:00.000Z",
+    expiresAt: "2026-08-22T12:30:00.000Z",
+    approvedAt: null,
+    broadcastAt: null,
+    resolvedAt: null,
+    blockHeight: null,
+    failureReason: null,
+  };
+
+  it("serves status and lifecycle actions and maps wallet errors to stable codes", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const gasWallet = {
+      status: vi.fn().mockResolvedValue(status),
+      create: vi.fn().mockResolvedValue(status),
+      enable: vi.fn().mockRejectedValue(new GasWalletError("gas_wallet_refused", "refused")),
+      disable: vi.fn().mockResolvedValue(status),
+      dismissBanner: vi.fn().mockResolvedValue(status),
+      prepareSweep: vi.fn().mockResolvedValue(sweep),
+      approveSweep: vi
+        .fn()
+        .mockRejectedValue(new GasWalletError("gas_wallet_sweep_stale", "stale")),
+      cancelSweep: vi.fn().mockResolvedValue({ ...sweep, status: "cancelled" }),
+      refreshSweep: vi.fn().mockResolvedValue(sweep),
+    };
+    const server = createServer({ service, gasWallet, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const read = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.headers["cache-control"]).toBe("no-store");
+    expect(read.json()).toEqual(status);
+
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers,
+    });
+    expect(created.statusCode).toBe(200);
+    expect(gasWallet.create).toHaveBeenCalledTimes(1);
+
+    const refused = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/enable",
+      headers,
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(JSON.stringify(refused.json())).toContain("gas_wallet_refused");
+    expect(JSON.stringify(refused.json())).not.toContain('refused"}');
+
+    const disabled = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/disable",
+      headers,
+    });
+    expect(disabled.statusCode).toBe(200);
+
+    const badBanner = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/dismiss-banner",
+      headers,
+      payload: { kind: "nope" },
+    });
+    expect(badBanner.statusCode).toBe(400);
+    const dismissed = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/dismiss-banner",
+      headers,
+      payload: { kind: "setup" },
+    });
+    expect(dismissed.statusCode).toBe(200);
+    expect(gasWallet.dismissBanner).toHaveBeenCalledWith("setup");
+
+    const badRecipient = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep",
+      headers,
+      payload: { recipient: "" },
+    });
+    expect(badRecipient.statusCode).toBe(400);
+    const prepared = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep",
+      headers,
+      payload: { recipient: sweep.recipient },
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toEqual(sweep);
+    expect(gasWallet.prepareSweep).toHaveBeenCalledWith({ recipient: sweep.recipient });
+
+    const stale = await server.inject({
+      method: "POST",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}/approve`,
+      headers,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.stringify(stale.json())).toContain("gas_wallet_sweep_stale");
+    const badId = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/sweep/not-a-uuid/approve",
+      headers,
+    });
+    expect(badId.statusCode).toBe(400);
+    const cancelled = await server.inject({
+      method: "POST",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}/cancel`,
+      headers,
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ status: "cancelled" });
+    const refreshed = await server.inject({
+      method: "GET",
+      url: `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}`,
+      headers,
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.headers["cache-control"]).toBe("no-store");
+    expect(gasWallet.refreshSweep).toHaveBeenCalledWith(sweep.sweepId);
+  });
+
+  it("rejects cross-site browser mutations and accepts same-origin ones", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const gasWallet = {
+      status: vi.fn().mockResolvedValue(status),
+      create: vi.fn().mockResolvedValue(status),
+      enable: vi.fn().mockResolvedValue(status),
+      disable: vi.fn().mockResolvedValue(status),
+      dismissBanner: vi.fn().mockResolvedValue(status),
+      prepareSweep: vi.fn().mockResolvedValue(sweep),
+      approveSweep: vi.fn().mockResolvedValue(sweep),
+      cancelSweep: vi.fn().mockResolvedValue(sweep),
+      refreshSweep: vi.fn().mockResolvedValue(sweep),
+    };
+    const server = createServer({ service, gasWallet, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}`, host: "sidekick.local" };
+
+    const crossSite = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "https://evil.example" },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(JSON.stringify(crossSite.json())).toContain("cross_site_request_rejected");
+    const fetchMetadata = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/enable",
+      headers: { ...headers, "sec-fetch-site": "cross-site" },
+    });
+    expect(fetchMetadata.statusCode).toBe(403);
+    expect(gasWallet.create).not.toHaveBeenCalled();
+    expect(gasWallet.enable).not.toHaveBeenCalled();
+
+    const sameOrigin = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "http://sidekick.local", "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOrigin.statusCode).toBe(200);
+    const nonBrowser = await server.inject({
+      method: "POST",
+      url: "/api/v1/settings/gas-wallet/disable",
+      headers,
+    });
+    expect(nonBrowser.statusCode).toBe(200);
+    const crossSiteRead = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { ...headers, origin: "https://evil.example" },
+    });
+    expect(crossSiteRead.statusCode).toBe(200);
+  });
+
+  it("reports the feature as unavailable when no gas wallet service is wired", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-08-22T12:00:00.000Z" }),
+      synchronize: vi.fn().mockResolvedValue({}),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/v1/settings/gas-wallet",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(501);
+    expect(JSON.stringify(response.json())).toContain("gas_wallet_unavailable");
   });
 });

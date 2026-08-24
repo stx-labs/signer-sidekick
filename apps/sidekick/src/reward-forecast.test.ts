@@ -119,6 +119,40 @@ describe("reward run-rate forecast", () => {
     ).toEqual({ status: "unavailable", reason: "non-monotonic-accrual" });
   });
 
+  it("recovers from a decrease after a fresh monotonic window spans the evidence threshold", () => {
+    const current = sample(1_040, "3000");
+    const result = projectGlobalRewardRunRate({
+      observations: [
+        sample(1_010, "1000"),
+        sample(1_020, "3000"),
+        sample(1_030, "2000"),
+        sample(1_034, "2400"),
+      ],
+      current,
+      target,
+    });
+
+    expect(result).toMatchObject({
+      status: "available",
+      forecast: {
+        globalSats: {
+          // The point still uses the canonical cumulative amount since the calculation. Bounds
+          // use the fresh post-decrease intervals and include the cumulative point rate.
+          low: "7500",
+          point: "7500",
+          high: "9000",
+        },
+        sample: {
+          observations: 3,
+          firstObservedBurnHeight: 1_030,
+          lastObservedBurnHeight: 1_040,
+          sampleBlocks: 10,
+          elapsedBlocks: 40,
+        },
+      },
+    });
+  });
+
   it("collapses the range to the exact current accrual at the calculation checkpoint", () => {
     const checkpointTarget = { ...target, calculationBurnHeight: 1_030 };
     const current = sample(1_030, "3000", {

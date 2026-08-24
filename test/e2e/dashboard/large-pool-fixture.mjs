@@ -198,6 +198,7 @@ export const runtimeSettings = {
   },
   forecast: { horizonCycles: 6 },
   embed: { publicApiUrl: "https://pool.example/sidekick" },
+  engine: { minimumFeeUstx: 3000, standardFeeUstx: 10000, maximumFeeUstx: 100000 },
   audit: [
     { revision: 12, changedFields: ["pool.displayName"], changedAt: "2026-07-15T12:00:00.000Z" },
   ],
@@ -1130,6 +1131,7 @@ export const overview = {
     rewardCycleId: 140,
     estimatedNetworkRewardSats: "200000",
     estimatedPoolRewardSats: "150000",
+    distributionCheckpoint: "first-half",
     estimatedOperatorFeeSats: "7500",
     operatorFeeUnavailableReason: null,
     estimateKind: "checkpoint-forecast",
@@ -1143,6 +1145,461 @@ export const overview = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------------------------
+// Reward ledger (plan S1) and gas wallet (plan S2) fixtures for the Rewards page and Overview card.
+// Cycle 140 · First Distribution is calculated and ready to collect & distribute; cycles 128–139
+// are complete history.
+// ---------------------------------------------------------------------------------------------
+
+const ledgerStakers = roster.slice(0, 40).map(({ stakerPrincipal }) => stakerPrincipal);
+
+function ledgerTx(seed) {
+  return `0x${seed.toString(16).padStart(2, "0").repeat(32)}`;
+}
+
+function ledgerPayment(cycle, distribution, index, staker, status, overrides = {}) {
+  const gross = 245_900 - index * 3_100;
+  const fee = Math.floor(gross * 0.05);
+  const entitlement = gross - fee;
+  const bitcoin = index % 7 === 1;
+  const paid = status !== "outstanding";
+  return {
+    schemaVersion: 1,
+    cycle,
+    distribution,
+    bucket: "stx",
+    stakerPrincipal: staker,
+    route: bitcoin ? "bitcoin" : "sbtc",
+    grossRewardSats: String(gross),
+    operatorFeeSats: String(fee),
+    stakerEntitlementSats: String(entitlement),
+    payoutSats: bitcoin ? String(entitlement - 10_000) : String(entitlement),
+    payoutAsset: bitcoin ? "BTC" : "sBTC",
+    l1MaxFeeSats: bitcoin ? "10000" : null,
+    l1ActualFeeSats: null,
+    feeRefundSats: null,
+    returnedSats: null,
+    status,
+    coverage: "exact",
+    includesPriorDistribution: false,
+    paymentTxId: paid ? ledgerTx(0x30 + index) : null,
+    paymentBlockHeight: paid ? 3_000 + cycle * 10 + index : null,
+    paidAt: paid ? "2026-08-15T09:12:00.000Z" : null,
+    by: paid ? (index % 2 === 0 ? "you" : "another-caller") : null,
+    l1RequestId: bitcoin && paid ? String(4_100 + index) : null,
+    l1Status: bitcoin && paid ? "retired" : null,
+    settleOrReclaimTxId: null,
+    btcSweepTxId: null,
+    btcSweepBlockHeight: null,
+    unavailableReason: null,
+    l1Address: bitcoin ? "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" : null,
+    rollForward: null,
+    ...overrides,
+  };
+}
+
+function ledgerDistribution(cycle, distribution, status, stakers) {
+  const calculated = status !== "accruing";
+  const outstanding = status === "ready";
+  const payments = stakers.map((staker, index) =>
+    ledgerPayment(
+      cycle,
+      distribution,
+      index,
+      staker,
+      outstanding ? "outstanding" : index % 7 === 1 ? "retired" : "paid",
+    ),
+  );
+  const distributed = outstanding
+    ? 0n
+    : payments.reduce((sum, p) => sum + BigInt(p.stakerEntitlementSats), 0n);
+  const fees = outstanding ? 0n : payments.reduce((sum, p) => sum + BigInt(p.operatorFeeSats), 0n);
+  const outstandingSats = outstanding
+    ? payments.reduce((sum, p) => sum + BigInt(p.stakerEntitlementSats), 0n)
+    : 0n;
+  const pool = payments.reduce((sum, p) => sum + BigInt(p.grossRewardSats), 0n);
+  return {
+    payments,
+    distribution: {
+      schemaVersion: 1,
+      cycle,
+      distribution,
+      current: false,
+      calculation: calculated
+        ? {
+            state: "done",
+            txId: ledgerTx(0x10 + distribution),
+            blockHeight: 2_000 + cycle * 10,
+            calculationBurnHeight: 900_000 + cycle * 2_100,
+            observedAt: "2026-08-15T03:20:00.000Z",
+            poolSats: pool.toString(),
+            poolSatsUnavailableReason: null,
+            by: "another-caller",
+          }
+        : {
+            state: "waiting",
+            txId: null,
+            blockHeight: null,
+            calculationBurnHeight: null,
+            observedAt: null,
+            poolSats: null,
+            poolSatsUnavailableReason: null,
+            by: null,
+          },
+      collects:
+        outstanding || !calculated
+          ? []
+          : [
+              {
+                sats: pool.toString(),
+                stxSats: pool.toString(),
+                txId: ledgerTx(0x20 + distribution),
+                blockHeight: 2_100 + cycle * 10,
+                by: "you",
+              },
+            ],
+      collectedSats: outstanding || !calculated ? "0" : pool.toString(),
+      availableToCollectSats: outstanding ? pool.toString() : "0",
+      feeBips: "500",
+      feeEvidence: "locked",
+      payments: {
+        made: outstanding ? 0 : payments.length,
+        outstanding: outstanding ? payments.length : 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        sent: 0,
+        arrived: 0,
+        arriving: 0,
+        rejected: 0,
+        returned: 0,
+        distributedSats: distributed.toString(),
+        outstandingSats: outstandingSats.toString(),
+        operatorFeeSats: fees.toString(),
+      },
+      status,
+      statusDetail:
+        status === "ready"
+          ? "Calculated; collect and distribute"
+          : status === "complete"
+            ? "Complete"
+            : "Accruing",
+      coverage: "exact",
+    },
+  };
+}
+
+function ledgerCycle(cycle, statuses, stakers) {
+  const built = statuses.map((status, index) =>
+    ledgerDistribution(cycle, index + 1, status, stakers),
+  );
+  const distributions = built.map(({ distribution }) => distribution);
+  return {
+    payments: built.flatMap(({ payments }) => payments),
+    cycle: {
+      cycle,
+      feeBips: "500",
+      feeEvidence: "locked",
+      collectedSats: distributions.reduce((sum, d) => sum + BigInt(d.collectedSats), 0n).toString(),
+      distributedSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.distributedSats), 0n)
+        .toString(),
+      operatorFeeSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.operatorFeeSats), 0n)
+        .toString(),
+      outstandingSats: distributions
+        .reduce((sum, d) => sum + BigInt(d.payments.outstandingSats), 0n)
+        .toString(),
+      coverage: "exact",
+      distributions,
+    },
+  };
+}
+
+const ledgerCycles = [
+  ledgerCycle(140, ["ready"], ledgerStakers),
+  ...Array.from({ length: 12 }, (_, index) =>
+    ledgerCycle(139 - index, ["complete", "complete"], ledgerStakers),
+  ),
+];
+ledgerCycles[0].cycle.distributions[0].current = true;
+
+function rewardLedgerForCycles(url, cycles, current) {
+  const request = new URL(url);
+  const cycleText = request.searchParams.get("cycle");
+  const distributionText = request.searchParams.get("distribution");
+  const scope = request.searchParams.get("scope") === "all" ? "all" : "selection";
+  const selectedCycle = cycleText === null ? current.cycle : Number(cycleText);
+  const selectedDistribution =
+    distributionText === null
+      ? cycleText === null
+        ? current.distribution
+        : null
+      : Number(distributionText);
+  const payments =
+    scope === "all"
+      ? cycles.flatMap(({ payments: rows }) => rows)
+      : cycles
+          .filter(({ cycle }) => cycle.cycle === selectedCycle)
+          .flatMap(({ payments: rows }) => rows)
+          .filter(
+            (row) => selectedDistribution === null || row.distribution === selectedDistribution,
+          );
+  return {
+    schemaVersion: 1,
+    generatedAt: snapshot.generatedAt,
+    managerPrincipal: snapshot.managerPrincipal,
+    network: "testnet",
+    pox5ContractId: "ST000000000000000000002AMW42H.pox-5",
+    anchor: {
+      stacksTipHeight: 5_000,
+      burnBlockHeight: 905_000,
+      indexBlockHash: `0x${"11".repeat(32)}`,
+    },
+    capabilityLevel: "reviewed-event-vocabulary",
+    monitoringStartedAt: "2026-07-01T00:00:00.000Z",
+    recovery: { managerHistory: "complete", currentMemberHistory: "complete" },
+    evidenceWindow: { truncated: false, oldestRetainedBlockHeight: null, limit: 10_000 },
+    current,
+    cycles: cycles.map(({ cycle }) => cycle),
+    payments,
+    paymentsTruncated: false,
+    fees: {
+      feeBips: "500",
+      earnedIndexedSats: cycles
+        .reduce((sum, { cycle }) => sum + BigInt(cycle.operatorFeeSats), 0n)
+        .toString(),
+      indexedPaymentCount: 0,
+      unmatchedPaymentCount: 0,
+      historyComplete: true,
+      balanceInManagerSats: "504000",
+      withdrawnDerivedSats: "1100000",
+      refunds: [],
+    },
+    query: { cycle: selectedCycle, distribution: selectedDistribution, staker: null, scope },
+  };
+}
+
+export function rewardLedger(url) {
+  return rewardLedgerForCycles(url, ledgerCycles, { cycle: 140, distribution: 1 });
+}
+
+/** Current-cycle quiet state: the First Distribution is complete while the second half accrues. */
+export function completedFirstRewardLedger(url) {
+  const current = ledgerCycle(140, ["complete", "accruing"], ledgerStakers);
+  current.cycle.distributions[1].current = true;
+  return rewardLedgerForCycles(url, [current, ...ledgerCycles.slice(1)], {
+    cycle: 140,
+    distribution: 2,
+  });
+}
+
+export const gasWalletStatus = {
+  schemaVersion: 1,
+  generatedAt: snapshot.generatedAt,
+  network: "testnet",
+  engineMode: "observe",
+  configured: false,
+  enabled: false,
+  source: null,
+  principal: null,
+  publicKey: null,
+  secretFilePath: null,
+  createdAt: null,
+  enabledAt: null,
+  signer: "not-loaded",
+  signerError: null,
+  balanceUstx: null,
+  balanceObservedAt: null,
+  balanceError: null,
+  feeBasisUstx: "100000",
+  feeBasis: "fee-cap",
+  estimatedTransactions: null,
+  refusal: {
+    checkedAt: null,
+    isManagerAdmin: null,
+    isSignerKey: null,
+    isContract: false,
+    refusalReason: null,
+  },
+  banners: { setupDismissedAt: null, lowBalanceDismissedUntil: null },
+  activeSweepId: null,
+  sweeps: [],
+};
+
+export const gasWalletCreated = {
+  ...gasWalletStatus,
+  engineMode: "operator-run",
+  configured: true,
+  source: "generated",
+  principal: "ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7",
+  publicKey: `02${"ab".repeat(32)}`,
+  secretFilePath: "/var/lib/sidekick/gas-wallet.key",
+  createdAt: snapshot.generatedAt,
+  signer: "disabled",
+  balanceUstx: "12480000",
+  balanceObservedAt: snapshot.generatedAt,
+  estimatedTransactions: 124,
+  refusal: {
+    checkedAt: snapshot.generatedAt,
+    isManagerAdmin: false,
+    isSignerKey: false,
+    isContract: false,
+    refusalReason: null,
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
+// Reward runs (plan S3): a sealed recipe for cycle 140 · First Distribution (collect + payments).
+// Tests drive the lifecycle by overriding the run routes; the default list is empty.
+// ---------------------------------------------------------------------------------------------
+
+export function rewardRunFixture(status = "awaiting-approval", overrides = {}) {
+  const runId = "00000000-0000-4000-8000-00000000a001";
+  const current = ledgerCycles[0];
+  const payments = current.payments.filter((row) => row.distribution === 1);
+  const accounts = payments.map((row) => ({
+    accountKey: `${row.stakerPrincipal}:140:stx`,
+    stakerPrincipal: row.stakerPrincipal,
+    rewardCycle: 140,
+    bondIndex: null,
+    maximumGrossSats: row.grossRewardSats,
+    payoutRoute: row.route === "bitcoin" ? "bitcoin-l1" : "direct-sbtc",
+  }));
+  const collectSats = payments
+    .reduce((sum, row) => sum + BigInt(row.grossRewardSats), 0n)
+    .toString();
+  const recipeChildren = [
+    {
+      index: 0,
+      operation: "claim-rewards",
+      adapterId: "reference-manager-claim-rewards",
+      adapterRevision: 3,
+      accountKey: null,
+      requestId: null,
+      stakerPrincipal: null,
+      maximumAmountSats: collectSats,
+      withdrawalAmountSats: null,
+      maxFeeSats: null,
+    },
+    ...accounts.map((account, index) => ({
+      index: index + 1,
+      operation: "claim-staker-rewards",
+      adapterId: "reference-manager-claim-staker-rewards",
+      adapterRevision: 2,
+      accountKey: account.accountKey,
+      requestId: null,
+      stakerPrincipal: account.stakerPrincipal,
+      maximumAmountSats: account.maximumGrossSats,
+      withdrawalAmountSats: null,
+      maxFeeSats: null,
+    })),
+  ];
+  const completed =
+    overrides.completed ?? (status === "awaiting-approval" || status === "approved" ? 0 : 13);
+  const inFlight = overrides.inFlight ?? (status === "running" || status === "halted" ? 1 : 0);
+  const children = recipeChildren.map((child, index) => ({
+    index: child.index,
+    operation: child.operation,
+    accountKey: child.accountKey,
+    status:
+      index < completed
+        ? "confirmed"
+        : index === completed && inFlight > 0
+          ? "broadcast"
+          : "pending",
+    maximumAmountSats: child.maximumAmountSats,
+    materializedAmountSats: index < completed ? child.maximumAmountSats : null,
+    planSha256: index <= completed && status !== "awaiting-approval" ? "ab".repeat(32) : null,
+    txid:
+      index < completed || (index === completed && inFlight > 0)
+        ? `0x${(0x40 + index).toString(16).padStart(2, "0").repeat(32)}`
+        : null,
+    provenance: index < completed ? "you" : null,
+    failureReason: null,
+    updatedAt: snapshot.generatedAt,
+  }));
+  const started = status !== "awaiting-approval" && status !== "approved";
+  return {
+    schemaVersion: 1,
+    runId,
+    status,
+    walletPrincipal: gasWalletCreated.principal,
+    recipeSha256: "ef".repeat(32),
+    recipe: {
+      schemaVersion: 1,
+      runId,
+      prepareRequestSha256: "12".repeat(32),
+      walletPrincipal: gasWalletCreated.principal,
+      managerPrincipal: snapshot.managerPrincipal,
+      pox5Contract: "ST000000000000000000002AMW42H.pox-5",
+      sbtcTokenContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token",
+      sbtcRegistryContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-registry",
+      network: "testnet",
+      chainId: 0x8000_0005,
+      cycle: 140,
+      distribution: 1,
+      orderedOperations: ["claim-rewards", "claim-staker-rewards"],
+      accounts,
+      reviewedTotalSats: collectSats,
+      reviewedPaymentCount: accounts.length,
+      maxTransactions: 200,
+      eligibleTransactions: recipeChildren.length,
+      truncated: false,
+      remainingTransactions: 0,
+      feeCapUstx: "100000",
+      gasBudgetUstx: String(100_000 * recipeChildren.length),
+      managerSourceFingerprint: "34".repeat(32),
+      pox5SourceFingerprint: "56".repeat(32),
+      adapterRevisions: {
+        "reference-manager-claim-rewards": 3,
+        "reference-manager-claim-staker-rewards": 2,
+      },
+      children: recipeChildren,
+      preparedAnchor: {
+        stacksBlockHeight: 5_000,
+        burnBlockHeight: 905_000,
+        indexBlockHash: `0x${"ab".repeat(32)}`,
+      },
+    },
+    cursor: completed,
+    progress: { completed, total: recipeChildren.length, inFlight },
+    gasSpentUstx: String(2_000 * completed),
+    approvalExpiresAt: "2026-08-14T17:35:00.000Z",
+    runtimeExpiresAt: started ? "2026-08-14T23:05:00.000Z" : null,
+    approvedAt: status === "awaiting-approval" ? null : "2026-08-14T17:06:00.000Z",
+    startedAt: started ? "2026-08-14T17:06:10.000Z" : null,
+    completedAt: ["completed", "cancelled", "expired"].includes(status)
+      ? "2026-08-14T17:30:00.000Z"
+      : null,
+    failureReason: status === "halted" ? "Broadcast outcome is ambiguous" : null,
+    createdAt: "2026-08-14T17:05:00.000Z",
+    updatedAt: snapshot.generatedAt,
+    children,
+  };
+}
+
+export function rewardRunPreparationFixture(status = "queued") {
+  return {
+    schemaVersion: 1,
+    preparationId: "00000000-0000-4000-8000-00000000a002",
+    status,
+    requestSha256: "12".repeat(32),
+    request: {
+      requestId: "00000000-0000-4000-8000-00000000a002",
+      cycle: 140,
+      distribution: 1,
+      operations: ["claim-rewards", "claim-staker-rewards"],
+    },
+    runId: status === "ready" ? "00000000-0000-4000-8000-00000000a001" : null,
+    failureReason: status === "failed" ? "Fixture preparation failed" : null,
+    createdAt: "2026-08-14T17:04:00.000Z",
+    startedAt: status === "queued" ? null : "2026-08-14T17:04:01.000Z",
+    completedAt: status === "ready" || status === "failed" ? "2026-08-14T17:05:00.000Z" : null,
+    updatedAt: "2026-08-14T17:05:00.000Z",
+  };
+}
 
 export function responseFor(url) {
   const request = new URL(url);
@@ -1235,6 +1692,36 @@ export function responseFor(url) {
           blockedReason: null,
         },
       ],
+    };
+  }
+  if (request.pathname === "/api/v1/rewards/ledger") return rewardLedger(url);
+  if (request.pathname.startsWith("/api/v1/rewards/ledger/")) {
+    const ledger = rewardLedger(url);
+    if (request.pathname.endsWith("payments.json")) return ledger.payments;
+    if (request.pathname.endsWith("distributions.json"))
+      return ledger.cycles.flatMap((cycle) => cycle.distributions);
+    if (request.pathname.endsWith("fees.json")) return { fees: ledger.fees, rows: [] };
+    return {
+      fixtureStatus: 200,
+      fixtureContentType: "text/csv",
+      fixtureText: "cycle,distribution\n140,1\n",
+    };
+  }
+  if (request.pathname === "/api/v1/settings/gas-wallet") return gasWalletStatus;
+  if (request.pathname.startsWith("/api/v1/settings/gas-wallet/")) return gasWalletStatus;
+  if (request.pathname === "/api/v1/rewards/runs") return [];
+  if (request.pathname.startsWith("/api/v1/rewards/run-preparations/")) {
+    return {
+      fixtureStatus: 404,
+      error: "reward_run_not_found",
+      message: "Reward-run preparation does not exist",
+    };
+  }
+  if (request.pathname.startsWith("/api/v1/rewards/runs/")) {
+    return {
+      fixtureStatus: 404,
+      error: "reward_run_not_found",
+      message: "Reward run does not exist",
     };
   }
   if (request.pathname === "/api/v1/rewards/history") {

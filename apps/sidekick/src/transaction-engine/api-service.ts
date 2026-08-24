@@ -2,28 +2,22 @@ import { isDeepStrictEqual } from "node:util";
 import {
   type EngineAdapterStatus,
   type EngineApproval,
-  type EngineApprovalRequest,
-  type EngineApprovalResponse,
   type EngineApprovalReview,
   type EngineAttempt,
   type EngineDisableAdapterRequest,
   type EngineDisableAdapterResponse,
   type EngineForceObserveRequest,
   type EngineForceObserveResponse,
-  type EngineInvalidateApprovalRequest,
-  type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
   type EngineJobPage,
   type EngineJobState,
   type EngineJobSummary,
   type EngineReconciliation,
   type EngineStatus,
-  engineApprovalResponseSchema,
   engineApprovalReviewSchema,
   engineApprovalSchema,
   engineDisableAdapterResponseSchema,
   engineForceObserveResponseSchema,
-  engineInvalidateApprovalResponseSchema,
   engineJobDetailSchema,
   engineJobPageSchema,
   engineStatusSchema,
@@ -115,11 +109,9 @@ export class TransactionEngineApiServiceError extends Error {
 export interface RepositoryTransactionEngineApiServiceOptions {
   repository: TransactionEngineRepository;
   requestedMode: TransactionEngineMode;
-  maximumApprovalMinutes: number;
   finalityDepth: number;
   now?: () => Date;
   adapterAvailability?: () => { available: boolean; reason: string | null };
-  onApproved?: (jobId: string) => Promise<void>;
 }
 
 interface JobMaterial {
@@ -152,8 +144,7 @@ const observedBlockMessages: Readonly<Record<string, string>> = {
 const approvalRevalidationMessages: Readonly<Record<string, string>> = {
   "approval-binding-changed": "Approval no longer matches this job",
   "planned-anchor-noncanonical": "The approved chain anchor is no longer canonical",
-  "runtime-mode-changed":
-    "The runtime is no longer in Assist mode; restore Assist first if intended",
+  "runtime-mode-changed": "The retired execution mode changed",
   "network-identity-changed": "The configured network changed",
   "contract-identity-changed": "The PoX-5 or sBTC contract changed",
   "manager-identity-changed": "The manager identity or source changed",
@@ -163,16 +154,15 @@ const approvalRevalidationMessages: Readonly<Record<string, string>> = {
   "claim-amount-changed": "The claim amount or no-bond proof changed",
   "fee-snapshot-changed": "The manager fee changed",
   "rewards-paused": "PoX-5 rewards were paused after approval; wait until rewards resume",
-  "gas-payer-changed":
-    "The configured gas-payer identity changed; check Assist configuration first",
+  "gas-payer-changed": "The retired job's gas-payer identity changed",
   "gas-nonce-changed": "The gas-payer nonce changed after approval",
   "gas-balance-insufficient":
     "The gas-payer balance no longer covers the approved fee; fund the gas payer first",
-  "fee-policy-changed": "The Assist fee policy changed; review configuration first",
+  "fee-policy-changed": "The retired job's fee policy changed",
 };
 
 const newCurrentJobGuidance =
-  "Sync chain data to prepare a new current job, then review and approve it";
+  "This retired job is read-only; prepare a current operation from Rewards";
 
 function operatorJobBlockReason(value: string | null): string | null {
   const reason = boundedReason(value);
@@ -186,7 +176,7 @@ function operatorJobBlockReason(value: string | null): string | null {
   if (reason.startsWith("approval-revalidation:")) {
     const code = reason.slice("approval-revalidation:".length);
     if (code === "adapter-disabled") {
-      return "Assist or manager-claim transactions were disabled. This job cannot continue. If Assist becomes available later, sync chain data to prepare a new current job, then review and approve it";
+      return `The retired job's adapter was disabled. ${newCurrentJobGuidance}`;
     }
     const cause = approvalRevalidationMessages[code] ?? "The approved job failed revalidation";
     return boundedReason(`${cause}. ${newCurrentJobGuidance}`);
@@ -196,15 +186,15 @@ function operatorJobBlockReason(value: string | null): string | null {
     return `Approval changed before broadcast. ${newCurrentJobGuidance}`;
   }
   if (reason.startsWith("broadcast-rejected:")) {
-    return `Broadcast was rejected by the node. Review the rejection. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`;
+    return `Broadcast was rejected by the node. Review the rejection. ${newCurrentJobGuidance}`;
   }
   if (reason === "foreign-gas-payer-nonce-activity") {
-    return `Another transaction used the Assist gas-payer nonce. Resolve the nonce conflict. ${newCurrentJobGuidance}`;
+    return `Another transaction used the retired job's gas-payer nonce. ${newCurrentJobGuidance}`;
   }
   if (reason.startsWith("canonical-transaction-")) {
     const executionStatus = reason.slice("canonical-transaction-".length).replaceAll("_", " ");
     return boundedReason(
-      `The transaction failed on-chain: ${executionStatus}. Review the failure. If the claim is still needed, ${newCurrentJobGuidance.toLowerCase()}`,
+      `The transaction failed on-chain: ${executionStatus}. Review the failure. ${newCurrentJobGuidance}`,
     );
   }
   return reason;
@@ -228,21 +218,6 @@ function parseCursor(cursor: string): void {
   } catch {
     throw new TransactionEngineApiServiceError(400, "invalid_engine_cursor");
   }
-}
-
-function approvalDocument(
-  job: StoredTransactionJob,
-  request: EngineApprovalRequest,
-): ApprovalDocument {
-  return approvalDocumentSchema.parse({
-    schemaVersion: 1,
-    decision: "approve",
-    jobId: job.jobId,
-    intentSha256: request.intentSha256,
-    policySha256: request.policySha256,
-    attestationSha256: job.attestation.payloadSha256,
-    expiresAt: request.expiresAt,
-  });
 }
 
 function jobMaterial(job: StoredTransactionJob): JobMaterial {
@@ -430,27 +405,17 @@ function repositoryMutationConflict(error: unknown): never {
 export class RepositoryTransactionEngineApiService implements TransactionEngineApiService {
   readonly #repository: TransactionEngineRepository;
   readonly #requestedMode: TransactionEngineMode;
-  readonly #maximumApprovalMilliseconds: number;
   readonly #finalityDepth: number;
   readonly #clock: () => Date;
   readonly #adapterAvailability: () => { available: boolean; reason: string | null };
-  readonly #onApproved: ((jobId: string) => Promise<void>) | null;
 
   constructor(options: RepositoryTransactionEngineApiServiceOptions) {
     this.#repository = options.repository;
-    this.#requestedMode = z.enum(["observe", "assist"]).parse(options.requestedMode);
-    this.#maximumApprovalMilliseconds =
-      z
-        .number()
-        .int()
-        .min(1)
-        .max(24 * 60)
-        .parse(options.maximumApprovalMinutes) * 60_000;
+    this.#requestedMode = z.enum(["observe", "operator-run"]).parse(options.requestedMode);
     this.#finalityDepth = z.number().int().min(1).max(144).parse(options.finalityDepth);
     this.#clock = options.now ?? (() => new Date());
     this.#adapterAvailability =
       options.adapterAvailability ?? (() => ({ available: true, reason: null }));
-    this.#onApproved = options.onApproved ?? null;
   }
 
   #now(): Date {
@@ -560,13 +525,9 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
     };
   }
 
-  #approvalDeadline(job: StoredTransactionJob): string {
-    return new Date(Date.parse(job.updatedAt) + this.#maximumApprovalMilliseconds).toISOString();
-  }
-
   #approvalWindow(
     job: StoredTransactionJob,
-    material: JobMaterial,
+    _material: JobMaterial,
     approval: EngineApproval | null,
     now: Date,
   ): EngineJobDetail["approvalWindow"] {
@@ -575,7 +536,7 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         eligible: false,
         expiresAt: approval?.expiresAt ?? null,
         reason:
-          "This job is blocked. Resolve its block reason, then sync chain data to prepare a new current job, review, and approve it",
+          "This retired job is blocked and read-only; prepare a current operation from Rewards",
       };
     }
     if (approval !== null) {
@@ -597,46 +558,14 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
         reason: "This job is not awaiting approval",
       };
     }
-    if (material.policy.mode !== "assist" || !material.policy.approvalRequired) {
-      return {
-        eligible: false,
-        expiresAt: null,
-        reason: "This job does not require approval",
-      };
-    }
-    if (!material.policy.adapterEnabled) {
-      return { eligible: false, expiresAt: null, reason: "This transaction adapter is disabled" };
-    }
-    if (material.policy.rewardsPaused) {
-      return { eligible: false, expiresAt: null, reason: "Manager rewards are paused" };
-    }
-    const forced = this.#repository.getForceObserveControl();
-    if (forced !== null) {
-      return {
-        eligible: false,
-        expiresAt: null,
-        reason: "Assist is paused by emergency Observe mode",
-      };
-    }
-    if (this.#requestedMode !== "assist") {
-      return {
-        eligible: false,
-        expiresAt: null,
-        reason: "Assist is unavailable in Observe mode",
-      };
-    }
-    if (this.#repository.getDisabledAdapterControl(job.adapterId) !== null) {
-      return { eligible: false, expiresAt: null, reason: "This transaction adapter is disabled" };
-    }
-    const expiresAt = this.#approvalDeadline(job);
-    if (now.getTime() >= Date.parse(expiresAt)) {
-      return {
-        eligible: false,
-        expiresAt,
-        reason: `Approval window expired. ${newCurrentJobGuidance}`,
-      };
-    }
-    return { eligible: true, expiresAt, reason: null };
+    // Single-job Assist approvals are retired (ADR 0010): operator-run signs only inside sealed
+    // reward runs. Jobs that still await approval stay visible for review but never become
+    // eligible here.
+    return {
+      eligible: false,
+      expiresAt: null,
+      reason: "Single-job approvals are retired; run reward calls from Rewards",
+    };
   }
 
   #jobDetail(job: StoredTransactionJob, now: Date): EngineJobDetail {
@@ -685,155 +614,6 @@ export class RepositoryTransactionEngineApiService implements TransactionEngineA
   async getJob(jobId: string): Promise<EngineJobDetail | null> {
     const job = this.#repository.getLogicalJob(jobId);
     return job === null ? null : this.#jobDetail(job, this.#now());
-  }
-
-  #matchesApprovalRequest(
-    approval: StoredTransactionApproval,
-    request: EngineApprovalRequest,
-    actor: string,
-  ): boolean {
-    const document = parseStoredApprovalDocument(approval);
-    return (
-      approval.invalidatedAt === null &&
-      approval.actor === actor &&
-      document.intentSha256 === request.intentSha256 &&
-      document.policySha256 === request.policySha256 &&
-      document.expiresAt === request.expiresAt
-    );
-  }
-
-  async approve(
-    jobId: string,
-    request: EngineApprovalRequest,
-    actor: string,
-  ): Promise<EngineApprovalResponse> {
-    const job = this.#repository.getLogicalJob(jobId);
-    if (job === null) {
-      throw new TransactionEngineApiServiceError(404, "engine_job_not_found");
-    }
-    const material = jobMaterial(job);
-    if (request.intentSha256 !== job.intentSha256 || request.policySha256 !== job.policySha256) {
-      throw new TransactionEngineApiServiceError(409, "engine_approval_hash_mismatch");
-    }
-    z.string().min(1).max(500).parse(actor);
-    const existing = this.#repository.getLatestApproval(job.jobId);
-    if (existing !== null) {
-      if (this.#matchesApprovalRequest(existing, request, actor)) {
-        await this.#onApproved?.(job.jobId);
-        const currentJob = this.#repository.getLogicalJob(job.jobId);
-        assertStoredState(currentJob !== null);
-        return engineApprovalResponseSchema.parse({
-          approval: mapApproval(existing, currentJob, jobMaterial(currentJob)),
-          job: this.#jobDetail(currentJob, this.#now()),
-          created: false,
-        });
-      }
-      throw new TransactionEngineApiServiceError(409, "engine_approval_not_available");
-    }
-
-    const now = this.#now();
-    const window = this.#approvalWindow(job, material, null, now);
-    if (!window.eligible || window.expiresAt === null) {
-      throw new TransactionEngineApiServiceError(409, "engine_approval_not_available");
-    }
-    const requestedExpiry = Date.parse(request.expiresAt);
-    if (requestedExpiry <= now.getTime() || requestedExpiry > Date.parse(window.expiresAt)) {
-      throw new TransactionEngineApiServiceError(409, "engine_approval_expiry_invalid");
-    }
-    const document = approvalDocument(job, request);
-    let stored: StoredTransactionApproval;
-    let created: boolean;
-    try {
-      const result = this.#repository.createApproval({
-        jobId: job.jobId,
-        expectedJobStateVersion: job.stateVersion,
-        intentSha256: request.intentSha256,
-        policySha256: request.policySha256,
-        approval: document,
-        approvalSha256: transactionEngineDocumentSha256(document),
-        actor,
-        createdAt: now.toISOString(),
-        expiresAt: request.expiresAt,
-      });
-      stored = result.approval;
-      created = result.created;
-    } catch (error) {
-      if (
-        error instanceof TransactionEngineConflictError ||
-        error instanceof TransactionEngineCasError
-      ) {
-        const raced = this.#repository.getLatestApproval(job.jobId);
-        if (raced !== null && this.#matchesApprovalRequest(raced, request, actor)) {
-          stored = raced;
-          created = false;
-        } else {
-          repositoryMutationConflict(error);
-        }
-      } else {
-        throw error;
-      }
-    }
-    await this.#onApproved?.(job.jobId);
-    const currentJob = this.#repository.getLogicalJob(job.jobId);
-    assertStoredState(currentJob !== null);
-    return engineApprovalResponseSchema.parse({
-      approval: mapApproval(stored, currentJob, jobMaterial(currentJob)),
-      job: this.#jobDetail(currentJob, this.#now()),
-      created,
-    });
-  }
-
-  async invalidateApproval(
-    jobId: string,
-    request: EngineInvalidateApprovalRequest,
-    actor: string,
-  ): Promise<EngineInvalidateApprovalResponse> {
-    const job = this.#repository.getLogicalJob(jobId);
-    if (job === null) {
-      throw new TransactionEngineApiServiceError(404, "engine_job_not_found");
-    }
-    z.string().min(1).max(500).parse(actor);
-    const latest = this.#repository.getLatestApproval(job.jobId);
-    if (latest === null) {
-      throw new TransactionEngineApiServiceError(404, "engine_approval_not_found");
-    }
-    if (latest.invalidatedAt !== null) {
-      if (latest.invalidationReason !== request.reason) {
-        throw new TransactionEngineApiServiceError(409, "engine_approval_not_available");
-      }
-      return engineInvalidateApprovalResponseSchema.parse({
-        approval: mapApproval(latest, job, jobMaterial(job)),
-        job: this.#jobDetail(job, this.#now()),
-      });
-    }
-    let invalidated: StoredTransactionApproval;
-    try {
-      invalidated = this.#repository.invalidateApproval({
-        approvalId: latest.approvalId,
-        expectedApprovalVersion: latest.approvalVersion,
-        reason: request.reason,
-        invalidatedAt: this.#now().toISOString(),
-      });
-    } catch (error) {
-      if (error instanceof TransactionEngineCasError) {
-        const raced = this.#repository.getLatestApproval(job.jobId);
-        if (
-          raced !== null &&
-          raced.invalidatedAt !== null &&
-          raced.invalidationReason === request.reason
-        ) {
-          invalidated = raced;
-        } else {
-          repositoryMutationConflict(error);
-        }
-      } else {
-        repositoryMutationConflict(error);
-      }
-    }
-    return engineInvalidateApprovalResponseSchema.parse({
-      approval: mapApproval(invalidated, job, jobMaterial(job)),
-      job: this.#jobDetail(job, this.#now()),
-    });
   }
 
   async forceObserve(

@@ -445,13 +445,9 @@ function currentForecastCycle(snapshot: DashboardSnapshot) {
   );
 }
 
+/** Only a stale snapshot delays the projection: an indexed API that trails the node is normal. */
 function indexedProjectionDelayed(snapshot: DashboardSnapshot): boolean {
-  return (
-    snapshot.freshness?.status === "stale" ||
-    snapshot.preflight.api.position === "behind" ||
-    (snapshot.preflight.api.stacksTipLag ?? 0) > 0 ||
-    snapshot.preflight.api.burnBlockLag > 0
-  );
+  return snapshot.freshness?.status === "stale";
 }
 
 function nextForecastCycle(snapshot: DashboardSnapshot) {
@@ -576,6 +572,7 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       rewardCycleId: null,
       estimatedNetworkRewardSats: null,
       estimatedPoolRewardSats: null,
+      distributionCheckpoint: null,
       estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reward-outlook-unavailable",
       estimateKind: "unavailable",
@@ -591,6 +588,8 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
   const operatorFeeForecast = outlook?.operatorFeeForecast ?? null;
   const operatorFeeEstimate = outlook?.operatorFeeEstimate ?? null;
   const usesForecast = forecast !== null;
+  const checkpointPoolSats = forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null;
+  const targetCheckpoint = forecast?.targetCheckpoint ?? currentEstimate?.targetCheckpoint ?? null;
   const available = outlook !== null || rewards !== null;
   const rewardEvidence = evidence({
     status: !available
@@ -616,7 +615,8 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
     estimatedNetworkRewardSats:
       forecast?.globalSats.point ?? (currentEstimate ? outlook?.accrued.globalSats : null) ?? null,
-    estimatedPoolRewardSats: forecast?.poolSats.point ?? currentEstimate?.grossSats ?? null,
+    estimatedPoolRewardSats: checkpointPoolSats,
+    distributionCheckpoint: checkpointPoolSats === null ? null : targetCheckpoint,
     estimatedOperatorFeeSats: usesForecast
       ? (operatorFeeForecast?.sats.point ?? null)
       : (operatorFeeEstimate?.sats ?? null),
@@ -1260,12 +1260,12 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
         domain: "rewards",
         affectedDomains: ["rewards"],
         code: "reward-claims-due",
-        title: `${actionableClaims} staker reward settlement${actionableClaims === 1 ? " is" : "s are"} due`,
+        title: `${actionableClaims} STX-bucket reward settlement${actionableClaims === 1 ? " is" : "s are"} due`,
         summary: profileIssueBlocksClaim
           ? "An installed manager profile issue removed the reviewed claim capability."
           : canClaim
-            ? "Current reward and capability evidence supports discovering and reviewing the exact per-staker settlement calls."
-            : "Staker settlements are due, but the required current evidence or reviewed manager capability is unavailable.",
+            ? "The fast snapshot found payable STX-bucket rewards. Open the settlement plan to discover and review exact calls across every participating bucket."
+            : "The fast snapshot found payable STX-bucket rewards, but the required current evidence or reviewed manager capability is unavailable.",
         impact: "The accrued rewards remain unclaimed until the operator reviews this work.",
         updatedAt,
         evidence: [localEvidence],

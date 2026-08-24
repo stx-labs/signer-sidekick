@@ -610,9 +610,10 @@ describe("Overview projection", () => {
     expect(result.signer.status).toBe("healthy");
     expect(result.attention).toEqual([]);
     expect(result.pool.participants).toEqual({ stxOnly: 1, bitcoinBond: 1 });
+    // An indexed API that trails the local node is normal indexing lag, not delayed evidence.
     expect(result.pool.evidence).toMatchObject([
       { source: "local-node", status: "current" },
-      { source: "indexed-api", status: "delayed" },
+      { source: "indexed-api", status: "current" },
     ]);
     expect(result.rewards.evidence[0]).toMatchObject({ source: "local-node", status: "current" });
     expect(result.cycle.nextRewardCalculation).toMatchObject({
@@ -775,6 +776,7 @@ describe("Overview projection", () => {
       status: "ready",
       estimatedNetworkRewardSats: "3000",
       estimatedPoolRewardSats: "600",
+      distributionCheckpoint: "first-half",
       estimateKind: "checkpoint-forecast",
       confidence: "developing",
       estimatedOperatorFeeSats: null,
@@ -808,6 +810,7 @@ describe("Overview projection", () => {
     ).toMatchObject({
       estimatedNetworkRewardSats: "2500",
       estimatedPoolRewardSats: "500",
+      distributionCheckpoint: "first-half",
       estimateKind: "if-calculated-now",
       confidence: "contract-exact",
       estimatedOperatorFeeSats: null,
@@ -837,6 +840,18 @@ describe("Overview projection", () => {
       operatorFeeUnavailableReason: null,
     });
     expect(() => overviewPageSchema.parse(currentEstimate)).not.toThrow();
+
+    outlook.poolEstimate.targetCheckpoint = "second-half";
+    const secondHalf = projectOverview({
+      snapshot: { ...value, rewardOutlook: outlook },
+      health: health(),
+      connection: null,
+    });
+    expect(secondHalf.rewards).toMatchObject({
+      estimatedPoolRewardSats: "500",
+      distributionCheckpoint: "second-half",
+    });
+    expect(() => overviewPageSchema.parse(secondHalf)).not.toThrow();
   });
 
   it("suppresses derived safe-mode noise but retains ambiguity and Activity coverage warnings", () => {

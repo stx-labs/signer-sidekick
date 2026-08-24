@@ -253,6 +253,7 @@ describe("Overview V1 contracts", () => {
         rewardCycleId: 141,
         estimatedNetworkRewardSats: "200000",
         estimatedPoolRewardSats: "150000",
+        distributionCheckpoint: "first-half" as const,
         estimatedOperatorFeeSats: "7500",
         operatorFeeUnavailableReason: null,
         estimateKind: "checkpoint-forecast" as const,
@@ -299,6 +300,12 @@ describe("Overview V1 contracts", () => {
       overviewPageSchema.safeParse({
         ...fixture,
         rewards: { ...fixture.rewards, confidence: "contract-exact" },
+      }).success,
+    ).toBe(false);
+    expect(
+      overviewPageSchema.safeParse({
+        ...fixture,
+        rewards: { ...fixture.rewards, distributionCheckpoint: null },
       }).success,
     ).toBe(false);
     expect(
@@ -857,7 +864,7 @@ describe("browser-wallet intent contracts", () => {
     ).toBe(false);
   });
 
-  it("binds reward claims to one existing engine job", () => {
+  it("accepts a fresh manual reward claim or binds a legacy claim to one engine job", () => {
     const request = {
       action: "claim-rewards",
       actorPrincipal: actor,
@@ -868,6 +875,13 @@ describe("browser-wallet intent contracts", () => {
       browserWalletIntentCreateRequestSchema.safeParse({
         action: "claim-rewards",
         actorPrincipal: actor,
+      }).success,
+    ).toBe(true);
+    expect(
+      browserWalletIntentCreateRequestSchema.safeParse({
+        action: "claim-rewards",
+        actorPrincipal: actor,
+        jobId: "not-a-job-id",
       }).success,
     ).toBe(false);
 

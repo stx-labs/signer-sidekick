@@ -1,5 +1,12 @@
 import { deserializeTransaction, txidFromBytes } from "@stacks/transactions";
-import type { SignedManagerClaimRewardsTransaction } from "./gas-payer-signer.js";
+import type {
+  SignedGasWalletSweepTransaction,
+  SignedRewardOperationTransaction,
+} from "./gas-payer-signer.js";
+
+export type BroadcastableSignedTransaction =
+  | SignedGasWalletSweepTransaction
+  | SignedRewardOperationTransaction;
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -142,10 +149,12 @@ function successTxid(body: string): `0x${string}` | null {
 }
 
 function validateSignedAttempt(
-  attempt: SignedManagerClaimRewardsTransaction,
+  attempt: BroadcastableSignedTransaction,
 ): { bytes: Uint8Array; txid: `0x${string}` } | null {
   try {
-    if (attempt.kind !== "signed-manager-claim-rewards") return null;
+    if (attempt.kind !== "signed-gas-wallet-sweep" && attempt.kind !== "signed-reward-operation") {
+      return null;
+    }
     const txid = canonicalTxid(attempt.precomputedTxid);
     const bytes = attempt.signedTransactionBytes;
     if (!txid || bytes.length === 0) return null;
@@ -204,9 +213,7 @@ export class NoRetryTransactionBroadcaster {
     this.#fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async broadcast(
-    attempt: SignedManagerClaimRewardsTransaction,
-  ): Promise<TransactionBroadcastResult> {
+  async broadcast(attempt: BroadcastableSignedTransaction): Promise<TransactionBroadcastResult> {
     const validated = validateSignedAttempt(attempt);
     const attemptedTxid = canonicalTxid(attempt.precomputedTxid);
     if (!validated) {

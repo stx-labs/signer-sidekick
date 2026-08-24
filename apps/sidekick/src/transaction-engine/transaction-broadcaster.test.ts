@@ -1,9 +1,9 @@
 import { makeSTXTokenTransfer } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
-import type { SignedManagerClaimRewardsTransaction } from "./gas-payer-signer.js";
+import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import { NoRetryTransactionBroadcaster } from "./transaction-broadcaster.js";
 
-async function signedAttempt(): Promise<SignedManagerClaimRewardsTransaction> {
+async function signedAttempt(): Promise<SignedRewardOperationTransaction> {
   const transaction = await makeSTXTokenTransfer({
     recipient: "ST000000000000000000002AMW42H",
     amount: 1n,
@@ -14,8 +14,9 @@ async function signedAttempt(): Promise<SignedManagerClaimRewardsTransaction> {
   });
   const bytes = transaction.serializeBytes();
   return {
-    kind: "signed-manager-claim-rewards",
-    intentHash: "ab".repeat(32),
+    kind: "signed-reward-operation",
+    operationKind: "claim-staker-rewards",
+    planSha256: "ab".repeat(32),
     unsignedTransactionSha256: "cd".repeat(32),
     precomputedTxid: `0x${transaction.txid()}`,
     nonce: "7",
@@ -26,7 +27,7 @@ async function signedAttempt(): Promise<SignedManagerClaimRewardsTransaction> {
     toJSON() {
       return {};
     },
-  } as unknown as SignedManagerClaimRewardsTransaction;
+  } as unknown as SignedRewardOperationTransaction;
 }
 
 describe("NoRetryTransactionBroadcaster", () => {
@@ -211,7 +212,7 @@ describe("NoRetryTransactionBroadcaster", () => {
     const tampered = {
       ...attempt,
       signedTransactionBytes: tamperedBytes,
-    } as unknown as SignedManagerClaimRewardsTransaction;
+    } as unknown as SignedRewardOperationTransaction;
 
     await expect(
       new NoRetryTransactionBroadcaster({

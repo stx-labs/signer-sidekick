@@ -1,4 +1,4 @@
-import { Check, ShieldCheck, Warning } from "@phosphor-icons/react";
+import { Check, Warning } from "@phosphor-icons/react";
 import type { EngineJobDetail } from "@stx-labs/signer-sidekick-api-contracts";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { Badge, StatLine } from "../../shared/dashboard-ui.js";
@@ -24,24 +24,11 @@ function ReviewHash({ name, value }: { name: string; value: string }) {
 export function EngineJobReview({
   job,
   actionsEnabled,
-  action,
-  onApprove,
-  onInvalidate,
 }: {
   job: EngineJobDetail;
   actionsEnabled: boolean;
-  action: "approve" | "invalidate" | null;
-  onApprove: () => void;
-  onInvalidate: () => void;
 }) {
   const { review } = job;
-  const canApprove =
-    actionsEnabled &&
-    job.state === "awaiting_approval" &&
-    job.approvalWindow.eligible &&
-    job.approval === null;
-  const canInvalidate =
-    actionsEnabled && job.approval !== null && job.approval.invalidatedAt === null;
 
   return (
     <section className="engine-job-detail" aria-label="Transaction job detail">
@@ -249,29 +236,6 @@ export function EngineJobReview({
                 : "This job is not currently eligible for approval.")}
           </p>
         )}
-        <div className="engine-approval-actions">
-          {canApprove ? (
-            <button
-              type="button"
-              className="btn btn-accent"
-              disabled={action !== null}
-              onClick={onApprove}
-            >
-              <ShieldCheck />{" "}
-              {action === "approve" ? "Approving transaction" : "Approve transaction"}
-            </button>
-          ) : null}
-          {canInvalidate ? (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={action !== null}
-              onClick={onInvalidate}
-            >
-              <Warning /> {action === "invalidate" ? "Invalidating" : "Invalidate approval"}
-            </button>
-          ) : null}
-        </div>
       </div>
 
       <div className="engine-review-grid">

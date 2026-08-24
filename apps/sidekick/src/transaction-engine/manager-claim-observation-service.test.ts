@@ -1,42 +1,22 @@
-import { generateKeyPairSync, sign } from "node:crypto";
-import { falseCV, getAddressFromPublicKey, privateKeyToPublic, trueCV } from "@stacks/transactions";
-import {
-  type CompatibilityAttestationPayload,
-  compatibilityAttestationPayloadSha256,
-  compatibilityAttestationSigningBytes,
-  type SignedCompatibilityAttestation,
-  type VerifiedCompatibilityAttestation,
-} from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
-import {
-  MAINNET_4_0_1_COMPATIBILITY,
-  POX5_TESTNET_COMPATIBILITY,
-} from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
-import type { NetworkCompatibilityProfile } from "@stx-labs/signer-sidekick-protocol/network-compatibility";
+import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
 import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
 import type { StxRewardStatus } from "../reward-status.js";
+import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import {
-  openSidekickStore,
-  type SidekickStore,
-  type SignerStakerRun,
-  type StoredSignerStaker,
-} from "../storage/store.js";
+  legacyClaimManager,
+  legacyManagerClaimFacts,
+  seedLegacyManagerClaimJob,
+} from "./legacy-manager-claim.fixture.js";
 import {
-  type ManagerClaimApprovalRevalidationInput,
-  type ManagerClaimEvidenceStore,
   type ManagerClaimObservationInput,
   ManagerClaimObservationService,
 } from "./manager-claim-observation-service.js";
-import { transactionEngineDocumentSha256 } from "./repository.js";
 
 const observedAt = "2026-07-17T12:00:00.000Z";
-const manager = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager";
-const staker = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
-const sourceId = "api:testnet:complete";
-const publicKey = privateKeyToPublic(`${"11".repeat(32)}01`);
-const gasPayer = getAddressFromPublicKey(publicKey, "testnet");
-const attestationKeys = generateKeyPairSync("ed25519");
+const manager = legacyClaimManager;
+const runId = "1f53f216-71c3-4b72-865d-53e81a426bc8";
 const stores: SidekickStore[] = [];
 
 const anchor: ChainAnchor = {
@@ -51,113 +31,39 @@ const anchor: ChainAnchor = {
   checkpoint: "second-half",
 };
 
-const run: SignerStakerRun = {
-  runId: "1f53f216-71c3-4b72-865d-53e81a426bc8",
-  sourceId,
-  managerPrincipal: manager,
-  status: "completed",
-  authoritative: true,
-  reconciliationComplete: true,
-  chainAnchor: anchor,
-  cursor: null,
-  pagesProcessed: 1,
-  itemsProcessed: 1,
-  startedAt: observedAt,
-  updatedAt: observedAt,
-  completedAt: observedAt,
-};
-
-function roster(overrides: Partial<StoredSignerStaker> = {}): StoredSignerStaker {
-  return {
-    managerPrincipal: manager,
-    stakerPrincipal: staker,
-    hasStx: true,
-    hasBtc: false,
-    stxNodeVerified: true,
-    active: true,
-    sourceId,
-    verificationSourceId: "node:testnet:local",
-    lastSeenRunId: run.runId,
-    firstSeenAt: observedAt,
-    lastSeenAt: observedAt,
-    position: null,
-    ...overrides,
-  };
-}
-
-function evidenceStore(
-  runValue: SignerStakerRun | null = run,
-  rosterValue: StoredSignerStaker[] = [roster()],
-): ManagerClaimEvidenceStore {
-  return {
-    getLatestCompletedSignerStakerRun: vi.fn().mockReturnValue(runValue),
-    listSignerStakers: vi.fn().mockReturnValue(rosterValue),
-  };
-}
-
-function payload(
-  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
-): CompatibilityAttestationPayload {
-  return {
-    schemaVersion: 1,
-    issuer: "stacks-labs",
-    revision: 1,
-    issuedAt: "2026-07-17T00:00:00.000Z",
-    notBefore: "2026-07-17T00:00:00.000Z",
-    expiresAt: "2026-07-18T00:00:00.000Z",
-    profile,
-  };
-}
-
-function signedAttestation(
-  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
-): SignedCompatibilityAttestation {
-  const value = payload(profile);
-  return {
-    schemaVersion: 1,
-    algorithm: "ed25519",
-    keyId: "release-a",
-    payload: value,
-    signature: sign(
-      null,
-      compatibilityAttestationSigningBytes(value),
-      attestationKeys.privateKey,
-    ).toString("base64"),
-  };
-}
-
-async function memoryStore(
-  profile: NetworkCompatibilityProfile = POX5_TESTNET_COMPATIBILITY,
-): Promise<{
-  store: SidekickStore;
-  attestation: VerifiedCompatibilityAttestation;
-}> {
-  const { store } = await openSidekickStore(":memory:", observedAt);
-  stores.push(store);
-  const document = signedAttestation(profile);
-  const digest = compatibilityAttestationPayloadSha256(document.payload);
-  const acceptedState = {
-    issuer: document.payload.issuer,
-    revision: document.payload.revision,
-    payloadSha256: digest,
-    verifiedAt: observedAt,
-  };
-  await store.transactionEngine.accept({ acceptedState, document, acceptedAt: observedAt }, null);
-  return {
-    store,
-    attestation: {
-      document,
-      profile: document.payload.profile,
-      payloadSha256: digest,
-      verifiedAt: observedAt,
-      acceptedState,
-    },
-  };
-}
-
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
 });
+
+async function memoryStore(): Promise<SidekickStore> {
+  const { store } = await openSidekickStore(":memory:", observedAt);
+  stores.push(store);
+  return store;
+}
+
+/** The durable legacy job this service may still reconcile, planned from the same testnet facts. */
+async function seedPlannedJob(store: SidekickStore) {
+  return await seedLegacyManagerClaimJob(store, {
+    state: "preflighted",
+    facts: legacyManagerClaimFacts({
+      network: { kind: "testnet", chainId: POX5_TESTNET_COMPATIBILITY.networkId },
+      manager: {
+        contract: manager,
+        profile: {
+          id: POX5_TESTNET_COMPATIBILITY.referenceManager.profileId,
+          recognitionTier: "reference-render",
+          sourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+        },
+        observedSourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+      },
+      contracts: {
+        pox5: POX5_TESTNET_COMPATIBILITY.pox5.contractId,
+        sbtcToken: POX5_TESTNET_COMPATIBILITY.sbtc.tokenContract,
+      },
+    }),
+  });
+}
 
 function setup(): OperatorAnchorSnapshot {
   return {
@@ -193,29 +99,6 @@ function setup(): OperatorAnchorSnapshot {
   } as unknown as OperatorAnchorSnapshot;
 }
 
-function rewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
-  const base = baseRewards(overrides);
-  if (base.buckets.length > 0) return base;
-  // Derive the STX bucket from `global` so the many tests that override the earned amount stay
-  // internally consistent. Shares stay at zero so participation tracks earnings alone, which keeps
-  // an unclaimed-but-empty cycle idle rather than bucket-idle.
-  const stxEarned = base.global.signerEarnedBeforeManagerClaimSats;
-  return {
-    ...base,
-    global: { ...base.global, signerEarnedAcrossBucketsSats: stxEarned },
-    buckets: [
-      {
-        bondIndex: null,
-        managerSharesSats: "0",
-        signerEarnedBeforeManagerClaimSats: stxEarned,
-        rewardsPerToken: base.global.rewardsPerToken,
-        feeSnapshotBips: base.manager.feeSnapshotBips,
-        participating: stxEarned !== "0",
-      },
-    ],
-  };
-}
-
 function baseRewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
   return {
     status: "ready",
@@ -227,7 +110,7 @@ function baseRewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus 
       burnBlockHeight: anchor.burnBlockHeight,
       stacksTipHeight: anchor.stacksBlockHeight,
     },
-    ingestion: { runId: run.runId, completedAt: observedAt },
+    ingestion: { runId, completedAt: observedAt },
     global: {
       lastRewardComputeBurnHeight: "4099",
       lastComputedRewardCycle: String(anchor.rewardCycle),
@@ -260,68 +143,42 @@ function baseRewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus 
     },
     stakers: [],
     ...overrides,
-  };
+  } as unknown as StxRewardStatus;
 }
 
-function reader(overrides: Record<string, unknown> = {}) {
+function rewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus {
+  const base = baseRewards(overrides);
+  if (base.buckets.length > 0) return base;
+  // Derive the STX bucket from `global` so the tests that override the earned amount stay
+  // internally consistent. Shares stay at zero so participation tracks earnings alone.
+  const stxEarned = base.global.signerEarnedBeforeManagerClaimSats;
   return {
-    readAnchoredAccount: vi.fn().mockResolvedValue({
-      status: "observed",
-      httpStatus: 200,
-      value: {
-        principal: gasPayer,
-        indexBlockHash: anchor.indexBlockHash,
-        balanceUstx: 10_000n,
-        lockedUstx: 0n,
-        unlockHeight: 0n,
-        nonce: 7n,
+    ...base,
+    global: { ...base.global, signerEarnedAcrossBucketsSats: stxEarned },
+    buckets: [
+      {
+        bondIndex: null,
+        managerSharesSats: "0",
+        signerEarnedBeforeManagerClaimSats: stxEarned,
+        rewardsPerToken: base.global.rewardsPerToken,
+        feeSnapshotBips: base.manager.feeSnapshotBips,
+        participating: stxEarned !== "0",
       },
-    }),
-    estimateUnsignedTransactionFee: vi.fn().mockResolvedValue({
-      status: "observed",
-      httpStatus: 200,
-      value: {
-        estimates: {
-          low: { feeRate: 1, feeUstx: 800n },
-          middle: { feeRate: 2, feeUstx: 1_000n },
-          high: { feeRate: 3, feeUstx: 1_200n },
-        },
-      },
-    }),
-    ...overrides,
-  };
+    ],
+  } as StxRewardStatus;
 }
 
-function input(attestation: VerifiedCompatibilityAttestation): ManagerClaimObservationInput {
-  return {
-    setup: setup(),
-    rewards: rewards(),
-    sourceId,
-    requestedMode: "observe",
-    gasPayer: { principal: gasPayer, publicKey },
-    maximumFeeUstx: 2_000n,
-    attestation,
-    observedAt,
-  };
+function input(): ManagerClaimObservationInput {
+  return { setup: setup(), rewards: rewards(), observedAt };
 }
 
-function service(
-  store: SidekickStore,
-  projection: ManagerClaimEvidenceStore = evidenceStore(),
-  node = { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-  liveReader = reader(),
-  finalityDepth = 1,
-): ManagerClaimObservationService {
+function service(store: SidekickStore, finalityDepth = 1): ManagerClaimObservationService {
   const canonicalAnchors = new Map<number, { indexBlockHash: string; burnBlockHeight: number }>([
     [9_001, { indexBlockHash: `0x${"cd".repeat(32)}`, burnBlockHeight: 4_101 }],
     [9_002, { indexBlockHash: `0x${"de".repeat(32)}`, burnBlockHeight: 4_102 }],
-    [9_101, { indexBlockHash: `0x${"cd".repeat(32)}`, burnBlockHeight: 4_160 }],
-    [9_102, { indexBlockHash: `0x${"de".repeat(32)}`, burnBlockHeight: 4_160 }],
   ]);
   return new ManagerClaimObservationService({
     repository: store.transactionEngine,
-    evidenceStore: projection,
-    node,
     api: {
       getStatus: vi.fn().mockResolvedValue({
         server_version: "test",
@@ -346,102 +203,19 @@ function service(
           burn_block_height: known.burnBlockHeight,
         };
       }),
-    },
-    liveReader: liveReader as never,
+    } as never,
     finalityDepth,
   });
 }
 
-async function approvedRevalidationFixture(options: { revalidationNonce?: bigint } = {}) {
-  const { store, attestation } = await memoryStore();
-  const anchoredReader = reader({
-    readAnchoredAccount: vi.fn(async (_principal: string, tip: string) => ({
-      status: "observed",
-      httpStatus: 200,
-      value: {
-        principal: gasPayer,
-        indexBlockHash: tip,
-        balanceUstx: 10_000n,
-        lockedUstx: 0n,
-        unlockHeight: 0n,
-        nonce: tip === anchor.indexBlockHash ? 7n : (options.revalidationNonce ?? 7n),
-      },
-    })),
-  });
-  const projection = evidenceStore();
-  const observer = service(
-    store,
-    projection,
-    { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-    anchoredReader,
-  );
-  const planningInput = input(attestation);
-  planningInput.requestedMode = "assist";
-  const planned = await observer.observe(planningInput);
-  if (planned.status !== "planned") throw new Error("Expected an approved test plan");
-  const approvalDocument = {
-    schemaVersion: 1,
-    jobId: planned.result.job.jobId,
-    intentSha256: planned.result.job.intentSha256,
-    policySha256: planned.result.job.policySha256,
-    actor: "operator:test",
-  };
-  const approval = store.transactionEngine.createApproval({
-    jobId: planned.result.job.jobId,
-    expectedJobStateVersion: planned.result.job.stateVersion,
-    intentSha256: planned.result.job.intentSha256,
-    policySha256: planned.result.job.policySha256,
-    approval: approvalDocument,
-    approvalSha256: transactionEngineDocumentSha256(approvalDocument),
-    actor: "operator:test",
-    createdAt: observedAt,
-    expiresAt: "2026-07-17T13:00:00.000Z",
-  }).approval;
-  const liveAnchor: ChainAnchor = {
-    ...anchor,
-    stacksBlockHeight: anchor.stacksBlockHeight + 1,
-    indexBlockHash: `0x${"cd".repeat(32)}`,
-    burnBlockHeight: anchor.burnBlockHeight + 1,
-    cyclePosition: anchor.cyclePosition + 1,
-  };
-  const fresh = input(attestation) as ManagerClaimApprovalRevalidationInput;
-  fresh.observedAt = "2026-07-17T12:01:00.000Z";
-  fresh.requestedMode = "assist";
-  fresh.setup = structuredClone(fresh.setup);
-  fresh.setup.chainAnchor = liveAnchor;
-  fresh.setup.preflight.node.burnBlockHeight = liveAnchor.burnBlockHeight;
-  fresh.setup.preflight.node.stacksTipHeight = liveAnchor.stacksBlockHeight;
-  fresh.rewards = rewards({
-    observedAt: {
-      timestamp: fresh.observedAt,
-      burnBlockHeight: liveAnchor.burnBlockHeight,
-      stacksTipHeight: liveAnchor.stacksBlockHeight,
-    },
-  });
-  fresh.job = planned.result.job;
-  fresh.approval = approval;
-  fresh.anchorProof = {
-    status: "proven",
-    plannedAnchor: anchor,
-    liveAnchor,
-    apiTipHeight: liveAnchor.stacksBlockHeight,
-    apiTipIndexBlockHash: liveAnchor.indexBlockHash,
-  };
-  return { store, observer, fresh, projection, anchoredReader };
-}
-
-function completedObservationInput(
-  attestation: VerifiedCompatibilityAttestation,
-  options: {
-    stacksBlockHeight: number;
-    indexBlockHash: string;
-    samePassConfirmedJobIds?: readonly string[];
-  },
-): ManagerClaimObservationInput {
+/** Authoritative facts showing the claim was completed externally `delta` blocks after planning. */
+function completedObservationInput(options: {
+  stacksBlockHeight: number;
+  indexBlockHash: string;
+  samePassConfirmedJobIds?: readonly string[];
+}): ManagerClaimObservationInput {
   const delta = options.stacksBlockHeight - anchor.stacksBlockHeight;
-  const value = input(attestation);
-  value.attestation = null;
-  value.gasPayer = null;
+  const value = input();
   value.observedAt = `2026-07-17T12:${String(delta).padStart(2, "0")}:00.000Z`;
   value.setup = {
     ...value.setup,
@@ -466,756 +240,21 @@ function completedObservationInput(
   return value;
 }
 
-describe("live manager-claim observation", () => {
-  it("revalidates the same immutable approved job at the same or a newer canonical anchor", async () => {
-    const { store, observer, fresh, projection } = await approvedRevalidationFixture();
-    const createOrSupersede = vi.spyOn(store.transactionEngine, "createOrSupersedeLogicalJob");
-    vi.mocked(projection.getLatestCompletedSignerStakerRun).mockClear();
-    vi.mocked(projection.listSignerStakers).mockClear();
+describe("manager-claim observation after the single-job engine retirement", () => {
+  it("stays idle on the manual wallet path for a remaining claim and never creates work", async () => {
+    const store = await memoryStore();
 
-    await expect(observer.revalidateApprovedJob(fresh)).resolves.toMatchObject({
-      status: "valid",
-      job: { jobId: fresh.job.jobId },
-      liveAnchor: fresh.setup.chainAnchor,
-      admission: {
-        liveFingerprintMatches: true,
-        anchorCanonical: true,
-        anchorDescendant: true,
-        prerequisitesComplete: true,
-        feeStateMatches: true,
-      },
-    });
-    expect(createOrSupersede).not.toHaveBeenCalled();
-    expect(projection.getLatestCompletedSignerStakerRun).not.toHaveBeenCalled();
-    expect(projection.listSignerStakers).not.toHaveBeenCalled();
-
-    const sameAnchor = structuredClone(fresh);
-    sameAnchor.setup = setup();
-    sameAnchor.rewards = rewards();
-    sameAnchor.anchorProof = {
-      status: "proven",
-      plannedAnchor: anchor,
-      liveAnchor: anchor,
-      apiTipHeight: anchor.stacksBlockHeight,
-      apiTipIndexBlockHash: anchor.indexBlockHash,
-    };
-    await expect(observer.revalidateApprovedJob(sameAnchor)).resolves.toMatchObject({
-      status: "valid",
-      job: { jobId: fresh.job.jobId },
-    });
-    expect(createOrSupersede).not.toHaveBeenCalled();
-  });
-
-  it("retains approval when canonical proof or an authoritative source is transiently unavailable", async () => {
-    const proofUnavailable = await approvedRevalidationFixture();
-    proofUnavailable.fresh.anchorProof = {
-      status: "unavailable",
-      reason: "api-unavailable",
-    };
-    await expect(
-      proofUnavailable.observer.revalidateApprovedJob(proofUnavailable.fresh),
-    ).resolves.toMatchObject({
-      status: "blocked",
-      disposition: "retained",
-      code: "canonical-proof-unavailable",
-    });
-    expect(
-      proofUnavailable.store.transactionEngine.getActiveApproval(
-        proofUnavailable.fresh.job.jobId,
-        proofUnavailable.fresh.observedAt,
-      ),
-    ).not.toBeNull();
-
-    const rewardUnavailable = await approvedRevalidationFixture();
-    rewardUnavailable.fresh.rewards = null;
-    await expect(
-      rewardUnavailable.observer.revalidateApprovedJob(rewardUnavailable.fresh),
-    ).resolves.toMatchObject({
-      status: "blocked",
-      disposition: "retained",
-      code: "reward-status-unavailable",
-    });
-    expect(
-      rewardUnavailable.store.transactionEngine.getActiveApproval(
-        rewardUnavailable.fresh.job.jobId,
-        rewardUnavailable.fresh.observedAt,
-      ),
-    ).not.toBeNull();
-  });
-
-  it.each([
-    [
-      "manager source",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        value.setup.manager.source.sha256 = "11".repeat(32);
-      },
-      "manager-identity-changed",
-    ],
-    [
-      "PoX contract",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        value.setup.preflight.pox.pox5ContractId = manager.replace("signer-manager", "pox-5");
-      },
-      "contract-identity-changed",
-    ],
-    [
-      "attestation digest",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        value.attestation = structuredClone(value.attestation);
-        if (value.attestation) value.attestation.payloadSha256 = "22".repeat(32);
-      },
-      "attestation-changed",
-    ],
-    [
-      "calculation checkpoint",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        if (value.rewards) value.rewards.global.lastRewardComputeBurnHeight = "4098";
-      },
-      "reward-checkpoint-changed",
-    ],
-    [
-      "rewards per token",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        if (value.rewards) value.rewards.global.rewardsPerToken = "123456788";
-      },
-      "reward-checkpoint-changed",
-    ],
-    [
-      "earned amount",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        if (!value.rewards) return;
-        value.rewards.global.signerEarnedBeforeManagerClaimSats = "1233";
-        value.rewards.global.signerEarnedAcrossBucketsSats = "1233";
-        value.rewards.buckets = value.rewards.buckets.map((bucket) =>
-          bucket.bondIndex === null
-            ? { ...bucket, signerEarnedBeforeManagerClaimSats: "1233" }
-            : bucket,
-        );
-      },
-      "claim-amount-changed",
-    ],
-    [
-      "fee snapshot",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        if (value.rewards) value.rewards.manager.configuredFeeBips = "501";
-      },
-      "fee-snapshot-changed",
-    ],
-    [
-      "fee policy",
-      (value: ManagerClaimApprovalRevalidationInput) => {
-        value.maximumFeeUstx = 3_000n;
-      },
-      "fee-policy-changed",
-    ],
-  ] as const)("invalidates approval when the approved %s changes", async (_label, mutate, code) => {
-    const { store, observer, fresh } = await approvedRevalidationFixture();
-    mutate(fresh);
-    await expect(observer.revalidateApprovedJob(fresh)).resolves.toMatchObject({
-      status: "blocked",
-      disposition: "invalidated",
-      code,
-      message: expect.stringContaining(
-        "Sync chain data to prepare a new current job, then review and approve it",
-      ),
-      job: { state: "blocked" },
-    });
-    expect(store.transactionEngine.getLogicalJob(fresh.job.jobId)).toMatchObject({
-      state: "blocked",
-      blockReason: `approval-revalidation:${code}`,
-    });
-    expect(store.transactionEngine.getActiveApproval(fresh.job.jobId)).toBeNull();
-  });
-
-  it("invalidates approval when the anchored gas nonce changes", async () => {
-    const { store, observer, fresh } = await approvedRevalidationFixture({
-      revalidationNonce: 8n,
-    });
-    await expect(observer.revalidateApprovedJob(fresh)).resolves.toMatchObject({
-      status: "blocked",
-      disposition: "invalidated",
-      code: "gas-nonce-changed",
-      message:
-        "The gas-payer nonce changed after approval. Sync chain data to prepare a new current job, then review and approve it",
-      job: { state: "blocked" },
-    });
-    expect(store.transactionEngine.getLogicalJob(fresh.job.jobId)).toMatchObject({
-      state: "blocked",
-      blockReason: "approval-revalidation:gas-nonce-changed",
-    });
-    expect(store.transactionEngine.getActiveApproval(fresh.job.jobId)).toBeNull();
-  });
-
-  it("reconciles a completed effect instead of returning executable admission", async () => {
-    const { observer, fresh } = await approvedRevalidationFixture();
-    fresh.rewards = rewards({
-      observedAt: {
-        timestamp: fresh.observedAt,
-        burnBlockHeight: fresh.setup.chainAnchor.burnBlockHeight,
-        stacksTipHeight: fresh.setup.chainAnchor.stacksBlockHeight,
-      },
-      global: {
-        ...rewards().global,
-        signerEarnedBeforeManagerClaimSats: "0",
-      },
-      manager: { ...rewards().manager, feeSnapshotBips: "500" },
-    });
-    await expect(observer.revalidateApprovedJob(fresh)).resolves.toMatchObject({
-      status: "completed",
-      outcome: { status: "planned", result: { job: { state: "confirmed" } } },
-    });
-  });
-
-  it("does not advance local finality when recovery omitted the job or disagrees with inclusion", async () => {
-    for (const disagreement of ["not-in-page", "noncanonical-inclusion"] as const) {
-      const { store, attestation } = await memoryStore();
-      const observer = service(store);
-      const planned = await observer.observe(input(attestation));
-      if (planned.status !== "planned") throw new Error("Expected a local-finality test plan");
-      const canonical = disagreement === "not-in-page";
-      vi.spyOn(store.transactionEngine, "listAttempts").mockReturnValue([
-        {
-          attemptId: "00000000-0000-4000-8000-000000000011",
-          jobId: planned.result.job.jobId,
-          attemptNumber: 1,
-          nonceReservationId: "00000000-0000-4000-8000-000000000012",
-          feeUstx: "1000",
-          feePolicyRevision: 1,
-          signedTransactionRef: "sealed",
-          precomputedTxid: `0x${"44".repeat(32)}`,
-          state: "confirmed",
-          stateVersion: 1,
-          submissionResult: null,
-          inclusion: {
-            schemaVersion: 1,
-            txid: `0x${"44".repeat(32)}`,
-            executionStatus: "success",
-            stacksBlockHeight: anchor.stacksBlockHeight,
-            blockHash: `0x${"45".repeat(32)}`,
-            indexBlockHash: anchor.indexBlockHash,
-            canonical,
-            observedAt,
-          },
-          submittedAt: observedAt,
-          resolvedAt: null,
-          createdAt: observedAt,
-          updatedAt: observedAt,
-        },
-      ]);
-      const first = completedObservationInput(attestation, {
-        stacksBlockHeight: anchor.stacksBlockHeight + 1,
-        indexBlockHash: `0x${"cd".repeat(32)}`,
-        samePassConfirmedJobIds:
-          disagreement === "noncanonical-inclusion" ? [planned.result.job.jobId] : [],
-      });
-      const second = completedObservationInput(attestation, {
-        stacksBlockHeight: anchor.stacksBlockHeight + 2,
-        indexBlockHash: `0x${"de".repeat(32)}`,
-        samePassConfirmedJobIds:
-          disagreement === "noncanonical-inclusion" ? [planned.result.job.jobId] : [],
-      });
-
-      await expect(observer.observe(first)).resolves.toMatchObject({
-        status: "planned",
-        result: { job: { state: "confirmed" } },
-      });
-      await expect(observer.observe(second)).resolves.toMatchObject({
-        status: "planned",
-        result: { job: { state: "confirmed" } },
-      });
-    }
-  });
-
-  it("plans one fixed anchored vector with exact fee estimation and duplicate idempotency", async () => {
-    const { store, attestation } = await memoryStore();
-    const liveReader = reader();
-    const observer = service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-      liveReader,
-    );
-
-    const first = await observer.observe(input(attestation));
-    const duplicate = await observer.observe(input(attestation));
-
-    expect(first).toMatchObject({
-      status: "planned",
-      result: {
-        created: true,
-        job: { state: "preflighted" },
-        plan: { material: { transaction: { nonce: "7", fee: "1000" } } },
-      },
-    });
-    expect(duplicate).toMatchObject({
-      status: "planned",
-      result: {
-        created: false,
-        job: { jobId: first.status === "planned" ? first.result.job.jobId : "" },
-      },
-    });
-    expect(liveReader.estimateUnsignedTransactionFee).toHaveBeenCalledTimes(2);
-  });
-
-  it("moves fresh Assist work into a bounded approval state but honors forced Observe", async () => {
-    const assistedStore = await memoryStore();
-    const assistedInput = input(assistedStore.attestation);
-    assistedInput.requestedMode = "assist";
-    await expect(service(assistedStore.store).observe(assistedInput)).resolves.toMatchObject({
-      status: "planned",
-      result: {
-        job: { state: "awaiting_approval" },
-        records: { policy: { mode: "assist", approvalRequired: true } },
-      },
-    });
-
-    const observedStore = await memoryStore();
-    observedStore.store.transactionEngine.forceObserve({
-      reason: "Safety stop",
-      actor: "operator:test",
-      forcedAt: observedAt,
-    });
-    const forcedInput = input(observedStore.attestation);
-    forcedInput.requestedMode = "assist";
-    forcedInput.setup.manager.automationEligible = false;
-    await expect(service(observedStore.store).observe(forcedInput)).resolves.toMatchObject({
-      status: "planned",
-      result: {
-        job: { state: "preflighted" },
-        records: { policy: { mode: "observe", approvalRequired: false } },
-      },
-    });
-  });
-
-  it.each([
-    "devnet",
-    "regtest",
-  ] as const)("allows %s Assist without a production-approved manager profile", async (network) => {
-    const networkId = 0x8000_0000;
-    const profile: NetworkCompatibilityProfile = {
-      ...POX5_TESTNET_COMPATIBILITY,
-      id: `wallet-assist-${network}`,
-      label: `Wallet Assist ${network}`,
-      network,
-      networkId,
-    };
-    const { store, attestation } = await memoryStore(profile);
-    const privateInput = input(attestation);
-    privateInput.requestedMode = "assist";
-    privateInput.setup.preflight.network = network;
-    privateInput.setup.preflight.node.networkId = networkId;
-
-    await expect(service(store).observe(privateInput)).resolves.toMatchObject({
-      status: "planned",
-      result: {
-        job: { state: "awaiting_approval" },
-        records: { policy: { mode: "assist", approvalRequired: true } },
-      },
-    });
-  });
-
-  it("gates Assist on production approval without blocking Observe", async () => {
-    const { store, attestation } = await memoryStore(MAINNET_4_0_1_COMPATIBILITY);
-    const mainnetInput = input(attestation);
-    mainnetInput.requestedMode = "assist";
-    mainnetInput.setup.preflight.network = "mainnet";
-    mainnetInput.setup.preflight.node.networkId = 1;
-    // A verified reference manager that has not been approved for unattended use.
-    mainnetInput.setup.manager.automationEligible = false;
-
-    await expect(service(store).observe(mainnetInput)).resolves.toMatchObject({
-      status: "blocked",
-      blocks: expect.arrayContaining([
-        expect.objectContaining({
-          code: "assist-not-approved",
-          message: "Assist is not enabled for this verified reference manager on mainnet",
-        }),
-      ]),
+    await expect(service(store).observe(input())).resolves.toEqual({
+      status: "idle",
+      blocks: [],
+      reason: "manual-wallet-available",
     });
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
-
-    // Observe only needs the source verified: the operator signs and the postcondition pins the
-    // effect, so Assist approval has no bearing on proposing the same claim for a browser wallet.
-    const { store: observeStore, attestation: observeAttestation } = await memoryStore(
-      MAINNET_4_0_1_COMPATIBILITY,
-    );
-    const observeInput = input(observeAttestation);
-    observeInput.requestedMode = "observe";
-    observeInput.setup.preflight.network = "mainnet";
-    observeInput.setup.preflight.node.networkId = 1;
-    observeInput.setup.manager.automationEligible = false;
-
-    // The Assist gate must not reach Observe. Whatever else this mainnet fixture lacks, a manager
-    // that is merely unapproved for unattended use is not a reason to refuse an operator-signed
-    // claim.
-    const observed = await service(observeStore).observe(observeInput);
-    expect(observed.blocks.some(({ code }) => code === "assist-not-approved")).toBe(false);
-  });
-
-  it("allows a verified mainnet reference manager through Observe without Assist approval", async () => {
-    const { store, attestation } = await memoryStore(MAINNET_4_0_1_COMPATIBILITY);
-    const mainnetInput = input(attestation);
-    const mainnetManager = "SP000000000000000000002Q6VF78.signer-manager";
-    const mainnetGasPayer = getAddressFromPublicKey(publicKey, "mainnet");
-    mainnetInput.setup.preflight.network = "mainnet";
-    mainnetInput.setup.preflight.node.networkId = 1;
-    mainnetInput.setup.preflight.pox.pox5ContractId = MAINNET_4_0_1_COMPATIBILITY.pox5.contractId;
-    mainnetInput.setup.preflight.pox.sourceSha256 = MAINNET_4_0_1_COMPATIBILITY.pox5.sourceSha256;
-    mainnetInput.setup.preflight.pox.sbtcTokenContract =
-      MAINNET_4_0_1_COMPATIBILITY.sbtc.tokenContract;
-    mainnetInput.setup.preflight.pox.sbtcRegistryContract =
-      MAINNET_4_0_1_COMPATIBILITY.sbtc.registryContract;
-    mainnetInput.setup.manager.managerPrincipal = mainnetManager;
-    mainnetInput.setup.manager.automationEligible = false;
-    mainnetInput.setup.manager.source.profileId =
-      MAINNET_4_0_1_COMPATIBILITY.referenceManager.profileId;
-    mainnetInput.setup.manager.source.sha256 =
-      MAINNET_4_0_1_COMPATIBILITY.referenceManager.sourceSha256;
-    mainnetInput.gasPayer = { principal: mainnetGasPayer, publicKey };
-    mainnetInput.rewards = rewards({
-      managerPrincipal: mainnetManager,
-      pox5ContractId: MAINNET_4_0_1_COMPATIBILITY.pox5.contractId,
-    });
-
-    await expect(
-      service(
-        store,
-        evidenceStore(),
-        undefined,
-        reader({
-          readAnchoredAccount: vi.fn().mockResolvedValue({
-            status: "observed",
-            httpStatus: 200,
-            value: {
-              principal: mainnetGasPayer,
-              indexBlockHash: anchor.indexBlockHash,
-              balanceUstx: 10_000n,
-              lockedUstx: 0n,
-              unlockHeight: 0n,
-              nonce: 7n,
-            },
-          }),
-        }),
-      ).observe(mainnetInput),
-    ).resolves.toMatchObject({
-      status: "planned",
-      result: { records: { policy: { mode: "observe", approvalRequired: false } } },
-    });
-    expect(store.transactionEngine.logicalJobStats().total).toBe(1);
-  });
-
-  it.each([
-    ["devnet", "custom-observe"],
-    ["regtest", "unrecognized"],
-  ] as const)("keeps the exact-manager Assist gate on %s for a %s source", async (network, tier) => {
-    const networkId = 0x8000_0000;
-    const profile: NetworkCompatibilityProfile = {
-      ...POX5_TESTNET_COMPATIBILITY,
-      id: `ineligible-${network}`,
-      label: `Ineligible ${network}`,
-      network,
-      networkId,
-    };
-    const { store, attestation } = await memoryStore(profile);
-    const privateInput = input(attestation);
-    privateInput.requestedMode = "assist";
-    privateInput.setup.preflight.network = network;
-    privateInput.setup.preflight.node.networkId = networkId;
-    privateInput.setup.manager.automationEligible = false;
-    privateInput.setup.manager.source.tier = tier;
-    privateInput.setup.manager.source.match = "unknown";
-    if (tier === "unrecognized") privateInput.setup.manager.source.profileId = null;
-
-    await expect(service(store).observe(privateInput)).resolves.toMatchObject({
-      status: "blocked",
-      blocks: expect.arrayContaining([expect.objectContaining({ code: "manager-ineligible" })]),
-    });
-    expect(store.transactionEngine.logicalJobStats().total).toBe(0);
-  });
-
-  it("plans from anchored bucket reads without consulting the staker roster", async () => {
-    const { store, attestation } = await memoryStore();
-
-    // Revision 1 refused to plan without a complete roster crawl, because the empty bond list was
-    // only justified by a negative proof drawn from that roster. The buckets are read straight from
-    // PoX-5 now, so neither a missing roster nor a bonded one has any bearing on the claim.
-    const withoutRoster = await service(store, evidenceStore(null)).observe(input(attestation));
-    expect(withoutRoster).toMatchObject({ status: "planned" });
-
-    const { store: bondedStore, attestation: bondedAttestation } = await memoryStore();
-    const bonded = await service(
-      bondedStore,
-      evidenceStore(run, [roster({ hasBtc: true })]),
-    ).observe(input(bondedAttestation));
-    expect(bonded).toMatchObject({ status: "planned" });
-  });
-
-  it("fails closed on a bad attestation", async () => {
-    const { store, attestation } = await memoryStore();
-    const mismatched = structuredClone(attestation);
-    mismatched.profile = {
-      ...mismatched.profile,
-      networkId: mismatched.profile.networkId + 1,
-    };
-    const badAttestation = await service(store).observe(input(mismatched));
-    expect(badAttestation).toMatchObject({
-      status: "blocked",
-      blocks: [{ code: "attestation-fingerprint-mismatch" }],
-    });
-    expect(store.transactionEngine.logicalJobStats().total).toBe(0);
-  });
-
-  it("blocks paused rewards, unavailable account reads, fee caps, and low gas balance", async () => {
-    const { store, attestation } = await memoryStore();
-    const paused = await service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(trueCV()) },
-      reader(),
-    ).observe(input(attestation));
-    expect(paused).toMatchObject({ status: "blocked", blocks: [{ code: "rewards-paused" }] });
-
-    const missingAccount = await service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-      reader({
-        readAnchoredAccount: vi.fn().mockResolvedValue({
-          status: "unavailable",
-          httpStatus: 503,
-          reason: "http-error",
-        }),
-      }),
-    ).observe(input(attestation));
-    expect(missingAccount).toMatchObject({
-      status: "blocked",
-      blocks: [
-        {
-          code: "node-read-unavailable",
-          message:
-            "The node rejected the gas-payer account request. Check its URL and access settings",
-        },
-      ],
-    });
-
-    const incompatibleAccount = await service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-      reader({
-        readAnchoredAccount: vi.fn().mockResolvedValue({
-          status: "schema-invalid",
-          httpStatus: 200,
-          reason: "unexpected-response",
-        }),
-      }),
-    ).observe(input(attestation));
-    expect(incompatibleAccount).toMatchObject({
-      status: "blocked",
-      blocks: [
-        {
-          code: "node-read-unavailable",
-          message:
-            "The gas-payer account response is incompatible with Sidekick. Check node compatibility",
-        },
-      ],
-    });
-
-    const incompatibleFee = await service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-      reader({
-        estimateUnsignedTransactionFee: vi.fn().mockResolvedValue({
-          status: "schema-invalid",
-          httpStatus: 200,
-          reason: "unexpected-response",
-        }),
-      }),
-    ).observe(input(attestation));
-    expect(incompatibleFee).toMatchObject({
-      status: "blocked",
-      blocks: [
-        {
-          code: "fee-estimate-unavailable",
-          message: "The claim fee response is incompatible with Sidekick. Check node compatibility",
-        },
-      ],
-    });
-
-    const cappedInput = input(attestation);
-    cappedInput.maximumFeeUstx = 900n;
-    const capped = await service(store).observe(cappedInput);
-    expect(capped).toMatchObject({ status: "blocked", blocks: [{ code: "fee-cap-exceeded" }] });
-
-    const lowBalance = await service(
-      store,
-      evidenceStore(),
-      { getDataVar: vi.fn().mockResolvedValue(falseCV()) },
-      reader({
-        readAnchoredAccount: vi.fn().mockResolvedValue({
-          status: "observed",
-          httpStatus: 200,
-          value: {
-            principal: gasPayer,
-            indexBlockHash: anchor.indexBlockHash,
-            balanceUstx: 999n,
-            lockedUstx: 0n,
-            unlockHeight: 0n,
-            nonce: 7n,
-          },
-        }),
-      }),
-    ).observe(input(attestation));
-    expect(lowBalance).toMatchObject({
-      status: "blocked",
-      blocks: [{ code: "gas-balance-insufficient" }],
-    });
-  });
-
-  it("creates and reconciles the distinct second calculation with the insert-only fee snapshot", async () => {
-    const { store, attestation } = await memoryStore();
-    const first = await service(store).observe(input(attestation));
-    expect(first).toMatchObject({
-      status: "planned",
-      result: {
-        created: true,
-        records: {
-          intent: {
-            review: { checkpoint: { calculationCheckpoint: "first-half", rewardCycle: 5 } },
-          },
-        },
-      },
-    });
-
-    const secondObservedAt = "2026-07-17T12:01:00.000Z";
-    const secondAnchor: ChainAnchor = {
-      ...anchor,
-      stacksBlockHeight: anchor.stacksBlockHeight + 100,
-      indexBlockHash: `0x${"bc".repeat(32)}`,
-      burnBlockHeight: 4_160,
-      rewardCycle: 6,
-      cyclePosition: 10,
-      checkpoint: "first-half",
-    };
-    const secondRun: SignerStakerRun = {
-      ...run,
-      runId: "2f53f216-71c3-4b72-865d-53e81a426bc8",
-      chainAnchor: secondAnchor,
-      startedAt: secondObservedAt,
-      updatedAt: secondObservedAt,
-      completedAt: secondObservedAt,
-    };
-    const secondInput = input(attestation);
-    secondInput.observedAt = secondObservedAt;
-    secondInput.setup = { ...secondInput.setup, chainAnchor: secondAnchor };
-    secondInput.rewards = rewards({
-      rewardCycle: 5,
-      observedAt: {
-        timestamp: secondObservedAt,
-        burnBlockHeight: secondAnchor.burnBlockHeight,
-        stacksTipHeight: secondAnchor.stacksBlockHeight,
-      },
-      ingestion: { runId: secondRun.runId, completedAt: secondObservedAt },
-      global: {
-        lastRewardComputeBurnHeight: "4149",
-        lastComputedRewardCycle: "5",
-        rewardsPerToken: "223456789",
-        signerEarnedBeforeManagerClaimSats: "777",
-      },
-      manager: {
-        ...rewards().manager,
-        configuredFeeBips: "900",
-        feeSnapshotBips: "500",
-      },
-    });
-    const second = await service(
-      store,
-      evidenceStore(secondRun, [roster({ lastSeenRunId: secondRun.runId })]),
-    ).observe(secondInput);
-
-    expect(second).toMatchObject({
-      status: "planned",
-      result: {
-        created: true,
-        plan: {
-          material: {
-            call: { rewardCycle: "5" },
-            rewardObservation: { calculationCheckpoint: "second-half" },
-            feeSnapshot: { state: "present", effectiveFeeBips: "500" },
-            expectedEffect: { amount: "777", condition: "eq", postConditionMode: "deny" },
-          },
-        },
-        records: {
-          intent: {
-            review: {
-              checkpoint: { calculationCheckpoint: "second-half", rewardCycle: 5 },
-              fee: { snapshot: { state: "present", feeBips: 500 } },
-            },
-          },
-        },
-      },
-    });
-    if (first.status !== "planned" || second.status !== "planned") {
-      throw new Error("Expected two planned calculation jobs");
-    }
-    expect(second.result.job.jobId).not.toBe(first.result.job.jobId);
-    expect(second.result.job.operationScopeKey).not.toBe(first.result.job.operationScopeKey);
-
-    const completeInput = structuredClone(secondInput);
-    completeInput.attestation = null;
-    completeInput.gasPayer = null;
-    completeInput.observedAt = "2026-07-17T12:02:00.000Z";
-    completeInput.setup.chainAnchor = {
-      ...secondAnchor,
-      stacksBlockHeight: secondAnchor.stacksBlockHeight + 1,
-      indexBlockHash: `0x${"cd".repeat(32)}`,
-    };
-    completeInput.rewards = rewards({
-      rewardCycle: 5,
-      observedAt: {
-        timestamp: completeInput.observedAt,
-        burnBlockHeight: secondAnchor.burnBlockHeight,
-        stacksTipHeight: secondAnchor.stacksBlockHeight + 1,
-      },
-      ingestion: { runId: secondRun.runId, completedAt: secondObservedAt },
-      global: {
-        lastRewardComputeBurnHeight: "4149",
-        lastComputedRewardCycle: "5",
-        rewardsPerToken: "223456789",
-        signerEarnedBeforeManagerClaimSats: "0",
-      },
-      manager: {
-        ...rewards().manager,
-        configuredFeeBips: "900",
-        feeSnapshotBips: "500",
-      },
-    });
-    const confirming = await service(store, evidenceStore(null, [])).observe(completeInput);
-    expect(confirming).toMatchObject({
-      status: "planned",
-      result: { job: { jobId: second.result.job.jobId, state: "confirmed" } },
-    });
-
-    const finalInput = structuredClone(completeInput);
-    finalInput.observedAt = "2026-07-17T12:03:00.000Z";
-    finalInput.setup.chainAnchor.stacksBlockHeight += 1;
-    finalInput.setup.chainAnchor.indexBlockHash = `0x${"de".repeat(32)}`;
-    if (finalInput.rewards) {
-      finalInput.rewards.observedAt.timestamp = finalInput.observedAt;
-      finalInput.rewards.observedAt.stacksTipHeight += 1;
-    }
-    await expect(
-      service(store, evidenceStore(null, [])).observe(finalInput),
-    ).resolves.toMatchObject({
-      status: "reconciled",
-      result: { job: { jobId: second.result.job.jobId, state: "reconciled" } },
-    });
   });
 
   it("blocks reward reads that target the anchor cycle during a first-half checkpoint", async () => {
-    const { store, attestation } = await memoryStore();
-    const invalidInput = input(attestation);
+    const store = await memoryStore();
+    const invalidInput = input();
     invalidInput.setup = {
       ...invalidInput.setup,
       chainAnchor: {
@@ -1252,83 +291,96 @@ describe("live manager-claim observation", () => {
     });
   });
 
-  it("waits for finality before reconciling external completion without current authority", async () => {
-    const { store, attestation } = await memoryStore();
+  it("waits for finality before reconciling external completion of a planned legacy claim", async () => {
+    const store = await memoryStore();
+    const { job } = await seedPlannedJob(store);
     const observer = service(store);
-    const planned = await observer.observe(input(attestation));
-    expect(planned.status).toBe("planned");
 
-    const completeInput = input(attestation);
-    completeInput.attestation = null;
-    completeInput.gasPayer = null;
-    completeInput.observedAt = "2026-07-17T12:01:00.000Z";
-    completeInput.setup = {
-      ...completeInput.setup,
-      chainAnchor: {
-        ...anchor,
+    const completed = await observer.observe(
+      completedObservationInput({
         stacksBlockHeight: anchor.stacksBlockHeight + 1,
-        burnBlockHeight: anchor.burnBlockHeight + 1,
-        cyclePosition: anchor.cyclePosition + 1,
         indexBlockHash: `0x${"cd".repeat(32)}`,
-      },
-    };
-    completeInput.rewards = rewards({
-      observedAt: {
-        timestamp: completeInput.observedAt,
-        burnBlockHeight: anchor.burnBlockHeight + 1,
-        stacksTipHeight: anchor.stacksBlockHeight + 1,
-      },
-      global: {
-        ...rewards().global,
-        signerEarnedBeforeManagerClaimSats: "0",
-      },
-      manager: { ...rewards().manager, feeSnapshotBips: "500" },
-    });
-    const completionRun = { ...run, chainAnchor: completeInput.setup.chainAnchor };
-    const completed = await service(store, evidenceStore(completionRun, [roster()])).observe(
-      completeInput,
+      }),
     );
-
     expect(completed).toMatchObject({
       status: "planned",
-      result: { created: false, job: { state: "confirmed" } },
+      result: { created: false, job: { jobId: job.jobId, state: "confirmed" } },
     });
 
-    const finalizedInput = structuredClone(completeInput);
-    finalizedInput.observedAt = "2026-07-17T12:02:00.000Z";
-    finalizedInput.setup.chainAnchor = {
-      ...completeInput.setup.chainAnchor,
-      stacksBlockHeight: anchor.stacksBlockHeight + 2,
-      burnBlockHeight: anchor.burnBlockHeight + 2,
-      cyclePosition: anchor.cyclePosition + 2,
-      indexBlockHash: `0x${"de".repeat(32)}`,
-    };
-    finalizedInput.rewards = rewards({
-      observedAt: {
-        timestamp: finalizedInput.observedAt,
-        burnBlockHeight: anchor.burnBlockHeight + 2,
-        stacksTipHeight: anchor.stacksBlockHeight + 2,
-      },
-      global: {
-        ...rewards().global,
-        signerEarnedBeforeManagerClaimSats: "0",
-      },
-      manager: { ...rewards().manager, feeSnapshotBips: "500" },
-    });
-    const finalized = await service(
-      store,
-      evidenceStore({ ...run, chainAnchor: finalizedInput.setup.chainAnchor }, [roster()]),
-    ).observe(finalizedInput);
-
+    const finalized = await observer.observe(
+      completedObservationInput({
+        stacksBlockHeight: anchor.stacksBlockHeight + 2,
+        indexBlockHash: `0x${"de".repeat(32)}`,
+      }),
+    );
     expect(finalized).toMatchObject({
       status: "reconciled",
-      result: { created: false, job: { state: "reconciled" } },
+      result: { created: false, job: { jobId: job.jobId, state: "reconciled" } },
     });
+    expect(store.transactionEngine.logicalJobStats().total).toBe(1);
+  });
+
+  it("does not advance local finality when recovery omitted the job or disagrees with inclusion", async () => {
+    for (const disagreement of ["not-in-page", "noncanonical-inclusion"] as const) {
+      const store = await memoryStore();
+      const { job } = await seedPlannedJob(store);
+      const observer = service(store);
+      const canonical = disagreement === "not-in-page";
+      vi.spyOn(store.transactionEngine, "listAttempts").mockReturnValue([
+        {
+          attemptId: "00000000-0000-4000-8000-000000000011",
+          jobId: job.jobId,
+          attemptNumber: 1,
+          nonceReservationId: "00000000-0000-4000-8000-000000000012",
+          feeUstx: "1000",
+          feePolicyRevision: 1,
+          signedTransactionRef: "sealed",
+          precomputedTxid: `0x${"44".repeat(32)}`,
+          state: "confirmed",
+          stateVersion: 1,
+          submissionResult: null,
+          inclusion: {
+            schemaVersion: 1,
+            txid: `0x${"44".repeat(32)}`,
+            executionStatus: "success",
+            stacksBlockHeight: anchor.stacksBlockHeight,
+            blockHash: `0x${"45".repeat(32)}`,
+            indexBlockHash: anchor.indexBlockHash,
+            canonical,
+            observedAt,
+          },
+          submittedAt: observedAt,
+          resolvedAt: null,
+          createdAt: observedAt,
+          updatedAt: observedAt,
+        },
+      ]);
+      const samePassConfirmedJobIds = disagreement === "noncanonical-inclusion" ? [job.jobId] : [];
+
+      await expect(
+        observer.observe(
+          completedObservationInput({
+            stacksBlockHeight: anchor.stacksBlockHeight + 1,
+            indexBlockHash: `0x${"cd".repeat(32)}`,
+            samePassConfirmedJobIds,
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "planned", result: { job: { state: "confirmed" } } });
+      await expect(
+        observer.observe(
+          completedObservationInput({
+            stacksBlockHeight: anchor.stacksBlockHeight + 2,
+            indexBlockHash: `0x${"de".repeat(32)}`,
+            samePassConfirmedJobIds,
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "planned", result: { job: { state: "confirmed" } } });
+    }
   });
 
   it("does not fabricate retrospective jobs for a completed effect", async () => {
-    const { store, attestation } = await memoryStore();
-    const completeInput = input(attestation);
+    const store = await memoryStore();
+    const completeInput = input();
     completeInput.rewards = rewards({
       global: { ...rewards().global, signerEarnedBeforeManagerClaimSats: "0" },
       manager: { ...rewards().manager, feeSnapshotBips: "500" },
@@ -1342,62 +394,8 @@ describe("live manager-claim observation", () => {
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
   });
 
-  it("plans a claim that names every participating bond bucket", async () => {
-    const { store, attestation } = await memoryStore();
-    // The STX bucket alone would be 1234; two bond buckets add 300 more. Revision 1 could not
-    // express this at all, and an invariant defined only over the STX bucket would reject it.
-    const bonded = rewards({
-      global: {
-        ...rewards().global,
-        signerEarnedBeforeManagerClaimSats: "1234",
-        signerEarnedAcrossBucketsSats: "1534",
-      },
-      buckets: [
-        {
-          bondIndex: null,
-          managerSharesSats: "0",
-          signerEarnedBeforeManagerClaimSats: "1234",
-          rewardsPerToken: "123456789",
-          feeSnapshotBips: null,
-          participating: true,
-        },
-        {
-          bondIndex: "2",
-          managerSharesSats: "100000",
-          signerEarnedBeforeManagerClaimSats: "200",
-          rewardsPerToken: "42",
-          feeSnapshotBips: null,
-          participating: true,
-        },
-        {
-          // Zero earnings but live shares: still named, so its fee snapshot is pinned with the rest.
-          bondIndex: "3",
-          managerSharesSats: "50000",
-          signerEarnedBeforeManagerClaimSats: "100",
-          rewardsPerToken: "7",
-          feeSnapshotBips: null,
-          participating: true,
-        },
-      ],
-    });
-
-    const outcome = await service(store).observe({ ...input(attestation), rewards: bonded });
-
-    expect(outcome).toMatchObject({ status: "planned" });
-    if (outcome.status !== "planned") throw new Error("expected a planned claim");
-    const material = outcome.result.plan.material;
-    expect(material.call.bondPeriods).toEqual(["2", "3"]);
-    expect(material.stxEarnedSats).toBe("1234");
-    expect(material.bondBuckets).toMatchObject([
-      { bondIndex: "2", earnedSats: "200" },
-      { bondIndex: "3", earnedSats: "100" },
-    ]);
-    // One transfer covers the whole claim, so the postcondition is the sum of every named bucket.
-    expect(material.expectedEffect.amount).toBe("1534");
-  });
-
   it("stays idle when buckets participate but nothing is settled in them", async () => {
-    const { store, attestation } = await memoryStore();
+    const store = await memoryStore();
     const idle = rewards({
       global: {
         ...rewards().global,
@@ -1422,17 +420,15 @@ describe("live manager-claim observation", () => {
           participating: true,
         },
       ],
-    });
+    } as Partial<StxRewardStatus>);
 
     // `claim-rewards` reverts when the whole call totals zero, so proposing it would hand the
     // operator a transaction that cannot succeed.
-    await expect(service(store).observe({ ...input(attestation), rewards: idle })).resolves.toEqual(
-      {
-        status: "idle",
-        blocks: [],
-        reason: "buckets-present-nothing-claimable",
-      },
-    );
+    await expect(service(store).observe({ ...input(), rewards: idle })).resolves.toEqual({
+      status: "idle",
+      blocks: [],
+      reason: "buckets-present-nothing-claimable",
+    });
     expect(store.transactionEngine.logicalJobStats().total).toBe(0);
   });
 });

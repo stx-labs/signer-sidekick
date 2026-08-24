@@ -1,0 +1,40 @@
+<!-- @include shell-open -->
+<!-- @include page-head -->
+<section class="card-standout rw-now" aria-labelledby="rw-now-title">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · Second Distribution <span class="badge b-success"><span class="dot"></span>Ready</span></div>
+      <h2 class="rw-status" id="rw-now-title">Ready to collect &amp; distribute</h2>
+      <p class="rw-status-sub">The network calculated this distribution. 0.0122 sBTC is waiting for your stakers across 40 payments, and 64,350 sats is yours.</p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-primary lg" type="button">Collect &amp; distribute<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      <!-- @include gas-chip -->
+    </div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated for this pool</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">projected 0.0125 → got 0.0129</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0 <span class="u">sBTC</span></div><div class="d">0.0129 sBTC ready to collect · fee locked 5%</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">0 <span class="u">of 40</span></div><div class="d">0.0122 sBTC waiting for stakers</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">64,350 <span class="u">sats</span></div><div class="d">5% locked · paid as you distribute</div></div>
+  </div>
+</section>
+<!-- @include payments-ready -->
+<!-- @include shell-close -->
+<div class="rw-backdrop" role="dialog" aria-modal="true" aria-labelledby="rw-sheet-title">
+  <div class="rw-sheet">
+    <div class="rw-eyebrow">Cycle 141 · Second Distribution</div>
+    <h2 id="rw-sheet-title">Collect &amp; distribute</h2>
+    <p class="muted" style="margin: 0 0 14px; font-size: 13px;">Two steps, run in order. The manager sends each staker payout; your fee stays credited in the manager; the gas wallet pays only the network fees.</p>
+    <div class="checklist rw-run-steps">
+      <div class="check-item"><span class="box wait">1</span><div class="body">Collect 0.0129 sBTC into the manager<div class="m">Fee already locked at 5% for cycle 141 · 1 transaction</div></div><span class="v">0.0129 sBTC</span></div>
+      <div class="check-item"><span class="box wait">2</span><div class="body">Distribute 40 payments<div class="m">0.0122 sBTC to stakers · 64,350 sats credited to you in the manager · 34 in sBTC, 6 over Bitcoin (each after its Bitcoin fee budget) · 40 transactions, one at a time</div></div><span class="v">0.0122 sBTC</span></div>
+    </div>
+    <div class="rw-facts">
+      <span><span class="mono">41 transactions</span> · about <span class="mono">0.42 STX</span> gas from the gas wallet (<span class="mono">12.48 STX</span> available)</span>
+      <span>Another caller may finish some of this first — Sidekick skips what is already done.</span>
+      <span>You can close this page. Progress shows on Rewards and Overview.</span>
+    </div>
+    <div class="rw-sheet-actions"><button class="btn btn-tertiary" type="button">Cancel</button><button class="btn btn-primary" type="button">Go<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button></div>
+  </div>
+</div>

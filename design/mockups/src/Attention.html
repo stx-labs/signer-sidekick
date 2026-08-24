@@ -1,0 +1,50 @@
+<!-- @include shell-open -->
+<!-- @include page-head -->
+<div class="callout callout-caution rw-banner" role="status">
+  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:18px;height:18px"><path d="M12 4l9 16H3z"></path><path d="M12 10v4M12 17h.01"></path></svg>
+  <div class="body"><strong>Gas wallet is low.</strong> 0.31 STX left — about 30 transactions. Returning the rejected payout needs 1, but the next distribution needs 41. Fund about 0.2 STX to <span class="identifier">SP2J6Z…V9EJ7</span>.
+    <div class="actions"><button class="btn btn-secondary" type="button">Fund instructions</button><button class="btn btn-tertiary" type="button">Dismiss until the next run</button></div>
+  </div>
+  <button class="btn-icon rw-dismiss" type="button" aria-label="Dismiss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+</div>
+<section class="card-standout rw-now" aria-labelledby="rw-now-title">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · Second Distribution <span class="badge b-error"><span class="dot"></span>Needs attention</span></div>
+      <h2 class="rw-status" id="rw-now-title">1 Bitcoin payout was rejected</h2>
+      <p class="rw-status-sub">The sBTC protocol rejected SP3W…H7CN's withdrawal of 59,356 sats. The amount is back in the manager and owed to them; return it as sBTC with Finish Bitcoin payouts. The other 39 payments are delivered. <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Request #4184 rejected by the sBTC signers Aug 23, 02:10 UTC · the full amount (payout + Bitcoin fee budget) returned to the manager and is owed to the staker"><!-- @include icon-info --></button></p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-primary lg" type="button">Finish Bitcoin payouts<svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      <span class="rw-gas low"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg>Gas wallet 0.31 STX <span>· ≈ 30 tx</span></span>
+    </div>
+  </div>
+  <div class="callout callout-critical" style="margin-top: 16px;">
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:18px;height:18px"><path d="M12 4l9 16H3z"></path><path d="M12 10v4M12 17h.01"></path></svg>
+    <div class="body"><strong>Rejected withdrawal — SP3W…H7CN · 59,356 sats.</strong> Withdrawal request #4184 was rejected by the sBTC protocol. Finishing returns the full amount directly to the staker as sBTC. Their future payouts keep the configured Bitcoin route unless they change it — Sidekick does not change a staker's route.</div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated for this pool</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">exact · projected 0.0125</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">fee locked 5%</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">40 <span class="u">of 40</span></div><div class="d">39 delivered · 1 rejected, return pending</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">64,350 <span class="u">sats</span></div><div class="d">5% locked · credited in the manager</div></div>
+  </div>
+  <p class="rw-cycle-line"><span>Cycle 141</span><strong class="mono">0.0254 sBTC</strong><span>calculated · 0.0241 sBTC owed to stakers · your fee <span class="mono">0.00127 sBTC</span> · 1 return pending</span></p>
+</section>
+<!-- @include details -->
+<div class="section-title" id="rw-payments">Payments <span class="hint">this distribution · one per staker per bucket</span></div>
+<div class="tbl-wrap">
+  <div class="tbl-toolbar">
+    <div class="filters"><div class="seg" role="tablist" aria-label="Payment status"><button type="button" role="tab">Outstanding · 0</button><button type="button" role="tab">Paid · 37</button><button type="button" role="tab">Arriving · 2</button><button class="on" type="button" role="tab" aria-selected="true">Rejected · 1</button></div></div>
+    <div class="total">1 rejected · 59,356 sats to return</div>
+  </div>
+  <table>
+    <thead><tr><th scope="col">Staker</th><th scope="col">Route</th><th scope="col" class="right">Gross</th><th scope="col" class="right rw-hide-sm">Fee</th><th scope="col" class="right" title="What the staker receives: sBTC directly, or BTC over Bitcoin after the Bitcoin fee budget">To staker</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="staker"><span class="avatar">3W</span><span class="identifier">SP3W…H7CN</span></span></td><td><span class="rw-route btc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 7.5h4.2a2.2 2.2 0 0 1 0 4.4H9zM9 11.9h4.8a2.3 2.3 0 0 1 0 4.6H9zM10.5 6v1.5M10.5 16.5V18"></path></svg>bc1q…c41e</span></td><td class="mono right">62,480 sats</td><td class="mono right rw-hide-sm">3,124 sats</td><td class="mono right">59,356 sats<span class="rw-pay-sub">returns as sBTC</span></td><td><span class="badge b-error">Rejected · return pending</span><span class="rw-pay-sub">request #4184 · rejected by the sBTC signers</span></td></tr>
+    </tbody>
+  </table>
+</div>
+<!-- @include past-collapsed -->
+<!-- @include accounting -->
+<!-- @include shell-close -->

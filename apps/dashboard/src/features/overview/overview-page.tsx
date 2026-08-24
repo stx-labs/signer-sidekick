@@ -21,6 +21,7 @@ import { Badge, PageHead } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
 import { compactDuration, number, sbtc, stx } from "../../shared/format.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
+import { RewardsOverviewCard } from "./rewards-overview-card.js";
 
 const OVERVIEW_POLL_MS = 15_000;
 const INITIAL_ATTENTION_COUNT = 5;
@@ -639,101 +640,112 @@ export function Overview({
           />
         </section>
 
-        <section
-          className="card overview-domain"
-          id="overview-rewards"
-          aria-labelledby="overview-rewards-heading"
-        >
-          <div className="card-head">
-            <h2 id="overview-rewards-heading">Rewards</h2>
-            <Badge state={statusTone(rewards.status)}>{statusLabel(rewards.status)}</Badge>
-          </div>
-          <div className="overview-domain-primary">
-            <span>
-              {rewards.estimateKind === "checkpoint-forecast"
-                ? "Projected next allocation"
-                : rewards.estimateKind === "if-calculated-now"
-                  ? "Accrued so far — pool gross"
-                  : "Pool estimate"}
-            </span>
-            <strong>
-              {rewards.estimatedPoolRewardSats === null
-                ? "Unavailable"
-                : `${sbtc(rewards.estimatedPoolRewardSats)} sBTC`}
-            </strong>
-            <small>{forecastConfidence}</small>
-          </div>
-          <dl>
-            <div>
-              <dt
-                title={
-                  usesRewardForecast
-                    ? "Projected total sBTC at the next network calculation, shared across eligible signers and pools."
-                    : "Total sBTC accumulated by PoX-5 so far, shared across eligible signers and pools."
-                }
-              >
-                {usesRewardForecast
-                  ? "Projected network-wide rewards"
-                  : "Network-wide rewards accrued"}
-              </dt>
-              <dd>
-                {rewards.estimatedNetworkRewardSats === null
-                  ? "Unavailable"
-                  : `${sbtc(rewards.estimatedNetworkRewardSats)} sBTC`}
-              </dd>
-            </div>
-            <div>
-              <dt
-                title={
-                  usesRewardForecast
-                    ? "Projected portion earned by this pool operator at the next allocation, using per-staker and per-bucket integer rounding."
-                    : "Estimated portion earned by this pool operator if rewards were calculated now, using per-staker and per-bucket integer rounding."
-                }
-              >
-                {usesRewardForecast ? "Projected operator fee" : "Operator fee if calculated now"}
-              </dt>
-              <dd>
-                {rewards.estimatedOperatorFeeSats === null
-                  ? feeUnavailableLabel(rewards.operatorFeeUnavailableReason)
-                  : `${sbtc(rewards.estimatedOperatorFeeSats)} sBTC`}
-              </dd>
-            </div>
-            <div>
-              <dt
-                title={
-                  usesRewardForecast
-                    ? "Projected amount remaining for this pool's stakers after operator fees at the next allocation."
-                    : "Estimated amount remaining for this pool's stakers after operator fees if rewards were calculated now."
-                }
-              >
-                {usesRewardForecast
-                  ? "Projected net for your stakers"
-                  : "Staker net if calculated now"}
-              </dt>
-              <dd>
-                {rewardNetSats(
-                  rewards.estimatedPoolRewardSats,
-                  rewards.estimatedOperatorFeeSats,
-                ) === null
-                  ? "Unavailable"
-                  : `${sbtc(rewardNetSats(rewards.estimatedPoolRewardSats, rewards.estimatedOperatorFeeSats) ?? "0")} sBTC`}
-              </dd>
-            </div>
-          </dl>
-          {rewards.rewardCycleId === null ? null : (
-            <p className="overview-domain-note">
-              {usesRewardForecast ? "Projected for" : "Estimate for"} reward cycle{" "}
-              {rewards.rewardCycleId}
-            </p>
-          )}
-          <EvidenceLine evidence={rewards.evidence} />
-          <ContextualActionControl
-            action={rewards.detailsAction}
-            emphasis="tertiary"
-            onRecheck={(target) => void recheck(target)}
-            rechecking={refreshing}
-          />
-        </section>
+        <RewardsOverviewCard
+          token={token}
+          rewards={rewards}
+          generatedAt={data.generatedAt}
+          fallback={
+            <section
+              className="card overview-domain"
+              id="overview-rewards"
+              aria-labelledby="overview-rewards-heading"
+            >
+              <div className="card-head">
+                <h2 id="overview-rewards-heading">Current Reward Distribution</h2>
+                <Badge state={statusTone(rewards.status)}>{statusLabel(rewards.status)}</Badge>
+              </div>
+              <div className="overview-domain-primary">
+                <span>Total Estimated Pool Earnings for This Distribution</span>
+                <strong>
+                  {rewards.estimatedPoolRewardSats === null
+                    ? "Unavailable"
+                    : `${sbtc(rewards.estimatedPoolRewardSats)} sBTC`}
+                </strong>
+                <small>
+                  {rewards.estimateKind === "checkpoint-forecast"
+                    ? `Projected at this distribution's checkpoint · ${forecastConfidence}`
+                    : rewards.estimateKind === "if-calculated-now"
+                      ? `If this distribution were calculated now · ${forecastConfidence}`
+                      : forecastConfidence}
+                </small>
+              </div>
+              <dl>
+                <div>
+                  <dt
+                    title={
+                      usesRewardForecast
+                        ? "Projected total sBTC at the next network calculation, shared across eligible signers and pools."
+                        : "Total sBTC accumulated by PoX-5 so far, shared across eligible signers and pools."
+                    }
+                  >
+                    {usesRewardForecast
+                      ? "Projected network-wide rewards"
+                      : "Network-wide rewards accrued"}
+                  </dt>
+                  <dd>
+                    {rewards.estimatedNetworkRewardSats === null
+                      ? "Unavailable"
+                      : `${sbtc(rewards.estimatedNetworkRewardSats)} sBTC`}
+                  </dd>
+                </div>
+                <div>
+                  <dt
+                    title={
+                      usesRewardForecast
+                        ? "Projected portion earned by this pool operator at the next allocation, using per-staker and per-bucket integer rounding."
+                        : "Estimated portion earned by this pool operator if rewards were calculated now, using per-staker and per-bucket integer rounding."
+                    }
+                  >
+                    {usesRewardForecast
+                      ? "Projected operator fee"
+                      : "Operator fee if calculated now"}
+                  </dt>
+                  <dd>
+                    {rewards.estimatedOperatorFeeSats === null
+                      ? feeUnavailableLabel(rewards.operatorFeeUnavailableReason)
+                      : `${sbtc(rewards.estimatedOperatorFeeSats)} sBTC`}
+                  </dd>
+                </div>
+                <div>
+                  <dt
+                    title={
+                      usesRewardForecast
+                        ? "Projected amount remaining for this pool's stakers after operator fees at the next allocation."
+                        : "Estimated amount remaining for this pool's stakers after operator fees if rewards were calculated now."
+                    }
+                  >
+                    {usesRewardForecast
+                      ? "Projected net for your stakers"
+                      : "Staker net if calculated now"}
+                  </dt>
+                  <dd>
+                    {rewardNetSats(
+                      rewards.estimatedPoolRewardSats,
+                      rewards.estimatedOperatorFeeSats,
+                    ) === null
+                      ? "Unavailable"
+                      : `${sbtc(rewardNetSats(rewards.estimatedPoolRewardSats, rewards.estimatedOperatorFeeSats) ?? "0")} sBTC`}
+                  </dd>
+                </div>
+              </dl>
+              {rewards.rewardCycleId === null || rewards.distributionCheckpoint === null ? null : (
+                <p className="overview-domain-note">
+                  {usesRewardForecast ? "Projected for" : "Estimate for"} cycle{" "}
+                  {rewards.rewardCycleId}
+                  {" · "}
+                  {rewards.distributionCheckpoint} distribution
+                </p>
+              )}
+              <EvidenceLine evidence={rewards.evidence} />
+              <ContextualActionControl
+                action={rewards.detailsAction}
+                emphasis="tertiary"
+                onRecheck={(target) => void recheck(target)}
+                rechecking={refreshing}
+              />
+            </section>
+          }
+        />
       </div>
     </>
   );

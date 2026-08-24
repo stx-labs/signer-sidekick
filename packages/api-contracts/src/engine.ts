@@ -8,7 +8,8 @@ const unsignedIntegerTextSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 const indexBlockHashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 const txidSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
 
-export const engineModeSchema = z.enum(["observe", "assist"]);
+// `assist` remains for persisted legacy job records; runtimes report `observe` or `operator-run`.
+export const engineModeSchema = z.enum(["observe", "assist", "operator-run"]);
 export type EngineMode = z.infer<typeof engineModeSchema>;
 
 export const engineJobStateSchema = z.enum([
@@ -381,43 +382,6 @@ export const operationReadinessSchema = z.union([
   operationReadinessV2Schema,
 ]);
 export type OperationReadiness = z.infer<typeof operationReadinessSchema>;
-
-export const engineApprovalRequestSchema = z
-  .object({
-    decision: z.literal("approve"),
-    intentSha256: sha256Schema,
-    policySha256: sha256Schema,
-    expiresAt: instantSchema,
-  })
-  .strict();
-export type EngineApprovalRequest = z.infer<typeof engineApprovalRequestSchema>;
-
-export const engineApprovalResponseSchema = z
-  .object({
-    approval: engineApprovalSchema,
-    job: engineJobDetailSchema,
-    created: z.boolean(),
-  })
-  .strict();
-export type EngineApprovalResponse = z.infer<typeof engineApprovalResponseSchema>;
-
-export const engineInvalidateApprovalRequestSchema = z
-  .object({
-    decision: z.literal("invalidate"),
-    reason: z.string().min(1).max(1_000),
-  })
-  .strict();
-export type EngineInvalidateApprovalRequest = z.infer<typeof engineInvalidateApprovalRequestSchema>;
-
-export const engineInvalidateApprovalResponseSchema = z
-  .object({
-    approval: engineApprovalSchema,
-    job: engineJobDetailSchema,
-  })
-  .strict();
-export type EngineInvalidateApprovalResponse = z.infer<
-  typeof engineInvalidateApprovalResponseSchema
->;
 
 export const engineForceObserveRequestSchema = z
   .object({

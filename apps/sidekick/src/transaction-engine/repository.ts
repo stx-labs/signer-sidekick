@@ -2,17 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   type AcceptedCompatibilityAttestationState,
-  compatibilityAttestationPayloadSha256,
   type SignedCompatibilityAttestation,
   signedCompatibilityAttestationSchema,
 } from "@stx-labs/signer-sidekick-protocol/compatibility-attestation";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
 import { type ChainAnchor, chainAnchorSchema } from "../chain-anchor.js";
-import type {
-  CompatibilityAttestationRepository,
-  StoredCompatibilityAttestation,
-} from "./attestation-controller.js";
 import {
   assertTransactionJobTransition,
   type TransactionJobState,
@@ -681,8 +676,6 @@ const jobCursorSchema = z
   })
   .strict();
 
-type AttestationRow = z.infer<typeof attestationRowSchema>;
-
 function authorityControlReason(db: DatabaseSync, adapterId: string): string | null {
   const forced = db.prepare("SELECT 1 AS active FROM engine_force_observe_control").get();
   if (forced !== undefined) return "Engine is irreversibly forced to Observe mode";
@@ -711,19 +704,18 @@ function decodeJobCursor(cursor: string, filterSha256: string): z.infer<typeof j
   return value;
 }
 
-function acceptedStateMatches(
-  row: AttestationRow,
-  expected: AcceptedCompatibilityAttestationState,
-): boolean {
-  return (
-    row.issuer === expected.issuer &&
-    row.revision === expected.revision &&
-    row.payload_sha256 === expected.payloadSha256 &&
-    row.verified_at === expected.verifiedAt
-  );
+/**
+ * Accepted compatibility attestation record. The attestation-gated Assist path is retired
+ * (ADR 0010); the table and these records remain only so persisted job attestation identities keep
+ * validating. No runtime code accepts new attestations.
+ */
+export interface StoredCompatibilityAttestation {
+  acceptedState: AcceptedCompatibilityAttestationState;
+  document: SignedCompatibilityAttestation;
+  acceptedAt: string;
 }
 
-export class TransactionEngineRepository implements CompatibilityAttestationRepository {
+export class TransactionEngineRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   private transaction<T>(operation: () => T): T {
@@ -1121,118 +1113,6 @@ export class TransactionEngineRepository implements CompatibilityAttestationRepo
     });
   }
 
-  createApproval(input: {
-    approvalId?: string;
-    jobId: string;
-    expectedJobStateVersion: number;
-    intentSha256: string;
-    policySha256: string;
-    approval: unknown;
-    approvalSha256: string;
-    actor: string;
-    createdAt: string;
-    expiresAt: string;
-  }): { approval: StoredTransactionApproval; created: boolean } {
-    const approvalId = uuidSchema.parse(input.approvalId ?? randomUUID());
-    const jobId = uuidSchema.parse(input.jobId);
-    const expectedVersion = z.number().int().nonnegative().parse(input.expectedJobStateVersion);
-    const intentSha256 = sha256Schema.parse(input.intentSha256);
-    const policySha256 = sha256Schema.parse(input.policySha256);
-    const approval = canonicalDocument(input.approval);
-    if (approval.sha256 !== sha256Schema.parse(input.approvalSha256)) {
-      throw new TransactionEngineConflictError(
-        "Approval hash does not match canonical approval JSON",
-      );
-    }
-    const actor = z.string().min(1).max(500).parse(input.actor);
-    const createdAt = instantSchema.parse(input.createdAt);
-    const expiresAt = instantSchema.parse(input.expiresAt);
-    if (Date.parse(expiresAt) <= Date.parse(createdAt)) {
-      throw new TransactionEngineConflictError("Approval expiry must be after creation time");
-    }
-
-    return this.transaction(() => {
-      const job = this.jobRow(jobId);
-      if (
-        job === null ||
-        job.state !== "awaiting_approval" ||
-        job.state_version !== expectedVersion
-      ) {
-        throw new TransactionEngineCasError(
-          "Approval logical job state/version compare-and-swap failed",
-        );
-      }
-      const controlReason = authorityControlReason(this.db, job.adapter_id);
-      if (controlReason !== null) throw new TransactionEngineConflictError(controlReason);
-      if (job.intent_sha256 !== intentSha256 || job.policy_sha256 !== policySha256) {
-        throw new TransactionEngineConflictError(
-          "Approval does not bind the logical job intent and policy hashes",
-        );
-      }
-      const active = this.db
-        .prepare("SELECT * FROM transaction_approvals WHERE job_id = ? AND invalidated_at IS NULL")
-        .get(jobId);
-      if (active !== undefined) {
-        const existing = approvalRowSchema.parse(active);
-        if (
-          existing.intent_sha256 === intentSha256 &&
-          existing.policy_sha256 === policySha256 &&
-          existing.approval_sha256 === approval.sha256 &&
-          existing.approval_json === approval.encoded &&
-          existing.actor === actor &&
-          existing.created_at === createdAt &&
-          existing.expires_at === expiresAt
-        ) {
-          return { approval: mapApproval(existing), created: false };
-        }
-        throw new TransactionEngineConflictError("Logical job already has an active approval");
-      }
-      this.db
-        .prepare(
-          `INSERT INTO transaction_approvals (
-            approval_id, job_id, intent_sha256, policy_sha256, approval_sha256,
-            approval_json, actor, created_at, expires_at, invalidated_at,
-            invalidation_reason, approval_version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0)`,
-        )
-        .run(
-          approvalId,
-          jobId,
-          intentSha256,
-          policySha256,
-          approval.sha256,
-          approval.encoded,
-          actor,
-          createdAt,
-          expiresAt,
-        );
-      const created = this.db
-        .prepare("SELECT * FROM transaction_approvals WHERE approval_id = ?")
-        .get(approvalId);
-      if (created === undefined) throw new Error("Approval insert did not persist");
-      return { approval: mapApproval(created), created: true };
-    });
-  }
-
-  getActiveApproval(jobId: string, at?: string): StoredTransactionApproval | null {
-    const parsedJobId = uuidSchema.parse(jobId);
-    const parsedAt = at === undefined ? undefined : instantSchema.parse(at);
-    const row =
-      parsedAt === undefined
-        ? this.db
-            .prepare(
-              "SELECT * FROM transaction_approvals WHERE job_id = ? AND invalidated_at IS NULL",
-            )
-            .get(parsedJobId)
-        : this.db
-            .prepare(
-              `SELECT * FROM transaction_approvals
-               WHERE job_id = ? AND invalidated_at IS NULL AND expires_at > ?`,
-            )
-            .get(parsedJobId, parsedAt);
-    return row === undefined ? null : mapApproval(row);
-  }
-
   getLatestApproval(jobId: string): StoredTransactionApproval | null {
     const row = this.db
       .prepare(
@@ -1241,33 +1121,6 @@ export class TransactionEngineRepository implements CompatibilityAttestationRepo
       )
       .get(uuidSchema.parse(jobId));
     return row === undefined ? null : mapApproval(row);
-  }
-
-  invalidateApproval(input: {
-    approvalId: string;
-    expectedApprovalVersion: number;
-    reason: string;
-    invalidatedAt: string;
-  }): StoredTransactionApproval {
-    const approvalId = uuidSchema.parse(input.approvalId);
-    const expectedVersion = z.number().int().nonnegative().parse(input.expectedApprovalVersion);
-    const reason = z.string().min(1).max(2_000).parse(input.reason);
-    const invalidatedAt = instantSchema.parse(input.invalidatedAt);
-    return this.transaction(() => {
-      const result = this.db
-        .prepare(
-          `UPDATE transaction_approvals SET
-            invalidated_at = ?, invalidation_reason = ?, approval_version = approval_version + 1
-           WHERE approval_id = ? AND approval_version = ? AND invalidated_at IS NULL`,
-        )
-        .run(invalidatedAt, reason, approvalId, expectedVersion);
-      requireChanges(result.changes, "Approval version compare-and-swap failed");
-      const row = this.db
-        .prepare("SELECT * FROM transaction_approvals WHERE approval_id = ?")
-        .get(approvalId);
-      if (row === undefined) throw new Error("Approval disappeared after invalidation");
-      return mapApproval(row);
-    });
   }
 
   getNonceReservation(reservationId: string): StoredNonceReservation | null {
@@ -1955,95 +1808,5 @@ export class TransactionEngineRepository implements CompatibilityAttestationRepo
       document: signedCompatibilityAttestationSchema.parse(parseJson(value.document_json)),
       acceptedAt: value.accepted_at,
     };
-  }
-
-  async accept(
-    record: StoredCompatibilityAttestation,
-    expected: AcceptedCompatibilityAttestationState | null,
-  ): Promise<void> {
-    const document: SignedCompatibilityAttestation = signedCompatibilityAttestationSchema.parse(
-      record.document,
-    );
-    const acceptedState = {
-      issuer: issuerSchema.parse(record.acceptedState.issuer),
-      revision: z.number().int().positive().parse(record.acceptedState.revision),
-      payloadSha256: sha256Schema.parse(record.acceptedState.payloadSha256),
-      verifiedAt: instantSchema.parse(record.acceptedState.verifiedAt),
-    };
-    const acceptedAt = instantSchema.parse(record.acceptedAt);
-    if (document.payload.issuer !== acceptedState.issuer) {
-      throw new TransactionEngineConflictError(
-        "Accepted attestation issuer does not match its document",
-      );
-    }
-    if (document.payload.revision !== acceptedState.revision) {
-      throw new TransactionEngineConflictError(
-        "Accepted attestation revision does not match its document",
-      );
-    }
-    if (compatibilityAttestationPayloadSha256(document.payload) !== acceptedState.payloadSha256) {
-      throw new TransactionEngineConflictError(
-        "Accepted attestation digest does not match its document",
-      );
-    }
-    const documentJson = canonicalJson(document);
-    this.transaction(() => {
-      const existingValue = this.db
-        .prepare("SELECT * FROM accepted_compatibility_attestations WHERE issuer = ?")
-        .get(acceptedState.issuer);
-      if (existingValue === undefined) {
-        if (expected !== null) {
-          throw new TransactionEngineCasError("Attestation compare-and-swap failed");
-        }
-        this.db
-          .prepare(
-            `INSERT INTO accepted_compatibility_attestations (
-              issuer, revision, payload_sha256, verified_at, document_json,
-              accepted_at, row_version
-            ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-          )
-          .run(
-            acceptedState.issuer,
-            acceptedState.revision,
-            acceptedState.payloadSha256,
-            acceptedState.verifiedAt,
-            documentJson,
-            acceptedAt,
-          );
-        return;
-      }
-      const existing = attestationRowSchema.parse(existingValue);
-      if (expected === null || !acceptedStateMatches(existing, expected)) {
-        throw new TransactionEngineCasError("Attestation revision/digest compare-and-swap failed");
-      }
-      if (acceptedState.revision < existing.revision) {
-        throw new TransactionEngineConflictError("Attestation revision cannot be downgraded");
-      }
-      if (
-        acceptedState.revision === existing.revision &&
-        acceptedState.payloadSha256 !== existing.payload_sha256
-      ) {
-        throw new TransactionEngineConflictError(
-          "Attestation revision cannot be rebound to a different digest",
-        );
-      }
-      const result = this.db
-        .prepare(
-          `UPDATE accepted_compatibility_attestations SET
-            revision = ?, payload_sha256 = ?, verified_at = ?, document_json = ?,
-            accepted_at = ?, row_version = row_version + 1
-           WHERE issuer = ? AND row_version = ?`,
-        )
-        .run(
-          acceptedState.revision,
-          acceptedState.payloadSha256,
-          acceptedState.verifiedAt,
-          documentJson,
-          acceptedAt,
-          acceptedState.issuer,
-          existing.row_version,
-        );
-      requireChanges(result.changes, "Attestation row compare-and-swap failed");
-    });
   }
 }

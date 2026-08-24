@@ -269,6 +269,15 @@ const runtimeSettingsShape = z
       .strict(),
     forecast: z.object({ horizonCycles: z.number().int().nonnegative() }).strict(),
     embed: z.object({ publicApiUrl: z.string() }),
+    /** Reward-run fee band plus the deployment cap; absent on Sidekicks that predate it. */
+    engine: z
+      .object({
+        minimumFeeUstx: z.number().int().nonnegative(),
+        standardFeeUstx: z.number().int().nonnegative(),
+        maximumFeeUstx: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
     audit: z.array(
       z
         .object({
@@ -553,7 +562,7 @@ export type BrowserWalletIntentCreateRequest =
       recipient: string;
     }
   | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
-  | { action: "claim-rewards"; actorPrincipal: string; jobId: string }
+  | { action: "claim-rewards"; actorPrincipal: string; jobId?: string | undefined }
   | { action: "calculate-rewards"; actorPrincipal: string }
   | {
       action: "claim-staker-rewards";
@@ -768,6 +777,10 @@ export interface OperatorSnapshot {
       rewardPhaseStartBurnHeight: number | null;
       blocksUntilRewardPhase: number | null;
       isPreparePhase: boolean | null;
+      /** PoX geometry for the current cycle, so pages can place halves and the prepare phase. */
+      rewardCycleLength?: number | null;
+      prepareCycleLength?: number | null;
+      currentCycleStartBurnHeight?: number | null;
     };
     compatibility: {
       status: "matched" | "unrecognized" | "inconsistent";
@@ -1236,12 +1249,18 @@ export interface DashboardSnapshot extends OperatorSnapshot {
       grossSats: string;
       earnedSats: string;
       feeSats: string;
+      /** Fast snapshot count for the STX-only reward bucket, not whole-pool settlement status. */
       actionableClaims: number;
+      /** Bitcoin-L1 payouts below policy threshold in the STX-only reward bucket. */
       l1ClaimsWaitingForFeeThreshold: number;
     };
     stakers: Array<{
       stakerPrincipal: string;
-      payout: { kind: string; maxFeeSats: string | null };
+      payout: {
+        kind: string;
+        maxFeeSats: string | null;
+        poxAddress?: { versionHex: string; hashbytesHex: string } | null;
+      };
       rewards: { earnedSats: string; feeSats: string; grossSats: string };
       claimableByPolicy: boolean;
     }>;
@@ -1955,7 +1974,7 @@ export const activityGroupSummarySchema = z
     deadline: operatorDeadlineSchema.nullable(),
     urgencyAt: z.iso.datetime().nullable(),
     actorPrincipal: z.string().min(1).max(500).nullable(),
-    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(100),
+    txids: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)).max(200),
     anchor: engineChainAnchorSchema.nullable(),
     supersedesActivityId: z.string().min(1).max(500).nullable(),
     supersededByActivityId: z.string().min(1).max(500).nullable(),
@@ -2310,6 +2329,7 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
+    distributionCheckpoint: z.enum(["first-half", "second-half"]).nullable(),
     estimatedOperatorFeeSats: z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
@@ -2351,6 +2371,13 @@ export const overviewRewardsSummarySchema = z
         code: "custom",
         path: ["estimatedPoolRewardSats"],
         message: "An available pool estimate must identify its kind and confidence",
+      });
+    }
+    if ((value.estimatedPoolRewardSats === null) !== (value.distributionCheckpoint === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["distributionCheckpoint"],
+        message: "An available reward estimate must identify its distribution checkpoint",
       });
     }
     if (value.estimateKind === "if-calculated-now" && value.confidence !== "contract-exact") {
@@ -2513,7 +2540,8 @@ export const browserWalletIntentCreateRequestSchema = z.discriminatedUnion("acti
     .object({
       action: z.literal("claim-rewards"),
       actorPrincipal: walletActorPrincipalInputSchema,
-      jobId: z.uuid(),
+      /** Present for a legacy Observe engine job; omitted for a fresh manual wallet proposal. */
+      jobId: z.uuid().optional(),
     })
     .strict(),
   z
@@ -2880,3 +2908,412 @@ export const browserWalletIntentResponseSchema = z
   .object({ intent: browserWalletIntentSchema })
   .strict();
 export type BrowserWalletIntentResponse = z.infer<typeof browserWalletIntentResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Reward ledger — operator-run reward operations (ADR 0010, plan S1).
+// Distributions inside cycles, derived from chain evidence at read time.
+// ---------------------------------------------------------------------------
+
+const ledgerSatsSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/);
+const ledgerTxIdSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
+const ledgerCycleSchema = z.number().int().nonnegative().safe();
+const ledgerDistributionIndexSchema = z.union([z.literal(1), z.literal(2)]);
+
+export const rewardLedgerCoverageSchema = z.enum([
+  "exact",
+  "combined",
+  "historical-coverage-incomplete",
+]);
+export type RewardLedgerCoverage = z.infer<typeof rewardLedgerCoverageSchema>;
+
+export const rewardLedgerProvenanceSchema = z.enum(["you", "another-caller", "unknown"]);
+export type RewardLedgerProvenance = z.infer<typeof rewardLedgerProvenanceSchema>;
+
+export const rewardLedgerDistributionStatusSchema = z.enum([
+  "needs-attention",
+  "accruing",
+  "waiting-calculation",
+  "calculation-overdue",
+  "ready",
+  "distributing",
+  "all-distributed",
+  "complete",
+]);
+export type RewardLedgerDistributionStatus = z.infer<typeof rewardLedgerDistributionStatusSchema>;
+
+export const rewardLedgerPaymentStatusSchema = z.enum([
+  "outstanding",
+  "not-payable",
+  "below-fee",
+  "rolled-forward",
+  "paid",
+  "sent",
+  "arrived",
+  "retired",
+  "rejected",
+  "returned",
+]);
+export type RewardLedgerPaymentStatus = z.infer<typeof rewardLedgerPaymentStatusSchema>;
+
+export const rewardLedgerL1StatusSchema = z.enum([
+  "awaiting-signers",
+  "accepted-ready-to-retire",
+  "rejected-return-pending",
+  "retired",
+  "returned",
+  "unknown",
+]);
+export type RewardLedgerL1Status = z.infer<typeof rewardLedgerL1StatusSchema>;
+
+/**
+ * Why a First-Distribution account was not paid before the Second calculation (its amount then
+ * travels with the Second-Distribution payment). Reasons come from the operator-run history:
+ * recorded child outcomes, the run's own state, or the absence of a run.
+ */
+export const rewardLedgerRollForwardReasonSchema = z.enum([
+  "no-run",
+  "not-in-recipe",
+  "skipped-below-fee-budget",
+  "skipped",
+  "halted-at-this-payment",
+  "not-attempted-run-halted",
+  "not-attempted-run-cancelled",
+  "not-attempted-run-expired",
+  "not-attempted-run-open",
+  "broadcast-unresolved",
+  "paid-after-second-calculation",
+]);
+export type RewardLedgerRollForwardReason = z.infer<typeof rewardLedgerRollForwardReasonSchema>;
+
+export const rewardLedgerRollForwardSchema = z
+  .object({
+    reason: rewardLedgerRollForwardReasonSchema,
+    /** The recorded failure/skip reason verbatim, when the run history holds one. */
+    detail: z.string().min(1).max(1_000).nullable(),
+    runId: z.string().uuid().nullable(),
+    childIndex: z.number().int().nonnegative().nullable(),
+    recordedAt: z.string().nullable(),
+    /** The Second-Distribution payment that carried this account's amount, once made. */
+    paidWith: z
+      .object({ distribution: z.literal(2), txId: ledgerTxIdSchema })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type RewardLedgerRollForward = z.infer<typeof rewardLedgerRollForwardSchema>;
+
+export const rewardLedgerCapabilityLevelSchema = z.enum([
+  "pox5-baseline",
+  "manager-readable",
+  "reviewed-event-vocabulary",
+  "reviewed-execution-adapter",
+]);
+export type RewardLedgerCapabilityLevel = z.infer<typeof rewardLedgerCapabilityLevelSchema>;
+
+export const rewardLedgerPaymentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cycle: ledgerCycleSchema,
+    distribution: ledgerDistributionIndexSchema.nullable(),
+    bucket: z.string().min(1).max(40),
+    stakerPrincipal: z.string().min(1).max(200),
+    route: z.enum(["sbtc", "bitcoin"]),
+    grossRewardSats: ledgerSatsSchema.nullable(),
+    operatorFeeSats: ledgerSatsSchema.nullable(),
+    stakerEntitlementSats: ledgerSatsSchema,
+    payoutSats: ledgerSatsSchema.nullable(),
+    payoutAsset: z.enum(["sBTC", "BTC"]).nullable(),
+    l1MaxFeeSats: ledgerSatsSchema.nullable(),
+    l1ActualFeeSats: ledgerSatsSchema.nullable(),
+    feeRefundSats: ledgerSatsSchema.nullable(),
+    returnedSats: ledgerSatsSchema.nullable(),
+    status: rewardLedgerPaymentStatusSchema,
+    coverage: rewardLedgerCoverageSchema,
+    includesPriorDistribution: z.boolean(),
+    paymentTxId: ledgerTxIdSchema.nullable(),
+    paymentBlockHeight: z.number().int().nonnegative().nullable(),
+    paidAt: z.iso.datetime().nullable(),
+    by: rewardLedgerProvenanceSchema.nullable(),
+    l1RequestId: z.string().min(1).max(40).nullable(),
+    l1Status: rewardLedgerL1StatusSchema.nullable(),
+    settleOrReclaimTxId: ledgerTxIdSchema.nullable(),
+    btcSweepTxId: z.string().min(1).max(128).nullable(),
+    /** Bitcoin block height of the sweep that paid an L1 withdrawal, when known. */
+    btcSweepBlockHeight: z.number().int().nonnegative().nullable(),
+    unavailableReason: z.string().min(1).max(200).nullable(),
+    /** The staker's currently registered Bitcoin payout address, not historical destination proof. */
+    l1Address: z.string().min(1).max(128).nullable(),
+    /** Set on `rolled-forward` rows: why the First-Distribution amount moved to the Second. */
+    rollForward: rewardLedgerRollForwardSchema.nullable(),
+  })
+  .strict();
+export type RewardLedgerPayment = z.infer<typeof rewardLedgerPaymentSchema>;
+
+export const rewardLedgerCalculationSchema = z
+  .object({
+    state: z.enum(["done", "waiting", "overdue"]),
+    txId: ledgerTxIdSchema.nullable(),
+    blockHeight: z.number().int().nonnegative().nullable(),
+    calculationBurnHeight: z.number().int().nonnegative().nullable(),
+    observedAt: z.iso.datetime().nullable(),
+    poolSats: ledgerSatsSchema.nullable(),
+    poolSatsUnavailableReason: z.string().min(1).max(200).nullable(),
+    by: rewardLedgerProvenanceSchema.nullable(),
+  })
+  .strict();
+export type RewardLedgerCalculation = z.infer<typeof rewardLedgerCalculationSchema>;
+
+export const rewardLedgerCollectSchema = z
+  .object({
+    sats: ledgerSatsSchema,
+    stxSats: ledgerSatsSchema.nullable(),
+    txId: ledgerTxIdSchema,
+    blockHeight: z.number().int().nonnegative(),
+    by: rewardLedgerProvenanceSchema,
+  })
+  .strict();
+export type RewardLedgerCollect = z.infer<typeof rewardLedgerCollectSchema>;
+
+export const rewardLedgerDistributionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cycle: ledgerCycleSchema,
+    distribution: ledgerDistributionIndexSchema,
+    current: z.boolean(),
+    calculation: rewardLedgerCalculationSchema,
+    collects: z.array(rewardLedgerCollectSchema).max(50),
+    collectedSats: ledgerSatsSchema,
+    availableToCollectSats: ledgerSatsSchema.nullable(),
+    feeBips: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    payments: z
+      .object({
+        made: z.number().int().nonnegative(),
+        outstanding: z.number().int().nonnegative(),
+        notPayable: z.number().int().nonnegative(),
+        belowFee: z.number().int().nonnegative(),
+        rolledForward: z.number().int().nonnegative(),
+        /** Withdrawal broadcast but not yet accepted by the Bitcoin protocol. */
+        sent: z.number().int().nonnegative(),
+        /** Accepted withdrawal whose manager-side request can now be retired. */
+        arrived: z.number().int().nonnegative(),
+        /** Compatibility total: `sent + arrived`. */
+        arriving: z.number().int().nonnegative(),
+        rejected: z.number().int().nonnegative(),
+        returned: z.number().int().nonnegative(),
+        distributedSats: ledgerSatsSchema,
+        outstandingSats: ledgerSatsSchema,
+        operatorFeeSats: ledgerSatsSchema,
+      })
+      .strict(),
+    status: rewardLedgerDistributionStatusSchema,
+    statusDetail: z.string().min(1).max(300),
+    coverage: rewardLedgerCoverageSchema,
+  })
+  .strict();
+export type RewardLedgerDistribution = z.infer<typeof rewardLedgerDistributionSchema>;
+
+export const rewardLedgerCycleSchema = z
+  .object({
+    cycle: ledgerCycleSchema,
+    feeBips: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    collectedSats: ledgerSatsSchema,
+    distributedSats: ledgerSatsSchema,
+    operatorFeeSats: ledgerSatsSchema,
+    outstandingSats: ledgerSatsSchema,
+    coverage: rewardLedgerCoverageSchema,
+    distributions: z.array(rewardLedgerDistributionSchema).max(2),
+  })
+  .strict();
+export type RewardLedgerCycle = z.infer<typeof rewardLedgerCycleSchema>;
+
+export const rewardLedgerSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    managerPrincipal: z.string().min(1),
+    network: z.string().min(1),
+    pox5ContractId: z.string().min(1).nullable(),
+    anchor: z
+      .object({
+        stacksTipHeight: z.number().int().nonnegative(),
+        burnBlockHeight: z.number().int().nonnegative(),
+        indexBlockHash: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
+    capabilityLevel: rewardLedgerCapabilityLevelSchema,
+    monitoringStartedAt: z.iso.datetime().nullable(),
+    recovery: z
+      .object({
+        managerHistory: z.enum(["not-started", "reconstructing", "complete"]),
+        currentMemberHistory: z.enum(["not-started", "reconstructing", "complete"]),
+      })
+      .strict(),
+    /**
+     * Evidence read window. When a long history exceeds `limit` rows per stream the ledger keeps
+     * the newest rows; cycles at or below `oldestRetainedBlockHeight` report
+     * `historical-coverage-incomplete` rather than silently missing payments.
+     */
+    evidenceWindow: z
+      .object({
+        truncated: z.boolean(),
+        oldestRetainedBlockHeight: z.number().int().nonnegative().nullable(),
+        limit: z.number().int().positive(),
+      })
+      .strict(),
+    current: z
+      .object({
+        cycle: ledgerCycleSchema.nullable(),
+        distribution: ledgerDistributionIndexSchema.nullable(),
+      })
+      .strict(),
+    cycles: z.array(rewardLedgerCycleSchema).max(200),
+    payments: z.array(rewardLedgerPaymentSchema).max(100_000),
+    paymentsTruncated: z.boolean(),
+    fees: z
+      .object({
+        feeBips: z
+          .string()
+          .regex(/^(?:0|[1-9][0-9]*)$/)
+          .nullable(),
+        earnedIndexedSats: ledgerSatsSchema,
+        indexedPaymentCount: z.number().int().nonnegative(),
+        unmatchedPaymentCount: z.number().int().nonnegative(),
+        historyComplete: z.boolean(),
+        balanceInManagerSats: ledgerSatsSchema.nullable(),
+        withdrawnDerivedSats: ledgerSatsSchema.nullable(),
+        refunds: z
+          .array(
+            z
+              .object({
+                txId: ledgerTxIdSchema,
+                blockHeight: z.number().int().nonnegative(),
+                amountSats: ledgerSatsSchema.nullable(),
+              })
+              .strict(),
+          )
+          .max(1_000),
+      })
+      .strict(),
+    query: z
+      .object({
+        cycle: ledgerCycleSchema.nullable(),
+        distribution: ledgerDistributionIndexSchema.nullable(),
+        staker: z.string().min(1).max(200).nullable(),
+        /** `all` lists every retained payment (accounting exports); `selection` is one cycle. */
+        scope: z.enum(["selection", "all"]),
+      })
+      .strict(),
+  })
+  .strict();
+export type RewardLedger = z.infer<typeof rewardLedgerSchema>;
+
+// ---------------------------------------------------------------------------
+// Gas wallet (operator-run execution envelope, ADR 0010 / plan S2). Public identity only.
+// ---------------------------------------------------------------------------
+
+export const gasWalletRefusalSchema = z
+  .object({
+    checkedAt: z.iso.datetime().nullable(),
+    isManagerAdmin: z.boolean().nullable(),
+    isSignerKey: z.boolean().nullable(),
+    isContract: z.boolean(),
+    refusalReason: z
+      .enum(["manager-admin", "signer-key", "contract-principal", "check-unavailable"])
+      .nullable(),
+  })
+  .strict();
+export type GasWalletRefusal = z.infer<typeof gasWalletRefusalSchema>;
+
+export const gasWalletSweepStatusSchema = z.enum([
+  "planned",
+  "broadcast",
+  "confirmed",
+  "failed",
+  "cancelled",
+  "expired",
+]);
+export type GasWalletSweepStatus = z.infer<typeof gasWalletSweepStatusSchema>;
+
+/** One sealed sweep of the gas wallet's remaining STX to an operator-entered address. */
+export const gasWalletSweepSchema = z
+  .object({
+    sweepId: z.string().uuid(),
+    status: gasWalletSweepStatusSchema,
+    walletPrincipal: z.string().min(1),
+    recipient: z.string().min(1),
+    amountUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    feeUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    nonce: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    balanceUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    planSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    txid: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    broadcastAmbiguous: z.boolean(),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    approvedAt: z.iso.datetime().nullable(),
+    broadcastAt: z.iso.datetime().nullable(),
+    resolvedAt: z.iso.datetime().nullable(),
+    blockHeight: z.number().int().nonnegative().nullable(),
+    failureReason: z.string().min(1).max(300).nullable(),
+  })
+  .strict();
+export type GasWalletSweep = z.infer<typeof gasWalletSweepSchema>;
+
+export const gasWalletSweepRequestSchema = z
+  .object({ recipient: z.string().min(1).max(64) })
+  .strict();
+export type GasWalletSweepRequest = z.infer<typeof gasWalletSweepRequestSchema>;
+
+export const gasWalletStatusSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.iso.datetime(),
+    network: z.string().min(1),
+    engineMode: z.enum(["observe", "operator-run"]),
+    configured: z.boolean(),
+    enabled: z.boolean(),
+    source: z.enum(["generated", "configured"]).nullable(),
+    principal: z.string().min(1).nullable(),
+    publicKey: z
+      .string()
+      .regex(/^(02|03)[0-9a-f]{64}$/)
+      .nullable(),
+    secretFilePath: z.string().min(1).nullable(),
+    createdAt: z.iso.datetime().nullable(),
+    enabledAt: z.iso.datetime().nullable(),
+    signer: z.enum(["ready", "not-loaded", "unreadable", "disabled", "engine-unavailable"]),
+    signerError: z.string().min(1).max(200).nullable(),
+    balanceUstx: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable(),
+    balanceObservedAt: z.iso.datetime().nullable(),
+    balanceError: z.string().min(1).max(200).nullable(),
+    feeBasisUstx: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+    feeBasis: z.enum(["fee-cap"]),
+    estimatedTransactions: z.number().int().nonnegative().nullable(),
+    refusal: gasWalletRefusalSchema,
+    banners: z
+      .object({
+        setupDismissedAt: z.iso.datetime().nullable(),
+        lowBalanceDismissedUntil: z.iso.datetime().nullable(),
+      })
+      .strict(),
+    /** Planned or broadcast sweep, if any; while present the wallet refuses new runs and sweeps. */
+    activeSweepId: z.string().uuid().nullable(),
+    sweeps: z.array(gasWalletSweepSchema).max(20),
+  })
+  .strict();
+export type GasWalletStatus = z.infer<typeof gasWalletStatusSchema>;

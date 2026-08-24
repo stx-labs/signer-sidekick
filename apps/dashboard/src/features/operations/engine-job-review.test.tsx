@@ -80,16 +80,8 @@ const job: EngineJobDetail = {
 };
 
 describe("EngineJobReview", () => {
-  it("renders every exact approval field and the actionable decision", () => {
-    const markup = renderToStaticMarkup(
-      <EngineJobReview
-        job={job}
-        actionsEnabled
-        action={null}
-        onApprove={() => undefined}
-        onInvalidate={() => undefined}
-      />,
-    );
+  it("renders every exact review field without any approval control", () => {
+    const markup = renderToStaticMarkup(<EngineJobReview job={job} actionsEnabled />);
 
     expect(markup).toContain("claim-rewards");
     expect(markup).toContain("reference-manager-claim-rewards");
@@ -100,21 +92,13 @@ describe("EngineJobReview", () => {
     expect(markup).toContain(hash("a"));
     expect(markup).toContain(hash("b"));
     expect(markup).toContain(hash("c"));
-    expect(markup).toContain("Approve transaction");
+    expect(markup).not.toContain("Approve transaction");
     expect(markup).not.toContain("private key");
     expect(markup).not.toContain("signed transaction");
   });
 
-  it("removes the approval control when freshness is invalidated", () => {
-    const markup = renderToStaticMarkup(
-      <EngineJobReview
-        job={job}
-        actionsEnabled={false}
-        action={null}
-        onApprove={() => undefined}
-        onInvalidate={() => undefined}
-      />,
-    );
+  it("explains disabled controls when freshness is invalidated", () => {
+    const markup = renderToStaticMarkup(<EngineJobReview job={job} actionsEnabled={false} />);
     expect(markup).toContain("Action controls are disabled");
     expect(markup).not.toContain("Approve transaction");
   });

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Gas wallet · reward operations mockup</title>
+<link rel="stylesheet" href="../../tokens/tokens.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/base.css">
+<link rel="stylesheet" href="../../../apps/dashboard/src/styles.css">
+<link rel="stylesheet" href="../src/mockup.css?v=mt5w7q2b">
+<script>
+  const theme = new URLSearchParams(location.search).get("theme");
+  if (theme === "dark") document.documentElement.dataset.theme = "dark";
+</script>
+</head>
+<body>
+<div class="app" data-network="mainnet">
+  <aside class="sidebar">
+    <div class="brand"><div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6-4 6 4M6 15l6 4 6-4M5 12h14"></path></svg></div><div class="name">Signer Sidekick<small>PoX-5 · v1</small></div></div>
+    <nav aria-label="Primary">
+      <div class="nav-label">Operate</div>
+      <a class="item" href="#overview">Overview</a>
+      <a class="item" href="#pool">Pool</a>
+      <a class="item" href="#rewards">Rewards</a>
+      <a class="item" href="#activity">Activity</a>
+      <a class="item" href="#health">Signer Health</a>
+      <div class="nav-label">Configure</div>
+      <a class="item active" href="#settings" aria-current="page">Settings</a>
+    </nav>
+    <div class="spacer"></div>
+  </aside>
+  <div class="content content-settings">
+    <div class="topbar"><div class="crumbs"><strong>Settings</strong></div><div class="right"><span class="net net-mainnet"><span class="dot"></span>Mainnet</span></div></div>
+    <main class="main">
+      <div class="page-head"><div><h1>Settings</h1><p class="lede">Deployment, operations, and the gas wallet for this Sidekick instance.</p></div></div>
+      <section class="settings-group" aria-labelledby="gas-wallet-title">
+        <div class="settings-group-head">
+          <h2 id="gas-wallet-title">Gas wallet</h2>
+          <p>Sidekick's own small STX wallet. It pays the transaction fees when you click Calculate, Collect, or Distribute. It holds nothing else. Before every run Sidekick checks that this address is not currently the signer or a manager admin, and refuses to sign if it is.</p>
+        </div>
+        <section class="card-standout set-section" id="gas-wallet">
+          <div class="card-head"><div><h2>Gas wallet</h2><p class="muted">Created on this machine · the key stays in Sidekick's data directory</p></div><span class="badge b-success">Ready</span></div>
+          <div class="rw-wallet-grid">
+            <div>
+              <div class="rw-wallet-address"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg><span>SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7</span><button class="btn-icon" type="button" aria-label="Copy address"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path></svg></button></div>
+              <div class="statline"><span class="k">Balance</span><span class="v">12.48 STX<span class="sub">about 1,200 transactions at current fees</span></span></div>
+              <div class="statline"><span class="k">Last run</span><span class="v">0.42 STX<span class="sub">41 transactions · Cycle 141 · Second Distribution</span></span></div>
+              <div class="statline"><span class="k">Fee cap per transaction</span><span class="v">0.10 STX</span></div>
+              <div class="statline"><span class="k">Key file</span><span class="v"><span class="identifier">data/gas-wallet.key</span><span class="sub">owner-only · part of your host backups · losing it loses only gas</span></span></div>
+            </div>
+            <div>
+              <div class="callout callout-neutral"><div class="body"><strong>Fund it.</strong> Send STX to the address on the left from any wallet. At current fees, 10 STX ≈ 960 transactions — about 23 distributions of 41 transactions for this pool.</div></div>
+              <div class="rw-setting-row"><span>Show the setup banner on Rewards<span class="muted">Off — you dismissed it</span></span><span class="toggle" role="switch" aria-checked="false" aria-label="Show the setup banner on Rewards"></span></div>
+              <div class="rw-setting-row"><span>Low-balance reminder<span class="muted">Warn when the next run cannot be covered</span></span><span class="toggle on" role="switch" aria-checked="true" aria-label="Low-balance reminder"></span></div>
+              <div class="rw-setting-row"><span>Dedicated-key check<span class="muted">Run before every run · refuses to sign if this address is currently the signer or a manager admin</span></span><span class="badge b-success">Passed</span></div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="rw-sweep">
+            <div>
+              <h3>Sweep remaining STX</h3>
+              <p class="muted">Sends everything in the gas wallet except the network fee to an address you enter. Runs stay disabled until you fund it again. Not available while a run is in progress.</p>
+            </div>
+            <div class="field">
+              <label for="sweep-to">Send all remaining STX to</label>
+              <div class="input-group"><input id="sweep-to" type="text" value="SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE" spellcheck="false" aria-describedby="sweep-help"><span class="suffix">mainnet</span></div>
+              <span class="help" id="sweep-help">12.48 STX available · 12.47 STX after the network fee · must be a standard mainnet address, not a contract</span>
+            </div>
+            <div class="rw-sweep-action"><button class="btn btn-secondary" type="button">Sweep 12.47 STX</button></div>
+          </div>
+        </section>
+        <p class="rw-mock-note">Mockup — the same section before a wallet exists</p>
+        <section class="card-standout set-section" id="gas-wallet-empty">
+          <div class="card-head"><div><h2>Gas wallet</h2><p class="muted">Not set up</p></div><span class="badge b-neutral">Optional</span></div>
+          <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; max-width: 640px;">Create a small STX wallet that lives on this machine. Sidekick uses it only to pay gas for the permissionless reward calls when you click — it holds nothing else, and Sidekick checks before every run that it is not currently the signer or an admin. Without it, you keep signing each call with your own wallet.</p>
+          <div class="pill-row"><button class="btn btn-primary" type="button">Create gas wallet</button><button class="btn btn-tertiary" type="button">Use an existing key file</button></div>
+        </section>
+      </section>
+    </main>
+  </div>
+</div>
+
+</body>
+</html>

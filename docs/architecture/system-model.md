@@ -14,7 +14,7 @@ of truth.
 | Reconciliation workers | Verify callback claims, refresh affected domains, backfill current-member history, and run periodic anti-entropy. |
 | Health monitor | Samples the local node and signer, compares optional independent references, and records durable finding episodes. |
 | SQLite store | Keeps raw evidence, canonical anchors, projections, operation state, settings, and audit history behind typed repositories. |
-| Dashboard | Reads page-specific API contracts, requests explicit refreshes, and hands sealed intents to a browser wallet. |
+| Dashboard | Reads page-specific API contracts, hands sealed intents to a browser wallet, and approves bounded reward runs. |
 
 The default deployment packages these components in one container. The observer listener may bind a
 separate private port, but it shares the service lifecycle and database.
@@ -54,11 +54,12 @@ operator snapshot without an open browser.
 ## Operator action flow
 
 ```text
-anchored state -> reviewed capability adapter -> sealed expiring intent -> browser wallet
-      -> txid only -> node/API transaction lookup -> byte verification -> poststate -> Activity
+anchored state -> reviewed capability adapter -> sealed plan
+      browser-wallet action -> txid only -----------------------+
+      approved reward recipe -> dedicated gas wallet -> one tx -+-> canonical evidence -> Activity
 ```
 
 An unknown manager remains observable through the PoX-5 baseline. Sidekick enables an action only
 when a code-backed adapter proves the exact behavior needed to construct and verify it. Observe
-never signs. Assist, if released, uses a dedicated gas-payer key for one separately approved adapter
-and follows the durable transaction-engine contract.
+never signs. Operator-run signs only permissionless reward calls from one operator-approved recipe
+with a dedicated, low-balance gas wallet. See the [engine contract](transaction-engine.md).

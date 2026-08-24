@@ -7,27 +7,66 @@ export interface TableSort<Key extends string> {
   direction: SortDirection;
 }
 
+/** One compact mobile control for the field and direction that desktop headers express separately. */
+export function MobileSortSelect<Key extends string>({
+  label,
+  options,
+  sort,
+  setSort,
+}: {
+  label: string;
+  options: ReadonlyArray<readonly [Key, string]>;
+  sort: TableSort<Key>;
+  setSort: (sort: TableSort<Key>) => void;
+}) {
+  return (
+    <select
+      aria-label={label}
+      className="responsive-table-mobile-sort"
+      value={`${sort.key}:${sort.direction}`}
+      onChange={(event) => {
+        const [key, direction] = event.target.value.split(":") as [Key, SortDirection];
+        setSort({ key, direction });
+      }}
+    >
+      {options.flatMap(([key, optionLabel]) =>
+        (["asc", "desc"] as const).map((direction) => (
+          <option key={`${key}:${direction}`} value={`${key}:${direction}`}>
+            {optionLabel} {direction === "asc" ? "↑" : "↓"}
+          </option>
+        )),
+      )}
+    </select>
+  );
+}
+
 export function SortableHeader<Key extends string>({
   label,
   column,
   sort,
   setSort,
   align = "left",
+  title,
+  className,
 }: {
   label: string;
   column: Key;
   sort: TableSort<Key>;
   setSort: (sort: TableSort<Key>) => void;
   align?: "left" | "right";
+  title?: string | undefined;
+  className?: string | undefined;
 }) {
   const active = sort.key === column;
   const nextDirection: SortDirection = active && sort.direction === "asc" ? "desc" : "asc";
   const Icon = active ? (sort.direction === "asc" ? CaretUp : CaretDown) : CaretUpDown;
+  const classes = [align === "right" ? "right" : null, className ?? null].filter(Boolean).join(" ");
   return (
     <th
       aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
-      className={align === "right" ? "right" : undefined}
+      className={classes || undefined}
       scope="col"
+      title={title}
     >
       <button
         aria-label={`Sort by ${label}, ${nextDirection === "asc" ? "ascending" : "descending"}`}
@@ -62,13 +101,34 @@ export function StatusBadge({ status }: { status: string }) {
     "eligible",
     "activation scheduled",
     "signer active",
+    "verified",
+    "available",
+    "registered",
+    "authenticated",
+    "enabled",
+    "passed",
   ].includes(normalized)
     ? "b-success"
-    : ["blocked", "fail", "unavailable", "grant not verified", "needs attention"].includes(
-          normalized,
-        )
+    : [
+          "blocked",
+          "fail",
+          "unavailable",
+          "grant not verified",
+          "needs attention",
+          "forced observe",
+        ].includes(normalized)
       ? "b-error"
-      : "b-caution";
+      : [
+            "not configured",
+            "configured",
+            "observe",
+            "observe mode",
+            "observe only",
+            "optional",
+            "disabled",
+          ].includes(normalized)
+        ? "b-neutral"
+        : "b-caution";
   return <span className={`badge ${state}`}>{status.replaceAll("-", " ")}</span>;
 }
 
@@ -93,14 +153,14 @@ export function PageHead({
   actions,
 }: {
   title: string;
-  lede: string;
+  lede?: string;
   actions?: React.ReactNode;
 }) {
   return (
     <div className="page-head">
       <div>
         <h1>{title}</h1>
-        <p className="lede">{lede}</p>
+        {lede ? <p className="lede">{lede}</p> : null}
       </div>
       {actions ? <div className="actions">{actions}</div> : null}
     </div>

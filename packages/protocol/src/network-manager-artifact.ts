@@ -17,8 +17,8 @@ export function managerArtifactFromNetworkProfile(
         sbtcDeployer: parseContractPrincipal(networkProfile.sbtc.tokenContract).address,
       },
       expectedReplacements: artifact.expectedReplacements,
-      // Operator-provided data never grants mainnet production approval. Non-mainnet Assist still
-      // requires reproduced reference source and every independent runtime gate.
+      // Operator-provided data never grants mainnet production approval. Non-mainnet reviewed
+      // execution still requires reproduced reference source and every independent runtime gate.
       productionApproved: false,
     }),
     sourceSha256: artifact.sourceSha256,

@@ -4,7 +4,8 @@ import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals
 import { z } from "zod";
 import type { SidekickNetwork } from "../config.js";
 
-export type TransactionEngineMode = "observe" | "assist";
+/** Engine execution modes. `assist` was retired by ADR 0010 in favour of `operator-run`. */
+export type TransactionEngineMode = "observe" | "operator-run";
 
 export interface TransactionEngineRuntimeConfig {
   requestedMode: TransactionEngineMode;
@@ -13,13 +14,12 @@ export interface TransactionEngineRuntimeConfig {
     publicKey: string;
     secretFilePath: string | null;
   };
-  attestation: null | {
-    documentFilePath: string;
-    trustKeysFilePath: string;
-  };
   finalityDepth: number;
+  /** Hard per-transaction fee cap sealed into every recipe and sweep; the band lives in Settings. */
   maximumFeeUstx: bigint;
-  maximumApprovalMinutes: number;
+  runStartWindowMinutes: number;
+  maximumRunHours: number;
+  maximumRunTransactions: number;
 }
 
 const compressedPublicKeySchema = z
@@ -52,10 +52,18 @@ export function loadTransactionEngineRuntimeConfig(
   env: NodeJS.ProcessEnv,
   network: SidekickNetwork,
 ): TransactionEngineRuntimeConfig {
-  const requestedMode = z
-    .enum(["observe", "assist"])
+  const requestedModeValue = z
+    .enum(["observe", "operator-run", "assist"])
     .default("observe")
     .parse(optionalValue(env, "SIDEKICK_ENGINE_MODE") ?? undefined);
+  if (requestedModeValue === "assist") {
+    // ADR 0010 retired the attestation-gated Assist mode. Operator-run needs no issuer attestation:
+    // the gas wallet signs only inside a sealed recipe the operator approved per run.
+    throw new Error(
+      "SIDEKICK_ENGINE_MODE=assist is retired; use SIDEKICK_ENGINE_MODE=operator-run (see ADR 0010)",
+    );
+  }
+  const requestedMode: TransactionEngineMode = requestedModeValue;
   const principal = optionalValue(env, "SIDEKICK_GAS_PAYER_PRINCIPAL");
   const publicKeyValue = optionalValue(env, "SIDEKICK_GAS_PAYER_PUBLIC_KEY");
   const secretFileValue = optionalValue(env, "SIDEKICK_GAS_PAYER_SECRET_FILE");
@@ -85,38 +93,20 @@ export function loadTransactionEngineRuntimeConfig(
     throw new Error("Gas-payer secret path requires the matching public identity");
   }
 
-  const attestationFile = optionalValue(env, "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE");
-  const trustKeysFile = optionalValue(env, "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE");
-  if ((attestationFile === null) !== (trustKeysFile === null)) {
-    throw new Error("Compatibility attestation and trust-key files must be configured together");
-  }
-  const attestation =
-    attestationFile === null || trustKeysFile === null
-      ? null
-      : {
-          documentFilePath: absoluteFilePath(
-            attestationFile,
-            "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE",
-          ),
-          trustKeysFilePath: absoluteFilePath(
-            trustKeysFile,
-            "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
-          ),
-        };
-
-  if (requestedMode === "assist") {
-    if (!gasPayer?.secretFilePath) {
-      throw new Error("Assist mode requires a dedicated gas-payer secret file and public identity");
-    }
-    if (!attestation) {
-      throw new Error("Assist mode requires compatibility attestation and trust-key files");
-    }
+  if (
+    optionalValue(env, "SIDEKICK_COMPATIBILITY_ATTESTATION_FILE") !== null ||
+    optionalValue(env, "SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE") !== null
+  ) {
+    // The attestation-gated Assist path is retired (ADR 0010); refuse stale configuration rather
+    // than silently ignoring files an operator believes are in force.
+    throw new Error(
+      "Compatibility attestation files are no longer used; remove SIDEKICK_COMPATIBILITY_ATTESTATION_FILE and SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE",
+    );
   }
 
   return {
     requestedMode,
     gasPayer,
-    attestation,
     finalityDepth: z.coerce
       .number()
       .int()
@@ -132,12 +122,26 @@ export function loadTransactionEngineRuntimeConfig(
         .default("100000")
         .parse(env.SIDEKICK_ENGINE_MAXIMUM_FEE_USTX),
     ),
-    maximumApprovalMinutes: z.coerce
+    runStartWindowMinutes: z.coerce
       .number()
       .int()
       .min(1)
       .max(24 * 60)
       .default(30)
-      .parse(env.SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES),
+      .parse(env.SIDEKICK_ENGINE_RUN_START_MINUTES ?? env.SIDEKICK_ENGINE_MAX_APPROVAL_MINUTES),
+    maximumRunHours: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24)
+      .default(6)
+      .parse(env.SIDEKICK_ENGINE_MAX_RUN_HOURS),
+    maximumRunTransactions: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .default(200)
+      .parse(env.SIDEKICK_ENGINE_MAX_RUN_TRANSACTIONS),
   };
 }

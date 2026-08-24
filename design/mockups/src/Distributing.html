@@ -1,0 +1,49 @@
+<!-- @include shell-open -->
+<!-- @include page-head -->
+<section class="card-standout rw-now" aria-labelledby="rw-now-title">
+  <div class="rw-now-head">
+    <div>
+      <div class="rw-eyebrow">Cycle 141 · Second Distribution <span class="badge b-accent"><span class="live-dot"></span>In progress</span></div>
+      <h2 class="rw-status" id="rw-now-title">Distributing… 12 of 40 payments</h2>
+      <p class="rw-status-sub">Sidekick is submitting one payment transaction at a time; the manager sends each payout and the gas wallet pays the network fees. About 9 minutes left. You can close this page. <button class="tooltip-trigger rw-info" type="button" aria-label="Details" title="Run started 14:02 UTC · collect confirmed in 1 transaction · payments 1–12 confirmed · next nonce 1,208"><!-- @include icon-info --></button></p>
+    </div>
+    <div class="rw-now-actions">
+      <button class="btn btn-tertiary" type="button">Pause after this payment</button>
+      <span class="rw-gas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12v4M3 7v10a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z"></path><circle cx="16.5" cy="13.5" r="1"></circle></svg>Gas wallet 12.36 STX <span class="muted">· ≈ 1,190 tx</span></span>
+    </div>
+  </div>
+  <div class="rw-progress">
+    <div class="meter"><div class="track"><div class="fill" style="width: 30%"></div></div></div>
+    <div class="scale"><span>12 of 40 payments · 0.00351 sBTC sent</span><span>0.12 STX gas used</span></div>
+  </div>
+  <div class="kpi rw-tiles">
+    <div class="tile"><div class="l">Calculated for this pool</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">exact · projected 0.0125</div></div>
+    <div class="tile"><div class="l">Collected</div><div class="v">0.0129 <span class="u">sBTC</span></div><div class="d">fee locked 5%</div></div>
+    <div class="tile"><div class="l">Distributed</div><div class="v">12 <span class="u">of 40</span></div><div class="d">0.00351 sBTC sent so far</div></div>
+    <div class="tile"><div class="l">Your fee</div><div class="v">18,470 <span class="u">sats</span></div><div class="d">of 64,350 sats · 5% locked</div></div>
+  </div>
+  <p class="rw-cycle-line"><span>Cycle 141</span><strong class="mono">0.0254 sBTC</strong><span>calculated for this pool across both distributions · your fee <span class="mono">0.00127 sBTC</span></span></p>
+</section>
+<!-- @include details -->
+<div class="section-title" id="rw-payments">Payments <span class="hint">this distribution · one per staker per bucket</span></div>
+<div class="tbl-wrap">
+  <div class="tbl-toolbar">
+    <div class="filters"><div class="seg" role="tablist" aria-label="Payment status"><button class="on" type="button" role="tab" aria-selected="true">Outstanding · 28</button><button type="button" role="tab">Paid · 12</button><button type="button" role="tab">Arriving · 0</button></div><label class="search-inline"><svg class="rw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input type="search" placeholder="Find a staker" aria-label="Find a staker"></label></div>
+    <div class="total">40 payments · 0.00872 sBTC still to send</div>
+  </div>
+  <table>
+    <thead><tr><th scope="col">Staker</th><th scope="col">Route</th><th scope="col" class="right">Gross</th><th scope="col" class="right rw-hide-sm">Fee</th><th scope="col" class="right" title="What the staker receives: sBTC directly, or BTC over Bitcoin after the Bitcoin fee budget">To staker</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="staker"><span class="avatar">1A</span><span class="identifier">SP1A…7QZD</span></span></td><td><span class="rw-route">sBTC</span></td><td class="mono right">0.00246 sBTC</td><td class="mono right rw-hide-sm">12,295 sats</td><td class="mono right">0.00234 sBTC</td><td><span class="badge b-success">Paid</span><span class="rw-pay-sub">tx 0x8d21…4c0b</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">2K</span><span class="identifier">SP2K…M3XW</span></span></td><td><span class="rw-route btc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 7.5h4.2a2.2 2.2 0 0 1 0 4.4H9zM9 11.9h4.8a2.3 2.3 0 0 1 0 4.6H9zM10.5 6v1.5M10.5 16.5V18"></path></svg>bc1q…8f2a</span></td><td class="mono right">0.00181 sBTC</td><td class="mono right rw-hide-sm">9,065 sats</td><td class="mono right">0.00162 BTC<span class="rw-pay-sub">after 10,000 sats Bitcoin fee budget</span></td><td><span class="badge b-info">Sent over Bitcoin</span><span class="rw-pay-sub">request #4181 · awaiting signers</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">3F</span><span class="identifier">SP3F…K9QR</span></span></td><td><span class="rw-route">sBTC</span></td><td class="mono right">8,150 sats</td><td class="mono right rw-hide-sm">408 sats</td><td class="mono right">7,742 sats</td><td><span class="rw-sending"><span class="live-dot"></span>Sending…</span><span class="rw-pay-sub">payment 13 of 40</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">1Q</span><span class="identifier">SP1Q…V2TD</span></span></td><td><span class="rw-route">sBTC</span></td><td class="mono right">98,120 sats</td><td class="mono right rw-hide-sm">4,906 sats</td><td class="mono right">93,214 sats</td><td><span class="badge b-neutral">Queued</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">3W</span><span class="identifier">SP3W…H7CN</span></span></td><td><span class="rw-route btc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 7.5h4.2a2.2 2.2 0 0 1 0 4.4H9zM9 11.9h4.8a2.3 2.3 0 0 1 0 4.6H9zM10.5 6v1.5M10.5 16.5V18"></path></svg>bc1q…c41e</span></td><td class="mono right">62,480 sats</td><td class="mono right rw-hide-sm">3,124 sats</td><td class="mono right">49,356 sats<span class="rw-pay-sub">after 10,000 sats Bitcoin fee budget</span></td><td><span class="badge b-neutral">Queued</span></td></tr>
+      <tr><td><span class="staker"><span class="avatar">2E</span><span class="identifier">SP2E…P8LM</span></span></td><td><span class="rw-route">sBTC</span></td><td class="mono right">41,700 sats</td><td class="mono right rw-hide-sm">2,085 sats</td><td class="mono right">39,615 sats</td><td><span class="badge b-neutral">Queued</span></td></tr>
+    </tbody>
+  </table>
+  <div class="rw-table-foot"><span>Showing 6 of 40</span><button class="btn btn-tertiary sm" type="button">Show all 40</button></div>
+</div>
+<!-- @include past-collapsed -->
+<!-- @include accounting -->
+<!-- @include shell-close -->

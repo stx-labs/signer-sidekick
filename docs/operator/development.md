@@ -14,9 +14,9 @@ pnpm build
 
 Run `pnpm --filter @stx-labs/signer-sidekick cli help` after building for the current command
 surface. Configuration is defined by the [mainnet](../../.env.mainnet.example) and
-[PoX-5 Testnet](../../.env.pox5-testnet.example) examples. Devnet or regtest Assist requires
-`SIDEKICK_NETWORK_ID`. Never place a signer or admin private key, mnemonic, or production credential
-in the repository, fixtures, commands, screenshots, or support bundles.
+[PoX-5 Testnet](../../.env.pox5-testnet.example) examples. Custom Devnet or regtest profiles require
+`SIDEKICK_NETWORK_ID`. Never place a signer or admin key, mnemonic, or production credential in the
+repository, fixtures, commands, screenshots, or support bundles.
 
 ## Additional validation
 
@@ -39,21 +39,19 @@ The deterministic contract harness is documented in
 
 ## Transaction engine development
 
-The transaction engine starts in Observe when no engine variables are set. This exercises live
-observation, durable blockers, API mapping, Settings capability controls, and Activity/action
-workspaces without loading a signer or reaching a broadcaster. Exact plans also require the public
-gas-payer identity and reviewed
-attestation/trust files described in the deployment guide; the private gas key remains unnecessary
-in Observe.
+The engine defaults to Observe. Operator-run uses a Sidekick-generated, disposable gas wallet and
+one sealed recipe per run; it has no generic signing path. Use only isolated, low-balance test
+accounts outside mainnet.
 
 Implementation boundaries:
 
-- fixed transaction vectors and compatibility-attestation schemas live in `packages/protocol`;
-- durable jobs, admission, signing, submission, observation, and recovery live under
+- reviewed adapters and exact transaction vectors live in
+  `packages/protocol/src/reward-operation-plan.ts`;
+- recipes, run state, signing, submission, observation, and recovery live under
   `apps/sidekick/src/transaction-engine`;
 - strict browser-facing schemas live in `packages/api-contracts`;
-- exact-job approvals live in the shared action workspace; engine policy and emergency controls
-  live under dashboard Settings.
+- gas-wallet lifecycle lives in Settings; reward-run approval and recovery live in Rewards and
+  Activity.
 
 Run the full checks before changing an adapter or authority boundary. A focused backend pass is also
 useful while iterating:
@@ -64,17 +62,12 @@ pnpm --filter @stx-labs/signer-sidekick-api-contracts test
 pnpm --filter @stx-labs/signer-sidekick-dashboard test
 ```
 
-Assist is unreleased. Any isolated test-network work uses a disposable, dedicated, low-balance gas
-payer and follows the [safety contract](../architecture/transaction-engine.md) and
-[release gates](https://github.com/stx-labs/signer-sidekick/issues/6). Keep raw keys outside the
-repository, fixtures, command line, environment, screenshots, and logs; pass only an absolute
-read-only file path and matching public identity. Use reviewed attestation/trust files rather than
-weakening verification for development.
+For restart or ambiguity tests, preserve the database, WAL, gas-wallet key, and transaction ID
+across the simulated crash. Deleting state between nonce reservation and reconciliation invalidates
+the test. The [engine contract](../architecture/transaction-engine.md) is normative.
 
-Use a dedicated database for emergency-control tests because Force Observe and adapter disable are
-one-way for that database. For restart or ambiguity tests, preserve the same database, WAL, mounted
-secret, and precomputed txid across the simulated crash. Deleting state between nonce reservation
-and reconciliation invalidates the recovery test.
+Pull requests that touch the operator-run signing path are reviewed against
+[`security/operator-run-mainnet-review.md`](../../security/operator-run-mainnet-review.md).
 
 ## Released Devnet
 

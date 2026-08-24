@@ -20,11 +20,15 @@ import {
   chainCursorInputSchema,
 } from "./chain-state-repository.js";
 import { DeploymentIdentityRepository } from "./deployment-identity-repository.js";
+import { GasWalletRepository } from "./gas-wallet-repository.js";
+import { GasWalletSweepRepository } from "./gas-wallet-sweep-repository.js";
 import { HealthMonitoringRepository } from "./health-monitoring-repository.js";
 import { ManagerTrustRepository } from "./manager-trust-repository.js";
 import { type Migration, migrations } from "./migrations.js";
 import { ObserverInboxRepository } from "./observer-inbox-repository.js";
+import { RewardRunRepository } from "./reward-run-repository.js";
 import { RuntimeSettingsRepository } from "./runtime-settings-repository.js";
+import { SbtcWithdrawalCompletionRepository } from "./sbtc-withdrawal-completion-repository.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
 
 const hashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
@@ -1236,6 +1240,8 @@ export interface StoredManagerClaim {
   amountSats: string;
   destination: "direct-sbtc" | "bitcoin-l1";
   withdrawalRequestId: string | null;
+  /** Block time of the payment transaction when the evidence source reported it. */
+  occurredAt: string | null;
 }
 
 export interface StoredManagerWithdrawal {
@@ -1248,6 +1254,29 @@ export interface StoredManagerWithdrawal {
   state: "pending" | "settled" | "reclaimed";
   resolvedTxId: string | null;
   resolvedBlockHeight: number | null;
+}
+
+/** A canonical, successful PoX-5 reward print that names this manager (collect or staker payout). */
+export interface StoredPox5RewardPrint {
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  indexBlockHash: string;
+  kind: "claim-rewards" | "claim-staker-rewards-for-signer";
+  rewardCycle: string | null;
+  stakerPrincipal: string | null;
+  bondIndex: string | null;
+  rewardsClaimedSats: string | null;
+  totalRewardsSats: string | null;
+  stxRewardsSats: string | null;
+  firstSeenAt: string;
+}
+
+export interface StoredManagerTopicEvent {
+  txId: string;
+  eventIndex: number;
+  blockHeight: number;
+  rawPayload: unknown;
 }
 
 export interface ManagerActivityPage<T> {
@@ -1656,9 +1685,13 @@ export class SidekickStore {
   readonly healthMonitoring: HealthMonitoringRepository;
   readonly observerInbox: ObserverInboxRepository;
   readonly deploymentIdentity: DeploymentIdentityRepository;
+  readonly gasWallet: GasWalletRepository;
+  readonly gasWalletSweeps: GasWalletSweepRepository;
   readonly runtimeSettings: RuntimeSettingsRepository;
+  readonly rewardRuns: RewardRunRepository;
   readonly managerTrust: ManagerTrustRepository;
   readonly chainState: ChainStateRepository;
+  readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.transactionEngine = new TransactionEngineRepository(db);
@@ -1666,9 +1699,13 @@ export class SidekickStore {
     this.healthMonitoring = new HealthMonitoringRepository(db);
     this.observerInbox = new ObserverInboxRepository(db);
     this.deploymentIdentity = new DeploymentIdentityRepository(db);
+    this.gasWallet = new GasWalletRepository(db);
+    this.gasWalletSweeps = new GasWalletSweepRepository(db);
     this.runtimeSettings = new RuntimeSettingsRepository(db);
+    this.rewardRuns = new RewardRunRepository(db);
     this.managerTrust = new ManagerTrustRepository(db);
     this.chainState = new ChainStateRepository(db);
+    this.sbtcWithdrawalCompletions = new SbtcWithdrawalCompletionRepository(db);
   }
 
   close(): void {
@@ -2196,6 +2233,236 @@ export class SidekickStore {
     }));
   }
 
+  /**
+   * Canonical, successful PoX-5 reward prints that name this manager: the manager-level
+   * `claim-rewards` collect print and per-staker `claim-staker-rewards-for-signer` prints.
+   * Oldest first so ledger attribution can walk forward in block order.
+   */
+  listPox5RewardPrints(
+    chainId: number,
+    pox5ContractId: string,
+    managerPrincipal: string,
+    options: { kinds?: readonly StoredPox5RewardPrint["kind"][]; limit?: number } = {},
+  ): StoredPox5RewardPrint[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const contract = principalSchema.parse(pox5ContractId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const kinds = [
+      ...new Set(options.kinds ?? ["claim-rewards", "claim-staker-rewards-for-signer"]),
+    ];
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(100_001)
+      .parse(options.limit ?? 10_001);
+    const rows = this.db
+      .prepare(
+        `SELECT tx_id, event_index, block_height, index_block_hash, decoded_payload_json,
+                first_seen_at
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+           AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+           AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
+           AND json_extract(decoded_payload_json, '$.event.kind') IN (${kinds.map(() => "?").join(", ")})
+         ORDER BY block_height DESC, tx_id DESC, event_index DESC
+         LIMIT ?`,
+      )
+      .all(parsedChainId, contract, manager, ...kinds, limit) as Array<{
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      index_block_hash: string;
+      decoded_payload_json: string;
+      first_seen_at: string;
+    }>;
+    // Newest rows are retained when the limit truncates; callers receive them oldest first so a
+    // long-history pool degrades at the historical end, never the current cycle.
+    return rows.reverse().map((row) => {
+      const decoded = JSON.parse(row.decoded_payload_json) as { event?: Record<string, unknown> };
+      const event = decoded.event ?? {};
+      const text = (key: string): string | null =>
+        typeof event[key] === "string" ? (event[key] as string) : null;
+      const kind = text("kind");
+      if (kind !== "claim-rewards" && kind !== "claim-staker-rewards-for-signer") {
+        throw new Error(`Unexpected PoX-5 reward print kind ${String(kind)}`);
+      }
+      return {
+        txId: row.tx_id,
+        eventIndex: row.event_index,
+        blockHeight: row.block_height,
+        indexBlockHash: row.index_block_hash,
+        kind,
+        rewardCycle: text("rewardCycle"),
+        stakerPrincipal: text("stakerPrincipal"),
+        bondIndex: text("bondIndex"),
+        rewardsClaimedSats: text("rewardsClaimedSats"),
+        totalRewardsSats: text("totalRewardsSats"),
+        stxRewardsSats: text("stxRewardsSats"),
+        firstSeenAt: row.first_seen_at,
+      };
+    });
+  }
+
+  /** Canonical staker payment events for the manager: the newest `limit`, returned oldest first. */
+  listManagerClaimRecords(
+    chainId: number,
+    managerPrincipal: string,
+    limit = 10_001,
+  ): StoredManagerClaim[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT m.tx_id, m.event_index, m.block_height, m.staker_principal, m.reward_cycle,
+                m.bond_index, m.amount_sats, m.request_id, c.occurred_at
+         FROM manager_activity_events AS m
+         LEFT JOIN chain_events AS c
+           ON c.chain_id = m.chain_id AND c.tx_id = m.tx_id AND c.event_index = m.event_index
+         WHERE m.chain_id = ? AND m.manager_principal = ? AND m.canonical = 1
+           AND m.kind = 'claim-staker-rewards'
+         ORDER BY m.block_height DESC, m.tx_id DESC, m.event_index DESC
+         LIMIT ?`,
+      )
+      .all(parsedChainId, manager, parsedLimit) as Array<{
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      staker_principal: string;
+      reward_cycle: string | null;
+      bond_index: string | null;
+      amount_sats: string;
+      request_id: string | null;
+      occurred_at: string | null;
+    }>;
+    // Newest rows are retained when the limit truncates; returned oldest first (see listPox5RewardPrints).
+    return rows.reverse().map((row) => ({
+      txId: row.tx_id,
+      eventIndex: row.event_index,
+      blockHeight: row.block_height,
+      stakerPrincipal: row.staker_principal,
+      rewardCycle: row.reward_cycle ?? "0",
+      bondIndex: row.bond_index,
+      amountSats: row.amount_sats,
+      destination: row.request_id === null ? "direct-sbtc" : "bitcoin-l1",
+      withdrawalRequestId: row.request_id,
+      occurredAt: row.occurred_at,
+    }));
+  }
+
+  /**
+   * Complete indexed operator-fee aggregate, independent of the bounded ledger display window.
+   * A payment without its matching PoX-5 print is counted but excluded from the fee sum so callers
+   * can refuse to describe a partial total as complete.
+   */
+  getManagerRewardFeeTotals(
+    chainId: number,
+    managerPrincipal: string,
+    pox5ContractId: string,
+  ): { earnedIndexedSats: string; paymentCount: number; unmatchedPaymentCount: number } {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const pox5 = principalSchema.parse(pox5ContractId);
+    const row = this.db
+      .prepare(
+        `WITH claims AS (
+           SELECT tx_id, staker_principal, bond_index, CAST(amount_sats AS INTEGER) AS net_sats
+           FROM manager_activity_events
+           WHERE chain_id = ? AND manager_principal = ? AND canonical = 1
+             AND kind = 'claim-staker-rewards'
+         ), prints AS (
+           SELECT tx_id,
+             json_extract(decoded_payload_json, '$.event.stakerPrincipal') AS staker_principal,
+             json_extract(decoded_payload_json, '$.event.bondIndex') AS bond_index,
+             MAX(CAST(json_extract(decoded_payload_json, '$.event.rewardsClaimedSats') AS INTEGER))
+               AS gross_sats
+           FROM chain_events
+           WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+             AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+             AND json_extract(decoded_payload_json, '$.event.kind') =
+               'claim-staker-rewards-for-signer'
+             AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
+           GROUP BY tx_id, staker_principal, bond_index
+         )
+         SELECT COUNT(*) AS payment_count,
+           COALESCE(SUM(CASE WHEN prints.gross_sats IS NULL THEN 1 ELSE 0 END), 0)
+             AS unmatched_count,
+           COALESCE(SUM(CASE
+             WHEN prints.gross_sats >= claims.net_sats THEN prints.gross_sats - claims.net_sats
+             ELSE 0
+           END), 0) AS earned_sats
+         FROM claims
+         LEFT JOIN prints ON prints.tx_id = claims.tx_id
+           AND prints.staker_principal = claims.staker_principal
+           AND prints.bond_index IS claims.bond_index`,
+      )
+      .get(parsedChainId, manager, parsedChainId, pox5, manager) as {
+      payment_count: number;
+      unmatched_count: number;
+      earned_sats: number;
+    };
+    return {
+      earnedIndexedSats: BigInt(row.earned_sats).toString(),
+      paymentCount: z.number().int().nonnegative().parse(row.payment_count),
+      unmatchedPaymentCount: z.number().int().nonnegative().parse(row.unmatched_count),
+    };
+  }
+
+  /** Every Bitcoin withdrawal request the manager initiated, with its latest manager-side state. */
+  listManagerWithdrawalRecords(
+    chainId: number,
+    managerPrincipal: string,
+    limit = 10_001,
+  ): StoredManagerWithdrawal[] {
+    const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
+    const records: StoredManagerWithdrawal[] = [];
+    for (let offset = 0; records.length < parsedLimit; offset += 200) {
+      const page = this.listManagerWithdrawals(chainId, managerPrincipal, {
+        limit: 200,
+        offset,
+        sort: "request",
+        direction: "asc",
+      });
+      records.push(...page.items);
+      if (page.items.length < 200) break;
+    }
+    return records.slice(0, parsedLimit);
+  }
+
+  /** Canonical manager prints by topic (e.g. `sweep-fee-refunds`), newest first, bounded. */
+  listManagerTopicEvents(
+    chainId: number,
+    managerPrincipal: string,
+    topic: string,
+    limit = 1_001,
+  ): StoredManagerTopicEvent[] {
+    const parsedChainId = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const parsedTopic = z.string().min(1).max(200).parse(topic);
+    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT tx_id, event_index, block_height, raw_payload_json
+         FROM chain_events
+         WHERE chain_id = ? AND contract_id = ? AND canonical = 1 AND topic = ?
+         ORDER BY block_height DESC, tx_id ASC, event_index DESC
+         LIMIT ?`,
+      )
+      .all(parsedChainId, manager, parsedTopic, parsedLimit) as Array<{
+      tx_id: string;
+      event_index: number;
+      block_height: number;
+      raw_payload_json: string;
+    }>;
+    return rows.map((row) => ({
+      txId: row.tx_id,
+      eventIndex: row.event_index,
+      blockHeight: row.block_height,
+      rawPayload: JSON.parse(row.raw_payload_json) as unknown,
+    }));
+  }
+
   listManagerClaims(
     chainId: number,
     managerPrincipal: string,
@@ -2261,6 +2528,8 @@ export class SidekickStore {
           amountSats: value.amount_sats,
           destination: value.request_id === null ? "direct-sbtc" : "bitcoin-l1",
           withdrawalRequestId: value.request_id,
+          // Block time is only joined on the ledger read path (listManagerClaimRecords).
+          occurredAt: null,
         };
       }),
       total: z.number().int().nonnegative().parse(totalRow.count),

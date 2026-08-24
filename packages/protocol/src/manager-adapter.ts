@@ -131,7 +131,7 @@ export function createManagerAdapterFromHashes(artifact: ReviewedManagerArtifact
       reason =
         profile.network === "mainnet"
           ? `Source matches production-approved profile ${profile.id} (${match})`
-          : `Source matches non-mainnet profile ${profile.id} (${match}); production approval is not required for Assist on ${profile.network}`;
+          : `Source matches non-mainnet profile ${profile.id} (${match}); production approval is not required for reviewed execution on ${profile.network}`;
     } else if (matched) {
       reason = `Source matches mainnet profile ${profile.id}, but that profile is not production-approved`;
     }

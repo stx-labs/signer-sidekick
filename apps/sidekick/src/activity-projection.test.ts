@@ -3,6 +3,7 @@ import type {
   ActivityDisplayStatus,
   ActivityGroupSummary,
   ActivityOutcome,
+  RewardRunRecipe,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -101,6 +102,102 @@ async function memoryStore(): Promise<SidekickStore> {
   const { store } = await openSidekickStore(":memory:", now.toISOString());
   stores.push(store);
   return store;
+}
+
+function insertCompletedRewardRun(store: SidekickStore) {
+  const runId = "00000000-0000-4000-8000-000000000141";
+  const recipe: RewardRunRecipe = {
+    schemaVersion: 1,
+    runId,
+    prepareRequestSha256: "44".repeat(32),
+    walletPrincipal: actorPrincipal,
+    managerPrincipal,
+    pox5Contract: pox5ContractId,
+    sbtcTokenContract: "SP000000000000000000002Q6VF78.sbtc-token",
+    sbtcRegistryContract: "SP000000000000000000002Q6VF78.sbtc-registry",
+    network: "mainnet",
+    chainId: 1,
+    cycle: 141,
+    distribution: 1,
+    orderedOperations: ["claim-rewards"],
+    accounts: [],
+    reviewedTotalSats: "1000",
+    reviewedPaymentCount: 0,
+    maxTransactions: 1,
+    eligibleTransactions: 1,
+    truncated: false,
+    remainingTransactions: 0,
+    feeCapUstx: "100000",
+    gasBudgetUstx: "100000",
+    managerSourceFingerprint: "55".repeat(32),
+    pox5SourceFingerprint: "66".repeat(32),
+    adapterRevisions: { "reference-manager-claim-rewards": 1 },
+    children: [
+      {
+        index: 0,
+        operation: "claim-rewards",
+        adapterId: "reference-manager-claim-rewards",
+        adapterRevision: 1,
+        accountKey: null,
+        requestId: null,
+        stakerPrincipal: null,
+        maximumAmountSats: "1000",
+        withdrawalAmountSats: null,
+        maxFeeSats: null,
+      },
+    ],
+    preparedAnchor: {
+      stacksBlockHeight: 8_750_000,
+      burnBlockHeight: 962_000,
+      indexBlockHash,
+    },
+  };
+  store.rewardRuns.insert({
+    runId,
+    walletPrincipal: actorPrincipal,
+    recipeSha256: "77".repeat(32),
+    recipe,
+    approvalExpiresAt: "2026-08-14T11:30:00.000Z",
+    children: recipe.children.map((child) => ({
+      operation: child.operation,
+      adapterId: child.adapterId,
+      adapterRevision: child.adapterRevision,
+      accountKey: child.accountKey,
+      maximumAmountSats: child.maximumAmountSats,
+    })),
+    now: "2026-08-14T11:00:00.000Z",
+  });
+  store.rewardRuns.transition({
+    runId,
+    from: ["awaiting-approval"],
+    to: "approved",
+    now: "2026-08-14T11:01:00.000Z",
+    approvedAt: "2026-08-14T11:01:00.000Z",
+    runtimeExpiresAt: "2026-08-14T17:01:00.000Z",
+  });
+  store.rewardRuns.transition({
+    runId,
+    from: ["approved"],
+    to: "running",
+    now: "2026-08-14T11:02:00.000Z",
+    startedAt: "2026-08-14T11:02:00.000Z",
+  });
+  store.rewardRuns.updateChild({
+    runId,
+    childIndex: 0,
+    from: ["pending"],
+    to: "confirmed",
+    now: "2026-08-14T11:05:00.000Z",
+    txid,
+    provenance: "you",
+  });
+  return store.rewardRuns.transition({
+    runId,
+    from: ["running"],
+    to: "completed",
+    now: "2026-08-14T11:05:00.000Z",
+    completedAt: "2026-08-14T11:05:00.000Z",
+  });
 }
 
 afterEach(() => {
@@ -472,6 +569,34 @@ describe("Activity projection", () => {
     expect(service.page(query({ domain: "pool", time: "24h" })).items).toEqual([]);
   });
 
+  it("projects completed recipe runs as actions and resolves their transaction aliases", async () => {
+    const store = await memoryStore();
+    const run = insertCompletedRewardRun(store);
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+
+    const page = service.page(query({ type: "actions" }));
+    expect(page.items).toContainEqual(
+      expect.objectContaining({
+        activityId: `reward-run:${run.runId}`,
+        title: "Collect rewards",
+        displayStatus: "complete",
+        outcome: "succeeded",
+        txids: [txid],
+      }),
+    );
+    expect(service.detail(`chain-tx:1:${txid}`)).toMatchObject({
+      canonicalActivityId: `reward-run:${run.runId}`,
+      aliases: expect.arrayContaining([`chain-tx:1:${txid}`, `reward-run:${run.runId}`]),
+      summary: { stage: "complete" },
+    });
+  });
+
   it("links an expired transaction review to the replacement for the same operation scope", async () => {
     const store = await memoryStore();
     const manifest = { schemaVersion: 2, action: "claim-rewards" };
@@ -592,6 +717,9 @@ describe("Activity projection", () => {
       transactionEngine: {
         listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
         listAttemptsForActivity: () => new Map(),
+      },
+      rewardRuns: {
+        listForActivity: () => [],
       },
       runtimeSettings: {
         listAudit: () => settingsAudit,

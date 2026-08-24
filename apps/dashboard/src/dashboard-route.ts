@@ -36,6 +36,7 @@ export const settingsSections = [
   "attachment",
   "sources",
   "capabilities",
+  "gas-wallet",
   "observer",
   "auth",
   "support",

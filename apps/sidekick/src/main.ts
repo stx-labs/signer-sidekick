@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { MANAGER_CLAIM_REWARDS_ADAPTER_ID } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { ActivityProjectionService } from "./activity-projection.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
@@ -15,6 +16,7 @@ import {
 import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 import { ConnectionAssessmentService } from "./connection-assessment.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
+import { GasWalletService } from "./gas-wallet.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { managerActionCapability } from "./manager-capabilities.js";
 import { syncManagerEvents } from "./manager-event-sync.js";
@@ -61,8 +63,14 @@ import {
   openSidekickStore,
 } from "./storage/store.js";
 import { createOperatorSupportBundle, operatorSupportApplication } from "./support-bundle.js";
+import {
+  createLiveRewardRunFacts,
+  LiveRewardRunDriver,
+} from "./transaction-engine/live-reward-run.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
+import { RewardRunService } from "./transaction-engine/reward-run-service.js";
 import { createSidekickTransactionEngineRuntime } from "./transaction-engine/runtime.js";
+import { loadTransactionEngineRuntimeConfig } from "./transaction-engine/runtime-config.js";
 import { WalletIntentService } from "./wallet-intent-service.js";
 
 function clientsFromConfig(config: ReturnType<typeof loadConfig>) {
@@ -157,7 +165,16 @@ export async function executeCliCommand({
       store.close();
     };
     try {
-      const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+      const runtimeSettings = new RuntimeSettingsController(
+        config,
+        store,
+        managerPrincipal,
+        undefined,
+        {
+          engineMaximumFeeUstx: loadTransactionEngineRuntimeConfig(env, config.network)
+            .maximumFeeUstx,
+        },
+      );
       const { config: effectiveConfig, node, api } = runtimeSettings.clients();
       const connection = new ConnectionAssessmentService({
         config: effectiveConfig,
@@ -186,6 +203,8 @@ export async function executeCliCommand({
         return runtimeSettings.clients();
       };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
+      let warnGasWallet: (message: string) => void = (message) => console.warn(message);
+      let logRunStage: (stage: string, durationMs: number) => void = () => undefined;
       const engine = await createSidekickTransactionEngineRuntime({
         env,
         store,
@@ -223,6 +242,8 @@ export async function executeCliCommand({
           observe: async (input) => await engine.observe(input),
           onError: (error) => reportTransactionEngineError(error),
         },
+        rewardRunHistory: (cycle, distribution) =>
+          store.rewardRuns.listForTarget(cycle, distribution),
       });
       const signerGrant = new SignerGrantService({
         runtimeSettings,
@@ -232,9 +253,7 @@ export async function executeCliCommand({
         store,
         runtimeSettings,
         managerVerification,
-        transactionEngineRequestedMode: engine.requestedMode,
-        observeManagerClaimWalletJob: async (jobId) =>
-          await engine.observeManagerClaimWalletJob(jobId),
+        readManagerClaimEvidence: async () => await service.managerClaimWalletEvidence(),
         readState: () => signerGrant.walletState(),
         canRepairSignerRegistration: async () => {
           const current = await service.snapshot(true);
@@ -313,11 +332,75 @@ export async function executeCliCommand({
         getConnection: () => connection.current(),
         getObserverStatus: currentObserverStatus,
       });
+      // Live: the fee band is a setting (Settings → Reward runs); only the cap is deployment env.
+      const feePolicy = () => runtimeSettings.feePolicy();
+      const gasWallet = new GasWalletService({
+        store,
+        engineMode: engine.requestedMode,
+        engine,
+        runtimeContext: connectedRuntimeContext,
+        managerPrincipal,
+        network: effectiveConfig.network,
+        chainId,
+        secretFilePath: join(dirname(resolve(config.databasePath)), "gas-wallet.key"),
+        maximumFeeUstx: engine.maximumFeeUstx,
+        feePolicy,
+        signerKeyHex: async () => (await service.snapshot()).registration?.signerKeyHex ?? null,
+        logger: { warn: (message) => warnGasWallet(message) },
+      });
+      const rewardRuns = new RewardRunService({
+        repository: store.rewardRuns,
+        signer: engine,
+        driver: new LiveRewardRunDriver({
+          engine,
+          runtimeContext: connectedRuntimeContext,
+          feePolicy,
+          withdrawalRequestStatus: async (registryContract, requestId, tip) =>
+            await service.withdrawalRequestStatus(registryContract, requestId, tip),
+        }),
+        facts: createLiveRewardRunFacts({
+          engine,
+          store,
+          managerPrincipal,
+          runtimeContext: connectedRuntimeContext,
+          stakerClaims: async (options) => await service.stakerClaims(options),
+          withdrawalRequestStatus: async (registryContract, requestId, tip) =>
+            await service.withdrawalRequestStatus(registryContract, requestId, tip),
+          onStage: (stage, durationMs) => logRunStage(stage, durationMs),
+        }),
+        refusalChecks: async (principal, now) => await gasWallet.refusalChecks(principal, now),
+        executionControl: (operations) => {
+          const forceObserve = store.transactionEngine.getForceObserveControl();
+          if (forceObserve) {
+            return {
+              allowed: false,
+              reason: `Force Observe is active: ${forceObserve.reason}`,
+            };
+          }
+          const managerClaimDisabled =
+            operations.includes("claim-rewards") &&
+            store.transactionEngine.getDisabledAdapterControl(MANAGER_CLAIM_REWARDS_ADAPTER_ID);
+          if (managerClaimDisabled) {
+            return {
+              allowed: false,
+              reason: `The manager collect adapter is disabled: ${managerClaimDisabled.reason}`,
+            };
+          }
+          return { allowed: true, reason: null };
+        },
+        maximumFeeUstx: engine.maximumFeeUstx,
+        maximumTransactions: engine.maximumRunTransactions,
+        approvalStartMinutes: engine.runStartWindowMinutes,
+        maximumRunHours: engine.maximumRunHours,
+        logger: { warn: (message) => warnGasWallet(message) },
+      });
       const server = createServer({
         service,
         activityProjection,
         connection,
         deploymentRequirements,
+        gasWallet,
+        rewardRuns,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
           if (result.status === "connected") await startOperationalRuntime();
@@ -347,6 +430,11 @@ export async function executeCliCommand({
           { error: error instanceof Error ? error.message : String(error) },
           "Transaction engine failed closed; operator reads remain available",
         );
+      warnGasWallet = (message) => server.log.warn(message);
+      logRunStage = (stage, durationMs) =>
+        server.log.info({ stage, durationMs }, "reward run preparation stage");
+      // Re-activate a previously enabled gas wallet; failures surface in Settings, never block boot.
+      await gasWallet.startup();
       reportObserverInboxError = (error) =>
         server.log.warn(
           { error: error instanceof Error ? error.message : String(error) },
@@ -390,6 +478,7 @@ export async function executeCliCommand({
           }
           operationalStarted = true;
           engine.start();
+          await rewardRuns.start();
           snapshotRefresh = startSnapshotRefreshLoop(
             {
               refreshSnapshot: async () => {
@@ -405,15 +494,6 @@ export async function executeCliCommand({
             },
           );
           server.log.info("Connection established; operator background services are enabled");
-          void engine
-            .recoverActive()
-            .then((results) =>
-              server.log.info(
-                { recoveredJobs: results.length },
-                "Transaction engine startup recovery completed",
-              ),
-            )
-            .catch((error: unknown) => reportTransactionEngineError(error));
           void service
             .observeManagerTrustState()
             .then(() => server.log.info("Initial manager observation completed"))
@@ -444,6 +524,7 @@ export async function executeCliCommand({
       server.addHook("onClose", async () => {
         snapshotRefresh?.stop();
         health.stop();
+        await rewardRuns.stop();
         try {
           await observerServer?.close();
           observerListening = false;
@@ -910,7 +991,16 @@ export async function executeCliCommand({
     await withStore(
       () => openSidekickStore(config.databasePath),
       async ({ store }) => {
-        const runtimeSettings = new RuntimeSettingsController(config, store, managerPrincipal);
+        const runtimeSettings = new RuntimeSettingsController(
+          config,
+          store,
+          managerPrincipal,
+          undefined,
+          {
+            engineMaximumFeeUstx: loadTransactionEngineRuntimeConfig(env, config.network)
+              .maximumFeeUstx,
+          },
+        );
         const { config: effectiveConfig, node, api } = runtimeSettings.clients();
         const connection = new ConnectionAssessmentService({
           config: effectiveConfig,

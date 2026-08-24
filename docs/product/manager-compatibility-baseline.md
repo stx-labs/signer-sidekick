@@ -178,10 +178,10 @@ and canonical callable interface SHA-256. It must define:
 - stale/race/nonce/finality behavior; and
 - contract, regtest, Devnet, and representative deployed-family fixtures.
 
-A wallet-signed action can be offered only when these checks pass and the deployed byte-exact source
-matches a fingerprint reviewed into that capability adapter. The fingerprint authorizes one
-capability, not the whole manager or a product version. Assist requires the same adapter plus its
-independent attestation, retry, revocation, finality, and security release gates.
+A transaction can be offered only when these checks pass and the deployed byte-exact source matches
+a fingerprint reviewed into that capability adapter. The fingerprint authorizes one capability,
+not the whole manager or a product version. Operator-run adds a separate exact-source application
+review; it does not weaken manager-adapter admission.
 
 ### Level 3: custom extensions
 
@@ -225,6 +225,6 @@ Do not use them to:
 ## Decisions this review does not make
 
 - Which active family should receive the second adapter after the reference-like baseline.
-- Who approves behavioral adapters and Assist eligibility.
+- Who approves additional behavioral adapters.
 - Which manager Zero to Signing recommends to a new operator. That choice may consider usability
   and safety, but it does not control whether Sidekick can attach.

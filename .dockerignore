@@ -2,6 +2,7 @@
 .github
 .env
 .env.*
+.ai-runs
 node_modules
 dist
 coverage
@@ -15,3 +16,4 @@ tmp
 **/test-results
 test-results
 playwright-report
+design/mockups/canvas

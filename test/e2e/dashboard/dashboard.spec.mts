@@ -1,13 +1,19 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
+  completedFirstRewardLedger,
   connection,
   deploymentRequirements,
+  engineStatus,
+  gasWalletCreated,
+  gasWalletStatus,
   health,
   healthFinding,
   operationReadiness,
   overview,
   reconciliationResponse,
   responseFor,
+  rewardRunFixture,
+  rewardRunPreparationFixture,
   roster,
   snapshot,
 } from "./large-pool-fixture.mjs";
@@ -22,13 +28,29 @@ test.beforeEach(async ({ page }) => {
     if (message.type() === "error") errors.push(message.text());
   });
   await page.route("**/api/v1/**", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(responseFor(route.request().url())),
-    });
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
   });
 });
+
+function fixtureFulfillment(body: unknown) {
+  const record = body as {
+    fixtureStatus?: number;
+    fixtureContentType?: string;
+    fixtureText?: string;
+  };
+  if (record && typeof record === "object" && record.fixtureText !== undefined) {
+    return {
+      status: record.fixtureStatus ?? 200,
+      contentType: record.fixtureContentType ?? "text/plain",
+      body: record.fixtureText,
+    };
+  }
+  return {
+    status: record?.fixtureStatus ?? 200,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  };
+}
 
 test.afterEach(async ({ page }) => {
   expect(consoleErrors.get(page) ?? []).toEqual([]);
@@ -53,9 +75,7 @@ async function openSettingsSection(
 }
 
 async function editConnection(page: Page, label: string) {
-  const row = page.locator(".connection-row", {
-    has: page.getByRole("heading", { name: label, exact: true }),
-  });
+  const row = page.locator(".st-connection", { hasText: label });
   await row.getByRole("button", { name: "Edit" }).click();
   return row;
 }
@@ -146,10 +166,9 @@ test("keeps diagnostics readable and actions disabled during identity safe mode"
   await expect(page.getByRole("button", { name: "Refresh" })).toBeDisabled();
 
   await openPage(page, "settings", "Settings");
-  await expect(page.getByText(/configuration changes and source tests are disabled/)).toBeVisible();
+  await expect(page.getByText(/changes and source tests are disabled/)).toBeVisible();
   await expect(page.getByRole("button", { name: /^Save / })).toHaveCount(0);
-  await openSettingsSection(page, "support", "Support & maintenance");
-  const supportButtons = page.getByRole("button", { name: "Download support bundle" });
+  const supportButtons = page.getByRole("button", { name: "Support bundle" });
   await expect(supportButtons).toHaveCount(1);
   await expect(supportButtons).toBeEnabled();
 });
@@ -193,15 +212,48 @@ test("loads the independent operator Overview without the shared status endpoint
   await expect(page.getByText("Next cycle is below threshold")).toBeVisible();
   await expect(page.getByText("Reward claim is awaiting approval")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Local node" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Rewards — ready to distribute" })).toBeVisible();
   const rewardsSummary = page.locator("#overview-rewards");
-  await expect(rewardsSummary.getByText("Projected network-wide rewards")).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected operator fee")).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected net for your stakers")).toBeVisible();
-  await expect(rewardsSummary.getByText("Projected for reward cycle 140")).toBeVisible();
+  await expect(rewardsSummary.getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(rewardsSummary.getByText("Ready to collect & distribute")).toBeVisible();
+  await expect(rewardsSummary.getByText("To stakers")).toBeVisible();
+  await expect(rewardsSummary.getByText("Your fee")).toBeVisible();
+  await expect(rewardsSummary.getByRole("link", { name: "Review payments" })).toBeVisible();
   await expect(rewardsSummary).not.toContainText("stakers ready for payout");
   await expect(rewardsSummary).not.toContainText("Reward calculation:");
   await expect.poll(() => statusRequests).toBe(0);
+});
+
+test("uses one Pool-style Rewards action while rewards accrue", async ({ page }) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
+  });
+
+  await login(page);
+
+  const rewardsSummary = page.locator("#overview-rewards");
+  await expect(rewardsSummary.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(rewardsSummary.getByRole("link", { name: "View projection" })).toHaveCount(0);
+  const openRewards = rewardsSummary.getByRole("link", { name: "Open Rewards" });
+  await expect(openRewards).toHaveCount(1);
+  expect(await openRewards.evaluate((element) => element.parentElement?.id)).toBe(
+    "overview-rewards",
+  );
+
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    const widths = await rewardsSummary.evaluate((card) => {
+      const action = card.querySelector<HTMLElement>(":scope > .btn");
+      const style = getComputedStyle(card);
+      return {
+        action: action?.getBoundingClientRect().width ?? 0,
+        content:
+          card.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight),
+      };
+    });
+    expect(Math.abs(widths.action - widths.content)).toBeLessThanOrEqual(1);
+  }
 });
 
 test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
@@ -238,7 +290,7 @@ test("preserves spacing between emphasized callout titles and their details", as
   await expectNoConcatenatedStrongSpanPairs();
   await openPage(page, "health", "Signer Health");
   await expectNoConcatenatedStrongSpanPairs();
-  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await openSettingsSection(page, "capabilities", "Manager");
   await expectNoConcatenatedStrongSpanPairs();
 });
 
@@ -279,7 +331,9 @@ test("keeps healthy Overview domains visible when one domain is unavailable", as
   await expect(
     page.getByText("Signer monitoring is healthy and aligned with the node."),
   ).toBeVisible();
-  await expect(page.getByText("Projected next allocation", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("#overview-rewards").getByText("Cycle 140 · First Distribution", { exact: true }),
+  ).toBeVisible();
 });
 
 test("retains the last Overview projection when a forced refresh fails", async ({ page }) => {
@@ -424,15 +478,19 @@ test("keeps the single-page Settings flow responsive and preserves reward sectio
   await openPage(page, "settings", "Settings");
 
   await expect(page.getByRole("button", { name: /Settings section/ })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Operations", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /Node & signer requirements/, exact: false }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Manager", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Reward runs/, exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Preferences", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Access & audit", exact: true })).toBeVisible();
   const viewport = page.viewportSize();
   if (viewport && viewport.width <= 640) {
     const indexed = await editConnection(page, "Indexed chain API");
-    await expect(indexed.locator(".connection-editor")).toBeVisible();
-    const editorBox = await indexed.locator(".connection-editor").boundingBox();
+    await expect(indexed.locator(".st-editor")).toBeVisible();
+    const editorBox = await indexed.locator(".st-editor").boundingBox();
     expect(editorBox).not.toBeNull();
     expect(editorBox?.x ?? -1).toBeGreaterThanOrEqual(0);
     expect((editorBox?.x ?? 0) + (editorBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
@@ -442,17 +500,20 @@ test("keeps the single-page Settings flow responsive and preserves reward sectio
   }
 
   await openPage(page, "rewards", "Rewards");
-  const rewardBuckets = page.locator("section.reward-buckets");
-  const rewardLedger = page.locator(".reward-ledger");
-  await expect(rewardBuckets).toBeVisible();
-  await expect(rewardLedger).toBeVisible();
-  const bucketsBox = await rewardBuckets.boundingBox();
-  const ledgerBox = await rewardLedger.boundingBox();
-  expect(bucketsBox).not.toBeNull();
-  expect(ledgerBox).not.toBeNull();
+  const nowCard = page.locator(".rw-now").first();
+  const projection = page.locator("#rewards-outlook");
+  await expect(nowCard).toBeVisible();
+  await expect(projection).toBeVisible();
+  const nowBox = await nowCard.boundingBox();
+  const projectionBox = await projection.boundingBox();
+  expect(nowBox).not.toBeNull();
+  expect(projectionBox).not.toBeNull();
   expect(
-    (ledgerBox?.y ?? 0) - ((bucketsBox?.y ?? 0) + (bucketsBox?.height ?? 0)),
-  ).toBeGreaterThanOrEqual(15);
+    (projectionBox?.y ?? 0) - ((nowBox?.y ?? 0) + (nowBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(12);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    viewport.width,
+  );
 });
 
 function discardExpectedHttpConsoleError(page: Page, status: number) {
@@ -634,7 +695,11 @@ function engineFixture() {
     blockReason: null,
     supersededByJobId: null,
     review,
-    approvalWindow: { eligible: true, expiresAt, reason: null },
+    approvalWindow: {
+      eligible: false,
+      expiresAt: null,
+      reason: "Single-job approvals are retired; run reward calls from Rewards",
+    },
     approval: null,
     nonce: null,
     attempts: [],
@@ -644,13 +709,13 @@ function engineFixture() {
   };
   const status = {
     schemaVersion: 1,
-    mode: "assist",
+    mode: "operator-run",
     forcedObserve: { active: false, reason: null, actor: null, forcedAt: null },
     adapters: [
       {
         adapter: review.adapter,
         label: "Reference manager claim rewards",
-        mode: "assist",
+        mode: "operator-run",
         enabled: true,
         availability: "available",
         blockReason: null,
@@ -760,16 +825,16 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
 
   await login(page);
   await openPage(page, "settings", "Settings");
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+  await openSettingsSection(page, "capabilities", "Manager");
+  await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
   current = true;
-  await openSettingsSection(page, "attachment", "Manager attachment");
+  await openSettingsSection(page, "attachment", "Manager");
   await page.getByRole("button", { name: "Refresh attachment", exact: true }).click();
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+  await openSettingsSection(page, "capabilities", "Manager");
+  await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "false",
   );
@@ -803,15 +868,13 @@ test("links readiness blockers to their repair pages", async ({ page }) => {
   });
 
   await login(page);
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  const readinessBlock = page.locator(".engine-block", {
-    has: page.getByRole("heading", { name: "Operation readiness" }),
-  });
-  await readinessBlock.getByRole("link", { name: "Review sources" }).click();
+  await openSettingsSection(page, "capabilities", "Manager");
+  const readinessBlock = page.locator('section[aria-label="Reward runs"]');
+  await readinessBlock.getByRole("link", { name: "Review connections" }).click();
   await expect(page).toHaveURL(/#settings\?section=sources$/);
 
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await readinessBlock.getByRole("link", { name: "Review attachment" }).click();
+  await openSettingsSection(page, "capabilities", "Manager");
+  await readinessBlock.getByRole("link", { name: "Review manager" }).click();
   await expect(page).toHaveURL(/#settings\?section=attachment$/);
 });
 
@@ -962,13 +1025,10 @@ test("treats HTTP 501 engine and readiness endpoints as unavailable Settings cap
     });
   });
   await login(page);
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  const engine = page.locator("#transaction-capabilities");
-  await expect(
-    engine.getByText(
-      "The transaction engine is unavailable. Monitoring and wallet-signed operations are unaffected.",
-    ),
-  ).toBeVisible();
+  await openPage(page, "settings", "Settings");
+  const engine = page.locator('section[aria-label="Reward runs"]');
+  await expect(engine.getByText("Unavailable", { exact: true }).first()).toBeVisible();
+  await expect(engine.getByText("engine status unavailable", { exact: true })).toBeVisible();
   consoleErrors.set(page, []);
 });
 
@@ -996,26 +1056,22 @@ test("summarizes empty transaction work in Settings and links to Activity", asyn
   });
 
   await login(page);
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  const counts = page.locator("#transaction-capabilities .engine-jobs");
-  await expect(counts).toContainText("0 active");
-  await expect(counts).toContainText("0 awaiting approval");
-  await expect(counts).toContainText("0 ambiguous");
-  await expect(page.getByRole("link", { name: "Review activity" })).toHaveAttribute(
+  await openPage(page, "settings", "Settings");
+  const engine = page.locator('section[aria-label="Reward runs"]');
+  await expect(engine).toContainText("0 runs active");
+  await expect(engine).toContainText("0 awaiting approval");
+  await expect(engine).toContainText("0 ambiguous");
+  await expect(engine.getByRole("link", { name: "Activity" })).toHaveAttribute(
     "href",
     "#activity?type=actions",
   );
 });
 
-test("reviews exact engine intent and keeps approval and emergency controls idempotent", async ({
-  page,
-}) => {
+test("reviews exact engine intent and keeps emergency controls idempotent", async ({ page }) => {
   const fixture = engineFixture();
-  let approvalRequests = 0;
-  let invalidationRequests = 0;
   let forceObserveRequests = 0;
   let disableRequests = 0;
-  let currentJob = fixture.job;
+  const currentJob = fixture.job;
   let currentStatus = fixture.status;
 
   await page.unroute("**/api/v1/**");
@@ -1030,37 +1086,6 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
       body = { schemaVersion: 1, items: [fixture.summary], nextCursor: null, total: 1 };
     } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}`) {
       body = currentJob;
-    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval/invalidate`) {
-      invalidationRequests += 1;
-      const requestBody = route.request().postDataJSON();
-      expect(requestBody).toEqual({
-        decision: "invalidate",
-        reason: "Operator invalidated approval from the action workspace",
-      });
-      const invalidatedApproval = {
-        ...fixture.approval,
-        invalidatedAt: "2026-07-17T12:05:00.000Z",
-        invalidationReason: "Operator invalidated approval from the action workspace",
-        version: 1,
-      };
-      currentJob = { ...currentJob, approval: invalidatedApproval, stateVersion: 5 };
-      body = { approval: invalidatedApproval, job: currentJob };
-    } else if (request.pathname === `/api/v1/engine/jobs/${fixture.jobId}/approval`) {
-      approvalRequests += 1;
-      expect(route.request().postDataJSON()).toEqual({
-        decision: "approve",
-        intentSha256: "a".repeat(64),
-        policySha256: "b".repeat(64),
-        expiresAt: "2026-07-17T12:10:00.000Z",
-      });
-      await new Promise((resolve) => setTimeout(resolve, 75));
-      currentJob = {
-        ...currentJob,
-        state: "nonce_reserved",
-        stateVersion: 4,
-        approval: fixture.approval,
-      };
-      body = { approval: fixture.approval, job: currentJob, created: approvalRequests === 1 };
     } else if (request.pathname === "/api/v1/engine/force-observe") {
       forceObserveRequests += 1;
       currentStatus = {
@@ -1104,28 +1129,23 @@ test("reviews exact engine intent and keeps approval and emergency controls idem
   await expect(page.getByText("Last reward compute height", { exact: true })).toBeVisible();
   await expect(page.getByText("Maximum asset outflow", { exact: true })).toBeVisible();
   await expect(page.getByText("Attestation hash", { exact: true })).toBeVisible();
+  // Single-job approvals are retired (ADR 0010): the review stays read-only.
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toHaveCount(0);
+  await expect(
+    page.getByText("Single-job approvals are retired; run reward calls from Rewards"),
+  ).toBeVisible();
 
-  await page.getByRole("button", { name: "Approve transaction" }).evaluate((button) => {
-    button.click();
-    button.click();
-  });
-  await expect.poll(() => approvalRequests).toBe(1);
-  await expect(page.getByText("Approved", { exact: true })).toBeVisible();
-
+  await openPage(page, "settings", "Settings");
+  const engine = page.locator('section[aria-label="Reward runs"]');
+  await expect(engine).toContainText("1 runs active · 1 awaiting approval · 0 ambiguous");
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Invalidate approval" }).click();
-  await expect.poll(() => invalidationRequests).toBe(1);
-  await expect(page.locator(".engine-approval .badge").getByText("Invalidated")).toBeVisible();
-
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByText("assist", { exact: true })).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Force Observe" }).click();
+  await engine.getByRole("button", { name: "Force Observe" }).click();
   await expect.poll(() => forceObserveRequests).toBe(1);
-  await expect(page.getByText("Forced Observe", { exact: true })).toBeVisible();
+  await expect(engine.getByText("Forced Observe", { exact: true }).first()).toBeVisible();
 
+  await engine.getByRole("button", { name: "Manage" }).click();
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Disable", exact: true }).click();
+  await engine.getByRole("button", { name: "Disable", exact: true }).click();
   await expect.poll(() => disableRequests).toBe(1);
   await expect(page.getByText("disabled", { exact: true })).toBeVisible();
 
@@ -1162,7 +1182,7 @@ test("opens one exact engine job in the shared action workspace", async ({ page 
   await expect(page.getByText("WHY THIS ACTION", { exact: true })).toBeVisible();
   await expect(page.getByText("Transaction review", { exact: true })).toBeVisible();
   await expect(page.getByText(fixture.jobId, { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Approve transaction" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve transaction" })).toHaveCount(0);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
@@ -1268,9 +1288,8 @@ test("downloads the server-collected support bundle", async ({ page }) => {
 
   await login(page);
   await openPage(page, "settings", "Settings");
-  await openSettingsSection(page, "support", "Support & maintenance");
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download support bundle" }).click();
+  await page.getByRole("button", { name: "Support bundle" }).click();
   const download = await downloadPromise;
 
   expect(supportRequests).toBe(1);
@@ -1319,12 +1338,10 @@ test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
   await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
-  await openSettingsSection(page, "sources", "Connections");
-  await page
-    .locator(".connection-compatibility")
-    .getByText(/Network compatibility/)
-    .click();
-  await expect(page.getByText(/Profile PoX-5 Testnet revision 1/)).toBeVisible();
+  const deployment = page.locator("#st-deployment");
+  await expect(deployment).toContainText("PoX-5 Testnet");
+  await expect(deployment).toContainText("chain 0x80000005");
+  await expect(deployment).toContainText("revision 1 · built in");
 });
 
 test("edits indexed and comparison API credentials independently", async ({ page }) => {
@@ -1342,14 +1359,16 @@ test("edits indexed and comparison API credentials independently", async ({ page
 
   await login(page);
   await openSettingsSection(page, "sources", "Connections");
+  await expect(page.getByLabel("Minimum fee")).toHaveValue("0.003");
+  await expect(page.getByLabel("Standard fee")).toHaveValue("0.01");
   await page.getByLabel("Forecast horizon").fill("12");
   const indexed = await editConnection(page, "Indexed chain API");
-  await expect(indexed.getByText("Provided by the deployment environment")).toBeVisible();
+  await expect(indexed.getByText("provided by the environment", { exact: true })).toBeVisible();
   await indexed.locator('input[type="password"]').fill("new-indexed-secret");
   await expect(indexed.getByRole("button", { name: "Test saved connection" })).toBeDisabled();
 
   const comparison = await editConnection(page, "Network comparison API");
-  await expect(comparison.getByText("Saved in Sidekick")).toBeVisible();
+  await expect(comparison.getByText("key saved in Sidekick", { exact: true })).toBeVisible();
   await comparison.locator('input[type="password"]').fill("new-reference-secret");
   await page.getByRole("button", { name: "Save connections" }).click();
 
@@ -1361,7 +1380,10 @@ test("edits indexed and comparison API credentials independently", async ({ page
     forecast: snapshot.runtimeSettings.forecast,
   });
   await expect(page.getByLabel("Forecast horizon")).toHaveValue("12");
-  await page.getByRole("button", { name: "Save forecast" }).click();
+  await page
+    .locator('section[aria-label="Preferences"]')
+    .getByRole("button", { name: "Save", exact: true })
+    .click();
   expect(submissions[1]).toMatchObject({
     dataSources: {
       apiKeyAction: { action: "keep" },
@@ -1471,30 +1493,23 @@ test("refreshes signer health without declaring an empty JSON body", async ({ pa
 test("explains manager attachment and trust evidence in Settings", async ({ page }) => {
   await login(page);
   await openPage(page, "settings", "Settings");
-  await expect(page.getByText("Built-in source", { exact: true })).toBeVisible();
-  await expect(page.getByText("Built into Sidekick")).toBeVisible();
-  const managerRow = page.locator(".statline", { hasText: "Manager principal" });
-  const copyBox = await managerRow.locator(".copy-identifier-button").boundingBox();
-  const valueBox = await managerRow.locator(".copyable-identifier-value").boundingBox();
-  expect(copyBox).not.toBeNull();
-  expect(valueBox).not.toBeNull();
-  expect((copyBox?.x ?? 0) + (copyBox?.width ?? 0)).toBeLessThanOrEqual(valueBox?.x ?? 0);
-  await openSettingsSection(page, "support", "Support & maintenance");
-  await expect(page.getByText("Manager trust", { exact: true })).toBeVisible();
-  await expect(page.getByText("Installed profile store")).toBeVisible();
-  await openSettingsSection(page, "sources", "Connections");
-  await page
-    .locator(".connection-compatibility")
-    .getByText(/Network compatibility/)
-    .click();
-  await expect(page.getByText(/Profile PoX-5 Testnet revision 1 · built in/)).toBeVisible();
+  const deployment = page.locator("#st-deployment");
+  await expect(deployment).toContainText(snapshot.managerPrincipal);
+  await expect(deployment.locator(".copy-identifier-button")).toBeVisible();
+  const manager = page.locator('section[aria-label="Manager"]');
+  await expect(manager).toContainText("built-in reference · profile");
+  await expect(manager).toContainText("6 reviewed adapters");
+  await expect(manager.getByText("Verified", { exact: true })).toBeVisible();
+  await expect(page.getByText("Manager trust", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Installed profile store")).toHaveCount(0);
 });
 
 test("uses the recovered operator-control styling and keyboard tooltips", async ({ page }) => {
   await login(page);
 
   await openPage(page, "rewards", "Rewards");
-  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards:/ }).first();
+  await page.locator("#rewards-outlook summary").click();
+  const rewardTerm = page.getByRole("button", { name: /^Network-wide rewards/ }).first();
   await rewardTerm.focus();
   await expect
     .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").visibility))
@@ -1504,6 +1519,12 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
       .poll(() => rewardTerm.evaluate((element) => getComputedStyle(element, "::after").position))
       .toBe("fixed");
   }
+  const rewardInfo = page.locator(".rw-now .rw-info").first();
+  await rewardInfo.focus();
+  await expect(rewardInfo).toHaveAttribute("data-tooltip", /.+/);
+  await expect
+    .poll(() => rewardInfo.evaluate((element) => getComputedStyle(element, "::after").visibility))
+    .toBe("visible");
 
   await openPage(page, "activity", "Activity");
   const buttonLink = page.locator("a.btn").first();
@@ -1559,10 +1580,10 @@ test("uses the recovered operator-control styling and keyboard tooltips", async 
     expect(filterBarBox?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
   }
 
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  const capability = page.getByRole("button", {
-    name: "register-self: Fixture capability is reviewed.",
-  });
+  await openSettingsSection(page, "capabilities", "Manager");
+  const capability = page
+    .locator('section[aria-label="Manager"] .st-row', { hasText: "Reward calls" })
+    .getByRole("button", { name: "Details" });
   await capability.focus();
   await expect
     .poll(() => capability.evaluate((element) => getComputedStyle(element, "::after").visibility))
@@ -1576,13 +1597,11 @@ test("checks deployment requirements and shows exact operator-owned remediation"
   await openPage(page, "settings", "Settings");
 
   await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Node & signer requirements" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Refresh checks" })).toBeVisible();
-  const transactionIndex = page.locator(".deployment-requirement", {
-    hasText: "Node transaction index",
-  });
+  await expect(page.getByRole("heading", { name: /Node & signer requirements/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run checks" })).toBeVisible();
+  const transactionIndex = page.locator(".st-requirement", { hasText: "Node transaction index" });
   await expect(transactionIndex).toContainText("HTTP 501");
-  await transactionIndex.getByText("How to resolve").click();
+  await transactionIndex.getByRole("button", { name: "Resolve" }).click();
   await expect(transactionIndex.locator("pre")).toContainText("txindex = true");
   await expect(transactionIndex).toContainText("Restart after changing configuration: stacks-node");
   await expect(transactionIndex).toBeInViewport();
@@ -1661,9 +1680,7 @@ test("shows successful live checks as connected in every connection summary", as
   await openSettingsSection(page, "sources", "Connections");
 
   for (const label of ["Stacks node", "Node monitoring", "Signer monitoring"]) {
-    const row = page.locator(".connection-row", {
-      has: page.getByRole("heading", { name: label, exact: true }),
-    });
+    const row = page.locator(".st-connection", { hasText: label });
     await expect(row.locator(".badge")).toHaveText("Connected");
   }
 
@@ -1671,7 +1688,14 @@ test("shows successful live checks as connected in every connection summary", as
   await expect(comparison.locator(".badge")).toHaveText("Connected");
   await comparison.getByRole("button", { name: "Test saved connection" }).click();
   await expect(comparison.locator(".badge")).toHaveText("Connected");
-  await expect(comparison.getByText("Connected · 4 recognized signals")).toBeVisible();
+
+  await page.evaluate(() => {
+    location.hash = "#settings?section=requirements";
+  });
+  await expect(page.getByRole("heading", { name: /Node & signer requirements/ })).toBeVisible();
+  await expect(page.locator(".st-requirement", { hasText: "Stacks event observer" })).toHaveCount(
+    1,
+  );
 });
 
 test("starts an admin-history sync from Settings", async ({ page }) => {
@@ -1693,7 +1717,7 @@ test("starts an admin-history sync from Settings", async ({ page }) => {
   });
 
   await login(page);
-  await openSettingsSection(page, "capabilities", "Pool forecast");
+  await openSettingsSection(page, "capabilities", "Manager");
   await page.getByRole("button", { name: "Sync admin history" }).click();
 
   await expect(page.getByText("Syncing chain data")).toBeVisible();
@@ -1704,18 +1728,13 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   const adminPrincipal = snapshot.managerPrincipal.split(".")[0];
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  const accrualCard = page.getByRole("heading", { name: "Accrued so far" }).locator("../..");
-  const projectedCard = page
-    .getByRole("heading", { name: "Projected next allocation" })
-    .locator("../..");
-  await expect(accrualCard).toBeVisible();
-  await expect(accrualCard.getByText("0.025 sBTC", { exact: true })).toBeVisible();
-  await expect(accrualCard.getByText("0.005 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
-  await expect(projectedCard.getByText("0.05 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("0.01 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("0.008–0.012 sBTC", { exact: true })).toBeVisible();
-  await expect(projectedCard.getByText("low confidence", { exact: true })).toBeVisible();
+  const projection = page.locator("#rewards-outlook");
+  await projection.locator("summary").click();
+  await expect(projection.getByText("0.025 sBTC", { exact: true })).toBeVisible();
+  await expect(projection.getByText("0.05 sBTC", { exact: true }).first()).toBeVisible();
+  await expect(projection.getByText("0.008 sBTC – 0.012 sBTC", { exact: true })).toBeVisible();
+  await expect(projection).toContainText("in 1,050 Bitcoin blocks · about 7d 7h");
+  await expect(projection).toContainText("low confidence");
   await page.getByRole("button", { name: "Update manager fee" }).click();
   await expect(page).toHaveURL(/#action\/update-fees$/);
   await expect(page.getByRole("heading", { name: "Update manager fee" })).toBeVisible();
@@ -1743,10 +1762,18 @@ test("deep-links reward administration and blocks manager-admin self-removal", a
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
 });
 
+async function openWalletSettlement(page: Page) {
+  const details = page.locator("details", {
+    has: page.getByText("Distribute with your wallet", { exact: false }),
+  });
+  await details.locator("summary").click();
+}
+
 test("prepares a staker settlement through the browser-wallet flow", async ({ page }) => {
   await login(page);
   await openPage(page, "rewards", "Rewards");
 
+  await openWalletSettlement(page);
   await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
   await expect(page.getByRole("button", { name: "Settle" })).toBeVisible();
   await page.getByRole("button", { name: "Settle" }).click();
@@ -1808,6 +1835,7 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
 
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  await openWalletSettlement(page);
   await expect(
     page.getByText("Staker rewards become available after the global calculation runs."),
   ).toBeVisible();
@@ -1816,12 +1844,9 @@ test("keeps pending and empty staker settlement views compact", async ({ page })
   ).toHaveCount(0);
   expect(settlementReads).toBe(0);
 
-  await page.getByRole("link", { name: "Review calculation" }).click();
-  await expect(page).toHaveURL(/#action\/calculate-rewards$/);
-  await expect(page.getByRole("heading", { name: "Calculate PoX-5 rewards" })).toBeVisible();
-  await expect(page.getByText("PERMISSIONLESS CHECKPOINT")).toBeVisible();
-  await page.getByLabel("Signing account").fill(snapshot.managerPrincipal.split(".")[0] ?? "");
-  await expect(page.getByLabel("Browser wallet")).toBeVisible();
+  // The separate legacy calculation callout is intentionally gone; the distribution card owns
+  // that action so the page never offers two competing paths for the same operation.
+  await expect(page.getByRole("link", { name: "Review calculation" })).toHaveCount(0);
 });
 
 test("does not list every zero-value staker in settlement discovery", async ({ page }) => {
@@ -1869,6 +1894,7 @@ test("does not list every zero-value staker in settlement discovery", async ({ p
 
   await login(page);
   await openPage(page, "rewards", "Rewards");
+  await openWalletSettlement(page);
   await page.getByRole("button", { name: "Check what settling this cycle costs" }).click();
   await expect(page.getByText("No staker rewards are settleable for this cycle")).toBeVisible();
   await expect(page.getByText("Nothing settled")).toHaveCount(0);
@@ -2002,7 +2028,7 @@ test("requires a fresh signer grant before preparing a Testnet registration wall
 
   await login(page);
   await openPage(page, "settings", "Settings");
-  await page.getByRole("link", { name: "Review signer registration or rotation" }).click();
+  await page.getByRole("link", { name: "Rotate", exact: true }).click();
   await expect(page.getByLabel("Browser wallet")).toHaveCount(0);
   await page.getByLabel("Authorization ID").fill("141");
   await page.getByLabel("Signer configuration path").fill("/srv/signer/Signer.toml");
@@ -2031,9 +2057,9 @@ test("uses one document scroll for desktop Settings", async ({ page }) => {
 
   await expect(page.locator(".settings-scroll")).toHaveCount(0);
   await expect(page.locator(".set-nav")).toHaveCount(0);
-  await page.getByRole("heading", { name: "Support", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole("heading", { name: "Access & audit", exact: true }).scrollIntoViewIfNeeded();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-  await expect(page.getByRole("heading", { name: "Support", exact: true })).toBeInViewport();
+  await expect(page.getByRole("heading", { name: "Access & audit", exact: true })).toBeInViewport();
 });
 
 test("hands first-time signer setup to the maintained external flow", async ({ page }) => {
@@ -2061,8 +2087,8 @@ test("hands first-time signer setup to the maintained external flow", async ({ p
   await login(page);
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Connect a running signer manager.")).toBeVisible();
-  await expect(page.getByText(/starts after first-time setup/)).toBeVisible();
-  await expect(page.getByRole("link", { name: /Open Zero to Signing/ })).toHaveAttribute(
+  await expect(page.getByText(/Complete first-time setup/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Zero to Signing/ })).toHaveAttribute(
     "href",
     "https://stx.fan/zero_to/signing/",
   );
@@ -2085,7 +2111,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
       status.manager.automationEligible = automationEligible;
       status.manager.automationEligibilityReason = automationEligible
         ? "Pinned reference render and network approval verified"
-        : "Reference-manager Assist is disabled";
+        : "Reviewed reward calls are disabled for this manager";
       status.manager.provenance.status =
         tier === "reference-render"
           ? "verified"
@@ -2113,9 +2139,10 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 
   await login(page);
   await openPage(page, "settings", "Settings");
-  await expect(page.getByText("Custom source", { exact: true })).toBeVisible();
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+  const manager = page.locator('section[aria-label="Manager"]');
+  await expect(manager).toContainText("custom · profile none");
+  await openSettingsSection(page, "capabilities", "Manager");
+  await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "false",
   );
@@ -2127,24 +2154,26 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
 
   tier = "custom-observe";
   await page.reload();
-  await openSettingsSection(page, "attachment", "Manager attachment");
-  await expect(page.getByText("Recorded custom source", { exact: true })).toBeVisible();
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+  await openSettingsSection(page, "attachment", "Manager");
+  await expect(manager).toContainText("recorded custom · profile operator-custom-observe");
+  await openSettingsSection(page, "capabilities", "Manager");
+  await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "false",
   );
 
   tier = "reference-render";
   await page.reload();
-  await openSettingsSection(page, "attachment", "Manager attachment");
-  await expect(page.getByText("Reviewed source", { exact: true })).toBeVisible();
-  await expect(page.getByText("Operator-installed")).toBeVisible();
-  await openSettingsSection(page, "capabilities", "Pool forecast");
-  await expect(
-    page.getByLabel("Operations").getByText("Assist unavailable.", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("link", { name: /Add admin/ })).toHaveAttribute(
+  await openSettingsSection(page, "attachment", "Manager");
+  await expect(manager).toContainText("reviewed · profile operator-reference-render");
+  await openSettingsSection(page, "capabilities", "Manager");
+  const rewardCalls = manager.locator(".st-row", { hasText: "Reward calls" });
+  await expect(rewardCalls.getByText("Available", { exact: true })).toBeVisible();
+  await expect(rewardCalls.getByRole("button", { name: "Details" })).toHaveAttribute(
+    "data-tooltip",
+    "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs.",
+  );
+  await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "false",
   );
@@ -2197,16 +2226,31 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   const forecastBox = await forecast.boundingBox();
   expect(forecastBox?.height).toBeLessThan(340);
   await expect(page.getByText(`1–50 of ${roster.length}`)).toBeVisible();
-  const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
-  await expect(amountSort).toHaveCount(1);
-  await amountSort.click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await page.getByLabel("Sort roster").selectOption("amount:asc");
+  } else {
+    const amountSort = page.getByRole("button", { name: "Sort by Amount, ascending" });
+    await expect(amountSort).toHaveCount(1);
+    await amountSort.click();
+  }
   const rows = page.locator("tbody tr");
   await expect(rows).toHaveCount(50);
   const smallestStaker = roster[0]?.stakerPrincipal ?? "";
   await expect(rows.nth(0).locator(`[data-copy-value="${smallestStaker}"]`)).toHaveCount(1);
-  const descendingAmountSort = page.getByRole("button", { name: "Sort by Amount, descending" });
-  await expect(descendingAmountSort).toHaveCount(1);
-  await descendingAmountSort.click();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    expect((await rows.first().boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      145,
+    );
+    await expect(rows.first()).toContainText("Cycles");
+    await expect(rows.first()).toContainText("Unlock");
+    await page.getByLabel("Sort roster").selectOption("amount:desc");
+  } else {
+    const descendingAmountSort = page.getByRole("button", {
+      name: "Sort by Amount, descending",
+    });
+    await expect(descendingAmountSort).toHaveCount(1);
+    await descendingAmountSort.click();
+  }
   const largestStaker = roster.at(-1)?.stakerPrincipal ?? "";
   await expect(rows.nth(0).locator(`[data-copy-value="${largestStaker}"]`)).toHaveCount(1);
   await page.getByRole("button", { name: "Next" }).click();
@@ -2394,9 +2438,9 @@ test("editing a Settings source invalidates its overlapping connection test", as
   try {
     await login(page);
     await openSettingsSection(page, "sources", "Connections");
-    await editConnection(page, "Node monitoring");
+    const nodeMonitoring = await editConnection(page, "Node monitoring");
     const metricsUrl = page.getByLabel("Node metrics URL");
-    await metricsUrl.locator("xpath=following-sibling::button").click();
+    await nodeMonitoring.getByRole("button", { name: "Test", exact: true }).click();
     await expect.poll(() => sourceTestCalls).toBe(1);
     await expect(page.getByText("Connecting…", { exact: true })).toBeVisible();
 
@@ -2431,6 +2475,8 @@ test("copies the full principal from an abbreviated address", async ({ page }) =
   const valueBox = await value.boundingBox();
   expect(copyBox).not.toBeNull();
   expect(valueBox).not.toBeNull();
+  await expect(value).toHaveText(`${principal.slice(0, 6)}…${principal.slice(-6)}`);
+  await expect(value.locator("xpath=parent::*")).toHaveAttribute("title", principal);
   expect(copyBox?.x ?? 0).toBeGreaterThanOrEqual((valueBox?.x ?? 0) + (valueBox?.width ?? 0));
   await expect(copy).toHaveCSS("opacity", "0");
   await copy.hover();
@@ -2442,11 +2488,378 @@ test("copies the full principal from an abbreviated address", async ({ page }) =
     .toBe(principal);
 });
 
-test("paginates multi-year reward history", async ({ page }) => {
+test("pages multi-year reward history and loads payments on demand", async ({ page }) => {
   await login(page);
   await openPage(page, "rewards", "Rewards");
-  await expect(page.getByText("1–10 of 48")).toBeVisible();
-  const paginations = page.getByRole("navigation", { name: "Table pagination" });
-  await paginations.first().getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText("11–20 of 48")).toBeVisible();
+  await expect(page.getByText("6 of 12 cycles")).toBeVisible();
+  await page.getByRole("button", { name: "Show older" }).click();
+  await expect(page.getByText("12 of 12 cycles")).toBeVisible();
+  await page
+    .locator("#rewards-cycle-139")
+    .getByRole("button", { name: "Show distributions" })
+    .click();
+  const panel = page.locator(".rw-ledger-panel");
+  await expect(panel.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
+  await expect(panel.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
+});
+
+test("keeps a completed current-cycle distribution accessible during the second half", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
+  });
+
+  await login(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-payment-txid", value),
+      },
+    });
+  });
+  await openPage(page, "rewards", "Rewards");
+
+  const currentCycle = page.locator("#rewards-calculation");
+  await expect(
+    currentCycle.getByText("First Distribution complete", { exact: true }),
+  ).toBeVisible();
+  await expect(currentCycle.getByText(/40 of 40 paid/)).toBeVisible();
+  const view = currentCycle.getByRole("button", { name: "View payments" });
+  await expect(view).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("All available distributions have been completed.")).toBeVisible();
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    const distributionFact = currentCycle.locator('[data-earning-fact="distribution"]');
+    const cycleFact = currentCycle.locator('[data-earning-fact="cycle"]');
+    const networkFact = currentCycle.locator('[data-earning-fact="network"]');
+    await expect(distributionFact).toContainText("Projected this distribution");
+    expect((await distributionFact.boundingBox())?.y ?? 0).toBeLessThan(
+      (await cycleFact.boundingBox())?.y ?? 0,
+    );
+    expect((await cycleFact.boundingBox())?.y ?? 0).toBeLessThan(
+      (await networkFact.boundingBox())?.y ?? 0,
+    );
+    expect((await currentCycle.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      500,
+    );
+  }
+
+  await view.click();
+  await expect(view).toHaveAttribute("aria-expanded", "true");
+  const details = page.locator("#rewards-current-distribution-140-1");
+  await expect(details.getByRole("heading", { name: "First Distribution details" })).toBeVisible();
+  await expect(details.getByText(/Calculation confirmed · rewards collected/)).toBeVisible();
+  await expect(details.getByRole("tab", { name: "Paid · 40" })).toBeVisible();
+  await expect(details.locator(".rw-tx-badge")).toHaveCount(0);
+  const transactionCopies = details.locator(".rw-payment-paid .copy-identifier-button");
+  await expect(transactionCopies).toHaveCount(10);
+  const firstTransactionCopy = transactionCopies.first();
+  const firstTransactionId = await firstTransactionCopy.getAttribute("data-copy-value");
+  expect(firstTransactionId).toMatch(/^0x[0-9a-f]{64}$/);
+  await expect(firstTransactionCopy).toHaveAttribute(
+    "aria-label",
+    new RegExp(`^Copy transaction ID: ${firstTransactionId}$`),
+  );
+  await firstTransactionCopy.click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("copied-payment-txid")))
+    .toBe(firstTransactionId);
+  const detailsBox = await details.boundingBox();
+  const projectionBox = await page.locator("#rewards-outlook").boundingBox();
+  expect(detailsBox).not.toBeNull();
+  expect(projectionBox).not.toBeNull();
+  expect(
+    (projectionBox?.y ?? 0) - ((detailsBox?.y ?? 0) + (detailsBox?.height ?? 0)),
+  ).toBeGreaterThanOrEqual(12);
+  await details.getByRole("button", { name: "Close" }).click();
+  await expect(details).toHaveCount(0);
+  await expect(view).toBeFocused();
+});
+
+test("shows the ready distribution with payments, exports, and the wallet fallback", async ({
+  page,
+}) => {
+  const downloads: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/rewards/ledger/")) downloads.push(request.url());
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const now = page.locator(".rw-now");
+  await expect(now.getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(now.getByRole("heading", { name: "Ready to collect & distribute" })).toBeVisible();
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toBeDisabled();
+  await expect(now.getByText("Calculated for this pool", { exact: true })).toBeVisible();
+  await expect(now.getByText("0 of 40", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sign with your own wallet.")).toBeVisible();
+
+  const payments = page.locator("#rewards-distribution-140-1 .rw-payments");
+  const principal = roster[0].stakerPrincipal;
+  const principalValue = payments
+    .locator(`[data-copy-value="${principal}"]`)
+    .first()
+    .locator("xpath=preceding-sibling::*[1]");
+  await expect(principalValue).toHaveText(`${principal.slice(0, 6)}…${principal.slice(-6)}`);
+  await expect(principalValue.locator("xpath=parent::*")).toHaveAttribute("title", principal);
+  expect(
+    await payments.evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBe(
+    0,
+  );
+  await expect(payments.getByRole("tab", { name: "Outstanding · 40" })).toBeVisible();
+  await expect(payments.getByRole("tab", { name: "Paid · 0" })).toBeDisabled();
+  await expect(payments.getByRole("tab", { name: "Arriving · 0" })).toBeDisabled();
+  const l1Marker = payments.locator(".rw-l1").last();
+  await l1Marker.click();
+  const l1Popover = l1Marker.locator("xpath=following-sibling::*[contains(@class, 'rw-l1-pop')]");
+  await expect(l1Popover).toBeVisible();
+  await expect(l1Popover.getByText("L1 Payout", { exact: true })).toBeVisible();
+  const popoverBox = await l1Popover.boundingBox();
+  const viewport = page.viewportSize();
+  expect(popoverBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(popoverBox?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((popoverBox?.y ?? 0) + (popoverBox?.height ?? 0)).toBeLessThanOrEqual(
+    viewport?.height ?? 0,
+  );
+  expect(popoverBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((popoverBox?.x ?? 0) + (popoverBox?.width ?? 0)).toBeLessThanOrEqual(viewport?.width ?? 0);
+  await page.getByRole("heading", { name: "Rewards" }).click();
+  await expect(l1Popover).toBeHidden();
+  await page.getByLabel("Search principal").fill(roster[1].stakerPrincipal);
+  await expect(payments.getByText("1 of 40 payments")).toBeVisible();
+  await page.getByLabel("Search principal").fill("");
+  await expect(payments.getByText("1–10 of 40")).toBeVisible();
+  await payments.getByRole("button", { name: "Next" }).click();
+  await expect(payments.getByText("11–20 of 40")).toBeVisible();
+
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await expect(payments.getByLabel("Sort payments")).toBeVisible();
+    expect(
+      (await payments.locator("tbody tr").first().boundingBox())?.height ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(150);
+    const feeCard = page.locator(".rw-fee-card");
+    const withdraw = feeCard.getByRole("button", { name: "Withdraw earned fees" });
+    const update = feeCard.getByRole("button", { name: "Update manager fee" });
+    const sweep = feeCard.getByRole("button", { name: "Sweep fee refunds" });
+    const feeCardBox = await feeCard.boundingBox();
+    const withdrawBox = await withdraw.boundingBox();
+    const updateBox = await update.boundingBox();
+    const sweepBox = await sweep.boundingBox();
+    expect(Math.abs((withdrawBox?.width ?? 0) - (feeCardBox?.width ?? 0) + 28)).toBeLessThanOrEqual(
+      2,
+    );
+    expect(Math.abs((updateBox?.y ?? 0) - (sweepBox?.y ?? 0))).toBeLessThanOrEqual(1);
+    expect(feeCardBox?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(520);
+  }
+
+  // Exports live with the data: a past cycle's panel exports that distribution or the cycle…
+  await page
+    .locator("#rewards-cycle-139")
+    .getByRole("button", { name: "Show distributions" })
+    .click();
+  const cyclePanel = page.locator(".rw-ledger-panel");
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await cyclePanel.getByRole("button", { name: "Export payments" }).click();
+    await cyclePanel.getByRole("menuitem", { name: "This distribution" }).click();
+  } else {
+    await cyclePanel.getByRole("button", { name: "This distribution" }).click();
+  }
+  await expect
+    .poll(() => downloads.some((url) => url.includes("/payments.csv?cycle=139&distribution=1")))
+    .toBe(true);
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await cyclePanel.getByRole("button", { name: "Export payments" }).click();
+    await cyclePanel.getByRole("menuitem", { name: "Cycle 139", exact: true }).click();
+  } else {
+    await cyclePanel.getByRole("button", { name: "Cycle 139", exact: true }).click();
+  }
+  await expect
+    .poll(() => downloads.some((url) => url.endsWith("/payments.csv?cycle=139")))
+    .toBe(true);
+  // …and the fee ledger exports the whole history.
+  if ((page.viewportSize()?.width ?? 0) <= 640) {
+    await page.getByLabel("Export format").selectOption("json");
+    await page.getByLabel("Export dataset").selectOption("payments");
+    await page.getByRole("button", { name: "Download history" }).click();
+  } else {
+    await page.getByRole("button", { name: "JSON" }).click();
+    await page.getByRole("button", { name: "Staker Payments", exact: true }).click();
+  }
+  await expect
+    .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
+    .toBe(true);
+});
+
+test("keeps the reward action tooltip inside intermediate desktop viewports", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Intermediate desktop regression");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route("**/api/v1/engine", async (route) => {
+    await route.fulfill(fixtureFulfillment({ ...engineStatus, mode: "operator-run" }));
+  });
+  await page.route("**/api/v1/settings/gas-wallet", async (route) => {
+    await route.fulfill(
+      fixtureFulfillment({ ...gasWalletCreated, enabled: true, signer: "ready" }),
+    );
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.locator(".rw-now-actions .rw-gas")).toBeVisible();
+  for (const width of [1081, 1152, 1280, 1366]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+  }
+});
+
+test("seals, approves, and follows a reward run from the Rewards page", async ({ page }) => {
+  let runStatus: string | null = null;
+  const operatorRunEngine = { ...engineStatus, mode: "operator-run" };
+  const readyWallet = { ...gasWalletCreated, enabled: true, signer: "ready" };
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const method = route.request().method();
+    if (request.pathname === "/api/v1/engine") {
+      await route.fulfill(fixtureFulfillment(operatorRunEngine));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      await route.fulfill(fixtureFulfillment(readyWallet));
+      return;
+    }
+    if (request.pathname === "/api/v1/rewards/runs" && method === "GET") {
+      await route.fulfill(fixtureFulfillment(runStatus ? [rewardRunFixture(runStatus)] : []));
+      return;
+    }
+    if (request.pathname === "/api/v1/rewards/runs" && method === "POST") {
+      await route.fulfill(fixtureFulfillment(rewardRunPreparationFixture("queued")));
+      return;
+    }
+    if (request.pathname.startsWith("/api/v1/rewards/run-preparations/") && method === "GET") {
+      runStatus = "awaiting-approval";
+      await route.fulfill(fixtureFulfillment(rewardRunPreparationFixture("ready")));
+      return;
+    }
+    if (request.pathname.endsWith("/approve") && method === "POST") {
+      runStatus = "running";
+      await route.fulfill(fixtureFulfillment(rewardRunFixture("running")));
+      return;
+    }
+    if (request.pathname.endsWith("/resume") && method === "POST") {
+      runStatus = "running";
+      await route.fulfill(fixtureFulfillment(rewardRunFixture("running")));
+      return;
+    }
+    if (request.pathname.startsWith("/api/v1/rewards/runs/") && method === "GET") {
+      await route.fulfill(fixtureFulfillment(rewardRunFixture(runStatus ?? "awaiting-approval")));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const now = page.locator(".rw-now");
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toBeEnabled();
+  await expect(now.getByText(/Gas wallet 12\.48 STX/)).toBeVisible();
+  await now.getByRole("button", { name: "Collect & distribute" }).click();
+
+  const sheet = page.getByRole("dialog", { name: "Collect & distribute" });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText("Collect into the manager")).toBeVisible();
+  await expect(sheet.getByText("Distribute payments")).toBeVisible();
+  await expect(sheet.getByText(/41 transactions/)).toBeVisible();
+  await expect(sheet.getByText(/up to 4\.10 STX gas/)).toBeVisible();
+  await sheet.getByRole("button", { name: "Go" }).click();
+
+  await expect(now.getByRole("heading", { name: /Distributing… 13 of 41 payments/ })).toBeVisible();
+  await expect(now.getByText("13 of 41 transactions", { exact: false })).toBeVisible();
+  await expect(now.getByRole("button", { name: "Collect & distribute" })).toHaveCount(0);
+
+  runStatus = "halted";
+  await expect(now.getByRole("heading", { name: "Run halted" })).toBeVisible({ timeout: 15_000 });
+  await expect(
+    now.getByText("Broadcast outcome is ambiguous", { exact: false }).first(),
+  ).toBeVisible();
+  await now.getByRole("button", { name: "Resume" }).click();
+  await expect(now.getByRole("heading", { name: /Distributing… 13 of 41 payments/ })).toBeVisible();
+});
+
+test("renders the last verified gas-wallet status immediately across a page reload", async ({
+  page,
+}) => {
+  const operatorRunEngine = { ...engineStatus, mode: "operator-run" };
+  const readyWallet = { ...gasWalletCreated, enabled: true, signer: "ready" };
+  let holdWalletStatus = false;
+  let releaseWalletStatus: (() => void) | null = null;
+  const walletStatusReleased = new Promise<void>((resolve) => {
+    releaseWalletStatus = resolve;
+  });
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/engine") {
+      await route.fulfill(fixtureFulfillment(operatorRunEngine));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      if (holdWalletStatus) await walletStatusReleased;
+      await route.fulfill(fixtureFulfillment(readyWallet));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+
+  try {
+    await login(page);
+    await openPage(page, "rewards", "Rewards");
+    await expect(page.getByText(/Gas wallet 12\.48 STX/).first()).toBeVisible();
+    holdWalletStatus = true;
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+    await expect(page.getByText(/Gas wallet 12\.48 STX/).first()).toBeVisible({ timeout: 2_000 });
+  } finally {
+    releaseWalletStatus?.();
+  }
+});
+
+test("creates a gas wallet from Settings", async ({ page }) => {
+  let created = false;
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname === "/api/v1/settings/gas-wallet" && route.request().method() === "POST") {
+      created = true;
+      await route.fulfill(fixtureFulfillment(gasWalletCreated));
+      return;
+    }
+    if (request.pathname === "/api/v1/settings/gas-wallet") {
+      await route.fulfill(fixtureFulfillment(created ? gasWalletCreated : gasWalletStatus));
+      return;
+    }
+    await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#settings?section=gas-wallet";
+  });
+  const section = page.locator('section[aria-label="Reward runs"]');
+  await expect(page.getByRole("heading", { name: /Reward runs/ })).toBeVisible();
+  await expect(section.getByText("Not set up")).toBeVisible();
+  await section.getByRole("button", { name: "Create gas wallet" }).click();
+  await expect(section.getByText("ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7")).toBeVisible();
+  await expect(section.getByText(/12\.48 STX/).first()).toBeVisible();
+  await expect(section.getByRole("button", { name: "Enable" })).toBeVisible();
+  await section.getByRole("button", { name: "Sweep remaining STX" }).click();
+  await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
 });

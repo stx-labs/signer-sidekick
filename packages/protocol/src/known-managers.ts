@@ -46,8 +46,8 @@ const devnetProfile = {
     pox5: 8,
     sbtcDeployer: 13,
   },
-  // Production approval is a mainnet-only gate. Non-mainnet Assist still requires every source,
-  // attestation, approval, and runtime admission check.
+  // Production approval is a mainnet-only gate. Non-mainnet reviewed execution still requires
+  // every source, approval, and runtime admission check.
   productionApproved: false,
 } as const satisfies ManagerProfile;
 

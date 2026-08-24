@@ -1,18 +1,12 @@
 import {
-  type EngineApprovalRequest,
-  type EngineApprovalResponse,
   type EngineDisableAdapterRequest,
   type EngineDisableAdapterResponse,
   type EngineForceObserveRequest,
   type EngineForceObserveResponse,
-  type EngineInvalidateApprovalRequest,
-  type EngineInvalidateApprovalResponse,
   type EngineJobDetail,
   type EngineStatus,
-  engineApprovalResponseSchema,
   engineDisableAdapterResponseSchema,
   engineForceObserveResponseSchema,
-  engineInvalidateApprovalResponseSchema,
   engineJobDetailSchema,
   engineStatusSchema,
   type OperationReadiness,
@@ -54,32 +48,6 @@ export async function loadEngineJob(
     `/api/v1/engine/jobs/${encodeURIComponent(jobId)}`,
     engineJobDetailSchema,
     signal ? { signal } : {},
-  );
-}
-
-export async function approveEngineJob(
-  token: string,
-  jobId: string,
-  request: EngineApprovalRequest,
-): Promise<EngineApprovalResponse> {
-  return apiJson(
-    token,
-    `/api/v1/engine/jobs/${encodeURIComponent(jobId)}/approval`,
-    engineApprovalResponseSchema,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
-export async function invalidateEngineApproval(
-  token: string,
-  jobId: string,
-  request: EngineInvalidateApprovalRequest,
-): Promise<EngineInvalidateApprovalResponse> {
-  return apiJson(
-    token,
-    `/api/v1/engine/jobs/${encodeURIComponent(jobId)}/approval/invalidate`,
-    engineInvalidateApprovalResponseSchema,
-    { method: "POST", body: JSON.stringify(request) },
   );
 }
 

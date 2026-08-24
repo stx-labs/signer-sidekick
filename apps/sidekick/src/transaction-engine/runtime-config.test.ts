@@ -9,15 +9,12 @@ import { loadTransactionEngineRuntimeConfig } from "./runtime-config.js";
 const privateKey = "11".repeat(32);
 const publicKey = compressPublicKey(privateKeyToPublic(privateKey));
 const principal = getAddressFromPublicKey(publicKey, "testnet");
-
-function assistEnvironment(): NodeJS.ProcessEnv {
+function operatorRunEnvironment(): NodeJS.ProcessEnv {
   return {
-    SIDEKICK_ENGINE_MODE: "assist",
+    SIDEKICK_ENGINE_MODE: "operator-run",
     SIDEKICK_GAS_PAYER_PRINCIPAL: principal,
     SIDEKICK_GAS_PAYER_PUBLIC_KEY: publicKey,
     SIDEKICK_GAS_PAYER_SECRET_FILE: "/run/secrets/sidekick-gas-payer",
-    SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/etc/sidekick/compatibility.json",
-    SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: "/etc/sidekick/attestation-keys.json",
   };
 }
 
@@ -26,10 +23,11 @@ describe("transaction-engine runtime config", () => {
     expect(loadTransactionEngineRuntimeConfig({}, "mainnet")).toEqual({
       requestedMode: "observe",
       gasPayer: null,
-      attestation: null,
       finalityDepth: 6,
       maximumFeeUstx: 100_000n,
-      maximumApprovalMinutes: 30,
+      runStartWindowMinutes: 30,
+      maximumRunHours: 6,
+      maximumRunTransactions: 200,
     });
   });
 
@@ -46,15 +44,21 @@ describe("transaction-engine runtime config", () => {
     ).toThrow("Engine fee cap is too large");
   });
 
-  it("accepts only a matching public gas identity and secret path for Assist", () => {
-    expect(loadTransactionEngineRuntimeConfig(assistEnvironment(), "regtest")).toMatchObject({
-      requestedMode: "assist",
+  it("accepts a matching public gas identity and secret path for operator-run", () => {
+    expect(loadTransactionEngineRuntimeConfig(operatorRunEnvironment(), "regtest")).toMatchObject({
+      requestedMode: "operator-run",
       gasPayer: {
         principal,
         publicKey: publicKey.toLowerCase(),
         secretFilePath: "/run/secrets/sidekick-gas-payer",
       },
     });
+  });
+
+  it("starts operator-run without a gas payer so the wallet can be generated later", () => {
+    expect(
+      loadTransactionEngineRuntimeConfig({ SIDEKICK_ENGINE_MODE: "operator-run" }, "testnet"),
+    ).toMatchObject({ requestedMode: "operator-run", gasPayer: null });
   });
 
   it("permits Observe planning with a public identity and no private-key path", () => {
@@ -70,7 +74,15 @@ describe("transaction-engine runtime config", () => {
   });
 
   it.each([
-    [{ SIDEKICK_ENGINE_MODE: "assist" }, "Assist mode requires"],
+    [{ SIDEKICK_ENGINE_MODE: "assist" }, "SIDEKICK_ENGINE_MODE=assist is retired"],
+    [
+      {
+        SIDEKICK_ENGINE_MODE: "operator-run",
+        SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/etc/sidekick/compatibility.json",
+        SIDEKICK_COMPATIBILITY_TRUST_KEYS_FILE: "/etc/sidekick/attestation-keys.json",
+      },
+      "Compatibility attestation files are no longer used",
+    ],
     [
       { SIDEKICK_GAS_PAYER_PRINCIPAL: principal },
       "principal and public key must be configured together",
@@ -85,7 +97,7 @@ describe("transaction-engine runtime config", () => {
     ],
     [
       { SIDEKICK_COMPATIBILITY_ATTESTATION_FILE: "/tmp/attestation.json" },
-      "attestation and trust-key files must be configured together",
+      "Compatibility attestation files are no longer used",
     ],
   ])("fails closed for partial or unsafe configuration", (environment, message) => {
     expect(() => loadTransactionEngineRuntimeConfig(environment, "testnet")).toThrow(message);

@@ -1,8 +1,13 @@
-import { ArrowClockwise, Eye, ShieldWarning, Warning } from "@phosphor-icons/react";
-import type { EngineStatus, OperationReadiness } from "@stx-labs/signer-sidekick-api-contracts";
+import { Check, Warning } from "@phosphor-icons/react";
+import type {
+  EngineStatus,
+  GasWalletStatus,
+  OperationReadiness,
+  RuntimeSettings,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityHash, settingsHash } from "../../dashboard-route.js";
-import { Badge, ErrorCallout, StatusBadge } from "../../shared/dashboard-ui.js";
+import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
 import { operatorActionError } from "../../shared/operator-error.js";
 import {
   disableEngineAdapter,
@@ -10,45 +15,185 @@ import {
   loadEngineStatus,
   loadOperationReadiness,
 } from "../operations/engine-api.js";
+import { GasWalletSettings } from "./gas-wallet-settings.js";
+import { SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
 
 type EngineControlAction = "force-observe" | `disable:${string}`;
 
-const MODE_DESCRIPTION: Record<EngineStatus["mode"], string> = {
-  observe: "Plans transactions but never signs or submits them.",
-  assist: "Prepares each transaction and waits for your approval before submitting.",
-};
+type FeeBand = NonNullable<RuntimeSettings["engine"]>;
 
-function stateLabel(value: string): string {
-  return value.replaceAll("_", " ").replaceAll("-", " ");
+const stxText = (ustx: number) => (ustx / 1_000_000).toString();
+const ustxValue = (text: string) => Math.round(Number(text) * 1_000_000);
+const feeBandValid = (band: FeeBand) =>
+  Number.isInteger(band.minimumFeeUstx) &&
+  Number.isInteger(band.standardFeeUstx) &&
+  band.minimumFeeUstx >= 1 &&
+  band.minimumFeeUstx <= band.standardFeeUstx &&
+  band.standardFeeUstx <= band.maximumFeeUstx;
+
+/**
+ * Reward-run fee band: the node's estimate for the exact call is paid within this band; the floor
+ * is also paid when the node has no estimate. Inputs keep their own text so partial entries
+ * ("0.00") do not fight the stored micro-STX value.
+ */
+function FeeBandRow({
+  band,
+  dirty,
+  error,
+  onChange,
+  onSave,
+  readOnly,
+  saved,
+  saving,
+}: {
+  band: FeeBand;
+  dirty: boolean;
+  error: string | null;
+  onChange: (band: FeeBand) => void;
+  onSave: () => void;
+  readOnly: boolean;
+  saved: boolean;
+  saving: boolean;
+}) {
+  const [draft, setDraft] = useState<{ minimum: string; standard: string } | null>(null);
+  useEffect(() => {
+    if (!dirty) setDraft(null);
+  }, [dirty]);
+  const minimum = draft?.minimum ?? stxText(band.minimumFeeUstx);
+  const standard = draft?.standard ?? stxText(band.standardFeeUstx);
+  const valid = feeBandValid(band);
+  const change = (field: "minimum" | "standard", text: string) => {
+    const next = { minimum, standard, [field]: text };
+    setDraft(next);
+    onChange({
+      ...band,
+      minimumFeeUstx: ustxValue(next.minimum),
+      standardFeeUstx: ustxValue(next.standard),
+    });
+  };
+  return (
+    <>
+      <SettingsRow
+        actions={
+          <button
+            className="btn btn-tertiary sm"
+            disabled={readOnly || !dirty || !valid || saving}
+            onClick={onSave}
+            type="button"
+          >
+            {saving ? "Saving" : "Save"}
+          </button>
+        }
+        detail={
+          valid
+            ? `paid per transaction · hard cap ${stxText(band.maximumFeeUstx)} STX set by the deployment`
+            : `minimum must not exceed standard, and standard must not exceed the ${stxText(band.maximumFeeUstx)} STX cap`
+        }
+        help="The local node estimates each exact call; Sidekick pays that estimate clamped to this band, and the minimum when the node has no estimate — the Leather wallet's standard method, so bot-driven fee spikes are neither paid nor halted on. SIDEKICK_ENGINE_MAXIMUM_FEE_USTX is the deployment's hard cap."
+        name="Fee band"
+        {...(valid ? {} : { status: "Invalid" })}
+        value={
+          <span className="st-fee-band">
+            <span className="input-group st-inline-input">
+              <input
+                aria-label="Minimum fee"
+                disabled={readOnly}
+                inputMode="decimal"
+                min={0.000001}
+                onChange={(event) => change("minimum", event.target.value)}
+                step={0.001}
+                type="number"
+                value={minimum}
+              />
+              <span className="suffix">STX</span>
+            </span>
+            <span className="muted">to</span>
+            <span className="input-group st-inline-input">
+              <input
+                aria-label="Standard fee"
+                disabled={readOnly}
+                inputMode="decimal"
+                min={0.000001}
+                onChange={(event) => change("standard", event.target.value)}
+                step={0.001}
+                type="number"
+                value={standard}
+              />
+              <span className="suffix">STX</span>
+            </span>
+          </span>
+        }
+      />
+      <ErrorCallout error={error} />
+      {saved ? (
+        <div className="settings-section-saved" role="status">
+          <Check /> Fee band saved.
+        </div>
+      ) : null}
+    </>
+  );
 }
+
+const operationChips = [
+  ["pox5-calculate-rewards", "calculate"],
+  ["reference-manager-claim-rewards", "collect"],
+  ["reference-manager-claim-staker-rewards", "distribute"],
+  ["reference-manager-settle-accepted-withdrawal", "settle"],
+  ["reference-manager-reclaim-failed-withdrawal", "reclaim"],
+] as const;
 
 function readinessReview(
   check: OperationReadiness["checks"][number],
 ): { href: string; label: string } | null {
   if (check.status === "ready") return null;
   if (check.id === "manager" || check.id === "signer" || check.id === "setup") {
-    return { href: settingsHash("attachment"), label: "Review attachment" };
+    return { href: settingsHash("attachment"), label: "Review manager" };
   }
-  if (check.id === "control-plane")
-    return { href: settingsHash("sources"), label: "Review sources" };
+  if (check.id === "control-plane") {
+    return { href: settingsHash("sources"), label: "Review connections" };
+  }
   return null;
 }
 
-function adapterBadgeState(
-  availability: EngineStatus["adapters"][number]["availability"],
-): "success" | "error" | "caution" {
-  if (availability === "available") return "success";
-  if (availability === "disabled") return "error";
-  return "caution";
+function adapterTone(availability: EngineStatus["adapters"][number]["availability"]) {
+  if (availability === "available") return "success" as const;
+  if (availability === "disabled") return "error" as const;
+  return "caution" as const;
 }
 
-export function EngineSettings({ token }: { token: string }) {
+export function EngineSettings({
+  feeBand = null,
+  feeBandDirty = false,
+  feeBandError = null,
+  feeBandSaved = false,
+  feeBandSaving = false,
+  onFeeBandChange,
+  onFeeBandSave,
+  onGasWalletStatus,
+  onStatus,
+  readOnly,
+  token,
+}: {
+  /** Stored reward-run fee band with the deployment cap; null on Sidekicks that predate it. */
+  feeBand?: FeeBand | null;
+  feeBandDirty?: boolean;
+  feeBandError?: string | null;
+  feeBandSaved?: boolean;
+  feeBandSaving?: boolean;
+  onFeeBandChange?: (band: FeeBand) => void;
+  onFeeBandSave?: () => void;
+  onGasWalletStatus?: (status: GasWalletStatus | null) => void;
+  onStatus?: (status: EngineStatus | null) => void;
+  readOnly: boolean;
+  token: string;
+}) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [readiness, setReadiness] = useState<OperationReadiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<EngineControlAction | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -64,21 +209,18 @@ export function EngineSettings({ token }: { token: string }) {
       ]);
       if (request.signal.aborted) return;
       setStatus(nextStatus);
+      onStatus?.(nextStatus);
       setReadiness(nextReadiness);
       setUnavailable(nextStatus === null);
     } catch (cause) {
       if (request.signal.aborted) return;
       setError(
-        operatorActionError(
-          cause,
-          "Could not load transaction policy controls",
-          "Retrying is safe",
-        ),
+        operatorActionError(cause, "Could not load reward-run controls", "Retrying is safe"),
       );
     } finally {
       if (!request.signal.aborted) setLoading(false);
     }
-  }, [token]);
+  }, [onStatus, token]);
 
   useEffect(() => {
     void load();
@@ -86,14 +228,13 @@ export function EngineSettings({ token }: { token: string }) {
   }, [load]);
 
   const forceObserve = async () => {
-    if (!status || action) return;
+    if (!status || action || readOnly) return;
     if (
       !window.confirm(
         "Force the transaction engine into Observe mode? New signing and broadcasts will stop while result verification continues.",
       )
-    ) {
+    )
       return;
-    }
     setAction("force-observe");
     setError(null);
     try {
@@ -102,12 +243,13 @@ export function EngineSettings({ token }: { token: string }) {
         reason: "Operator confirmed emergency force-Observe from Settings",
       });
       setStatus(result.status);
+      onStatus?.(result.status);
     } catch (cause) {
       setError(
         operatorActionError(
           cause,
           "Could not confirm Force Observe",
-          "Refresh policy controls before trying again; Observe mode may already be active",
+          "Refresh before trying again; Observe mode may already be active",
         ),
       );
     } finally {
@@ -116,14 +258,13 @@ export function EngineSettings({ token }: { token: string }) {
   };
 
   const disableAdapter = async (adapterId: string) => {
-    if (!status || action) return;
+    if (!status || action || readOnly) return;
     if (
       !window.confirm(
         `Disable ${adapterId}? New jobs and broadcasts for this adapter will stop while existing attempts remain observable.`,
       )
-    ) {
+    )
       return;
-    }
     setAction(`disable:${adapterId}`);
     setError(null);
     try {
@@ -132,12 +273,13 @@ export function EngineSettings({ token }: { token: string }) {
         reason: "Operator disabled adapter from Settings",
       });
       setStatus(result.status);
+      onStatus?.(result.status);
     } catch (cause) {
       setError(
         operatorActionError(
           cause,
           `Could not confirm that ${adapterId} was disabled`,
-          "Refresh policy controls before trying again; the adapter may already be disabled",
+          "Refresh before trying again; the adapter may already be disabled",
         ),
       );
     } finally {
@@ -145,153 +287,175 @@ export function EngineSettings({ token }: { token: string }) {
     }
   };
 
-  const blockingChecks = readiness?.checks.filter((check) => check.status !== "ready") ?? [];
-  const blockerDetails = new Set(blockingChecks.map((check) => check.detail));
-  const jobTotal = status
-    ? status.jobs.active + status.jobs.awaitingApproval + status.jobs.ambiguous
-    : 0;
-  // Engine job counts and the emergency brake are only meaningful in Assist mode or while work
-  // remains active, so keep them out of the default Observe view.
-  const showEngineControls = Boolean(
-    status && (status.mode !== "observe" || jobTotal > 0 || status.forcedObserve.active),
+  const blockers = readiness?.checks.filter((check) => check.status !== "ready") ?? [];
+  const modeLabel = unavailable
+    ? "Unavailable"
+    : status?.forcedObserve.active
+      ? "Forced Observe"
+      : status?.mode === "operator-run"
+        ? "Operator-run"
+        : "Observe";
+  const modeDetail = status
+    ? status.forcedObserve.active
+      ? `${status.forcedObserve.reason ?? "emergency brake active"}${status.forcedObserve.actor ? ` · ${status.forcedObserve.actor}` : ""}`
+      : status.mode === "operator-run"
+        ? `${status.jobs.active} runs active · ${status.jobs.awaitingApproval} awaiting approval · ${status.jobs.ambiguous} ambiguous`
+        : "set SIDEKICK_ENGINE_MODE=operator-run and restart to run reward calls from here"
+    : "engine status unavailable";
+  // The five reviewed reward adapters are a closed registry executed by the run engine. The legacy
+  // `/api/v1/engine` adapter list knows only the collect adapter (the one with a disable control),
+  // so availability comes from the engine mode, with collect honouring its own control.
+  const operatorRun = Boolean(
+    status && status.mode === "operator-run" && !status.forcedObserve.active,
   );
-  const canForceObserve = Boolean(
-    status && status.mode !== "observe" && !status.forcedObserve.active,
-  );
+  const collectAdapter =
+    status?.adapters.find((item) => item.adapter.id === "reference-manager-claim-rewards") ?? null;
+  const chipState = (id: (typeof operationChips)[number][0]): "ok" | "off" | "" => {
+    if (!operatorRun) return "";
+    if (id === "reference-manager-claim-rewards" && collectAdapter) {
+      return collectAdapter.availability === "available" ? "ok" : "off";
+    }
+    return "ok";
+  };
+  const operationStatus = unavailable
+    ? "Unavailable"
+    : !operatorRun
+      ? "Observe only"
+      : collectAdapter?.availability === "disabled"
+        ? "Collect disabled"
+        : collectAdapter?.availability === "blocked"
+          ? "Attention"
+          : "Available";
 
   return (
-    <section className="card set-section engine-settings" id="transaction-capabilities">
-      <div className="card-head">
-        <div>
-          <h2>Transaction capabilities</h2>
-          <p className="engine-settings-subtitle">
-            How Sidekick prepares and submits manager operations.
-          </p>
+    <>
+      <SettingsSectionTitle hint="how Sidekick signs the permissionless reward calls" id="st-runs">
+        Reward runs
+      </SettingsSectionTitle>
+      <section className="card st-card" aria-label="Reward runs">
+        <ErrorCallout error={error} />
+        <div className="st-rows">
+          <SettingsRow
+            actions={
+              status?.mode === "operator-run" && !status.forcedObserve.active ? (
+                <button
+                  className="btn btn-tertiary sm"
+                  disabled={readOnly || action !== null}
+                  onClick={() => void forceObserve()}
+                  type="button"
+                >
+                  {action === "force-observe" ? "Forcing Observe" : "Force Observe"}
+                </button>
+              ) : null
+            }
+            detail={modeDetail}
+            help="Set by the deployment. Observe never signs; operator-run signs only a sealed recipe you approve with the gas wallet."
+            name="Engine mode"
+            statusNode={
+              <Badge
+                state={
+                  status?.forcedObserve.active
+                    ? "error"
+                    : status?.mode === "operator-run"
+                      ? "accent"
+                      : "neutral"
+                }
+              >
+                {loading && !status ? "Loading" : modeLabel}
+              </Badge>
+            }
+            value={<span className="mono">{modeLabel}</span>}
+          />
         </div>
-        <button
-          className="btn btn-tertiary sm"
-          disabled={loading || action !== null}
-          onClick={() => void load()}
-          type="button"
-        >
-          <ArrowClockwise className={loading ? "spin" : ""} /> Refresh
-        </button>
-      </div>
-      <ErrorCallout error={error} />
-      {loading && !status ? <div className="loading-state">Loading transaction policy</div> : null}
-      {unavailable ? (
-        <p className="muted">
-          The transaction engine is unavailable. Monitoring and wallet-signed operations are
-          unaffected.
-        </p>
-      ) : null}
-      {status ? (
-        <>
-          <div className="engine-mode">
-            <Eye />
-            <div>
-              <strong>{stateLabel(status.mode)}</strong>{" "}
-              <span className="muted">{MODE_DESCRIPTION[status.mode]}</span>
-            </div>
-            {status.forcedObserve.active ? <Badge state="error">Forced Observe</Badge> : null}
-          </div>
-
-          {blockingChecks.length ? (
-            <div className="engine-block">
-              <div className="engine-block-head">
-                <h3>Operation readiness</h3>
-                {readiness ? <StatusBadge status={readiness.status} /> : null}
-              </div>
-              {blockingChecks.map((check) => {
-                const review = readinessReview(check);
-                return (
-                  <div className="engine-block-item" key={check.id}>
-                    <p className="muted">{check.detail}</p>
-                    {review ? (
-                      <a className="btn btn-tertiary sm" href={review.href}>
-                        {review.label}
-                      </a>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
+        <GasWalletSettings
+          {...(onGasWalletStatus ? { onStatus: onGasWalletStatus } : {})}
+          token={token}
+          readOnly={readOnly}
+        />
+        <div className="st-rows">
+          {feeBand && onFeeBandChange && onFeeBandSave ? (
+            <FeeBandRow
+              band={feeBand}
+              dirty={feeBandDirty}
+              error={feeBandError}
+              onChange={onFeeBandChange}
+              onSave={onFeeBandSave}
+              readOnly={readOnly}
+              saved={feeBandSaved}
+              saving={feeBandSaving}
+            />
           ) : null}
-
-          {status.adapters.length ? (
-            <div className="engine-block">
-              <div className="engine-block-head">
-                <h3>Operations</h3>
-                <a className="btn btn-tertiary sm" href={activityHash(null, "type=actions")}>
-                  Review activity
-                </a>
-              </div>
-              {status.adapters.map((adapter) => (
-                <div className="engine-operation" key={adapter.adapter.id}>
-                  <div className="engine-operation-name">
-                    <strong>{adapter.label}</strong>{" "}
-                    <span className="mono">
-                      {adapter.adapter.id} · rev {adapter.adapter.revision}
-                    </span>
-                    {adapter.blockReason && !blockerDetails.has(adapter.blockReason) ? (
-                      <span className="muted">{adapter.blockReason}</span>
-                    ) : null}
-                  </div>
-                  <Badge state={adapterBadgeState(adapter.availability)}>
-                    {adapter.availability}
-                  </Badge>
-                  {adapter.enabled ? (
-                    <button
-                      className="btn btn-tertiary sm"
-                      disabled={action !== null}
-                      onClick={() => void disableAdapter(adapter.adapter.id)}
-                      type="button"
-                    >
-                      <Warning />
-                      {action === `disable:${adapter.adapter.id}` ? "Disabling" : "Disable"}
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {showEngineControls ? (
-            <div className="engine-block">
-              <div className="engine-block-head">
-                <h3>Engine controls</h3>
-                {canForceObserve ? (
+          <SettingsRow
+            actions={
+              <>
+                {status?.adapters.length ? (
                   <button
-                    className="btn btn-secondary sm"
-                    disabled={action !== null}
-                    onClick={() => void forceObserve()}
+                    aria-expanded={manageOpen}
+                    className="btn btn-tertiary sm"
+                    onClick={() => setManageOpen((value) => !value)}
                     type="button"
                   >
-                    <ShieldWarning />
-                    {action === "force-observe" ? "Forcing Observe" : "Force Observe"}
+                    {manageOpen ? "Close" : "Manage"}
                   </button>
                 ) : null}
+                <a className="btn btn-tertiary sm" href={activityHash(null, "type=actions")}>
+                  Activity
+                </a>
+              </>
+            }
+            help="Five reviewed reward adapters, each with one explicit signer method and no generic signing path. Force Observe stops all of them; collect also has its own disable control."
+            name="Operations"
+            status={operationStatus}
+            value={
+              <span className="st-chips">
+                {operationChips.map(([id, label]) => (
+                  <span className={`st-chip ${chipState(id)}`} key={id}>
+                    {label}
+                  </span>
+                ))}
+              </span>
+            }
+          >
+            {blockers.length ? (
+              <div className="st-operation-blockers">
+                {blockers.map((check) => {
+                  const review = readinessReview(check);
+                  return (
+                    <div key={check.id}>
+                      <span>{check.detail}</span>
+                      {review ? <a href={review.href}>{review.label}</a> : null}
+                    </div>
+                  );
+                })}
               </div>
-              <div className="engine-jobs">
-                <span>
-                  <strong>{status.jobs.active}</strong> active
-                </span>
-                <span>
-                  <strong>{status.jobs.awaitingApproval}</strong> awaiting approval
-                </span>
-                <span>
-                  <strong>{status.jobs.ambiguous}</strong> ambiguous
-                </span>
+            ) : null}
+            {manageOpen && status?.adapters.length ? (
+              <div className="st-manage-adapters">
+                {status.adapters.map((adapter) => (
+                  <div className="st-manage-adapter" key={adapter.adapter.id}>
+                    <span>
+                      <strong>{adapter.label}</strong>
+                      <small className="mono">{adapter.adapter.id}</small>
+                    </span>
+                    <Badge state={adapterTone(adapter.availability)}>{adapter.availability}</Badge>
+                    {adapter.enabled ? (
+                      <button
+                        className="btn btn-tertiary sm"
+                        disabled={readOnly || action !== null}
+                        onClick={() => void disableAdapter(adapter.adapter.id)}
+                        type="button"
+                      >
+                        <Warning />
+                        {action === `disable:${adapter.adapter.id}` ? "Disabling" : "Disable"}
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
               </div>
-              {status.forcedObserve.active ? (
-                <p className="muted">
-                  Forced into Observe — {status.forcedObserve.reason} · {status.forcedObserve.actor}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      ) : null}
-    </section>
+            ) : null}
+          </SettingsRow>
+        </div>
+      </section>
+    </>
   );
 }

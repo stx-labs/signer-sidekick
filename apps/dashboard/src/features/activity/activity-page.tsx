@@ -26,6 +26,7 @@ import {
   activityHash,
   type DomainSection,
   dashboardHash,
+  domainHash,
 } from "../../dashboard-route.js";
 import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
@@ -644,6 +645,9 @@ function ActivityDetailPage({
   const engineJobId = item.activityId.startsWith("engine-job:")
     ? item.activityId.slice("engine-job:".length)
     : null;
+  const rewardRunId = item.activityId.startsWith("reward-run:")
+    ? item.activityId.slice("reward-run:".length)
+    : null;
   const engineOperation = operatorOperationCodeSchema.safeParse(item.code);
   const activeOperation = ["action-required", "in-progress", "needs-attention"].includes(
     item.displayStatus,
@@ -862,6 +866,21 @@ function ActivityDetailPage({
             </a>
           </section>
         )
+      ) : rewardRunId ? (
+        <section className="card activity-resume-operation" aria-labelledby="activity-run-heading">
+          <div>
+            <span className="eyebrow">REWARD RUN</span>
+            <h2 id="activity-run-heading">
+              {activeOperation ? "Continue this reward run" : "Review this reward run"}
+            </h2>
+            <p className="muted">
+              Rewards shows the retained recipe, call progress, and current ledger state.
+            </p>
+          </div>
+          <a className="btn btn-accent" href={domainHash("rewards", "claims")}>
+            Open rewards
+          </a>
+        </section>
       ) : null}
       <section aria-labelledby="activity-timeline-heading">
         <div className="section-title" id="activity-timeline-heading">

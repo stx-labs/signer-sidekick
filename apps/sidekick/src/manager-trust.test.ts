@@ -490,7 +490,7 @@ describe("manager trust profiles", () => {
       automationEligible: true,
     });
     expect(report.automationEligibilityReason).toContain(
-      "production approval is not required for Assist on testnet",
+      "production approval is not required for reviewed execution on testnet",
     );
   });
 

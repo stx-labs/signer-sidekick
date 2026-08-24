@@ -7,6 +7,7 @@ import {
   falseCV,
   getAddressFromPrivateKey,
   hexToCV,
+  listCV,
   makeContractCall,
   noneCV,
   Pc,
@@ -32,7 +33,11 @@ import type { RuntimeSettingsController } from "./runtime-settings.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256 } from "./storage/wallet-intent-repository.js";
 import type { IndexedTransactionObservation } from "./transaction-engine/live-transaction-reader.js";
-import { type WalletIntentRuntimeState, WalletIntentService } from "./wallet-intent-service.js";
+import {
+  type ManagerClaimWalletEvidence,
+  type WalletIntentRuntimeState,
+  WalletIntentService,
+} from "./wallet-intent-service.js";
 
 const {
   loadNetworkCompatibilityProfilesMock,
@@ -228,6 +233,86 @@ function trustedManagerSnapshot(options: {
       ? { registered: false, signerKeyGrantValid: false, signerKeyHex: options.signerKeyHex }
       : null,
   };
+}
+
+function currentManagerClaimEvidence(): ManagerClaimWalletEvidence {
+  const setup = trustedManagerSnapshot({});
+  return {
+    observedAt: "2026-07-19T12:00:00.000Z",
+    setup: {
+      ...setup,
+      preflight: {
+        ...setup.preflight,
+        network: "mainnet",
+        pox: {
+          ...setup.preflight.pox,
+          firstRewardCycleId: 0,
+        },
+      },
+    },
+    rewards: {
+      status: "ready",
+      managerPrincipal,
+      pox5ContractId,
+      rewardCycle: 5,
+      observedAt: {
+        timestamp: "2026-07-19T12:00:00.000Z",
+        burnBlockHeight: 8_000,
+        stacksTipHeight: 9_000,
+      },
+      ingestion: { runId: "claim-run", completedAt: "2026-07-19T11:59:00.000Z" },
+      global: {
+        lastRewardComputeBurnHeight: "7999",
+        lastComputedRewardCycle: "5",
+        globalAccruedRewardsSats: "0",
+        rewardsPerToken: "1234",
+        signerEarnedBeforeManagerClaimSats: "100",
+        signerEarnedAcrossBucketsSats: "300",
+      },
+      calculation: {
+        state: "completed",
+        targetRewardCycle: 5,
+        targetCheckpoint: "first-half",
+        expectedLastRewardComputeBurnHeight: 7_999,
+        observedLastRewardComputeBurnHeight: "7999",
+        next: null,
+      },
+      buckets: [
+        {
+          bondIndex: null,
+          managerSharesSats: "0",
+          signerEarnedBeforeManagerClaimSats: "100",
+          rewardsPerToken: "1234",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+        {
+          bondIndex: "3",
+          managerSharesSats: "10000",
+          signerEarnedBeforeManagerClaimSats: "200",
+          rewardsPerToken: "99",
+          feeSnapshotBips: null,
+          participating: true,
+        },
+      ],
+      manager: {
+        configuredFeeBips: "500",
+        feeSnapshotBips: null,
+        earnedFeesSats: "0",
+        withdrawalLiabilitySats: "0",
+        unclaimedStakerRewardsSats: "0",
+      },
+      totals: {
+        stakers: 1,
+        grossSats: "0",
+        earnedSats: "0",
+        feeSats: "0",
+        actionableClaims: 0,
+        l1ClaimsWaitingForFeeThreshold: 0,
+      },
+      stakers: [],
+    },
+  } as unknown as ManagerClaimWalletEvidence;
 }
 
 function registrationFreshState(
@@ -742,6 +827,119 @@ afterEach(() => {
 });
 
 describe("manager wallet action preparation", () => {
+  it("prepares a manual all-bucket manager claim without an Assist job or attestation", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const getDataVar = vi.fn(async (_principal: string, variableName: string) => {
+      if (variableName === "rewards-paused") return falseCV();
+      throw new Error(`Unexpected data-var read ${variableName}`);
+    });
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: { getDataVar },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+      canRepairSignerRegistration,
+      readManagerClaimEvidence: async () => currentManagerClaimEvidence(),
+    });
+
+    const intent = await wallet.prepare(
+      { action: "claim-rewards", actorPrincipal: requiredSender },
+      "2026-07-19T12:01:00.000Z",
+    );
+    const expectedPostCondition = postConditionToHex(
+      Pc.principal(pox5ContractId)
+        .willSendEq(300n)
+        .ft(sbtcTokenContract as `${string}.${string}`, "sbtc-token"),
+    );
+    expect(intent).toMatchObject({
+      action: "claim-rewards",
+      request: { action: "claim-rewards", actorPrincipal: requiredSender },
+      requiredSender,
+      transaction: {
+        method: "stx_callContract",
+        params: {
+          contract: managerPrincipal,
+          functionName: "claim-rewards",
+          functionArgs: [cvToHex(listCV([uintCV(3)])), cvToHex(uintCV(5))],
+          address: requiredSender,
+          postConditionMode: "deny",
+          postConditions: [expectedPostCondition],
+        },
+      },
+    });
+    expect(intent.review.fields).toEqual(
+      expect.arrayContaining([
+        { label: "Bond periods", value: "3" },
+        { label: "Expected sBTC (sats)", value: "300" },
+        { label: "STX bucket fee", value: "500 bips (pins with this claim)" },
+      ]),
+    );
+    expect(readOperatorAnchorSnapshotMock).not.toHaveBeenCalled();
+    expect(getDataVar).toHaveBeenCalledWith(
+      "SP000000000000000000002Q6VF78.pox-5",
+      "rewards-paused",
+      {
+        tip: indexBlockHash,
+      },
+    );
+  });
+
+  it("refuses a new manual manager claim while PoX-5 rewards are paused", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: { getDataVar: vi.fn(async () => trueCV()) },
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+      canRepairSignerRegistration,
+      readManagerClaimEvidence: async () => currentManagerClaimEvidence(),
+    });
+
+    await expect(
+      wallet.prepare({ action: "claim-rewards", actorPrincipal: requiredSender }),
+    ).rejects.toThrow("manager reward claims are currently paused");
+  });
+
+  it("rejects a retired single-job manager-claim binding", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
+    stores.push(store);
+    const wallet = new WalletIntentService({
+      store,
+      runtimeSettings: {
+        clients: () => ({
+          config: { network: "mainnet", nodeRpcUrl: "http://node:20443" },
+          node: {},
+          api: {},
+        }),
+      } as unknown as RuntimeSettingsController,
+      readState: deploymentFreshState,
+      canRepairSignerRegistration,
+      readManagerClaimEvidence: async () => currentManagerClaimEvidence(),
+    });
+
+    await expect(
+      wallet.prepare({
+        action: "claim-rewards",
+        actorPrincipal: requiredSender,
+        jobId: "9284f4f4-7277-57f3-a251-08e9daf5f28a",
+      }),
+    ).rejects.toThrow(
+      "Legacy manager-claim jobs are read-only; prepare a current claim from Rewards",
+    );
+  });
+
   it("seals an actor-authorized fee update in a V2 manifest", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);

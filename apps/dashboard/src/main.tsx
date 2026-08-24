@@ -640,9 +640,9 @@ function App() {
         return !check || check.status === "pass";
       }),
   );
-  const indexedDataDelayed = Boolean(
-    data && (!indexedApiChecksPass || data.preflight.api.position === "behind"),
-  );
+  // The indexed API trailing the local node is normal indexing lag, never "delayed" data; only an
+  // unavailable or incompatible API (or the node trailing the API, a preflight failure) is.
+  const indexedDataDelayed = Boolean(data && !indexedApiChecksPass);
   const ageLabel =
     ageMs === null
       ? "age unavailable"
@@ -676,10 +676,10 @@ function App() {
           : !indexedApiChecksPass
             ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Reference API incompatible · ${ageLabel}`
             : data.preflight.api.position === "behind"
-              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API behind ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
+              ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · ${(data.preflight.api.stacksTipLag ?? 0) > 0 ? `Indexed API ${data.preflight.api.stacksTipLag} Stacks ${data.preflight.api.stacksTipLag === 1 ? "block" : "blocks"} behind` : "Indexed API current"} · ${ageLabel}`
               : data.preflight.api.position === "ahead"
                 ? `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Node behind API ${data.preflight.api.burnBlockLag} Bitcoin / ${data.preflight.api.stacksTipLag ?? 0} Stacks blocks · ${ageLabel}`
-                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · API current · ${ageLabel}`
+                : `Bitcoin tip ${number(data.preflight.node.burnBlockHeight)} · Indexed API current · ${ageLabel}`
         : "loading status";
   const showFreshnessRefresh =
     (connectionUnavailableAfterSuccess || stale || indexedDataDelayed) && !rateLimited;

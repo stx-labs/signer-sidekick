@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reward operations mockups</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<style>
+  body { margin: 0; padding: 32px; background: var(--sand-150); color: var(--text-primary); font-family: var(--font-body); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+  h1 { font-family: var(--font-display); font-weight: 400; font-size: 24px; margin: 0; }
+  p.lede { color: var(--text-secondary); margin: 4px 0 0; font-size: 13px; max-width: 720px; }
+  .mock-toggle { font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--surface-fourth); cursor: pointer; }
+  .mock-grid { display: grid; gap: 32px; }
+  .mock-frame h2 { font-family: var(--font-display); font-weight: 500; font-size: 15px; margin: 0 0 8px; }
+  .mock-frame h2 small { font-family: var(--font-mono); font-weight: 400; color: var(--text-tertiary); margin-left: 8px; }
+  .mock-frame iframe { border: 1px solid var(--border-primary); border-radius: 12px; background: #fff; display: block; max-width: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Reward operations mockups</h1>
+    <p class="lede">Each frame is a standalone page rendered with the real dashboard stylesheet, tokens, and fonts. Source: design/mockups/src. Plan: docs/product/reward-operations-plan.md.</p>
+  </div>
+  <button class="mock-toggle" type="button" id="theme">Dark theme</button>
+</header>
+<div class="mock-grid">
+  <section class="mock-frame"><h2>Rewards · Ready to collect & distribute<small>Main.html · 1280×1640</small></h2><iframe title="Rewards · Ready to collect & distribute" src="pages/Main.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · Accruing (before calculation)<small>Accruing.html · 1280×1640</small></h2><iframe title="Rewards · Accruing (before calculation)" src="pages/Accruing.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · Quiet (cycle complete, accruing for next)<small>Quiet.html · 1280×1640</small></h2><iframe title="Rewards · Quiet (cycle complete, accruing for next)" src="pages/Quiet.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · Distributing 12 of 40<small>Distributing.html · 1280×1640</small></h2><iframe title="Rewards · Distributing 12 of 40" src="pages/Distributing.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · All distributed + past cycles<small>Complete.html · 1280×1760</small></h2><iframe title="Rewards · All distributed + past cycles" src="pages/Complete.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · Needs attention<small>Attention.html · 1280×1640</small></h2><iframe title="Rewards · Needs attention" src="pages/Attention.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Confirm sheet · Collect & distribute<small>Confirm.html · 1280×1640</small></h2><iframe title="Confirm sheet · Collect & distribute" src="pages/Confirm.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Overview · Rewards card (two states)<small>Overview.html · 1000×560</small></h2><iframe title="Overview · Rewards card (two states)" src="pages/Overview.html" width="1000" height="560" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Settings · Gas wallet<small>Settings.html · 1280×1240</small></h2><iframe title="Settings · Gas wallet" src="pages/Settings.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards · Mobile (390)<small>Mobile.html · 390×1500</small></h2><iframe title="Rewards · Mobile (390)" src="pages/Mobile.html" width="390" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Overview · Rewards card · mobile (390)<small>OverviewMobile.html · 390×980</small></h2><iframe title="Overview · Rewards card · mobile (390)" src="pages/OverviewMobile.html" width="390" height="980" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards v2 · Earning (nothing to distribute)<small>EarningQuiet.html · 1280×1700</small></h2><iframe title="Rewards v2 · Earning (nothing to distribute)" src="pages/EarningQuiet.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards v2 · Earning + First Distribution ready<small>EarningPending.html · 1280×2000</small></h2><iframe title="Rewards v2 · Earning + First Distribution ready" src="pages/EarningPending.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards v2 · Earning (cycle 142) + two distributions waiting<small>EarningPendingTwo.html · 1280×2300</small></h2><iframe title="Rewards v2 · Earning (cycle 142) + two distributions waiting" src="pages/EarningPendingTwo.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Rewards v2 · Past cycle expanded (payments)<small>PastExpanded.html · 1280×2000</small></h2><iframe title="Rewards v2 · Past cycle expanded (payments)" src="pages/PastExpanded.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Settings v2 · Observe, no gas wallet, one requirement open<small>SettingsV2.html · 1280×2300</small></h2><iframe title="Settings v2 · Observe, no gas wallet, one requirement open" src="pages/SettingsV2.html" width="1280" height="1100" loading="lazy"></iframe></section>
+  <section class="mock-frame"><h2>Settings v2 · Operator-run, gas wallet ready, editing a connection<small>SettingsV2Operator.html · 1280×2500</small></h2><iframe title="Settings v2 · Operator-run, gas wallet ready, editing a connection" src="pages/SettingsV2Operator.html" width="1280" height="1100" loading="lazy"></iframe></section>
+</div>
+<script>
+  const button = document.getElementById("theme");
+  let dark = false;
+  button.addEventListener("click", () => {
+    dark = !dark;
+    button.textContent = dark ? "Light theme" : "Dark theme";
+    for (const frame of document.querySelectorAll("iframe")) {
+      const url = new URL(frame.getAttribute("src"), location.href);
+      url.searchParams.set("theme", dark ? "dark" : "light");
+      frame.src = url.pathname.split("/").slice(-2).join("/") + url.search;
+    }
+  });
+</script>
+</body>
+</html>

@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import {
   Cl,
   type ClarityValue,
+  compressPublicKey,
+  deserializeTransaction,
   getAddressFromPublicKey,
+  PayloadType,
   privateKeyToPublic,
   serializeCV,
   signWithKey,
@@ -11,6 +14,10 @@ import {
 import { beforeEach, describe, expect, it } from "vitest";
 import { simulatePox5CalculateRewards } from "../../../packages/protocol/src/pox5-calculate-rewards.js";
 import { decodePox5CalculateRewardsEvent } from "../../../packages/protocol/src/pox5-events.js";
+import {
+  planRewardOperation,
+  type RewardOperationPlan,
+} from "../../../packages/protocol/src/reward-operation-plan.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const deployer = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
@@ -293,6 +300,23 @@ function poxAddressCalldata(maxFee: bigint): ClarityValue {
   return Cl.some(Cl.buffer(Uint8Array.from(Buffer.from(encoded, "hex"))));
 }
 
+function executeRewardPlan(plan: RewardOperationPlan, caller: string) {
+  const transaction = deserializeTransaction(plan.unsignedTransactionHex);
+  if (transaction.payload.payloadType !== PayloadType.ContractCall) {
+    throw new Error("Reward adapter did not produce a contract call");
+  }
+  const contractId =
+    plan.material.kind === "calculate-rewards"
+      ? plan.material.pox5Contract
+      : plan.material.managerContract;
+  return simnet.callPublicFn(
+    contractId,
+    transaction.payload.functionName.content,
+    transaction.payload.functionArgs as ClarityValue[],
+    caller,
+  );
+}
+
 describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
   beforeEach(() => {
     simnet.deployContract("sbtc-withdrawal", withdrawalSource, { clarityVersion: 3 }, sbtcDeployer);
@@ -314,6 +338,188 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
     expect(simnet.getContractSource(managerId)).not.toContain(
       "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4",
     );
+  });
+
+  it("round-trips every sealed reward adapter through the real regtest contracts", async () => {
+    initializePox5();
+    registerManager();
+    const stakerOne = simnet.getAccounts().get("wallet_1");
+    const stakerTwo = simnet.getAccounts().get("wallet_2");
+    if (!stakerOne || !stakerTwo) throw new Error("Clarinet wallet fixtures are missing");
+    expectOk(
+      simnet.callPublicFn(managerId, "update-fees", [Cl.uint(1_000)], deployer).result,
+      Cl.bool(true),
+    );
+    stake(stakerOne, poxAddressCalldata(100n));
+    stake(stakerTwo, poxAddressCalldata(100n));
+
+    const rewards = 4_000n;
+    simnet.mintFT(sbtcAssetId, deployer, rewards);
+    expectOk(
+      simnet.callPublicFn(
+        sbtcTokenId,
+        "transfer",
+        [Cl.uint(rewards), Cl.principal(deployer), Cl.principal(pox5Id), Cl.none()],
+        deployer,
+      ).result,
+      Cl.bool(true),
+    );
+    const cycleStart = uintValue(
+      simnet.callReadOnlyFn(pox5Id, "reward-cycle-to-burn-height", [Cl.uint(1)], deployer).result,
+    );
+    simnet.mineEmptyBurnBlocks(
+      Number(cycleStart + halfCycleLength - BigInt(simnet.burnBlockHeight)),
+    );
+
+    const publicKey = compressPublicKey(privateKeyToPublic(signerPrivateKey));
+    const caller = getAddressFromPublicKey(publicKey, "testnet");
+    const common = {
+      authorization: {
+        schemaVersion: 2 as const,
+        kind: "operator-run" as const,
+        runId: "00000000-0000-4000-8000-000000000001",
+        recipeSha256: "12".repeat(32),
+      },
+      network: { kind: "testnet" as const, chainId: 0x8000_0005 },
+      chainAnchor: {
+        stacksBlockHeight: simnet.blockHeight,
+        burnBlockHeight: simnet.burnBlockHeight,
+        indexBlockHash: `0x${"ab".repeat(32)}`,
+      },
+      sender: { principal: caller, publicKey },
+      managerSourceFingerprint: "34".repeat(32),
+      nonce: 0n,
+      feeUstx: 1_000n,
+    };
+
+    const calculate = await planRewardOperation({
+      ...common,
+      kind: "calculate-rewards",
+      pox5Contract: pox5Id,
+      bondPeriods: [],
+      targetRewardCycle: 1n,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: Number(cycleStart + halfCycleLength - 1n),
+    });
+    expectOk(executeRewardPlan(calculate, caller).result);
+
+    const collectAmount = uintValue(
+      simnet.callReadOnlyFn(
+        pox5Id,
+        "get-earned",
+        [Cl.principal(managerId), Cl.uint(1), Cl.none()],
+        caller,
+      ).result,
+    );
+    const collect = await planRewardOperation({
+      ...common,
+      kind: "claim-rewards",
+      managerContract: managerId,
+      pox5Contract: pox5Id,
+      sbtcTokenContract: sbtcTokenId,
+      rewardCycle: 1n,
+      bondPeriods: [],
+      expectedSbtcOutflow: collectAmount,
+    });
+    expectOk(executeRewardPlan(collect, caller).result);
+
+    for (const [index, staker] of [stakerOne, stakerTwo].entries()) {
+      const earned = simnet.callReadOnlyFn(
+        managerId,
+        "get-earned-staker-rewards",
+        [Cl.principal(staker), Cl.uint(1), Cl.none()],
+        caller,
+      ).result;
+      if (earned.type !== "tuple") throw new Error("Expected earned reward tuple");
+      const net = uintValue(earned.value.earned as ClarityValue);
+      const fee = uintValue(earned.value.fees as ClarityValue);
+      const payment = await planRewardOperation({
+        ...common,
+        nonce: BigInt(index + 1),
+        kind: "claim-staker-rewards",
+        managerContract: managerId,
+        sbtcTokenContract: sbtcTokenId,
+        stakerPrincipal: staker,
+        rewardCycle: 1n,
+        bondIndex: null,
+        payoutRoute: "bitcoin-l1",
+        grossSats: net + fee,
+        feeSats: fee,
+        expectedNetSats: net,
+      });
+      expectOk(executeRewardPlan(payment, caller).result);
+    }
+
+    expectOk(
+      simnet.callPublicFn(
+        sbtcWithdrawalId,
+        "reject-withdrawal-request",
+        [Cl.uint(1), Cl.uint(0)],
+        sbtcDeployer,
+      ).result,
+      Cl.bool(true),
+    );
+    const burnHeight = BigInt(simnet.burnBlockHeight - 1);
+    const burnHash = optionalBufferValue(
+      simnet.callReadOnlyFn(
+        sbtcWithdrawalId,
+        "get-burn-header",
+        [Cl.uint(burnHeight)],
+        sbtcDeployer,
+      ).result,
+    );
+    expectOk(
+      simnet.callPublicFn(
+        sbtcWithdrawalId,
+        "accept-withdrawal-request",
+        [
+          Cl.uint(2),
+          Cl.buffer(new Uint8Array(32).fill(1)),
+          Cl.uint(0),
+          Cl.uint(0),
+          Cl.uint(40),
+          Cl.bufferFromHex(burnHash),
+          Cl.uint(burnHeight),
+          Cl.buffer(new Uint8Array(32).fill(2)),
+        ],
+        sbtcDeployer,
+      ).result,
+      Cl.bool(true),
+    );
+
+    const firstEarned = collectAmount / 2n - collectAmount / 2n / 10n;
+    const reclaim = await planRewardOperation({
+      ...common,
+      nonce: 3n,
+      kind: "reclaim-failed-withdrawal",
+      managerContract: managerId,
+      sbtcTokenContract: sbtcTokenId,
+      requestId: 1n,
+      stakerPrincipal: stakerOne,
+      withdrawalAmountSats: firstEarned - 100n,
+      maxFeeSats: 100n,
+    });
+    expect(reclaim.material.expectedEffect).toMatchObject({
+      sender: managerId,
+      recipient: stakerOne,
+      amountSats: firstEarned.toString(),
+    });
+    expectOk(executeRewardPlan(reclaim, caller).result, Cl.bool(true));
+
+    const settle = await planRewardOperation({
+      ...common,
+      nonce: 4n,
+      kind: "settle-accepted-withdrawal",
+      managerContract: managerId,
+      requestId: 2n,
+      stakerPrincipal: stakerTwo,
+    });
+    expect(settle.material.expectedEffect).toEqual({ kind: "no-asset-transfer" });
+    expectOk(executeRewardPlan(settle, caller).result, Cl.bool(true));
+    expect(
+      simnet.callReadOnlyFn(managerId, "get-withdrawal-liability", [], caller).result,
+    ).toBeUint(0);
+    expect(sbtcBalance(stakerOne)).toBe(firstEarned);
   });
 
   it("registers, stakes, calculates, claims, pays a staker, and withdraws pool fees", () => {

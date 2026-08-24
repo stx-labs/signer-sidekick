@@ -16,7 +16,11 @@ export interface WalletOperationContract {
   capability: ManagerActionCapabilityId | null;
   authority: WalletOperationAuthority;
   functionName: string | null;
-  completionEvidence: "contract-source" | "canonical-post-state" | "immutable-engine-job";
+  completionEvidence:
+    | "contract-source"
+    | "canonical-post-state"
+    | "immutable-engine-job"
+    | "sealed-wallet-proposal";
 }
 
 /**
@@ -79,7 +83,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "reference-reward-claims",
     authority: "permissionless",
     functionName: "claim-rewards",
-    completionEvidence: "immutable-engine-job",
+    completionEvidence: "sealed-wallet-proposal",
   },
   "claim-staker-rewards": {
     action: "claim-staker-rewards",

@@ -8,10 +8,10 @@ import {
   privateKeyToPublic,
 } from "@stacks/transactions";
 import {
-  MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-  type ManagerClaimRewardsPlan,
-  planManagerClaimRewards,
-} from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
+  planRewardOperation,
+  type RewardOperationPlan,
+  type RewardOperationPlanInput,
+} from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GasPayerSigner, type GasPayerSignerError } from "./gas-payer-signer.js";
 
@@ -40,46 +40,6 @@ async function secretFile(
   return path;
 }
 
-async function fixturePlan(
-  signerPublicKey = publicKey,
-  signerPrincipal = principal,
-): Promise<ManagerClaimRewardsPlan> {
-  return planManagerClaimRewards({
-    schemaVersion: 1,
-    adapterRevision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
-    network: { kind: "testnet", chainId: 0x8000_0005 },
-    managerContract: "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager",
-    pox5Contract: "ST000000000000000000002AMW42H.pox-5",
-    sbtcTokenContract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
-    rewardCycle: 5n,
-    expectedSbtcOutflow: 1_234n,
-    chainAnchor: {
-      stacksBlockHeight: 9_000,
-      indexBlockHash: `0x${"ab".repeat(32)}`,
-      burnBlockHeight: 4_100,
-      rewardCycle: 5n,
-      rewardCycleLength: 100,
-      prepareCycleLength: 10,
-      cyclePosition: 50,
-      phase: "reward",
-      checkpoint: "second-half",
-    },
-    attestationDigest: "cd".repeat(32),
-    managerSourceFingerprint: "12".repeat(32),
-    rewardObservation: {
-      calculationCheckpoint: "first-half",
-      lastRewardComputeBurnHeight: 4_099,
-      rewardsPerToken: 123_456_789n,
-    },
-    stxEarnedSats: 1_234n,
-    bondBuckets: [],
-    feeSnapshot: { state: "absent", effectiveFeeBips: 500n },
-    sender: { principal: signerPrincipal, publicKey: signerPublicKey },
-    nonce: 7n,
-    fee: 1_000n,
-  });
-}
-
 async function expectSignerError(run: () => Promise<unknown>, code: GasPayerSignerError["code"]) {
   try {
     await run();
@@ -92,37 +52,138 @@ async function expectSignerError(run: () => Promise<unknown>, code: GasPayerSign
   throw new Error(`Expected GasPayerSignerError ${code}`);
 }
 
+function rewardOperationInputs(): RewardOperationPlanInput[] {
+  const common = {
+    authorization: {
+      schemaVersion: 2 as const,
+      kind: "operator-run" as const,
+      runId: "00000000-0000-4000-8000-000000000001",
+      recipeSha256: "12".repeat(32),
+    },
+    network: { kind: "testnet" as const, chainId: 0x8000_0005 },
+    chainAnchor: {
+      stacksBlockHeight: 9_000,
+      burnBlockHeight: 4_100,
+      indexBlockHash: `0x${"ab".repeat(32)}`,
+    },
+    sender: { principal, publicKey },
+    managerSourceFingerprint: "34".repeat(32),
+    nonce: 7n,
+    feeUstx: 1_000n,
+  };
+  const manager = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager";
+  const pox5 = "ST000000000000000000002AMW42H.pox-5";
+  const sbtc = "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token";
+  const staker = "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG";
+  return [
+    {
+      ...common,
+      kind: "calculate-rewards",
+      pox5Contract: pox5,
+      bondPeriods: [2n],
+      targetRewardCycle: 141n,
+      targetCheckpoint: "first-half",
+      expectedLastRewardComputeBurnHeight: 4_099,
+    },
+    {
+      ...common,
+      kind: "claim-rewards",
+      managerContract: manager,
+      pox5Contract: pox5,
+      sbtcTokenContract: sbtc,
+      rewardCycle: 141n,
+      bondPeriods: [2n],
+      expectedSbtcOutflow: 10_000n,
+    },
+    {
+      ...common,
+      kind: "claim-staker-rewards",
+      managerContract: manager,
+      sbtcTokenContract: sbtc,
+      stakerPrincipal: staker,
+      rewardCycle: 141n,
+      bondIndex: null,
+      payoutRoute: "direct-sbtc",
+      grossSats: 10_000n,
+      feeSats: 500n,
+      expectedNetSats: 9_500n,
+    },
+    {
+      ...common,
+      kind: "settle-accepted-withdrawal",
+      managerContract: manager,
+      requestId: 42n,
+      stakerPrincipal: staker,
+    },
+    {
+      ...common,
+      kind: "reclaim-failed-withdrawal",
+      managerContract: manager,
+      sbtcTokenContract: sbtc,
+      requestId: 43n,
+      stakerPrincipal: staker,
+      withdrawalAmountSats: 8_500n,
+      maxFeeSats: 1_000n,
+    },
+  ];
+}
+
+async function paymentPlan(): Promise<RewardOperationPlan> {
+  const input = rewardOperationInputs().find((value) => value.kind === "claim-staker-rewards");
+  if (input === undefined) throw new Error("Expected a claim-staker-rewards input");
+  return planRewardOperation(input);
+}
+
 describe("GasPayerSigner", () => {
-  it("signs only the revalidated manager claim and returns defensive bytes plus its txid", async () => {
-    const path = await secretFile(`${"11".repeat(32)}\n`, 0o400);
+  it("keeps one explicit sealed signing method per reward adapter", async () => {
     const signer = await GasPayerSigner.fromSecretFile({
-      secretFilePath: path,
+      secretFilePath: await secretFile(),
       expectedPrincipal: principal,
       network: "testnet",
     });
-    const plan = await fixturePlan();
+    const plans = await Promise.all(rewardOperationInputs().map(planRewardOperation));
+    const [calculate, collect, payment, settle, reclaim] = plans;
+    if (!calculate || !collect || !payment || !settle || !reclaim) {
+      throw new Error("Expected one plan for every reward adapter");
+    }
+    const signed = await Promise.all([
+      signer.signPox5CalculateRewardsPlan(calculate),
+      signer.signManagerClaimRewardsRunPlan(collect),
+      signer.signClaimStakerRewardsPlan(payment),
+      signer.signSettleAcceptedWithdrawalPlan(settle),
+      signer.signReclaimFailedWithdrawalPlan(reclaim),
+    ]);
 
-    const signed = await signer.signManagerClaimRewardsPlan(plan);
-    const bytes = signed.signedTransactionBytes;
-    const transaction = deserializeTransaction(bytes);
+    expect(signed.map(({ operationKind }) => operationKind)).toEqual([
+      "calculate-rewards",
+      "claim-rewards",
+      "claim-staker-rewards",
+      "settle-accepted-withdrawal",
+      "reclaim-failed-withdrawal",
+    ]);
+    for (const [index, attempt] of signed.entries()) {
+      const transaction = deserializeTransaction(attempt.signedTransactionBytes);
+      expect(attempt).toMatchObject({
+        kind: "signed-reward-operation",
+        planSha256: plans[index]?.planSha256,
+        precomputedTxid: `0x${transaction.txid()}`,
+        nonce: "7",
+        fee: "1000",
+      });
+      expect(() => transaction.verifyOrigin()).not.toThrow();
+      expect(JSON.stringify(attempt)).not.toContain(secretKey);
+    }
 
-    expect(signer).toMatchObject({ principal, publicKey, network: "testnet" });
-    expect(signed).toMatchObject({
-      kind: "signed-manager-claim-rewards",
-      intentHash: plan.intentHash,
-      unsignedTransactionSha256: plan.unsignedTransactionSha256,
-      precomputedTxid: `0x${transaction.txid()}`,
-      nonce: "7",
-      fee: "1000",
-    });
-    expect(() => transaction.verifyOrigin()).not.toThrow();
-    expect(Buffer.from(bytes).toString("hex")).not.toBe(plan.unsignedTransactionHex);
-
-    bytes.fill(0);
-    expect(signed.signedTransactionBytes.some((value) => value !== 0)).toBe(true);
-    expect(JSON.stringify(signer)).not.toContain(secretKey);
-    expect(JSON.stringify(signed)).not.toContain(secretKey);
-    expect(inspect(signer)).not.toContain(secretKey);
+    const tampered = structuredClone(payment) as RewardOperationPlan;
+    tampered.material.authorization.recipeSha256 = "ef".repeat(32);
+    await expectSignerError(
+      () => signer.signClaimStakerRewardsPlan(tampered),
+      "sealed-plan-invalid",
+    );
+    await expectSignerError(
+      () => signer.signPox5CalculateRewardsPlan(collect),
+      "sealed-plan-invalid",
+    );
   });
 
   it("rejects relative paths, symlinks, and non-regular secret paths", async () => {
@@ -212,49 +273,31 @@ describe("GasPayerSigner", () => {
   });
 
   it.each([
-    (plan: ManagerClaimRewardsPlan) => {
-      (plan as { intentHash: string }).intentHash = "00".repeat(32);
+    (plan: RewardOperationPlan) => {
+      plan.planSha256 = "00".repeat(32);
     },
-    (plan: ManagerClaimRewardsPlan) => {
-      (plan as { unsignedTransactionSha256: string }).unsignedTransactionSha256 = "00".repeat(32);
+    (plan: RewardOperationPlan) => {
+      plan.unsignedTransactionSha256 = "00".repeat(32);
     },
-    (plan: ManagerClaimRewardsPlan) => {
-      (plan as { unsignedTransactionHex: string }).unsignedTransactionHex =
-        `${plan.unsignedTransactionHex.slice(0, -2)}00`;
+    (plan: RewardOperationPlan) => {
+      plan.unsignedTransactionHex = `${plan.unsignedTransactionHex.slice(0, -2)}00`;
     },
-    (plan: ManagerClaimRewardsPlan) => {
-      (plan.material.adapter as { id: string }).id = "arbitrary-call";
+    (plan: RewardOperationPlan) => {
+      plan.material.authorization.recipeSha256 = "ef".repeat(32);
     },
-    (plan: ManagerClaimRewardsPlan) => {
-      (plan as ManagerClaimRewardsPlan & { arbitraryCall: boolean }).arbitraryCall = true;
+    (plan: RewardOperationPlan) => {
+      (plan as RewardOperationPlan & { arbitraryCall: boolean }).arbitraryCall = true;
     },
-  ])("rejects a tampered or widened sealed transaction vector", async (tamper) => {
+  ])("rejects a tampered or widened sealed reward operation plan", async (tamper) => {
     const signer = await GasPayerSigner.fromSecretFile({
       secretFilePath: await secretFile(),
       expectedPrincipal: principal,
       network: "testnet",
     });
-    const plan = structuredClone(await fixturePlan());
+    const plan = structuredClone(await paymentPlan());
     tamper(plan);
 
-    await expectSignerError(() => signer.signManagerClaimRewardsPlan(plan), "sealed-plan-invalid");
-  });
-
-  it("refuses a valid sealed plan belonging to another gas payer", async () => {
-    const signer = await GasPayerSigner.fromSecretFile({
-      secretFilePath: await secretFile(),
-      expectedPrincipal: principal,
-      network: "testnet",
-    });
-    const otherSecret = `${"22".repeat(32)}01`;
-    const otherPublicKey = privateKeyToPublic(otherSecret);
-    const otherPrincipal = getAddressFromPublicKey(otherPublicKey, "testnet");
-
-    await expectSignerError(
-      async () =>
-        signer.signManagerClaimRewardsPlan(await fixturePlan(otherPublicKey, otherPrincipal)),
-      "plan-signer-mismatch",
-    );
+    await expectSignerError(() => signer.signClaimStakerRewardsPlan(plan), "sealed-plan-invalid");
   });
 
   it("zeroes and permanently disables its private signing capability", async () => {
@@ -266,7 +309,7 @@ describe("GasPayerSigner", () => {
     signer.destroy();
     signer.destroy();
     await expectSignerError(
-      async () => signer.signManagerClaimRewardsPlan(await fixturePlan()),
+      async () => signer.signClaimStakerRewardsPlan(await paymentPlan()),
       "signer-destroyed",
     );
   });

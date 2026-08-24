@@ -1,4 +1,11 @@
-import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
+import { ClarityType } from "@stacks/transactions";
+import type {
+  DashboardSnapshot,
+  RewardLedger,
+  RewardRun,
+} from "@stx-labs/signer-sidekick-api-contracts";
+import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
+import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
@@ -38,6 +45,19 @@ import {
   indexedWorkflowsReady,
   type runOperatorPreflight,
 } from "./preflight.js";
+import { carryForwardRewards, type LastGoodRewards } from "./reward-last-good.js";
+import {
+  buildRewardLedger,
+  previousCycleOpen,
+  type RewardLedgerQuery,
+  type RewardLedgerSnapshotInput,
+  type WithdrawalRegistryEvidence,
+  type WithdrawalRegistryStatus,
+} from "./reward-ledger.js";
+import {
+  anchorSetupToRewardEvidence,
+  resolveRosterProjectionAnchor,
+} from "./reward-observation-anchor.js";
 import { rewardRealizationStream, syncRewardRealizations } from "./reward-realization-sync.js";
 import {
   discoverStakerClaims,
@@ -46,11 +66,8 @@ import {
   type StxRewardStatus,
 } from "./reward-status.js";
 import type { RuntimeSettingsController } from "./runtime-settings.js";
-import {
-  proveSignerStakerAnchorRemainsCanonical,
-  SignerStakerAnchorError,
-  syncSignerStakers,
-} from "./signer-staker-sync.js";
+import { decodeSbtcWithdrawalCompletion } from "./sbtc-withdrawal-evidence.js";
+import { SignerStakerAnchorError, syncSignerStakers } from "./signer-staker-sync.js";
 import type { ManagerTrustTransition } from "./storage/manager-trust-repository.js";
 import { createChainSourceId, createNodeSourceId, type SidekickStore } from "./storage/store.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
@@ -60,6 +77,12 @@ export interface OperatorAlert {
   severity: "critical" | "warning" | "info";
   title: string;
   detail: string;
+}
+
+interface ManagerClaimWalletEvidence {
+  observedAt: string;
+  setup: OperatorAnchorSnapshot;
+  rewards: StxRewardStatus | null;
 }
 
 export interface OperatorServiceOptions {
@@ -74,6 +97,8 @@ export interface OperatorServiceOptions {
   managerVerification?: ManagerVerificationContext;
   transactionEngineObservation?: TransactionEngineObservationHook;
   nodeTransactions?: ManagerEventNodeTransactions;
+  /** Operator runs sealed for a distribution; the ledger explains rolled-forward payments with it. */
+  rewardRunHistory?: (cycle: number, distribution: 1 | 2) => readonly RewardRun[];
 }
 
 export interface OperatorSynchronizationProgress {
@@ -248,28 +273,6 @@ export async function observeTransactionEngineSafely(
   }
 }
 
-export async function resolveRosterProjectionAnchor(options: {
-  store: Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
-  api: Pick<StacksApiClient, "getStatus" | "getBlock">;
-  sourceId: string;
-  managerPrincipal: string;
-  liveAnchor: ChainAnchor;
-  indexedApiAvailable?: boolean;
-}): Promise<ChainAnchor> {
-  const run = options.store.getLatestCompletedSignerStakerRun(
-    options.sourceId,
-    options.managerPrincipal,
-  );
-  if (!run?.chainAnchor || options.indexedApiAvailable === false) return options.liveAnchor;
-  try {
-    await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
-    return run.chainAnchor;
-  } catch (error) {
-    if (!(error instanceof SignerStakerAnchorError)) throw error;
-    return options.liveAnchor;
-  }
-}
-
 function asSentence(value: string): string {
   const trimmed = value.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
@@ -305,6 +308,8 @@ export function buildAlerts(snapshot: {
   readiness: Awaited<ReturnType<typeof readOperatorReadiness>> | null;
   forecast: Awaited<ReturnType<typeof readPoolForecast>> | null;
   rewards: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
+  /** Live status for the previous calculation-target cycle while it still has open work. */
+  rewardsPrevious?: Awaited<ReturnType<typeof readStxRewardStatus>> | null;
   activity: ReturnType<typeof readManagerActivity>;
   trustTransition?: {
     transition: "gained" | "lost" | "degraded";
@@ -365,10 +370,10 @@ export function buildAlerts(snapshot: {
       id: `manager:trust-transition-${transition}:${snapshot.trustTransition.changedAt}`,
       severity: gained ? "info" : degraded ? "warning" : "critical",
       title: gained
-        ? "Manager Assist Eligibility Gained"
+        ? "Manager Execution Eligibility Gained"
         : degraded
           ? "Manager Recognition Degraded"
-          : "Manager Assist Eligibility Lost",
+          : "Manager Execution Eligibility Lost",
       detail: gained
         ? `${asSentence(snapshot.trustTransition.reason)} No action is required.`
         : asSentence(snapshot.trustTransition.reason),
@@ -445,6 +450,8 @@ export class OperatorService {
     value: Awaited<ReturnType<OperatorService["load"]>>;
   } | null = null;
   private lastKnownHealthContext: HealthOperatorContext | null = null;
+  /** Last published reward status; re-published through indexed-API outages. */
+  private lastGoodRewards: LastGoodRewards | null = null;
   private loading: Promise<Awaited<ReturnType<OperatorService["load"]>>> | null = null;
   private synchronization: Promise<
     Awaited<ReturnType<OperatorService["runSynchronization"]>>
@@ -460,6 +467,7 @@ export class OperatorService {
   private lastRefreshFailure: "refresh-failed" | "rate-limited" | null = null;
   private lastRateLimit: RateLimitInfo | null = null;
   private lastRateLimitEndpoint: string | undefined;
+  private latestManagerClaimWalletEvidence: ManagerClaimWalletEvidence | null = null;
 
   constructor(private readonly options: OperatorServiceOptions) {}
 
@@ -517,6 +525,16 @@ export class OperatorService {
   /** Refresh the retained operator snapshot without requiring a browser request. */
   async refreshSnapshot() {
     return await this.refresh();
+  }
+
+  /** One fresh, internally aligned reward observation for a manual manager-claim proposal. */
+  async managerClaimWalletEvidence(): Promise<ManagerClaimWalletEvidence> {
+    const snapshot = await this.refreshSnapshot();
+    const evidence = this.latestManagerClaimWalletEvidence;
+    if (!evidence || evidence.observedAt !== snapshot.generatedAt) {
+      throw new Error("Fresh manager-claim reward evidence is unavailable");
+    }
+    return evidence;
   }
 
   private currentTime(): number {
@@ -844,10 +862,20 @@ export class OperatorService {
    * multiply every refresh by the bucket count. The caller pages it, and the returned settlement
    * summary is what an operator sees before signing the first of N transactions.
    */
-  async stakerClaims(options: { offset?: number; limit?: number } = {}) {
+  async stakerClaims(
+    options: {
+      offset?: number;
+      limit?: number;
+      rewardCycle?: number;
+      bondIndices?: readonly bigint[];
+      chainAnchor?: ChainAnchor;
+    } = {},
+  ) {
     const snapshot = await this.snapshot();
     const rewards = snapshot.rewards;
-    if (!rewards) throw new Error("Reward status is unavailable");
+    if (!rewards && options.rewardCycle === undefined) {
+      throw new Error("Reward status is unavailable");
+    }
     const offset = options.offset ?? 0;
     const limit = Math.min(options.limit ?? 25, 100);
     // The reconciled roster, not the STX cycle-membership list. A pure bond staker has no STX
@@ -872,15 +900,18 @@ export class OperatorService {
       )
       .map(({ stakerPrincipal }) => stakerPrincipal);
     const page = principals.slice(offset, offset + limit);
-    const bondIndices = rewards.buckets
-      .filter(({ bondIndex, participating }) => bondIndex !== null && participating)
-      .map(({ bondIndex }) => BigInt(bondIndex as string));
+    const bondIndices =
+      options.bondIndices ??
+      (rewards?.buckets ?? [])
+        .filter(({ bondIndex, participating }) => bondIndex !== null && participating)
+        .map(({ bondIndex }) => BigInt(bondIndex as string));
     const discovery = await discoverStakerClaims({
       node: this.options.node,
       managerPrincipal: this.options.managerPrincipal,
-      rewardCycle: rewards.rewardCycle,
+      rewardCycle: options.rewardCycle ?? (rewards as NonNullable<typeof rewards>).rewardCycle,
       stakerPrincipals: page,
       bondIndices,
+      ...(options.chainAnchor ? { chainAnchor: options.chainAnchor } : {}),
     });
     return {
       generatedAt: snapshot.generatedAt,
@@ -927,6 +958,205 @@ export class OperatorService {
     return this.options.store.listRewardCycleSummaries(this.options.managerPrincipal, options);
   }
 
+  /**
+   * Reward ledger: distributions inside cycles derived from chain evidence (plan S1). Read-only,
+   * bounded, memoized per snapshot anchor; never triggers a synchronization.
+   */
+  async rewardLedger(query: RewardLedgerQuery = {}): Promise<RewardLedger> {
+    const snapshot = await this.snapshot();
+    const config = this.runtimeContext().config;
+    const chainId =
+      config.expectedNetworkId ??
+      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const sourceId = createChainSourceId(config.network, config.apiUrl);
+    const pox5ContractId =
+      snapshot.preflight?.pox?.pox5ContractId ?? snapshot.rewardOutlook?.pox5ContractId ?? null;
+    const cacheKey = JSON.stringify([
+      snapshot.generatedAt,
+      snapshot.chainAnchor?.indexBlockHash ?? null,
+      query.cycle ?? null,
+      query.distribution ?? null,
+      query.staker ?? null,
+      query.scope ?? "selection",
+    ]);
+    const cached = this.rewardLedgerCache.get(cacheKey);
+    if (cached) return cached;
+    const registry =
+      BUILT_IN_NETWORK_COMPATIBILITY_PROFILES.find((profile) => profile.network === config.network)
+        ?.sbtc.registryContract ?? null;
+    const tip = snapshot.chainAnchor?.indexBlockHash;
+    const snapshotInput: RewardLedgerSnapshotInput = {
+      generatedAt: snapshot.generatedAt,
+      network: snapshot.network,
+      managerPrincipal: snapshot.managerPrincipal,
+      chainAnchor: snapshot.chainAnchor ?? null,
+      roster: snapshot.roster,
+      historyRecovery: snapshot.historyRecovery ?? null,
+      manager: { capabilities: snapshot.manager?.capabilities ?? null },
+      rewards: snapshot.rewards ?? null,
+      rewardsPrevious: snapshot.rewardsPrevious ?? null,
+      rewardOutlook: snapshot.rewardOutlook ?? null,
+    };
+    const ledger = await buildRewardLedger({
+      store: this.options.store,
+      chainId,
+      managerPrincipal: this.options.managerPrincipal,
+      pox5ContractId,
+      sourceId,
+      snapshot: snapshotInput,
+      ownedTxids: this.ownedTransactionIds(),
+      now: new Date(),
+      query,
+      ...(registry
+        ? {
+            withdrawalRequestEvidence: (
+              requests: readonly { requestId: string; initiatedBlockHeight: number }[],
+            ) => this.withdrawalRequestEvidence(registry, requests, tip),
+          }
+        : {}),
+      ...(this.options.rewardRunHistory ? { runHistory: this.options.rewardRunHistory } : {}),
+    });
+    if (this.rewardLedgerCache.size >= 8) {
+      const oldest = this.rewardLedgerCache.keys().next().value;
+      if (oldest !== undefined) this.rewardLedgerCache.delete(oldest);
+    }
+    this.rewardLedgerCache.set(cacheKey, ledger);
+    return ledger;
+  }
+
+  private readonly rewardLedgerCache = new Map<string, RewardLedger>();
+
+  /** Transaction IDs Sidekick produced itself: wallet intents and engine attempts (bounded). */
+  private ownedTransactionIds(): Set<string> {
+    const owned = new Set<string>();
+    for (const intent of this.options.store.walletIntents.listForActivity(10_001)) {
+      if (intent.txid) owned.add(intent.txid);
+    }
+    const jobIds: string[] = [];
+    let cursor: string | undefined;
+    while (jobIds.length <= 10_000) {
+      const page = this.options.store.transactionEngine.listLogicalJobs({
+        limit: 200,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      jobIds.push(...page.items.map(({ jobId }) => jobId));
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+    for (const attempts of this.options.store.transactionEngine
+      .listAttemptsForActivity(jobIds)
+      .values()) {
+      for (const attempt of attempts) owned.add(attempt.precomputedTxid);
+    }
+    for (const txid of this.options.store.rewardRuns.listOwnedTransactionIds()) owned.add(txid);
+    return owned;
+  }
+
+  /**
+   * Read current registry state and persist the node-readable Bitcoin sweep proof. The manager's
+   * Stacks transaction only opens the withdrawal; this proof identifies the later L1 payout.
+   */
+  async withdrawalRequestEvidence(
+    registryContract: string,
+    requests: readonly { requestId: string; initiatedBlockHeight: number }[],
+    tip: string | undefined,
+  ): Promise<ReadonlyMap<string, WithdrawalRegistryEvidence>> {
+    const config = this.runtimeContext().config;
+    const chainId =
+      config.expectedNetworkId ??
+      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const observedAt = new Date().toISOString();
+    const result = new Map<string, WithdrawalRegistryEvidence>();
+    for (let index = 0; index < requests.length; index += 8) {
+      const batch = requests.slice(index, index + 8);
+      const evidence = await Promise.all(
+        batch.map(async ({ requestId }): Promise<[string, WithdrawalRegistryEvidence]> => {
+          const stored = this.options.store.sbtcWithdrawalCompletions.get(
+            chainId,
+            registryContract,
+            requestId,
+          );
+          if (stored) {
+            return [
+              requestId,
+              {
+                status: "accepted",
+                completion: {
+                  sweepTxId: stored.sweepTxId,
+                  bitcoinBlockHeight: stored.bitcoinBlockHeight,
+                  bitcoinBlockHash: stored.bitcoinBlockHash,
+                },
+              },
+            ];
+          }
+          try {
+            const status = await this.withdrawalRequestStatus(registryContract, requestId, tip);
+            if (status !== "accepted") return [requestId, { status, completion: null }];
+            try {
+              const value = await this.options.node.callReadOnly(
+                registryContract,
+                "get-completed-withdrawal-sweep-data",
+                this.options.managerPrincipal,
+                [encodeUIntHex(BigInt(requestId))],
+                tip ? { tip } : undefined,
+              );
+              const completion = decodeSbtcWithdrawalCompletion(value);
+              if (!completion) return [requestId, { status, completion: null }];
+              const persisted = this.options.store.sbtcWithdrawalCompletions.upsert({
+                chainId,
+                registryContract,
+                requestId,
+                ...completion,
+                observedAt,
+              });
+              return [
+                requestId,
+                {
+                  status,
+                  completion: {
+                    sweepTxId: persisted.sweepTxId,
+                    bitcoinBlockHeight: persisted.bitcoinBlockHeight,
+                    bitcoinBlockHash: persisted.bitcoinBlockHash,
+                  },
+                },
+              ];
+            } catch {
+              return [requestId, { status, completion: null }];
+            }
+          } catch {
+            return [requestId, { status: "unknown", completion: null }];
+          }
+        }),
+      );
+      for (const [requestId, value] of evidence) result.set(requestId, value);
+    }
+    return result;
+  }
+
+  /** sBTC registry status for one withdrawal request id, read at the snapshot anchor. */
+  async withdrawalRequestStatus(
+    registryContract: string,
+    requestId: string,
+    tip: string | undefined,
+  ): Promise<WithdrawalRegistryStatus> {
+    const value = await this.options.node.callReadOnly(
+      registryContract,
+      "get-withdrawal-request",
+      this.options.managerPrincipal,
+      [encodeUIntHex(BigInt(requestId))],
+      tip ? { tip } : undefined,
+    );
+    if (value.type !== ClarityType.OptionalSome) return "unknown";
+    const request = value.value;
+    if (request.type !== ClarityType.Tuple) return "unknown";
+    const status = request.value.status;
+    if (!status || status.type === ClarityType.OptionalNone) return "pending";
+    if (status.type === ClarityType.OptionalSome) {
+      return status.value.type === ClarityType.BoolTrue ? "accepted" : "rejected";
+    }
+    return "unknown";
+  }
+
   async activity(options: Parameters<typeof readManagerActivity>[3] = {}) {
     const config = this.runtimeContext().config;
     const chainId =
@@ -950,6 +1180,7 @@ export class OperatorService {
       invalidateManagerVerificationCache(this.options.managerVerification);
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return result;
   }
 
@@ -1134,6 +1365,7 @@ export class OperatorService {
       }
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return {
       observedAt: synchronized.observedAt,
       stakers: synchronized.stakers,
@@ -1218,6 +1450,7 @@ export class OperatorService {
       invalidateManagerVerificationCache(this.options.managerVerification, managerPrincipal);
     }
     this.cached = null;
+    this.lastGoodRewards = null;
     return { observedAt, events };
   }
 
@@ -1285,6 +1518,7 @@ export class OperatorService {
       ...(options.signal ? { signal: options.signal } : {}),
     });
     this.cached = null;
+    this.lastGoodRewards = null;
     return { observedAt, result };
   }
 
@@ -1331,6 +1565,7 @@ export class OperatorService {
       sourceId,
       managerPrincipal,
       liveAnchor: chainAnchor,
+      node,
       indexedApiAvailable: indexedApiCompatible(preflight),
     });
     const rewardCalculation = deriveRewardCalculationTarget(
@@ -1388,8 +1623,45 @@ export class OperatorService {
             rewardOutlook,
           })
         : null;
+    // The second distribution of a cycle is collected and distributed during the next cycle, and
+    // an operator may be later still. Keep the previous target cycle live while evidence shows it
+    // has open work so the ledger can present it; otherwise skip the extra per-staker reads.
+    const previousCycle = rewards ? rewards.rewardCycle - 1 : null;
+    const rewardsPrevious =
+      rewards &&
+      rewardOutlook &&
+      previousCycle !== null &&
+      previousCycle >= (preflight.pox.firstRewardCycleId ?? 0) &&
+      previousCycleOpen(store, {
+        chainId: preflight.node.networkId,
+        managerPrincipal,
+        pox5ContractId: rewardOutlook.pox5ContractId,
+        sourceId,
+        cycle: previousCycle,
+      })
+        ? await readStxRewardStatus({
+            store,
+            node,
+            sourceId,
+            managerPrincipal,
+            pox5ContractId: rewardOutlook.pox5ContractId,
+            rewardCycle: previousCycle,
+            observedAt: generatedAt,
+            burnBlockHeight: projectionAnchor.burnBlockHeight,
+            stacksTipHeight: projectionAnchor.stacksBlockHeight,
+            chainAnchor: projectionAnchor,
+            firstRewardCycleId: preflight.pox.firstRewardCycleId,
+            rewardOutlook,
+          }).catch(() => null)
+        : null;
+    const managerClaimSetup = anchorSetupToRewardEvidence(operatorSnapshot, projectionAnchor);
+    this.latestManagerClaimWalletEvidence = {
+      observedAt: generatedAt,
+      setup: managerClaimSetup,
+      rewards,
+    };
     await observeTransactionEngineSafely(this.options.transactionEngineObservation, {
-      setup: operatorSnapshot,
+      setup: managerClaimSetup,
       rewards,
       sourceId,
       observedAt: generatedAt,
@@ -1457,6 +1729,14 @@ export class OperatorService {
         monitoringStartedAt,
       },
     };
+    // Last known good: an indexed-API outage must not publish an empty Rewards page.
+    const published = carryForwardRewards({
+      indexedApiAvailable: indexedApiCompatible(preflight),
+      rewards,
+      rewardsPrevious,
+      lastGood: this.lastGoodRewards,
+    });
+    this.lastGoodRewards = published;
     const partial = {
       preflight,
       manager,
@@ -1465,7 +1745,8 @@ export class OperatorService {
       setup: readiness,
       forecast,
       rewardOutlook,
-      rewards,
+      rewards: published.rewards,
+      rewardsPrevious: published.rewardsPrevious,
       activity,
       roster,
       trustTransition,

@@ -18,3 +18,7 @@ trusted-managers/*.json
 
 # Point-in-time review snapshots are kept locally, not tracked
 docs/reviews/
+
+# Agent run artifacts and the editable design canvas are kept locally, not tracked
+.ai-runs/
+design/mockups/canvas/

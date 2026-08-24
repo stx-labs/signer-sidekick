@@ -183,7 +183,7 @@ describe("operator preflight", () => {
     });
   });
 
-  it("reports a lagging API diagnostically without treating it as a coherent sync anchor", () => {
+  it("treats an indexed API that trails the local node as normal indexing lag", () => {
     const result = evaluatePreflight(
       config,
       sources({
@@ -201,10 +201,16 @@ describe("operator preflight", () => {
     );
 
     expect(result.api.burnBlockLag).toBe(20);
+    expect(result.api.position).toBe("behind");
     expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
-      status: "warn",
-      message: "API chain data is behind the local node by 20 Bitcoin blocks and 100 Stacks blocks",
+      status: "pass",
+      message:
+        "Indexed API trails the local node by 20 Bitcoin blocks and 100 Stacks blocks (normal indexing lag)",
     });
+    // The lag itself raises nothing beyond the baseline notices.
+    const nonPassing = (report: typeof result) =>
+      report.checks.filter((check) => check.status !== "pass").map((check) => check.id);
+    expect(nonPassing(result)).toEqual(nonPassing(evaluatePreflight(config, sources())));
   });
 
   it("keeps local-node preflight usable when the Reference API is unavailable", () => {
