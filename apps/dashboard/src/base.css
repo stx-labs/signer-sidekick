@@ -1237,6 +1237,16 @@ td .avatar {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-weak);
 }
+/* Read-only fields are rendered, not editable — look the part rather than inviting a click. */
+.input[readonly] {
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.input[readonly]:focus {
+  border-color: var(--border-primary);
+  box-shadow: none;
+}
 .select {
   font-family: var(--font-body);
   font-size: 14px;
