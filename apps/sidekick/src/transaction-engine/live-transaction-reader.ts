@@ -66,6 +66,24 @@ export type LiveObservation<Value> =
 
 export type LiveLookup<Value> = LiveObservation<Value> | LiveReadNotFound;
 
+/**
+ * Whether the node's transaction index simply has no answer for a lookup.
+ *
+ * Covers both shapes of "ask the block instead": a 404 from an enabled index that has
+ * not covered the transaction's height, and the 501 a node without `txindex` returns.
+ * Neither is a verification failure — callers fall back to reading the canonical block.
+ */
+export function transactionIndexCannotAnswer<Value>(
+  lookup: LiveLookup<Value>,
+): lookup is
+  | LiveReadNotFound
+  | (LiveReadUnavailable & { reason: "transaction-index-unavailable" }) {
+  return (
+    lookup.status === "not-found" ||
+    (lookup.status === "unavailable" && lookup.reason === "transaction-index-unavailable")
+  );
+}
+
 export interface AnchoredAccountObservation {
   principal: string;
   indexBlockHash: `0x${string}`;

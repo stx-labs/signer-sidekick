@@ -141,12 +141,15 @@ describe("deployment requirements", () => {
     expect(check(result, "node-transaction-index").observed).toContain("enabled-endpoint");
   });
 
-  it("blocks affected features and provides exact TOML when txindex is disabled", async () => {
+  it("keeps a disabled txindex non-blocking and provides exact TOML to opt into it", async () => {
     const result = await service({ transactionIndex: "disabled" }).check(true);
     const index = check(result, "node-transaction-index");
 
-    expect(result).toMatchObject({ status: "blocked", requiredReady: false });
-    expect(index).toMatchObject({ importance: "required", status: "not-configured" });
+    // Verification falls back to reading canonical blocks, so a disabled index is a
+    // performance choice rather than a missing requirement.
+    expect(result).toMatchObject({ status: "attention", requiredReady: true });
+    expect(index).toMatchObject({ importance: "recommended", status: "not-configured" });
+    expect(index.summary).toContain("reading canonical blocks");
     expect(index.remediation?.configuration).toContainEqual({
       label: "Stacks node [node] table",
       format: "toml",
