@@ -2088,6 +2088,11 @@ test("hands first-time signer setup to the maintained external flow", async ({ p
   await openPage(page, "settings", "Settings");
   await expect(page.getByText("Connect a running signer manager.")).toBeVisible();
   await expect(page.getByText(/Complete first-time setup/)).toBeVisible();
+  const manager = page.locator('section[aria-label="Manager"]');
+  await expect(manager.locator(".st-row", { hasText: "PoX-5 interface" })).toContainText(
+    "Connection blocked",
+  );
+  await expect(manager).not.toContainText("Core monitoring available");
   await expect(page.getByRole("link", { name: /Zero to Signing/ })).toHaveAttribute(
     "href",
     "https://stx.fan/zero_to/signing/",
@@ -2167,12 +2172,15 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await openSettingsSection(page, "attachment", "Manager");
   await expect(manager).toContainText("reviewed · profile operator-reference-render");
   await openSettingsSection(page, "capabilities", "Manager");
-  const rewardCalls = manager.locator(".st-row", { hasText: "Reward calls" });
-  await expect(rewardCalls.getByText("Available", { exact: true })).toBeVisible();
-  await expect(rewardCalls.getByRole("button", { name: "Details" })).toHaveAttribute(
+  const managerOperations = manager.locator(".st-row", { hasText: "Manager operations" });
+  await expect(managerOperations.getByText("Available", { exact: true })).toBeVisible();
+  await expect(managerOperations.getByRole("button", { name: "Details" })).toHaveAttribute(
     "data-tooltip",
-    "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs.",
+    "Compatibility is evaluated separately for each manager operation. Runtime readiness is checked again when you prepare an action.",
   );
+  await manager.getByText("Operation compatibility", { exact: true }).click();
+  await expect(manager.getByText("Reward distribution", { exact: true })).toBeVisible();
+  await expect(manager.getByText("Available", { exact: true })).toHaveCount(7);
   await expect(page.getByRole("link", { name: "Rotate", exact: true })).toHaveAttribute(
     "aria-disabled",
     "false",
@@ -2200,6 +2208,50 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
   await expect(page.getByText("Guided manager actions are unavailable.")).toHaveCount(0);
   await openPage(page, "rewards", "Rewards");
   await expect(page.getByRole("button", { name: "Update manager fee" })).toBeEnabled();
+});
+
+test("shows custom manager compatibility per operation without blocking core monitoring", async ({
+  page,
+}) => {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const response = structuredClone(responseFor(request.href));
+    if (request.pathname === "/api/v1/status") {
+      const status = response as typeof import("./large-pool-fixture.mjs").snapshot;
+      status.manager.source.tier = "custom-observe";
+      status.manager.source.recognized = true;
+      status.manager.source.profileId = "operator-custom-manager";
+      status.manager.source.origin = "operator-installed";
+      status.manager.capabilities.sourceReview.exactReviewed = false;
+      status.manager.capabilities.sourceReview.reason = "No reviewed exact source match";
+      for (const capability of status.manager.capabilities.actions) {
+        capability.executionAvailable = false;
+        capability.adapter = null;
+      }
+    }
+    await route.fulfill(fixtureFulfillment(response));
+  });
+
+  await login(page);
+  await openSettingsSection(page, "attachment", "Manager");
+  const manager = page.locator('section[aria-label="Manager"]');
+  await expect(manager.locator(".st-row", { hasText: "PoX-5 interface" })).toContainText(
+    "Core monitoring available",
+  );
+  await expect(manager.getByText("Compatible", { exact: true })).toBeVisible();
+  await expect(manager.getByText("Custom", { exact: true })).toBeVisible();
+  await expect(
+    manager
+      .locator(".st-row", { hasText: "Manager operations" })
+      .getByText("Observe only", { exact: true }),
+  ).toBeVisible();
+  await manager.getByText("Operation compatibility", { exact: true }).click();
+  await expect(manager.getByRole("link", { name: /Open a compatibility issue/ })).toBeVisible();
+  await expect(manager.getByText("Observe only", { exact: true })).toHaveCount(7);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
+    .toBeLessThanOrEqual(0);
 });
 
 test("paginates and searches a pool with hundreds of stakers", async ({ page }) => {

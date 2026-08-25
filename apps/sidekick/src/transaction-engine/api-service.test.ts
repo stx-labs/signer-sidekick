@@ -178,7 +178,7 @@ describe("repository transaction-engine API service", () => {
   it.each([
     [
       "manager-source-mismatch,rewards-paused",
-      "Manager source does not match its verified profile; Manager rewards are paused",
+      "Manager source does not match its reviewed reward adapter; Manager rewards are paused",
     ],
     [
       "approval-revalidation:attestation-expired",

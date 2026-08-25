@@ -18,9 +18,10 @@ Sidekick starts after the node, signer, and signer-manager are running. Use
 [StacksUp](https://github.com/stx-labs/stacksup) to manage node and signer infrastructure.
 
 Sidekick supports STX-only positions and the STX side of Bitcoin bonds. Manager and signer keys
-remain in the operator's wallet and signer. Compatible custom managers receive baseline monitoring;
-each executable action requires a reviewed capability adapter. Optional reward runs use a separate,
-low-balance gas wallet and one operator-approved recipe at a time.
+remain in the operator's wallet and signer. Any PoX-5-compatible manager receives
+[core monitoring](docs/operator/deployment.md#manager-compatibility); manager operations are enabled
+individually through reviewed capability adapters. Optional reward runs use a separate, low-balance
+gas wallet and one operator-approved recipe at a time.
 
 ## Development
 

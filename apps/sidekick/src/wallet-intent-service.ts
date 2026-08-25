@@ -1160,8 +1160,8 @@ export class WalletIntentService {
         value:
           snapshot.manager.source.tier === "reference-built-in" ||
           snapshot.manager.source.tier === "reference-render"
-            ? "Verified reference manager"
-            : "Unverified or custom manager — review in signing tool",
+            ? "Reviewed manager source"
+            : "Custom manager source — review in signing tool",
       },
     ];
     const transaction = (

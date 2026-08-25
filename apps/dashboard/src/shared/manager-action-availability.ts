@@ -2,6 +2,7 @@ import type {
   DashboardSnapshot,
   ManagerActionCapabilityId,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { managerCapabilityExplanation } from "./manager-capability-presentation.js";
 
 type ManagerActionContext = Pick<DashboardSnapshot, "freshness" | "manager" | "preflight">;
 
@@ -49,7 +50,9 @@ export function managerActionAvailability(
   if (!capability?.executionAvailable) {
     return {
       available: false,
-      reason: capability?.reason ?? `Sidekick did not report the ${capabilityId} capability.`,
+      reason: capability
+        ? managerCapabilityExplanation(capability)
+        : `Sidekick did not report the ${capabilityId} capability.`,
       warning: null,
     };
   }

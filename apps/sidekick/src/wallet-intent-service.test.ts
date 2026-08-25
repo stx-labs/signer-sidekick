@@ -1814,7 +1814,7 @@ describe("manager wallet action preparation", () => {
     });
     expect(intent.review.fields).toContainEqual({
       label: "Source assurance",
-      value: "Unverified or custom manager — review in signing tool",
+      value: "Custom manager source — review in signing tool",
     });
     expect(store.walletIntents.get(intent.id)).toMatchObject({ network, chainId });
   });

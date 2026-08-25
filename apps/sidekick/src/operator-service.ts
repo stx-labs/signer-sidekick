@@ -333,24 +333,19 @@ export function buildAlerts(snapshot: {
     alerts.push({
       id: "manager:unsupported",
       severity: "critical",
-      title: "Manager Trait Check Failed",
+      title: "Manager Connection Blocked",
       detail: asSentence(incompatibility),
     });
-  } else if (snapshot.manager.source.tier === "unrecognized") {
+  } else if (
+    snapshot.manager.source.tier === "unrecognized" ||
+    snapshot.manager.source.tier === "custom-observe"
+  ) {
     alerts.push({
       id: "manager:custom-capabilities",
       severity: "info",
-      title: "Custom Manager Attached",
+      title: "Custom Manager Connected",
       detail:
-        "PoX-5 baseline state remains available. Each manager action is enabled only when its deployed byte-exact source matches a reviewed capability fingerprint.",
-    });
-  } else if (snapshot.manager.source.tier === "custom-observe") {
-    alerts.push({
-      id: "manager:custom-capabilities",
-      severity: "info",
-      title: "Custom Manager Attached",
-      detail:
-        "PoX-5 baseline state remains available. Executable manager actions require a reviewed capability fingerprint.",
+        "Core PoX-5 monitoring is available. Manager operations are enabled individually when their deployed behavior matches a reviewed adapter.",
     });
   }
   const profileIssueCount = snapshot.manager.installedProfiles.issues.length;
