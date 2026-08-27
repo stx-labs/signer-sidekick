@@ -103,6 +103,66 @@ export function paymentTotal(distribution: RewardLedgerDistribution): number {
   return p.made + p.outstanding + p.notPayable + p.belowFee;
 }
 
+export interface DistributionAllocation {
+  toStakersSats: string | null;
+  operatorFeeSats: string | null;
+  /** True when payment rows are not available and the split uses the locked/configured rate. */
+  estimated: boolean;
+}
+
+/**
+ * Split a calculated pool total between stakers and the operator without mistaking an
+ * unmaterialized payment set for operator income. Once every payment is represented, the ledger
+ * amounts are exact. Before then, the aggregate fee rate is the best available estimate; the
+ * final total can differ by a few sats because the manager rounds once per staker and bucket.
+ */
+export function distributionAllocation(
+  distribution: RewardLedgerDistribution,
+): DistributionAllocation {
+  const poolText = distribution.calculation.poolSats;
+  if (distribution.calculation.state !== "done" || poolText === null) {
+    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
+  }
+  const pool = big(poolText);
+  const payments = distribution.payments;
+  const toStakers = big(payments.distributedSats) + big(payments.outstandingSats);
+  const completePaymentSet =
+    paymentTotal(distribution) > 0 &&
+    (payments.outstanding + payments.notPayable + payments.belowFee > 0 ||
+      distribution.status === "complete" ||
+      distribution.status === "all-distributed");
+  if (completePaymentSet && toStakers <= pool) {
+    return {
+      toStakersSats: text(toStakers),
+      operatorFeeSats: text(pool - toStakers),
+      estimated: false,
+    };
+  }
+
+  const feeBipsText = distribution.feeBips;
+  if (feeBipsText === null) {
+    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
+  }
+  const feeBips = big(feeBipsText);
+  if (feeBips > 10_000n) {
+    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
+  }
+  const operatorFee = (pool * feeBips) / 10_000n;
+  return {
+    toStakersSats: text(pool - operatorFee),
+    operatorFeeSats: text(operatorFee),
+    estimated: true,
+  };
+}
+
+/** Older cycles remain historical even while one of their distributions still needs action. */
+export function pastRewardCycles(
+  ledger: RewardLedger,
+  accruingCycle: number | null,
+): RewardLedgerCycle[] {
+  return ledger.cycles.filter((cycle) => accruingCycle === null || cycle.cycle < accruingCycle);
+}
+
 function provenance(by: "you" | "another-caller" | "unknown" | null | undefined): string {
   return by === "you"
     ? "by you"
@@ -723,7 +783,6 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     const calculated = distribution.calculation.state === "done";
     const poolSats = distribution.calculation.poolSats;
     const available = big(distribution.availableToCollectSats);
-    const outstandingSats = big(p.outstandingSats);
     const payments = input.paymentsByKey?.get(key) ?? [];
     const arrived = p.arrived;
     const rejected = p.rejected;
@@ -801,14 +860,8 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     let sub: string;
     let attention: DistributionCardModel["attention"] = null;
     let progress: DistributionCardModel["progress"] = null;
-    const yourFee = calculated
-      ? text(
-          big(p.operatorFeeSats) +
-            (poolSats
-              ? big(poolSats) - big(p.distributedSats) - big(p.operatorFeeSats) - outstandingSats
-              : 0n),
-        )
-      : null;
+    const allocation = distributionAllocation(distribution);
+    const yourFee = calculated ? allocation.operatorFeeSats : null;
     const calculatedLine = calculated
       ? `Calculated ${shortDate(distribution.calculation.observedAt)} ${provenance(distribution.calculation.by)}`
       : null;
@@ -943,11 +996,17 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
       const bips = distribution.feeBips ?? cycle.feeBips ?? null;
       const locked = distribution.feeEvidence === "locked" || cycle.feeEvidence === "locked";
       tiles.push({
-        label: "Your fee",
+        label: allocation.estimated ? "Your fee estimate" : "Your fee",
         value: feeParts?.value ?? "—",
         unit: feeParts?.unit ?? null,
-        detail: bips ? `${feePercent(bips)}${locked ? " locked" : ""}` : null,
-        tooltip: yourFee ? exactSats(yourFee) : null,
+        detail: bips
+          ? `${feePercent(bips)}${locked ? " locked" : ""}${allocation.estimated ? " · estimated" : ""}`
+          : null,
+        tooltip: allocation.estimated
+          ? "Estimated from the pool total and manager fee. The final total can differ by a few sats because each staker and bond bucket is rounded separately."
+          : yourFee
+            ? exactSats(yourFee)
+            : null,
       });
     }
 

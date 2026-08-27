@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import {
   completedFirstRewardLedger,
   connection,
+  crossedCycleRewardLedger,
   deploymentRequirements,
   engineStatus,
   gasWalletCreated,
@@ -254,6 +255,33 @@ test("uses one Pool-style Rewards action while rewards accrue", async ({ page })
     });
     expect(Math.abs(widths.action - widths.content)).toBeLessThanOrEqual(1);
   }
+});
+
+test("shows the prior cycle in history while its last distribution remains pending", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(crossedCycleRewardLedger(route.request().url())));
+  });
+
+  await login(page);
+  const overview = page.locator("#overview-rewards");
+  await expect(overview.getByText("Your fee estimate").locator("..")).toContainText("0.00371 sBTC");
+  await expect(overview.getByText("Estimated to stakers").locator("..")).toContainText(
+    "0.0705 sBTC",
+  );
+
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
+  await expect(page.getByText("Cycle 141 · Second Distribution")).toBeVisible();
+  const history = page.getByRole("region", { name: "Past cycles" });
+  const previousCycle = history.getByRole("row", { name: "Cycle 141" });
+  await expect(previousCycle).toBeVisible();
+  await previousCycle.getByRole("button", { name: "Show distributions" }).click();
+  await expect(history.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
+  await expect(history.getByRole("tab", { name: /Second Distribution/ })).toBeVisible();
 });
 
 test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {

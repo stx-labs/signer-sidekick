@@ -1395,6 +1395,24 @@ export function completedFirstRewardLedger(url) {
   });
 }
 
+/** A new cycle is accruing while the previous cycle has one complete and one uncollected half. */
+export function crossedCycleRewardLedger(url) {
+  const current = ledgerCycle(142, ["accruing"], ledgerStakers);
+  current.cycle.distributions[0].current = true;
+  const previous = ledgerCycle(141, ["complete", "ready"], ledgerStakers);
+  previous.payments = previous.payments.filter((payment) => payment.distribution === 1);
+  const pending = previous.cycle.distributions[1];
+  pending.payments = {
+    ...pending.payments,
+    outstanding: 0,
+    outstandingSats: "0",
+  };
+  return rewardLedgerForCycles(url, [current, previous, ...ledgerCycles.slice(1)], {
+    cycle: 142,
+    distribution: 1,
+  });
+}
+
 export const gasWalletStatus = {
   schemaVersion: 1,
   generatedAt: snapshot.generatedAt,

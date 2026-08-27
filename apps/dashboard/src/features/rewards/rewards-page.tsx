@@ -46,6 +46,7 @@ import {
   distributionKey,
   distributionName,
   execution as executionAvailability,
+  pastRewardCycles,
   pendingDistributions,
   type RewardPrimaryAction,
 } from "./reward-state.js";
@@ -651,14 +652,10 @@ export function Rewards({
     </>
   );
 
-  // Past cycles: strictly older than the accruing cycle, and not still in Distribute. A cycle with
-  // a distribution that needs the operator is listed there until it is finished.
+  // Past cycles are calendar history. An older cycle remains visible here even when one of its
+  // distributions also appears in Distribute because it still needs the operator.
   const accruingCycle = earning?.cycle ?? ledger?.current.cycle ?? null;
-  const pendingCycles = new Set(cards.map((card) => card.cycle));
-  const pastCycles = (ledger?.cycles ?? []).filter(
-    (cycle) =>
-      (accruingCycle === null || cycle.cycle < accruingCycle) && !pendingCycles.has(cycle.cycle),
-  );
+  const pastCycles = ledger ? pastRewardCycles(ledger, accruingCycle) : [];
   const currentCycleDistributions =
     ledger?.cycles.find((cycle) => cycle.cycle === accruingCycle)?.distributions ?? [];
   const completedCurrentDistributions = currentCycleDistributions.filter(
