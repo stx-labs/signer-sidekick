@@ -1,6 +1,6 @@
 {
   "name": "signer-sidekick",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "PoX-5 operations tooling for Stacks signer and pool operators",
   "license": "GPL-3.0-only",
