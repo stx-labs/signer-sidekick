@@ -696,7 +696,6 @@ async function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> 
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, milliseconds);
-    timeout.unref?.();
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

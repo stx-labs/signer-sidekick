@@ -159,12 +159,30 @@ export async function executeCliCommand({
     let transactionEngine: Awaited<
       ReturnType<typeof createSidekickTransactionEngineRuntime>
     > | null = null;
+    let observerServer: ReturnType<typeof createObserverServer> | null = null;
+    let observerListening = false;
+    let observerProcessor: ObserverInboxProcessor | null = null;
     const closeStore = () => {
       if (storeClosed) return;
       storeClosed = true;
       store.close();
     };
     try {
+      // Stacks Core synchronously replays durable observer deliveries before opening its RPC
+      // server. Accept and persist those callbacks before probing RPC so a cold reboot cannot
+      // deadlock the node and Sidekick while both wait for the other to become ready.
+      observerServer = observerConfig.enabled
+        ? createObserverServer({
+            store: store.observerInbox,
+            maxBodyBytes: observerConfig.maxBodyBytes,
+            logger: false,
+            onAccepted: () => observerProcessor?.notify(),
+          })
+        : null;
+      if (observerServer) {
+        await observerServer.listen({ host: observerConfig.host, port: observerConfig.port });
+        observerListening = true;
+      }
       const runtimeSettings = new RuntimeSettingsController(
         config,
         store,
@@ -278,7 +296,7 @@ export async function executeCliCommand({
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
       let observerReconciliation: ObserverReconciliationScheduler | null = null;
       let observerGapMonitor: ObserverGapMonitor | null = null;
-      const observerProcessor = new ObserverInboxProcessor({
+      const processor = new ObserverInboxProcessor({
         store: store.observerInbox,
         getNode: () => runtimeSettings.clients().node,
         canProcess: () => connection.current()?.status === "connected",
@@ -286,15 +304,7 @@ export async function executeCliCommand({
         onProcessed: (delivery, outcome) =>
           observerReconciliation?.notifyProcessed(delivery, outcome),
       });
-      const observerServer = observerConfig.enabled
-        ? createObserverServer({
-            store: store.observerInbox,
-            maxBodyBytes: observerConfig.maxBodyBytes,
-            logger: false,
-            onAccepted: () => observerProcessor.notify(),
-          })
-        : null;
-      let observerListening = false;
+      observerProcessor = processor;
       let snapshotRefresh: { stop(): void } | null = null;
       let operationalStarted = false;
       const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker();
@@ -459,17 +469,9 @@ export async function executeCliCommand({
       startOperationalRuntime = async () => {
         if (operationalStarted) return;
         operationalStartPromise ??= (async () => {
-          if (observerServer && !observerListening) {
-            await observerServer.listen({ host: observerConfig.host, port: observerConfig.port });
-            observerListening = true;
-            server.log.info(
-              { host: observerConfig.host, port: observerConfig.port },
-              "Private Stacks event listener is ready",
-            );
-          }
           observerReconciliation?.start();
           if (observerConfig.enabled) observerGapMonitor?.start();
-          const recoveredObserverDeliveries = observerProcessor.start();
+          const recoveredObserverDeliveries = processor.start();
           if (recoveredObserverDeliveries > 0) {
             server.log.info(
               { recoveredObserverDeliveries },
@@ -521,6 +523,12 @@ export async function executeCliCommand({
           `Network compatibility profile ignored: ${issue.message}`,
         );
       }
+      if (observerListening) {
+        server.log.info(
+          { host: observerConfig.host, port: observerConfig.port },
+          "Private Stacks event listener is ready",
+        );
+      }
       server.addHook("onClose", async () => {
         snapshotRefresh?.stop();
         health.stop();
@@ -528,7 +536,7 @@ export async function executeCliCommand({
         try {
           await observerServer?.close();
           observerListening = false;
-          await observerProcessor.stop();
+          await processor.stop();
           await observerGapMonitor?.stop();
           await observerReconciliation?.stop();
           await engine.close();
@@ -565,9 +573,15 @@ export async function executeCliCommand({
     } finally {
       if (!serverOwnsStore) {
         try {
-          await transactionEngine?.close();
+          await observerServer?.close();
+          observerListening = false;
         } finally {
-          closeStore();
+          try {
+            await observerProcessor?.stop();
+            await transactionEngine?.close();
+          } finally {
+            closeStore();
+          }
         }
       }
     }
