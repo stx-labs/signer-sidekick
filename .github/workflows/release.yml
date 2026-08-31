@@ -14,9 +14,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      image: ${{ steps.image.outputs.image }}
+      reference: ${{ steps.image.outputs.reference }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -67,6 +73,24 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Prepare release image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${{ steps.release.outputs.version }}"
+          reference="$image:$version"
+          if docker manifest inspect "$reference" >/dev/null 2>&1; then
+            echo "Image tag $reference already exists" >&2
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -81,48 +105,105 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           pnpm test:e2e:dashboard
 
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    name: build (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       - name: Log in to GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - name: Prepare release image
-        id: image
-        shell: bash
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          version="${{ steps.release.outputs.version }}"
-          reference="$image:$version"
-          if docker manifest inspect "$reference" >/dev/null 2>&1; then
-            echo "Image tag $reference already exists" >&2
-            exit 1
-          fi
-          echo "reference=$reference" >> "$GITHUB_OUTPUT"
-
-      - name: Publish release image
+      - name: Build and publish architecture image
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           build-args: |
-            VCS_REF=${{ steps.release.outputs.commit }}
-            VERSION=${{ steps.release.outputs.version }}
+            VCS_REF=${{ needs.validate.outputs.commit }}
+            VERSION=${{ needs.validate.outputs.version }}
           context: .
-          platforms: linux/amd64,linux/arm64
+          outputs: type=image,name=${{ needs.validate.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          platforms: ${{ matrix.platform }}
           provenance: false
-          push: true
           sbom: false
-          tags: ${{ steps.image.outputs.reference }}
           target: runtime
+
+      - name: Export image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${IMAGE_DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Download image digests
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Publish release manifest
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}
+          IMAGE_REFERENCE: ${{ needs.validate.outputs.reference }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=()
+          for digest in "$RUNNER_TEMP"/digests/*; do
+            images+=("$IMAGE@sha256:$(basename "$digest")")
+          done
+          [[ "${#images[@]}" -eq 2 ]] || {
+            echo "Expected two architecture image digests; found ${#images[@]}" >&2
+            exit 1
+          }
+          docker buildx imagetools create --tag "$IMAGE_REFERENCE" "${images[@]}"
 
       - name: Verify release image platforms
         env:
-          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+          IMAGE_REFERENCE: ${{ needs.validate.outputs.reference }}
         shell: bash
         run: |
           set -euo pipefail
@@ -139,8 +220,8 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          IMAGE_REFERENCE: ${{ needs.validate.outputs.reference }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
           notes="docs/releases/${RELEASE_TAG}.md"
