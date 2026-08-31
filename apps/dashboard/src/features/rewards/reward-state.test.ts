@@ -12,7 +12,9 @@ import {
   deriveCycleGeometry,
   deriveDistributionCards,
   deriveEarning,
+  distributionAllocation,
   distributionTooltip,
+  pastRewardCycles,
   paymentStatusLabel,
   paymentTab,
   pendingDistributions,
@@ -481,6 +483,63 @@ describe("deriveDistributionCards", () => {
       ["Your fee", "70,000", "sats", "5% locked"],
     ]);
     expect(card?.queued).toBeNull();
+  });
+
+  it("estimates the fee split instead of treating an unmaterialized pool as operator income", () => {
+    const unmaterialized = distribution({
+      cycle: 141,
+      distribution: 2,
+      payments: {
+        made: 0,
+        outstanding: 0,
+        notPayable: 0,
+        belowFee: 0,
+        rolledForward: 0,
+        sent: 0,
+        arrived: 0,
+        arriving: 0,
+        rejected: 0,
+        returned: 0,
+        distributedSats: "0",
+        outstandingSats: "0",
+        operatorFeeSats: "0",
+      },
+    });
+
+    expect(distributionAllocation(unmaterialized)).toEqual({
+      toStakersSats: "1330000",
+      operatorFeeSats: "70000",
+      estimated: true,
+    });
+    const card = deriveDistributionCards({
+      ledger: ledger(unmaterialized),
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: null,
+    })[0];
+    expect(card?.tiles.at(-1)).toMatchObject({
+      label: "Your fee estimate",
+      value: "70,000",
+      unit: "sats",
+      detail: "5% locked · estimated",
+    });
+  });
+
+  it("keeps an older cycle in history while one distribution still needs action", () => {
+    const live = accruing(142, 1);
+    const previousPending = distribution({ cycle: 141, distribution: 2 });
+    const rewardLedger = ledger(live, [complete(141, 1), previousPending]);
+
+    expect(pastRewardCycles(rewardLedger, 142).map((cycle) => cycle.cycle)).toEqual([141]);
+    expect(
+      pastRewardCycles(rewardLedger, 142)[0]?.distributions.map((entry) => [
+        entry.distribution,
+        entry.status,
+      ]),
+    ).toEqual([
+      [1, "complete"],
+      [2, "ready"],
+    ]);
   });
 
   it("lists every open distribution oldest first, and queues the rest behind the running one", () => {
