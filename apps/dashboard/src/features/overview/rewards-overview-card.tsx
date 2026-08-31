@@ -15,6 +15,7 @@ import {
   currentDistribution,
   type DistributionCardModel,
   deriveDistributionCards,
+  distributionAllocation,
   distributionName,
 } from "../rewards/reward-state.js";
 import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
@@ -130,15 +131,7 @@ export function RewardsOverviewCard({
     if (primaryAction) sessionStorage.setItem(PENDING_RUN_STORAGE_KEY, primaryAction.kind);
     location.hash = domainHash("rewards", "claims");
   };
-  const toStakers = (
-    BigInt(distribution.payments.distributedSats) + BigInt(distribution.payments.outstandingSats)
-  ).toString();
-  // Expected fee for a calculated distribution: pool minus what goes to stakers; paid fee otherwise.
-  const expectedFee =
-    calculated && distribution.calculation.poolSats
-      ? (BigInt(distribution.calculation.poolSats) - BigInt(toStakers)).toString()
-      : distribution.payments.operatorFeeSats;
-  const feeShown = BigInt(expectedFee) < 0n ? distribution.payments.operatorFeeSats : expectedFee;
+  const allocation = distributionAllocation(distribution);
   const cycleCalculated = cycle
     ? cycle.distributions
         .reduce((sum, d) => sum + BigInt(d.calculation.poolSats ?? "0"), 0n)
@@ -180,13 +173,13 @@ export function RewardsOverviewCard({
         {calculated ? (
           <>
             <div>
-              <dt>To stakers</dt>
-              <dd>{amount(toStakers)}</dd>
+              <dt>{allocation.estimated ? "Estimated to stakers" : "To stakers"}</dt>
+              <dd>{amount(allocation.toStakersSats)}</dd>
             </div>
             <div>
-              <dt>Your fee</dt>
+              <dt>{allocation.estimated ? "Your fee estimate" : "Your fee"}</dt>
               <dd>
-                {amount(feeShown)}
+                {amount(allocation.operatorFeeSats)}
                 {distribution.feeBips
                   ? ` · ${feePercent(distribution.feeBips)}${distribution.feeEvidence === "locked" ? " locked" : ""}`
                   : ""}

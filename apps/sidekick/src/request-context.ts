@@ -40,7 +40,6 @@ export async function withInteractiveRequestDeadline<T>(
   const controller = new AbortController();
   const deadlineError = new InteractiveRequestDeadlineError();
   const timeout = setTimeout(() => controller.abort(deadlineError), milliseconds);
-  timeout.unref?.();
   const signal = externalSignal
     ? AbortSignal.any([controller.signal, externalSignal])
     : controller.signal;

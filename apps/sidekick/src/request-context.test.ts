@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { StacksNodeClient } from "./chain-clients.js";
 import {
@@ -17,6 +18,30 @@ function abortableFetch() {
 }
 
 describe("interactive request context", () => {
+  it("keeps an awaited deadline alive when no other event-loop handle exists", () => {
+    const moduleUrl = new URL("./request-context.ts", import.meta.url).href;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--input-type=module",
+        "--eval",
+        `
+          import { withInteractiveRequestDeadline } from ${JSON.stringify(moduleUrl)};
+          try {
+            await withInteractiveRequestDeadline(20, async () => await new Promise(() => {}));
+          } catch (error) {
+            console.log(error.name);
+          }
+        `,
+      ],
+      { encoding: "utf8", timeout: 1_000 },
+    );
+
+    expect(child.status).toBe(0);
+    expect(child.stdout.trim()).toBe("InteractiveRequestDeadlineError");
+  });
+
   it("aborts chain reads at the operator deadline without retrying", async () => {
     const fetchImpl = abortableFetch();
     const node = new StacksNodeClient("http://node.internal:20443", fetchImpl);
