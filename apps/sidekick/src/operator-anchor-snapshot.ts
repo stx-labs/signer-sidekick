@@ -8,6 +8,7 @@ import {
   type ManagerVerificationContext,
   type ManagerVerificationReport,
 } from "./manager-verification.js";
+import { nodeProvesChainAnchorCanonical } from "./node-chain-anchor-proof.js";
 import { type OperatorReadinessStatus, readOperatorReadiness } from "./operator-readiness.js";
 import { type PreflightResult, runOperatorPreflight } from "./preflight.js";
 import {
@@ -80,14 +81,27 @@ async function readOperatorAnchorSnapshotAttempt(
     readOptions,
   );
   const after = await captureNodeChainAnchor(options.node);
-  if (!chainAnchorsEqual(before, after)) {
+  const advancedWithinCycleWindow =
+    after.stacksBlockHeight >= before.stacksBlockHeight &&
+    after.burnBlockHeight >= before.burnBlockHeight &&
+    after.cyclePosition >= before.cyclePosition &&
+    before.rewardCycle === after.rewardCycle &&
+    before.rewardCycleLength === after.rewardCycleLength &&
+    before.prepareCycleLength === after.prepareCycleLength &&
+    before.phase === after.phase &&
+    before.checkpoint === after.checkpoint;
+  const capturedAnchorRemainsCanonical =
+    chainAnchorsEqual(before, after) ||
+    (advancedWithinCycleWindow &&
+      (await nodeProvesChainAnchorCanonical(options.node, before, after)));
+  if (!capturedAnchorRemainsCanonical) {
     throw new OperatorAnchorSnapshotCoherenceError(
-      "Chain position moved while the operator snapshot was being assembled",
+      "Chain position changed without preserving a canonical operator snapshot anchor",
     );
   }
-  // Preflight is deliberately live health data. The node may process newer Nakamoto blocks while
+  // Preflight is deliberately live health data. The node may process newer canonical blocks while
   // the pinned manager and eligibility reads are assembled, but it must still contain the captured
-  // anchor and describe the same PoX reward cycle. The second local capture fences that movement.
+  // anchor and describe the same PoX reward cycle. Boundary changes and reorgs retry the snapshot.
   if (
     preflight.node.stacksTipHeight < before.stacksBlockHeight ||
     preflight.node.burnBlockHeight < before.burnBlockHeight ||

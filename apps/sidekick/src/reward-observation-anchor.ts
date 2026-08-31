@@ -1,5 +1,6 @@
 import { type ChainAnchor, chainAnchorsEqual } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
+import { nodeProvesChainAnchorCanonical } from "./node-chain-anchor-proof.js";
 import type { OperatorAnchorSnapshot } from "./operator-anchor-snapshot.js";
 import {
   proveSignerStakerAnchorRemainsCanonical,
@@ -8,37 +9,6 @@ import {
 import type { SidekickStore } from "./storage/store.js";
 
 type RosterProofNode = Pick<StacksNodeClient, "getNakamotoBlockById" | "getNakamotoBlockAtHeight">;
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length || left.length === 0) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
-/**
- * The local node proves a sealed roster anchor the same way the observer inbox proves a callback:
- * the block fetched by index-block ID must be byte-identical to the canonical block at that height
- * under the live tip. No indexed API is involved, so an API outage cannot fail the proof.
- */
-async function nodeProvesAnchorCanonical(
-  node: RosterProofNode,
-  anchor: ChainAnchor,
-  liveAnchor: ChainAnchor,
-): Promise<boolean> {
-  if (chainAnchorsEqual(anchor, liveAnchor)) return true;
-  if (anchor.stacksBlockHeight > liveAnchor.stacksBlockHeight) return false;
-  try {
-    const [byId, atHeight] = await Promise.all([
-      node.getNakamotoBlockById(anchor.indexBlockHash),
-      node.getNakamotoBlockAtHeight(anchor.stacksBlockHeight, { tip: liveAnchor.indexBlockHash }),
-    ]);
-    return bytesEqual(byId, atHeight);
-  } catch {
-    return false;
-  }
-}
 
 export async function resolveRosterProjectionAnchor(options: {
   store: Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
@@ -60,7 +30,7 @@ export async function resolveRosterProjectionAnchor(options: {
     // to this anchor, so falling back to the live tip would empty the page. Let the local node
     // prove the anchor instead; only a failed proof (reorg, pruned block) falls back.
     return options.node &&
-      (await nodeProvesAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
+      (await nodeProvesChainAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
       ? run.chainAnchor
       : options.liveAnchor;
   }
@@ -72,7 +42,7 @@ export async function resolveRosterProjectionAnchor(options: {
     // The indexed API could not confirm the anchor (a reorg, or an API that has fallen behind it).
     // The local node decides: a node-proved anchor stays; anything else falls back to the live tip.
     return options.node &&
-      (await nodeProvesAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
+      (await nodeProvesChainAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
       ? run.chainAnchor
       : options.liveAnchor;
   }

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   verifyManagerRegistration: vi.fn(),
   readOperatorReadiness: vi.fn(),
   captureNodeChainAnchor: vi.fn(),
+  nodeProvesChainAnchorCanonical: vi.fn(),
 }));
 
 vi.mock("./preflight.js", () => ({ runOperatorPreflight: mocks.runOperatorPreflight }));
@@ -21,6 +22,9 @@ vi.mock("./operator-readiness.js", () => ({ readOperatorReadiness: mocks.readOpe
 vi.mock("./chain-clients.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./chain-clients.js")>()),
   captureNodeChainAnchor: mocks.captureNodeChainAnchor,
+}));
+vi.mock("./node-chain-anchor-proof.js", () => ({
+  nodeProvesChainAnchorCanonical: mocks.nodeProvesChainAnchorCanonical,
 }));
 
 import { ChainAnchorError } from "./chain-clients.js";
@@ -47,6 +51,7 @@ describe("operator anchor snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.captureNodeChainAnchor.mockResolvedValue(chainAnchor);
+    mocks.nodeProvesChainAnchorCanonical.mockResolvedValue(false);
   });
 
   it("returns one canonical quartet and verifies registration when it is readable", async () => {
@@ -148,7 +153,7 @@ describe("operator anchor snapshot", () => {
     expect(mocks.inspectDeployedManager).not.toHaveBeenCalled();
   });
 
-  it("retries the whole setup snapshot when its exact chain anchor moves", async () => {
+  it("retries the whole setup snapshot when a moved anchor cannot be proven canonical", async () => {
     const moved = { ...chainAnchor, indexBlockHash: `0x${"cd".repeat(32)}` };
     mocks.captureNodeChainAnchor.mockResolvedValueOnce(chainAnchor).mockResolvedValueOnce(moved);
     mocks.runOperatorPreflight.mockResolvedValue({
@@ -173,6 +178,7 @@ describe("operator anchor snapshot", () => {
     expect(mocks.runOperatorPreflight).toHaveBeenCalledTimes(2);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledTimes(2);
     expect(mocks.readOperatorReadiness).toHaveBeenCalledTimes(2);
+    expect(mocks.nodeProvesChainAnchorCanonical).toHaveBeenCalledOnce();
     expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
@@ -237,6 +243,13 @@ describe("operator anchor snapshot", () => {
   });
 
   it("keeps setup reads anchored when the live node learns a newer Bitcoin block", async () => {
+    const advanced = {
+      ...chainAnchor,
+      burnBlockHeight: 6,
+      cyclePosition: 4,
+    };
+    mocks.captureNodeChainAnchor.mockResolvedValueOnce(chainAnchor).mockResolvedValueOnce(advanced);
+    mocks.nodeProvesChainAnchorCanonical.mockResolvedValue(true);
     const preflight = {
       node: { stacksTipHeight: 10, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -261,6 +274,7 @@ describe("operator anchor snapshot", () => {
     ).resolves.toMatchObject({ chainAnchor });
     expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
+    expect(mocks.nodeProvesChainAnchorCanonical).toHaveBeenCalledWith(node, chainAnchor, advanced);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
       node,
       config.network,
@@ -271,6 +285,13 @@ describe("operator anchor snapshot", () => {
   });
 
   it("keeps pinned setup reads when the live node advances by Nakamoto blocks", async () => {
+    const advanced = {
+      ...chainAnchor,
+      stacksBlockHeight: 11,
+      indexBlockHash: `0x${"cd".repeat(32)}` as const,
+    };
+    mocks.captureNodeChainAnchor.mockResolvedValueOnce(chainAnchor).mockResolvedValueOnce(advanced);
+    mocks.nodeProvesChainAnchorCanonical.mockResolvedValue(true);
     const preflight = {
       node: { stacksTipHeight: 11, burnBlockHeight: 5 },
       cycle: { currentId: 2 },
@@ -293,6 +314,7 @@ describe("operator anchor snapshot", () => {
     expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(2);
     expect(mocks.runOperatorPreflight).toHaveBeenCalledOnce();
     expect(waitBeforeRetry).not.toHaveBeenCalled();
+    expect(mocks.nodeProvesChainAnchorCanonical).toHaveBeenCalledWith(node, chainAnchor, advanced);
     expect(mocks.inspectDeployedManager).toHaveBeenCalledWith(
       node,
       config.network,
@@ -389,9 +411,45 @@ describe("operator anchor snapshot", () => {
         managerVerification: undefined,
         waitBeforeRetry,
       }),
-    ).rejects.toThrow("Chain position moved");
+    ).rejects.toThrow("without preserving a canonical operator snapshot anchor");
     expect(mocks.captureNodeChainAnchor).toHaveBeenCalledTimes(6);
+    expect(mocks.nodeProvesChainAnchorCanonical).toHaveBeenCalledTimes(3);
     expect(waitBeforeRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries instead of carrying a canonical anchor across a distribution boundary", async () => {
+    const nextWindow = {
+      ...chainAnchor,
+      stacksBlockHeight: 11,
+      indexBlockHash: `0x${"cd".repeat(32)}` as const,
+      burnBlockHeight: 7,
+      cyclePosition: 5,
+      checkpoint: "second-half" as const,
+    };
+    mocks.captureNodeChainAnchor
+      .mockResolvedValueOnce(chainAnchor)
+      .mockResolvedValueOnce(nextWindow)
+      .mockResolvedValue(nextWindow);
+    mocks.runOperatorPreflight.mockResolvedValue({
+      node: { stacksTipHeight: 11, burnBlockHeight: 7 },
+      cycle: { currentId: 2 },
+      pox: { pox5ContractId: null },
+    });
+    mocks.inspectDeployedManager.mockResolvedValue({ attachAllowed: false });
+    mocks.readOperatorReadiness.mockResolvedValue({ status: "blocked" });
+
+    await expect(
+      readOperatorAnchorSnapshot({
+        config,
+        node,
+        api,
+        managerPrincipal,
+        managerVerification: undefined,
+        waitBeforeRetry,
+      }),
+    ).resolves.toMatchObject({ chainAnchor: nextWindow });
+    expect(mocks.nodeProvesChainAnchorCanonical).not.toHaveBeenCalled();
+    expect(waitBeforeRetry).toHaveBeenCalledOnce();
   });
 
   it("does not retry non-coherence failures", async () => {
