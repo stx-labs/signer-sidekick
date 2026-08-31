@@ -124,7 +124,7 @@ const managerClaimAdapter = {
   id: MANAGER_CLAIM_REWARDS_ADAPTER_ID,
   revision: MANAGER_CLAIM_REWARDS_ADAPTER_REVISION,
 } as const;
-const managerClaimAdapterLabel = "Reference manager claim rewards";
+const managerClaimAdapterLabel = "Manager reward collection";
 
 function boundedReason(value: string | null): string | null {
   return value === null ? null : value.slice(0, 1_000);
@@ -132,8 +132,8 @@ function boundedReason(value: string | null): string | null {
 
 const observedBlockMessages: Readonly<Record<string, string>> = {
   "adapter-disabled": "Manager-claim transactions are disabled",
-  "manager-profile-ineligible": "Reward claims require a verified reference manager",
-  "manager-source-mismatch": "Manager source does not match its verified profile",
+  "manager-profile-ineligible": "Reward collection requires a reviewed capability adapter",
+  "manager-source-mismatch": "Manager source does not match its reviewed reward adapter",
   "attestation-not-current": "Compatibility attestation expired. Install a current attestation",
   "rewards-paused": "Manager rewards are paused",
   "fee-cap-exceeded": "Estimated claim fee exceeds the configured cap",

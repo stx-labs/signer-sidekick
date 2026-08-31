@@ -166,8 +166,8 @@ export async function readOperatorReadiness(
           : manager.source.tier === "reference-render"
             ? `Manager is a provenance-verified operator-installed reference render (${manager.source.profileId})`
             : manager.source.tier === "custom-observe"
-              ? "Custom manager source is recorded; PoX-5 baseline state remains available and actions depend on reviewed capabilities"
-              : "Manager source is not recognized; PoX-5 baseline state remains available and executable actions require a reviewed capability fingerprint",
+              ? "Custom manager connected; core PoX-5 monitoring is available and operations are evaluated individually"
+              : "Custom manager connected; core PoX-5 monitoring is available and operations require reviewed capability adapters",
     },
     {
       id: "signer-registration",

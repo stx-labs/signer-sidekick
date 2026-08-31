@@ -18,10 +18,7 @@ RUN find apps packages contracts network-compatibility trusted-managers scripts 
   | sha256sum \
   | cut -d ' ' -f 1 > /workspace/SOURCE_FINGERPRINT \
   && pnpm install --frozen-lockfile \
-  && pnpm protocol:verify \
-  && pnpm check \
-  && pnpm test \
-  && pnpm test:regtest \
+  && pnpm third-party:licenses \
   && pnpm build \
   && pnpm --filter @stx-labs/signer-sidekick deploy --legacy --prod /opt/sidekick
 

@@ -158,7 +158,7 @@ function staticBlocks(
     (manager.source.tier === "reference-built-in" || manager.source.tier === "reference-render") &&
     manager.source.profileId !== null;
   if (!verifiedReferenceManager) {
-    block(blocks, "manager-ineligible", "Reward claims require a verified reference manager");
+    block(blocks, "manager-ineligible", "Reward collection requires a reviewed capability adapter");
   }
   if (!manager.source.sha256 || manager.source.match === "unknown") {
     block(blocks, "manager-fingerprint-mismatch", "Manager source could not be verified");

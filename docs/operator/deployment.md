@@ -16,7 +16,7 @@ Set these values in `.env`:
 
 | Variable | Value |
 | --- | --- |
-| `SIDEKICK_IMAGE_TAG` | The same release tag |
+| `SIDEKICK_IMAGE_TAG` | Release version without the Git tag's `v` prefix |
 | `STACKS_NODE_RPC_URL` | Node RPC URL reachable from the container |
 | `SIDEKICK_MANAGER_PRINCIPAL` | Existing `SP_ADDRESS.contract-name` manager |
 | `SIDEKICK_AUTH_TOKEN` | Random operator credential |
@@ -29,6 +29,30 @@ both API URLs have the same origin, Sidekick safely reuses `STACKS_API_KEY`.
 
 The local node supplies current chain state. The indexed API supplies roster and history data; API
 lag does not block node-backed status.
+
+## Manager compatibility
+
+`connection check` accepts a manager only when its network and exact PoX-5 signer-manager interface
+match. A connected manager receives core monitoring: registration and grant state, signer-set
+membership and weight, STX-only and Bitcoin-bond positions, PoX rewards, node and signer health,
+raw activity, indexed history, and support export.
+
+Manager-specific operations are evaluated separately:
+
+| State | Meaning |
+| --- | --- |
+| **Available** | The deployed behavior matches a reviewed adapter for this operation. Runtime checks still apply when an action is prepared. |
+| **Observe only** | The required interface exists, but this deployment does not match a reviewed adapter for the operation. |
+| **Not provided** | The manager does not expose the functions Sidekick needs for the operation. |
+
+Settings shows these states for registration, admin management, fee operations, and reward
+distribution. A custom source therefore does not disable core monitoring or imply that every
+operation is unavailable.
+
+If an operation you need is **Observe only** or **Not provided**, open a
+[manager compatibility issue](https://github.com/stx-labs/signer-sidekick/issues/new?title=Manager%20compatibility%3A%20).
+Include the network, manager principal, operation, and a redacted support bundle when available; do
+not include keys or credentials.
 
 ## Start
 
@@ -43,7 +67,9 @@ curl --fail http://127.0.0.1:3998/health/ready
 curl --fail http://127.0.0.1:3998/health/operational
 ```
 
-`connection check` fails when RPC, network, manager identity, or transaction indexing is invalid.
+`connection check` fails when RPC, network, manager identity, PoX-5 interface, or transaction
+indexing is invalid. It confirms core monitoring compatibility; Settings reports manager-operation
+compatibility after Sidekick starts.
 `/health/ready` confirms Sidekick and its database can serve requests; `/health/operational` also
 checks the current node, manager connection, manager preflight, and availability of health evidence.
 Diagnostic warnings are reported in its body but do not fail the operational probe.
