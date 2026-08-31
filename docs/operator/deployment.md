@@ -16,7 +16,7 @@ Set these values in `.env`:
 
 | Variable | Value |
 | --- | --- |
-| `SIDEKICK_IMAGE_TAG` | The same release tag |
+| `SIDEKICK_IMAGE_TAG` | Release version without the Git tag's `v` prefix |
 | `STACKS_NODE_RPC_URL` | Node RPC URL reachable from the container |
 | `SIDEKICK_MANAGER_PRINCIPAL` | Existing `SP_ADDRESS.contract-name` manager |
 | `SIDEKICK_AUTH_TOKEN` | Random operator credential |
