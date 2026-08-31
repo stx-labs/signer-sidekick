@@ -698,7 +698,7 @@ function networkSummary(health: HealthSnapshot | null): OverviewPage["network"] 
   const unavailable =
     comparisons.length > 0 && comparisons.every(({ source }) => source.status === "unavailable");
   const networkFinding = health.findings.find(
-    ({ source }) => source === "network" || source === "source",
+    ({ severity, source }) => severity !== "info" && (source === "network" || source === "source"),
   );
   return {
     status: networkFinding
@@ -750,7 +750,9 @@ function nodeSummary(
       detailsAction: healthAction("node", "Review node health"),
     };
   }
-  const nodeFindings = health.findings.filter(({ source }) => source === "node");
+  const nodeFindings = health.findings.filter(
+    ({ severity, source }) => severity !== "info" && source === "node",
+  );
   const unavailable = nodeFindings.some(({ id }) => id === HEALTH_RULES.nodeRpcUnavailable.id);
   const behindFinding = nodeFindings.find(({ id }) => id === HEALTH_RULES.nodeBehindNetwork.id);
   const nodeFinding = behindFinding ?? nodeFindings[0];
@@ -809,7 +811,9 @@ function signerSummary(health: HealthSnapshot | null): OverviewPage["signer"] {
   }
   const source = health.signer.infoSource;
   const notConfigured = source.status === "not-configured";
-  const signerFinding = health.findings.find(({ source }) => source === "signer");
+  const signerFinding = health.findings.find(
+    ({ severity, source }) => severity !== "info" && source === "signer",
+  );
   const unavailable = health.findings.some(
     ({ id }) =>
       id === HEALTH_RULES.signerMonitoringUnavailable.id ||
@@ -1015,6 +1019,7 @@ function buildAttentionCandidates(input: OverviewProjectionInput): OverviewAtten
       ({ id }) => id === HEALTH_RULES.nodeRpcUnavailable.id,
     );
     for (const finding of health.findings) {
+      if (finding.severity === "info") continue;
       const domain: OverviewDomain =
         finding.source === "node" ? "node" : finding.source === "signer" ? "signer" : "network";
       const conditionKey = `${domain}:${finding.id}`;

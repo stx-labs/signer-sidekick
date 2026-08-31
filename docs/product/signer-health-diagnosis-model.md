@@ -81,8 +81,7 @@ raise the health state to `needs-attention`.
 
 “The signer rejected five recent proposals” is evidence. “The signer is broken” is an inference.
 Rejections can also reflect invalid miner proposals, node validation, or disagreement about chain
-context. Sidekick uses `source-disagreement` when the available evidence cannot safely assign one
-cause.
+context, so they remain diagnostic until a direct participation rule provides attributable evidence.
 
 ### Uncertainty is an operator result
 
@@ -182,22 +181,20 @@ stable identifier, threshold, rationale, and false-positive guard. The evaluator
 finding through that catalog, which prevents an undocumented ad hoc condition from opening a
 durable incident.
 
-End-to-end response p95 is intentionally not a rule. It remains available in telemetry and support
-data, but Stacks Signer derives it from the block header's wall-clock timestamp. It cannot open or
-strengthen a Sidekick health finding. Validation p95 is actionable because the local Stacks node
-reports `validation_time_ms` for each successful validation response.
+End-to-end response p95 and node-reported validation p95 are intentionally not rules. They remain
+available in telemetry and support data, but neither measurement alone identifies an operator
+action. Response timing derives from the block header's wall-clock timestamp; validation duration
+also varies with proposal execution work.
 
 ### 5. Attribute without overstating
 
 The available classifications are:
 
 - `healthy`: no sustained actionable finding is supported.
-- `likely-local-node`: local RPC, peer-gap, sync, local-stall, or node-reported validation evidence
-  points to this node.
+- `likely-local-node`: local RPC, peer-gap, sync, or local-stall evidence points to this node.
 - `likely-local-signer`: signer reachability, identity, node view, or participation evidence points
   to this signer.
-- `source-disagreement`: sources materially disagree, or one signer metric cannot safely identify
-  whether the cause is local, a proposal, or broader network context.
+- `source-disagreement`: comparison sources materially disagree with the local canonical chain view.
 - `suspected-network-wide`: the local tip is stalled and at least two distinct peer/reference
   signals corroborate the same lack of progress.
 - `insufficient-evidence`: Sidekick lacks the samples, baseline, or source coverage needed for a
@@ -235,14 +232,14 @@ Support-bundle export reads stored evidence and never collects or reconciles hea
 | --- | --- | --- |
 | Local node is at least 3 blocks behind its most advanced connected peer for 25 seconds | `likely-local-node` | The node's own peer view shows a sustained local gap |
 | Local node has not advanced for 90 seconds while Hiro or a connected peer advances | `likely-local-node` | Independent progress contradicts the local stall |
-| Local node advances while an indexed API remains at least 3 blocks behind for 90 seconds | `source-disagreement` | The comparison source is stale; it cannot make the healthy local node unhealthy |
+| Local node advances while an indexed API remains at least 3 blocks behind for 90 seconds | informational `source-disagreement` | The comparison source is stale; it cannot make the healthy local node unhealthy |
 | Local node and at least two distinct peer/reference signals remain stalled for 180 seconds | `suspected-network-wide` | Multiple signals support a broader progression problem, while the wording preserves uncertainty |
-| Signer heartbeat fails for 10 seconds across 3 checks | `likely-local-signer` | The signer itself reports that it cannot reach its node |
+| Signer heartbeat failures span 60 seconds across at least 3 checks | `likely-local-signer` | The signer itself reports that it cannot reach its node; brief request failures do not open an incident |
 | Signer receives proposals but accumulates at least 3 missing responses | `likely-local-signer` | First-person signer counters show an actionable local participation gap |
 | Signer is expected in the current set, the local node advances at least 12 times over 10 minutes, and the proposal counter does not move | `likely-local-signer` | Anchored expectation plus first-person silence identifies a local participation failure |
 | Local node height regresses or its canonical hash changes at the same height | `source-disagreement` | Sidekick records a possible reorg for correlation without treating it as an outage |
 | Local node and an indexed source repeatedly name different hashes at the same height | `source-disagreement` | Sustained canonical disagreement is stronger than an ordinary indexing-height delay |
-| Signer has a high rejection rate but node and chain progression remain normal | `source-disagreement` | Rejections alone do not distinguish local validation from a bad proposal or chain-view disagreement |
+| Signer has a high rejection rate but node and chain progression remain normal | diagnostic only | Rejections alone do not distinguish local validation from a bad proposal or chain-view disagreement |
 | Signer monitoring is unconfigured or the initial baseline is incomplete | `insufficient-evidence` | Sidekick cannot make a stronger signer claim without the missing evidence |
 
 ## External-reference boundary
@@ -257,9 +254,9 @@ provides the bounded external evidence needed to distinguish the common operator
   the local participation problem.
 
 Detailed cohort behavior may explain an ambiguous rejection or conflict, but it is not required to
-identify the operator's immediate action. The current model preserves that ambiguity as
-`source-disagreement` and lets an operator use Slotwatch or contact Stacks Labs for deeper network
-context.
+identify the operator's immediate action. Sidekick preserves those counters as diagnostic evidence
+without opening a finding; an operator can use Slotwatch or contact Stacks Labs for deeper network
+context when a direct participation or corroborated network finding also exists.
 
 Do not add the Hiro Signer Metrics API to the mandatory collection loop, settings, durable health
 model, or dashboard without evidence that it materially improves a recurring local diagnosis. A
@@ -297,8 +294,8 @@ known.
 | Proposal and response counters | `stacks_signer_block_proposals_received` and `stacks_signer_block_responses_sent{response_type}` support a conservative missing-response lower bound after a 30-second settling window. | Does every actionable proposal increment once, and which normal paths can intentionally produce neither an accepted nor rejected response? |
 | Expected-signer silence | A signer proved to be in the current set should see proposals. No proposal-counter change for 10 minutes while the local node advances at least 12 times is a critical local participation finding. | Are there legitimate protocol windows where an expected signer sees no proposals this long? Should the rule count a different chain or tenure event? |
 | Signer node view | `stacks_signer_stacks_node_height` is the signer's current view of its configured node. Lag of 3 blocks across 3 metric updates and 2 minutes is actionable; 2 aligned updates prove recovery. | What exactly advances this gauge, and what lag or update cadence is normal during tenure transitions or reorgs? |
-| Validation latency | `stacks_signer_block_validation_latencies_histogram_bucket` measures `validation_time_ms` reported by the local node for successful validations. A 15-minute interpolated p95 above 5 seconds with at least 20 timed validations is a warning. | Are the start/end points and successful-validation interpretation correct? On 2026-08-17 our mainnet test produced 5.4s across 73 timed validations; should that be actionable, and what threshold/sample window better separates normal block complexity from a node problem? |
-| Rejections and agreement conflicts | A 25% rejection rate across at least 20 responses, or 3 agreement conflicts in 15 minutes, is anomalous but not attributable to one component without corroboration. | Which rejection reasons or agreement-conflict states are expected protocol behavior, and which can safely support a more specific operator action? |
+| Validation latency | `stacks_signer_block_validation_latencies_histogram_bucket` measures `validation_time_ms` reported by the local node for successful validations. Live evidence shows its p95 is diagnostic, not an independent health boundary. | Are the start/end points and successful-validation interpretation correct? Which corroborating counter or error distinguishes complex valid proposals from a local node problem? |
+| Rejections and agreement conflicts | Rejection rate and agreement-conflict counts remain diagnostic because either can reflect proposal, miner-view, node-validation, signer-policy, or wider-network behavior. | Which reasons or states are expected, which are actionable, and what stable metric or label can attribute them before Sidekick opens a finding? |
 | Canonical-tip changes | A local height regression or same-height derived StacksBlockId change is useful informational reorg evidence. Repeated same-height disagreement with an independent indexer's `index_block_hash` is a warning. | Is deriving the StacksBlockId from `/v2/info`'s `stacks_tip` and `stacks_tip_consensus_hash` the correct comparison with `index_block_hash`? Which same-height changes are normal, and should comparison wait for a particular finality or tenure boundary? |
 | Network-stall attribution | A 180-second local stall plus two distinct stalled peer/API signals supports `suspected-network-wide`; one source never does. | Is 180 seconds appropriate for current block production, and should the node's connected-peer view count as independent corroboration alongside a public indexer? |
 | Metrics compatibility | Missing metric families reduce coverage instead of creating a failure. | Which metric names, labels, and endpoint response fields are stable across supported signer/Core releases, and which need version-specific handling? |
@@ -306,7 +303,8 @@ known.
 The following boundaries are deliberate and do not need protocol review unless incident evidence
 shows they produce a wrong operator action:
 
-- end-to-end response p95 is diagnostic only and cannot create or strengthen a finding;
+- response and validation p95 plus rejection and agreement-conflict counters are diagnostic only
+  and cannot create or strengthen a finding without attributed evidence;
 - Hiro and the configured indexed API are comparison sources, never authority over an advancing
   local node;
 - detailed external signer-cohort monitoring remains outside Sidekick;

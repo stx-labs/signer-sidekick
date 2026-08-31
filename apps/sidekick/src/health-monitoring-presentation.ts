@@ -2,6 +2,7 @@ import type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { stacksTipIndexBlockHash } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
 import {
+  HEALTH_RULE_CATALOG,
   HEALTH_RULE_THRESHOLDS,
   HEALTH_RULES,
   HEALTH_WINDOWS,
@@ -34,13 +35,6 @@ import {
 } from "./storage/health-monitoring-repository.js";
 
 type FindingInput = Omit<HealthFinding, "episodeId">;
-
-// Latency measurements are interpolated within histogram buckets, so render them to a single
-// decimal (e.g. "4.8s") rather than exposing raw floating-point noise. Returns null passthrough so
-// callers can keep a not-measured value distinct from a real zero.
-function formatSeconds(value: number | null): string | null {
-  return value === null ? null : `${value.toFixed(1)}s`;
-}
 
 interface HealthHistoryInput {
   observedSince: string | null;
@@ -337,9 +331,6 @@ function evaluateHealthFindings(input: {
     signerConfigurationMismatch,
     signerNodeViewLag,
     proposalResponseGap,
-    rejectionRate,
-    validationLatency,
-    agreementConflicts,
     signerSilence,
     canonicalTipDisagreement,
   } = HEALTH_RULE_THRESHOLDS;
@@ -1080,11 +1071,10 @@ function evaluateHealthFindings(input: {
     }
   }
 
-  // Participation rules use first-person signer counters. End-to-end response latency is retained
-  // in the snapshot for troubleshooting but deliberately does not open a finding: Stacks Signer
-  // derives it from the block header wall-clock timestamp, which is not a trustworthy local alert
-  // boundary. Successful validation latency is eligible because the Stacks node reports that
-  // duration directly.
+  // Participation rules use first-person signer counters. Response and validation latency,
+  // rejection rate, and agreement conflicts remain visible for diagnosis but do not independently
+  // open findings. Live mainnet calibration showed that these signals reflect block complexity or
+  // ambiguous network/proposal behavior unless corroborated by a direct participation failure.
   //
   // signer15m.responseGap is a conservative lower bound after the settle window, so it will not
   // read normal in-flight responses as a gap.
@@ -1168,108 +1158,6 @@ function evaluateHealthFindings(input: {
             value: String(signer15m.responseGap),
             detail:
               "The settled proposal count advanced more than all accepted and rejected response counters in the same observation window.",
-          },
-        ],
-      }),
-    );
-  }
-
-  if (
-    signer15m.accepted !== null &&
-    signer15m.rejected !== null &&
-    signer15m.accepted + signer15m.rejected >= rejectionRate.minimumResponses &&
-    (signer15m.rejectionPercent ?? 0) >= rejectionRate.percent
-  ) {
-    findings.push(
-      finding({
-        rule: HEALTH_RULES.signerRejectionRateElevated,
-        title: "Signer rejection rate is elevated",
-        detail: `${signer15m.rejectionPercent?.toFixed(1)}% of recent signer responses rejected the proposed block. Review signer, node-validation, and network evidence together.`,
-        source: "signer",
-        classification: "source-disagreement",
-        confidence: "medium",
-        observations: recent15m,
-        evidence: [
-          {
-            code: "signer-rejection-rate",
-            source: "signer-monitoring",
-            status: "supporting",
-            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: `${signer15m.rejectionPercent?.toFixed(1)}%`,
-            detail:
-              "Rejections can reflect miner proposals, node validation, or signer policy; this is not attributed to one component without corroboration.",
-          },
-        ],
-      }),
-    );
-  }
-
-  if (
-    signer15m.validationLatencySamples >= validationLatency.minimumAcceptedValidations &&
-    (signer15m.validationP95Seconds ?? 0) > validationLatency.p95Seconds
-  ) {
-    const nodeRpcSlow = (signer15m.nodeRpcP95Seconds ?? 0) > validationLatency.p95Seconds;
-    findings.push(
-      finding({
-        rule: HEALTH_RULES.signerValidationLatencyElevated,
-        title: "Local node block validation is slow",
-        detail: `The local Stacks node reported a recent successful-validation p95 of ${formatSeconds(signer15m.validationP95Seconds)} across ${signer15m.validationLatencySamples} timed validations.`,
-        source: "node",
-        classification: "likely-local-node",
-        confidence: nodeRpcSlow ? "high" : "medium",
-        observations: recent15m,
-        evidence: [
-          {
-            code: "signer-validation-p95",
-            source: "signer-monitoring",
-            status: "supporting",
-            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: formatSeconds(signer15m.validationP95Seconds),
-            detail:
-              "The signer records validation_time_ms reported by the local Stacks node for successful block validation responses.",
-          },
-          {
-            code: "signer-node-rpc-p95",
-            source: "signer-monitoring",
-            status:
-              signer15m.nodeRpcP95Seconds === null
-                ? "unavailable"
-                : nodeRpcSlow
-                  ? "supporting"
-                  : "contradicting",
-            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: formatSeconds(signer15m.nodeRpcP95Seconds),
-            detail:
-              signer15m.nodeRpcP95Seconds === null
-                ? "General signer-to-node RPC latency was not available in this evidence window."
-                : nodeRpcSlow
-                  ? "General signer-to-node RPC latency is also elevated, strengthening the local-node diagnosis."
-                  : "General signer-to-node RPC latency is not elevated; the finding is limited to node-reported block validation.",
-          },
-        ],
-      }),
-    );
-  }
-
-  if ((signer15m.disagreements ?? 0) >= agreementConflicts.minimumConflicts) {
-    findings.push(
-      finding({
-        rule: HEALTH_RULES.signerAgreementConflictsElevated,
-        title: "Signer agreement conflicts are elevated",
-        detail: `${signer15m.disagreements} signer agreement conflicts were observed in the recent evidence window.`,
-        source: "network",
-        classification: "source-disagreement",
-        confidence: "medium",
-        observations: recent15m,
-        evidence: [
-          {
-            code: "signer-agreement-conflicts",
-            source: "signer-monitoring",
-            status: "supporting",
-            observedAt: latest.signerMetricsSource?.checkedAt ?? latest.observedAt,
-            value: String(signer15m.disagreements),
-            detail:
-              "The signer reports disagreement about burn blocks, Stacks blocks, or miner view; the local metric alone cannot assign network-wide cause.",
           },
         ],
       }),
@@ -1534,6 +1422,7 @@ export function buildHealthSnapshot({
       .filter(({ status }) => status === "active")
       .map((episode) => [episode.id, episode]),
   );
+  const supportedFindingIds = new Set(HEALTH_RULE_CATALOG.map(({ id }) => id));
   const indeterminateIds = new Set<string>();
   if (!latest?.nodeInfo) {
     for (const rule of [
@@ -1560,9 +1449,6 @@ export function buildHealthSnapshot({
       HEALTH_RULES.signerNodeViewBehind,
       HEALTH_RULES.signerProposalResponseGap,
       HEALTH_RULES.expectedSignerSilent,
-      HEALTH_RULES.signerRejectionRateElevated,
-      HEALTH_RULES.signerValidationLatencyElevated,
-      HEALTH_RULES.signerAgreementConflictsElevated,
     ])
       indeterminateIds.add(rule.id);
   }
@@ -1575,6 +1461,7 @@ export function buildHealthSnapshot({
     .filter(
       (episode) =>
         episode.status === "active" &&
+        supportedFindingIds.has(episode.id) &&
         (retainActiveEpisodes || indeterminateIds.has(episode.id)) &&
         !provisionalFindings.some(({ id }) => id === episode.id),
     )

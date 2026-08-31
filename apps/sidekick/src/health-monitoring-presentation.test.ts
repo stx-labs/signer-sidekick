@@ -256,9 +256,11 @@ describe("Signer Health v2 diagnosis", () => {
     expect(snapshot.findings).toContainEqual(
       expect.objectContaining({
         id: "reference-api-behind-local-node",
+        severity: "info",
         classification: "source-disagreement",
       }),
     );
+    expect(snapshot.overallStatus).toBe("monitoring");
   });
 
   it("correlates the monitored signer identity with the node-proved manager registration", () => {
@@ -289,7 +291,7 @@ describe("Signer Health v2 diagnosis", () => {
   it("reports sustained loss of signer participation telemetry", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const samples = Array.from({ length: 3 }, (_, index) => {
-      const sample = observation(new Date(startedAt + index * 5_000).toISOString(), {
+      const sample = observation(new Date(startedAt + index * 30_000).toISOString(), {
         signerPublicKey: operator.signerKeyHex ?? undefined,
       });
       return {
@@ -400,7 +402,7 @@ describe("Signer Health v2 diagnosis", () => {
     expect(snapshot.diagnosis.activeFindingIds).toEqual([]);
   });
 
-  it("alerts on sustained node-reported validation latency", () => {
+  it("keeps node-reported validation latency diagnostic-only", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const first = signerMetrics({
       validationAcceptedTotal: 10,
@@ -428,18 +430,14 @@ describe("Signer Health v2 diagnosis", () => {
       operator,
     });
 
-    expect(snapshot.findings).toContainEqual(
-      expect.objectContaining({
-        id: "signer-validation-latency-elevated",
-        severity: "warning",
-        source: "node",
-        classification: "likely-local-node",
-        confidence: "medium",
-      }),
+    expect(snapshot.signer.last15Minutes.validationP95Seconds).toBeGreaterThan(5);
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain(
+      "signer-validation-latency-elevated",
     );
+    expect(snapshot.overallStatus).toBe("healthy");
   });
 
-  it("does not alert on validation latency before the minimum population", () => {
+  it("retains sparse validation-latency telemetry without opening a finding", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const snapshot = buildHealthSnapshot({
       observations: [
@@ -469,7 +467,7 @@ describe("Signer Health v2 diagnosis", () => {
     );
   });
 
-  it("detects response gaps, elevated rejection, validation latency, and agreement conflicts", () => {
+  it("alerts on response gaps but keeps rejection, latency, and conflicts diagnostic-only", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     // Proposals climb far faster than responses across samples that are all old enough to have been
     // answered, so the settled proposal/response gap is real rather than trailing-edge in-flight.
@@ -520,14 +518,19 @@ describe("Signer Health v2 diagnosis", () => {
       operator,
     });
 
-    expect(snapshot.findings.map(({ id }) => id)).toEqual(
+    expect(snapshot.findings.map(({ id }) => id)).toContain("signer-proposal-response-gap");
+    expect(snapshot.findings.map(({ id }) => id)).not.toEqual(
       expect.arrayContaining([
-        "signer-proposal-response-gap",
         "signer-rejection-rate-elevated",
         "signer-validation-latency-elevated",
         "signer-agreement-conflicts-elevated",
       ]),
     );
+    expect(snapshot.signer.last15Minutes).toMatchObject({
+      rejected: 10,
+      disagreements: 4,
+      validationLatencySamples: 100,
+    });
   });
 
   it("does not flag a proposal/response gap from proposals still within the settle window", () => {
@@ -769,6 +772,49 @@ describe("Signer Health v2 diagnosis", () => {
     );
   });
 
+  it("does not retain episodes for rules removed from the catalog", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const observations = Array.from({ length: 3 }, (_, index) =>
+      observation(new Date(startedAt + index * 5_000).toISOString(), {
+        signerPublicKey: `03${"22".repeat(32)}`,
+        signer: signerMetrics(),
+      }),
+    );
+    const active = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator,
+    }).findings.find(({ id }) => id === "signer-identity-mismatch");
+    if (!active) throw new Error("identity fixture did not open a finding");
+
+    const snapshot = buildHealthSnapshot({
+      observations,
+      config: { ...config, signerMonitoringUrl: "http://127.0.0.1:30001" },
+      burnBlockTiming: null,
+      operator: null,
+      history: {
+        observedSince: observations[0]?.observedAt ?? null,
+        observationCount: observations.length,
+        recentRollups: [],
+        recentEpisodes: [
+          {
+            ...active,
+            id: "signer-validation-latency-elevated",
+            episodeId: "8e1af5f0-b5db-45aa-a579-0755e19e93b0",
+            status: "active",
+            resolvedAt: null,
+            occurrences: 3,
+          },
+        ],
+      },
+    });
+
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain(
+      "signer-validation-latency-elevated",
+    );
+  });
+
   it("covers the local-stall and distinct configured-API lag paths", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const samples = Array.from({ length: 20 }, (_, index) => {
@@ -837,27 +883,28 @@ describe("Signer Health v2 diagnosis", () => {
       expect.arrayContaining(["signer-network-mismatch", "signer-reward-cycle-mismatch"]),
     );
 
-    const unavailable = mismatched.map((sample) => ({
-      ...sample,
+    const unavailable = Array.from({ length: 3 }, (_, index) => ({
+      ...mismatched[0],
+      observedAt: new Date(startedAt + index * 30_000).toISOString(),
       signerInfo: null,
       signerInfoSource: {
         reachable: false,
         latencyMs: null,
         errorCode: "connection-failed",
-        checkedAt: sample.observedAt,
+        checkedAt: new Date(startedAt + index * 30_000).toISOString(),
       },
       signerMetrics: null,
       signerMetricsSource: {
         reachable: false,
         latencyMs: null,
         errorCode: "connection-failed",
-        checkedAt: sample.observedAt,
+        checkedAt: new Date(startedAt + index * 30_000).toISOString(),
       },
       signerHeartbeat: {
         reachable: false,
         latencyMs: null,
         errorCode: "connection-failed",
-        checkedAt: sample.observedAt,
+        checkedAt: new Date(startedAt + index * 30_000).toISOString(),
       },
     }));
     const outage = buildHealthSnapshot({
@@ -874,7 +921,7 @@ describe("Signer Health v2 diagnosis", () => {
   it("uses a sustained node-RPC finding for unavailable status", () => {
     const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
     const samples = Array.from({ length: 3 }, (_, index) => {
-      const sample = observation(new Date(startedAt + index * 5_000).toISOString());
+      const sample = observation(new Date(startedAt + index * 30_000).toISOString());
       return {
         ...sample,
         nodeRpc: {
@@ -894,6 +941,33 @@ describe("Signer Health v2 diagnosis", () => {
     });
     expect(snapshot.overallStatus).toBe("unavailable");
     expect(snapshot.findings.map(({ id }) => id)).toContain("node-rpc-unavailable");
+  });
+
+  it("does not open a node-RPC incident during a brief failure burst", () => {
+    const startedAt = Date.parse("2026-08-14T12:00:00.000Z");
+    const samples = Array.from({ length: 3 }, (_, index) => {
+      const sample = observation(new Date(startedAt + index * 5_000).toISOString());
+      return {
+        ...sample,
+        nodeRpc: {
+          reachable: false,
+          latencyMs: null,
+          errorCode: "upstream-timeout",
+          checkedAt: sample.observedAt,
+        },
+        nodeInfo: null,
+      };
+    });
+    const snapshot = buildHealthSnapshot({
+      observations: samples,
+      config,
+      burnBlockTiming: null,
+      operator,
+    });
+
+    expect(snapshot.findings.map(({ id }) => id)).not.toContain("node-rpc-unavailable");
+    expect(snapshot.overallStatus).not.toBe("unavailable");
+    expect(snapshot.diagnosis.title).toBe("Local node check is not yet conclusive");
   });
 
   it("chooses the highest severity before applying classification precedence", () => {

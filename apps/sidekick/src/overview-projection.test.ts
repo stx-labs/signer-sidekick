@@ -1010,43 +1010,17 @@ describe("Overview projection", () => {
     });
   });
 
-  it("does not label a synchronized node as behind when block validation is slow", () => {
+  it("keeps an informational local reorg observation out of Overview attention", () => {
     const result = projectOverview({
       snapshot: snapshot(),
       health: health({
         findings: [
           healthFinding({
-            id: "signer-validation-latency-elevated",
-            severity: "warning",
-            title: "Local node block validation is slow",
-            detail: "The local node reported an elevated successful-validation p95.",
+            id: "local-canonical-tip-changed",
+            severity: "info",
+            title: "Local canonical Stacks tip changed",
+            detail: "The local node reported a canonical-tip transition.",
             source: "node",
-            classification: "likely-local-node",
-          }),
-        ],
-      }),
-      connection: null,
-      now: new Date(generatedAt),
-    });
-
-    expect(result.node).toMatchObject({
-      status: "needs-attention",
-      peerHeightDifference: 0,
-      detail: "The local node reported an elevated successful-validation p95.",
-    });
-  });
-
-  it("keeps an ambiguous signer finding in the signer domain", () => {
-    const result = projectOverview({
-      snapshot: snapshot(),
-      health: health({
-        findings: [
-          healthFinding({
-            id: "signer-rejection-rate-elevated",
-            severity: "warning",
-            title: "Signer rejection rate is elevated",
-            detail: "Recent signer responses rejected an elevated share of proposals.",
-            source: "signer",
             classification: "source-disagreement",
           }),
         ],
@@ -1055,9 +1029,39 @@ describe("Overview projection", () => {
       now: new Date(generatedAt),
     });
 
-    expect(result.signer.status).toBe("needs-attention");
+    expect(result.node).toMatchObject({
+      status: "aligned",
+      peerHeightDifference: 0,
+    });
+    expect(result.attention.map(({ attentionId }) => attentionId)).not.toContain(
+      "health:local-canonical-tip-changed",
+    );
+  });
+
+  it("keeps informational comparison lag out of Overview attention", () => {
+    const result = projectOverview({
+      snapshot: snapshot(),
+      health: health({
+        findings: [
+          healthFinding({
+            id: "reference-api-behind-local-node",
+            severity: "info",
+            title: "A comparison source is behind the local node",
+            detail: "The local node is advancing while a comparison source is behind.",
+            source: "source",
+            classification: "source-disagreement",
+          }),
+        ],
+      }),
+      connection: null,
+      now: new Date(generatedAt),
+    });
+
+    expect(result.signer.status).toBe("healthy");
     expect(result.network.status).toBe("advancing");
-    expect(result.attention[0]).toMatchObject({ domain: "signer" });
+    expect(result.attention.map(({ attentionId }) => attentionId)).not.toContain(
+      "health:reference-api-behind-local-node",
+    );
   });
 
   it("uses a distinct configured API when the public reference is absent", () => {
