@@ -7,12 +7,8 @@ export type SidekickNetwork = z.infer<typeof sidekickNetworkSchema>;
 
 function parseConfiguredNetwork(value: string | undefined): SidekickNetwork {
   const configured = value ?? "mainnet";
+  // Legacy alias: the dedicated PoX-5 testnet was reverted to the standard Stacks testnet.
   if (configured === "pox5-testnet") return "testnet";
-  if (configured === "testnet") {
-    throw new Error(
-      "SIDEKICK_NETWORK=testnet refers to the PoX-4 Stacks testnet, which Sidekick does not support; use pox5-testnet for the dedicated PoX-5 Testnet",
-    );
-  }
   return sidekickNetworkSchema.parse(configured);
 }
 
@@ -24,8 +20,8 @@ const networkDefaults: Partial<
     hiroReferenceApiUrl: "https://api.mainnet.hiro.so",
   },
   testnet: {
-    apiUrl: "https://api.testnet-pox5.hiro.so",
-    hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
+    apiUrl: "https://api.testnet.hiro.so",
+    hiroReferenceApiUrl: "https://api.testnet.hiro.so",
   },
 };
 
@@ -80,7 +76,7 @@ export interface ApiCredential {
 
 const defaultNetworkIds: Record<SidekickNetwork, number> = {
   mainnet: 1,
-  testnet: 0x80000005,
+  testnet: 0x80000000,
   devnet: 0x80000000,
   regtest: 0x80000000,
 };

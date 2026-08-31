@@ -765,7 +765,7 @@ describe("operator service", () => {
       config: {
         network: "testnet",
         nodeRpcUrl: "http://127.0.0.1:20443",
-        apiUrl: "https://api.testnet-pox5.hiro.so",
+        apiUrl: "https://api.testnet.hiro.so",
         apiKeyHeader: "x-api-key",
         maxApiBurnBlockLag: 12,
         forecastHorizonCycles: 6,

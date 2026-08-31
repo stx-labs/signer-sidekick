@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAINNET_4_0_1_COMPATIBILITY,
-  POX5_TESTNET_COMPATIBILITY,
+  TESTNET_COMPATIBILITY,
 } from "../src/known-network-compatibility.js";
 import { parseNetworkCompatibilityProfile } from "../src/network-compatibility.js";
 import { managerArtifactFromNetworkProfile } from "../src/network-manager-artifact.js";
@@ -30,19 +30,19 @@ describe("network compatibility profiles", () => {
       },
       sourceSha256: MAINNET_4_0_1_COMPATIBILITY.referenceManager.sourceSha256,
     });
-    expect(POX5_TESTNET_COMPATIBILITY).toMatchObject({
-      id: "stacks-pox5-testnet-4.0.1",
-      label: "PoX-5 Testnet",
+    expect(TESTNET_COMPATIBILITY).toMatchObject({
+      id: "stacks-testnet-4.0.1",
+      label: "Testnet",
       network: "testnet",
-      networkId: 0x80000005,
+      networkId: 0x80000000,
     });
-    expect(managerArtifactFromNetworkProfile(POX5_TESTNET_COMPATIBILITY)).toMatchObject({
+    expect(managerArtifactFromNetworkProfile(TESTNET_COMPATIBILITY)).toMatchObject({
       profile: {
-        id: "stacks-pox5-testnet-4.0.1-reference-manager",
+        id: "stacks-testnet-4.0.1-reference-manager",
         network: "testnet",
         contracts: { sbtcDeployer: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1" },
       },
-      sourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+      sourceSha256: TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
     });
   });
 });

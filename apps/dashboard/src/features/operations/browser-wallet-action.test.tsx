@@ -102,7 +102,7 @@ describe("BrowserWalletActionPanel recovery", () => {
   });
 
   it("renders an unsupported-network fallback once", () => {
-    const html = renderPanel({ action: "register-self", actorPrincipal: admin }, 0x80000005);
+    const html = renderPanel({ action: "register-self", actorPrincipal: admin }, 0x80000000);
     expect(
       html.match(
         /Browser wallet signing is unavailable for this network\. Use another signing tool\./g,

@@ -14,7 +14,7 @@ pnpm build
 
 Run `pnpm --filter @stx-labs/signer-sidekick cli help` after building for the current command
 surface. Configuration is defined by the [mainnet](../../.env.mainnet.example) and
-[PoX-5 Testnet](../../.env.pox5-testnet.example) examples. Custom Devnet or regtest profiles require
+[Testnet](../../.env.testnet.example) examples. Custom Devnet or regtest profiles require
 `SIDEKICK_NETWORK_ID`. Never place a signer or admin key, mnemonic, or production credential in the
 repository, fixtures, commands, screenshots, or support bundles.
 

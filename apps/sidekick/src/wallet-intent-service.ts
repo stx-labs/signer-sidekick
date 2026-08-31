@@ -80,8 +80,8 @@ import {
   defaultPrivateChainId,
   mainnetChainId,
   mainnetWalletNetwork,
-  pox5TestnetChainId,
-  pox5TestnetWalletNetwork,
+  testnetChainId,
+  testnetWalletNetwork,
   type VerifiedWalletTransaction,
   verifyWalletTransactionHex,
   WalletTransactionMismatchError,
@@ -136,7 +136,7 @@ const storedManifestSchema = z
       "calculate-rewards",
     ]),
     request: walletIntentRequestSchema,
-    network: z.enum(["mainnet", "pox5-testnet", "devnet", "regtest"]),
+    network: z.enum(["mainnet", "testnet", "devnet", "regtest"]),
     chainId: z.number().int().nonnegative().max(0xffff_ffff),
     requiredSender: z.string().min(1),
     createdAt: z.iso.datetime(),
@@ -177,8 +177,8 @@ const storedManifestSchema = z
     const expectedChainId =
       value.network === "mainnet"
         ? mainnetChainId
-        : value.network === "pox5-testnet"
-          ? pox5TestnetChainId
+        : value.network === "testnet"
+          ? testnetChainId
           : null;
     if (
       (expectedChainId !== null && value.chainId !== expectedChainId) ||
@@ -459,7 +459,7 @@ export class WalletIntentService {
           manifest,
           manifestSha256: canonicalJsonSha256(manifest),
           requiredSender: current.requiredSender,
-          network: current.network === "pox5-testnet" ? "testnet" : current.network,
+          network: current.network,
           chainId: current.chainId,
           createdAt: observedAt,
           expiresAt: manifest.expiresAt,
@@ -766,7 +766,7 @@ export class WalletIntentService {
     config: Pick<SidekickConfig, "network" | "expectedNetworkId">,
   ): WalletTransactionNetworkBinding {
     if (config.network === "mainnet") return mainnetWalletNetwork;
-    if (config.network === "testnet") return pox5TestnetWalletNetwork;
+    if (config.network === "testnet") return testnetWalletNetwork;
     return createWalletTransactionNetworkBinding(
       config.network,
       config.expectedNetworkId ?? defaultPrivateChainId,

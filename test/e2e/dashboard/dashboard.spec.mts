@@ -568,8 +568,8 @@ function registerWalletIntent(actorPrincipal: string) {
       schemaVersion: 2,
       id: "6ed58dac-c42c-4cb5-ad02-ed50671f3d27",
       action: "register-self",
-      network: "pox5-testnet",
-      chainId: 0x80000005,
+      network: "testnet",
+      chainId: 0x80000000,
       requiredSender: actorPrincipal,
       createdAt: "2026-07-18T18:00:00.000Z",
       expiresAt: "2099-07-18T19:00:00.000Z",
@@ -579,7 +579,7 @@ function registerWalletIntent(actorPrincipal: string) {
           contract: snapshot.managerPrincipal,
           functionName: "register-self",
           functionArgs: ["0x01", "0x02", "0x03", "0x04"],
-          network: "pox5-testnet",
+          network: "testnet",
           address: actorPrincipal,
           sponsored: false,
           postConditionMode: "deny",
@@ -1360,15 +1360,15 @@ test("routes a typed Overview action directly to its operation workspace", async
   await expect(page.getByRole("heading", { name: "Register or rotate signer" })).toBeVisible();
 });
 
-test("shows the PoX-5 Testnet label and network ID", async ({ page }) => {
+test("shows the Testnet label and network ID", async ({ page }) => {
   await login(page);
   await openPage(page, "health", "Signer Health");
-  await expect(page.getByText("PoX-5 Testnet · 0x80000005")).toBeVisible();
+  await expect(page.getByText("Testnet · 0x80000000")).toBeVisible();
 
   await openPage(page, "settings", "Settings");
   const deployment = page.locator("#st-deployment");
-  await expect(deployment).toContainText("PoX-5 Testnet");
-  await expect(deployment).toContainText("chain 0x80000005");
+  await expect(deployment).toContainText("Testnet");
+  await expect(deployment).toContainText("chain 0x80000000");
   await expect(deployment).toContainText("revision 1 · built in");
 });
 
@@ -1684,7 +1684,7 @@ test("shows successful live checks as connected in every connection summary", as
         status: "pass",
         title: "Network comparison API",
         summary: "Sidekick verified the external comparison API.",
-        observed: "https://api.testnet-pox5.hiro.so",
+        observed: "https://api.testnet.hiro.so",
         remediation: null,
       },
     ],
@@ -2160,7 +2160,7 @@ test("explains operator-installed and unrecognized trust tiers", async ({ page }
       status.preflight.compatibility.status = compatibilityStatus;
       status.preflight.compatibility.reason =
         compatibilityStatus === "matched"
-          ? "Live network fingerprint matches PoX-5 Testnet"
+          ? "Live network fingerprint matches Testnet"
           : "No matching compatibility profile";
     }
     await route.fulfill({

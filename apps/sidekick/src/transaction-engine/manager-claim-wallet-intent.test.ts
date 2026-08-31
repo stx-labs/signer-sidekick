@@ -9,7 +9,7 @@ import {
 
 const observedAt = "2026-07-17T12:00:00.000Z";
 const actor = "ST2NEB84ASENDXKYGJPQW86YXQCEFEX2ZQPG87ND";
-const network = { name: "pox5-testnet", kind: "testnet", chainId: 0x8000_0005 } as const;
+const network = { name: "testnet", kind: "testnet", chainId: 0x8000_0000 } as const;
 const openStores: SidekickStore[] = [];
 
 afterEach(() => {
@@ -38,8 +38,8 @@ describe("retired manager-claim browser-wallet binding", () => {
     expect(bound).toMatchObject({
       scope: `manager-claim-wallet:${job.jobId}`,
       requiredSender: actor,
-      network: "pox5-testnet",
-      chainId: 0x8000_0005,
+      network: "testnet",
+      chainId: 0x8000_0000,
       facts: {
         kind: "reference-manager-claim-rewards-wallet",
         actorPrincipal: actor,

@@ -45,7 +45,7 @@ export function legacyManagerClaimFacts(
   return {
     schemaVersion: 1,
     observedAt: "2026-07-17T12:00:00.000Z",
-    network: { kind: "testnet", chainId: 0x8000_0005 },
+    network: { kind: "testnet", chainId: 0x8000_0000 },
     manager: {
       contract: legacyClaimManager,
       profile: {

@@ -455,7 +455,7 @@ describe("manager trust profiles", () => {
   it("allows a reproducible testnet render without production approval", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
-      SIDEKICK_NETWORK: "pox5-testnet",
+      SIDEKICK_NETWORK: "testnet",
       SIDEKICK_NETWORK_ID: "256",
       STACKS_NODE_RPC_URL: "http://node:20443",
     });
@@ -497,7 +497,7 @@ describe("manager trust profiles", () => {
   it("still requires a known upstream reference identity on testnet", async () => {
     const { upstreamSource, source } = await renderedSource("testnet");
     const config = loadConfig({
-      SIDEKICK_NETWORK: "pox5-testnet",
+      SIDEKICK_NETWORK: "testnet",
       SIDEKICK_NETWORK_ID: "256",
       STACKS_NODE_RPC_URL: "http://node:20443",
     });

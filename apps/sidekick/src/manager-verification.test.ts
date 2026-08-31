@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import { TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import {
   canonicalizeClaritySource,
   claritySourceSha256,
@@ -188,7 +188,7 @@ describe("deployed manager verification", () => {
     const profilesDirectory = await mkdtemp(resolve(tmpdir(), "sidekick-network-profile-"));
     temporaryDirectories.push(profilesDirectory);
     const profileTemplate = {
-      ...POX5_TESTNET_COMPATIBILITY,
+      ...TESTNET_COMPATIBILITY,
       revision: 2,
       publishedAt: "2026-07-17T00:00:00.000Z",
       sbtc: {
@@ -196,7 +196,7 @@ describe("deployed manager verification", () => {
         registryContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-registry",
       },
       referenceManager: {
-        ...POX5_TESTNET_COMPATIBILITY.referenceManager,
+        ...TESTNET_COMPATIBILITY.referenceManager,
         profileId: "operator-private-1-reference-manager",
       },
     };
@@ -222,7 +222,7 @@ describe("deployed manager verification", () => {
     const context = await createManagerVerificationContext({
       contractsDirectory: resolve(root, "contracts"),
       compatibilityProfilesDirectory: profilesDirectory,
-      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
+      expectedNetworkId: TESTNET_COMPATIBILITY.networkId,
     });
     const report = verifyManagerArtifact(
       "testnet",
@@ -248,16 +248,16 @@ describe("deployed manager verification", () => {
     );
   });
 
-  it("enables the byte-exact built-in PoX-5 testnet reference manager", async () => {
+  it("enables the byte-exact built-in testnet reference manager", async () => {
     const upstreamSource = await readFile(
       resolve(root, "contracts/reference-manager/upstream/signer-manager.clar"),
       "utf8",
     );
-    const artifact = managerArtifactFromNetworkProfile(POX5_TESTNET_COMPATIBILITY);
+    const artifact = managerArtifactFromNetworkProfile(TESTNET_COMPATIBILITY);
     const generated = generateManagerArtifact(upstreamSource, artifact.profile);
     const context = await createManagerVerificationContext({
       contractsDirectory: resolve(root, "contracts"),
-      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
+      expectedNetworkId: TESTNET_COMPATIBILITY.networkId,
     });
     const report = verifyManagerArtifact(
       "testnet",
@@ -271,7 +271,7 @@ describe("deployed manager verification", () => {
         match: "exact",
         recognized: true,
         tier: "reference-built-in",
-        profileId: POX5_TESTNET_COMPATIBILITY.referenceManager.profileId,
+        profileId: TESTNET_COMPATIBILITY.referenceManager.profileId,
       },
       attachAllowed: true,
       automationEligible: true,
@@ -310,11 +310,11 @@ describe("deployed manager verification", () => {
     temporaryDirectories.push(profilesDirectory);
     const customSource = "(define-public (custom) (ok true))";
     const profile = {
-      ...POX5_TESTNET_COMPATIBILITY,
+      ...TESTNET_COMPATIBILITY,
       revision: 2,
       publishedAt: "2026-07-17T00:00:00.000Z",
       referenceManager: {
-        ...POX5_TESTNET_COMPATIBILITY.referenceManager,
+        ...TESTNET_COMPATIBILITY.referenceManager,
         profileId: "operator-forged-reference-manager",
         sourceSha256: claritySourceSha256(customSource),
         canonicalSha256: claritySourceSha256(canonicalizeClaritySource(customSource)),
@@ -324,7 +324,7 @@ describe("deployed manager verification", () => {
     const context = await createManagerVerificationContext({
       contractsDirectory: resolve(root, "contracts"),
       compatibilityProfilesDirectory: profilesDirectory,
-      expectedNetworkId: POX5_TESTNET_COMPATIBILITY.networkId,
+      expectedNetworkId: TESTNET_COMPATIBILITY.networkId,
     });
 
     const report = verifyManagerArtifact(

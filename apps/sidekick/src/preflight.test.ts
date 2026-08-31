@@ -133,18 +133,18 @@ describe("operator preflight", () => {
     });
   });
 
-  it("uses the PoX-5 Testnet network ID for testnet", () => {
+  it("uses the Testnet network ID for testnet", () => {
     const testnetConfig = { ...config, network: "testnet" as const };
     const result = evaluatePreflight(
       testnetConfig,
       sources({
         nodeInfo: {
-          network_id: 0x80000005,
+          network_id: 0x80000000,
           burn_block_height: 5_636,
           stacks_tip_height: 192_259,
         },
         apiNodeInfo: {
-          network_id: 0x80000005,
+          network_id: 0x80000000,
           burn_block_height: 5_636,
           stacks_tip_height: 192_259,
         },

@@ -5,7 +5,7 @@
 - [Install on mainnet](operator/deployment.md)
 - [Configure the node and signer](operator/node-signer-requirements.md)
 - [Upgrade, restore, and diagnose](operator/operations.md)
-- [Evaluate on PoX-5 Testnet](operator/pox5-testnet-deployment.md)
+- [Evaluate on Testnet](operator/testnet-deployment.md)
 
 ## Contributors
 

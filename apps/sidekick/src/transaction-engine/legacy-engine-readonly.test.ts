@@ -22,7 +22,7 @@ function remainingClaim(): ManagerClaimObserveFacts {
   return {
     schemaVersion: 1,
     observedAt,
-    network: { kind: "testnet", chainId: 0x8000_0005 },
+    network: { kind: "testnet", chainId: 0x8000_0000 },
     manager: {
       contract: manager,
       profile: {

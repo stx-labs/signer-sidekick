@@ -1683,7 +1683,7 @@ describe("manager wallet action preparation", () => {
     ).rejects.toThrow("cannot remove itself");
   });
 
-  it("maps configured testnet only to the dedicated PoX-5 Testnet chain", async () => {
+  it("maps configured testnet only to the dedicated Testnet chain", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-19T12:00:00.000Z");
     stores.push(store);
     const testnetActor = getAddressFromPrivateKey(senderKey, "testnet");
@@ -1697,8 +1697,8 @@ describe("manager wallet action preparation", () => {
     readOperatorAnchorSnapshotMock.mockResolvedValue(
       trustedManagerSnapshot({
         manager: testnetManager,
-        networkId: 0x80000005,
-        profileId: "pox5-testnet-reference-manager",
+        networkId: 0x80000000,
+        profileId: "testnet-reference-manager",
       }),
     );
     const runtimeSettings = {
@@ -1724,14 +1724,14 @@ describe("manager wallet action preparation", () => {
       feeBips: "200",
     });
     expect(intent).toMatchObject({
-      network: "pox5-testnet",
-      chainId: 0x80000005,
+      network: "testnet",
+      chainId: 0x80000000,
       requiredSender: testnetActor,
-      transaction: { params: { network: "pox5-testnet" } },
+      transaction: { params: { network: "testnet" } },
     });
     expect(store.walletIntents.get(intent.id)).toMatchObject({
       network: "testnet",
-      chainId: 0x80000005,
+      chainId: 0x80000000,
     });
   });
 

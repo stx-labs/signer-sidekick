@@ -14,12 +14,12 @@ function context(): ManagerActionContext {
       ],
       compatibility: {
         status: "matched",
-        profileId: "pox5-testnet",
+        profileId: "testnet",
         profileRevision: 1,
-        profileLabel: "PoX-5 Testnet",
+        profileLabel: "Testnet",
         origin: "built-in",
         nodeBuildPreviouslyTested: true,
-        reason: "Live network fingerprint matches PoX-5 Testnet",
+        reason: "Live network fingerprint matches Testnet",
       },
     },
     manager: {

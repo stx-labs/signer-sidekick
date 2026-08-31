@@ -3,7 +3,7 @@ const managerPrincipal = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manag
 const deploymentIdentity = {
   schemaVersion: 1,
   network: "testnet",
-  networkId: 0x80000005,
+  networkId: 0x80000000,
   parentNetworkId: 0x80000000,
   managerPrincipal,
   boundAt: "2026-08-13T12:00:00.000Z",
@@ -21,12 +21,12 @@ export const connection = {
   stale: false,
   configured: {
     network: "testnet",
-    networkId: 0x80000005,
+    networkId: 0x80000000,
     nodeRpcUrl: "http://stacks-node:20443",
     managerPrincipal,
   },
   observed: {
-    networkId: 0x80000005,
+    networkId: 0x80000000,
     parentNetworkId: 0x80000000,
     stacksTipHeight: 14_200,
     burnBlockHeight: 9_240,
@@ -191,7 +191,7 @@ export const runtimeSettings = {
     apiKeySource: "environment",
     nodeMetricsUrl: "http://stacks-node:9153",
     signerMonitoringUrl: "http://stacks-signer:9153",
-    hiroReferenceApiUrl: "https://api.testnet-pox5.hiro.so",
+    hiroReferenceApiUrl: "https://api.testnet.hiro.so",
     hiroReferenceApiKeyHeader: "x-api-key",
     hiroReferenceApiKeyConfigured: true,
     hiroReferenceApiKeySource: "database",
@@ -221,7 +221,7 @@ export const snapshot = {
   preflight: {
     status: "pass",
     node: {
-      networkId: 0x80000005,
+      networkId: 0x80000000,
       serverVersion: "stacks-node 4.0.1 (62e03cc, release build, linux [x86_64])",
       version: "4.0.1",
       commit: "62e03cc",
@@ -243,12 +243,12 @@ export const snapshot = {
     },
     compatibility: {
       status: "matched",
-      profileId: "stacks-pox5-testnet-4.0.1",
+      profileId: "stacks-testnet-4.0.1",
       profileRevision: 1,
-      profileLabel: "PoX-5 Testnet",
+      profileLabel: "Testnet",
       origin: "built-in",
       nodeBuildPreviouslyTested: true,
-      reason: "Live network fingerprint matches PoX-5 Testnet",
+      reason: "Live network fingerprint matches Testnet",
     },
     cycle: {
       currentId: 139,
@@ -268,11 +268,11 @@ export const snapshot = {
   manager: {
     attachAllowed: true,
     automationEligible: true,
-    automationEligibilityReason: "Source matches PoX-5 Testnet reference profile",
+    automationEligibilityReason: "Source matches Testnet reference profile",
     publishHeight: 9_100,
     source: {
       recognized: true,
-      profileId: "pox5-testnet-reference-manager",
+      profileId: "testnet-reference-manager",
       sha256: "ca97d964",
       match: "exact",
       tier: "reference-built-in",
@@ -280,8 +280,8 @@ export const snapshot = {
     },
     provenance: {
       status: "built-in",
-      upstreamProfileId: "pox5-testnet-reference-manager",
-      reason: "Source matches PoX-5 Testnet reference profile",
+      upstreamProfileId: "testnet-reference-manager",
+      reason: "Source matches Testnet reference profile",
     },
     capabilities: {
       signerManagerTrait: {
@@ -660,7 +660,7 @@ export const health = {
       errorCode: null,
     },
     version: "stacks-node 4.0.1",
-    networkId: 2147483653,
+    networkId: 2147483648,
     stacksTipHeight: 12990,
     burnBlockHeight: 13000,
     tipIndexBlockHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
@@ -992,7 +992,7 @@ const overviewEvidence = {
 export const overview = {
   schemaVersion: 1,
   generatedAt: "2026-08-14T17:05:00.000Z",
-  monitoring: { network: "PoX-5 Testnet", managerPrincipal },
+  monitoring: { network: "Testnet", managerPrincipal },
   cycle: {
     status: "current",
     rewardCycleId: 140,
@@ -1555,7 +1555,7 @@ export function rewardRunFixture(status = "awaiting-approval", overrides = {}) {
       sbtcTokenContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token",
       sbtcRegistryContract: "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-registry",
       network: "testnet",
-      chainId: 0x8000_0005,
+      chainId: 0x8000_0000,
       cycle: 140,
       distribution: 1,
       orderedOperations: ["claim-rewards", "claim-staker-rewards"],

@@ -80,8 +80,8 @@ describe("CLI dispatch", () => {
       Environment:
         STACKS_NODE_RPC_URL  Required node RPC base URL for connected commands
         SIDEKICK_MANAGER_PRINCIPAL  Required deployed signer-manager contract principal
-        SIDEKICK_NETWORK     mainnet (default), pox5-testnet, devnet, or regtest
-        STACKS_API_URL       Optional for mainnet/PoX-5 Testnet; defaults to Hiro
+        SIDEKICK_NETWORK     mainnet (default), testnet, devnet, or regtest
+        STACKS_API_URL       Optional for mainnet/testnet; defaults to Hiro
         STACKS_API_KEY       Optional API key; never included in output
         STACKS_API_KEY_HEADER  Optional indexed API key header; defaults to x-api-key
         HIRO_REFERENCE_API_URL  Optional network-comparison API

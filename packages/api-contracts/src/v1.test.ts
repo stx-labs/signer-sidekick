@@ -742,10 +742,7 @@ describe("reconciliation contracts", () => {
 describe("browser-wallet intent contracts", () => {
   const actor = "ST000000000000000000002AMW42H";
 
-  function managerIntent(
-    network: "mainnet" | "pox5-testnet" | "devnet" | "regtest",
-    chainId: number,
-  ) {
+  function managerIntent(network: "mainnet" | "testnet" | "devnet" | "regtest", chainId: number) {
     return {
       schemaVersion: 2,
       id: "10000000-0000-4000-8000-000000000001",
@@ -890,8 +887,8 @@ describe("browser-wallet intent contracts", () => {
       id: "10000000-0000-4000-8000-000000000002",
       action: "claim-rewards",
       request,
-      network: "pox5-testnet",
-      chainId: 0x80000005,
+      network: "testnet",
+      chainId: 0x80000000,
       requiredSender: actor,
       createdAt: "2026-07-19T12:00:00.000Z",
       expiresAt: "2026-07-19T12:15:00.000Z",
@@ -901,7 +898,7 @@ describe("browser-wallet intent contracts", () => {
           contract: `${actor}.signer-manager`,
           functionName: "claim-rewards",
           functionArgs: ["0x0b00000000", "0x0100000000000000000000000000000005"],
-          network: "pox5-testnet",
+          network: "testnet",
           address: actor,
           sponsored: false,
           postConditionMode: "deny",
@@ -945,8 +942,8 @@ describe("browser-wallet intent contracts", () => {
         targetCheckpoint: "first-half",
         expectedLastRewardComputeBurnHeight: 962_249,
       },
-      network: "pox5-testnet",
-      chainId: 0x80000005,
+      network: "testnet",
+      chainId: 0x80000000,
       requiredSender: actor,
       createdAt: "2026-07-19T12:00:00.000Z",
       expiresAt: "2026-07-19T12:15:00.000Z",
@@ -956,7 +953,7 @@ describe("browser-wallet intent contracts", () => {
           contract: `${actor}.pox-5`,
           functionName: "calculate-rewards",
           functionArgs: ["0x0b00000000"],
-          network: "pox5-testnet",
+          network: "testnet",
           address: actor,
           sponsored: false,
           postConditionMode: "deny",
@@ -981,16 +978,16 @@ describe("browser-wallet intent contracts", () => {
     );
     expect(
       browserWalletIntentSchema.safeParse({
-        ...managerIntent("pox5-testnet", 0x80000005),
+        ...managerIntent("testnet", 0x80000000),
         binding: intent.binding,
       }).success,
     ).toBe(false);
   });
 
-  it("binds V2 PoX-5 Testnet intents to the exact chain and immutable request", () => {
-    const intent = managerIntent("pox5-testnet", 0x80000005);
+  it("binds V2 Testnet intents to the exact chain and immutable request", () => {
+    const intent = managerIntent("testnet", 0x80000000);
     expect(browserWalletIntentSchema.safeParse(intent).success).toBe(true);
-    expect(browserWalletIntentSchema.safeParse({ ...intent, chainId: 0x80000000 }).success).toBe(
+    expect(browserWalletIntentSchema.safeParse({ ...intent, chainId: 0x80000005 }).success).toBe(
       false,
     );
     expect(browserWalletIntentSchema.safeParse({ ...intent, request: undefined }).success).toBe(
