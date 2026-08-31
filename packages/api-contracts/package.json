@@ -1,6 +1,6 @@
 {
   "name": "@stx-labs/signer-sidekick-api-contracts",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "license": "GPL-3.0-only",
