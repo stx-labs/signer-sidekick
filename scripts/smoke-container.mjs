@@ -27,7 +27,7 @@ const containerName = `signer-sidekick-smoke-${suffix}`;
 const authToken = "sidekick-container-smoke-token-0001";
 const managerPrincipal = process.env.SIDEKICK_MANAGER_PRINCIPAL.trim();
 const expectedInternalNetwork =
-  process.env.SIDEKICK_NETWORK.trim() === "testnet"
+  process.env.SIDEKICK_NETWORK.trim() === "pox5-testnet"
     ? "testnet"
     : process.env.SIDEKICK_NETWORK.trim();
 const trustedManagerProfilesDirectory = process.env.SIDEKICK_TRUSTED_MANAGER_PROFILES_DIR?.trim()
