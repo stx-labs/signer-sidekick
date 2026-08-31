@@ -102,6 +102,8 @@ export function StatusBadge({ status }: { status: string }) {
     "activation scheduled",
     "signer active",
     "verified",
+    "reviewed",
+    "compatible",
     "available",
     "registered",
     "authenticated",
@@ -124,6 +126,8 @@ export function StatusBadge({ status }: { status: string }) {
             "observe",
             "observe mode",
             "observe only",
+            "custom",
+            "not provided",
             "optional",
             "disabled",
           ].includes(normalized)

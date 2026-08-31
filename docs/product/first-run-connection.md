@@ -223,10 +223,12 @@ This is a data-coverage state, never a failed manager connection.
 
 > **Custom manager connected**
 >
-> Baseline PoX-5 monitoring is available. Each recurring manager action is enabled only when its
-> deployed behavior matches a reviewed Sidekick capability adapter.
+> Core PoX-5 monitoring is available. Manager operations are enabled individually when their
+> deployed behavior matches a reviewed capability adapter.
 
-List availability per operation. Do not call the manager globally unsupported or unverified.
+List each operation as **Available**, **Observe only**, or **Not provided**. Do not call the manager
+globally unsupported or unverified. When an operator needs an unavailable operation, link to a
+manager compatibility issue rather than repeating the full model in the dashboard.
 
 ## First useful Overview
 

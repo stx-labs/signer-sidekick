@@ -245,8 +245,8 @@ describe("operator service", () => {
         expect.objectContaining({
           id: "manager:custom-capabilities",
           severity: "info",
-          title: "Custom Manager Attached",
-          detail: expect.stringContaining("PoX-5 baseline state remains available"),
+          title: "Custom Manager Connected",
+          detail: expect.stringContaining("Core PoX-5 monitoring is available"),
         }),
         expect.objectContaining({
           id: "manager:trust-transition-lost:2026-07-16T12:00:00.000Z",
@@ -441,8 +441,8 @@ describe("operator service", () => {
     const alert = buildAlerts(input).find(({ id }) => id === "manager:custom-capabilities");
     expect(alert).toMatchObject({
       severity: "info",
-      title: "Custom Manager Attached",
-      detail: expect.stringContaining("reviewed capability fingerprint"),
+      title: "Custom Manager Connected",
+      detail: expect.stringContaining("reviewed adapter"),
     });
     expect(alert).not.toHaveProperty("action");
   });

@@ -169,7 +169,8 @@ describe("managerActionAvailability", () => {
     customCapability.reason = "Source is not reviewed for update-admin";
     expect(managerActionAvailability(custom, "update-admin")).toEqual({
       available: false,
-      reason: "Source is not reviewed for update-admin",
+      reason:
+        "This manager exposes the required interface, but its deployed behavior does not match a reviewed adapter for this operation.",
       warning: null,
     });
 
@@ -186,7 +187,24 @@ describe("managerActionAvailability", () => {
     unverifiedCapability.reason = "No reviewed exact source match";
     expect(managerActionAvailability(unverified, "update-admin")).toMatchObject({
       available: false,
-      reason: "No reviewed exact source match",
+      reason:
+        "This manager exposes the required interface, but its deployed behavior does not match a reviewed adapter for this operation.",
+    });
+  });
+
+  it("distinguishes a manager that does not provide the operation", () => {
+    const value = context();
+    const capability = value.manager.capabilities.actions[0];
+    if (!capability) throw new Error("Missing update-admin capability");
+    capability.interfaceAvailable = false;
+    capability.executionAvailable = false;
+    capability.adapter = null;
+    capability.missingFunctions = ["update-admin", "is-admin"];
+
+    expect(managerActionAvailability(value, "update-admin")).toMatchObject({
+      available: false,
+      reason:
+        "This manager does not expose the functions Sidekick requires for this operation: update-admin, is-admin.",
     });
   });
 

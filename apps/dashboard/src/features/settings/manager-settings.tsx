@@ -2,11 +2,18 @@ import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { DashboardSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
 import { actionHash } from "../../dashboard-route.js";
+import { StatusBadge } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { number, short } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
+import {
+  MANAGER_CAPABILITY_LABELS,
+  managerCapabilityExplanation,
+  managerCapabilityState,
+  summarizeManagerCapabilities,
+} from "../../shared/manager-capability-presentation.js";
 import { managerCapabilityIdForAction } from "../manager/manager-page.js";
-import { SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
+import { SettingsInfo, SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
 
 function sourceLabel(data: DashboardSnapshot): string {
   switch (data.manager.source.tier) {
@@ -56,11 +63,10 @@ export function ManagerSettings({
     data.freshness?.status === "stale",
   );
   const actions = data.manager.capabilities.actions;
-  const reviewedCalls = actions.filter(({ executionAvailable }) => executionAvailable).length;
-  // The run engine gates on this one capability (reference-reward-claims); surface exactly that.
-  const rewardCalls = actions.find(({ id }) => id === "reference-reward-claims") ?? null;
-  const rewardCallsAvailable = Boolean(rewardCalls?.executionAvailable);
-  const sourceVerified = data.manager.capabilities.signerManagerTrait.compatible;
+  const operationSummary = summarizeManagerCapabilities(actions);
+  const sourceReviewed = data.manager.capabilities.sourceReview.exactReviewed;
+  const traitCompatible = data.manager.capabilities.signerManagerTrait.compatible;
+  const coreMonitoringAvailable = data.manager.attachAllowed && traitCompatible;
   const admins = data.activity.admins;
 
   return (
@@ -77,7 +83,7 @@ export function ManagerSettings({
             {refreshingStatus ? "Refreshing" : "Refresh attachment"}
           </button>
         }
-        hint={`${data.manager.attachAllowed ? "attached" : "needs attention"} · published at block ${number(data.manager.publishHeight)}`}
+        hint={`${data.manager.attachAllowed ? "connected" : "needs attention"} · published at block ${number(data.manager.publishHeight)}`}
         id="st-manager"
       >
         Manager
@@ -103,10 +109,21 @@ export function ManagerSettings({
         ) : null}
         <div className="st-rows">
           <SettingsRow
+            detail="registration, pool, rewards, and signer health"
+            help={
+              coreMonitoringAvailable
+                ? data.manager.capabilities.signerManagerTrait.reason
+                : (data.manager.reasons[0] ?? data.manager.capabilities.signerManagerTrait.reason)
+            }
+            name="PoX-5 interface"
+            status={coreMonitoringAvailable ? "Compatible" : "Attention"}
+            value={coreMonitoringAvailable ? "Core monitoring available" : "Connection blocked"}
+          />
+          <SettingsRow
             detail={`${sourceLabel(data)} · profile ${data.manager.source.profileId ?? "none"}${data.preflight.compatibility.profileRevision ? ` r${data.preflight.compatibility.profileRevision}` : ""}`}
-            help={data.manager.capabilities.signerManagerTrait.reason}
-            name="Source"
-            status={sourceVerified ? "Verified" : "Attention"}
+            help={data.manager.capabilities.sourceReview.reason}
+            name="Contract source"
+            status={sourceReviewed ? "Reviewed" : "Custom"}
             value={
               <CopyableIdentifier
                 className="identifier mono"
@@ -117,21 +134,41 @@ export function ManagerSettings({
             }
           />
           <SettingsRow
-            help={
-              rewardCallsAvailable
-                ? "Reviewed call adapters Sidekick can build and verify for this manager. Whether Sidekick signs them is controlled separately by Reward runs."
-                : (rewardCalls?.reason ??
-                  data.manager.automationEligibilityReason ??
-                  "Reward calls are not available for this manager.")
-            }
-            name="Reward calls"
-            status={rewardCallsAvailable ? "Available" : "Observe only"}
-            value={
-              <span className="mono">
-                {reviewedCalls} reviewed {reviewedCalls === 1 ? "adapter" : "adapters"}
-              </span>
-            }
-          />
+            help="Compatibility is evaluated separately for each manager operation. Runtime readiness is checked again when you prepare an action."
+            name="Manager operations"
+            status={operationSummary.state}
+            value={<span className="mono">{operationSummary.detail}</span>}
+          >
+            <details className="st-capability-details">
+              <summary>Operation compatibility</summary>
+              <div className="st-capability-list">
+                {actions.map((capability) => (
+                  <div className="st-capability" key={capability.id}>
+                    <span>
+                      {MANAGER_CAPABILITY_LABELS[capability.id]}
+                      <SettingsInfo
+                        label={`${MANAGER_CAPABILITY_LABELS[capability.id]} compatibility`}
+                        text={managerCapabilityExplanation(capability)}
+                      />
+                    </span>
+                    <StatusBadge status={managerCapabilityState(capability)} />
+                  </div>
+                ))}
+              </div>
+              {operationSummary.hasUnavailable ? (
+                <p className="st-capability-help">
+                  Need another manager operation?{" "}
+                  <a
+                    href={DOCUMENT_LINKS.managerCompatibilityIssue}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open a compatibility issue <ArrowSquareOut aria-hidden="true" />
+                  </a>
+                </p>
+              ) : null}
+            </details>
+          </SettingsRow>
           <SettingsRow
             actions={
               establishedSignerParticipation ? (
