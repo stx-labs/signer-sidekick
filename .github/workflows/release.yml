@@ -16,7 +16,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -84,28 +84,57 @@ jobs:
       - name: Log in to GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Publish release image
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Prepare release image
         id: image
         shell: bash
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          tag="${{ steps.release.outputs.tag }}"
-          major="v${{ steps.release.outputs.version }}"
-          major="${major%%.*}"
-          if docker manifest inspect "$image:$tag" >/dev/null 2>&1; then
-            echo "Image tag $image:$tag already exists" >&2
+          version="${{ steps.release.outputs.version }}"
+          reference="$image:$version"
+          if docker manifest inspect "$reference" >/dev/null 2>&1; then
+            echo "Image tag $reference already exists" >&2
             exit 1
           fi
-          docker build --target runtime \
-            --build-arg "VCS_REF=${{ steps.release.outputs.commit }}" \
-            --build-arg "VERSION=${{ steps.release.outputs.version }}" \
-            --tag "$image:$tag" \
-            --tag "$image:$major" \
-            .
-          docker push "$image:$tag"
-          docker push "$image:$major"
-          echo "reference=$image:$tag" >> "$GITHUB_OUTPUT"
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          build-args: |
+            VCS_REF=${{ steps.release.outputs.commit }}
+            VERSION=${{ steps.release.outputs.version }}
+          context: .
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+          push: true
+          sbom: false
+          tags: ${{ steps.image.outputs.reference }}
+          target: runtime
+
+      - name: Verify release image platforms
+        env:
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$(docker buildx imagetools inspect --raw "$IMAGE_REFERENCE")"
+          for architecture in amd64 arm64; do
+            jq -e --arg architecture "$architecture" \
+              'any(.manifests[]?; .platform.os == "linux" and .platform.architecture == $architecture)' \
+              <<<"$manifest" >/dev/null || {
+                echo "$IMAGE_REFERENCE is missing linux/$architecture" >&2
+                exit 1
+              }
+          done
 
       - name: Create GitHub release
         env:
