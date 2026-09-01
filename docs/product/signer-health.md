@@ -48,21 +48,28 @@ distinct-source count, confidence, and supporting/contradicting evidence.
 - `likely-local-node` — sustained local RPC, peer-height, or local-tip evidence points at this node.
 - `likely-local-signer` — signer reachability, identity, network/cycle, node-view, or participation
   telemetry points at this signer.
-- `source-disagreement` — a comparison source disagrees with an advancing local node, or one local
-  signer metric cannot safely attribute the cause.
+- `source-disagreement` — comparison sources disagree with the local canonical chain view.
 - `suspected-network-wide` — the local tip and at least two distinct nonlocal/peer signals agree on
   a network stall.
 - `insufficient-evidence` — coverage or baseline is not sufficient to attribute a condition.
 - `healthy` — no active finding is supported.
 
+Severity answers what the operator should do, not how unusual a metric looks:
+
+- `critical` — a sustained local fault is likely preventing participation or safe operation;
+  investigate now.
+- `warning` — inspect soon, or check the wider Stacks network when multiple independent sources
+  indicate a broader event.
+- `info` — retained context only; no local action is justified.
+
 The current thresholds are deliberately closed and operator-readable:
 
 | Rule ID | Finding | Minimum evidence |
 | --- | --- | --- |
-| `node-rpc-unavailable` | Node RPC unavailable | 3 consecutive samples spanning at least 10 seconds |
-| `signer-monitoring-unavailable` | Signer monitoring unavailable | 3 consecutive samples spanning at least 10 seconds |
-| `signer-node-heartbeat-failed` | Signer cannot reach its node | 3 consecutive samples spanning at least 10 seconds |
-| `signer-metrics-unavailable` | Signer metrics unavailable | 3 consecutive samples spanning at least 10 seconds; suppressed when all signer monitoring is unavailable |
+| `node-rpc-unavailable` | Node RPC unavailable | at least 3 consecutive failures spanning 60 seconds |
+| `signer-monitoring-unavailable` | Signer monitoring unavailable | at least 3 consecutive failures spanning 60 seconds |
+| `signer-node-heartbeat-failed` | Signer cannot reach its node | at least 3 consecutive failures spanning 60 seconds |
+| `signer-metrics-unavailable` | Signer metrics unavailable | at least 3 consecutive failures spanning 60 seconds; suppressed when all signer monitoring is unavailable |
 | `node-behind-network` | Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
 | `node-tip-stalled-locally` | Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
 | `network-tip-stalled` | Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
@@ -73,9 +80,6 @@ The current thresholds are deliberately closed and operator-readable:
 | `signer-node-view-behind` | Signer node view behind local node | at least 3 Stacks blocks across 3 signer-height updates spanning at least 2 minutes; 2 healthy updates resolve it |
 | `signer-proposal-response-gap` | Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
 | `expected-signer-silent` | Expected signer receives no proposals | signer is expected in the current set, metrics remain available, the proposal counter is static for 10 minutes, and the local node advances at least 12 times |
-| `signer-rejection-rate-elevated` | Elevated rejection rate | at least 20 responses and 25% rejected in 15 minutes; cause remains unattributed |
-| `signer-validation-latency-elevated` | Elevated node validation latency | at least 20 timed histogram observations and node-reported p95 above 5 seconds in 15 minutes |
-| `signer-agreement-conflicts-elevated` | Agreement conflicts | at least 3 conflicts in 15 minutes; cause remains unattributed |
 
 Signer counters are reset-safe. Histograms use the official Stacks signer bucket boundaries and
 derive windowed p95 from cumulative-counter increases, re-baselining every bucket together on a
@@ -86,11 +90,11 @@ than reporting the bucket's upper boundary. Incomplete or non-monotonic histogra
 excluded rather than allowed to create a false latency finding. Missing release-specific metrics
 reduce coverage rather than failing the entire signer source.
 
-End-to-end response p95 remains visible as diagnostic telemetry and in support data, but it cannot
-open or strengthen a health finding. Stacks Signer derives that measurement from the block header's
-wall-clock timestamp, so Sidekick does not treat it as a reliable local alert boundary. The
-validation-latency rule instead uses `validation_time_ms` reported by the local Stacks node for
-successful validation responses.
+Response p95, node-reported validation p95, rejection rate, and agreement-conflict counts remain
+visible in the 15-minute statistics, rollups, Prometheus export, and support data. They do not open
+or strengthen a finding without a direct participation failure. Response timing depends on a block
+header timestamp, while successful-validation timing and rejection/conflict counters vary with
+proposal complexity and protocol behavior that the metric alone cannot attribute.
 
 ## Durable history
 
@@ -104,8 +108,8 @@ skipped and counted rather than stopping monitoring. Changing the monitored conf
 the old configuration's active episodes and starts a separate evidence stream.
 
 The API returns up to 288 recent rollups and 50 recent episodes. Rollups contain source
-availability, tip progression, proposal/response/rejection/conflict changes, response p95 for
-diagnostics, and validation p95 for alert calibration.
+availability, tip progression, proposal/response/rejection/conflict changes, and response and
+validation p95 for diagnostics.
 
 ## Operator and support surfaces
 
@@ -119,7 +123,7 @@ Process probes are separate from authenticated operator health data: `/health/li
 liveness, `/health/ready` reports that Sidekick and its database can serve requests, and
 `/health/operational` verifies the current node/manager connection, manager preflight, and the
 availability of node-health evidence. It returns the current diagnostic status in its body, but a
-warning such as slow validation does not make the probe fail; connection/preflight failure or an
+warning finding does not make the probe fail; connection/preflight failure or an
 `unavailable` health state does. A node outage must not make `/health/ready` fail because Sidekick
 remains the diagnostic surface during that outage.
 
@@ -144,6 +148,11 @@ cover host saturation, process/container lifecycle, service logs, disk/filesyste
 networking for the same window. Sidekick deliberately does not collect unrestricted logs, control
 the host, or include private keys. Bundle generation is read-only: it cannot collect a new health
 sample, resolve an episode, or change incident history.
+
+The August 17–31, 2026 node-vm calibration included 101,417 successful validations. A five-second
+15-minute validation p95 would have warned in about 43% of sampled minutes without identifying an
+operator action. That evidence keeps latency, rejection rate, and agreement conflicts diagnostic;
+direct participation failures and corroborated stalls remain actionable.
 
 ## Endpoint safety
 

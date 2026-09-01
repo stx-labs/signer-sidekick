@@ -20,7 +20,7 @@ export const HEALTH_WINDOWS = {
 export const HEALTH_RULE_THRESHOLDS = {
   localEndpointFailure: {
     minimumSamples: 3,
-    minimumWindowMs: 10_000,
+    minimumWindowMs: 60_000,
   },
   nodeBehindPeers: {
     lagBlocks: 3,
@@ -62,20 +62,6 @@ export const HEALTH_RULE_THRESHOLDS = {
     minimumProposals: 5,
     minimumGap: 3,
     highConfidenceResponses: 20,
-  },
-  rejectionRate: {
-    windowMs: HEALTH_WINDOWS.recentSignerMs,
-    minimumResponses: 20,
-    percent: 25,
-  },
-  validationLatency: {
-    windowMs: HEALTH_WINDOWS.recentSignerMs,
-    minimumAcceptedValidations: 20,
-    p95Seconds: 5,
-  },
-  agreementConflicts: {
-    windowMs: HEALTH_WINDOWS.recentSignerMs,
-    minimumConflicts: 3,
   },
 } as const;
 
@@ -189,7 +175,7 @@ export const HEALTH_RULES = {
   referenceApiBehindLocalNode: defineRule({
     id: "reference-api-behind-local-node",
     category: "comparison",
-    defaultSeverity: "warning",
+    defaultSeverity: "info",
     thresholds: HEALTH_RULE_THRESHOLDS.comparisonSourceLag,
     rationale:
       "A stale reference should be disclosed without making a healthy local node unhealthy.",
@@ -199,7 +185,7 @@ export const HEALTH_RULES = {
   configuredApiBehindLocalNode: defineRule({
     id: "configured-api-behind-local-node",
     category: "comparison",
-    defaultSeverity: "warning",
+    defaultSeverity: "info",
     thresholds: HEALTH_RULE_THRESHOLDS.comparisonSourceLag,
     rationale: "A stale indexed source should not override node-proved current state.",
     falsePositiveGuard:
@@ -257,34 +243,6 @@ export const HEALTH_RULES = {
       "A signer expected in the active set must observe proposals while the chain advances.",
     falsePositiveGuard:
       "Require anchored participation, healthy first-person metrics, ten minutes, and many local node advances.",
-  }),
-  signerRejectionRateElevated: defineRule({
-    id: "signer-rejection-rate-elevated",
-    category: "signer-participation",
-    defaultSeverity: "warning",
-    thresholds: HEALTH_RULE_THRESHOLDS.rejectionRate,
-    rationale:
-      "Sustained rejection can indicate bad proposals, node validation, or signer policy issues.",
-    falsePositiveGuard: "Require a minimum response population and preserve ambiguous attribution.",
-  }),
-  signerValidationLatencyElevated: defineRule({
-    id: "signer-validation-latency-elevated",
-    category: "local-chain",
-    defaultSeverity: "warning",
-    thresholds: HEALTH_RULE_THRESHOLDS.validationLatency,
-    rationale: "The Stacks node directly reports how long successful block validation took.",
-    falsePositiveGuard:
-      "Require at least 20 successful validations so one complex block cannot alert.",
-  }),
-  signerAgreementConflictsElevated: defineRule({
-    id: "signer-agreement-conflicts-elevated",
-    category: "signer-participation",
-    defaultSeverity: "warning",
-    thresholds: HEALTH_RULE_THRESHOLDS.agreementConflicts,
-    rationale:
-      "Repeated agreement conflicts can reveal signer, miner-view, or network disagreement.",
-    falsePositiveGuard:
-      "Require multiple conflicts and do not attribute the metric to one component.",
   }),
 } as const;
 

@@ -941,8 +941,7 @@ describe("local API", () => {
 
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     // The settled proposal burst is old enough to be an unanswered gap, so the primary diagnosis is
-    // likely-local-signer alongside the source-disagreement rejection finding. End-to-end response
-    // latency remains exported as diagnostic telemetry but no longer opens a finding.
+    // likely-local-signer. Rejection and latency measurements remain diagnostic telemetry.
     expect(metrics.body).toContain(
       'sidekick_signer_health_diagnosis{classification="likely-local-signer"} 1',
     );
@@ -950,7 +949,7 @@ describe("local API", () => {
       'sidekick_signer_health_active_findings{classification="likely-local-signer"} 1',
     );
     expect(metrics.body).toContain(
-      'sidekick_signer_health_active_findings{classification="source-disagreement"} 1',
+      'sidekick_signer_health_active_findings{classification="source-disagreement"} 0',
     );
     expect(metrics.body).toContain(
       'sidekick_signer_health_active_findings{classification="insufficient-evidence"} 0',

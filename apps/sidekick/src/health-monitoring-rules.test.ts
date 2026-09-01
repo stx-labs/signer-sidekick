@@ -15,18 +15,26 @@ describe("health rule catalog", () => {
     }
   });
 
-  it("keeps response latency diagnostic-only and validation latency actionable", () => {
-    expect(HEALTH_RULE_CATALOG.map(({ id }) => id)).not.toContain(
-      "signer-response-latency-elevated",
+  it("keeps ambiguous signer performance counters diagnostic-only", () => {
+    expect(HEALTH_RULE_CATALOG.map(({ id }) => id)).not.toEqual(
+      expect.arrayContaining([
+        "signer-response-latency-elevated",
+        "signer-validation-latency-elevated",
+        "signer-rejection-rate-elevated",
+        "signer-agreement-conflicts-elevated",
+      ]),
     );
-    expect(HEALTH_RULES.signerValidationLatencyElevated).toMatchObject({
-      id: "signer-validation-latency-elevated",
-      defaultSeverity: "warning",
-      thresholds: {
-        minimumAcceptedValidations: 20,
-        p95Seconds: 5,
-      },
+  });
+
+  it("waits a minute before making a local endpoint outage actionable", () => {
+    expect(HEALTH_RULE_THRESHOLDS.localEndpointFailure).toEqual({
+      minimumSamples: 3,
+      minimumWindowMs: 60_000,
     });
-    expect(HEALTH_RULE_THRESHOLDS.validationLatency.windowMs).toBe(15 * 60_000);
+  });
+
+  it("keeps a lagging comparison API informational", () => {
+    expect(HEALTH_RULES.referenceApiBehindLocalNode.defaultSeverity).toBe("info");
+    expect(HEALTH_RULES.configuredApiBehindLocalNode.defaultSeverity).toBe("info");
   });
 });

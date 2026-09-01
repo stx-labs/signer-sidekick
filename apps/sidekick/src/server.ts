@@ -1789,7 +1789,7 @@ export function createServer(options: ServerOptions = {}) {
       if (health.signer.last15Minutes.validationP95Seconds !== null) {
         metrics.gauge(
           "sidekick_signer_validation_p95_seconds",
-          "Approximate node-reported successful block-validation p95 in the rolling 15-minute window.",
+          "Diagnostic-only approximate node-reported successful block-validation p95 in the rolling 15-minute window; this does not open health findings.",
           health.signer.last15Minutes.validationP95Seconds,
         );
       }
