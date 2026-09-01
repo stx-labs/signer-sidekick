@@ -76,10 +76,10 @@ describe("compatibility attestations", () => {
     const signingBytes = compatibilityAttestationSigningBytes(payload());
 
     expect(createHash("sha256").update(signingBytes).digest("hex")).toBe(
-      "a628d614fc38ce8b5f83301c9e9c72893e676cccad38ca00e8b31456dc62af91",
+      "f5e28377d9508f032ec3345e88203787f6666daeb755f7e3da058097971a0438",
     );
     expect(sign(null, signingBytes, privateKey).toString("base64")).toBe(
-      "87UE/lG97PKWSJgorwDdNoOezgwpIIosQDCGIo9FsiRvke2V18rqIaOBeOTTCzTdaWjNkbW+j0tl0cY0mMknDg==",
+      "7YFvRaQeQWKZvF9nKSYF/JxdGe2nomLTMizcnwn1Uz2aFP9Wf9jmkkmzMLtvfaoMHJacruJhaOdbIqLbeBUiDg==",
     );
   });
 

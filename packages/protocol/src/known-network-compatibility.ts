@@ -52,8 +52,8 @@ export const TESTNET_COMPATIBILITY = {
   pox5: {
     contractId: "ST000000000000000000002AMW42H.pox-5",
     sourceSha256: "44a424364cb3c115ec92d0a72ebd228645e65d8f92792d66695898904e14c734",
-    activationBurnHeight: 4_065,
-    firstRewardCycleId: 5,
+    activationBurnHeight: 2_702,
+    firstRewardCycleId: 4,
   },
   sbtc: {
     tokenContract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
