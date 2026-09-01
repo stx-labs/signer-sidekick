@@ -1,4 +1,4 @@
-import { POX5_TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import { TESTNET_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "../chain-anchor.js";
 import type { OperatorAnchorSnapshot } from "../operator-anchor-snapshot.js";
@@ -47,19 +47,19 @@ async function seedPlannedJob(store: SidekickStore) {
   return await seedLegacyManagerClaimJob(store, {
     state: "preflighted",
     facts: legacyManagerClaimFacts({
-      network: { kind: "testnet", chainId: POX5_TESTNET_COMPATIBILITY.networkId },
+      network: { kind: "testnet", chainId: TESTNET_COMPATIBILITY.networkId },
       manager: {
         contract: manager,
         profile: {
-          id: POX5_TESTNET_COMPATIBILITY.referenceManager.profileId,
+          id: TESTNET_COMPATIBILITY.referenceManager.profileId,
           recognitionTier: "reference-render",
-          sourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+          sourceSha256: TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
         },
-        observedSourceSha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+        observedSourceSha256: TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
       },
       contracts: {
-        pox5: POX5_TESTNET_COMPATIBILITY.pox5.contractId,
-        sbtcToken: POX5_TESTNET_COMPATIBILITY.sbtc.tokenContract,
+        pox5: TESTNET_COMPATIBILITY.pox5.contractId,
+        sbtcToken: TESTNET_COMPATIBILITY.sbtc.tokenContract,
       },
     }),
   });
@@ -72,15 +72,15 @@ function setup(): OperatorAnchorSnapshot {
       status: "pass",
       network: "testnet",
       node: {
-        networkId: POX5_TESTNET_COMPATIBILITY.networkId,
+        networkId: TESTNET_COMPATIBILITY.networkId,
         burnBlockHeight: anchor.burnBlockHeight,
         stacksTipHeight: anchor.stacksBlockHeight,
       },
       pox: {
-        pox5ContractId: POX5_TESTNET_COMPATIBILITY.pox5.contractId,
-        sourceSha256: POX5_TESTNET_COMPATIBILITY.pox5.sourceSha256,
-        sbtcTokenContract: POX5_TESTNET_COMPATIBILITY.sbtc.tokenContract,
-        sbtcRegistryContract: POX5_TESTNET_COMPATIBILITY.sbtc.registryContract,
+        pox5ContractId: TESTNET_COMPATIBILITY.pox5.contractId,
+        sourceSha256: TESTNET_COMPATIBILITY.pox5.sourceSha256,
+        sbtcTokenContract: TESTNET_COMPATIBILITY.sbtc.tokenContract,
+        sbtcRegistryContract: TESTNET_COMPATIBILITY.sbtc.registryContract,
       },
       compatibility: { status: "matched" },
     },
@@ -89,8 +89,8 @@ function setup(): OperatorAnchorSnapshot {
       automationEligible: true,
       source: {
         tier: "reference-render",
-        profileId: POX5_TESTNET_COMPATIBILITY.referenceManager.profileId,
-        sha256: POX5_TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
+        profileId: TESTNET_COMPATIBILITY.referenceManager.profileId,
+        sha256: TESTNET_COMPATIBILITY.referenceManager.sourceSha256,
         match: "exact",
       },
     },
@@ -103,7 +103,7 @@ function baseRewards(overrides: Partial<StxRewardStatus> = {}): StxRewardStatus 
   return {
     status: "ready",
     managerPrincipal: manager,
-    pox5ContractId: POX5_TESTNET_COMPATIBILITY.pox5.contractId,
+    pox5ContractId: TESTNET_COMPATIBILITY.pox5.contractId,
     rewardCycle: anchor.rewardCycle,
     observedAt: {
       timestamp: observedAt,

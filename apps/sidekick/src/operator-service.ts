@@ -960,9 +960,7 @@ export class OperatorService {
   async rewardLedger(query: RewardLedgerQuery = {}): Promise<RewardLedger> {
     const snapshot = await this.snapshot();
     const config = this.runtimeContext().config;
-    const chainId =
-      config.expectedNetworkId ??
-      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const chainId = config.expectedNetworkId ?? (config.network === "mainnet" ? 1 : 0x80000000);
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const pox5ContractId =
       snapshot.preflight?.pox?.pox5ContractId ?? snapshot.rewardOutlook?.pox5ContractId ?? null;
@@ -1057,9 +1055,7 @@ export class OperatorService {
     tip: string | undefined,
   ): Promise<ReadonlyMap<string, WithdrawalRegistryEvidence>> {
     const config = this.runtimeContext().config;
-    const chainId =
-      config.expectedNetworkId ??
-      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const chainId = config.expectedNetworkId ?? (config.network === "mainnet" ? 1 : 0x80000000);
     const observedAt = new Date().toISOString();
     const result = new Map<string, WithdrawalRegistryEvidence>();
     for (let index = 0; index < requests.length; index += 8) {
@@ -1154,9 +1150,7 @@ export class OperatorService {
 
   async activity(options: Parameters<typeof readManagerActivity>[3] = {}) {
     const config = this.runtimeContext().config;
-    const chainId =
-      config.expectedNetworkId ??
-      (config.network === "mainnet" ? 1 : config.network === "testnet" ? 0x80000005 : 0x80000000);
+    const chainId = config.expectedNetworkId ?? (config.network === "mainnet" ? 1 : 0x80000000);
     return readManagerActivity(this.options.store, chainId, this.options.managerPrincipal, {
       ...options,
       sourceId: createChainSourceId(config.network, config.apiUrl),

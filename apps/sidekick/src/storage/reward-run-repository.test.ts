@@ -29,7 +29,7 @@ function recipe(id = runId): RewardRunRecipe {
     sbtcTokenContract: sbtc,
     sbtcRegistryContract: registry,
     network: "testnet",
-    chainId: 0x8000_0005,
+    chainId: 0x8000_0000,
     cycle: 141,
     distribution: 1,
     orderedOperations: ["claim-staker-rewards"],
@@ -163,7 +163,7 @@ describe("reward run repository", () => {
         runId,
         recipeSha256: "56".repeat(32),
       },
-      network: { kind: "testnet", chainId: 0x8000_0005 },
+      network: { kind: "testnet", chainId: 0x8000_0000 },
       chainAnchor: recipe().preparedAnchor,
       sender: { principal: wallet, publicKey },
       managerSourceFingerprint: "12".repeat(32),
@@ -256,7 +256,7 @@ describe("reward run repository", () => {
 
     const sweepPlan = await planGasWalletSweep({
       network: "testnet",
-      chainId: 0x8000_0005,
+      chainId: 0x8000_0000,
       sender: { principal: wallet, publicKey },
       recipient: staker,
       balanceUstx: 10_000n,

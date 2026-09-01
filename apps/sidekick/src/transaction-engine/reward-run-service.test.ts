@@ -38,7 +38,7 @@ function facts(): RewardRunDraftFacts {
     sbtcTokenContract: sbtc,
     sbtcRegistryContract: registry,
     network: "testnet",
-    chainId: 0x8000_0005,
+    chainId: 0x8000_0000,
     cycle: 141,
     distribution: 1,
     preparedAnchor: {
@@ -123,7 +123,7 @@ function driver(
           runId: run.runId,
           recipeSha256: run.recipeSha256,
         },
-        network: { kind: "testnet" as const, chainId: 0x8000_0005 },
+        network: { kind: "testnet" as const, chainId: 0x8000_0000 },
         chainAnchor: run.recipe.preparedAnchor,
         sender: { principal: wallet, publicKey },
         managerSourceFingerprint: run.recipe.managerSourceFingerprint,

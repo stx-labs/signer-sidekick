@@ -11,7 +11,7 @@ node and an indexed Stacks API.
 - [Install on mainnet](docs/operator/deployment.md)
 - [Configure the node and signer](docs/operator/node-signer-requirements.md)
 - [Operate and recover Sidekick](docs/operator/operations.md)
-- [Evaluate on PoX-5 Testnet](docs/operator/pox5-testnet-deployment.md)
+- [Evaluate on Testnet](docs/operator/testnet-deployment.md)
 
 Sidekick starts after the node, signer, and signer-manager are running. Use
 [Zero to Signing](https://stx.fan/zero_to/signing/) to deploy the manager and

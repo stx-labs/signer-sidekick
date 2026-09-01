@@ -16,7 +16,7 @@ import {
   executeRevalidatedBrowserWalletIntent,
   LEATHER_PROVIDER_ID,
   MAINNET_CHAIN_ID,
-  POX5_TESTNET_CHAIN_ID,
+  TESTNET_CHAIN_ID,
   XVERSE_PROVIDER_ID,
 } from "./browser-wallet.js";
 
@@ -140,7 +140,7 @@ function managerActionIntent(
 }
 
 function nonMainnetIntent(
-  network: "pox5-testnet" | "devnet" | "regtest",
+  network: "testnet" | "devnet" | "regtest",
   chainId: number,
   action: ManagerAction = "update-fees",
 ): BrowserWalletIntent {
@@ -174,8 +174,8 @@ function nonMainnetIntent(
   } as BrowserWalletIntent;
 }
 
-function pox5Intent(action: ManagerAction = "update-fees"): BrowserWalletIntent {
-  return nonMainnetIntent("pox5-testnet", POX5_TESTNET_CHAIN_ID, action);
+function testnetIntent(action: ManagerAction = "update-fees"): BrowserWalletIntent {
+  return nonMainnetIntent("testnet", TESTNET_CHAIN_ID, action);
 }
 
 function claimIntent(): BrowserWalletIntent {
@@ -260,7 +260,7 @@ describe("browser wallet execution", () => {
           ? [LEATHER_PROVIDER_ID, XVERSE_PROVIDER_ID]
           : [LEATHER_PROVIDER_ID],
       );
-      for (const network of ["pox5-testnet", "devnet", "regtest"] as const) {
+      for (const network of ["testnet", "devnet", "regtest"] as const) {
         expect(browserWalletProviderIds(action, network)).toEqual([LEATHER_PROVIDER_ID]);
       }
     }
@@ -422,8 +422,8 @@ describe("browser wallet execution", () => {
     );
   });
 
-  it("uses Leather's exact dedicated PoX-5 Testnet custom-network key", async () => {
-    const intent = await sealed(pox5Intent());
+  it("uses Leather's exact testnet network key", async () => {
+    const intent = await sealed(testnetIntent());
     const deps = dependencies({ address: testnetAdmin });
 
     await expect(executeBrowserWalletIntent(intent, deps)).resolves.toEqual({
@@ -434,7 +434,7 @@ describe("browser wallet execution", () => {
     expect(deps.connectWallet).toHaveBeenCalledWith(
       expect.objectContaining({
         approvedProviderIds: [LEATHER_PROVIDER_ID],
-        network: "pox5-testnet",
+        network: "testnet",
       }),
     );
     expect(deps.call).toHaveBeenCalledWith(
@@ -469,23 +469,23 @@ describe("browser wallet execution", () => {
 
   it.each([
     {
-      name: "ordinary testnet identifier",
+      name: "legacy pox5-testnet identifier",
       update: (intent: BrowserWalletIntent) => ({
         ...intent,
-        network: "testnet",
+        network: "pox5-testnet",
         transaction: {
           ...intent.transaction,
-          params: { ...intent.transaction.params, network: "testnet" },
+          params: { ...intent.transaction.params, network: "pox5-testnet" },
         },
       }),
     },
     {
-      name: "ordinary testnet chain ID",
-      update: (intent: BrowserWalletIntent) => ({ ...intent, chainId: 0x80000000 }),
+      name: "legacy pox5-testnet chain ID",
+      update: (intent: BrowserWalletIntent) => ({ ...intent, chainId: 0x80000005 }),
     },
-  ])("rejects PoX-5 Testnet intent with $name", async ({ update }) => {
+  ])("rejects testnet intent with $name", async ({ update }) => {
     const deps = dependencies({ address: testnetAdmin });
-    const changed = update(await sealed(pox5Intent())) as BrowserWalletIntent;
+    const changed = update(await sealed(testnetIntent())) as BrowserWalletIntent;
 
     await expect(executeBrowserWalletIntent(changed, deps)).rejects.toMatchObject({
       code: "unsupported-network",
@@ -788,12 +788,12 @@ describe("browser wallet execution", () => {
   });
 
   it("returns provider capabilities for each supported network binding", () => {
-    expect(browserWalletSupport("register-self", "testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
+    expect(browserWalletSupport("register-self", "testnet", TESTNET_CHAIN_ID)).toEqual({
       available: true,
       providerIds: [LEATHER_PROVIDER_ID],
       unavailableReason: null,
     });
-    expect(browserWalletSupport("update-fees", "pox5-testnet", POX5_TESTNET_CHAIN_ID)).toEqual({
+    expect(browserWalletSupport("update-fees", "testnet", TESTNET_CHAIN_ID)).toEqual({
       available: true,
       providerIds: [LEATHER_PROVIDER_ID],
       unavailableReason: null,
@@ -821,7 +821,7 @@ describe("browser wallet execution", () => {
   });
 
   it("returns one manual fallback for unsupported network bindings", () => {
-    expect(browserWalletSupport("update-fees", "mainnet", POX5_TESTNET_CHAIN_ID)).toEqual({
+    expect(browserWalletSupport("update-fees", "mainnet", TESTNET_CHAIN_ID)).toEqual({
       available: false,
       providerIds: [],
       unavailableReason:

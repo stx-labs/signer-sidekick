@@ -25,7 +25,7 @@ import {
 import { type TransactionEngineRepository, transactionEngineDocumentSha256 } from "./repository.js";
 
 const mainnetChainId = 1;
-const pox5TestnetChainId = 0x8000_0005;
+const testnetChainId = 0x8000_0000;
 const digestSchema = z.string().regex(/^[0-9a-f]{64}$/);
 const uintTextSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 
@@ -221,14 +221,10 @@ function publicNetwork(input: ManagerClaimWalletLiveIdentity["network"]): {
   if (input.name === "mainnet" && input.kind === "mainnet" && input.chainId === mainnetChainId) {
     return { network: "mainnet", chainId: mainnetChainId, transactionVersion: 0 };
   }
-  if (
-    input.name === "pox5-testnet" &&
-    input.kind === "testnet" &&
-    input.chainId === pox5TestnetChainId
-  ) {
+  if (input.name === "testnet" && input.kind === "testnet" && input.chainId === testnetChainId) {
     return {
-      network: "pox5-testnet",
-      chainId: pox5TestnetChainId,
+      network: "testnet",
+      chainId: testnetChainId,
       transactionVersion: 0x80,
     };
   }

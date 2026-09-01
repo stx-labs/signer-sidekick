@@ -9,8 +9,8 @@ import { isStacksAddress, isStacksAddressForNetwork } from "../../shared/princip
 export const LEATHER_PROVIDER_ID = "LeatherProvider";
 export const XVERSE_PROVIDER_ID = "XverseProviders.BitcoinProvider";
 export const MAINNET_CHAIN_ID = 0x0000_0001;
-export const POX5_TESTNET_CHAIN_ID = 0x8000_0005;
-export const POX5_TESTNET_CONNECT_NETWORK = "pox5-testnet";
+export const TESTNET_CHAIN_ID = 0x8000_0000;
+export const TESTNET_CONNECT_NETWORK = "testnet";
 const MAX_CHAIN_ID = 0xffff_ffff;
 
 export type BrowserWalletAction = BrowserWalletIntent["action"];
@@ -129,10 +129,9 @@ export function isBrowserWalletProviderSupported(
 }
 
 export function browserWalletIntentNetwork(network: string): BrowserWalletIntentNetwork | null {
-  if (network === "testnet") return POX5_TESTNET_CONNECT_NETWORK;
   if (
     network === "mainnet" ||
-    network === POX5_TESTNET_CONNECT_NETWORK ||
+    network === TESTNET_CONNECT_NETWORK ||
     network === "devnet" ||
     network === "regtest"
   ) {
@@ -144,7 +143,7 @@ export function browserWalletIntentNetwork(network: string): BrowserWalletIntent
 function validChainId(network: BrowserWalletIntentNetwork, chainId: number): boolean {
   if (!Number.isInteger(chainId) || chainId < 0 || chainId > MAX_CHAIN_ID) return false;
   if (network === "mainnet") return chainId === MAINNET_CHAIN_ID;
-  if (network === POX5_TESTNET_CONNECT_NETWORK) return chainId === POX5_TESTNET_CHAIN_ID;
+  if (network === TESTNET_CONNECT_NETWORK) return chainId === TESTNET_CHAIN_ID;
   return true;
 }
 
@@ -298,7 +297,7 @@ function walletNetworkBinding(intent: BrowserWalletIntent): WalletNetworkBinding
   const connectNetwork = String(intent.transaction.params.network);
   if (
     (sidekickNetwork === "mainnet" ||
-      sidekickNetwork === POX5_TESTNET_CONNECT_NETWORK ||
+      sidekickNetwork === TESTNET_CONNECT_NETWORK ||
       sidekickNetwork === "devnet" ||
       sidekickNetwork === "regtest") &&
     connectNetwork === sidekickNetwork &&

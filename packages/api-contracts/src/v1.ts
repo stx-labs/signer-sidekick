@@ -549,7 +549,7 @@ export type BrowserWalletIntentAction =
   | "claim-rewards"
   | "claim-staker-rewards"
   | "calculate-rewards";
-export type BrowserWalletIntentNetwork = "mainnet" | "pox5-testnet" | "devnet" | "regtest";
+export type BrowserWalletIntentNetwork = "mainnet" | "testnet" | "devnet" | "regtest";
 export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
 export type BrowserWalletIntentCreateRequest =
   | { action: "register-self"; actorPrincipal: string }
@@ -2465,12 +2465,7 @@ export const overviewPageSchema = z
   });
 export type OverviewPage = z.infer<typeof overviewPageSchema>;
 
-export const browserWalletIntentNetworkSchema = z.enum([
-  "mainnet",
-  "pox5-testnet",
-  "devnet",
-  "regtest",
-]);
+export const browserWalletIntentNetworkSchema = z.enum(["mainnet", "testnet", "devnet", "regtest"]);
 export const browserWalletConnectNetworkSchema = browserWalletIntentNetworkSchema;
 
 const clarityUintMaximum = (1n << 128n) - 1n;
@@ -2837,7 +2832,7 @@ export const browserWalletIntentSchema = z
   .strict()
   .superRefine((value, context) => {
     const expectedChainId =
-      value.network === "mainnet" ? 1 : value.network === "pox5-testnet" ? 0x80000005 : null;
+      value.network === "mainnet" ? 1 : value.network === "testnet" ? 0x80000000 : null;
     if (
       value.transaction.params.network !== value.network ||
       (expectedChainId !== null && value.chainId !== expectedChainId)

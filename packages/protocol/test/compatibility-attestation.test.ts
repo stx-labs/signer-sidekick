@@ -9,7 +9,7 @@ import {
   type SignedCompatibilityAttestation,
   verifyCompatibilityAttestation,
 } from "../src/compatibility-attestation.js";
-import { POX5_TESTNET_COMPATIBILITY } from "../src/known-network-compatibility.js";
+import { TESTNET_COMPATIBILITY } from "../src/known-network-compatibility.js";
 
 const now = new Date("2026-07-17T12:00:00.000Z");
 
@@ -32,7 +32,7 @@ function payload(overrides: Partial<CompatibilityAttestationPayload> = {}) {
     issuedAt: "2026-07-17T00:00:00.000Z",
     notBefore: "2026-07-17T00:00:00.000Z",
     expiresAt: "2026-07-18T00:00:00.000Z",
-    profile: POX5_TESTNET_COMPATIBILITY,
+    profile: TESTNET_COMPATIBILITY,
     ...overrides,
   } as CompatibilityAttestationPayload;
 }
@@ -76,10 +76,10 @@ describe("compatibility attestations", () => {
     const signingBytes = compatibilityAttestationSigningBytes(payload());
 
     expect(createHash("sha256").update(signingBytes).digest("hex")).toBe(
-      "88c07968eb42e9907ab47525456a7aac1e61e44fc4e55971b2b89bb2c6c82360",
+      "f5e28377d9508f032ec3345e88203787f6666daeb755f7e3da058097971a0438",
     );
     expect(sign(null, signingBytes, privateKey).toString("base64")).toBe(
-      "CYr4PHnbGDzxu/f3QI2IxEgHWtj7c++r2P6iyNNWNu2jsEsRvag117wd9aQeu7Ct9LvIQ3mxKJyCg8SC2s2hCw==",
+      "7YFvRaQeQWKZvF9nKSYF/JxdGe2nomLTMizcnwn1Uz2aFP9Wf9jmkkmzMLtvfaoMHJacruJhaOdbIqLbeBUiDg==",
     );
   });
 
@@ -110,7 +110,7 @@ describe("compatibility attestations", () => {
       now,
     });
 
-    expect(result.profile).toEqual(POX5_TESTNET_COMPATIBILITY);
+    expect(result.profile).toEqual(TESTNET_COMPATIBILITY);
     expect(result.payloadSha256).toBe(compatibilityAttestationPayloadSha256(value));
     expect(result.acceptedState).toEqual({
       issuer: "stacks-labs",

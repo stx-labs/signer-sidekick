@@ -14,7 +14,7 @@ describe("Stacks principal validation", () => {
     expect(isStacksAddressForNetwork(mainnetAddress, "mainnet")).toBe(true);
     expect(isStacksAddressForNetwork(mainnetAddress, "testnet")).toBe(false);
     expect(isStacksAddressForNetwork(testnetAddress, "mainnet")).toBe(false);
-    expect(isStacksAddressForNetwork(testnetAddress, "pox5-testnet")).toBe(true);
+    expect(isStacksAddressForNetwork(testnetAddress, "testnet")).toBe(true);
   });
 
   it("preserves each caller's explicit contract-name length", () => {

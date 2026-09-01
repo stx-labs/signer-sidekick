@@ -172,7 +172,7 @@ function ConnectionRow({
 
 function networkLabel(network: string): string {
   if (network === "mainnet") return "Mainnet";
-  if (network === "testnet" || network === "pox5-testnet") return "PoX-5 Testnet";
+  if (network === "testnet") return "Testnet";
   return network;
 }
 

@@ -12,7 +12,7 @@ import {
   browserWalletRecoveryScope,
   isBrowserWalletProviderSupported,
   MAINNET_CHAIN_ID,
-  POX5_TESTNET_CHAIN_ID,
+  TESTNET_CHAIN_ID,
 } from "./browser-wallet.js";
 
 export interface PendingBrowserWalletBroadcast extends BrowserWalletResult {
@@ -63,7 +63,7 @@ const recoveryInFlight = new Map<string, Promise<PendingBroadcastRecovery>>();
 function validNetworkBinding(network: BrowserWalletIntentNetwork, chainId: number): boolean {
   if (!Number.isInteger(chainId) || chainId < 0 || chainId > 0xffff_ffff) return false;
   if (network === "mainnet") return chainId === MAINNET_CHAIN_ID;
-  if (network === "pox5-testnet") return chainId === POX5_TESTNET_CHAIN_ID;
+  if (network === "testnet") return chainId === TESTNET_CHAIN_ID;
   return true;
 }
 

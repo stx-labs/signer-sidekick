@@ -4,7 +4,7 @@ import { ApiRequestError } from "../../api-client.js";
 import {
   type BrowserWalletRecoveryScope,
   LEATHER_PROVIDER_ID,
-  POX5_TESTNET_CHAIN_ID,
+  TESTNET_CHAIN_ID,
   XVERSE_PROVIDER_ID,
 } from "./browser-wallet.js";
 import {
@@ -151,7 +151,7 @@ describe("browser wallet broadcast recovery", () => {
 
     expect(
       loadPendingBrowserWalletBroadcast(
-        { ...scope, network: "pox5-testnet", chainId: POX5_TESTNET_CHAIN_ID },
+        { ...scope, network: "testnet", chainId: TESTNET_CHAIN_ID },
         [storage],
       ),
     ).toBeNull();
@@ -218,15 +218,15 @@ describe("browser wallet broadcast recovery", () => {
     "add-admin",
     "remove-admin",
     "update-fees",
-  ] as const)("rejects PoX-5 Testnet Xverse recovery for %s", (xverseAction) => {
+  ] as const)("rejects Testnet Xverse recovery for %s", (xverseAction) => {
     const storage = new MemoryStorage();
 
     expect(
       persistPendingBrowserWalletBroadcast(
         {
           ...scope,
-          network: "pox5-testnet",
-          chainId: POX5_TESTNET_CHAIN_ID,
+          network: "testnet",
+          chainId: TESTNET_CHAIN_ID,
           action: xverseAction,
         },
         {
@@ -308,9 +308,7 @@ describe("browser wallet broadcast recovery", () => {
       recoverPendingBrowserWalletBroadcast(
         scope,
         {
-          getIntent: vi
-            .fn()
-            .mockResolvedValue(intent("expired", null, { network: "pox5-testnet" })),
+          getIntent: vi.fn().mockResolvedValue(intent("expired", null, { network: "testnet" })),
           recordTxid,
         },
         [storage],

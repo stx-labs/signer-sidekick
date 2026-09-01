@@ -26,7 +26,7 @@ function fixture(): ManagerClaimStakerRewardsPlanInput {
   return {
     schemaVersion: 1,
     adapterRevision: MANAGER_CLAIM_STAKER_REWARDS_ADAPTER_REVISION,
-    network: { kind: "testnet", chainId: 0x8000_0005 },
+    network: { kind: "testnet", chainId: 0x8000_0000 },
     managerContract,
     sbtcTokenContract,
     stakerPrincipal,

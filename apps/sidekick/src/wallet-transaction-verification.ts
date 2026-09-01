@@ -22,7 +22,7 @@ import type {
 const mainnetTransactionVersion = 0;
 const testnetTransactionVersion = 128;
 export const mainnetChainId = 1;
-export const pox5TestnetChainId = 0x80000005;
+export const testnetChainId = 0x80000000;
 export const defaultPrivateChainId = 0x80000000;
 
 export interface WalletTransactionNetworkBinding {
@@ -36,9 +36,9 @@ export const mainnetWalletNetwork: WalletTransactionNetworkBinding = {
   chainId: mainnetChainId,
   transactionVersion: mainnetTransactionVersion,
 };
-export const pox5TestnetWalletNetwork: WalletTransactionNetworkBinding = {
-  network: "pox5-testnet",
-  chainId: pox5TestnetChainId,
+export const testnetWalletNetwork: WalletTransactionNetworkBinding = {
+  network: "testnet",
+  chainId: testnetChainId,
   transactionVersion: testnetTransactionVersion,
 };
 
@@ -52,8 +52,8 @@ export function createWalletTransactionNetworkBinding(
   if (network === "mainnet" && chainId !== mainnetChainId) {
     throw new Error("Mainnet wallet transactions require chain ID 1");
   }
-  if (network === "pox5-testnet" && chainId !== pox5TestnetChainId) {
-    throw new Error("PoX-5 Testnet wallet transactions require chain ID 0x80000005");
+  if (network === "testnet" && chainId !== testnetChainId) {
+    throw new Error("Testnet wallet transactions require chain ID 0x80000000");
   }
   return {
     network,

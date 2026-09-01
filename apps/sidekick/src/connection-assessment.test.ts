@@ -151,7 +151,7 @@ describe("first-run connection assessment", () => {
       build: async (store: SidekickStore) =>
         service({
           store,
-          node: node({ getInfo: async () => ({ ...nodeInfo, network_id: 0x80000005 }) }),
+          node: node({ getInfo: async () => ({ ...nodeInfo, network_id: 0x80000000 }) }),
         }),
     },
     {

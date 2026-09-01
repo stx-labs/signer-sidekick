@@ -380,7 +380,7 @@ describe("Epoch 4.0 PoX-5 lifecycle harness", () => {
         runId: "00000000-0000-4000-8000-000000000001",
         recipeSha256: "12".repeat(32),
       },
-      network: { kind: "testnet" as const, chainId: 0x8000_0005 },
+      network: { kind: "testnet" as const, chainId: 0x8000_0000 },
       chainAnchor: {
         stacksBlockHeight: simnet.blockHeight,
         burnBlockHeight: simnet.burnBlockHeight,
