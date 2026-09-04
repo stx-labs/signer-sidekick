@@ -673,6 +673,8 @@ function classifySafeOperatorError(
   if (error instanceof OperatorWorkflowError) {
     return safeClassification(error.statusCode, error.responseCode, {
       ...(error.message === error.responseCode ? {} : { message: error.message }),
+      retryable: error.retryable,
+      ...(error.retryable ? { retryAfterSeconds: 1 } : {}),
     });
   }
   if (error instanceof TransactionEngineApiServiceError) {
@@ -1376,7 +1378,9 @@ export function createServer(options: ServerOptions = {}) {
         reconciliationRetryAfterSeconds =
           error instanceof RateLimitedError
             ? Math.max(1, Math.ceil((error.retryAfterMs ?? 60_000) / 1_000))
-            : null;
+            : classified.body.retryable
+              ? (classified.retryAfterSeconds ?? 1)
+              : null;
         logger.warn(
           {
             err: error,

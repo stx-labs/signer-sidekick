@@ -40,11 +40,7 @@ import {
 import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
-import {
-  indexedApiCompatible,
-  indexedWorkflowsReady,
-  type runOperatorPreflight,
-} from "./preflight.js";
+import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
 import { carryForwardRewards, type LastGoodRewards } from "./reward-last-good.js";
 import {
   buildRewardLedger,
@@ -118,6 +114,84 @@ export interface OperatorSynchronizationOptions {
 export type ManagerActivitySynchronizationOptions = OperatorSynchronizationOptions;
 export type RewardRealizationSynchronizationOptions = OperatorSynchronizationOptions;
 
+function assertIndexedSynchronizationReady(
+  preflight: Awaited<ReturnType<typeof runOperatorPreflight>>,
+  manager: Awaited<ReturnType<typeof inspectDeployedManager>>,
+  options: {
+    operation: string;
+    incompatibleCode: string;
+    unavailableCode: string;
+    minimumStacksHeight?: number | null;
+    requirePox5?: boolean;
+  },
+): void {
+  // A peer-relative node lag is a health observation. Indexed reconciliation is still safe at the
+  // operation's captured local-node anchor, so only proven identity/compatibility failures block it.
+  const blockingCheck = preflight.checks.find(
+    ({ id, status }) => status === "fail" && id !== "node-sync",
+  );
+  if (blockingCheck) {
+    throw new OperatorWorkflowError(
+      422,
+      options.incompatibleCode,
+      `${options.operation} is blocked: ${asSentence(blockingCheck.message)}`,
+    );
+  }
+  if (!preflight.api.available) {
+    throw new OperatorWorkflowError(
+      503,
+      options.unavailableCode,
+      `${options.operation} is waiting because the indexed API is temporarily unavailable. Local-node data remains available; Sidekick will retry automatically.`,
+      true,
+    );
+  }
+  const incompatibleApiCheck = preflight.checks.find(
+    (check) => check.id === "api-network" && check.status !== "pass",
+  );
+  if (incompatibleApiCheck) {
+    throw new OperatorWorkflowError(
+      422,
+      options.incompatibleCode,
+      `${options.operation} is blocked: ${asSentence(incompatibleApiCheck.message)}`,
+    );
+  }
+  const apiStatus = preflight.checks.find((check) => check.id === "api-status");
+  if (apiStatus && apiStatus.status !== "pass") {
+    throw new OperatorWorkflowError(
+      503,
+      options.unavailableCode,
+      `${options.operation} is waiting because ${asSentence(apiStatus.message)} Local-node data remains available; Sidekick will retry automatically.`,
+      true,
+    );
+  }
+  if (options.requirePox5 && !preflight.pox.pox5ContractId) {
+    throw new OperatorWorkflowError(
+      422,
+      options.incompatibleCode,
+      `${options.operation} is blocked because the connected node did not report an active PoX-5 contract.`,
+    );
+  }
+  if (!manager.attachAllowed) {
+    throw new OperatorWorkflowError(
+      422,
+      options.incompatibleCode,
+      `${options.operation} is blocked: ${asSentence(manager.reasons[0] ?? "The manager network or required interface is incompatible with this deployment")}`,
+    );
+  }
+  if (
+    options.minimumStacksHeight !== null &&
+    options.minimumStacksHeight !== undefined &&
+    preflight.api.stacksTipHeight < options.minimumStacksHeight
+  ) {
+    throw new OperatorWorkflowError(
+      503,
+      options.unavailableCode,
+      `${options.operation} is waiting for the indexed API to reach Stacks block ${options.minimumStacksHeight}; it is currently at ${preflight.api.stacksTipHeight}. Sidekick will retry automatically.`,
+      true,
+    );
+  }
+}
+
 export type SortDirection = "asc" | "desc";
 export type PoolRosterSort =
   | "staker"
@@ -128,6 +202,8 @@ export type PoolRosterSort =
   | "bond"
   | "status";
 export type RewardStakerSort = "staker" | "gross" | "fee" | "net" | "destination" | "status";
+
+const RETAINED_SNAPSHOT_STALE_AFTER_MS = 120_000;
 
 function compareSortValues(
   left: bigint | number | string | null,
@@ -442,6 +518,7 @@ export function buildAlerts(snapshot: {
 export class OperatorService {
   private cached: {
     expiresAt: number;
+    loadedAt: number;
     value: Awaited<ReturnType<OperatorService["load"]>>;
   } | null = null;
   private lastKnownHealthContext: HealthOperatorContext | null = null;
@@ -557,6 +634,7 @@ export class OperatorService {
           // The dashboard polls every 15 seconds. Keep a successful observation fresh through the
           // next poll so normal status traffic does not create an upstream refresh per page view.
           expiresAt: loadedAt + (this.options.cacheTtlMs ?? 45_000),
+          loadedAt,
           value,
         };
         this.refreshBlockedUntil = 0;
@@ -594,18 +672,19 @@ export class OperatorService {
     });
   }
 
-  private staleSnapshot(): {
+  private retainedSnapshot(): {
     value: Awaited<ReturnType<OperatorService["load"]>>;
-    stale: true;
-    reason: "refreshing" | "refresh-failed" | "rate-limited";
+    stale: boolean;
+    reason: "refreshing" | "refresh-failed" | "rate-limited" | null;
     rateLimit: RateLimitInfo | null;
   } | null {
     if (!this.cached) return null;
+    const stale = this.currentTime() - this.cached.loadedAt > RETAINED_SNAPSHOT_STALE_AFTER_MS;
     return {
       value: this.cached.value,
-      stale: true,
-      reason: this.lastRefreshFailure ?? "refreshing",
-      rateLimit: this.lastRefreshFailure === "rate-limited" ? this.lastRateLimit : null,
+      stale,
+      reason: stale ? (this.lastRefreshFailure ?? "refreshing") : null,
+      rateLimit: stale && this.lastRefreshFailure === "rate-limited" ? this.lastRateLimit : null,
     };
   }
 
@@ -626,8 +705,8 @@ export class OperatorService {
       try {
         return { value: await this.refresh(), stale: false, reason: null, rateLimit: null };
       } catch (error) {
-        const stale = this.staleSnapshot();
-        if (stale) return stale;
+        const retained = this.retainedSnapshot();
+        if (retained) return retained;
         throw error;
       }
     }
@@ -637,8 +716,8 @@ export class OperatorService {
         return { value: this.cached.value, stale: false, reason: null, rateLimit: null };
       }
       this.refreshInBackground();
-      const stale = this.staleSnapshot();
-      if (stale) return stale;
+      const retained = this.retainedSnapshot();
+      if (retained) return retained;
     }
     return { value: await this.refresh(), stale: false, reason: null, rateLimit: null };
   }
@@ -1198,26 +1277,14 @@ export class OperatorService {
       });
       const trustTransition = this.recordManagerTrustState(manager, observedAt);
       if (trustTransition) this.pendingTrustTransition = trustTransition;
-      if (
-        !indexedWorkflowsReady(preflight) ||
-        !preflight.pox.pox5ContractId ||
-        !manager.attachAllowed
-      ) {
-        throw new OperatorWorkflowError(
-          422,
-          "synchronization_sources_incompatible",
-          "Sync is blocked by node, API, PoX-5, or manager compatibility checks. Review preflight and manager verification, then retry",
-        );
-      }
-      if (
-        options.minimumStacksHeight !== null &&
-        options.minimumStacksHeight !== undefined &&
-        preflight.api.stacksTipHeight < options.minimumStacksHeight
-      ) {
-        throw new Error(
-          `Roster reconciliation is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
-        );
-      }
+      assertIndexedSynchronizationReady(preflight, manager, {
+        operation: "Chain data sync",
+        incompatibleCode: "synchronization_sources_incompatible",
+        unavailableCode: "synchronization_source_temporarily_unavailable",
+        minimumStacksHeight: options.minimumStacksHeight ?? null,
+        requirePox5: true,
+      });
+      const pox5ContractId = preflight.pox.pox5ContractId as string;
       const indexedAnchor = await captureChainAnchor(node, api);
       store.chainState.upsertSource({
         sourceId,
@@ -1241,7 +1308,7 @@ export class OperatorService {
           sourceId,
           nodeSourceId,
           managerPrincipal,
-          pox5ContractId: preflight.pox.pox5ContractId,
+          pox5ContractId,
           observedAt,
           burnBlockHeight: indexedAnchor.burnBlockHeight,
           stacksTipHeight: indexedAnchor.stacksBlockHeight,
@@ -1263,7 +1330,7 @@ export class OperatorService {
           observedAt,
           chainId: preflight.node.networkId,
           eventVocabulary: managerEventVocabularyFor(manager.capabilities),
-          pox5ContractId: preflight.pox.pox5ContractId,
+          pox5ContractId,
           stakers,
         };
         break;
@@ -1381,22 +1448,12 @@ export class OperatorService {
     });
     const trustTransition = this.recordManagerTrustState(manager, observedAt);
     if (trustTransition) this.pendingTrustTransition = trustTransition;
-    if (!indexedWorkflowsReady(preflight) || !manager.attachAllowed) {
-      throw new OperatorWorkflowError(
-        422,
-        "manager_activity_sources_incompatible",
-        "Manager activity sync is blocked by node, API, or manager compatibility checks",
-      );
-    }
-    if (
-      options.minimumStacksHeight !== null &&
-      options.minimumStacksHeight !== undefined &&
-      preflight.api.stacksTipHeight < options.minimumStacksHeight
-    ) {
-      throw new Error(
-        `Manager activity is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
-      );
-    }
+    assertIndexedSynchronizationReady(preflight, manager, {
+      operation: "Manager activity sync",
+      incompatibleCode: "manager_activity_sources_incompatible",
+      unavailableCode: "manager_activity_source_temporarily_unavailable",
+      minimumStacksHeight: options.minimumStacksHeight ?? null,
+    });
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     store.chainState.upsertSource({
       sourceId,
@@ -1464,26 +1521,14 @@ export class OperatorService {
     });
     const trustTransition = this.recordManagerTrustState(manager, observedAt);
     if (trustTransition) this.pendingTrustTransition = trustTransition;
-    if (
-      !indexedWorkflowsReady(preflight) ||
-      !manager.attachAllowed ||
-      !preflight.pox.pox5ContractId
-    ) {
-      throw new OperatorWorkflowError(
-        422,
-        "reward_realization_sources_incompatible",
-        "Reward realization sync is blocked by node, API, or manager compatibility checks",
-      );
-    }
-    if (
-      options.minimumStacksHeight !== null &&
-      options.minimumStacksHeight !== undefined &&
-      preflight.api.stacksTipHeight < options.minimumStacksHeight
-    ) {
-      throw new Error(
-        `Reward realization sync is waiting for the indexed source to reach Stacks height ${options.minimumStacksHeight}`,
-      );
-    }
+    assertIndexedSynchronizationReady(preflight, manager, {
+      operation: "Reward realization sync",
+      incompatibleCode: "reward_realization_sources_incompatible",
+      unavailableCode: "reward_realization_source_temporarily_unavailable",
+      minimumStacksHeight: options.minimumStacksHeight ?? null,
+      requirePox5: true,
+    });
+    const pox5ContractId = preflight.pox.pox5ContractId as string;
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     store.chainState.upsertSource({
       sourceId,
@@ -1501,7 +1546,7 @@ export class OperatorService {
       sourceId,
       chainId: preflight.node.networkId,
       managerPrincipal,
-      pox5ContractId: preflight.pox.pox5ContractId,
+      pox5ContractId,
       observedAt,
       pageLimit: config.eventPageLimit,
       ...(options.signal ? { signal: options.signal } : {}),

@@ -159,7 +159,7 @@ describe("operator preflight", () => {
     });
   });
 
-  it("fails readiness when the local node is behind the API", () => {
+  it("reports API-ahead lag without treating it as a blocker", () => {
     const result = evaluatePreflight(
       config,
       sources({
@@ -178,9 +178,10 @@ describe("operator preflight", () => {
 
     expect(result.api.burnBlockLag).toBe(20);
     expect(result.checks.find((check) => check.id === "api-lag")).toMatchObject({
-      status: "fail",
+      status: "warn",
       message: "The local node trails the API by 20 Bitcoin blocks and 100 Stacks blocks",
     });
+    expect(result.status).toBe("warn");
   });
 
   it("treats an indexed API that trails the local node as normal indexing lag", () => {
