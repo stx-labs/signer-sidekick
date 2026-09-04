@@ -43,6 +43,7 @@ import {
   rateLimitGuidance,
   rateLimitHeading,
 } from "./shared/rate-limit-guidance.js";
+import { operatorStateIsStale } from "./shared/status-freshness.js";
 import { SignerHealthPage } from "./signer-health.js";
 
 type Snapshot = DashboardSnapshot;
@@ -141,7 +142,6 @@ function StacksGlyph() {
 }
 
 const STATUS_POLL_MS = 15_000;
-const STATUS_STALE_AFTER_MS = 60_000;
 const SYNC_POLL_MS = 1_000;
 const CONNECTION_RECHECK_MS = 60_000;
 
@@ -272,6 +272,7 @@ function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [checkingConnection, setCheckingConnection] = useState(false);
   const [data, setData] = useState<Snapshot | null>(null);
+  const dataRef = useRef<Snapshot | null>(null);
   const [overviewMeta, setOverviewMeta] = useState<{
     network: string;
     attentionCount: number;
@@ -390,27 +391,19 @@ function App() {
           statusResponseSchema,
         );
         if (requestGeneration !== statusRequestGeneration.current) return false;
+        dataRef.current = snapshot;
         setData(snapshot);
         setStatusError(null);
         setStatusRateLimit(null);
         return true;
       } catch (cause) {
         if (requestGeneration !== statusRequestGeneration.current) return false;
-        setData((current) =>
-          current
-            ? {
-                ...current,
-                freshness: {
-                  status: "stale",
-                  snapshotGeneratedAt: current.generatedAt,
-                  servedAt: current.freshness?.servedAt ?? current.generatedAt,
-                  reason: "refresh-failed",
-                },
-              }
-            : current,
-        );
-        setStatusError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
-        setStatusRateLimit(rateLimitFromError(cause));
+        // Retain a recently verified snapshot through an isolated background request failure.
+        // Manual refreshes and initial-load failures still report the exact error to the operator.
+        if (!dataRef.current || force) {
+          setStatusError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+          setStatusRateLimit(rateLimitFromError(cause));
+        }
         return false;
       } finally {
         activeStatusRequests.current = Math.max(0, activeStatusRequests.current - 1);
@@ -431,6 +424,7 @@ function App() {
       setConnection(null);
       setConnectionError(null);
       setCheckingConnection(false);
+      dataRef.current = null;
       setData(null);
       setOverviewMeta(null);
       setStatusError(null);
@@ -496,6 +490,7 @@ function App() {
     setConnection(null);
     setConnectionError(null);
     setCheckingConnection(false);
+    dataRef.current = null;
     setData(null);
     setOverviewMeta(null);
     setStatusError(null);
@@ -643,11 +638,11 @@ function App() {
   const ageMs = Number.isFinite(lastStatusAt) ? Math.max(0, now - lastStatusAt) : null;
   const stale = Boolean(
     data &&
-      (connectionUnavailableAfterSuccess ||
-        data.freshness?.status === "stale" ||
-        statusError ||
-        ageMs === null ||
-        ageMs > STATUS_STALE_AFTER_MS),
+      operatorStateIsStale({
+        connectionUnavailable: connectionUnavailableAfterSuccess,
+        serverStatus: data.freshness?.status,
+        ageMs,
+      }),
   );
   const rateLimit = data?.freshness?.rateLimit ?? statusRateLimit;
   const rateLimited = data?.freshness?.reason === "rate-limited" || statusRateLimit !== null;
@@ -997,10 +992,18 @@ function App() {
             </div>
           ) : null}
           {page !== "overview" && syncError ? (
-            <div className="callout callout-critical app-status-banner" role="alert">
+            <div
+              className={`callout ${syncOperation?.error?.retryable ? "callout-caution" : "callout-critical"} app-status-banner`}
+              role={syncOperation?.error?.retryable ? "status" : "alert"}
+            >
               <WarningCircle className="ic" />
               <div className="body">
-                <strong>Chain data sync needs attention</strong> <span>{syncError}</span>
+                <strong>
+                  {syncOperation?.error?.retryable
+                    ? "Chain data sync is delayed"
+                    : "Chain data sync needs attention"}
+                </strong>{" "}
+                <span>{syncError}</span>
                 <div className="actions">
                   <button
                     type="button"
@@ -1015,7 +1018,10 @@ function App() {
             </div>
           ) : null}
           {page !== "overview" && statusError ? (
-            <div className="callout callout-critical app-status-banner error-banner">
+            <div
+              className={`callout ${data ? "callout-neutral" : "callout-critical"} app-status-banner error-banner`}
+              role={data ? "status" : "alert"}
+            >
               <WarningCircle className="ic" />
               <div className="body">
                 <strong>{data ? "Couldn’t refresh status" : "Couldn’t load status"}</strong>{" "}

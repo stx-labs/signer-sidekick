@@ -146,6 +146,111 @@ afterEach(() => {
 });
 
 describe("OperatorService synchronization anchor retries", () => {
+  it("reports an unavailable indexed API as an exact retryable delay", async () => {
+    const snapshot = setupSnapshot(anchor(100, 200));
+    snapshot.preflight.status = "warn";
+    snapshot.preflight.api.available = false;
+    snapshot.preflight.api.networkCompatible = false;
+    snapshot.preflight.api.position = "unavailable";
+    snapshot.preflight.checks = [
+      {
+        id: "api-availability",
+        status: "warn",
+        message: "The Reference API is unavailable",
+      },
+    ];
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(snapshot);
+    const operator = await service();
+
+    await expect(operator.synchronize()).rejects.toMatchObject({
+      statusCode: 503,
+      responseCode: "synchronization_source_temporarily_unavailable",
+      retryable: true,
+      message:
+        "Chain data sync is waiting because the indexed API is temporarily unavailable. Local-node data remains available; Sidekick will retry automatically.",
+    });
+    expect(syncSignerStakers).not.toHaveBeenCalled();
+  });
+
+  it("continues synchronization when the indexed API is ahead", async () => {
+    const snapshot = setupSnapshot(anchor(100, 200));
+    snapshot.preflight.status = "warn";
+    snapshot.preflight.api.position = "ahead";
+    snapshot.preflight.checks = [
+      {
+        id: "api-lag",
+        status: "warn",
+        message: "The local node trails the API by 1 Stacks block",
+      },
+    ];
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(syncSignerStakers).mockResolvedValue(stakerResult);
+    vi.mocked(syncManagerEvents).mockResolvedValue(eventResult);
+    const operator = await service();
+
+    await expect(operator.synchronize()).resolves.toMatchObject({
+      stakers: stakerResult,
+      events: eventResult,
+    });
+  });
+
+  it("lets working indexed reads proceed when the API version label is unrecognized", async () => {
+    const snapshot = setupSnapshot(anchor(100, 200));
+    snapshot.preflight.status = "warn";
+    snapshot.preflight.checks = [
+      {
+        id: "api-version",
+        status: "warn",
+        message: "Unable to confirm Stacks API v9+ from a proxy-defined version label",
+      },
+    ];
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(syncSignerStakers).mockResolvedValue(stakerResult);
+    vi.mocked(syncManagerEvents).mockResolvedValue(eventResult);
+    const operator = await service();
+
+    await expect(operator.synchronize()).resolves.toMatchObject({
+      stakers: stakerResult,
+      events: eventResult,
+    });
+  });
+
+  it("keeps proven compatibility failures blocking and reports the exact check", async () => {
+    const snapshot = setupSnapshot(anchor(100, 200));
+    snapshot.preflight.status = "fail";
+    snapshot.preflight.checks = [
+      {
+        id: "node-network",
+        status: "fail",
+        message: "Node network ID 1 does not match testnet",
+      },
+    ];
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(snapshot);
+    const operator = await service();
+
+    await expect(operator.synchronize()).rejects.toMatchObject({
+      statusCode: 422,
+      responseCode: "synchronization_sources_incompatible",
+      retryable: false,
+      message: "Chain data sync is blocked: Node network ID 1 does not match testnet.",
+    });
+  });
+
+  it("reports indexed height lag as retryable with the current and required heights", async () => {
+    const snapshot = setupSnapshot(anchor(100, 200));
+    snapshot.preflight.api.stacksTipHeight = 99;
+    vi.mocked(readOperatorAnchorSnapshot).mockResolvedValue(snapshot);
+    const operator = await service();
+
+    await expect(operator.synchronize({ minimumStacksHeight: 100 })).rejects.toMatchObject({
+      statusCode: 503,
+      responseCode: "synchronization_source_temporarily_unavailable",
+      retryable: true,
+      message:
+        "Chain data sync is waiting for the indexed API to reach Stacks block 100; it is currently at 99. Sidekick will retry automatically.",
+    });
+  });
+
   it("uses the shared indexed anchor and recaptures it after an anchor error", async () => {
     const localAnchor = anchor(110, 205);
     const staleAnchor = anchor(100, 200);
