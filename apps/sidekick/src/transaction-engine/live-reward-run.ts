@@ -242,7 +242,7 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
       requestedOperations.some((operation) => MANAGER_OPERATIONS.has(operation)) &&
       !reviewedRewardManagerAvailable(setup.manager.capabilities, managerSourceFingerprint)
     ) {
-      throw new Error("Manager reward execution requires a byte-exact reviewed adapter");
+      throw new Error("Manager reward execution requires a reviewed compatible adapter");
     }
     const context = options.runtimeContext();
     const chainAnchor = await captureNodeChainAnchor(context.node);

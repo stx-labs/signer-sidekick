@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import type { RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   completedFirstRewardLedger,
   connection,
@@ -234,6 +235,12 @@ test("uses one Pool-style Rewards action while rewards accrue", async ({ page })
 
   const rewardsSummary = page.locator("#overview-rewards");
   await expect(rewardsSummary.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(rewardsSummary.getByText("Pool if calculated now").locator("..")).toContainText(
+    "0.001 sBTC",
+  );
+  await expect(rewardsSummary.getByText("Projected at calculation").locator("..")).toContainText(
+    "0.0015 sBTC",
+  );
   await expect(rewardsSummary.getByRole("link", { name: "View projection" })).toHaveCount(0);
   const openRewards = rewardsSummary.getByRole("link", { name: "Open Rewards" });
   await expect(openRewards).toHaveCount(1);
@@ -266,22 +273,105 @@ test("shows the prior cycle in history while its last distribution remains pendi
 
   await login(page);
   const overview = page.locator("#overview-rewards");
-  await expect(overview.getByText("Your fee estimate").locator("..")).toContainText("0.00371 sBTC");
-  await expect(overview.getByText("Estimated to stakers").locator("..")).toContainText(
-    "0.0705 sBTC",
-  );
+  await expect(overview.getByText("Your fee", { exact: true }).locator("..")).toContainText("—");
+  await expect(overview.getByText("To stakers", { exact: true }).locator("..")).toContainText("—");
+  await expect(overview).not.toContainText("0.00371 sBTC");
+  await expect(overview.getByRole("button", { name: /^Collect/ })).toHaveCount(0);
 
   await page.evaluate(() => {
     location.hash = "#rewards";
   });
   await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
   await expect(page.getByText("Cycle 141 · Second Distribution")).toBeVisible();
+  await expect(page.getByText("Reward details unavailable", { exact: true })).toBeVisible();
   const history = page.getByRole("region", { name: "Past cycles" });
   const previousCycle = history.getByRole("row", { name: "Cycle 141" });
   await expect(previousCycle).toBeVisible();
   await previousCycle.getByRole("button", { name: "Show distributions" }).click();
   await expect(history.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
   await expect(history.getByRole("tab", { name: /Second Distribution/ })).toBeVisible();
+});
+
+test("shows collected rounding separately from complete fees and keeps covered history closed", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const body = structuredClone(responseFor(route.request().url())) as RewardLedger;
+    const current = body.cycles[0]?.distributions[0];
+    if (!current?.allocation) throw new Error("Expected fixture allocation");
+    current.allocation.roundingSats = "2";
+    current.allocation.poolBasis = "collected";
+    current.calculation.poolSats = null;
+    current.collectedSats = (
+      BigInt(current.allocation.toStakersSats ?? "0") +
+      BigInt(current.allocation.operatorFeeSats ?? "0") +
+      2n
+    ).toString();
+    current.availableToCollectSats = "0";
+    current.collects = [
+      {
+        sats: current.collectedSats,
+        stxSats: current.collectedSats,
+        txId: `0x${"55".repeat(32)}`,
+        blockHeight: 4990,
+        by: "you",
+      },
+    ];
+    for (const cycle of body.cycles.slice(1)) {
+      cycle.coverage = "historical-coverage-incomplete";
+      for (const distribution of cycle.distributions) {
+        distribution.coverage = "historical-coverage-incomplete";
+      }
+    }
+    await route.fulfill(fixtureFulfillment(body));
+  });
+
+  await login(page);
+  const overviewCard = page.locator("#overview-rewards");
+  await expect(overviewCard.getByText("Your fee", { exact: true })).toBeVisible();
+  await expect(overviewCard).toContainText("2 sats rounding retained in manager; not earned fees");
+  await expect(overviewCard).not.toContainText("Known fee (partial)");
+  await expect(overviewCard).not.toContainText("more distributions waiting");
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByText("2 sats rounding retained in manager; not earned fees", { exact: false })
+      .first(),
+  ).toBeVisible();
+  await expect(page.getByText("Known fee (partial)", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Reward details unavailable", { exact: true })).toHaveCount(0);
+});
+
+test("explains missing cycle fee totals without hiding the known indexed subtotal", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const body = structuredClone(responseFor(route.request().url())) as RewardLedger;
+    const current = body.cycles[0];
+    if (!current) throw new Error("Expected fixture cycle");
+    current.operatorFeeSats = null;
+    body.fees.historyComplete = false;
+    body.fees.earnedIndexedSats = "500";
+    body.fees.unmatchedPaymentCount = 1;
+    await route.fulfill(fixtureFulfillment(body));
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("heading", { name: "Your fee ledger", exact: true })).toBeVisible();
+  const cycle = page.locator('[data-fee-fact="cycle"]');
+  await expect(cycle.locator("dd")).toContainText("—");
+  await expect(cycle).toContainText(
+    "cycle fee total unavailable: payment fee evidence is incomplete",
+  );
+  await expect(page.locator('[data-fee-fact="all-time"]')).toContainText("500 sats");
+  await expect(page.locator('[data-fee-fact="all-time"]')).toContainText(
+    "Earned in indexed history",
+  );
 });
 
 test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
@@ -2251,7 +2341,7 @@ test("shows custom manager compatibility per operation without blocking core mon
       status.manager.source.recognized = true;
       status.manager.source.profileId = "operator-custom-manager";
       status.manager.source.origin = "operator-installed";
-      status.manager.capabilities.sourceReview.exactReviewed = false;
+      status.manager.capabilities.sourceReview.reviewed = false;
       status.manager.capabilities.sourceReview.reason = "No reviewed exact source match";
       for (const capability of status.manager.capabilities.actions) {
         capability.executionAvailable = false;

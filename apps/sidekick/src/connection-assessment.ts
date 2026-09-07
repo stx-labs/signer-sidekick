@@ -157,7 +157,7 @@ export class ConnectionAssessmentService {
     const trait = inspectManagerCapabilities({
       contractInterface,
       sourceSha256: "",
-      exactSourceReviewed: false,
+      sourceReviewed: false,
       sourceReviewReason: "Connection assessment checks only the universal signer-manager trait",
     }).signerManagerTrait;
     return {

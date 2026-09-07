@@ -76,7 +76,7 @@ export function EarningCard({
           ))}
           {model.mobileFee ? (
             <div className="rw-earning-mobile-only" data-earning-fact="fee">
-              <dt>Your projected fee</dt>
+              <dt>Projected fee — this distribution</dt>
               <dd className="rw-earning-mobile-value">{model.mobileFee}</dd>
             </div>
           ) : null}

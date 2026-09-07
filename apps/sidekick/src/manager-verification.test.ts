@@ -90,6 +90,102 @@ function compatibleInterface(): ContractInterface {
 }
 
 describe("deployed manager verification", () => {
+  it.each([
+    ["missing final newline", (source: string) => source.trimEnd()],
+    ["CRLF", (source: string) => source.replaceAll("\n", "\r\n")],
+    [
+      "comments and whitespace",
+      (source: string) => `;; an operator note with "quotes"\n\n${source.replaceAll("  ", "\t")}\n`,
+    ],
+  ])("admits the reviewed program with %s while binding execution to deployed bytes", async (_, transform) => {
+    const original = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const source = transform(original);
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      compatibleInterface(),
+    );
+    expect(report.source).toMatchObject({ match: "canonical", recognized: true });
+    expect(report.capabilities.sourceReview).toMatchObject({
+      reviewed: true,
+      match: "canonical",
+      artifactId: "stacks-4.0.0-mainnet-reference-manager",
+    });
+    expect(report.capabilities.eventVocabulary.normalizationAvailable).toBe(true);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => executionAvailable)).toBe(
+      true,
+    );
+    expect(
+      report.capabilities.actions.every(
+        ({ adapter }) => adapter?.reviewedSourceSha256 === claritySourceSha256(source),
+      ),
+    ).toBe(true);
+    expect(claritySourceSha256(source)).not.toBe(claritySourceSha256(original));
+    // Program recognition is not production approval or authorization for unattended execution.
+    expect(report.automationEligible).toBe(false);
+  });
+
+  it.each([
+    ["constant", (source: string) => source.replace("u10000", "u10001")],
+    ["caller", (source: string) => source.replace("tx-sender", "contract-caller")],
+    [
+      "identifier boundary",
+      (source: string) =>
+        source.replace("(define-public (claim-rewards", "(define-public (claim- rewards"),
+    ],
+    [
+      "string literal",
+      (source: string) => source.replace('"claim-staker-rewards"', '"claim-staker-reward"'),
+    ],
+  ])("does not admit an unreviewed %s change", async (_, transform) => {
+    const original = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const source = transform(original);
+    expect(source).not.toBe(original);
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      compatibleInterface(),
+    );
+    expect(report.capabilities.sourceReview.reviewed).toBe(false);
+    expect(report.capabilities.eventVocabulary.normalizationAvailable).toBe(false);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    "Clarity4",
+    undefined,
+  ])("still rejects a canonical match with unreviewed execution semantics: %s", async (clarityVersion) => {
+    const source = (
+      await readFile(
+        resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+        "utf8",
+      )
+    ).trimEnd();
+    const contractInterface = compatibleInterface();
+    contractInterface.clarity_version = clarityVersion;
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      contractInterface,
+    );
+    expect(report.source.match).toBe("canonical");
+    expect(report.capabilities.sourceReview.reviewed).toBe(false);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+  });
+
   it("recognizes the mainnet reference artifact but keeps it in observe mode until approval", async () => {
     const source = await readFile(
       resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
@@ -131,7 +227,7 @@ describe("deployed manager verification", () => {
 
     expect(report).toMatchObject({
       attachAllowed: true,
-      capabilities: { sourceReview: { exactReviewed: false } },
+      capabilities: { sourceReview: { reviewed: false } },
     });
     expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
       true,
@@ -156,7 +252,7 @@ describe("deployed manager verification", () => {
       contractInterface,
     );
 
-    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: false });
+    expect(report.capabilities.sourceReview).toMatchObject({ reviewed: false });
     expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
       true,
     );
@@ -179,9 +275,7 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
-    expect(report.automationEligibilityReason).toContain(
-      "No reviewed byte-exact capability fingerprint",
-    );
+    expect(report.automationEligibilityReason).toContain("No reviewed reference program");
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {
@@ -276,7 +370,7 @@ describe("deployed manager verification", () => {
       attachAllowed: true,
       automationEligible: true,
     });
-    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: true });
+    expect(report.capabilities.sourceReview).toMatchObject({ reviewed: true });
     expect(report.capabilities.actions.some(({ executionAvailable }) => executionAvailable)).toBe(
       true,
     );

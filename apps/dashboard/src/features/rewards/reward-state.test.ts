@@ -8,6 +8,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import { rewardRunFixture } from "./reward-run.fixture.js";
 import {
+  allocationRoundingNote,
   comparePayments,
   deriveCycleGeometry,
   deriveDistributionCards,
@@ -45,6 +46,12 @@ function distribution(
     availableToCollectSats: "1400000",
     feeBips: "500",
     feeEvidence: "locked",
+    allocation: {
+      toStakersSats: "1330000",
+      operatorFeeSats: "70000",
+      coverage: "complete",
+      estimated: false,
+    },
     payments: {
       made: 0,
       outstanding: 40,
@@ -117,6 +124,7 @@ function accruing(cycle: number, index: 1 | 2, overdue = false): RewardLedgerDis
       by: null,
     },
     availableToCollectSats: null,
+    allocation: undefined,
     payments: {
       made: 0,
       outstanding: 0,
@@ -169,7 +177,7 @@ function ledger(
           .reduce((sum, d) => sum + BigInt(d.payments.distributedSats), 0n)
           .toString(),
         operatorFeeSats: distributions
-          .reduce((sum, d) => sum + BigInt(d.payments.operatorFeeSats), 0n)
+          .reduce((sum, d) => sum + BigInt(d.payments.operatorFeeSats ?? "0"), 0n)
           .toString(),
         outstandingSats: distributions
           .reduce((sum, d) => sum + BigInt(d.payments.outstandingSats), 0n)
@@ -351,6 +359,34 @@ describe("deriveCycleGeometry", () => {
 });
 
 describe("deriveEarning", () => {
+  it("counts known collected fees without a pool simulation and excludes rounding from income", () => {
+    const first = complete(141, 1);
+    first.calculation.poolSats = null;
+    first.allocation = {
+      toStakersSats: "1330000",
+      operatorFeeSats: "70000",
+      roundingSats: "2",
+      poolBasis: "collected",
+      coverage: "complete",
+      estimated: false,
+    };
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 2), [first]),
+      snapshot: snapshot(),
+    });
+    expect(model?.facts.find((fact) => fact.key === "cycle")?.sub).toContain(
+      "cycle fee total 0.0014 sBTC",
+    );
+    expect(model?.mobileFee).toBe("70,000 sats");
+    first.allocation.coverage = "partial";
+    expect(
+      deriveEarning({
+        ledger: ledger(accruing(141, 2), [first]),
+        snapshot: snapshot(),
+      })?.facts.find((fact) => fact.key === "cycle")?.sub,
+    ).toContain("cycle fee total unavailable");
+  });
+
   it("describes the accruing cycle: identity, three facts, two halves", () => {
     const model = deriveEarning({
       ledger: ledger(accruing(141, 2), [distribution({ cycle: 141, distribution: 1 })]),
@@ -362,6 +398,7 @@ describe("deriveEarning", () => {
     expect(model?.cycle).toBe(141);
     expect(model?.when).toBe("Second half · 2d 10h left · ends at block 964,249");
     expect(model?.prepare).toBe("Prepare phase in 1d 17h · block 964,150");
+    expect(model?.mobileFee).toBe("70,000 sats");
     expect(model?.facts.map((fact) => [fact.label, fact.value, fact.unit, fact.sub])).toEqual([
       ["Network earned this half", "2.42", "sBTC", "3.81 sBTC projected at calculation"],
       [
@@ -374,7 +411,7 @@ describe("deriveEarning", () => {
         "Pool projected this cycle",
         "0.028",
         "sBTC",
-        "0.014 sBTC calculated + 0.014 sBTC projected · your fee 0.0014 sBTC",
+        "0.014 sBTC calculated + 0.014 sBTC projected · cycle fee total 0.0014 sBTC",
       ],
     ]);
     expect(model?.halves[0]).toMatchObject({
@@ -453,6 +490,38 @@ describe("deriveEarning", () => {
 });
 
 describe("deriveDistributionCards", () => {
+  it("reports collected and projected rounding separately without labeling complete fees partial", () => {
+    const rounded = distribution({ cycle: 141, distribution: 2 });
+    rounded.allocation = {
+      toStakersSats: "1330000",
+      operatorFeeSats: "70000",
+      roundingSats: "2",
+      poolBasis: "collected",
+      coverage: "complete",
+      estimated: false,
+    };
+    const card = deriveDistributionCards({
+      ledger: ledger(rounded),
+      gasWallet: gasWallet(),
+      engineMode: "operator-run",
+      activeRun: null,
+    })[0];
+    expect(card?.tiles.at(-1)).toMatchObject({
+      label: "Your fee",
+      value: "70,000",
+      unit: "sats",
+      detail: "STX fee 5% locked · 2 sats rounding retained in manager; not earned fees",
+    });
+    expect(distributionTooltip(rounded)).toContain(
+      "2 sats rounding retained in manager; not earned fees",
+    );
+    expect(allocationRoundingNote({ ...rounded.allocation, poolBasis: "simulation" })).toBe(
+      "2 sats projected rounding; not earned fees",
+    );
+    expect(allocationRoundingNote({ ...rounded.allocation, roundingSats: "0" })).toBeNull();
+    expect(allocationRoundingNote({ ...rounded.allocation, roundingSats: undefined })).toBeNull();
+  });
+
   it("offers Collect & distribute for a calculated distribution with nothing moved", () => {
     const cards = deriveDistributionCards({
       ledger: ledger(distribution({ cycle: 141, distribution: 2, current: true }), [
@@ -480,15 +549,18 @@ describe("deriveDistributionCards", () => {
       ["Calculated for this pool", "0.014", "sBTC", null],
       ["Collected", "0", "sats", "0.014 sBTC ready to collect"],
       ["Distributed", "0", "of 40", "0.0133 sBTC to stakers"],
-      ["Your fee", "70,000", "sats", "5% locked"],
+      ["Your fee", "70,000", "sats", "STX fee 5% locked"],
     ]);
     expect(card?.queued).toBeNull();
   });
 
-  it("estimates the fee split instead of treating an unmaterialized pool as operator income", () => {
+  it("does not infer either a remainder or a uniform fee split for an unmaterialized pool", () => {
     const unmaterialized = distribution({
       cycle: 141,
       distribution: 2,
+      allocation: undefined,
+      status: "interpretation-unavailable",
+      statusDetail: "Current reward balances have not been read",
       payments: {
         made: 0,
         outstanding: 0,
@@ -507,9 +579,10 @@ describe("deriveDistributionCards", () => {
     });
 
     expect(distributionAllocation(unmaterialized)).toEqual({
-      toStakersSats: "1330000",
-      operatorFeeSats: "70000",
-      estimated: true,
+      toStakersSats: null,
+      operatorFeeSats: null,
+      estimated: false,
+      coverage: "unavailable",
     });
     const card = deriveDistributionCards({
       ledger: ledger(unmaterialized),
@@ -518,11 +591,20 @@ describe("deriveDistributionCards", () => {
       activeRun: null,
     })[0];
     expect(card?.tiles.at(-1)).toMatchObject({
-      label: "Your fee estimate",
-      value: "70,000",
-      unit: "sats",
-      detail: "5% locked · estimated",
+      label: "Your fee",
+      value: "—",
     });
+    expect(card?.badge.label).toBe("Details unavailable");
+    expect(card?.primary).toBeNull();
+    expect(card?.tiles.find((tile) => tile.label === "Distributed")).toMatchObject({
+      value: "—",
+      unit: "known payments",
+      detail: "Payment coverage incomplete",
+    });
+    // Even an older server's false-complete status must not manufacture a fee remainder.
+    expect(
+      distributionAllocation({ ...unmaterialized, status: "complete" }).operatorFeeSats,
+    ).toBeNull();
   });
 
   it("keeps an older cycle in history while one distribution still needs action", () => {
@@ -690,6 +772,17 @@ describe("deriveDistributionCards", () => {
     expect(
       pendingDistributions(ledger(accruing(141, 2), [complete(141, 1), complete(140, 2)])),
     ).toEqual([]);
+  });
+
+  it("keeps completed history out of Distribute despite departed-member or window coverage", () => {
+    const past = complete(140, 2);
+    past.coverage = "historical-coverage-incomplete";
+    const rewardLedger = ledger(accruing(141, 2), [past]);
+    expect(pendingDistributions(rewardLedger)).toEqual([]);
+    expect(pastRewardCycles(rewardLedger, 141)[0]?.distributions[0]).toMatchObject({
+      status: "complete",
+      coverage: "historical-coverage-incomplete",
+    });
   });
 
   it("explains why execution is unavailable without a gas wallet or in Observe mode", () => {

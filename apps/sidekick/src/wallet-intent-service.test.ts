@@ -140,7 +140,7 @@ function reviewedManagerCapabilities(reviewed = true) {
     signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
     observedFunctions: { public: [], readOnly: [] },
     sourceReview: {
-      exactReviewed: reviewed,
+      reviewed: reviewed,
       reason: reviewed ? "Exact reviewed source" : "No reviewed exact source match",
     },
     eventVocabulary: {

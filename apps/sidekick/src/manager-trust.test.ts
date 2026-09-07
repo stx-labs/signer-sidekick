@@ -391,11 +391,28 @@ describe("manager trust profiles", () => {
     expect(reformattedReport).toMatchObject({
       source: { tier: "reference-render", recognized: true, match: "exact" },
       attachAllowed: true,
-      automationEligible: false,
-      capabilities: { sourceReview: { exactReviewed: false } },
+      automationEligible: true,
+      capabilities: { sourceReview: { reviewed: true, match: "canonical" } },
     });
     expect(
-      reformattedReport.capabilities.actions.every(({ executionAvailable }) => !executionAvailable),
+      reformattedReport.capabilities.actions.every(({ executionAvailable }) => executionAvailable),
+    ).toBe(true);
+    const canonicalInstalledReport = verifyManagerArtifact(
+      "devnet",
+      manager,
+      { source: reformatted, publish_height: 100 },
+      compatibleInterface(),
+      context(upstreamSource, store),
+    );
+    expect(canonicalInstalledReport).toMatchObject({
+      source: { match: "canonical" },
+      automationEligible: true,
+      capabilities: { sourceReview: { reviewed: true, match: "canonical" } },
+    });
+    expect(
+      canonicalInstalledReport.capabilities.actions.every(
+        ({ adapter }) => adapter?.reviewedSourceSha256 === claritySourceSha256(reformatted),
+      ),
     ).toBe(true);
 
     const staleProvenance = parseInstalledManagerProfile({

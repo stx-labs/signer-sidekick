@@ -21,10 +21,13 @@ import type { HealthOperatorContext } from "./health-monitoring-types.js";
 import { advanceLocalNodeAuthority } from "./local-node-authority.js";
 import { readManagerActivity } from "./manager-activity.js";
 import { managerActionCapability } from "./manager-capabilities.js";
-import { type ManagerEventNodeTransactions, syncManagerEvents } from "./manager-event-sync.js";
+import {
+  type ManagerEventNodeTransactions,
+  managerEventCheckpoint,
+  syncManagerEvents,
+} from "./manager-event-sync.js";
 import {
   type ManagerEventVocabulary,
-  managerEventStream,
   managerEventVocabularyFor,
 } from "./manager-event-vocabulary.js";
 import {
@@ -1734,10 +1737,12 @@ export class OperatorService {
       eventVocabulary: managerEventVocabularyFor(manager.capabilities),
     });
     const roster = rosterJson(store, managerPrincipal, sourceId);
-    const managerCursor = store.chainState.getCursor(
+    const managerCursor = managerEventCheckpoint({
+      store,
       sourceId,
-      managerEventStream(managerPrincipal, managerEventVocabularyFor(manager.capabilities)),
-    );
+      managerPrincipal,
+      eventVocabulary: managerEventVocabularyFor(manager.capabilities),
+    });
     const rewardCursor = pox5ContractId
       ? store.chainState.getCursor(sourceId, rewardRealizationStream(pox5ContractId))
       : null;

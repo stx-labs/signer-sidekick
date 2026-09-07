@@ -317,7 +317,7 @@ describe("local API", () => {
         capabilities: {
           signerManagerTrait: { compatible: true, reason: "matched" },
           observedFunctions: { public: [], readOnly: [] },
-          sourceReview: { exactReviewed: true, reason: "reviewed" },
+          sourceReview: { reviewed: true, reason: "reviewed" },
           eventVocabulary: {
             id: "reference-manager-v1",
             normalizationAvailable: true,
@@ -698,7 +698,7 @@ describe("local API", () => {
         capabilities: {
           signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
           observedFunctions: { public: [], readOnly: [] },
-          sourceReview: { exactReviewed: false, reason: "Observe-only fixture" },
+          sourceReview: { reviewed: false, reason: "Observe-only fixture" },
           eventVocabulary: {
             id: "reference-manager-v1",
             normalizationAvailable: false,

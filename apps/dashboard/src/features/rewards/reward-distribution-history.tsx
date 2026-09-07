@@ -16,6 +16,7 @@ function distributionSummary(distribution: RewardLedgerDistribution): string {
   const parts: string[] = [];
   if (distribution.calculation.state === "done") {
     parts.push("Calculation confirmed");
+    if (distribution.status === "interpretation-unavailable") parts.push(distribution.statusDetail);
   } else {
     parts.push(distribution.statusDetail);
   }
@@ -56,7 +57,11 @@ export function DistributionHistoryDetails({
           <PaymentsTable
             payments={state.rows}
             variant="history"
-            emptyText="No payments recorded for this distribution."
+            emptyText={
+              distribution.status === "interpretation-unavailable"
+                ? "Payment details are unavailable or still being recovered. This does not mean no payments were made."
+                : "No payments recorded for this distribution."
+            }
             toolbarRight={toolbarRight}
           />
         </div>

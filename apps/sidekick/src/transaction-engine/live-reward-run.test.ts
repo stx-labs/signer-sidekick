@@ -84,7 +84,7 @@ describe("reviewedRewardManagerAvailable", () => {
   const capabilities: ManagerCapabilities = {
     signerManagerTrait: { compatible: true, reason: "test" },
     observedFunctions: { public: [], readOnly: [] },
-    sourceReview: { exactReviewed: true, reason: "test" },
+    sourceReview: { reviewed: true, reason: "test" },
     eventVocabulary: {
       id: "reference-manager-v1",
       normalizationAvailable: true,

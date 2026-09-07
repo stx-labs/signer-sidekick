@@ -15,6 +15,8 @@ import {
   reconciliationOperationSchema,
   reconciliationSummarySchema,
   rewardCalculationRealizationSchema,
+  rewardLedgerDistributionSchema,
+  rewardLedgerSchema,
   rewardsActivityResponseSchema,
   rewardsPageResponseSchema,
   signerGrantSessionResponseSchema,
@@ -22,6 +24,75 @@ import {
   walletIntentAnchorMismatchErrorSchema,
   walletIntentAnchorUnstableErrorSchema,
 } from "./v1.js";
+
+describe("reward truth contracts", () => {
+  it("accepts unavailable interpretation and unknown fees without coercing them to zero", () => {
+    expect(rewardLedgerDistributionSchema.shape.status.parse("interpretation-unavailable")).toBe(
+      "interpretation-unavailable",
+    );
+    expect(
+      rewardLedgerDistributionSchema.shape.payments.shape.operatorFeeSats.parse(null),
+    ).toBeNull();
+    expect(rewardLedgerSchema.shape.fees.shape.earnedIndexedSats.parse(null)).toBeNull();
+    expect(
+      rewardLedgerDistributionSchema.shape.allocation.parse({
+        toStakersSats: "950",
+        operatorFeeSats: null,
+        coverage: "partial",
+        estimated: false,
+      }),
+    ).toMatchObject({ operatorFeeSats: null, coverage: "partial" });
+  });
+
+  it("keeps allocation additive for older responses and rejects negative or malformed amounts", () => {
+    expect(rewardLedgerDistributionSchema.shape.allocation.parse(undefined)).toBeUndefined();
+    for (const operatorFeeSats of ["-1", "", "NaN", 0]) {
+      expect(
+        rewardLedgerDistributionSchema.shape.allocation.safeParse({
+          toStakersSats: "950",
+          operatorFeeSats,
+          coverage: "partial",
+          estimated: true,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps rounding evidence optional and validates it independently of account fees", () => {
+    const allocation = {
+      toStakersSats: "2850",
+      operatorFeeSats: "147",
+      coverage: "complete",
+      estimated: false,
+    };
+    expect(rewardLedgerDistributionSchema.shape.allocation.parse(allocation)).toEqual(allocation);
+    for (const roundingSats of [null, "0", "2"]) {
+      for (const poolBasis of [null, "collected", "simulation"]) {
+        expect(
+          rewardLedgerDistributionSchema.shape.allocation.parse({
+            ...allocation,
+            roundingSats,
+            poolBasis,
+          }),
+        ).toMatchObject({ roundingSats, poolBasis, operatorFeeSats: "147" });
+      }
+    }
+    for (const roundingSats of ["-1", "", "NaN", 0]) {
+      expect(
+        rewardLedgerDistributionSchema.shape.allocation.safeParse({
+          ...allocation,
+          roundingSats,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      rewardLedgerDistributionSchema.shape.allocation.safeParse({
+        ...allocation,
+        poolBasis: "assumed",
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("deployment requirement contracts", () => {
   const required = {
@@ -555,7 +626,7 @@ describe("dashboard snapshot contract", () => {
             signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
             observedFunctions: { public: ["update-fees"], readOnly: ["is-admin"] },
             sourceReview: {
-              exactReviewed: true,
+              reviewed: true,
               reason: "Reviewed artifact",
               clarityVersion: "Clarity6",
               epoch: "Epoch40",

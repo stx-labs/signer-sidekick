@@ -22,6 +22,8 @@ export interface PastCyclesExportQuery {
 
 function cycleBadge(cycle: RewardLedgerCycle): { tone: string; label: string } {
   const statuses = cycle.distributions.map((d) => d.status);
+  if (statuses.includes("interpretation-unavailable"))
+    return { tone: "caution", label: "Details unavailable" };
   if (statuses.includes("needs-attention")) return { tone: "error", label: "Needs attention" };
   if (statuses.every((s) => s === "complete")) return { tone: "success", label: "Complete" };
   if (statuses.some((s) => s === "all-distributed"))
@@ -50,7 +52,9 @@ function distributionMeta(d: RewardLedgerDistribution): string {
   const p = d.payments;
   return [
     d.calculation.state === "done" ? amount(d.calculation.poolSats) : "not calculated",
-    `${p.made} of ${paymentTotal(d)} paid`,
+    d.status === "interpretation-unavailable"
+      ? "Payment details unavailable"
+      : `${p.made} of ${paymentTotal(d)} paid`,
     p.rolledForward > 0 ? `${p.rolledForward} rolled forward` : null,
     p.rejected > 0 ? `${p.rejected} rejected` : null,
   ]
@@ -148,6 +152,9 @@ export function PastCyclesLedger({
               const badge = cycleBadge(cycle);
               const open = openCycle === cycle.cycle;
               const made = cycle.distributions.reduce((sum, d) => sum + d.payments.made, 0);
+              const paymentsUnavailable = cycle.distributions.some(
+                (d) => d.status === "interpretation-unavailable",
+              );
               const total = cycle.distributions.reduce((sum, d) => sum + paymentTotal(d), 0);
               const tab = tabs[cycle.cycle] ?? cycle.distributions[0]?.distribution ?? 1;
               const active =
@@ -182,10 +189,16 @@ export function PastCyclesLedger({
                   >
                     {dates ?? "—"}
                   </td>
-                  <td className="mono right">{amount(cycle.distributedSats)}</td>
+                  <td className="mono right">
+                    {paymentsUnavailable && made === 0 ? "—" : amount(cycle.distributedSats)}
+                  </td>
                   <td className="mono right rw-hide-sm">{amount(cycle.operatorFeeSats)}</td>
                   <td className="mono right">
-                    {made} of {total}
+                    {paymentsUnavailable
+                      ? made > 0
+                        ? `${made} known`
+                        : "—"
+                      : `${made} of ${total}`}
                   </td>
                   <td className="right rw-ledger-toggle">
                     <ChevronButton

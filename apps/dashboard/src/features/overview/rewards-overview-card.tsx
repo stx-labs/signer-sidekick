@@ -12,6 +12,7 @@ import { amount, feePercent } from "../../shared/format.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
 import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
+  allocationRoundingNote,
   currentDistribution,
   type DistributionCardModel,
   deriveDistributionCards,
@@ -32,6 +33,7 @@ function cardState(card: DistributionCardModel | null): CardState {
   if (card.progress) return "distributing";
   switch (card.badge.label) {
     case "Needs attention":
+    case "Details unavailable":
       return "attention";
     case "Calculation overdue":
       return "overdue";
@@ -132,6 +134,7 @@ export function RewardsOverviewCard({
     location.hash = domainHash("rewards", "claims");
   };
   const allocation = distributionAllocation(distribution);
+  const roundingNote = allocationRoundingNote(allocation);
   const cycleCalculated = cycle
     ? cycle.distributions
         .reduce((sum, d) => sum + BigInt(d.calculation.poolSats ?? "0"), 0n)
@@ -156,11 +159,13 @@ export function RewardsOverviewCard({
         </span>
         <strong>{headline}</strong>
         <small>
-          {calculated
-            ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
-            : rewards.estimatedPoolRewardSats
-              ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
-              : "projection unavailable"}
+          {distribution.status === "interpretation-unavailable"
+            ? distribution.statusDetail
+            : calculated
+              ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
+              : rewards.estimatedPoolRewardSats
+                ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
+                : "projection unavailable"}
         </small>
         {cards.length > 1 ? (
           <small>
@@ -173,27 +178,43 @@ export function RewardsOverviewCard({
         {calculated ? (
           <>
             <div>
-              <dt>{allocation.estimated ? "Estimated to stakers" : "To stakers"}</dt>
+              <dt>
+                {allocation.coverage === "partial"
+                  ? "Known to stakers (partial)"
+                  : allocation.estimated
+                    ? "Estimated to stakers"
+                    : "To stakers"}
+              </dt>
               <dd>{amount(allocation.toStakersSats)}</dd>
             </div>
             <div>
-              <dt>{allocation.estimated ? "Your fee estimate" : "Your fee"}</dt>
+              <dt>
+                {allocation.coverage === "partial"
+                  ? "Known fee (partial)"
+                  : allocation.estimated
+                    ? "Your fee estimate"
+                    : "Your fee"}
+              </dt>
               <dd>
                 {amount(allocation.operatorFeeSats)}
                 {distribution.feeBips
-                  ? ` · ${feePercent(distribution.feeBips)}${distribution.feeEvidence === "locked" ? " locked" : ""}`
+                  ? ` · STX fee ${feePercent(distribution.feeBips)}${distribution.feeEvidence === "locked" ? " locked" : ""}`
                   : ""}
+                {roundingNote ? <small> · {roundingNote}</small> : null}
               </dd>
             </div>
           </>
         ) : (
           <>
             <div>
-              <dt>Earned so far</dt>
+              <dt>Pool if calculated now</dt>
               <dd>
-                {rewards.estimateKind === "if-calculated-now" && rewards.estimatedPoolRewardSats
-                  ? amount(rewards.estimatedPoolRewardSats)
-                  : "—"}
+                {amount(
+                  rewards.accruedPoolRewardSats ??
+                    (rewards.estimateKind === "if-calculated-now"
+                      ? rewards.estimatedPoolRewardSats
+                      : null),
+                )}
               </dd>
             </div>
             <div>

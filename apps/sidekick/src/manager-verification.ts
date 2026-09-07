@@ -342,7 +342,14 @@ function proveReferenceRender(input: {
     const rendered = generateManagerArtifact(input.upstreamSource, renderProfile);
     const sourceSha256 = claritySourceSha256(input.source);
     const canonicalSha256 = claritySourceSha256(canonicalizeClaritySource(input.source));
-    if (sourceSha256 !== profile.sourceSha256 || canonicalSha256 !== profile.canonicalSha256) {
+    if (
+      matchForHashes(
+        sourceSha256,
+        canonicalSha256,
+        profile.sourceSha256,
+        profile.canonicalSha256,
+      ) === "unknown"
+    ) {
       return {
         verified: false,
         automationEligible: false,
@@ -469,38 +476,38 @@ export function verifyManagerArtifact(
     provenReferenceArtifact &&
       artifactExecutionSemanticsMatch(provenReferenceArtifact, contractInterface),
   );
-  const exactSourceReviewed = Boolean(
+  const sourceReviewed = Boolean(
     (builtIn &&
-      builtIn.recognition.match === "exact" &&
+      builtIn.recognition.match !== "unknown" &&
       !operatorProvidedArtifact &&
       builtInSemanticsMatch) ||
       (proof?.verified &&
-        proof.sourceMatch === "exact" &&
-        installedMatch === "exact" &&
+        (proof.sourceMatch === "exact" || proof.sourceMatch === "canonical") &&
+        installedMatch !== "unknown" &&
         referenceRenderSemanticsMatch),
   );
-  const sourceReviewReason = exactSourceReviewed
+  const sourceReviewReason = sourceReviewed
     ? builtIn && !operatorProvidedArtifact
-      ? `Deployed source and ${builtIn.artifact.clarityVersion}/${builtIn.artifact.epoch} execution semantics exactly match reviewed built-in profile ${builtIn.artifact.profile.id}`
-      : `Deployed source and ${provenReferenceArtifact?.clarityVersion}/${provenReferenceArtifact?.epoch} execution semantics exactly match proven reference render ${installed?.profile.id}`
+      ? `Deployed source (${builtIn.recognition.match}) and ${builtIn.artifact.clarityVersion}/${builtIn.artifact.epoch} execution semantics match reviewed built-in profile ${builtIn.artifact.profile.id}`
+      : `Deployed source (${proof?.sourceMatch}) and ${provenReferenceArtifact?.clarityVersion}/${provenReferenceArtifact?.epoch} execution semantics match proven reference render ${installed?.profile.id}`
     : operatorProvidedArtifact
       ? "Operator-provided network data cannot grant executable manager capabilities"
-      : (builtIn?.recognition.match === "exact" && !builtInSemanticsMatch) ||
+      : (builtIn && builtIn.recognition.match !== "unknown" && !builtInSemanticsMatch) ||
           (proof?.verified &&
-            proof.sourceMatch === "exact" &&
-            installedMatch === "exact" &&
+            (proof.sourceMatch === "exact" || proof.sourceMatch === "canonical") &&
+            installedMatch !== "unknown" &&
             !referenceRenderSemanticsMatch)
-        ? `Source bytes match a reviewed artifact, but deployed execution semantics ${contractInterface.clarity_version ?? "unknown Clarity version"}/${contractInterface.epoch ?? "unknown epoch"} do not match the reviewed artifact`
-        : builtIn?.recognition.match === "canonical" ||
-            installedMatch === "canonical" ||
-            (proof?.verified && proof.sourceMatch === "canonical")
-          ? "Source has only a canonical/format-insensitive match; executable capabilities require a reviewed byte-exact fingerprint"
-          : "No reviewed byte-exact capability fingerprint matches the deployed source";
+        ? `Source matches a reviewed artifact, but deployed execution semantics ${contractInterface.clarity_version ?? "unknown Clarity version"}/${contractInterface.epoch ?? "unknown epoch"} do not match the reviewed artifact`
+        : "No reviewed reference program matches the deployed source";
   const capabilities = inspectManagerCapabilities({
     contractInterface,
     sourceSha256,
-    exactSourceReviewed,
+    sourceReviewed,
     sourceReviewReason,
+    sourceMatch: builtIn?.recognition.match ?? proof?.sourceMatch ?? "unknown",
+    reviewedArtifactId: sourceReviewed
+      ? (builtIn?.artifact.profile.id ?? provenReferenceArtifact?.profile.id ?? null)
+      : null,
   });
   const missingFunctions = capabilities.signerManagerTrait.compatible ? [] : ["validate-stake!"];
   const interfaceCompatible = capabilities.signerManagerTrait.compatible;
@@ -520,7 +527,7 @@ export function verifyManagerArtifact(
     networkMatches &&
       interfaceCompatible &&
       referenceInterfaceCompatible &&
-      exactSourceReviewed &&
+      sourceReviewed &&
       (builtIn?.recognition.automationAllowed ||
         (tier === "reference-render" && proof?.automationEligible)),
   );
@@ -535,7 +542,7 @@ export function verifyManagerArtifact(
         ? missingFunctionReason
         : !referenceInterfaceCompatible
           ? missingReferenceFunctionReason
-          : !exactSourceReviewed
+          : !sourceReviewed
             ? proof?.verified
               ? sourceReviewReason
               : (proof?.reason ?? installedFailureReason ?? sourceReviewReason)
@@ -709,7 +716,7 @@ export async function inspectManagerOrReportMissing(
       capabilities: inspectManagerCapabilities({
         contractInterface: { functions: [] },
         sourceSha256: "",
-        exactSourceReviewed: false,
+        sourceReviewed: false,
         sourceReviewReason: "Manager contract is not deployed yet",
       }),
       installedProfiles: {

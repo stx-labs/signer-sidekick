@@ -723,7 +723,9 @@ export interface ManagerCapabilities {
     readOnly: string[];
   };
   sourceReview: {
-    exactReviewed: boolean;
+    reviewed: boolean;
+    match?: "exact" | "canonical" | "unknown";
+    artifactId?: string | null;
     reason: string;
     clarityVersion?: string | null;
     epoch?: string | null;
@@ -1350,7 +1352,12 @@ function isManagerCapabilities(value: unknown): value is ManagerCapabilities {
     !isStringArray(observed.public) ||
     !isStringArray(observed.readOnly) ||
     !isRecord(sourceReview) ||
-    typeof sourceReview.exactReviewed !== "boolean" ||
+    typeof sourceReview.reviewed !== "boolean" ||
+    (sourceReview.match !== undefined &&
+      !["exact", "canonical", "unknown"].includes(String(sourceReview.match))) ||
+    (sourceReview.artifactId !== undefined &&
+      sourceReview.artifactId !== null &&
+      typeof sourceReview.artifactId !== "string") ||
     typeof sourceReview.reason !== "string" ||
     (sourceReview.clarityVersion !== undefined &&
       sourceReview.clarityVersion !== null &&
@@ -2329,6 +2336,12 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
+    /** Current conditional allocation, independent of the next-calculation forecast. */
+    accruedPoolRewardSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable()
+      .optional(),
     distributionCheckpoint: z.enum(["first-half", "second-half"]).nullable(),
     estimatedOperatorFeeSats: z
       .string()
@@ -2925,6 +2938,7 @@ export const rewardLedgerProvenanceSchema = z.enum(["you", "another-caller", "un
 export type RewardLedgerProvenance = z.infer<typeof rewardLedgerProvenanceSchema>;
 
 export const rewardLedgerDistributionStatusSchema = z.enum([
+  "interpretation-unavailable",
   "needs-attention",
   "accruing",
   "waiting-calculation",
@@ -3084,6 +3098,19 @@ export const rewardLedgerDistributionSchema = z
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
     feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    /** Row-derived totals before pagination; missing coverage must never become a fee remainder. */
+    allocation: z
+      .object({
+        toStakersSats: ledgerSatsSchema.nullable(),
+        operatorFeeSats: ledgerSatsSchema.nullable(),
+        coverage: z.enum(["complete", "partial", "unavailable"]),
+        estimated: z.boolean(),
+        /** Separately floored pool/account difference; not earned operator fees. */
+        roundingSats: ledgerSatsSchema.nullable().optional(),
+        poolBasis: z.enum(["collected", "simulation"]).nullable().optional(),
+      })
+      .strict()
+      .optional(),
     payments: z
       .object({
         made: z.number().int().nonnegative(),
@@ -3101,7 +3128,8 @@ export const rewardLedgerDistributionSchema = z
         returned: z.number().int().nonnegative(),
         distributedSats: ledgerSatsSchema,
         outstandingSats: ledgerSatsSchema,
-        operatorFeeSats: ledgerSatsSchema,
+        /** Known indexed paid fees only, not a pending distribution's estimated allocation. */
+        operatorFeeSats: ledgerSatsSchema.nullable(),
       })
       .strict(),
     status: rewardLedgerDistributionStatusSchema,
@@ -3121,7 +3149,7 @@ export const rewardLedgerCycleSchema = z
     feeEvidence: z.enum(["locked", "provisional", "unknown"]),
     collectedSats: ledgerSatsSchema,
     distributedSats: ledgerSatsSchema,
-    operatorFeeSats: ledgerSatsSchema,
+    operatorFeeSats: ledgerSatsSchema.nullable(),
     outstandingSats: ledgerSatsSchema,
     coverage: rewardLedgerCoverageSchema,
     distributions: z.array(rewardLedgerDistributionSchema).max(2),
@@ -3179,7 +3207,7 @@ export const rewardLedgerSchema = z
           .string()
           .regex(/^(?:0|[1-9][0-9]*)$/)
           .nullable(),
-        earnedIndexedSats: ledgerSatsSchema,
+        earnedIndexedSats: ledgerSatsSchema.nullable(),
         indexedPaymentCount: z.number().int().nonnegative(),
         unmatchedPaymentCount: z.number().int().nonnegative(),
         historyComplete: z.boolean(),

@@ -136,7 +136,7 @@ function collectPrint(
   seed: number,
   cycle: number,
   blockHeight: number,
-  total: string,
+  total: string | null,
 ): StoredPox5RewardPrint {
   return {
     txId: tx(seed),
@@ -219,6 +219,339 @@ function snapshot(overrides: Partial<RewardLedgerSnapshotInput> = {}): RewardLed
 }
 
 describe("buildRewardLedger", () => {
+  it.each([
+    "unsupported manager",
+    "missing live reads",
+    "replaying history",
+  ])("does not call a calculated pool complete or invent fee income with %s", async (condition) => {
+    const live = { rewardCycle: 141, buckets: [], stakers: [], calculation: { next: null } };
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "first-half", 4_000, "36194403", tx(1))],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: condition === "missing live reads" ? null : live,
+        rewardOutlook: { calculation: { targetRewardCycle: 141, next: null } },
+        ...(condition === "unsupported manager"
+          ? { manager: { capabilities: { eventVocabulary: { normalizationAvailable: false } } } }
+          : {}),
+        ...(condition === "replaying history"
+          ? {
+              historyRecovery: {
+                monitoringStartedAt: null,
+                managerHistory: { status: "reconstructing" },
+                currentMemberHistory: { status: "complete" },
+              },
+            }
+          : {}),
+      }),
+    });
+    expect(ledger.cycles[0]?.distributions[0]).toMatchObject({
+      status: "interpretation-unavailable",
+      coverage: "historical-coverage-incomplete",
+      allocation: { toStakersSats: null, operatorFeeSats: null, coverage: "unavailable" },
+    });
+    expect(ledger.cycles[0]?.operatorFeeSats).toBeNull();
+    if (condition !== "missing live reads") expect(ledger.fees.earnedIndexedSats).toBeNull();
+  });
+
+  it.each([
+    "0",
+    "36194403",
+  ])("distinguishes a proven zero allocation from an unexplained nonzero pool (%s sats)", async (poolSats) => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({ realizations: [realization(141, "first-half", 4_000, poolSats, tx(1))] }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({
+        rewards: { rewardCycle: 141, buckets: [], stakers: [], calculation: { next: null } },
+      }),
+    });
+    expect(ledger.cycles[0]?.distributions[0]).toMatchObject(
+      poolSats === "0"
+        ? {
+            status: "complete",
+            allocation: { toStakersSats: "0", operatorFeeSats: "0", coverage: "complete" },
+          }
+        : {
+            status: "interpretation-unavailable",
+            allocation: { operatorFeeSats: null, coverage: "unavailable" },
+          },
+    );
+  });
+
+  it.each([
+    false,
+    true,
+  ])("aggregates paid and outstanding account fees across differently priced buckets before payment filtering (provisional=%s)", async (provisional) => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(141, "first-half", 4_000, "6000", tx(1))],
+        claims: [claim(2, alice, 141, 4_100, "950")],
+        prints: [grossPrint(2, alice, 4_100, "1000")],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      query: { staker: alice },
+      snapshot: snapshot({
+        rewards: {
+          rewardCycle: 141,
+          calculation: { next: null },
+          manager: { configuredFeeBips: "500", feeSnapshotBips: "500", earnedFeesSats: "50" },
+          buckets: [
+            { bondIndex: null, signerEarnedBeforeManagerClaimSats: "0", feeSnapshotBips: "500" },
+            {
+              bondIndex: "0",
+              signerEarnedBeforeManagerClaimSats: "0",
+              feeSnapshotBips: provisional ? null : "1000",
+            },
+          ],
+          stakers: [
+            {
+              stakerPrincipal: bob,
+              payout: { kind: "direct-sbtc", maxFeeSats: null },
+              claimableByPolicy: true,
+              rewards: { earnedSats: "4600", feeSats: "400", grossSats: "5000" },
+              claims: [
+                {
+                  bondIndex: null,
+                  rewards: { earnedSats: "1900", feeSats: "100", grossSats: "2000" },
+                  claimable: true,
+                },
+                {
+                  bondIndex: "0",
+                  rewards: { earnedSats: "2700", feeSats: "300", grossSats: "3000" },
+                  claimable: !provisional,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    expect(ledger.payments).toHaveLength(1);
+    expect(ledger.paymentsTruncated).toBe(false);
+    expect(ledger.cycles[0]?.distributions[0]?.allocation).toEqual({
+      toStakersSats: "5550",
+      operatorFeeSats: "450",
+      coverage: "complete",
+      estimated: provisional,
+      roundingSats: "0",
+      poolBasis: "simulation",
+    });
+    expect(ledger.fees.earnedIndexedSats).toBe("50"); // Only the paid row is earned income.
+  });
+
+  it.each([
+    {
+      name: "per-account flooring",
+      pool: "2999",
+      collect: undefined,
+      coverage: "complete",
+      rounding: "2",
+    },
+    {
+      name: "actual collect overrides simulation",
+      pool: "9000",
+      collect: "2999",
+      coverage: "complete",
+      rounding: "2",
+    },
+    {
+      name: "collect without simulation",
+      pool: null,
+      collect: "2999",
+      coverage: "complete",
+      rounding: "2",
+    },
+    {
+      name: "gap equal to account count",
+      pool: "3000",
+      collect: undefined,
+      coverage: "partial",
+      rounding: null,
+    },
+    {
+      name: "gap above account count",
+      pool: "3001",
+      collect: undefined,
+      coverage: "partial",
+      rounding: null,
+    },
+    { name: "negative gap", pool: "2996", collect: undefined, coverage: "partial", rounding: null },
+    {
+      name: "collect mismatch cannot fall back to simulation",
+      pool: "2997",
+      collect: "9000",
+      coverage: "partial",
+      rounding: null,
+    },
+    {
+      name: "unknown collect cannot fall back to simulation",
+      pool: "2997",
+      collect: null,
+      coverage: "partial",
+      rounding: null,
+    },
+  ])("reconciles $name without treating rounding as fee income", async ({
+    pool,
+    collect,
+    coverage,
+    rounding,
+  }) => {
+    // Three accounts each floor 999.8 sats to 999, while the pool floors 2999.4 to 2999.
+    const accounts = [alice, bob, carol];
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(140, "first-half", 4_000, pool, tx(1))],
+        claims: accounts.map((staker, i) => claim(i + 2, staker, 140, 4_200 + i, "950")),
+        prints: [
+          ...accounts.map((staker, i) => grossPrint(i + 2, staker, 4_200 + i, "999")),
+          ...(collect === undefined ? [] : [collectPrint(9, 140, 4_100, collect)]),
+        ],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot(),
+    });
+    const cycle = ledger.cycles[0];
+    expect(cycle?.distributions[0]?.allocation).toMatchObject({
+      toStakersSats: "2850",
+      operatorFeeSats: "147",
+      coverage,
+      roundingSats: rounding,
+      poolBasis: collect === null ? null : collect === undefined ? "simulation" : "collected",
+    });
+    expect(cycle?.operatorFeeSats).toBe("147");
+    expect(ledger.fees.earnedIndexedSats).toBe("147");
+    expect(rewardLedgerDistributionsCsv(ledger).split("\n")[1]?.split(",").slice(-2)).toEqual([
+      rounding ?? "",
+      collect === null ? "" : collect === undefined ? "simulation" : "collected",
+    ]);
+  });
+
+  it("reconciles separately rounded STX and bond buckets even after a paid member departs", async () => {
+    const accounts = [
+      { staker: alice, bond: null, net: "317" },
+      { staker: bob, bond: null, net: "317" },
+      { staker: alice, bond: "0", net: "300" },
+      { staker: bob, bond: "0", net: "300" },
+    ];
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(140, "first-half", 4_000, null, tx(1))],
+        claims: accounts.map(({ staker, bond, net }, i) => ({
+          ...claim(i + 2, staker, 140, 4_200 + i, net),
+          bondIndex: bond,
+        })),
+        prints: [
+          { ...collectPrint(9, 140, 4_100, "1334"), stxRewardsSats: "667" },
+          ...accounts.map(({ staker, bond }, i) => ({
+            ...grossPrint(i + 2, staker, 4_200 + i, "333"),
+            bondIndex: bond,
+          })),
+        ],
+        memberships: { 140: [membership(alice, 140), membership(bob, 140)] },
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot({ roster: [{ stakerPrincipal: bob, active: true }] }),
+    });
+    expect(ledger.cycles[0]).toMatchObject({
+      coverage: "historical-coverage-incomplete",
+      operatorFeeSats: "98",
+    });
+    expect(ledger.cycles[0]?.distributions[0]).toMatchObject({
+      status: "complete",
+      payments: { made: 4 },
+      allocation: {
+        coverage: "complete",
+        toStakersSats: "1234",
+        operatorFeeSats: "98",
+        roundingSats: "2",
+        poolBasis: "collected",
+      },
+    });
+  });
+
+  it("does not present known fees in one distribution as a complete cycle fee total", async () => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [
+          realization(140, "first-half", 4_000, "1000", tx(1)),
+          realization(140, "second-half", 4_500, "1000", tx(2)),
+        ],
+        claims: [claim(3, alice, 140, 4_200, "950"), claim(4, alice, 140, 4_700, "950")],
+        prints: [grossPrint(3, alice, 4_200, "1000")],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot(),
+    });
+    expect(ledger.cycles[0]?.distributions.map((d) => d.payments.operatorFeeSats)).toEqual([
+      "50",
+      null,
+    ]);
+    expect(ledger.cycles[0]?.operatorFeeSats).toBeNull();
+    // The separate indexed-history total still exposes known fees with incomplete coverage.
+    expect(ledger.fees).toMatchObject({ earnedIndexedSats: "50", historyComplete: false });
+  });
+
+  it("keeps unmatched paid gross unknown rather than zero fees", async () => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: [realization(140, "first-half", 4_000, "1000", tx(1))],
+        claims: [claim(2, alice, 140, 4_100, "950")],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot(),
+    });
+    expect(ledger.cycles[0]?.distributions[0]?.allocation).toMatchObject({
+      toStakersSats: "950",
+      operatorFeeSats: null,
+      coverage: "partial",
+    });
+    expect(ledger.cycles[0]?.operatorFeeSats).toBeNull();
+    expect(ledger.fees).toMatchObject({
+      earnedIndexedSats: null,
+      historyComplete: false,
+      unmatchedPaymentCount: 1,
+    });
+    expect(ledger.cycles[0]?.distributions[0]?.payments.operatorFeeSats).toBeNull();
+    expect(rewardLedgerDistributionsCsv(ledger).split("\n")[1]?.split(",")[20]).toBe("");
+  });
+
   it("projects a current distribution that is ready to collect and distribute", async () => {
     const ledger = await buildRewardLedger({
       store: fakeStore({
@@ -737,6 +1070,7 @@ describe("buildRewardLedger", () => {
       "historical-coverage-incomplete",
     );
     expect(departed.payments[0]?.coverage).toBe("historical-coverage-incomplete");
+    expect(departed.cycles.find((c) => c.cycle === 139)?.distributions[0]?.status).toBe("complete");
     const reconstructing = await buildRewardLedger({
       ...base,
       snapshot: snapshot({
@@ -751,6 +1085,9 @@ describe("buildRewardLedger", () => {
     });
     expect(reconstructing.cycles.find((c) => c.cycle === 139)?.coverage).toBe(
       "historical-coverage-incomplete",
+    );
+    expect(reconstructing.cycles.find((c) => c.cycle === 139)?.distributions[0]?.status).toBe(
+      "interpretation-unavailable",
     );
     // A fresh install may not have seen payments made earlier in the live cycle either.
     expect(reconstructing.cycles.find((c) => c.cycle === 141)?.coverage).toBe(
@@ -869,7 +1206,7 @@ describe("buildRewardLedger", () => {
         ownedTxids: new Set(),
         now,
         snapshot: snapshot({
-          rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+          rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [], buckets: [] },
         }),
         ...(evidenceLimit === undefined ? {} : { evidenceLimit }),
         ...(query === undefined ? {} : { query }),
@@ -902,6 +1239,16 @@ describe("buildRewardLedger", () => {
       [139, "historical-coverage-incomplete"],
       [138, "historical-coverage-incomplete"],
     ]);
+    // Window coverage alone must not reopen a distribution with retained payment evidence.
+    expect(windowed.cycles.find((c) => c.cycle === 139)?.distributions[0]).toMatchObject({
+      status: "complete",
+      payments: { made: 2 },
+    });
+    // The older, entirely empty distribution remains unavailable for the independent reason
+    // that no payment evidence accounts for its nonzero calculation.
+    expect(windowed.cycles.find((c) => c.cycle === 138)?.distributions[0]?.status).toBe(
+      "interpretation-unavailable",
+    );
     const latest = windowed.cycles.find((c) => c.cycle === 140);
     expect(latest?.distributions[0]?.payments).toMatchObject({ made: 1, distributedSats: "95000" });
     const windowedCycle = await build(3, { cycle: 140 });
@@ -945,7 +1292,7 @@ describe("buildRewardLedger", () => {
       ownedTxids: new Set(),
       now,
       snapshot: snapshot({
-        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [], buckets: [] },
       }),
       query: { cycle: 140 },
     });
@@ -1012,7 +1359,7 @@ describe("buildRewardLedger", () => {
       now,
       snapshot: snapshot({
         roster: stakers.map((stakerPrincipal) => ({ stakerPrincipal, active: true })),
-        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [] },
+        rewards: { rewardCycle: 141, calculation: { next: null }, stakers: [], buckets: [] },
       }),
       query: { cycle: 140 },
     });

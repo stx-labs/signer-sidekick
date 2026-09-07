@@ -96,6 +96,29 @@ export interface SyncManagerEventsResult {
   stoppedAtKnownOverlap: boolean;
 }
 
+/** A scan under another vocabulary invalidates this vocabulary's old coverage claim. */
+export function managerEventCheckpoint(
+  options: Pick<
+    SyncManagerEventsOptions,
+    "store" | "sourceId" | "managerPrincipal" | "eventVocabulary"
+  >,
+) {
+  const checkpoint = options.store.chainState.getCursor(
+    options.sourceId,
+    managerEventStream(options.managerPrincipal, options.eventVocabulary),
+  );
+  const other = options.store.chainState.getCursor(
+    options.sourceId,
+    managerEventStream(
+      options.managerPrincipal,
+      options.eventVocabulary === "generic-v1" ? "reference-manager-v1" : "generic-v1",
+    ),
+  );
+  return other !== null && (checkpoint === null || other.updatedAt >= checkpoint.updatedAt)
+    ? null
+    : checkpoint;
+}
+
 function decodeEvent(hex: string): ManagerPrintEvent | null {
   try {
     return decodeManagerPrintEvent(decodeClarityHex(hex));
@@ -179,7 +202,7 @@ export async function syncManagerEvents(
   // reviewed adapter (or removing one) forces a complete replay instead of reusing projections
   // produced under different semantic assumptions.
   const stream = managerEventStream(options.managerPrincipal, options.eventVocabulary);
-  const checkpoint = options.store.chainState.getCursor(options.sourceId, stream);
+  const checkpoint = managerEventCheckpoint(options);
   let cursor = checkpoint?.cursor ?? null;
   const resumed = cursor !== null;
   const incrementalScan = checkpoint !== null && cursor === null;

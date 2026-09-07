@@ -137,7 +137,7 @@ function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
       capabilities: {
         signerManagerTrait: { compatible: true, reason: "matched" },
         observedFunctions: { public: ["register-self"], readOnly: [] },
-        sourceReview: { exactReviewed: true, reason: "reviewed" },
+        sourceReview: { reviewed: true, reason: "reviewed" },
         eventVocabulary: {
           id: "reference-manager-v1" as const,
           normalizationAvailable: true,
@@ -776,6 +776,7 @@ describe("Overview projection", () => {
       status: "ready",
       estimatedNetworkRewardSats: "3000",
       estimatedPoolRewardSats: "600",
+      accruedPoolRewardSats: "500",
       distributionCheckpoint: "first-half",
       estimateKind: "checkpoint-forecast",
       confidence: "developing",
