@@ -336,8 +336,8 @@ const transactionEventPageSchema = z
   .strict();
 
 // `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
-// endpoint supplies the signed transaction's public call details needed for the narrow fallback
-// used when a node explicitly has transaction indexing disabled.
+// endpoint supplies execution outcomes for the no-txindex fallback. Its public call details
+// are not a byte binding: wallet verification uses the transaction from the canonical node block.
 const transactionDetailSchema = z
   .object({
     tx_id: canonicalHex,

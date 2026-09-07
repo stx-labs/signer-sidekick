@@ -731,10 +731,11 @@ export class LiveRewardRunDriver implements RewardRunDriver {
     if (indexed.status === "observed") {
       if (!indexed.value.isCanonical)
         return { status: "halt", reason: "Transaction became noncanonical" };
+      if (indexed.value.blockHeight === null) return { status: "pending" };
       confirmed = {
         success: indexed.value.resultRepr.trim().startsWith("(ok"),
         resultRepr: indexed.value.resultRepr,
-        blockHeight: Number(indexed.value.blockHeight ?? 0n),
+        blockHeight: Number(indexed.value.blockHeight),
       };
     } else if (transactionIndexCannotAnswer(indexed)) {
       const apiTransaction = await lookupCanonicalApiTransaction({
@@ -743,6 +744,12 @@ export class LiveRewardRunDriver implements RewardRunDriver {
         chainId: input.run.recipe.chainId,
         txId: input.txid,
       });
+      if (apiTransaction.status === "conflict") {
+        return {
+          status: "halt",
+          reason: `Canonical transaction conflict: ${apiTransaction.reason}`,
+        };
+      }
       if (apiTransaction.status === "observed") {
         confirmed = {
           success: apiTransaction.value.success,

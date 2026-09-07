@@ -15,6 +15,7 @@ import {
 import { isRetryableChainReadError } from "../chain-clients.js";
 import { withOperatorRequestSignal } from "../request-context.js";
 import type { RewardRunRepository } from "../storage/reward-run-repository.js";
+import { submittedObservationIntervalMs } from "../submitted-observation-cadence.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import type { TransactionBroadcastResult } from "./transaction-broadcaster.js";
 
@@ -142,6 +143,7 @@ export interface RewardRunServiceOptions {
   approvalStartMinutes?: number;
   maximumRunHours?: number;
   pollIntervalMs?: number;
+  observeSubmitted?: readonly (() => Promise<void>)[];
   now?: () => Date;
   logger?: { warn(message: string): void };
 }
@@ -382,6 +384,8 @@ export class RewardRunService {
   #preparationController = new AbortController();
   #timer: NodeJS.Timeout | null = null;
   #recoveryInFlight: Promise<void> | null = null;
+  #observationInFlight: Promise<void> | null = null;
+  #nextObservationAt = 0;
   #closed = false;
 
   constructor(options: RewardRunServiceOptions) {
@@ -417,6 +421,7 @@ export class RewardRunService {
     this.#preparationController.abort(new Error("Reward-run preparation stopped"));
     await this.#preparationTail;
     await this.#recoveryInFlight;
+    await this.#observationInFlight;
     await this.#tail;
   }
 
@@ -676,6 +681,28 @@ export class RewardRunService {
 
   async recover(): Promise<void> {
     if (this.#closed) return;
+    // Reuse this maintenance tick without letting a slow wallet/sweep lookup stall active
+    // runs. The shared promise bounds concurrency and is drained before storage closes.
+    const now = this.#now().getTime();
+    if (
+      !this.#observationInFlight &&
+      this.#options.observeSubmitted &&
+      now >= this.#nextObservationAt
+    ) {
+      this.#nextObservationAt = now + submittedObservationIntervalMs;
+      this.#observationInFlight = Promise.allSettled(
+        this.#options.observeSubmitted.map(async (observe) => await observe()),
+      )
+        .then((results) => {
+          for (const result of results) {
+            if (result.status === "rejected")
+              this.#options.logger?.warn(`Submitted observation failed: ${String(result.reason)}`);
+          }
+        })
+        .finally(() => {
+          this.#observationInFlight = null;
+        });
+    }
     this.#recoveryInFlight ??= this.#recover().finally(() => {
       this.#recoveryInFlight = null;
     });

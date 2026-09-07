@@ -25,8 +25,9 @@ It does not replace the underlying wallet-intent or transaction-engine state mac
 
 Stacks transactions have distinct construction, signing, broadcast, mempool, execution, canonical
 inclusion, and finality phases. Inclusion is not execution success: a transaction can be included
-and abort by response or post-condition. Sidekick also requires its expected post-state to be
-reconciled before calling an operation complete.
+and abort by response or post-condition. Sidekick requires exact canonical execution and any
+adapter-specific checkpoint evidence before calling an operation complete. Re-reading later mutable
+admin/fee/registration state or a newly accrued balance must not undo historical execution (ADR 0008).
 
 The operator UI therefore must not collapse `submitted`, `mempool`, `included`, `executed`,
 `finalized`, and `post-state verified` into one “confirmed” status. It must present a small stable

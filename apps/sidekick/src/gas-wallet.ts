@@ -29,6 +29,7 @@ import {
   type StoredGasWalletSweep,
 } from "./storage/gas-wallet-sweep-repository.js";
 import type { SidekickStore } from "./storage/store.js";
+import { SubmittedObservationCadence } from "./submitted-observation-cadence.js";
 import {
   selectTransactionFee,
   type TransactionFeePolicy,
@@ -165,6 +166,9 @@ function toSweep(stored: StoredGasWalletSweep): GasWalletSweep {
 }
 
 export class GasWalletService {
+  readonly #sweepApprovals = new Map<string, Promise<GasWalletSweep>>();
+  readonly #sweepRefreshes = new Map<string, Promise<GasWalletSweep>>();
+  readonly #observationCadence = new SubmittedObservationCadence();
   readonly #options: GasWalletServiceOptions;
   #lastActivationError: string | null = null;
   #statusCache: { expiresAt: number; value: GasWalletStatus } | null = null;
@@ -502,6 +506,16 @@ export class GasWalletService {
    * balance that no longer covers the sealed amount fails closed instead of signing.
    */
   async approveSweep(sweepId: string): Promise<GasWalletSweep> {
+    const existing = this.#sweepApprovals.get(sweepId);
+    if (existing) return existing;
+    const approval = this.#approveSweep(sweepId).finally(() =>
+      this.#sweepApprovals.delete(sweepId),
+    );
+    this.#sweepApprovals.set(sweepId, approval);
+    return approval;
+  }
+
+  async #approveSweep(sweepId: string): Promise<GasWalletSweep> {
     this.#invalidateStatus();
     const now = this.#now();
     const engine = this.#requireEngine();
@@ -569,6 +583,7 @@ export class GasWalletService {
       );
     }
     let signed: SignedGasWalletSweepTransaction;
+    this.#assertSweepApprovalCurrent(sweepId);
     try {
       signed = await engine.signGasWalletSweep(plan);
     } catch (error) {
@@ -578,8 +593,21 @@ export class GasWalletService {
         `The sweep could not be signed: ${shortMessage(error)}`,
       );
     }
-    const approvedAt = now.toISOString();
-    this.#options.store.gasWalletSweeps.update(sweepId, { approvedAt }, approvedAt);
+    this.#assertSweepApprovalCurrent(sweepId);
+    const approvedAt = this.#now().toISOString();
+    // Persist the locally computed ID before any network submission. A crash or timeout
+    // now leaves observable, ambiguous work holding its existing wallet authorization.
+    this.#options.store.gasWalletSweeps.update(
+      sweepId,
+      {
+        approvedAt,
+        status: "broadcast",
+        txid: signed.precomputedTxid,
+        broadcastAmbiguous: true,
+        broadcastAt: approvedAt,
+      },
+      approvedAt,
+    );
     const broadcaster = (this.#options.createBroadcaster ?? defaultBroadcaster)(
       context.config.nodeRpcUrl,
     );
@@ -596,13 +624,16 @@ export class GasWalletService {
       };
     }
     const at = this.#now().toISOString();
+    // Background observation may finish while the broadcast response is still in flight.
+    const current = this.#requireSweep(sweepId);
+    if (current.status !== "broadcast" || current.failureReason !== null) return toSweep(current);
     if (result.status === "deterministic-rejection") {
       return toSweep(
         this.#options.store.gasWalletSweeps.update(
           sweepId,
           {
             status: "failed",
-            txid: result.txid ?? signed.precomputedTxid,
+            txid: signed.precomputedTxid,
             resolvedAt: at,
             failureReason: `Node rejected the sweep${result.nodeMessage ? `: ${result.nodeMessage}` : ""}`,
           },
@@ -615,9 +646,8 @@ export class GasWalletService {
         sweepId,
         {
           status: "broadcast",
-          txid: result.txid,
+          txid: signed.precomputedTxid,
           broadcastAmbiguous: result.status === "ambiguous",
-          broadcastAt: at,
         },
         at,
       ),
@@ -638,73 +668,134 @@ export class GasWalletService {
 
   /** Re-reads the node for a broadcast sweep and settles it when the chain has decided. */
   async refreshSweep(sweepId: string): Promise<GasWalletSweep> {
+    const existing = this.#sweepRefreshes.get(sweepId);
+    if (existing) return existing;
+    const refresh = this.#refreshSweep(sweepId).finally(() => this.#sweepRefreshes.delete(sweepId));
+    this.#sweepRefreshes.set(sweepId, refresh);
+    return refresh;
+  }
+
+  async observeSubmitted(): Promise<void> {
+    const sweep = this.#options.store.gasWalletSweeps.active();
+    this.#observationCadence.retain(sweep?.status === "broadcast" ? [sweep.sweepId] : []);
+    if (
+      sweep?.status === "broadcast" &&
+      this.#observationCadence.isDue(sweep.sweepId, this.#now().getTime())
+    ) {
+      await this.refreshSweep(sweep.sweepId);
+    }
+  }
+
+  async #refreshSweep(sweepId: string): Promise<GasWalletSweep> {
     this.#invalidateStatus();
     const now = this.#now();
-    const sweep = this.#requireSweep(sweepId);
-    if (sweep.status === "planned" && Date.parse(sweep.expiresAt) <= now.getTime()) {
-      return toSweep(this.#resolveSweep(sweepId, "expired", now, "Approval window elapsed"));
-    }
-    if (sweep.status !== "broadcast" || sweep.txid === null) return toSweep(sweep);
-    const context = this.#connectedContext();
-    const reader = (this.#options.createReader ?? defaultReader)(context.config.nodeRpcUrl);
-    const indexed = await reader.lookupIndexedTransaction(sweep.txid);
-    let confirmed: { success: boolean; resultRepr: string; blockHeight: number | null } | undefined;
-    if (indexed.status === "observed" && indexed.value.isCanonical) {
-      confirmed = {
-        success: indexed.value.resultRepr.trim().startsWith("(ok"),
-        resultRepr: indexed.value.resultRepr,
-        blockHeight: indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
-      };
-    } else if (transactionIndexCannotAnswer(indexed)) {
-      const apiTransaction = await lookupCanonicalApiTransaction({
-        api: context.api,
-        node: context.node,
-        chainId: this.#options.chainId,
-        txId: sweep.txid as `0x${string}`,
-      });
-      if (apiTransaction.status === "observed") {
-        confirmed = {
-          success: apiTransaction.value.success,
-          resultRepr: apiTransaction.value.resultRepr,
-          blockHeight: apiTransaction.value.blockHeight,
-        };
+    let retryLater = true;
+    try {
+      const sweep = this.#requireSweep(sweepId);
+      if (sweep.status === "planned" && Date.parse(sweep.expiresAt) <= now.getTime()) {
+        retryLater = false;
+        return toSweep(this.#resolveSweep(sweepId, "expired", now, "Approval window elapsed"));
       }
+      if (sweep.status !== "broadcast" || sweep.txid === null) {
+        retryLater = false;
+        return toSweep(sweep);
+      }
+      const context = this.#connectedContext();
+      const reader = (this.#options.createReader ?? defaultReader)(context.config.nodeRpcUrl);
+      const indexed = await reader.lookupIndexedTransaction(sweep.txid);
+      if (indexed.status === "observed" && !indexed.value.isCanonical) {
+        retryLater = false;
+        return this.#recordSweepConflict(sweepId, "Transaction became noncanonical", now);
+      }
+      let confirmed:
+        | { success: boolean; resultRepr: string; blockHeight: number | null }
+        | undefined;
+      if (
+        indexed.status === "observed" &&
+        indexed.value.isCanonical &&
+        indexed.value.blockHeight !== null
+      ) {
+        confirmed = {
+          success: indexed.value.resultRepr.trim().startsWith("(ok"),
+          resultRepr: indexed.value.resultRepr,
+          blockHeight:
+            indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
+        };
+      } else if (transactionIndexCannotAnswer(indexed)) {
+        const apiTransaction = await lookupCanonicalApiTransaction({
+          api: context.api,
+          node: context.node,
+          chainId: this.#options.chainId,
+          txId: sweep.txid as `0x${string}`,
+        });
+        if (apiTransaction.status === "conflict") {
+          retryLater = false;
+          return this.#recordSweepConflict(
+            sweepId,
+            `Canonical transaction conflict: ${apiTransaction.reason}`,
+            now,
+          );
+        }
+        if (apiTransaction.status === "observed") {
+          confirmed = {
+            success: apiTransaction.value.success,
+            resultRepr: apiTransaction.value.resultRepr,
+            blockHeight: apiTransaction.value.blockHeight,
+          };
+        }
+      }
+      const current = this.#requireSweep(sweepId);
+      if (current.status !== "broadcast") {
+        retryLater = false;
+        return toSweep(current);
+      }
+      if (confirmed) {
+        retryLater = false;
+        const at = now.toISOString();
+        return toSweep(
+          this.#options.store.gasWalletSweeps.update(
+            sweepId,
+            {
+              status: confirmed.success ? "confirmed" : "failed",
+              resolvedAt: at,
+              blockHeight: confirmed.blockHeight,
+              failureReason: confirmed.success
+                ? null
+                : `Sweep aborted on chain: ${confirmed.resultRepr}`,
+            },
+            at,
+          ),
+        );
+      }
+      const unconfirmed = await reader.lookupUnconfirmedTransaction(sweep.txid);
+      retryLater = unconfirmed.status !== "observed";
+      // Missing/lagging sources do not prove a signed transaction can never execute. Keep
+      // ambiguous broadcasts and their wallet authorization until a verified chain outcome.
+      return toSweep(sweep);
+    } finally {
+      this.#observationCadence.record(sweepId, retryLater, now.getTime());
     }
-    if (confirmed) {
-      const at = now.toISOString();
-      return toSweep(
-        this.#options.store.gasWalletSweeps.update(
-          sweepId,
-          {
-            status: confirmed.success ? "confirmed" : "failed",
-            resolvedAt: at,
-            blockHeight: confirmed.blockHeight,
-            failureReason: confirmed.success
-              ? null
-              : `Sweep aborted on chain: ${confirmed.resultRepr}`,
-          },
-          at,
-        ),
-      );
+  }
+
+  #recordSweepConflict(sweepId: string, reason: string, now: Date): GasWalletSweep {
+    const current = this.#requireSweep(sweepId);
+    if (current.status !== "broadcast") return toSweep(current);
+    return toSweep(
+      this.#options.store.gasWalletSweeps.update(
+        sweepId,
+        {
+          failureReason: `${reason}. Wallet authorization retained; do not repeat this sweep`,
+        },
+        now.toISOString(),
+      ),
+    );
+  }
+
+  #assertSweepApprovalCurrent(sweepId: string): void {
+    const current = this.#requireSweep(sweepId);
+    if (current.status !== "planned" || Date.parse(current.expiresAt) <= this.#now().getTime()) {
+      throw new GasWalletError("gas_wallet_sweep_state", "Sweep approval is no longer current");
     }
-    const unconfirmed = await reader.lookupUnconfirmedTransaction(sweep.txid);
-    if (unconfirmed.status === "observed") return toSweep(sweep);
-    if (
-      unconfirmed.status === "not-found" &&
-      sweep.broadcastAmbiguous &&
-      sweep.broadcastAt !== null &&
-      now.getTime() - Date.parse(sweep.broadcastAt) > this.#sweepApprovalMinutes() * 60 * 1000
-    ) {
-      return toSweep(
-        this.#resolveSweep(
-          sweepId,
-          "failed",
-          now,
-          "The node never saw the sweep after an ambiguous broadcast; prepare it again",
-        ),
-      );
-    }
-    return toSweep(sweep);
   }
 
   async listSweeps(limit = SWEEP_LIST_LIMIT): Promise<GasWalletSweep[]> {

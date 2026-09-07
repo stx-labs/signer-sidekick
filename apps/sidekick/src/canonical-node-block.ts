@@ -1,6 +1,6 @@
 import type { ChainAnchor } from "./chain-anchor.js";
 import { type StacksNodeClient, UpstreamUnavailableError } from "./chain-clients.js";
-import { nakamotoBlockContainsTxid } from "./nakamoto-block.js";
+import { findNakamotoBlockTransaction } from "./nakamoto-block.js";
 
 type CanonicalBlockNode = Pick<
   StacksNodeClient,
@@ -19,7 +19,10 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
  * temporarily unreachable node is never mistaken for a rolled-back transaction.
  */
 export type CanonicalTransactionProof =
-  | { status: "included" }
+  | {
+      status: "included";
+      transaction: NonNullable<ReturnType<typeof findNakamotoBlockTransaction>>;
+    }
   | { status: "absent" }
   | { status: "reorged" };
 
@@ -75,9 +78,10 @@ export async function checkTransactionInCanonicalBlock(
 ): Promise<CanonicalTransactionProof> {
   const block = await canonicalBlockBytes(node, input);
   if (!block) return { status: "reorged" };
-  return nakamotoBlockContainsTxid(block, input.txId)
-    ? { status: "included" }
-    : { status: "absent" };
+  // Finish decoding the entire block before returning a match: a malformed tail must not
+  // become either inclusion evidence or a positive claim that a transaction is absent.
+  const transaction = findNakamotoBlockTransaction(block, input.txId);
+  return transaction ? { status: "included", transaction } : { status: "absent" };
 }
 
 /**

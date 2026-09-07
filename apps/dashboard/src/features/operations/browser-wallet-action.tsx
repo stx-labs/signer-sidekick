@@ -291,9 +291,9 @@ export function BrowserWalletActionPanel({
       try {
         const result = await apiJson(
           token,
-          `${intentApiBase}/${encodeURIComponent(intent.id)}/refresh`,
+          `${intentApiBase}/${encodeURIComponent(intent.id)}`,
           browserWalletIntentResponseSchema,
-          { method: "POST", body: "{}", signal: controller.signal },
+          { signal: controller.signal },
         );
         if (!active || pollingController.current !== controller) return;
         setIntent(result.intent);

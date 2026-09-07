@@ -270,6 +270,7 @@ export async function executeCliCommand({
         managerPrincipal,
       });
       const wallet = new WalletIntentService({
+        logger: { warn: (message) => warnGasWallet(message) },
         store,
         runtimeSettings,
         managerVerification,
@@ -359,6 +360,7 @@ export async function executeCliCommand({
         logger: { warn: (message) => warnGasWallet(message) },
       });
       const rewardRuns = new RewardRunService({
+        observeSubmitted: [() => wallet.observeSubmitted(), () => gasWallet.observeSubmitted()],
         repository: store.rewardRuns,
         signer: engine,
         driver: new LiveRewardRunDriver({

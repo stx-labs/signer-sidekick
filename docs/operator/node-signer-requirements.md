@@ -38,6 +38,11 @@ verifies manager activity and reward realization by reading the canonical block 
 height and confirming the transaction is in it. That is equally authoritative — block bytes are
 primary consensus data — but deserializes a block per check instead of doing a single-row lookup.
 
+Submitted wallet transactions, reward-run children and gas sweeps use this fallback too. Wallet
+verification uses the exact transaction bytes from that canonical block, not the API's call summary
+or postcondition count. Local block access is still needed when the index cannot answer; this
+release does not yet enable API-only completion during a local-node outage.
+
 Enabling it trades storage for that speed. The index only covers blocks the node processes after you
 turn it on; it does not backfill, so transactions confirmed earlier keep using block reads. Keep the
 node working directory, including the index, on the chainstate volume.

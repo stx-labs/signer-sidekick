@@ -44,10 +44,10 @@ One run or sweep owns the gas wallet at a time, with one transaction in flight. 
 `awaiting-approval → approved → running → paused → completed | halted | cancelled | expired`.
 Approval must be used within 30 minutes; a started run expires after 6 hours.
 
-- For reward runs, the sealed child plan and precomputed transaction ID are persisted before the
-  single broadcast attempt. Raw signed bytes are not stored in the run-attempt table.
-- Submission is not confirmation; confirmation is not completion until the expected state is
-  proved.
+- For reward runs and gas sweeps, the sealed plan and precomputed transaction ID are persisted
+  before the single broadcast attempt. Raw signed bytes are not stored.
+- Submission is not confirmation. Completion requires exact canonical successful execution and
+  any adapter-specific checkpoint proof, not a repeated read of later mutable settings/balances.
 - A reset or timeout during submission, conflicting nonce, reorg, or uncertain submission outcome
   halts without replacement. Typed upstream/read failures and retryable anchor capture instead wait
   on the existing maintenance tick, bounded by the original runtime cap. Unclassified exceptions
@@ -61,6 +61,16 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
 - A predictable contract abort plus the already-proved target state is external completion.
 - Restart resumes from the durable cursor and never re-signs an existing attempt.
 - Cancel releases work that has not been signed; it cannot undo a broadcast transaction.
+- The existing maintenance tick observes submitted wallets and broadcast sweeps without a browser
+  or enabled gas signer. It grants no signing, replacement or automatic halted-run-resume authority.
+  Submitted-work scans run at most every 30 seconds, independently of five-second run recovery.
+  Per-item missing/unavailable results or read errors wait 30, 60, 120, 240, then 300 seconds
+  between reads; the cap repeats indefinitely, never retiring the transaction. Observed results
+  reset to 30 seconds. This in-memory pacing is not evidence, resets on restart, and is pruned
+  against the durable active set.
+  Manual refresh bypasses the due-time check and still coalesces with an in-flight read.
+  Positive sweep conflicts retain the wallet authorization; ambiguous missing transactions never
+  expire into permission to submit another sweep.
 
 The executable contract is the typed schemas and tests under `apps/sidekick/src/transaction-engine`,
 `packages/protocol`, and `packages/api-contracts`. Operator recovery is in

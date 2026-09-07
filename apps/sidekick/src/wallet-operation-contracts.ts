@@ -17,6 +17,7 @@ export interface WalletOperationContract {
   authority: WalletOperationAuthority;
   functionName: string | null;
   completionEvidence:
+    | "canonical-execution"
     | "contract-source"
     | "canonical-post-state"
     | "immutable-engine-job"
@@ -35,7 +36,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "register-self",
     authority: "manager-admin-and-signer-grant",
     functionName: "register-self",
-    completionEvidence: "canonical-post-state",
+    completionEvidence: "canonical-execution",
   },
   "add-admin": {
     action: "add-admin",
@@ -43,7 +44,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "update-admin",
     authority: "manager-admin",
     functionName: "update-admin",
-    completionEvidence: "canonical-post-state",
+    completionEvidence: "canonical-execution",
   },
   "remove-admin": {
     action: "remove-admin",
@@ -51,7 +52,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "update-admin",
     authority: "manager-admin",
     functionName: "update-admin",
-    completionEvidence: "canonical-post-state",
+    completionEvidence: "canonical-execution",
   },
   "update-fees": {
     action: "update-fees",
@@ -59,7 +60,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "update-fees",
     authority: "manager-admin",
     functionName: "update-fees",
-    completionEvidence: "canonical-post-state",
+    completionEvidence: "canonical-execution",
   },
   "withdraw-fees": {
     action: "withdraw-fees",
@@ -91,7 +92,7 @@ export const WALLET_OPERATION_CONTRACTS = {
     capability: "reference-reward-claims",
     authority: "permissionless",
     functionName: "claim-staker-rewards",
-    completionEvidence: "canonical-post-state",
+    completionEvidence: "canonical-execution",
   },
   "calculate-rewards": {
     action: "calculate-rewards",

@@ -2702,10 +2702,14 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   await expect(page.getByText("1–1 of 1")).toBeVisible();
 });
 
-test("manual wallet verification supersedes an overlapping automatic poll", async ({ page }) => {
+test("manual wallet verification supersedes a retained-state GET without automatic reconciliation POSTs", async ({
+  page,
+}) => {
   await page.clock.install();
   const actorPrincipal = snapshot.managerPrincipal.split(".")[0];
   let refreshCalls = 0;
+  let automaticReads = 0;
+  let holdAutomaticRead = false;
   let releaseAutomaticRefresh: (() => void) | null = null;
   const automaticRefreshReleased = new Promise<void>((resolve) => {
     releaseAutomaticRefresh = resolve;
@@ -2726,19 +2730,20 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
       request.pathname ===
       `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}`
     ) {
-      body = updateFeesWalletIntent(actorPrincipal, "submitted");
+      expect(route.request().method()).toBe("GET");
+      if (holdAutomaticRead) {
+        automaticReads += 1;
+        heldAutomaticRefresh = true;
+        await automaticRefreshReleased;
+        body = updateFeesWalletIntent(actorPrincipal, "mempool");
+      } else body = updateFeesWalletIntent(actorPrincipal, "submitted");
     } else if (
       request.pathname ===
       `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}/refresh`
     ) {
       refreshCalls += 1;
-      if (refreshCalls === 1) {
-        heldAutomaticRefresh = true;
-        await automaticRefreshReleased;
-        body = updateFeesWalletIntent(actorPrincipal, "mempool");
-      } else {
-        body = updateFeesWalletIntent(actorPrincipal, "complete");
-      }
+      expect(route.request().method()).toBe("POST");
+      body = updateFeesWalletIntent(actorPrincipal, "complete");
     } else {
       body = responseFor(route.request().url());
     }
@@ -2767,10 +2772,12 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
     await expect(page).toHaveURL(/#action\/update-fees\?intentId=/);
     await expect(walletReview.getByRole("button", { name: "Refresh verification" })).toBeVisible();
 
+    holdAutomaticRead = true;
     await page.clock.runFor(15_000);
-    await expect.poll(() => refreshCalls).toBe(1);
+    await expect.poll(() => automaticReads).toBe(1);
+    expect(refreshCalls).toBe(0);
     await walletReview.getByRole("button", { name: "Refresh verification" }).click();
-    await expect.poll(() => refreshCalls).toBe(2);
+    await expect.poll(() => refreshCalls).toBe(1);
     await expect(walletReview).toContainText("The manual refresh verified the fee update.");
   } finally {
     releaseAutomaticRefresh?.();
@@ -3310,5 +3317,57 @@ test("creates a gas wallet from Settings", async ({ page }) => {
   await expect(section.getByText(/12\.48 STX/).first()).toBeVisible();
   await expect(section.getByRole("button", { name: "Enable" })).toBeVisible();
   await section.getByRole("button", { name: "Sweep remaining STX" }).click();
+  await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
+});
+
+test("R3a displays retained sweep conflicts without browser-driven reconciliation", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const conflict =
+    "Canonical transaction conflict: absent. Wallet authorization retained; do not repeat this sweep";
+  const sweepId = "00000000-0000-4000-8000-00000000b001";
+  const sweep = {
+    sweepId,
+    status: "broadcast",
+    walletPrincipal: gasWalletCreated.principal,
+    recipient: snapshot.managerPrincipal.split(".")[0],
+    amountUstx: "1000000",
+    feeUstx: "1000",
+    nonce: "1",
+    balanceUstx: "1001000",
+    planSha256: "11".repeat(32),
+    txid: `0x${"cd".repeat(32)}`,
+    broadcastAmbiguous: true,
+    createdAt: snapshot.generatedAt,
+    expiresAt: snapshot.generatedAt,
+    approvedAt: snapshot.generatedAt,
+    broadcastAt: snapshot.generatedAt,
+    resolvedAt: null,
+    blockHeight: null,
+    failureReason: conflict,
+  };
+  let receiptPosts = 0;
+  let statusReads = 0;
+  await page.route("**/api/v1/settings/gas-wallet**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname.endsWith("/refresh")) receiptPosts += 1;
+    else statusReads += 1;
+    await route.fulfill(
+      fixtureFulfillment({ ...gasWalletCreated, activeSweepId: sweepId, sweeps: [sweep] }),
+    );
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#settings?section=gas-wallet";
+  });
+  const section = page.locator('section[aria-label="Reward runs"]');
+  await section.getByRole("button", { name: "Sweep remaining STX" }).click();
+  await expect(section.getByText(conflict)).toBeVisible();
+  const initialReads = statusReads;
+  await page.clock.runFor(31_000);
+  await expect.poll(() => statusReads).toBeGreaterThan(initialReads);
+  expect(receiptPosts).toBe(0);
+  await expect(section.getByRole("button", { name: "Check status" })).toBeVisible();
   await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
 });

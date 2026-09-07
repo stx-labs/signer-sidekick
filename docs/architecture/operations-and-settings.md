@@ -30,7 +30,8 @@ start, stop, install, or configure it.
 
 Sidekick never accepts a signer key, manager-admin key, mnemonic, or arbitrary signing request.
 Wallet actions use sealed, expiring intents and return only a transaction ID; Sidekick verifies the
-canonical bytes and expected poststate.
+exact bytes and canonical execution, plus adapter-specific checkpoint evidence. Later mutable
+manager state does not undo historical execution (see ADR 0008).
 
 Operator-run may generate one dedicated, low-balance gas wallet. Its key stays in
 `/data/gas-wallet.key` and signs only the explicit permissionless reward adapters in one approved,

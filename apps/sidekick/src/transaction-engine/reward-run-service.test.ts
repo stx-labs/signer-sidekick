@@ -222,6 +222,103 @@ describe("reward run coordinator", () => {
     for (const store of stores.splice(0)) store.close();
   });
 
+  it("observes submitted work on existing maintenance with signing disabled, coalesces slow reads, and drains shutdown", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const pending = Promise.withResolvers<void>();
+    const observeSubmitted = vi.fn(() => pending.promise);
+    const live = driver();
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), gasWalletSignerReady: () => false },
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1000n,
+      observeSubmitted: [
+        async () => {
+          throw new Error("other observer failed");
+        },
+        observeSubmitted,
+      ],
+    });
+    await service.start();
+    await Promise.all([service.recover(), service.recover()]);
+    expect(observeSubmitted).toHaveBeenCalledOnce();
+    const stopped = vi.fn();
+    const stop = service.stop().then(stopped);
+    await Promise.resolve();
+    expect(stopped).not.toHaveBeenCalled();
+    pending.resolve();
+    await stop;
+    await service.recover();
+    expect(observeSubmitted).toHaveBeenCalledOnce();
+    expect(live.materialized).toEqual([]);
+    expect(live.broadcasts).toEqual([]);
+  });
+
+  it("retries failed submitted observation without halting or delaying an active run", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const observeSubmitted = vi.fn(async () => {
+      throw new Error("wallet source down");
+    });
+    const logger = { warn: vi.fn() };
+    const live = driver();
+    let now = started;
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1000n,
+      observeSubmitted: [observeSubmitted],
+      logger,
+      now: () => now,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    expect((await settle(service, run.runId)).status).toBe("completed");
+    expect(observeSubmitted).toHaveBeenCalledOnce();
+    now = new Date(started.getTime() + 29_999);
+    await service.recover();
+    expect(observeSubmitted).toHaveBeenCalledOnce();
+    now = new Date(started.getTime() + 30_000);
+    await service.recover();
+    expect(observeSubmitted).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("wallet source down"));
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await service.stop();
+  });
+
+  it("scans submitted work at most every thirty seconds while retaining five-second run ticks", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    let now = started;
+    const observeSubmitted = vi.fn(async () => {});
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: driver().implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1000n,
+      observeSubmitted: [observeSubmitted],
+      now: () => now,
+    });
+    for (let seconds = 0; seconds < 3600; seconds += 5) {
+      now = new Date(started.getTime() + seconds * 1000);
+      await service.recover();
+    }
+    expect(observeSubmitted).toHaveBeenCalledTimes(120);
+    await service.stop();
+  });
+
   it("seals the exact account universe while keeping the full collect bound", () => {
     const recipe = buildRewardRunRecipe({
       runId: "00000000-0000-4000-8000-000000000001",

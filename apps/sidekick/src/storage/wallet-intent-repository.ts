@@ -580,6 +580,24 @@ export class WalletIntentRepository {
       .map(mapIntent);
   }
 
+  /** Submitted work only; prepared and terminal history require no background chain reads. */
+  listAwaitingObservation(): StoredWalletIntent[] {
+    return this.db
+      .prepare(`SELECT * FROM browser_wallet_intents AS intent
+      WHERE txid IS NOT NULL AND (
+        state IN ('submitted', 'mempool', 'confirmed', 'reobserve') OR
+        (state = 'superseded' AND COALESCE((
+          SELECT outcome FROM browser_wallet_intent_observations AS observation
+          WHERE observation.intent_id = intent.intent_id AND outcome <> 'unavailable'
+            AND (outcome <> 'superseded' OR canonical = 1)
+          ORDER BY observed_at DESC, rowid DESC LIMIT 1
+        ), 'submitted') NOT IN ('complete', 'canonical-success', 'abort', 'mismatch', 'superseded'))
+      )
+      ORDER BY submitted_at ASC, intent_id ASC`)
+      .all()
+      .map(mapIntent);
+  }
+
   listSubmittedEquivalent(input: {
     action: WalletIntentAction;
     scope: string;

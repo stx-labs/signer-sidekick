@@ -1,4 +1,4 @@
-import { proveTransactionInCanonicalBlock } from "./canonical-node-block.js";
+import { checkTransactionInCanonicalBlock } from "./canonical-node-block.js";
 import { type StacksApiClient, type StacksNodeClient, UpstreamHttpError } from "./chain-clients.js";
 
 type CanonicalApiTransactionNode = Pick<
@@ -20,9 +20,16 @@ export type CanonicalApiTransactionLookup =
         indexBlockHash: `0x${string}`;
         success: boolean;
         resultRepr: string;
+        transactionHex: string;
       };
     }
   | { status: "not-found" }
+  | {
+      status: "conflict";
+      reason: "reorged" | "absent";
+      blockHeight: number;
+      indexBlockHash: `0x${string}`;
+    }
   | { status: "unavailable"; reason: string };
 
 function message(error: unknown): string {
@@ -73,11 +80,19 @@ export async function lookupCanonicalApiTransaction(input: {
         reason: "Configured API transaction and block records are not coherent",
       };
     }
-    await proveTransactionInCanonicalBlock(input.node, {
+    const proof = await checkTransactionInCanonicalBlock(input.node, {
       blockHeight: block.height,
       indexBlockHash: block.index_block_hash,
       txId: input.txId,
     });
+    if (proof.status !== "included") {
+      return {
+        status: "conflict",
+        reason: proof.status,
+        blockHeight: block.height,
+        indexBlockHash: block.index_block_hash,
+      };
+    }
     return {
       status: "observed",
       value: {
@@ -86,6 +101,7 @@ export async function lookupCanonicalApiTransaction(input: {
         indexBlockHash: block.index_block_hash,
         success: details.tx_status === "success",
         resultRepr: details.tx_result.repr,
+        transactionHex: proof.transaction.serialize(),
       },
     };
   } catch (error) {

@@ -112,6 +112,14 @@ Stacks request and retirement.
 
 ## Reward runs
 
+Submitted wallet transactions and gas-wallet sweeps are checked by the server even after the
+browser closes. Checks normally run every 30 seconds. Missing transactions and unavailable reads
+back off through 30 seconds, 1, 2, 4 and then 5 minutes between checks, without ever being dropped.
+A late appearance can therefore take up to five minutes plus the next 30-second scan to be picked
+up, with source latency, outages or a busy observation pass adding time. Manual **Check status**
+or **Refresh** bypasses that wait. Restart resets the in-memory backoff and checks retained work
+again. Missing does not mean failed and never authorizes another sweep.
+
 A run starts from a Distribute card. Sidekick first prepares its sealed recipe in the background;
 large pools can take a few minutes, survive a closed browser, and resume preparation after restart.
 Review the resulting transaction count, then Go. Execution is also server-side, one transaction at
@@ -130,6 +138,21 @@ and logs that it is waiting for upstream recovery. Retrying reads is not retryin
 failure after a signed attempt is persisted still halts rather than risking another broadcast.
 After a restart, preserve the same database and gas-wallet key so recovery cannot change signer or
 nonce identity.
+
+Submitted browser-wallet transactions and gas sweeps also continue being observed after closing the
+dashboard or restarting Sidekick. Disabling the gas signer does not disable observation. Normal
+pages read the retained result; manual verification refresh remains available.
+
+A gas sweep with an ambiguous broadcast retains its transaction ID and wallet authorization even
+if lookups report it missing for longer than the original approval window. Do not prepare a second
+sweep or reset the database. Positive canonical conflicts are shown on the active sweep; the wallet
+stays reserved until a verified terminal outcome. Confirmation can release it automatically, without
+another signature. A permanently missing ambiguous sweep currently needs operator investigation;
+there is no automatic abandonment or replacement policy.
+
+An action marked complete records historical execution. A later fee/admin/registration change or
+new rewards on the same settlement account does not undo that transaction. For a Bitcoin-route
+staker claim, this means the Stacks withdrawal request succeeded, not that BTC arrived in the wallet.
 
 ## Diagnose
 

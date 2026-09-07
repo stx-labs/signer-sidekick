@@ -142,6 +142,19 @@ describe("reward run confirmation without node txindex", () => {
     expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
   });
 
+  it("does not complete a node-index result missing its anchored height", async () => {
+    const runtime = driver("(ok true)");
+    runtime.reader.lookupIndexedTransaction.mockResolvedValue({
+      status: "observed",
+      value: {
+        isCanonical: true,
+        blockHeight: null,
+        resultRepr: "(ok true)",
+      },
+    } as never);
+    expect(await runtime.value.reconcile(input())).toEqual({ status: "pending" });
+  });
+
   it("still halts a new materialization on positive preparation-anchor mismatch", async () => {
     const runtime = driver("(ok true)");
     runtime.node.getNakamotoBlockAtHeight.mockResolvedValue(
@@ -262,7 +275,7 @@ describe("reward run confirmation without node txindex", () => {
         plan: { material: { kind: "claim-rewards" } },
         txid: txId,
       } as never),
-    ).resolves.toEqual({ status: "pending" });
-    expect(runtime.reader.lookupUnconfirmedTransaction).toHaveBeenCalledWith(txId);
+    ).resolves.toEqual({ status: "halt", reason: "Canonical transaction conflict: absent" });
+    expect(runtime.reader.lookupUnconfirmedTransaction).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,26 @@
 # Unreleased
 
+## Exact wallet verification and submitted-work recovery (R3a, second commit)
+
+- Wallets without a node transaction-index row now use exact bytes from the canonical block and
+  the existing full manifest verifier. The weaker API-summary verifier is removed. Canonical
+  aborts pass the same identity/inclusion checks; orphaned aborts cannot become failures.
+- Positive canonical conflicts remain explicit across wallets, runs and gas sweeps. Temporary
+  source unavailability preserves terminal wallet history; later mutable manager settings or
+  re-accrued rewards no longer undo successful registration, admin/fee updates or staker claims.
+- Existing server maintenance observes submitted wallets and broadcast sweeps after browser closure
+  and restart, independently of signing readiness. Automatic dashboard polls read retained results;
+  manual verification controls remain. Slow observation coalesces and shutdown drains it.
+  Submitted-work scans run every 30 seconds, with per-item missing/unavailable backoff capped at five
+  minutes. Missing work is never dropped; manual refresh remains immediate. This avoids perpetual
+  five-second API polling for abandoned submissions without changing completion or signing rules.
+- Sweeps save their locally produced txid before broadcast. Ambiguity and missing lookups retain
+  the wallet authorization instead of expiring into permission to sweep again; positive conflicts
+  are displayed. Concurrent approval and observation cannot duplicate broadcast or overwrite an
+  observed confirmation. Permanently missing ambiguous sweeps require operator investigation.
+- No database migration, signing-scope expansion or infrastructure change. Node-unavailable/API-only
+  completion remains R3b; Bitcoin delivery and withdrawal retirement remain separate facts.
+
 ## Active-run read recovery (R3a, first commit)
 
 - Typed upstream unavailability, rate limits and retryable anchor capture no longer halt an
@@ -11,8 +32,8 @@
   the signature boundary rechecks expiry, run state and emergency controls. Unknown exceptions,
   positive preparation-anchor mismatch and potentially ambiguous submission still halt.
 - No automatic halted-run resume, replacement transaction, database migration or infrastructure
-  change. Exact wallet fallback verification, typed API conflicts and background wallet/sweep
-  observation remain the next R3a commit; node-unavailable/API-supported completion remains R3b.
+  change. The remaining R3a work is described above; node-unavailable/API-supported completion
+  remains R3b.
 
 ## Background recovery and dashboard refresh (R2)
 

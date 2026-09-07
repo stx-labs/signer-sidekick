@@ -18,8 +18,6 @@ import {
 } from "./gas-wallet-api.js";
 import { SettingsInfo, SettingsRow } from "./settings-ui.js";
 
-const SWEEP_POLL_MS = 10_000;
-
 function signerBadge(status: GasWalletStatus): {
   tone: "success" | "caution" | "error" | "neutral";
   label: string;
@@ -118,23 +116,6 @@ export function GasWalletSettings({
 
   const activeSweep =
     status?.sweeps.find((sweep) => sweep.sweepId === status.activeSweepId) ?? null;
-  const broadcastSweepId = activeSweep?.status === "broadcast" ? activeSweep.sweepId : null;
-  const [sweepError, setSweepError] = useState<string | null>(null);
-  useEffect(() => {
-    setSweepError(null);
-    if (!broadcastSweepId) return;
-    const refresh = startVisibleRefresh(
-      async (signal) => {
-        await refreshGasWalletSweep(token, broadcastSweepId, signal);
-        if (signal.aborted) return;
-        setSweepError(null);
-        await load();
-      },
-      (cause) => setSweepError(operatorErrorSentence(cause)),
-      SWEEP_POLL_MS,
-    );
-    return () => refresh.stop();
-  }, [broadcastSweepId, load, token]);
 
   const act = (label: string, operation: () => Promise<unknown>) => {
     setBusy(label);
@@ -258,7 +239,6 @@ export function GasWalletSettings({
         </p>
         <ErrorCallout error={error} />
       </div>
-      <ErrorCallout error={sweepError ? `Sweep observation delayed: ${sweepError}` : null} />
       <div className="st-rows st-wallet-rows">
         <SettingsRow
           actions={
@@ -350,6 +330,7 @@ export function GasWalletSettings({
                     </strong>{" "}
                     {stxAmount(activeSweep.amountUstx)} to{" "}
                     <span className="identifier">{short(activeSweep.recipient, 8, 6)}</span>
+                    {activeSweep.failureReason ? <p>{activeSweep.failureReason}</p> : null}
                     <div className="actions">
                       {activeSweep.status === "planned" ? (
                         <>
