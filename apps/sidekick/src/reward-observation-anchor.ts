@@ -1,6 +1,6 @@
 import { type ChainAnchor, chainAnchorsEqual } from "./chain-anchor.js";
 import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
-import { nodeProvesChainAnchorCanonical } from "./node-chain-anchor-proof.js";
+import { readNodeChainAnchorProof } from "./node-chain-anchor-proof.js";
 import type { OperatorAnchorSnapshot } from "./operator-anchor-snapshot.js";
 import {
   proveSignerStakerAnchorRemainsCanonical,
@@ -13,7 +13,7 @@ type RosterProofNode = Pick<StacksNodeClient, "getNakamotoBlockById" | "getNakam
 export async function resolveRosterProjectionAnchor(options: {
   store: Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
   api: Pick<StacksApiClient, "getStatus" | "getBlock">;
-  /** Local node; proves the roster anchor when the indexed API cannot (node-first). */
+  /** Local node is the primary canonicality witness; API proof is an availability fallback. */
   node?: RosterProofNode;
   sourceId: string;
   managerPrincipal: string;
@@ -25,26 +25,23 @@ export async function resolveRosterProjectionAnchor(options: {
     options.managerPrincipal,
   );
   if (!run?.chainAnchor) return options.liveAnchor;
+  if (options.node) {
+    const proof = await readNodeChainAnchorProof(options.node, run.chainAnchor, options.liveAnchor);
+    if (proof === "canonical") return run.chainAnchor;
+    if (proof === "non-canonical") return options.liveAnchor;
+  }
   if (options.indexedApiAvailable === false) {
-    // An indexed-API outage must not drop the sealed roster: every reward read keys its staker set
-    // to this anchor, so falling back to the live tip would empty the page. Let the local node
-    // prove the anchor instead; only a failed proof (reorg, pruned block) falls back.
-    return options.node &&
-      (await nodeProvesChainAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
-      ? run.chainAnchor
-      : options.liveAnchor;
+    // The local proof above preserves the roster during an API outage. Without either witness,
+    // a saved anchor must not be presented as current financial evidence.
+    return options.liveAnchor;
   }
   try {
     await proveSignerStakerAnchorRemainsCanonical(options.api, run.chainAnchor);
     return run.chainAnchor;
   } catch (error) {
     if (!(error instanceof SignerStakerAnchorError)) throw error;
-    // The indexed API could not confirm the anchor (a reorg, or an API that has fallen behind it).
-    // The local node decides: a node-proved anchor stays; anything else falls back to the live tip.
-    return options.node &&
-      (await nodeProvesChainAnchorCanonical(options.node, run.chainAnchor, options.liveAnchor))
-      ? run.chainAnchor
-      : options.liveAnchor;
+    // Neither available source proved the saved roster. Do not present it as current evidence.
+    return options.liveAnchor;
   }
 }
 

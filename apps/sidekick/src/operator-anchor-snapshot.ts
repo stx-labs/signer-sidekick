@@ -31,6 +31,8 @@ type OperatorAnchorSnapshotOptions = {
   managerPrincipal: string;
   managerVerification: ManagerVerificationContext | undefined;
   reportMissingManager?: boolean;
+  /** Reuse advisory API health only; all local anchored reads and proofs remain fresh. */
+  background?: boolean;
   waitBeforeRetry?: (attempt: number) => Promise<void>;
 };
 
@@ -55,7 +57,9 @@ async function readOperatorAnchorSnapshotAttempt(
     ? inspectManagerOrReportMissing
     : inspectDeployedManager;
   const [preflight, manager] = await Promise.all([
-    runOperatorPreflight(options.config, options.node, options.api),
+    runOperatorPreflight(options.config, options.node, options.api, {
+      background: options.background ?? false,
+    }),
     managerReader(
       options.node,
       options.config.network,

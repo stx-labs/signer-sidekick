@@ -21,6 +21,82 @@ import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const stores: SidekickStore[] = [];
 
+describe("background snapshot reuse", () => {
+  async function fixture() {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://localhost:20443",
+        apiUrl: "http://localhost:3999",
+      } as SidekickConfig,
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      now: () => now,
+    });
+    const load = vi
+      .fn()
+      .mockResolvedValue({ chainAnchor: { stacksBlockHeight: 100, burnBlockHeight: 200 } });
+    (service as unknown as { load: typeof load }).load = load;
+    return {
+      service,
+      load,
+      setTime: (value: number) => {
+        now = value;
+      },
+    };
+  }
+
+  it("shares recent timer/callback work only when it covers the requested heights", async () => {
+    const { service, load, setTime } = await fixture();
+    await service.refreshBackgroundSnapshot();
+    await service.refreshBackgroundSnapshot({ minimumStacksHeight: 100, minimumBurnHeight: 200 });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenLastCalledWith(true);
+    await service.refreshBackgroundSnapshot({ minimumStacksHeight: 101 });
+    expect(load).toHaveBeenCalledTimes(2);
+    await service.refreshBackgroundSnapshot({ minimumBurnHeight: 201 });
+    expect(load).toHaveBeenCalledTimes(3);
+    setTime(30_000);
+    await service.refreshBackgroundSnapshot();
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not reuse cache for explicit refreshes or after projection invalidation", async () => {
+    const { service, load } = await fixture();
+    await service.refreshBackgroundSnapshot();
+    await service.refreshSnapshot();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenLastCalledWith(false);
+    (service as unknown as { cached: null }).cached = null;
+    await service.refreshBackgroundSnapshot();
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets overlapping background callers share work but starts explicit reads afterwards", async () => {
+    const { service, load } = await fixture();
+    let release: ((value: unknown) => void) | undefined;
+    load.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = service.refreshBackgroundSnapshot();
+    const second = service.refreshBackgroundSnapshot();
+    const explicit = service.refreshSnapshot();
+    expect(load).toHaveBeenCalledTimes(1);
+    release?.({ chainAnchor: { stacksBlockHeight: 100, burnBlockHeight: 200 } });
+    await Promise.all([first, second, explicit]);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenLastCalledWith(false);
+  });
+});
+
 afterEach(() => {
   for (const store of stores.splice(0)) store.close();
 });

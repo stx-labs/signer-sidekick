@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchHealthSource,
   isDeniedHealthAddress,
@@ -7,10 +7,12 @@ import {
   validateHealthEndpointUrl,
 } from "./health-http.js";
 import { InteractiveRequestCancelledError } from "./request-context.js";
+import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     servers
       .splice(0)
@@ -19,6 +21,20 @@ afterEach(async () => {
 });
 
 describe("health endpoint safety", () => {
+  it("counts native health HTTP responses once, including rate limits", async () => {
+    const record = vi.spyOn(upstreamRequestMetrics, "record");
+    const server = createServer((_request, response) => {
+      response.statusCode = 429;
+      response.end("busy");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const url = `http://127.0.0.1:${address.port}/extended`;
+    await expect(fetchHealthSource(url)).rejects.toMatchObject({ code: "rate-limited" });
+    expect(record).toHaveBeenCalledExactlyOnceWith(url, "GET", 429);
+  });
   it("allows private and loopback targets while blocking metadata and link-local targets", () => {
     expect(isDeniedHealthAddress("127.0.0.1")).toBe(false);
     expect(isDeniedHealthAddress("10.0.0.2")).toBe(false);

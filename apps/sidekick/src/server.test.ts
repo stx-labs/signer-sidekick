@@ -1577,6 +1577,7 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.statusCode).toBe(200);
     expect(metrics.body).toContain("sidekick_http_requests_total");
+    expect(metrics.body).toContain("# TYPE sidekick_upstream_requests_total counter");
     expect(metrics.body).toContain("sidekick_operator_snapshot_refresh_successes_total 1");
     expect(metrics.body).toContain("sidekick_operator_snapshot_age_seconds 10");
     expect(metrics.body).toContain(

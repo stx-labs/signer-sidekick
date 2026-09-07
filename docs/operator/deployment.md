@@ -30,6 +30,38 @@ both API URLs have the same origin, Sidekick safely reuses `STACKS_API_KEY`.
 The local node supplies current chain state. The indexed API supplies roster and history data; API
 lag does not block node-backed status.
 
+### API traffic and monitoring
+
+Background collection continues with the dashboard closed. Sidekick avoids upstream reads for
+idle legacy-engine maintenance, proves saved roster anchors with the local node first, and shares
+recent background snapshots when they cover the observer callback's verified heights. Advisory
+API health reads may be shared for up to 30 seconds; explicit wallet/run preparation and indexed
+canonicality fences still perform fresh reads. Changing an API endpoint or credential replaces
+the cached client. Network comparison still polls every 30 seconds and deduplicates same-origin
+comparison/indexed sources within that health check.
+
+The Bitcoin timing estimate keeps a 200-block display-only window: one recent page is fetched
+every five minutes, with an hourly full reconciliation. Changed or missing overlap and backwards
+movement trigger a full refresh. This window is not transaction evidence.
+
+The authenticated `/metrics` endpoint exposes `sidekick_upstream_requests_total` with `origin`,
+`route`, `method`, and `status` labels. It counts each chain, transaction, and health HTTP attempt,
+including retries. `no_response` means no HTTP response headers arrived; validation failures
+after a 200 response still count as HTTP 200. Blocked health URLs/DNS failures before an HTTP
+request are not counted. Paths are normalized and credentials, query strings, contract principals,
+and transaction IDs are omitted. Counters reset on restart; excess label cardinality rolls into
+an `other` series. These counters are separate from incoming dashboard/API request counts.
+
+For a single instance, Prometheus queries to compare a stable before/after deployment window:
+
+```promql
+sum by (origin, route) (rate(sidekick_upstream_requests_total[15m])) * 60
+sum by (origin) (increase(sidekick_upstream_requests_total[24h]))
+```
+
+Initial backfill, observer activity, source failures and transaction reconciliation add variable
+traffic. Measure actual usage rather than treating timer-based estimates as a daily quota.
+
 ## Manager compatibility
 
 `connection check` accepts a manager only when its network and exact PoX-5 signer-manager interface

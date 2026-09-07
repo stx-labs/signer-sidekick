@@ -38,6 +38,7 @@ import {
   type TransactionEngineMode,
   type TransactionEngineRuntimeConfig,
 } from "./runtime-config.js";
+import { transactionJobStates } from "./state-machine.js";
 
 export interface TransactionEngineRuntimeContext {
   config: SidekickConfig;
@@ -242,6 +243,15 @@ export class SidekickTransactionEngineRuntime {
       this.#maintenanceTimer = setTimeout(() => {
         this.#maintenanceTimer = null;
         const work = this.#exclusive(async () => {
+          // Snapshot observations already keep idle engine status current. Consult only local
+          // state before paying for a fresh observation; explicit run preparation is unaffected.
+          const pending = this.#composition.store.transactionEngine.listLogicalJobs({
+            states: transactionJobStates.filter(
+              (state) => state !== "reconciled" && state !== "superseded",
+            ),
+            limit: 1,
+          });
+          if (pending.total === 0) return;
           const context = this.#composition.runtimeContext();
           const fresh = await this.#composition.readFreshObservation(context);
           await this.#observeWithContext(context, fresh, true);
@@ -478,6 +488,7 @@ export async function createSidekickTransactionEngineRuntime(
         const rewardAnchor = await resolveRosterProjectionAnchor({
           store: options.store,
           api: context.api,
+          node: context.node,
           sourceId,
           managerPrincipal: options.managerPrincipal,
           liveAnchor: setup.chainAnchor,
@@ -504,6 +515,7 @@ export async function createSidekickTransactionEngineRuntime(
         const rewardAnchor = await resolveRosterProjectionAnchor({
           store: options.store,
           api: context.api,
+          node: context.node,
           sourceId,
           managerPrincipal: options.managerPrincipal,
           liveAnchor: setup.chainAnchor,

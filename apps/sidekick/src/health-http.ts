@@ -5,6 +5,7 @@ import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { parseEndpointUrl } from "./config.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
+import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
 
 const MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -194,9 +195,16 @@ export async function fetchHealthSource(
 
   return await new Promise<HealthHttpResponse>((resolve, reject) => {
     let settled = false;
+    let counted = false;
+    const record = (status: number | null) => {
+      if (counted) return;
+      counted = true;
+      upstreamRequestMetrics.record(normalized, "GET", status);
+    };
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const finishError = (error: HealthSourceError) => {
       if (settled) return;
+      record(null);
       settled = true;
       if (deadline) clearTimeout(deadline);
       reject(error);
@@ -220,6 +228,7 @@ export async function fetchHealthSource(
       },
       (response) => {
         const status = response.statusCode ?? 0;
+        record(status);
         const chunks: Buffer[] = [];
         let bytes = 0;
         response.on("data", (chunk: Buffer | string) => {

@@ -1,5 +1,6 @@
 import { makeSTXTokenTransfer } from "@stacks/transactions";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { upstreamRequestMetrics } from "../upstream-request-metrics.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import { NoRetryTransactionBroadcaster } from "./transaction-broadcaster.js";
 
@@ -30,8 +31,11 @@ async function signedAttempt(): Promise<SignedRewardOperationTransaction> {
   } as unknown as SignedRewardOperationTransaction;
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("NoRetryTransactionBroadcaster", () => {
   it("submits exactly once and accepts only the precomputed txid", async () => {
+    const record = vi.spyOn(upstreamRequestMetrics, "record");
     const attempt = await signedAttempt();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(attempt.precomputedTxid)));
     const broadcaster = new NoRetryTransactionBroadcaster({
@@ -45,6 +49,11 @@ describe("NoRetryTransactionBroadcaster", () => {
       httpStatus: 200,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledExactlyOnceWith(
+      "https://node.example/v2/transactions",
+      "POST",
+      200,
+    );
     const [url, request] = fetchImpl.mock.calls[0] ?? [];
     expect(url).toBe("https://node.example/v2/transactions");
     expect(request).toMatchObject({

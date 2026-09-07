@@ -1,5 +1,6 @@
 import { STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import { claritySourceSha256 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
+import { readBackgroundApiHealth } from "./background-api-health.js";
 import type {
   ApiStatus,
   ContractSource,
@@ -161,6 +162,7 @@ export async function runOperatorPreflight(
   config: SidekickConfig,
   node: StacksNodeClient,
   api: StacksApiClient,
+  options: { background?: boolean } = {},
 ): Promise<PreflightResult> {
   const apiSignal = AbortSignal.timeout(5_000);
   const [nodeInfo, nodePoxInfo, nodeHealth, apiObservation, compatibilityStore] = await Promise.all(
@@ -170,10 +172,13 @@ export async function runOperatorPreflight(
       Promise.resolve()
         .then(() => node.getHealth())
         .catch(() => null),
-      Promise.all([
-        api.getNodeInfo({ signal: apiSignal }),
-        api.getStatus({ signal: apiSignal }),
-      ]).then(
+      (options.background
+        ? readBackgroundApiHealth(api, apiSignal)
+        : Promise.all([
+            api.getNodeInfo({ signal: apiSignal }),
+            api.getStatus({ signal: apiSignal }),
+          ])
+      ).then(
         ([apiNodeInfo, apiStatus]) => ({ apiNodeInfo, apiStatus, apiError: null }),
         (error: unknown) => ({
           apiNodeInfo: null,

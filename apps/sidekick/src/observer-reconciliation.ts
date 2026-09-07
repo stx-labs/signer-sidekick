@@ -9,6 +9,10 @@ export type ObserverReconciliationDomain = "current" | "manager-activity" | "rew
 
 export interface ObserverReconciliationService {
   refreshSnapshot(): Promise<unknown>;
+  refreshBackgroundSnapshot?(target: {
+    minimumStacksHeight: number | null;
+    minimumBurnHeight: number | null;
+  }): Promise<unknown>;
   synchronizeManagerActivity(options?: {
     signal?: AbortSignal;
     minimumStacksHeight?: number | null;
@@ -459,6 +463,7 @@ export class ObserverReconciliationScheduler {
     state.running = true;
     state.lastStartedAt = this.#now().toISOString();
     const requestedStacksHeight = state.requestedStacksHeight;
+    const requestedBurnHeight = state.requestedBurnHeight;
     const callbackReceivedAtMs = state.pendingCallbackReceivedAtMs;
     state.pendingCallbackReceivedAtMs = null;
     const controller = new AbortController();
@@ -467,7 +472,14 @@ export class ObserverReconciliationScheduler {
     const active = (async () => {
       try {
         if (domain === "current") {
-          await this.#service.refreshSnapshot();
+          if (this.#service.refreshBackgroundSnapshot) {
+            await this.#service.refreshBackgroundSnapshot({
+              minimumStacksHeight: requestedStacksHeight,
+              minimumBurnHeight: requestedBurnHeight,
+            });
+          } else {
+            await this.#service.refreshSnapshot();
+          }
         } else if (domain === "manager-activity") {
           await this.#service.synchronizeManagerActivity({
             signal: controller.signal,

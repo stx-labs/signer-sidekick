@@ -418,7 +418,7 @@ describe("roster projection anchor selection", () => {
     ).resolves.toEqual(liveAnchor);
   });
 
-  it("lets the local node confirm a roster anchor the indexed API cannot", async () => {
+  it("uses the local node first without spending API calls on the saved roster anchor", async () => {
     const pinnedAnchor = anchor(100, 200);
     const liveAnchor = anchor(104, 201);
     const api = {
@@ -459,10 +459,56 @@ describe("roster projection anchor selection", () => {
         liveAnchor,
       }),
     ).resolves.toEqual(pinnedAnchor);
-    expect(api.getBlock).toHaveBeenCalledWith(pinnedAnchor.stacksBlockHeight);
+    expect(api.getBlock).not.toHaveBeenCalled();
+    expect(api.getStatus).not.toHaveBeenCalled();
     expect(node.getNakamotoBlockAtHeight).toHaveBeenCalledWith(pinnedAnchor.stacksBlockHeight, {
       tip: liveAnchor.indexBlockHash,
     });
+  });
+
+  it.each([
+    "fork",
+    "unavailable",
+  ])("only permits API fallback for unavailable node bytes, not a proved fork (%s)", async (kind) => {
+    const pinnedAnchor = anchor(100, 200);
+    const liveAnchor = anchor(104, 201);
+    const api = {
+      getStatus: vi.fn().mockResolvedValue({
+        chain_tip: {
+          block_height: liveAnchor.stacksBlockHeight,
+          block_hash: `0x${"aa".repeat(32)}`,
+          index_block_hash: liveAnchor.indexBlockHash,
+          burn_block_height: liveAnchor.burnBlockHeight,
+        },
+      }),
+      getBlock: vi.fn().mockResolvedValue({
+        canonical: true,
+        height: 100,
+        index_block_hash: pinnedAnchor.indexBlockHash,
+        burn_block_height: 200,
+      }),
+    } as unknown as Pick<StacksApiClient, "getStatus" | "getBlock">;
+    const node = {
+      getNakamotoBlockById: vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      getNakamotoBlockAtHeight:
+        kind === "fork"
+          ? vi.fn().mockResolvedValue(Uint8Array.from([2]))
+          : vi.fn().mockRejectedValue(new Error("pruned")),
+    } as unknown as Pick<StacksNodeClient, "getNakamotoBlockById" | "getNakamotoBlockAtHeight">;
+    const store = {
+      getLatestCompletedSignerStakerRun: vi.fn().mockReturnValue({ chainAnchor: pinnedAnchor }),
+    } as unknown as Pick<SidekickStore, "getLatestCompletedSignerStakerRun">;
+    await expect(
+      resolveRosterProjectionAnchor({
+        store,
+        api,
+        node,
+        sourceId: "source",
+        managerPrincipal,
+        liveAnchor,
+      }),
+    ).resolves.toEqual(kind === "fork" ? liveAnchor : pinnedAnchor);
+    expect(api.getStatus).toHaveBeenCalledTimes(kind === "fork" ? 0 : 2);
   });
 
   it("keeps the sealed roster anchor through an indexed-API outage when the local node proves it", async () => {

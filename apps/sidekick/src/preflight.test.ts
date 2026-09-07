@@ -1,8 +1,9 @@
 import { MAINNET_4_0_1_COMPATIBILITY } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { claritySourceSha256 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
-import { evaluatePreflight, type PreflightSources } from "./preflight.js";
+import { evaluatePreflight, type PreflightSources, runOperatorPreflight } from "./preflight.js";
 
 const config: SidekickConfig = {
   network: "mainnet",
@@ -54,6 +55,27 @@ function sources(overrides: Partial<PreflightSources> = {}): PreflightSources {
 }
 
 describe("operator preflight", () => {
+  it("shares only opt-in background API health and always re-reads explicit preflight", async () => {
+    const evidence = sources();
+    const node = {
+      getInfo: vi.fn().mockResolvedValue(evidence.nodeInfo),
+      getHealth: vi.fn().mockResolvedValue(null),
+      getPoxInfo: vi.fn().mockResolvedValue(evidence.nodePoxInfo),
+    } as unknown as StacksNodeClient;
+    const api = {
+      getNodeInfo: vi.fn().mockResolvedValue(evidence.apiNodeInfo),
+      getStatus: vi.fn().mockResolvedValue(evidence.apiStatus),
+    } as unknown as StacksApiClient;
+    await runOperatorPreflight(config, node, api, { background: true });
+    await runOperatorPreflight(config, node, api, { background: true });
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    expect(node.getInfo).toHaveBeenCalledTimes(2);
+    await runOperatorPreflight(config, node, api);
+    await runOperatorPreflight(config, node, api);
+    expect(api.getStatus).toHaveBeenCalledTimes(3);
+    expect(api.getNodeInfo).toHaveBeenCalledTimes(3);
+    expect(node.getInfo).toHaveBeenCalledTimes(4);
+  });
   it("reports a pre-activation warning without failing healthy endpoints", () => {
     const result = evaluatePreflight(config, sources());
 

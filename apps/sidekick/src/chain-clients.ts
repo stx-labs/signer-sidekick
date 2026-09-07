@@ -8,8 +8,10 @@ import {
   validatePrincipal,
 } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
+import { BurnBlockHistory } from "./burn-block-history.js";
 import { type ChainAnchor, chainAnchorSchema, parseChainAnchor } from "./chain-anchor.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
+import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
 
 const nodeInfoSchema = z.object({
   server_version: z.string().min(1).optional(),
@@ -805,7 +807,9 @@ async function fetchResponse(
         ...request,
         signal: AbortSignal.any(signals),
       });
+      upstreamRequestMetrics.record(url, request.method ?? "GET", response.status);
     } catch (error) {
+      upstreamRequestMetrics.record(url, request.method ?? "GET", null);
       cancellationSignal?.throwIfAborted();
       if (attempt === maxAttempts) {
         throw new UpstreamUnavailableError(
@@ -1049,6 +1053,12 @@ export class StacksNodeClient {
 
 export class StacksApiClient {
   private readonly headers: Record<string, string> | undefined;
+  private readonly burnBlockHistory = new BurnBlockHistory(this);
+
+  /** Incremental display-only history; getBurnBlocks remains an uncached API read. */
+  getBurnBlockTimingHistory(): Promise<BurnBlockPage> {
+    return this.burnBlockHistory.refresh();
+  }
 
   constructor(
     private readonly baseUrl: string,

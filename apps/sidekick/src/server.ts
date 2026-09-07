@@ -100,6 +100,7 @@ import {
   RewardRunError,
   type RewardRunErrorCode,
 } from "./transaction-engine/reward-run-service.js";
+import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
 import { WalletIntentError, type WalletIntentService } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
@@ -1602,6 +1603,11 @@ export function createServer(options: ServerOptions = {}) {
     const rosterRefresh = rosterReconciliationMetrics.snapshot();
     const observer = options.observerStatus?.();
     const metrics = new PrometheusText();
+    metrics.counter(
+      "sidekick_upstream_requests_total",
+      "Chain, transaction, and health HTTP attempts by upstream origin and normalized route, including retries. no_response means no HTTP response headers were received.",
+      upstreamRequestMetrics.samples(),
+    );
     metrics.counter(
       "sidekick_http_requests_total",
       "HTTP requests handled by this process.",

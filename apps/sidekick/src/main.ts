@@ -290,7 +290,7 @@ export async function executeCliCommand({
         getConfig: () => runtimeSettings.effectiveConfig(),
         store,
         getOperatorContext: () => service.healthMonitoringContext(),
-        getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
+        getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlockTimingHistory(),
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
@@ -483,7 +483,7 @@ export async function executeCliCommand({
                 if (connection.current()?.status !== "connected") {
                   throw new Error("The configured connection is not current");
                 }
-                return await service.refreshSnapshot();
+                return await service.refreshBackgroundSnapshot();
               },
             },
             server.log,
@@ -1063,7 +1063,7 @@ export async function executeCliCommand({
             getConfig: () => runtimeSettings.effectiveConfig(),
             store,
             getOperatorContext: () => service.healthMonitoringContext(),
-            getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlocks(),
+            getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlockTimingHistory(),
           });
           const operatorSnapshot = await service.supportSnapshot(true);
           const healthSnapshot = health.storedSnapshot();

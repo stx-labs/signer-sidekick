@@ -596,7 +596,33 @@ export class OperatorService {
 
   /** Refresh the retained operator snapshot without requiring a browser request. */
   async refreshSnapshot() {
+    // Explicit callers (including wallet preparation) must not inherit an older background read.
+    if (this.loading) await this.loading.catch(() => undefined);
     return await this.refresh();
+  }
+
+  /** Shared timer/callback refresh. Reuse a recent snapshot only if it covers the trigger's
+   * verified heights; synchronization invalidates `cached`, so changed projections still reload. */
+  async refreshBackgroundSnapshot(
+    target: { minimumStacksHeight?: number | null; minimumBurnHeight?: number | null } = {},
+  ) {
+    if (this.loading) await this.loading.catch(() => undefined);
+    const retained = this.cached;
+    const now = this.currentTime();
+    if (
+      retained &&
+      !this.lastRefreshFailure &&
+      now >= retained.loadedAt &&
+      now - retained.loadedAt < 30_000 &&
+      retained.expiresAt > now &&
+      (target.minimumStacksHeight == null ||
+        retained.value.chainAnchor.stacksBlockHeight >= target.minimumStacksHeight) &&
+      (target.minimumBurnHeight == null ||
+        retained.value.chainAnchor.burnBlockHeight >= target.minimumBurnHeight)
+    ) {
+      return retained.value;
+    }
+    return await this.refresh(true);
   }
 
   /** One fresh, internally aligned reward observation for a manual manager-claim proposal. */
@@ -613,7 +639,7 @@ export class OperatorService {
     return this.options.now?.() ?? Date.now();
   }
 
-  private refresh(): Promise<Awaited<ReturnType<OperatorService["load"]>>> {
+  private refresh(background = false): Promise<Awaited<ReturnType<OperatorService["load"]>>> {
     if (this.loading) return this.loading;
     const now = this.currentTime();
     if (this.refreshBlockedUntil > now) {
@@ -625,7 +651,7 @@ export class OperatorService {
         ),
       );
     }
-    this.loading = this.load()
+    this.loading = this.load(background)
       .then((value) => {
         const loadedAt = this.currentTime();
         this.lastKnownHealthContext =
@@ -1556,7 +1582,7 @@ export class OperatorService {
     return { observedAt, result };
   }
 
-  private async load() {
+  private async load(background = false) {
     const { managerPrincipal, store } = this.options;
     const { config, node, api } = this.runtimeContext();
     const generatedAt = new Date().toISOString();
@@ -1568,6 +1594,7 @@ export class OperatorService {
       managerPrincipal,
       managerVerification: this.options.managerVerification,
       reportMissingManager: true,
+      background,
     });
     const { chainAnchor, preflight, manager, registration, readiness } = operatorSnapshot;
     const nodeAuthority = store.deploymentIdentity.putLocalNodeAuthority(
