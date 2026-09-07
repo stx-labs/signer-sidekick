@@ -1,5 +1,19 @@
 # Unreleased
 
+## Active-run read recovery (R3a, first commit)
+
+- Typed upstream unavailability, rate limits and retryable anchor capture no longer halt an
+  already-running reward run. The existing tick retries reads within the original runtime cap;
+  cached connection unavailability remains distinct from hard identity/network refusal.
+- Preparation-anchor proof stays before each child is materialized, but no longer runs during
+  every submitted-child observation. Transaction confirmation requirements remain unchanged.
+- Concurrent recovery ticks coalesce; shutdown drains in-flight work. After slow role checks,
+  the signature boundary rechecks expiry, run state and emergency controls. Unknown exceptions,
+  positive preparation-anchor mismatch and potentially ambiguous submission still halt.
+- No automatic halted-run resume, replacement transaction, database migration or infrastructure
+  change. Exact wallet fallback verification, typed API conflicts and background wallet/sweep
+  observation remain the next R3a commit; node-unavailable/API-supported completion remains R3b.
+
 ## Background recovery and dashboard refresh (R2)
 
 - Connection assessment now retries without an open browser, using the existing bounded,
@@ -35,8 +49,8 @@ remain. Update consumers that treated the old freshness gauge as a universal hea
 
 With current defaults, connection and snapshot retry timers together can delay recovery by about
 ten minutes, plus request/startup time after upstream recovery. An already-halted run
-is not automatically resumed. **Transient errors can still halt active payout runs until R3a**;
-R2 repairs background connection recovery, not transaction retry/completion policy. No database
+is not automatically resumed. R2 alone did not change active-run error handling; the R3a read-recovery
+change above adds bounded waiting for typed transient errors, not transaction submission retries. No database
 migration, node-indexing requirement, infrastructure change, or new signing authority is introduced.
 
 ## Manager compatibility and reward truth (R1)

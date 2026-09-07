@@ -12,6 +12,7 @@ import {
   REWARD_OPERATION_ADAPTER_REVISIONS,
   type RewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
+import { isRetryableChainReadError } from "../chain-clients.js";
 import { withOperatorRequestSignal } from "../request-context.js";
 import type { RewardRunRepository } from "../storage/reward-run-repository.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
@@ -380,6 +381,7 @@ export class RewardRunService {
   #preparationTail: Promise<void> = Promise.resolve();
   #preparationController = new AbortController();
   #timer: NodeJS.Timeout | null = null;
+  #recoveryInFlight: Promise<void> | null = null;
   #closed = false;
 
   constructor(options: RewardRunServiceOptions) {
@@ -414,6 +416,8 @@ export class RewardRunService {
     this.#timer = null;
     this.#preparationController.abort(new Error("Reward-run preparation stopped"));
     await this.#preparationTail;
+    await this.#recoveryInFlight;
+    await this.#tail;
   }
 
   enqueuePreparation(request: RewardRunPrepareRequest): RewardRunPreparation {
@@ -671,6 +675,14 @@ export class RewardRunService {
   }
 
   async recover(): Promise<void> {
+    if (this.#closed) return;
+    this.#recoveryInFlight ??= this.#recover().finally(() => {
+      this.#recoveryInFlight = null;
+    });
+    await this.#recoveryInFlight;
+  }
+
+  async #recover(): Promise<void> {
     for (const run of this.#options.repository.list(200).reverse()) {
       const now = this.#now();
       if (
@@ -725,17 +737,7 @@ export class RewardRunService {
       });
     }
     if (run.status !== "running") return;
-    if (run.runtimeExpiresAt && Date.parse(run.runtimeExpiresAt) <= now.getTime()) {
-      this.#options.repository.transition({
-        runId,
-        from: ["running"],
-        to: "expired",
-        now: now.toISOString(),
-        completedAt: now.toISOString(),
-        failureReason: "Maximum run time elapsed",
-      });
-      return;
-    }
+    if (this.#expireRunningRun(run, now)) return;
     const child = run.children[run.cursor];
     if (!child) {
       this.#options.repository.transition({
@@ -871,6 +873,14 @@ export class RewardRunService {
     // execution-control and dedicated-key refusal checks at the actual signature boundary.
     this.#assertExecutionAllowed([storedChild.operation]);
     await this.#assertDedicatedWallet(run.walletPrincipal, this.#now());
+    const beforeSign = this.get(runId);
+    if (
+      this.#closed ||
+      beforeSign.status !== "running" ||
+      this.#expireRunningRun(beforeSign, this.#now())
+    )
+      return;
+    this.#assertExecutionAllowed([storedChild.operation]);
     const signed = await this.#sign(storedChild.operation, materialized.plan);
     const fee = BigInt(signed.fee);
     if (fee !== plannedFee) {
@@ -1148,12 +1158,41 @@ export class RewardRunService {
     });
   }
 
+  #expireRunningRun(run: RewardRun, now: Date): boolean {
+    if (!run.runtimeExpiresAt || Date.parse(run.runtimeExpiresAt) > now.getTime()) return false;
+    this.#options.repository.transition({
+      runId: run.runId,
+      from: ["running"],
+      to: "expired",
+      now: now.toISOString(),
+      completedAt: now.toISOString(),
+      failureReason: "Maximum run time elapsed",
+    });
+    return true;
+  }
+
   async #guardedTick(runId: string): Promise<void> {
     try {
       await this.#tick(runId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const current = this.#options.repository.get(runId);
+      const child = current?.children[current.cursor];
+      // A throw after an attempt was persisted may hide a submission. Never turn that
+      // ambiguity into an automatic retry; existing explicit-resume recovery owns it.
+      const submissionMayHaveStarted =
+        child?.status === "materialized" &&
+        this.#options.repository.attempts(runId, child.index).length > 0;
+      if (
+        current?.status === "running" &&
+        !submissionMayHaveStarted &&
+        isRetryableChainReadError(error)
+      ) {
+        this.#options.logger?.warn(
+          `Reward run ${runId} is waiting for upstream recovery: ${reason}`,
+        );
+        return;
+      }
       if (current?.status === "running") this.#halt(current, reason);
       this.#options.logger?.warn(`Reward run ${runId} halted: ${reason}`);
     }

@@ -14,7 +14,10 @@ import {
   writeCliText,
 } from "./cli-runtime.js";
 import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
-import { ConnectionAssessmentService } from "./connection-assessment.js";
+import {
+  ConnectionAssessmentService,
+  requireConnectedAssessment,
+} from "./connection-assessment.js";
 import { startConnectionRefreshLoop } from "./connection-refresh.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
 import { GasWalletService } from "./gas-wallet.js";
@@ -216,9 +219,7 @@ export async function executeCliCommand({
       });
       let engineConstructing = true;
       const connectedRuntimeContext = () => {
-        if (!engineConstructing && connection.current()?.status !== "connected") {
-          throw new Error("The configured connection is not current; operator activity is paused");
-        }
+        if (!engineConstructing) requireConnectedAssessment(connection.current());
         return runtimeSettings.clients();
       };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
@@ -377,7 +378,8 @@ export async function executeCliCommand({
             await service.withdrawalRequestStatus(registryContract, requestId, tip),
           onStage: (stage, durationMs) => logRunStage(stage, durationMs),
         }),
-        refusalChecks: async (principal, now) => await gasWallet.refusalChecks(principal, now),
+        refusalChecks: async (principal, now) =>
+          await gasWallet.refusalChecks(principal, now, { retryTransient: true }),
         executionControl: (operations) => {
           const forceObserve = store.transactionEngine.getForceObserveControl();
           if (forceObserve) {

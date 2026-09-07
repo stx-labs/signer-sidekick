@@ -1,5 +1,6 @@
 import { makeSTXTokenTransfer } from "@stacks/transactions";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as chainClients from "../chain-clients.js";
 import { LiveRewardRunDriver } from "./live-reward-run.js";
 import type { LiveTransactionReader } from "./live-transaction-reader.js";
 import type { TransactionEngineRuntimeContext } from "./runtime.js";
@@ -24,6 +25,8 @@ const txId = `0x${transaction.txid()}` as const;
 const blockHash = `0x${"22".repeat(32)}` as const;
 const indexBlockHash = `0x${"33".repeat(32)}` as const;
 const blockHeight = 8_600_002;
+const walletPrincipal = "ST000000000000000000002AMW42H";
+afterEach(() => vi.restoreAllMocks());
 
 function nakamotoBlockBytes(body = transaction.serializeBytes()): Uint8Array {
   const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
@@ -73,6 +76,7 @@ function driver(resultRepr: string, blockBytes = nakamotoBlockBytes()) {
     })),
   };
   const reader = {
+    readAnchoredAccount: vi.fn(),
     lookupIndexedTransaction: vi.fn(async () => ({
       status: "unavailable" as const,
       httpStatus: 501,
@@ -84,10 +88,11 @@ function driver(resultRepr: string, blockBytes = nakamotoBlockBytes()) {
     })),
   };
   return {
+    node,
     api,
     reader,
     value: new LiveRewardRunDriver({
-      engine: {} as never,
+      engine: { gasPayerIdentity: () => ({ principal: walletPrincipal }) } as never,
       runtimeContext: () =>
         ({
           config: { nodeRpcUrl: "http://node:20443" },
@@ -113,6 +118,90 @@ const operations = [
 ] as const;
 
 describe("reward run confirmation without node txindex", () => {
+  const input = () =>
+    ({
+      run: {
+        walletPrincipal,
+        recipe: { chainId: 1, preparedAnchor: { stacksBlockHeight: blockHeight, indexBlockHash } },
+      },
+      child: { operation: "claim-rewards" },
+      plan: { material: { kind: "claim-rewards" } },
+      txid: txId,
+    }) as never;
+
+  it("does not read the preparation block while reconciling a pending submitted transaction", async () => {
+    const runtime = driver("(ok true)");
+    runtime.reader.lookupIndexedTransaction.mockResolvedValue({
+      status: "unavailable",
+      httpStatus: 503,
+      reason: "transport-error",
+    } as never);
+    expect(await runtime.value.reconcile(input())).toEqual({ status: "pending" });
+    expect(runtime.node.getTenureInfo).not.toHaveBeenCalled();
+    expect(runtime.node.getNakamotoBlockById).not.toHaveBeenCalled();
+    expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
+  });
+
+  it("still halts a new materialization on positive preparation-anchor mismatch", async () => {
+    const runtime = driver("(ok true)");
+    runtime.node.getNakamotoBlockAtHeight.mockResolvedValue(
+      nakamotoBlockBytes(otherTransaction.serializeBytes()),
+    );
+    expect(await runtime.value.materialize(input())).toEqual({
+      status: "halt",
+      reason: "The reward run preparation anchor became noncanonical",
+    });
+    expect(runtime.reader.readAnchoredAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps preparation anchor timeouts and a node behind the anchor distinct from reorgs", async () => {
+    const runtime = driver("(ok true)");
+    runtime.node.getTenureInfo.mockRejectedValueOnce(
+      new chainClients.UpstreamUnavailableError("timeout"),
+    );
+    await expect(runtime.value.materialize(input())).rejects.toBeInstanceOf(
+      chainClients.UpstreamUnavailableError,
+    );
+    runtime.node.getTenureInfo.mockResolvedValue({
+      tip_block_id: indexBlockHash,
+      tip_height: blockHeight - 1,
+      reward_cycle: 141,
+    });
+    await expect(runtime.value.materialize(input())).rejects.toBeInstanceOf(
+      chainClients.UpstreamUnavailableError,
+    );
+    expect(runtime.node.getNakamotoBlockById).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    200,
+    408,
+    429,
+    503,
+  ])("propagates an unavailable nonce/balance read for bounded retry (HTTP %s)", async (httpStatus) => {
+    const runtime = driver("(ok true)");
+    vi.spyOn(chainClients, "captureNodeChainAnchor").mockResolvedValue({ indexBlockHash } as never);
+    runtime.reader.readAnchoredAccount.mockResolvedValue({
+      status: "unavailable",
+      httpStatus,
+      reason: httpStatus === 200 ? "response-read-error" : "http-error",
+    });
+    await expect(runtime.value.materialize(input())).rejects.toBeInstanceOf(
+      chainClients.UpstreamUnavailableError,
+    );
+  });
+
+  it.each([
+    { status: "schema-invalid", httpStatus: 200, reason: "unexpected-response" },
+    { status: "unavailable", httpStatus: 401, reason: "http-error" },
+  ])("does not classify invalid or unauthorized account evidence as transport recovery: %s", async (account) => {
+    const runtime = driver("(ok true)");
+    vi.spyOn(chainClients, "captureNodeChainAnchor").mockResolvedValue({ indexBlockHash } as never);
+    runtime.reader.readAnchoredAccount.mockResolvedValue(account);
+    expect(await runtime.value.materialize(input())).toMatchObject({ status: "halt" });
+  });
+
   it.each(operations)("confirms %s from an API-located, node-proven block", async (operation) => {
     const runtime = driver("(ok true)");
     await expect(
@@ -130,6 +219,8 @@ describe("reward run confirmation without node txindex", () => {
     ).resolves.toEqual({ status: "confirmed", blockHeight });
     expect(runtime.api.getTransactionDetails).toHaveBeenCalledWith(txId);
     expect(runtime.reader.lookupUnconfirmedTransaction).not.toHaveBeenCalled();
+    expect(runtime.node.getNakamotoBlockById).toHaveBeenCalledTimes(1);
+    expect(runtime.node.getNakamotoBlockAtHeight).toHaveBeenCalledTimes(1);
   });
 
   it("confirms calculate-rewards only when the API result matches the sealed target", async () => {

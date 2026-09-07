@@ -1456,6 +1456,15 @@ export class ChainAnchorError extends Error {
   }
 }
 
+/** Known read failures that can be retried without accepting missing or conflicting evidence. */
+export function isRetryableChainReadError(error: unknown): boolean {
+  return (
+    error instanceof UpstreamUnavailableError ||
+    error instanceof RateLimitedError ||
+    (error instanceof ChainAnchorError && error.retryable)
+  );
+}
+
 function sameApiTip(left: ApiStatus, right: ApiStatus): boolean {
   return (
     left.chain_tip.block_height === right.chain_tip.block_height &&

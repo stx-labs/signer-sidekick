@@ -13,7 +13,13 @@ import {
   gasWalletSweepSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { UpstreamHttpError } from "./chain-clients.js";
+import {
+  ChainAnchorError,
+  RateLimitedError,
+  UpstreamHttpError,
+  UpstreamSchemaError,
+  UpstreamUnavailableError,
+} from "./chain-clients.js";
 import {
   type GasWalletEngine,
   GasWalletError,
@@ -327,6 +333,95 @@ describe("gas wallet service", () => {
     const disabled = await service.disable();
     expect(engine.deactivateGasWallet).toHaveBeenCalledTimes(1);
     expect(disabled).toMatchObject({ enabled: false, signer: "disabled" });
+  });
+
+  it.each([
+    "manager",
+    "signer",
+  ] as const)("preserves typed transient %s role errors only for run retries", async (source) => {
+    const { options, state } = await fixture();
+    for (const error of [
+      new UpstreamUnavailableError("node timeout"),
+      new RateLimitedError("limited", 5_000),
+      new ChainAnchorError("tip moved", { retryable: true }),
+    ]) {
+      const service = new GasWalletService({
+        ...options,
+        ...(source === "manager"
+          ? {
+              runtimeContext: () => {
+                throw error;
+              },
+            }
+          : {
+              signerKeyHex: async () => {
+                throw error;
+              },
+            }),
+      });
+      await expect(service.refusalChecks(principal, state.now)).resolves.toMatchObject({
+        refusalReason: "check-unavailable",
+      });
+      await expect(
+        service.refusalChecks(principal, state.now, { retryTransient: true }),
+      ).rejects.toBe(error);
+    }
+    const malformed = new GasWalletService({
+      ...options,
+      ...(source === "manager"
+        ? {
+            runtimeContext: () => {
+              throw new UpstreamSchemaError("bad role evidence");
+            },
+          }
+        : {
+            signerKeyHex: async () => {
+              throw new UpstreamSchemaError("bad signer evidence");
+            },
+          }),
+    });
+    await expect(
+      malformed.refusalChecks(principal, state.now, { retryTransient: true }),
+    ).resolves.toMatchObject({ refusalReason: "check-unavailable" });
+  });
+
+  it("preserves a proven forbidden wallet role even if another role read is transiently unavailable", async () => {
+    const { options, state } = await fixture();
+    state.isAdmin = true;
+    const service = new GasWalletService({
+      ...options,
+      signerKeyHex: async () => {
+        throw new UpstreamUnavailableError("unavailable");
+      },
+    });
+    await expect(
+      service.refusalChecks(principal, state.now, { retryTransient: true }),
+    ).resolves.toMatchObject({ refusalReason: "manager-admin" });
+    const disconnected = new GasWalletService({
+      ...options,
+      runtimeContext: () => {
+        throw new UpstreamUnavailableError("unavailable");
+      },
+    });
+    await expect(
+      disconnected.refusalChecks(managerPrincipal, state.now, { retryTransient: true }),
+    ).resolves.toMatchObject({ refusalReason: "contract-principal" });
+  });
+
+  it("does not hide a malformed manager role behind a later transient signer read", async () => {
+    const { options, state } = await fixture();
+    const service = new GasWalletService({
+      ...options,
+      runtimeContext: () => {
+        throw new UpstreamSchemaError("invalid manager role");
+      },
+      signerKeyHex: async () => {
+        throw new UpstreamUnavailableError("signer read timeout");
+      },
+    });
+    await expect(
+      service.refusalChecks(principal, state.now, { retryTransient: true }),
+    ).resolves.toMatchObject({ refusalReason: "check-unavailable" });
   });
 
   it("refuses to enable outside operator-run and tracks banner dismissals", async () => {

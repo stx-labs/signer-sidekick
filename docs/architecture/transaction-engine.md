@@ -44,10 +44,19 @@ One run or sweep owns the gas wallet at a time, with one transaction in flight. 
 `awaiting-approval → approved → running → paused → completed | halted | cancelled | expired`.
 Approval must be used within 30 minutes; a started run expires after 6 hours.
 
-- Signed bytes and txid are committed before the single broadcast attempt.
+- For reward runs, the sealed child plan and precomputed transaction ID are persisted before the
+  single broadcast attempt. Raw signed bytes are not stored in the run-attempt table.
 - Submission is not confirmation; confirmation is not completion until the expected state is
   proved.
-- A reset, timeout, conflicting nonce, reorg, or uncertain response halts without replacement.
+- A reset or timeout during submission, conflicting nonce, reorg, or uncertain submission outcome
+  halts without replacement. Typed upstream/read failures and retryable anchor capture instead wait
+  on the existing maintenance tick, bounded by the original runtime cap. Unclassified exceptions
+  still halt; transport recovery is not a catch-all retry policy.
+- Materialization re-proves the preparation anchor before each child. Reconciliation checks the
+  submitted transaction, without re-reading the preparation block on every poll. The execution
+  evidence policy is unchanged; node-unavailable/API-supported completion is a separate change.
+- Slow reads do not overlap recovery ticks. Shutdown drains in-flight work, and the signature
+  boundary rechecks run state, expiry and emergency controls after role reads finish.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.
 - A predictable contract abort plus the already-proved target state is external completion.
 - Restart resumes from the durable cursor and never re-signs an existing attempt.

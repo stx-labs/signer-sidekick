@@ -20,9 +20,9 @@ import {
   type RewardOperationPlanInput,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { lookupCanonicalApiTransaction } from "../canonical-api-transaction.js";
-import { proveCanonicalNodeBlock } from "../canonical-node-block.js";
+import { checkCanonicalNodeBlock } from "../canonical-node-block.js";
 import type { ChainAnchor } from "../chain-anchor.js";
-import { captureNodeChainAnchor } from "../chain-clients.js";
+import { captureNodeChainAnchor, UpstreamUnavailableError } from "../chain-clients.js";
 import { managerActionCapability } from "../manager-capabilities.js";
 import {
   Pox5CalculateRewardsError,
@@ -414,10 +414,13 @@ export class LiveRewardRunDriver implements RewardRunDriver {
     input: Parameters<RewardRunDriver["materialize"]>[0],
   ): Promise<RewardRunMaterialization> {
     const context = this.options.runtimeContext();
-    await proveCanonicalNodeBlock(context.node, {
+    const preparation = await checkCanonicalNodeBlock(context.node, {
       blockHeight: input.run.recipe.preparedAnchor.stacksBlockHeight,
       indexBlockHash: input.run.recipe.preparedAnchor.indexBlockHash as `0x${string}`,
     });
+    if (preparation === "reorged") {
+      return { status: "halt", reason: "The reward run preparation anchor became noncanonical" };
+    }
     const wallet = this.options.engine.gasPayerIdentity();
     if (!wallet || wallet.principal !== input.run.walletPrincipal) {
       return { status: "halt", reason: "The loaded gas wallet identity changed" };
@@ -427,6 +430,18 @@ export class LiveRewardRunDriver implements RewardRunDriver {
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
     const account = await reader.readAnchoredAccount(wallet.principal, anchor.indexBlockHash);
+    if (
+      account.status === "unavailable" &&
+      (account.reason === "response-read-error" ||
+        account.httpStatus === null ||
+        account.httpStatus === 408 ||
+        account.httpStatus === 429 ||
+        account.httpStatus >= 500)
+    ) {
+      throw new UpstreamUnavailableError(
+        `The gas wallet account read is unavailable (${account.reason})`,
+      );
+    }
     if (account.status !== "observed") {
       return { status: "halt", reason: `The gas wallet account read is ${account.status}` };
     }
@@ -706,14 +721,8 @@ export class LiveRewardRunDriver implements RewardRunDriver {
     input: Parameters<RewardRunDriver["reconcile"]>[0],
   ): Promise<RewardRunReconciliation> {
     const context = this.options.runtimeContext();
-    try {
-      await proveCanonicalNodeBlock(context.node, {
-        blockHeight: input.run.recipe.preparedAnchor.stacksBlockHeight,
-        indexBlockHash: input.run.recipe.preparedAnchor.indexBlockHash as `0x${string}`,
-      });
-    } catch {
-      return { status: "halt", reason: "The reward run preparation anchor became noncanonical" };
-    }
+    // Reconcile the submitted transaction, not the old preparation state. Materialization
+    // still proves the recipe's anchor before any subsequent child can be signed.
     const reader = (
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);

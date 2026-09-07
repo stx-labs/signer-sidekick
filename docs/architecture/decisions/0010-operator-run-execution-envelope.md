@@ -43,9 +43,15 @@ operator-triggered, occasional, permissionless calls.
 
 4. **Execution.** Sequential, one transaction in flight, last-moment authoritative revalidation
    before each child, deny-mode post-conditions per adapter (including the reclaim refund), no
-   retry and no blind replacement, halt on ambiguity with an exact resume count, durable run
+   broadcast retry and no blind replacement, halt on ambiguity with an exact resume count, durable run
    cursor. Another caller completing work — before or after broadcast — is normal external
    completion, never a failure.
+   A typed transport/rate-limit failure or retryable anchor-capture failure during reads leaves an
+   already-running run waiting on its existing maintenance cadence, within its original runtime
+   cap. Cached connection unavailability is not a positive identity refusal. The preparation anchor
+   is re-proved before materializing each child, not while observing an already-submitted child.
+   Positive preparation-anchor mismatch, hard refusal and unclassified exceptions still halt.
+   This read retry never resubmits a persisted signed attempt or automatically resumes a halted run.
 
 5. **Adapters.** A closed, code-backed registry of the five reward adapters and one explicit signer
    method per adapter. No generic signing or contract calling.

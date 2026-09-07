@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type StacksNodeClient, UpstreamHttpError } from "./chain-clients.js";
+import {
+  type StacksNodeClient,
+  UpstreamHttpError,
+  UpstreamUnavailableError,
+} from "./chain-clients.js";
 import {
   ConnectionAssessmentService,
   type ConnectionManagerInspection,
+  requireConnectedAssessment,
 } from "./connection-assessment.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
@@ -115,6 +120,35 @@ afterEach(() => {
 });
 
 describe("first-run connection assessment", () => {
+  it("classifies cached unavailability as retryable but keeps network refusal and unchecked state hard-blocked", async () => {
+    const store = await memoryStore();
+    let reachable = true;
+    let wrongNetwork = false;
+    const assessor = service({
+      store,
+      node: node({
+        getInfo: async () => {
+          if (!reachable) throw new UpstreamUnavailableError("node unavailable");
+          return { ...nodeInfo, network_id: wrongNetwork ? 0x80000000 : 1 };
+        },
+      }),
+    });
+    expect(() => requireConnectedAssessment(assessor.current())).toThrow(Error);
+    await assessor.check();
+    expect(() => requireConnectedAssessment(assessor.current())).not.toThrow();
+    reachable = false;
+    await assessor.check(true);
+    expect(() => requireConnectedAssessment(assessor.current())).toThrow(UpstreamUnavailableError);
+    reachable = true;
+    wrongNetwork = true;
+    await assessor.check(true);
+    expect(assessor.current()?.status).toBe("blocked");
+    expect(() => requireConnectedAssessment(assessor.current())).toThrow(Error);
+    expect(() => requireConnectedAssessment(assessor.current())).not.toThrow(
+      UpstreamUnavailableError,
+    );
+  });
+
   it("connects and binds an empty database using only local-node and trait evidence", async () => {
     const store = await memoryStore();
     const inspectManager = vi.fn(async () => managerReport());

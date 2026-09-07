@@ -1,7 +1,18 @@
 import { getAddressFromPublicKey, privateKeyToPublic } from "@stacks/transactions";
-import type { GasWalletRefusal, RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
+import type {
+  ConnectionAssessment,
+  GasWalletRefusal,
+  RewardRun,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { planRewardOperation } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ChainAnchorError,
+  RateLimitedError,
+  UpstreamSchemaError,
+  UpstreamUnavailableError,
+} from "../chain-clients.js";
+import { requireConnectedAssessment } from "../connection-assessment.js";
 import { currentInteractiveRequestSignal } from "../request-context.js";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
@@ -324,6 +335,221 @@ describe("reward run coordinator", () => {
     expect(store.rewardRuns.active(wallet)).toBeNull();
   });
 
+  it.each([
+    "materialize",
+    "reconcile",
+  ] as const)("waits through cached connection unavailability during %s without replacing the child", async (stage) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let assessment = { status: "unavailable" } as ConnectionAssessment;
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: {
+        ...live.implementation,
+        async [stage](input: never) {
+          requireConnectedAssessment(assessment);
+          return await live.implementation[stage](input);
+        },
+      } as RewardRunDriver,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    for (let index = 0; index < 3; index++) await service.recover();
+    const waiting = service.get(run.runId);
+    expect(waiting.status).toBe("running");
+    expect(waiting.cursor).toBe(0);
+    expect(waiting.children[0]?.status).toBe(stage === "materialize" ? "pending" : "broadcast");
+    expect(sign).toHaveBeenCalledTimes(stage === "materialize" ? 0 : 1);
+    const deadline = waiting.runtimeExpiresAt;
+    assessment = { status: "connected" } as ConnectionAssessment;
+    const completed = await settle(service, run.runId);
+    expect(completed.status).toBe("completed");
+    expect(completed.runtimeExpiresAt).toBe(deadline);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+  });
+
+  it.each([
+    new UpstreamUnavailableError("node timeout"),
+    new RateLimitedError("rate limited", 5_000),
+    new ChainAnchorError("tip moved", { retryable: true }),
+  ])("bounds repeated transient preparation failures by the original runtime cap: %s", async (error) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    let now = started;
+    const live = driver();
+    const materialize = vi.fn().mockRejectedValue(error);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: { ...live.implementation, materialize },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => now,
+    });
+    const run = await service.prepare({ cycle: 141, distribution: 1 });
+    await service.approve(run.runId, run.recipeSha256);
+    await service.recover();
+    expect(service.get(run.runId).status).toBe("running");
+    const calls = materialize.mock.calls.length;
+    now = new Date(started.getTime() + 6 * 60 * 60_000);
+    await service.recover();
+    expect(service.get(run.runId)).toMatchObject({
+      status: "expired",
+      failureReason: "Maximum run time elapsed",
+    });
+    expect(materialize).toHaveBeenCalledTimes(calls);
+    expect(live.broadcasts).toEqual([]);
+    expect(store.rewardRuns.active(wallet)).toBeNull();
+  });
+
+  it.each([
+    new Error("identity changed"),
+    new UpstreamSchemaError("malformed evidence"),
+    new ChainAnchorError("canonical mismatch"),
+  ])("still halts on non-transient errors and never automatically resumes: %s", async (error) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    const materialize = vi.fn().mockRejectedValue(error);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: { ...live.implementation, materialize },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({ cycle: 141, distribution: 1 });
+    await service.approve(run.runId, run.recipeSha256);
+    expect((await settle(service, run.runId)).status).toBe("halted");
+    materialize.mockImplementation(live.implementation.materialize);
+    await service.recover();
+    expect(service.get(run.runId).status).toBe("halted");
+    expect(live.broadcasts).toEqual([]);
+  });
+
+  it("rebuilds an unsigned child after a transient last-moment role read without signing twice", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let unavailable = false;
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => {
+        if (unavailable) throw new UpstreamUnavailableError("role read timed out");
+        return goodRefusal;
+      },
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    unavailable = true;
+    await service.recover();
+    expect(service.get(run.runId).status).toBe("running");
+    expect(sign).not.toHaveBeenCalled();
+    expect(store.rewardRuns.attempts(run.runId, 0)).toEqual([]);
+    unavailable = false;
+    expect((await settle(service, run.runId)).status).toBe("completed");
+    expect(sign).toHaveBeenCalledOnce();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+  });
+
+  it("does not retry a typed transport error after a signed attempt may have been submitted", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    const broadcast = vi
+      .fn()
+      .mockRejectedValue(new UpstreamUnavailableError("submission connection lost"));
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: { ...live.implementation, broadcast },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    expect((await settle(service, run.runId)).status).toBe("halted");
+    await service.recover();
+    expect(store.rewardRuns.attempts(run.runId, 0)).toHaveLength(1);
+    expect(sign).toHaveBeenCalledOnce();
+    expect(broadcast).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "expire",
+    "pause",
+    "force-observe",
+  ] as const)("rechecks %s after slow role reads before signing", async (change) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let now = started;
+    let blocked = false;
+    let roleReads = 0;
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => {
+        if (++roleReads > 1) {
+          if (change === "expire") now = new Date(started.getTime() + 6 * 60 * 60_000);
+          if (change === "pause") service.pause(store.rewardRuns.active(wallet)?.runId ?? "");
+          if (change === "force-observe") blocked = true;
+        }
+        return goodRefusal;
+      },
+      executionControl: () => ({ allowed: !blocked, reason: "Force Observe is active" }),
+      maximumFeeUstx: 1_000n,
+      now: () => now,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    await service.recover();
+    expect(service.get(run.runId).status).toBe(
+      change === "expire" ? "expired" : change === "pause" ? "paused" : "halted",
+    );
+    expect(sign).not.toHaveBeenCalled();
+    expect(live.broadcasts).toEqual([]);
+  });
+
   it("returns a durable preparation immediately and seals its run in the background", async () => {
     const { store } = await openSidekickStore(":memory:", started.toISOString());
     stores.push(store);
@@ -590,6 +816,92 @@ describe("reward run coordinator", () => {
     expect(complete.status).toBe("completed");
     expect(recovered.materialized).toEqual([]);
     expect(recovered.broadcasts).toEqual([]);
+  });
+
+  it("coalesces slow recovery ticks and drains observation before shutdown", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reconcile = vi.fn(async () => {
+      await pending;
+      return { status: "pending" as const };
+    });
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: { ...live.implementation, reconcile },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    const ticks = Array.from({ length: 6 }, () => service.recover());
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
+    const stopped = vi.fn();
+    const stop = service.stop().then(stopped);
+    await Promise.resolve();
+    expect(stopped).not.toHaveBeenCalled();
+    release();
+    await Promise.all([...ticks, stop]);
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await service.recover();
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("does not sign a materialized child while shutdown drains slow role checks", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = vi.fn();
+    let roleReads = 0;
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => {
+        if (++roleReads > 1) {
+          entered();
+          await pending;
+        }
+        return goodRefusal;
+      },
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+    const stopped = vi.fn();
+    const stop = service.stop().then(stopped);
+    await Promise.resolve();
+    expect(stopped).not.toHaveBeenCalled();
+    release();
+    await stop;
+    expect(sign).not.toHaveBeenCalled();
+    expect(store.rewardRuns.attempts(run.runId, 0)).toEqual([]);
+    expect(live.broadcasts).toEqual([]);
   });
 
   it("halts without advancing when reconciliation detects a reorg", async () => {

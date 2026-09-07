@@ -17,6 +17,7 @@ import {
   encodePrincipalHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
+import { isRetryableChainReadError } from "./chain-clients.js";
 import type { SidekickNetwork } from "./config.js";
 import {
   type GasWalletSweepPlan,
@@ -723,7 +724,11 @@ export class GasWalletService {
    * Per-run refusal (ADR 0010 §4): the gas wallet must never be a manager admin, the registered
    * signer key, or a contract principal. Reads the live manager; unavailable reads refuse.
    */
-  async refusalChecks(principal: string, now: Date): Promise<GasWalletRefusal> {
+  async refusalChecks(
+    principal: string,
+    now: Date,
+    options: { retryTransient?: boolean } = {},
+  ): Promise<GasWalletRefusal> {
     const isContract = principal.includes(".");
     let isManagerAdmin: boolean | null = null;
     let isSignerKey: boolean | null = null;
@@ -737,7 +742,10 @@ export class GasWalletService {
         [encodePrincipalHex(principal)],
       );
       isManagerAdmin = decodeBoolean(result, "is-admin");
-    } catch {
+    } catch (error) {
+      // The run coordinator can wait on known transport errors without weakening role checks.
+      // Other callers retain the existing public refusal response, including malformed reads.
+      if (options.retryTransient && !isContract && isRetryableChainReadError(error)) throw error;
       unavailable = true;
     }
     try {
@@ -748,7 +756,15 @@ export class GasWalletService {
         const signerPrincipal = getAddressFromPublicKey(signerKeyHex, this.#transactionNetwork());
         isSignerKey = signerPrincipal === principal;
       }
-    } catch {
+    } catch (error) {
+      if (
+        options.retryTransient &&
+        !isContract &&
+        !unavailable &&
+        isManagerAdmin !== true &&
+        isRetryableChainReadError(error)
+      )
+        throw error;
       unavailable = true;
     }
     const refusalReason: GasWalletRefusal["refusalReason"] = isContract

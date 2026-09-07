@@ -60,8 +60,10 @@ write succeeded: retry observation, not the save.
 Prepared wallet transactions can be reopened from their action URL's `intentId` or Activity even
 when new-action eligibility changes. Viewing and verification remain available through a stale
 snapshot, but fresh evidence is required for new preparation/signing. Completion evidence rules
-are unchanged. Already-halted reward runs still require operator review and explicit resume;
-transient active-run retry handling is a separate pending change.
+are unchanged. Already-halted reward runs still require operator review and explicit resume.
+Running runs now wait through typed upstream/rate-limit failures and retryable anchor reads on their
+existing maintenance tick, without extending the original runtime deadline. Cached connection
+unavailability does not cause a manual-resume halt; a positive identity refusal still does.
 
 ## Restore
 
@@ -123,6 +125,9 @@ halts all signing at once; **Settings → Gas wallet** disables the wallet or sw
 
 If a run halts after an ambiguous broadcast, inspect its recorded transaction ID and chain evidence.
 Do not send a replacement. Resume makes Sidekick reconcile the existing attempt before continuing.
+During a retryable read failure the run stays running, makes no new signature from that failed read,
+and logs that it is waiting for upstream recovery. Retrying reads is not retrying submission: a
+failure after a signed attempt is persisted still halts rather than risking another broadcast.
 After a restart, preserve the same database and gas-wallet key so recovery cannot change signer or
 nonce identity.
 

@@ -1,5 +1,5 @@
 import type { ChainAnchor } from "./chain-anchor.js";
-import type { StacksNodeClient } from "./chain-clients.js";
+import { type StacksNodeClient, UpstreamUnavailableError } from "./chain-clients.js";
 import { nakamotoBlockContainsTxid } from "./nakamoto-block.js";
 
 type CanonicalBlockNode = Pick<
@@ -41,7 +41,7 @@ async function canonicalBlockBytes(
   const requestOptions = input.signal ? { signal: input.signal } : {};
   const before = await node.getTenureInfo(requestOptions);
   if (input.blockHeight > before.tip_height) {
-    throw new Error("Local node has not reached the indexed transaction block");
+    throw new UpstreamUnavailableError("Local node has not reached the indexed transaction block");
   }
 
   const [identified, canonical] = await Promise.all([
@@ -87,15 +87,23 @@ export async function checkTransactionInCanonicalBlock(
  * transaction index. The indexed API may identify the transaction's block, but the local node
  * independently selects the canonical bytes at that height from an explicitly captured local tip.
  */
-export async function proveCanonicalNodeBlock(
+export async function checkCanonicalNodeBlock(
   node: CanonicalBlockNode,
   input: {
     blockHeight: number;
     indexBlockHash: ChainAnchor["indexBlockHash"];
     signal?: AbortSignal;
   },
+): Promise<"canonical" | "reorged"> {
+  return (await canonicalBlockBytes(node, input)) ? "canonical" : "reorged";
+}
+
+/** Throw on a positive canonical mismatch for ingestion callers that require a proof. */
+export async function proveCanonicalNodeBlock(
+  node: CanonicalBlockNode,
+  input: Parameters<typeof checkCanonicalNodeBlock>[1],
 ): Promise<void> {
-  if (!(await canonicalBlockBytes(node, input))) {
+  if ((await checkCanonicalNodeBlock(node, input)) === "reorged") {
     throw new Error("Indexed transaction block is not canonical according to the local node");
   }
 }
