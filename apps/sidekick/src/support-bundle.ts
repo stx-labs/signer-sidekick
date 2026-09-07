@@ -266,6 +266,7 @@ const snapshotRefreshMetricsSchema = z
     snapshotGeneratedTimestampSeconds: z.number().nonnegative(),
     snapshotAgeSeconds: z.number().nonnegative(),
     snapshotFresh: z.union([z.literal(0), z.literal(1)]),
+    refreshInProgress: z.union([z.literal(0), z.literal(1)]),
     sourcePositions: z
       .object({
         nodeStacksHeight: z.number().int().nonnegative(),

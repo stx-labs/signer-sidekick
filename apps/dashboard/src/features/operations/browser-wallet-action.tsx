@@ -125,6 +125,8 @@ export function BrowserWalletActionPanel({
   managerPrincipal,
   network,
   onVerified,
+  onPrepared,
+  preparationBlocked,
   existingIntentId,
   token,
 }: {
@@ -136,6 +138,8 @@ export function BrowserWalletActionPanel({
   managerPrincipal: string;
   network: string;
   onVerified?: (() => void | Promise<void>) | undefined;
+  onPrepared?: ((intentId: string) => void) | undefined;
+  preparationBlocked?: string | undefined;
   token: string;
 }) {
   const action = createRequest?.action ?? existingAction;
@@ -155,7 +159,17 @@ export function BrowserWalletActionPanel({
     [action, chainId, managerPrincipal, network, supportNetwork],
   );
   const [intent, setIntent] = useState<BrowserWalletIntent | null>(null);
+  const intentScope = intent ? browserWalletRecoveryScope(intent) : null;
+  const signingBlocked =
+    preparationBlocked ??
+    (intentScope &&
+    (intentScope.network !== network ||
+      intentScope.chainId !== chainId ||
+      intentScope.managerPrincipal !== managerPrincipal)
+      ? "This stored review belongs to another deployment context. It remains readable, but cannot be signed here."
+      : undefined);
   const [loadingExisting, setLoadingExisting] = useState(existingIntentId !== undefined);
+  const [existingRetry, setExistingRetry] = useState(0);
   const [busy, setBusy] = useState<"prepare" | "sign" | "record" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -195,6 +209,7 @@ export function BrowserWalletActionPanel({
   );
 
   useEffect(() => {
+    void existingRetry;
     if (!existingIntentId) return;
     let active = true;
     setLoadingExisting(true);
@@ -219,7 +234,7 @@ export function BrowserWalletActionPanel({
     return () => {
       active = false;
     };
-  }, [action, existingIntentId, getIntent]);
+  }, [action, existingIntentId, existingRetry, getIntent]);
 
   useEffect(() => {
     const savedRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
@@ -310,7 +325,7 @@ export function BrowserWalletActionPanel({
   }, [intent?.id, intent?.status, onVerified]);
 
   const prepare = async () => {
-    if (!createRequest) return;
+    if (!createRequest || preparationBlocked) return;
     const currentRecoveryRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
     if (walletResults.length > 0 || currentRecoveryRecords.length > 0) {
       setWalletResults(currentRecoveryRecords.length > 0 ? currentRecoveryRecords : walletResults);
@@ -325,6 +340,7 @@ export function BrowserWalletActionPanel({
         body: JSON.stringify(createRequest),
       });
       setIntent(result.intent);
+      onPrepared?.(result.intent.id);
     } catch (cause) {
       setError(walletIntentErrorMessage(cause));
     } finally {
@@ -333,7 +349,7 @@ export function BrowserWalletActionPanel({
   };
 
   const sign = async () => {
-    if (!intent) return;
+    if (!intent || signingBlocked || !support.available) return;
     const currentRecoveryRecords = loadPendingBrowserWalletBroadcasts(recoverySelector);
     if (walletResults.length > 0 || currentRecoveryRecords.length > 0) {
       setWalletResults(currentRecoveryRecords.length > 0 ? currentRecoveryRecords : walletResults);
@@ -467,7 +483,7 @@ export function BrowserWalletActionPanel({
   };
 
   const replace = async () => {
-    if (!intent) return;
+    if (!intent || signingBlocked) return;
     setBusy("prepare");
     setError(null);
     setPollError(null);
@@ -479,6 +495,7 @@ export function BrowserWalletActionPanel({
         { method: "POST", body: "{}" },
       );
       setIntent(result.intent);
+      onPrepared?.(result.intent.id);
     } catch (cause) {
       setError(walletIntentErrorMessage(cause));
     } finally {
@@ -496,8 +513,14 @@ export function BrowserWalletActionPanel({
     setRecoveryCanClear(false);
     setError(null);
   };
-  const canSign = intent?.status === "prepared" && walletResults.length === 0;
+  const canSign =
+    support.available &&
+    !signingBlocked &&
+    intent?.status === "prepared" &&
+    walletResults.length === 0;
   const canPrepare =
+    support.available &&
+    !preparationBlocked &&
     createRequest !== undefined &&
     walletResults.length === 0 &&
     canPrepareBrowserWalletIntent(intent, pendingNeedsRecording);
@@ -526,324 +549,330 @@ export function BrowserWalletActionPanel({
           <Warning className="ic" />
           <div className="body">{support.unavailableReason}</div>
         </div>
-      ) : (
-        <>
-          {ambiguousWalletResults.length > 0 ? (
-            <div className="callout callout-critical" role="alert">
-              <Warning className="ic" />
-              <div className="body">
-                <strong>Multiple saved wallet broadcasts need review.</strong>
-                <p>
-                  Sidekick will not prepare another transaction for this action until each saved
-                  record is recorded or cleared. Clearing a local recovery record does not cancel
-                  its broadcast; save its transaction ID first.
-                </p>
-                <div className="wallet-recovery-list">
-                  {ambiguousWalletResults.map((pending) => {
-                    const messageKey = recoveryRecordKey(pending);
-                    return (
-                      <div className="wallet-recovery-record" key={messageKey}>
-                        <div>
-                          Request{" "}
-                          <CopyableIdentifier
-                            value={pending.intentId}
-                            label="wallet request ID"
-                            className="mono"
-                          />
-                        </div>
-                        <div>
-                          Transaction{" "}
-                          <CopyableIdentifier
-                            value={pending.txid}
-                            label="wallet transaction ID"
-                            className="mono"
-                          />
-                        </div>
-                        <div>
-                          Submitted from {pending.sender} with {walletName(pending.providerId)}.
-                        </div>
-                        {recoveryMessages[messageKey] ? (
-                          <p role="status">{recoveryMessages[messageKey]}</p>
-                        ) : null}
-                        <div className="wallet-result-actions">
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            disabled={busy !== null}
-                            onClick={() => void retryRecord(pending)}
-                          >
-                            <ArrowClockwise /> Retry recording this transaction
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            disabled={busy !== null}
-                            onClick={() => clearSavedRecovery(pending)}
-                          >
-                            Clear this recovery record
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {intent ? (
-            <div className="wallet-intent-review">
-              <div>
-                <strong>{intent.review.title}</strong>
-                <p>{intent.review.summary}</p>
-              </div>
-              <div className="deployment-target">
-                <span>
-                  Network <strong>{intent.network}</strong>
-                </span>
-                <span>
-                  Signing account{" "}
-                  <CopyableIdentifier
-                    value={intent.requiredSender}
-                    label="signing account"
-                    className="mono"
-                  />
-                </span>
-                <span>
-                  Request <strong className="mono">{intent.transaction.method}</strong>
-                </span>
-                <span>
-                  Target <strong className="mono">{requestTarget(intent)}</strong>
-                </span>
-                <span>
-                  Expires <strong>{new Date(intent.expiresAt).toLocaleString()}</strong>
-                </span>
-              </div>
-              {intent.review.fields?.length ? (
-                <dl className="wallet-intent-fields">
-                  {intent.review.fields.map((field) => (
-                    <div key={`${field.label}:${field.value}`}>
-                      <dt>{field.label}</dt>
-                      <dd>
-                        <CopyableIdentifier
-                          value={field.value}
-                          label={field.label}
-                          className="mono"
-                        />
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : null}
-              <div className="callout callout-neutral" role="note">
-                <Check className="ic" />
-                <div className="body">
-                  <strong>Expected result:</strong> {intent.review.expectedPostState}
-                </div>
-              </div>
-              <details className="wallet-operation-advanced">
-                <summary>Request fingerprints</summary>
-                <div className="wallet-intent-seals">
-                  <CopyableIdentifier
-                    value={intent.seal.factsSha256}
-                    label="wallet request facts hash"
-                    className="mono"
-                  />
-                  <CopyableIdentifier
-                    value={intent.seal.manifestSha256}
-                    label="wallet request manifest hash"
-                    className="mono"
-                  />
-                </div>
-              </details>
-              <details className="wallet-operation-advanced">
-                <summary>Transaction details</summary>
-                <div className="wallet-intent-payload">
-                  <div>
-                    <strong>Sponsored</strong> No
-                  </div>
-                  <div>
-                    <strong>Post-condition mode</strong>{" "}
-                    {intent.transaction.params.postConditionMode}
-                  </div>
-                  <div>
-                    <strong>Post-conditions</strong>{" "}
-                    {intent.transaction.params.postConditions.length === 0 ? "None" : "Present"}
-                  </div>
-                  {intent.transaction.params.postConditions.length > 0 ? (
-                    <ol>
-                      {intent.transaction.params.postConditions.map((postCondition) => (
-                        <li key={postCondition}>
-                          <CopyableIdentifier
-                            value={postCondition}
-                            label="serialized post-condition"
-                            className="mono"
-                          />
-                        </li>
-                      ))}
-                    </ol>
-                  ) : null}
-                  <div>
-                    <strong>Serialized arguments</strong>
-                    <ol>
-                      {intent.transaction.params.functionArgs.map((argument, index) => (
-                        <li key={argument}>
-                          <strong>Argument {index + 1}</strong>{" "}
-                          <CopyableIdentifier
-                            value={argument}
-                            label={`serialized argument ${index + 1}`}
-                            className="mono"
-                          />
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                </div>
-              </details>
-            </div>
-          ) : null}
-
-          {loadingExisting && !intent ? (
-            <p className="help" role="status">
-              Loading stored transaction review…
+      ) : null}
+      {ambiguousWalletResults.length > 0 ? (
+        <div className="callout callout-critical" role="alert">
+          <Warning className="ic" />
+          <div className="body">
+            <strong>Multiple saved wallet broadcasts need review.</strong>
+            <p>
+              Sidekick will not prepare another transaction for this action until each saved record
+              is recorded or cleared. Clearing a local recovery record does not cancel its
+              broadcast; save its transaction ID first.
             </p>
-          ) : null}
-
-          {intent?.txid ? (
-            <div className="callout callout-info" role="status">
-              <ArrowClockwise className="ic" />
-              <div className="body">
-                <strong>{walletIntentStatusHeading(intent.status)}</strong>
-                <div>
-                  Transaction{" "}
-                  <CopyableIdentifier value={intent.txid} label="transaction ID" className="mono" />
-                </div>
-                {walletResult?.txid === intent.txid ? (
-                  <div>
-                    Submitted from {walletResult.sender} with {walletName(walletResult.providerId)}.
+            <div className="wallet-recovery-list">
+              {ambiguousWalletResults.map((pending) => {
+                const messageKey = recoveryRecordKey(pending);
+                return (
+                  <div className="wallet-recovery-record" key={messageKey}>
+                    <div>
+                      Request{" "}
+                      <CopyableIdentifier
+                        value={pending.intentId}
+                        label="wallet request ID"
+                        className="mono"
+                      />
+                    </div>
+                    <div>
+                      Transaction{" "}
+                      <CopyableIdentifier
+                        value={pending.txid}
+                        label="wallet transaction ID"
+                        className="mono"
+                      />
+                    </div>
+                    <div>
+                      Submitted from {pending.sender} with {walletName(pending.providerId)}.
+                    </div>
+                    {recoveryMessages[messageKey] ? (
+                      <p role="status">{recoveryMessages[messageKey]}</p>
+                    ) : null}
+                    <div className="wallet-result-actions">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={busy !== null}
+                        onClick={() => void retryRecord(pending)}
+                      >
+                        <ArrowClockwise /> Retry recording this transaction
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={busy !== null}
+                        onClick={() => clearSavedRecovery(pending)}
+                      >
+                        Clear this recovery record
+                      </button>
+                    </div>
                   </div>
-                ) : null}
-                {intent.verification ? <div>{intent.verification.detail}</div> : null}
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {signingBlocked ? (
+        <div className="callout callout-caution" role="status">
+          {signingBlocked} Existing transaction progress remains available.
+        </div>
+      ) : null}
+      {intent ? (
+        <div className="wallet-intent-review">
+          <div>
+            <strong>{intent.review.title}</strong>
+            <p>{intent.review.summary}</p>
+          </div>
+          <div className="deployment-target">
+            <span>
+              Network <strong>{intent.network}</strong>
+            </span>
+            <span>
+              Signing account{" "}
+              <CopyableIdentifier
+                value={intent.requiredSender}
+                label="signing account"
+                className="mono"
+              />
+            </span>
+            <span>
+              Request <strong className="mono">{intent.transaction.method}</strong>
+            </span>
+            <span>
+              Target <strong className="mono">{requestTarget(intent)}</strong>
+            </span>
+            <span>
+              Expires <strong>{new Date(intent.expiresAt).toLocaleString()}</strong>
+            </span>
+          </div>
+          {intent.review.fields?.length ? (
+            <dl className="wallet-intent-fields">
+              {intent.review.fields.map((field) => (
+                <div key={`${field.label}:${field.value}`}>
+                  <dt>{field.label}</dt>
+                  <dd>
+                    <CopyableIdentifier value={field.value} label={field.label} className="mono" />
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          <div className="callout callout-neutral" role="note">
+            <Check className="ic" />
+            <div className="body">
+              <strong>Expected result:</strong> {intent.review.expectedPostState}
+            </div>
+          </div>
+          <details className="wallet-operation-advanced">
+            <summary>Request fingerprints</summary>
+            <div className="wallet-intent-seals">
+              <CopyableIdentifier
+                value={intent.seal.factsSha256}
+                label="wallet request facts hash"
+                className="mono"
+              />
+              <CopyableIdentifier
+                value={intent.seal.manifestSha256}
+                label="wallet request manifest hash"
+                className="mono"
+              />
+            </div>
+          </details>
+          <details className="wallet-operation-advanced">
+            <summary>Transaction details</summary>
+            <div className="wallet-intent-payload">
+              <div>
+                <strong>Sponsored</strong> No
+              </div>
+              <div>
+                <strong>Post-condition mode</strong> {intent.transaction.params.postConditionMode}
+              </div>
+              <div>
+                <strong>Post-conditions</strong>{" "}
+                {intent.transaction.params.postConditions.length === 0 ? "None" : "Present"}
+              </div>
+              {intent.transaction.params.postConditions.length > 0 ? (
+                <ol>
+                  {intent.transaction.params.postConditions.map((postCondition) => (
+                    <li key={postCondition}>
+                      <CopyableIdentifier
+                        value={postCondition}
+                        label="serialized post-condition"
+                        className="mono"
+                      />
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+              <div>
+                <strong>Serialized arguments</strong>
+                <ol>
+                  {intent.transaction.params.functionArgs.map((argument, index) => (
+                    <li key={argument}>
+                      <strong>Argument {index + 1}</strong>{" "}
+                      <CopyableIdentifier
+                        value={argument}
+                        label={`serialized argument ${index + 1}`}
+                        className="mono"
+                      />
+                    </li>
+                  ))}
+                </ol>
               </div>
             </div>
-          ) : null}
+          </details>
+        </div>
+      ) : null}
 
-          {pendingNeedsRecording ? (
-            <div className="callout callout-caution" role="status">
-              <Warning className="ic" />
-              <div className="body">
-                <strong>The wallet reported a broadcast, but Sidekick did not record it.</strong>
-                <div>
-                  Transaction{" "}
-                  <CopyableIdentifier
-                    value={walletResult.txid}
-                    label="wallet transaction ID"
-                    className="mono"
-                  />
-                </div>
-                Retry recording this ID without signing again, or keep it for manual verification.
-                {recoveryCanClear ? (
-                  <div>
-                    If this request no longer exists, save the transaction ID before clearing the
-                    local record. Clearing it does not cancel the transaction.
-                  </div>
-                ) : null}
+      {loadingExisting && !intent ? (
+        <p className="help" role="status">
+          Loading stored transaction review…
+        </p>
+      ) : null}
+
+      {intent?.txid ? (
+        <div className="callout callout-info" role="status">
+          <ArrowClockwise className="ic" />
+          <div className="body">
+            <strong>{walletIntentStatusHeading(intent.status)}</strong>
+            <div>
+              Transaction{" "}
+              <CopyableIdentifier value={intent.txid} label="transaction ID" className="mono" />
+            </div>
+            {walletResult?.txid === intent.txid ? (
+              <div>
+                Submitted from {walletResult.sender} with {walletName(walletResult.providerId)}.
               </div>
-            </div>
-          ) : null}
+            ) : null}
+            {intent.verification ? <div>{intent.verification.detail}</div> : null}
+          </div>
+        </div>
+      ) : null}
 
-          {error ? (
-            <div className="callout callout-critical" role="alert">
-              <Warning className="ic" />
-              <div className="body">{error}</div>
+      {pendingNeedsRecording ? (
+        <div className="callout callout-caution" role="status">
+          <Warning className="ic" />
+          <div className="body">
+            <strong>The wallet reported a broadcast, but Sidekick did not record it.</strong>
+            <div>
+              Transaction{" "}
+              <CopyableIdentifier
+                value={walletResult.txid}
+                label="wallet transaction ID"
+                className="mono"
+              />
             </div>
-          ) : null}
-          {pollError ? (
-            <div className="callout callout-caution" role="status">
-              <Warning className="ic" />
-              <div className="body">{pollError}</div>
-            </div>
-          ) : null}
-
-          <div className="wallet-result-actions">
-            {canPrepare ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={busy !== null}
-                onClick={() => void prepare()}
-              >
-                <ShieldCheck />{" "}
-                {intent ? "Review a new wallet transaction" : "Review wallet transaction"}
-              </button>
-            ) : null}
-            {canSign ? (
-              <button
-                type="button"
-                className="btn btn-accent"
-                disabled={busy !== null}
-                onClick={() => void sign()}
-              >
-                <Wallet /> Connect wallet and sign
-              </button>
-            ) : null}
-            {pendingNeedsRecording ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={busy !== null}
-                onClick={() => (walletResult ? void retryRecord(walletResult) : undefined)}
-              >
-                <ArrowClockwise /> Retry recording transaction
-              </button>
-            ) : null}
-            {walletResult && (pendingConflictsWithBackend || recoveryCanClear) ? (
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={busy !== null}
-                onClick={() => clearSavedRecovery(walletResult)}
-              >
-                Clear saved recovery record
-              </button>
-            ) : null}
-            {intent?.status === "reobserve" ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={busy !== null}
-                onClick={() => void replace()}
-              >
-                <ShieldCheck /> Prepare replacement transaction
-              </button>
-            ) : null}
-            {intent && REFRESHABLE_STATUSES.has(intent.status) ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={busy !== null}
-                onClick={() => void refresh()}
-              >
-                <ArrowClockwise /> Refresh verification
-              </button>
+            Retry recording this ID without signing again, or keep it for manual verification.
+            {recoveryCanClear ? (
+              <div>
+                If this request no longer exists, save the transaction ID before clearing the local
+                record. Clearing it does not cancel the transaction.
+              </div>
             ) : null}
           </div>
-          {busy ? (
-            <p className="help" role="status" aria-live="polite">
-              {busy === "prepare"
-                ? "Preparing transaction review…"
-                : busy === "sign"
-                  ? "Waiting for the wallet…"
-                  : busy === "record"
-                    ? "Recording transaction ID…"
-                    : "Refreshing verification…"}
-            </p>
-          ) : null}
-          <p className="help">
-            Your wallet signs and submits the transaction. Sidekick verifies it on-chain.
-          </p>
-        </>
-      )}
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="callout callout-critical" role="alert">
+          <Warning className="ic" />
+          <div className="body">{error}</div>
+        </div>
+      ) : null}
+      {pollError ? (
+        <div className="callout callout-caution" role="status">
+          <Warning className="ic" />
+          <div className="body">{pollError}</div>
+        </div>
+      ) : null}
+
+      <div className="wallet-result-actions">
+        {canPrepare ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy !== null}
+            onClick={() => void prepare()}
+          >
+            <ShieldCheck />{" "}
+            {intent ? "Review a new wallet transaction" : "Review wallet transaction"}
+          </button>
+        ) : null}
+        {existingIntentId && !intent && !loadingExisting ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setExistingRetry((value) => value + 1)}
+          >
+            Retry stored review
+          </button>
+        ) : null}
+        {canSign ? (
+          <button
+            type="button"
+            className="btn btn-accent"
+            disabled={busy !== null}
+            onClick={() => void sign()}
+          >
+            <Wallet /> Connect wallet and sign
+          </button>
+        ) : null}
+        {pendingNeedsRecording ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy !== null}
+            onClick={() => (walletResult ? void retryRecord(walletResult) : undefined)}
+          >
+            <ArrowClockwise /> Retry recording transaction
+          </button>
+        ) : null}
+        {walletResult && (pendingConflictsWithBackend || recoveryCanClear) ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={busy !== null}
+            onClick={() => clearSavedRecovery(walletResult)}
+          >
+            Clear saved recovery record
+          </button>
+        ) : null}
+        {intent?.status === "reobserve" ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy !== null || !!signingBlocked}
+            onClick={() => void replace()}
+          >
+            <ShieldCheck /> Prepare replacement transaction
+          </button>
+        ) : null}
+        {intent && REFRESHABLE_STATUSES.has(intent.status) ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy !== null}
+            onClick={() => void refresh()}
+          >
+            <ArrowClockwise /> Refresh verification
+          </button>
+        ) : null}
+      </div>
+      {busy ? (
+        <p className="help" role="status" aria-live="polite">
+          {busy === "prepare"
+            ? "Preparing transaction review…"
+            : busy === "sign"
+              ? "Waiting for the wallet…"
+              : busy === "record"
+                ? "Recording transaction ID…"
+                : "Refreshing verification…"}
+        </p>
+      ) : null}
+      <p className="help">
+        Your wallet signs and submits the transaction. Sidekick verifies it on-chain.
+      </p>
     </section>
   );
 }

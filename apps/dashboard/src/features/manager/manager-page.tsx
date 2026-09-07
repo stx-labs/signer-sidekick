@@ -76,10 +76,12 @@ export function managerCapabilityIdForAction(action: ManagerActionId): ManagerAc
 }
 
 function SignerGrantCeremony({
+  onPrepared,
   data,
   token,
   onOperatorStateChanged,
 }: {
+  onPrepared?: ((intentId: string) => void) | undefined;
   data: Snapshot;
   token: string;
   onOperatorStateChanged?: (() => void | Promise<void>) | undefined;
@@ -343,6 +345,7 @@ function SignerGrantCeremony({
           {createRequest ? (
             <>
               <BrowserWalletActionPanel
+                onPrepared={onPrepared}
                 key={JSON.stringify(createRequest)}
                 chainId={data.preflight.node.networkId}
                 createRequest={createRequest}
@@ -370,6 +373,7 @@ function SignerGrantCeremony({
 }
 
 export function ManagerActionWorkspace({
+  onPrepared,
   action,
   closeHref = dashboardHash("settings"),
   data,
@@ -377,6 +381,7 @@ export function ManagerActionWorkspace({
   token,
   onOperatorStateChanged,
 }: {
+  onPrepared?: ((intentId: string) => void) | undefined;
   action: ManagerActionId;
   closeHref?: string;
   data: Snapshot;
@@ -438,6 +443,7 @@ export function ManagerActionWorkspace({
 
       {action === "register-self" ? (
         <SignerGrantCeremony
+          onPrepared={onPrepared}
           data={data}
           token={token}
           onOperatorStateChanged={onOperatorStateChanged}
@@ -595,6 +601,7 @@ export function ManagerActionWorkspace({
       {createRequest ? (
         <>
           <BrowserWalletActionPanel
+            onPrepared={onPrepared}
             key={JSON.stringify(createRequest)}
             chainId={data.preflight.node.networkId}
             createRequest={createRequest}

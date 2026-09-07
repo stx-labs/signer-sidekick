@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import { startConnectionRefreshLoop } from "./connection-refresh.js";
 import { GasWalletError } from "./gas-wallet.js";
 import { HealthSourceError } from "./health-http.js";
 import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
@@ -531,7 +532,7 @@ describe("local API", () => {
     expect(operational.statusCode).toBe(503);
     expect(operational.json()).toMatchObject({
       status: "not-operational",
-      code: "manager-not-deployed",
+      code: "operational-startup-pending",
     });
 
     const recheck = await server.inject({
@@ -543,6 +544,88 @@ describe("local API", () => {
     expect(recheck.json()).toMatchObject({ status: "connected", outcomeCode: null });
     expect(check).toHaveBeenLastCalledWith(true);
     expect(onConnectionAssessed).toHaveBeenLastCalledWith(connected);
+  });
+
+  it("keeps the operational probe unavailable after rejected startup until background retry succeeds", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const connected = {
+      status: "connected",
+      outcomeCode: null,
+      checkedAt: "2026-09-07T12:00:00.000Z",
+      stale: false,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+    };
+    let operationalStarted = false;
+    const start = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("worker startup unavailable"))
+      .mockImplementation(async () => {
+        operationalStarted = true;
+      });
+    const server = createServer({
+      service,
+      connection: { current: () => connected, check },
+      isOperational: () => operationalStarted,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    await server.ready();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const loop = startConnectionRefreshLoop({ check }, start, logger);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ retryInMs: 30_000 }),
+        expect.any(String),
+      );
+      const pending = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(pending.statusCode).toBe(503);
+      expect(pending.json()).toEqual({
+        status: "not-operational",
+        code: "operational-startup-pending",
+      });
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(service.snapshot).not.toHaveBeenCalled();
+      for (const url of ["/health/live", "/health/ready"]) {
+        expect((await server.inject({ method: "GET", url })).statusCode).toBe(200);
+      }
+      const headers = { authorization: `Bearer ${token}` };
+      expect(
+        (await server.inject({ method: "GET", url: "/api/v1/status", headers })).statusCode,
+      ).toBe(503);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(start).toHaveBeenCalledTimes(2);
+      const operational = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(operational.statusCode).toBe(200);
+      expect(operational.json()).toMatchObject({ status: "operational" });
+      expect(service.snapshot).toHaveBeenCalledOnce();
+      expect(
+        (await server.inject({ method: "GET", url: "/api/v1/status", headers })).statusCode,
+      ).toBe(200);
+
+      check.mockResolvedValue({
+        ...connected,
+        status: "blocked",
+        outcomeCode: "manager-not-deployed",
+      });
+      const blocked = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(blocked.statusCode).toBe(503);
+      expect(blocked.json()).toMatchObject({
+        status: "not-operational",
+        code: "manager-not-deployed",
+      });
+    } finally {
+      await loop.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("preserves read-only operator evidence after a proved connection becomes unavailable", async () => {

@@ -15,6 +15,7 @@ import {
 } from "./cli-runtime.js";
 import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 import { ConnectionAssessmentService } from "./connection-assessment.js";
+import { startConnectionRefreshLoop } from "./connection-refresh.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
 import { GasWalletService } from "./gas-wallet.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
@@ -306,6 +307,8 @@ export async function executeCliCommand({
       });
       observerProcessor = processor;
       let snapshotRefresh: { stop(): void } | null = null;
+      let connectionRefresh: ReturnType<typeof startConnectionRefreshLoop> | null = null;
+      let closing = false;
       let operationalStarted = false;
       const snapshotRefreshMetrics = new SnapshotRefreshMetricsTracker();
       let operationalStartPromise: Promise<void> | null = null;
@@ -463,7 +466,7 @@ export async function executeCliCommand({
         logger: server.log,
       });
       startOperationalRuntime = async () => {
-        if (operationalStarted) return;
+        if (operationalStarted || closing) return;
         operationalStartPromise ??= (async () => {
           observerReconciliation?.start();
           if (observerConfig.enabled) observerGapMonitor?.start();
@@ -474,7 +477,6 @@ export async function executeCliCommand({
               "Recovered interrupted observer inbox deliveries",
             );
           }
-          operationalStarted = true;
           engine.start();
           await rewardRuns.start();
           snapshotRefresh = startSnapshotRefreshLoop(
@@ -491,6 +493,7 @@ export async function executeCliCommand({
               metrics: snapshotRefreshMetrics,
             },
           );
+          operationalStarted = true;
           server.log.info("Connection established; operator background services are enabled");
           void service
             .observeManagerTrustState()
@@ -526,6 +529,9 @@ export async function executeCliCommand({
         );
       }
       server.addHook("onClose", async () => {
+        closing = true;
+        await connectionRefresh?.stop();
+        await operationalStartPromise?.catch(() => undefined);
         snapshotRefresh?.stop();
         health.stop();
         await rewardRuns.stop();
@@ -558,14 +564,11 @@ export async function executeCliCommand({
         },
         "HTTP control plane is listening",
       );
-      if (initialConnection.status === "connected") {
-        try {
-          await startOperationalRuntime();
-        } catch (error) {
-          await server.close();
-          throw error;
-        }
-      }
+      connectionRefresh = startConnectionRefreshLoop(
+        connection,
+        startOperationalRuntime,
+        server.log,
+      );
     } finally {
       if (!serverOwnsStore) {
         try {

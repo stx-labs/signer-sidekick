@@ -5,10 +5,11 @@ import type {
   OperationReadiness,
   RuntimeSettings,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { activityHash, settingsHash } from "../../dashboard-route.js";
 import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
 import { operatorActionError } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import {
   disableEngineAdapter,
   forceEngineObserve,
@@ -162,6 +163,7 @@ function adapterTone(availability: EngineStatus["adapters"][number]["availabilit
 }
 
 export function EngineSettings({
+  cacheScope,
   feeBand = null,
   feeBandDirty = false,
   feeBandError = null,
@@ -174,6 +176,7 @@ export function EngineSettings({
   readOnly,
   token,
 }: {
+  cacheScope: string | null;
   /** Stored reward-run fee band with the deployment cap; null on Sidekicks that predate it. */
   feeBand?: FeeBand | null;
   feeBandDirty?: boolean;
@@ -194,38 +197,36 @@ export function EngineSettings({
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<EngineControlAction | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
-  const controller = useRef<AbortController | null>(null);
-
-  const load = useCallback(async () => {
-    controller.current?.abort();
-    const request = new AbortController();
-    controller.current = request;
-    setLoading(true);
-    setError(null);
-    try {
-      const [nextStatus, nextReadiness] = await Promise.all([
-        loadEngineStatus(token, request.signal),
-        loadOperationReadiness(token, request.signal),
-      ]);
-      if (request.signal.aborted) return;
-      setStatus(nextStatus);
-      onStatus?.(nextStatus);
-      setReadiness(nextReadiness);
-      setUnavailable(nextStatus === null);
-    } catch (cause) {
-      if (request.signal.aborted) return;
-      setError(
-        operatorActionError(cause, "Could not load reward-run controls", "Retrying is safe"),
-      );
-    } finally {
-      if (!request.signal.aborted) setLoading(false);
-    }
-  }, [onStatus, token]);
-
   useEffect(() => {
-    void load();
-    return () => controller.current?.abort();
-  }, [load]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        try {
+          const [statusResult, readinessResult] = await Promise.allSettled([
+            loadEngineStatus(token, signal),
+            loadOperationReadiness(token, signal),
+          ]);
+          if (signal.aborted) return;
+          if (statusResult.status === "fulfilled") {
+            setStatus(statusResult.value);
+            onStatus?.(statusResult.value);
+            setUnavailable(statusResult.value === null);
+          }
+          if (readinessResult.status === "fulfilled") setReadiness(readinessResult.value);
+          if (statusResult.status === "rejected") throw statusResult.reason;
+          if (readinessResult.status === "rejected") throw readinessResult.reason;
+          setError(null);
+        } finally {
+          if (!signal.aborted) setLoading(false);
+        }
+      },
+      (cause) => {
+        setError(
+          operatorActionError(cause, "Could not load reward-run controls", "Retrying is safe"),
+        );
+      },
+    );
+    return () => refresh.stop();
+  }, [onStatus, token]);
 
   const forceObserve = async () => {
     if (!status || action || readOnly) return;
@@ -368,6 +369,7 @@ export function EngineSettings({
           />
         </div>
         <GasWalletSettings
+          cacheScope={cacheScope}
           {...(onGasWalletStatus ? { onStatus: onGasWalletStatus } : {})}
           token={token}
           readOnly={readOnly}

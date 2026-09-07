@@ -99,11 +99,16 @@ curl --fail http://127.0.0.1:3998/health/ready
 curl --fail http://127.0.0.1:3998/health/operational
 ```
 
+The operational probe returns HTTP 503 with `operational-startup-pending` until operational
+workers finish starting. This is expected briefly after `up -d`; retry the probe. Failed startup
+is retried in the background, while `/health/live` and `/health/ready` remain available for diagnosis.
+
 `connection check` fails when RPC, network, manager identity, PoX-5 interface, or transaction
 indexing is invalid. It confirms core monitoring compatibility; Settings reports manager-operation
 compatibility after Sidekick starts.
 `/health/ready` confirms Sidekick and its database can serve requests; `/health/operational` also
-checks the current node, manager connection, manager preflight, and availability of health evidence.
+checks completed worker startup, the current node, manager connection, manager preflight, and
+availability of health evidence.
 Diagnostic warnings are reported in its body but do not fail the operational probe.
 The dashboard's **Settings → Deployment check** tests the same requirements and optional telemetry.
 

@@ -121,11 +121,12 @@ All operator health API routes require the existing operator credential:
 
 Process probes are separate from authenticated operator health data: `/health/live` reports process
 liveness, `/health/ready` reports that Sidekick and its database can serve requests, and
-`/health/operational` verifies the current node/manager connection, manager preflight, and the
-availability of node-health evidence. It returns the current diagnostic status in its body, but a
-warning finding does not make the probe fail; connection/preflight failure or an
-`unavailable` health state does. A node outage must not make `/health/ready` fail because Sidekick
-remains the diagnostic surface during that outage.
+`/health/operational` verifies completed worker startup, the current node/manager connection,
+manager preflight, and the availability of node-health evidence. It returns the current diagnostic
+status in its body, but a warning finding does not make the probe fail; connection/preflight failure or an
+`unavailable` health state does. Pending or failed worker startup returns HTTP 503 with
+`operational-startup-pending` until a background startup attempt succeeds. A node outage must not
+make `/health/ready` fail because Sidekick remains the diagnostic surface during that outage.
 
 The five-second collector starts with the Sidekick control plane and remains server-owned even when
 the manager connection is not yet operational or no browser is open. Manager readiness gates

@@ -9,6 +9,8 @@ import { useEffect, useState } from "react";
 import { dashboardHash, domainHash } from "../../dashboard-route.js";
 import { Badge } from "../../shared/dashboard-ui.js";
 import { amount, feePercent } from "../../shared/format.js";
+import { operatorErrorSentence } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
 import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
@@ -56,66 +58,81 @@ const titles: Record<CardState, string> = {
 export function RewardsOverviewCard({
   token,
   rewards,
-  generatedAt,
+  cacheScope,
   fallback,
 }: {
   token: string;
   rewards: OverviewPage["rewards"];
-  generatedAt: string;
+  cacheScope: string;
   /** Rendered when the ledger is unavailable (older Sidekick, or still loading). */
   fallback: React.ReactNode;
 }) {
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
-    cachedGasWalletStatus(),
+    cachedGasWalletStatus(token, cacheScope),
   );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
   useEffect(() => {
-    void generatedAt;
-    const controller = new AbortController();
-    const load = () => {
-      loadRewardLedger(token, {}, controller.signal)
-        .then((result) => {
-          if (!controller.signal.aborted) {
-            setLedger(result);
-          }
-        })
-        .catch(() => undefined);
-      loadGasWalletStatus(token, controller.signal)
-        .then((status) => {
-          if (!controller.signal.aborted) setGasWallet(status);
-        })
-        .catch(() => {
-          if (!controller.signal.aborted) {
-            setGasWallet((current) => (current === undefined ? null : current));
-          }
-        });
-      loadEngineStatus(token, controller.signal)
-        .then((status) => {
-          if (!controller.signal.aborted)
-            setEngineMode(status?.mode === "operator-run" ? "operator-run" : "observe");
-        })
-        .catch(() => undefined);
-      listRewardRuns(token, 3, controller.signal)
-        .then((runs) => {
-          if (!controller.signal.aborted) {
-            setActiveRun(runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null);
-          }
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") load();
-    }, CARD_POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
-  }, [token, generatedAt]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const failures: string[] = [];
+        const failed = (cause: unknown) => {
+          failures.push(operatorErrorSentence(cause));
+        };
+        await Promise.all([
+          loadRewardLedger(token, {}, signal)
+            .then((result) => {
+              if (!signal.aborted) {
+                setLedger(result);
+              }
+            })
+            .catch(failed),
+          loadGasWalletStatus(token, signal, cacheScope)
+            .then((status) => {
+              if (!signal.aborted) setGasWallet(status);
+            })
+            .catch((cause: unknown) => {
+              failed(cause);
+            }),
+          loadEngineStatus(token, signal)
+            .then((status) => {
+              if (!signal.aborted)
+                setEngineMode(status?.mode === "operator-run" ? "operator-run" : "observe");
+            })
+            .catch((cause: unknown) => {
+              failed(cause);
+              if (!signal.aborted) setEngineMode(null);
+            }),
+          listRewardRuns(token, 3, signal)
+            .then((runs) => {
+              if (!signal.aborted) {
+                setActiveRun(runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null);
+              }
+            })
+            .catch(failed),
+        ]);
+        if (failures.length) throw new Error(failures.join("; "));
+        if (!signal.aborted) setError(null);
+      },
+      (cause) => setError(operatorErrorSentence(cause)),
+      CARD_POLL_MS,
+    );
+    return () => refresh.stop();
+  }, [token, cacheScope]);
 
-  if (!ledger) return <>{fallback}</>;
+  if (!ledger)
+    return (
+      <>
+        {error ? (
+          <div className="content-notice" role="alert">
+            Reward details unavailable: {error}. Retrying automatically.
+          </div>
+        ) : null}
+        {fallback}
+      </>
+    );
   const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
   const card = cards[0] ?? null;
   const state = cardState(card);
@@ -153,6 +170,12 @@ export function RewardsOverviewCard({
         <h2 id="overview-rewards-heading">{titles[state]}</h2>
         <Badge state={badge.tone}>{badge.label}</Badge>
       </div>
+      {error ? (
+        <p className="content-notice" role="status">
+          Reward status refresh failed; showing retained data from{" "}
+          {new Date(ledger.generatedAt).toLocaleString()}. {error}
+        </p>
+      ) : null}
       <div className="overview-domain-primary">
         <span>
           Cycle {cycleNumber} · {distributionName(distribution.distribution)}

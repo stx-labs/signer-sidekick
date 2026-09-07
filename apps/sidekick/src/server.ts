@@ -1556,6 +1556,12 @@ export function createServer(options: ServerOptions = {}) {
   });
   server.get("/health/operational", async (request, reply) => {
     if (!options.service) return reply.code(503).send({ status: "not-operational" });
+    if (options.isOperational?.() === false) {
+      return reply.code(503).send({
+        status: "not-operational",
+        code: "operational-startup-pending",
+      });
+    }
     try {
       const connection = options.connection
         ? await interactive(request, async () => await options.connection?.check())
@@ -1598,6 +1604,7 @@ export function createServer(options: ServerOptions = {}) {
       snapshotGeneratedTimestampSeconds: 0,
       snapshotAgeSeconds: 0,
       snapshotFresh: 0 as const,
+      refreshInProgress: 0 as const,
       sourcePositions: null,
     };
     const rosterRefresh = rosterReconciliationMetrics.snapshot();
@@ -1706,8 +1713,13 @@ export function createServer(options: ServerOptions = {}) {
     );
     metrics.gauge(
       "sidekick_operator_snapshot_fresh",
-      "Whether the autonomous snapshot refresh is current and healthy.",
+      "Whether the retained snapshot generation time is within the freshness interval; not worker or history-sync health.",
       refresh.snapshotFresh,
+    );
+    metrics.gauge(
+      "sidekick_operator_snapshot_refresh_in_progress",
+      "Whether an autonomous snapshot refresh is in flight; inspect failures and last-success separately from source age.",
+      refresh.refreshInProgress,
     );
     if (health) {
       const findingsByClassification = new Map<string, number>();
@@ -2126,6 +2138,7 @@ export function createServer(options: ServerOptions = {}) {
           snapshotGeneratedTimestampSeconds: 0,
           snapshotAgeSeconds: 0,
           snapshotFresh: 0,
+          refreshInProgress: 0,
           sourcePositions: null,
         },
         rosterReconciliation: rosterReconciliationMetrics.snapshot(),

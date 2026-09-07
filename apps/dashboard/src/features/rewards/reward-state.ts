@@ -606,7 +606,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
             `calculated ${shortDate(d.calculation.observedAt)}`,
             amount(d.calculation.poolSats),
             detailsAvailable ? `${d.payments.made} of ${paymentTotal(d)} paid` : null,
-            detailsAvailable ? `your fee ${amount(d.payments.operatorFeeSats)}` : null,
+            detailsAvailable ? `known paid fee ${amount(d.payments.operatorFeeSats)}` : null,
           ]
             .filter(Boolean)
             .join(" · ")

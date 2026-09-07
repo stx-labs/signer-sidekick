@@ -5,10 +5,7 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useState } from "react";
 import { amount } from "../../shared/format.js";
-import {
-  DistributionHistoryDetails,
-  type DistributionPaymentsState,
-} from "./reward-distribution-history.js";
+import { DistributionHistoryDetails } from "./reward-distribution-history.js";
 import { DistributionExportControls } from "./reward-export-controls.js";
 import { type CycleGeometry, distributionName, paymentTotal, shortDate } from "./reward-state.js";
 import { ChevronButton } from "./reward-ui.js";
@@ -77,7 +74,11 @@ export function PastCyclesLedger({
   totalWithActivity,
 }: {
   cycles: readonly RewardLedgerCycle[];
-  loadPayments: (cycle: number, distribution: 1 | 2) => Promise<RewardLedgerPayment[]>;
+  loadPayments: (
+    cycle: number,
+    distribution: 1 | 2,
+    signal?: AbortSignal,
+  ) => Promise<RewardLedgerPayment[]>;
   onExport: (query: PastCyclesExportQuery) => void;
   exportBusy?: boolean;
   geometry?: CycleGeometry | null;
@@ -88,36 +89,19 @@ export function PastCyclesLedger({
   const [shown, setShown] = useState(PAGE);
   const [openCycle, setOpenCycle] = useState<number | null>(null);
   const [tabs, setTabs] = useState<Record<number, 1 | 2>>({});
-  const [payments, setPayments] = useState<Record<string, DistributionPaymentsState>>({});
   if (cycles.length === 0) return null;
   const visible = cycles.slice(0, shown);
   const seconds = burnBlockSeconds ?? 600;
 
-  const ensurePayments = (cycle: number, distribution: 1 | 2) => {
-    const key = `${cycle}:${distribution}`;
-    if (payments[key]) return;
-    setPayments((current) => ({ ...current, [key]: { rows: null, error: null } }));
-    loadPayments(cycle, distribution)
-      .then((rows) => setPayments((current) => ({ ...current, [key]: { rows, error: null } })))
-      .catch((cause: unknown) =>
-        setPayments((current) => ({
-          ...current,
-          [key]: { rows: null, error: cause instanceof Error ? cause.message : String(cause) },
-        })),
-      );
-  };
   const toggle = (cycle: RewardLedgerCycle) => {
     if (openCycle === cycle.cycle) {
       setOpenCycle(null);
       return;
     }
-    const tab = tabs[cycle.cycle] ?? cycle.distributions[0]?.distribution ?? 1;
     setOpenCycle(cycle.cycle);
-    ensurePayments(cycle.cycle, tab);
   };
   const selectTab = (cycle: number, distribution: 1 | 2) => {
     setTabs((current) => ({ ...current, [cycle]: distribution }));
-    ensurePayments(cycle, distribution);
   };
 
   return (
@@ -161,7 +145,6 @@ export function PastCyclesLedger({
                 cycle.distributions.find((d) => d.distribution === tab) ??
                 cycle.distributions[0] ??
                 null;
-              const state = active ? payments[`${cycle.cycle}:${active.distribution}`] : undefined;
               const dates = cycleDates(cycle.cycle, geometry, seconds, now);
               return [
                 <tr
@@ -232,8 +215,9 @@ export function PastCyclesLedger({
                           ))}
                         </div>
                         <DistributionHistoryDetails
+                          key={`${cycle.cycle}:${active.distribution}`}
                           distribution={active}
-                          state={state}
+                          loadPayments={loadPayments}
                           toolbarRight={
                             <DistributionExportControls
                               cycle={cycle.cycle}

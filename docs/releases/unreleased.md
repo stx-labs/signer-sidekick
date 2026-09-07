@@ -1,5 +1,44 @@
 # Unreleased
 
+## Background recovery and dashboard refresh (R2)
+
+- Connection assessment now retries without an open browser, using the existing bounded,
+  single-flight assessor and background loop. Transient unavailable results and asynchronous
+  worker-start failures back off; positive deployment/network refusals still block startup.
+- `/health/operational` returns HTTP 503 with `operational-startup-pending` until operational
+  workers finish starting, including during background startup retries. Liveness and readiness
+  stay available for diagnosis; a connected node and retained snapshot alone do not prove startup.
+- Rewards, its Overview card, Pool rows, and reward-run Settings use bounded visible-page polling
+  and focus refreshes. Parent snapshot timestamps no longer cancel slower resource reads. Public
+  gas-wallet status is shared only within the same credential/network/manager context; credentials
+  are not persisted in that cache.
+- Open payment history retries on focus, reopening, changed distribution evidence, or an explicit
+  retry. Refresh errors retain existing payment rows. Resource-specific errors stay visible instead
+  of converting an unavailable read into an empty table or zero balance.
+- Acknowledged Settings saves remain successful if subsequent status revalidation fails. External
+  gas-wallet funding is picked up without manually reloading Settings.
+- Prepared browser transactions stay accessible by an `intentId` action URL and through Activity,
+  including terminal transactions. Changing balances or snapshot freshness no longer removes that
+  view. Fresh preparation/signing gates and server-side pre-sign revalidation still apply.
+- Activity day headings use the event occurrence time. Terminal reward runs have no actionable
+  deadline; their original approval expiry and runtime cap remain in the detail timeline.
+- Distribution calculation notes label paid-fee subtotals as **known paid fee**, including mixed
+  known/unknown fee evidence. No fee accounting rule changes in this slice.
+
+### Freshness and recovery limits
+
+`sidekick_operator_snapshot_fresh` now measures the retained snapshot's generation age, not the
+worker's last completion time or absence of errors. The added
+`sidekick_operator_snapshot_refresh_in_progress` gauge (and support-bundle `refreshInProgress`
+field) separates an ongoing refresh from failure. Existing age, failure and last-success metrics
+remain. Update consumers that treated the old freshness gauge as a universal health verdict.
+
+With current defaults, connection and snapshot retry timers together can delay recovery by about
+ten minutes, plus request/startup time after upstream recovery. An already-halted run
+is not automatically resumed. **Transient errors can still halt active payout runs until R3a**;
+R2 repairs background connection recovery, not transaction retry/completion policy. No database
+migration, node-indexing requirement, infrastructure change, or new signing authority is introduced.
+
 ## Manager compatibility and reward truth (R1)
 
 - Reviewed managers may match the pinned source exactly or through the existing canonical

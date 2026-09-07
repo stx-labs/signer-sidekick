@@ -23,8 +23,45 @@ curl --fail http://127.0.0.1:3998/health/ready
 curl --fail http://127.0.0.1:3998/health/operational
 ```
 
+The operational probe returns HTTP 503 with `operational-startup-pending` until operational
+workers finish starting. This is expected briefly after `up -d`; retry the probe. Failed startup
+is retried in the background, while `/health/live` and `/health/ready` remain available for diagnosis.
+
 The database may contain API credentials; `gas-wallet.key` can spend its STX balance. Keep them as
 one restore set.
+
+## Recovery and freshness
+
+A temporary node failure does not require a browser request or service restart to recheck the
+connection. Sidekick reassesses it at a normal 30-second cadence, with exponential failure backoff
+up to five minutes. Operational worker startup is awaited and retried if it fails; already-started
+workers keep their existing lifecycles. A proved identity/network mismatch still blocks operations.
+Connection and snapshot backoffs can combine to roughly ten minutes, plus request/startup time.
+This is a timer bound after upstream recovery, not a guarantee that upstreams recover.
+
+Use each domain's evidence rather than one global "synced" timestamp:
+
+- The dashboard's **Current snapshot** indicator refers to its operator snapshot only.
+- `/sync` records a full roster/manager reconciliation, including bounded pool/member history
+  work. It is not the last successful callback verification or reward-history observation.
+- Reward ledger coverage and accounting history describe their own recovered evidence.
+- Callback queue/gap metrics show verification work, independently of the node's chain tip.
+- `sidekick_operator_snapshot_age_seconds` and `_fresh` describe retained snapshot age. The
+  `_refresh_in_progress`, `_refresh_consecutive_failures`, `_retry_backoff_seconds` and
+  `_last_success_timestamp_seconds` metrics describe the refresh worker. An aged snapshot during
+  a healthy in-flight refresh is not proof the node is behind. Container readiness is not indexing
+  completeness either.
+
+Visible Rewards, Pool and reward-run Settings refresh automatically and on focus. If a resource
+refresh fails, retained values stay on screen with a local error; payment history also offers a
+retry and reloads when reopened. A "Settings saved, but status refresh failed" notice means the
+write succeeded: retry observation, not the save.
+
+Prepared wallet transactions can be reopened from their action URL's `intentId` or Activity even
+when new-action eligibility changes. Viewing and verification remain available through a stale
+snapshot, but fresh evidence is required for new preparation/signing. Completion evidence rules
+are unchanged. Already-halted reward runs still require operator review and explicit resume;
+transient active-run retry handling is a separate pending change.
 
 ## Restore
 

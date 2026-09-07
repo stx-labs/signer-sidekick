@@ -587,6 +587,8 @@ describe("Activity projection", () => {
         title: "Collect rewards",
         displayStatus: "complete",
         outcome: "succeeded",
+        deadline: null,
+        urgencyAt: null,
         txids: [txid],
       }),
     );

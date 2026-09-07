@@ -126,6 +126,14 @@ cannot be refreshed because the node is temporarily unavailable, retain its last
 and timestamp as stale evidence rather than converting it into either a fresh success or a
 configuration failure.
 
+The process reuses its existing background-refresh loop to call the cached, single-flight
+assessor without an HTTP request. A returned `unavailable` result applies failure backoff, not a
+successful-start notification. Connected assessment awaits the existing start-once operational
+startup; startup rejection is logged and retried. Hard refusals never authorize worker startup.
+The connection loop and existing snapshot loop each cap ordinary backoff at five minutes, so
+combined recovery after upstream restoration can take about ten minutes plus request/startup
+time. Shutdown drains connection assessment/startup before closing workers and storage.
+
 ## Entry behavior
 
 After authentication, a deployment without a successful current connection assessment shows one

@@ -1511,6 +1511,279 @@ test("edits indexed and comparison API credentials independently", async ({ page
   });
 });
 
+for (const surface of ["overview", "rewards", "pool"] as const) {
+  test(`R2 ${surface} completes slow resource reads while parent snapshots advance`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    if (surface !== "overview") await login(page);
+    let release!: () => void;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    let reads = 0;
+    let parentReads = 0;
+    const path = surface === "pool" ? "/api/v1/pool" : "/api/v1/rewards/ledger";
+    const failed: string[] = [];
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname === path)
+        failed.push(request.failure()?.errorText ?? "failed");
+    });
+    await page.route(`**${path}*`, async (route) => {
+      reads += 1;
+      await held;
+      await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+    });
+    const parent = surface === "overview" ? "/api/v1/overview" : "/api/v1/status";
+    await page.route(`**${parent}*`, async (route) => {
+      parentReads += 1;
+      const body = responseFor(route.request().url());
+      await route.fulfill(
+        fixtureFulfillment({
+          ...body,
+          generatedAt: new Date(Date.now() + parentReads * 1000).toISOString(),
+        }),
+      );
+    });
+    if (surface === "overview") await login(page);
+    else await openPage(page, surface, surface === "pool" ? "Pool positions" : "Rewards");
+    await expect.poll(() => reads).toBe(1);
+    await page.clock.runFor(16_000);
+    await expect.poll(() => parentReads).toBeGreaterThan(1);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    expect(reads).toBe(1);
+    release();
+    if (surface === "overview")
+      await expect(
+        page.locator("#overview-rewards").getByRole("link", { name: "Review payments" }),
+      ).toBeVisible();
+    else if (surface === "rewards") await expect(page.locator("#rewards-cycle-139")).toBeVisible();
+    else await expect(page.locator("tbody tr").first()).toBeVisible();
+    expect(failed).toEqual([]);
+  });
+}
+
+test("R2 retries historical payments after failure and retains rows through refresh failure", async ({
+  page,
+}) => {
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  let fail = true;
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("cycle") === "139" && fail) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporarily_unavailable" }),
+      });
+    } else await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  const cycle = page.locator("#rewards-cycle-139");
+  await cycle.getByRole("button", { name: "Show distributions" }).click();
+  await expect(page.getByRole("button", { name: "Retry payments" })).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+  await cycle.getByRole("button", { name: "Hide distributions" }).click();
+  fail = false;
+  await cycle.getByRole("button", { name: "Show distributions" }).click();
+  const history = page.locator(".rw-ledger-panel");
+  await expect(history.locator("tbody tr").first()).toBeVisible();
+  fail = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(history.getByRole("button", { name: "Retry payments" })).toBeVisible();
+  await expect(history.locator("tbody tr").first()).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+  fail = false;
+  await history.getByRole("button", { name: "Retry payments" }).click();
+  await expect(history.getByRole("button", { name: "Retry payments" })).toHaveCount(0);
+});
+
+test("R2 refreshes external gas funding on focus and preserves acknowledged Settings saves", async ({
+  page,
+}) => {
+  let balance = "1000000";
+  let failStatus = false;
+  await page.route("**/api/v1/settings/gas-wallet", async (route) => {
+    await route.fulfill(fixtureFulfillment({ ...gasWalletCreated, balanceUstx: balance }));
+  });
+  await page.route("**/api/v1/settings", async (route) => {
+    if (route.request().method() === "PUT") failStatus = true;
+    await route.fulfill(fixtureFulfillment(snapshot.runtimeSettings));
+  });
+  await page.route("**/api/v1/status*", async (route) => {
+    if (failStatus)
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporarily_unavailable" }),
+      });
+    else await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  await login(page);
+  await openPage(page, "settings", "Settings");
+  await expect(page.locator(".st-wallet-sub")).toContainText("1.00 STX");
+  balance = "9000000";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(".st-wallet-sub")).toContainText("9.00 STX");
+  await openSettingsSection(page, "sources", "Connections");
+  const indexed = await editConnection(page, "Indexed chain API");
+  await indexed.locator('input[type="password"]').fill("new-fixture-secret");
+  await page.getByRole("button", { name: "Save connections" }).click();
+  await expect(page.getByText(/Settings saved, but status refresh failed/)).toBeVisible();
+  await expect(page.getByText(/Could not save connections/)).toHaveCount(0);
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+test("R2 preserves a sealed wallet intent by ID through stale snapshots and reload", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0] ?? "";
+  const prepared = {
+    intent: {
+      ...updateFeesWalletIntent(actor, "submitted").intent,
+      status: "prepared",
+      txid: null,
+      verification: null,
+    },
+  };
+  let stale = false;
+  await page.route("**/api/v1/wallet-intents/*", async (route) =>
+    route.fulfill(fixtureFulfillment(prepared)),
+  );
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment(
+        stale
+          ? {
+              ...current,
+              freshness: { ...current.freshness, status: "stale", reason: "refresh-failed" },
+            }
+          : current,
+      ),
+    );
+  });
+  await login(page);
+  await page.evaluate((id) => {
+    location.hash = `#action/update-fees?intentId=${id}`;
+  }, prepared.intent.id);
+  await expect(page.getByText("Set the manager fee to 250 basis points.")).toBeVisible();
+  stale = true;
+  await page.reload();
+  await expect(page.getByText("Set the manager fee to 250 basis points.")).toBeVisible();
+  await expect(page.getByText(/Fresh operation evidence is required/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review wallet transaction", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect wallet and sign" })).toHaveCount(0);
+});
+
+test("R2 keeps a submitted manager claim visible after its claimable balance reaches zero", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0];
+  const base = updateFeesWalletIntent(actor, "submitted").intent;
+  const claim = {
+    intent: {
+      ...base,
+      action: "claim-rewards",
+      request: { action: "claim-rewards", actorPrincipal: actor },
+      transaction: {
+        ...base.transaction,
+        params: {
+          ...base.transaction.params,
+          functionName: "claim-rewards",
+          functionArgs: ["0x01", "0x0b00000000"],
+          postConditions: ["0x0000"],
+        },
+      },
+      review: {
+        ...base.review,
+        title: "Claim manager funding",
+        summary: "A sealed manager claim remains observable.",
+      },
+    },
+  };
+  let claimable = "1000";
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...current,
+        rewards: {
+          ...current.rewards,
+          global: { ...current.rewards.global, signerEarnedAcrossBucketsSats: claimable },
+        },
+      }),
+    );
+  });
+  await page.route("**/api/v1/wallet-intents*", async (route) =>
+    route.fulfill(fixtureFulfillment(claim)),
+  );
+  await page.route("**/api/v1/wallet-intents/**", async (route) =>
+    route.fulfill(fixtureFulfillment(claim)),
+  );
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#action/claim-rewards";
+  });
+  await page.getByRole("textbox", { name: /^Signing account/ }).fill(actor);
+  await page.getByRole("button", { name: "Review wallet transaction" }).click();
+  await expect(page).toHaveURL(/#action\/claim-rewards\?intentId=/);
+  await expect(page.getByText("A sealed manager claim remains observable.")).toBeVisible();
+  claimable = "0";
+  await page.reload();
+  await expect(page.getByText("A sealed manager claim remains observable.")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Refresh verification", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/No manager reward balance is currently claimable/)).toHaveCount(0);
+});
+
+test("R2 Activity keeps terminal wallet evidence viewable while the snapshot is stale", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0];
+  const complete = updateFeesWalletIntent(actor, "complete");
+  await page.route("**/api/v1/wallet-intents/**", async (route) =>
+    route.fulfill(fixtureFulfillment(complete)),
+  );
+  await page.route("**/api/v1/activity/**", async (route) => {
+    const body = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...body,
+        summary: {
+          ...body.summary,
+          displayStatus: "complete",
+          outcome: "succeeded",
+          stage: "complete",
+          primaryAction: null,
+          deadline: null,
+          urgencyAt: null,
+        },
+      }),
+    );
+  });
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...current,
+        freshness: { ...current.freshness, status: "stale", reason: "refresh-failed" },
+      }),
+    );
+  });
+  await login(page);
+  await page.evaluate((id) => {
+    location.hash = `#activity/${encodeURIComponent(`wallet-intent:${id}`)}`;
+  }, complete.intent.id);
+  const panel = page.getByRole("region", { name: "Browser wallet" });
+  await expect(panel.getByText("The manual refresh verified the fee update.")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Refresh verification" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Connect wallet and sign" })).toHaveCount(0);
+});
+
 test("keeps sustained health findings on the Signer Health page", async ({ page }) => {
   await page.unroute("**/api/v1/**");
   await page.route("**/api/v1/**", async (route) => {
@@ -2451,6 +2724,11 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
       body = updateFeesWalletIntent(actorPrincipal, "submitted");
     } else if (
       request.pathname ===
+      `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}`
+    ) {
+      body = updateFeesWalletIntent(actorPrincipal, "submitted");
+    } else if (
+      request.pathname ===
       `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}/refresh`
     ) {
       refreshCalls += 1;
@@ -2486,6 +2764,7 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
     await page.getByLabel("New fee (basis points)").fill("250");
     const walletReview = page.getByRole("region", { name: "Browser wallet" });
     await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+    await expect(page).toHaveURL(/#action\/update-fees\?intentId=/);
     await expect(walletReview.getByRole("button", { name: "Refresh verification" })).toBeVisible();
 
     await page.clock.runFor(15_000);

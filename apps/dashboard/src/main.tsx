@@ -680,7 +680,7 @@ function App() {
             ? "Chain sources need attention"
             : indexedDataDelayed
               ? "Local node live · Indexed data delayed"
-              : "Live";
+              : "Current snapshot";
   const freshnessDetailLabel = diagnosticSafeMode
     ? "Stored evidence retained · actions disabled"
     : connectionUnavailableAfterSuccess && connection?.lastSuccessful
@@ -741,9 +741,9 @@ function App() {
         <ActionPage
           context={route.operationContext}
           data={data}
-          key={`${route.operation}:${JSON.stringify(route.operationContext)}`}
+          key={`${data.network}:${data.managerPrincipal}:${route.operation}:${JSON.stringify(route.operationContext)}`}
           operation={route.operation}
-          operatorStateStale={stale}
+          operatorStateStale={stale || diagnosticSafeMode}
           onOperatorStateChanged={refreshOperatorState}
           onRefreshStatus={refreshStatus}
           refreshingStatus={refreshingStatus}
@@ -754,6 +754,7 @@ function App() {
     if (page === "settings") {
       return (
         <SettingsPage
+          key={data ? `${data.network}:${data.managerPrincipal}` : "unattached"}
           data={data}
           initialSection={route.settingsSection}
           readOnly={diagnosticSafeMode}
@@ -784,10 +785,18 @@ function App() {
     if (!data) return null;
     switch (page) {
       case "pool":
-        return <Pool data={data} section={route.domainSection} token={token} />;
+        return (
+          <Pool
+            key={`${data.network}:${data.managerPrincipal}`}
+            data={data}
+            section={route.domainSection}
+            token={token}
+          />
+        );
       case "rewards":
         return (
           <Rewards
+            key={`${data.network}:${data.managerPrincipal}`}
             data={data}
             operatorStateStale={stale}
             section={route.domainSection}
@@ -885,6 +894,7 @@ function App() {
           <div
             className={`freshness ${diagnosticSafeMode || connectionUnavailableAfterSuccess || stale || data?.preflight.status === "fail" || indexedDataDelayed ? "stale" : ""}`}
             role="status"
+            title="Current operator snapshot only. Pool roster, reward history, and callback verification have separate synchronization and coverage."
           >
             <div className="freshness-primary">
               <span className="dot" aria-hidden="true" />
@@ -969,6 +979,10 @@ function App() {
                       } items`
                     : ""}
                 </span>
+                <p>
+                  Roster and manager history reconciliation; callback verification and current
+                  projections also advance independently.
+                </p>
               </div>
             </div>
           ) : null}

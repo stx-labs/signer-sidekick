@@ -22,6 +22,7 @@ import {
   operatorErrorDetail,
   operatorErrorSentence,
 } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { PoolForecastChart } from "./pool-forecast-chart.js";
 import { buildPoolForecastView } from "./pool-forecast-view.js";
 
@@ -77,11 +78,9 @@ export function Pool({
   const [rosterRetry, setRosterRetry] = useState(0);
   const [downloadBusy, setDownloadBusy] = useState<"csv" | "json" | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const rosterRefreshKey = `${data.generatedAt}:${rosterRetry}`;
   const pageSize = 50;
   useEffect(() => {
-    void rosterRefreshKey;
-    const controller = new AbortController();
+    void rosterRetry;
     let correctingPage = false;
     const parameters = new URLSearchParams({
       offset: String(page * pageSize),
@@ -92,30 +91,32 @@ export function Pool({
     });
     setRosterLoading(true);
     setRosterError(null);
-    void apiJson(token, `/api/v1/pool?${parameters}`, poolPageResponseSchema, {
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        const lastPage = Math.max(0, Math.ceil(result.total / pageSize) - 1);
-        setRosterFreshness(result.freshness ?? null);
-        setRosterTotal(result.total);
-        if (page > lastPage) {
-          correctingPage = true;
-          setPage(lastPage);
-          return;
-        }
-        setRoster(result.roster);
-      })
-      .catch((cause) => {
-        if (controller.signal.aborted) return;
-        setRosterError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && !correctingPage) setRosterLoading(false);
-      });
-    return () => controller.abort();
-  }, [page, query, rosterRefreshKey, sort, token]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        await apiJson(token, `/api/v1/pool?${parameters}`, poolPageResponseSchema, {
+          signal,
+        })
+          .then((result) => {
+            if (signal.aborted) return;
+            setRosterError(null);
+            const lastPage = Math.max(0, Math.ceil(result.total / pageSize) - 1);
+            setRosterFreshness(result.freshness ?? null);
+            setRosterTotal(result.total);
+            if (page > lastPage) {
+              correctingPage = true;
+              setPage(lastPage);
+              return;
+            }
+            setRoster(result.roster);
+          })
+          .finally(() => {
+            if (!signal.aborted && !correctingPage) setRosterLoading(false);
+          });
+      },
+      (cause) => setRosterError(operatorErrorDetail(cause, "Sidekick returned no error detail")),
+    );
+    return () => refresh.stop();
+  }, [page, query, rosterRetry, sort, token]);
   const download = async (format: "csv" | "json") => {
     setDownloadBusy(format);
     setDownloadError(null);

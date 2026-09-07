@@ -18,6 +18,7 @@ import { useDomainSection } from "../../shared/domain-section.js";
 import { compactDuration } from "../../shared/format.js";
 import { managerActionAvailability } from "../../shared/manager-action-availability.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
 import {
   cachedGasWalletStatus,
@@ -121,12 +122,15 @@ export function Rewards({
   token: string;
 }) {
   useDomainSection("rewards", section);
+  const cacheScope = `${data.network}:${data.managerPrincipal}`;
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(true);
-  const [ledgerRetry, setLedgerRetry] = useState(0);
+  const ledgerRefresh = useRef<ReturnType<typeof startVisibleRefresh> | null>(null);
+  const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
-    cachedGasWalletStatus(),
+    cachedGasWalletStatus(token, cacheScope),
   );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
@@ -147,90 +151,84 @@ export function Rewards({
   const rewards = data.rewards;
   const calculation = data.rewardOutlook?.calculation ?? rewards?.calculation ?? null;
 
-  const refreshLedger = useCallback(
-    async (signal?: AbortSignal) => {
-      const result = await loadRewardLedger(token, {}, signal);
-      if (signal?.aborted) return;
-      setLedger(result);
-      setLedgerError(null);
-    },
-    [token],
-  );
+  const refreshLedger = useCallback(async () => {
+    await ledgerRefresh.current?.refresh(true);
+  }, []);
 
   // Ledger: the page's single source for cycles, the pending distributions, their payments, fees.
   useEffect(() => {
-    void ledgerRetry;
-    void data.generatedAt;
-    const controller = new AbortController();
     setLedgerLoading(true);
-    refreshLedger(controller.signal)
-      .catch((cause: unknown) => {
-        if (!controller.signal.aborted)
-          setLedgerError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLedgerLoading(false);
-      });
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        refreshLedger(controller.signal).catch(() => undefined);
-      }
-    }, LEDGER_POLL_MS);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const result = await loadRewardLedger(token, {}, signal);
+        if (signal.aborted) return;
+        setLedger(result);
+        setLedgerError(null);
+        setLedgerLoading(false);
+      },
+      (cause) => {
+        setLedgerError(operatorErrorDetail(cause, "Sidekick returned no error detail"));
+        setLedgerLoading(false);
+      },
+      LEDGER_POLL_MS,
+    );
+    ledgerRefresh.current = refresh;
     return () => {
-      controller.abort();
-      window.clearInterval(interval);
+      refresh.stop();
+      ledgerRefresh.current = null;
     };
-  }, [data.generatedAt, ledgerRetry, refreshLedger]);
+  }, [token]);
 
   // Execution availability: gas wallet + engine mode.
   useEffect(() => {
-    void data.generatedAt;
-    const controller = new AbortController();
-    void loadGasWalletStatus(token, controller.signal)
-      .then((status) => {
-        if (!controller.signal.aborted) setGasWallet(status);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          // Keep verified cache data; without any cache, preserve the existing fallback behavior.
-          setGasWallet((current) => (current === undefined ? null : current));
-        }
-      });
-    void loadEngineStatus(token, controller.signal)
-      .then((status) => {
-        if (controller.signal.aborted) return;
-        setEngineMode(
-          status ? (status.mode === "operator-run" ? "operator-run" : "observe") : "observe",
-        );
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setEngineMode(null);
-      });
-    return () => controller.abort();
-  }, [token, data.generatedAt]);
-
-  // Projection accuracy + Bitcoin block timing for "left" / "in about …".
-  useEffect(() => {
-    void data.generatedAt;
-    const controller = new AbortController();
-    void apiJson(token, "/api/v1/health", healthSnapshotSchema, { signal: controller.signal })
-      .then((result) => {
-        if (!controller.signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setBurnBlockTiming(null);
-      });
-    void apiJson(token, "/api/v1/rewards?limit=1&offset=0", rewardsPageResponseSchema, {
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (!controller.signal.aborted) setRealizations(result.rewardRealizations ?? []);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setRealizations([]);
-      });
-    return () => controller.abort();
-  }, [token, data.generatedAt]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const failures: string[] = [];
+        await Promise.all([
+          loadGasWalletStatus(token, signal, cacheScope)
+            .then((status) => {
+              if (!signal.aborted) setGasWallet(status);
+            })
+            .catch((cause: unknown) => {
+              failures.push(`Gas wallet: ${operatorErrorSentence(cause)}`);
+            }),
+          loadEngineStatus(token, signal)
+            .then((status) => {
+              if (signal.aborted) return;
+              setEngineMode(
+                status ? (status.mode === "operator-run" ? "operator-run" : "observe") : "observe",
+              );
+            })
+            .catch((cause: unknown) => {
+              failures.push(operatorErrorSentence(cause));
+              if (!signal.aborted) setEngineMode(null);
+            }),
+          // Projection accuracy + Bitcoin timing also need their own bounded refresh trigger.
+          apiJson(token, "/api/v1/health", healthSnapshotSchema, { signal })
+            .then((result) => {
+              if (!signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
+            })
+            .catch((cause: unknown) => {
+              failures.push(operatorErrorSentence(cause));
+            }),
+          apiJson(token, "/api/v1/rewards?limit=1&offset=0", rewardsPageResponseSchema, {
+            signal,
+          })
+            .then((result) => {
+              if (!signal.aborted) setRealizations(result.rewardRealizations ?? []);
+            })
+            .catch((cause: unknown) => {
+              failures.push(operatorErrorSentence(cause));
+            }),
+        ]);
+        if (failures.length) throw new Error(failures.join("; "));
+        if (!signal.aborted) setAuxiliaryError(null);
+      },
+      (cause) => setAuxiliaryError(operatorErrorSentence(cause)),
+      LEDGER_POLL_MS,
+    );
+    return () => refresh.stop();
+  }, [token, cacheScope]);
 
   // Active run discovery + polling (S3): a run started from Overview, another tab, or before a
   // restart shows its progress here; terminal states refresh the ledger and leave a notice.
@@ -238,15 +236,15 @@ export function Rewards({
   activeRunRef.current = activeRun;
   const activeRunId = activeRun?.runId ?? null;
   useEffect(() => {
-    const controller = new AbortController();
-    const tick = () => {
-      const current = activeRunRef.current;
-      const request = current
-        ? loadRewardRun(token, current.runId, controller.signal).then((run) => [run])
-        : listRewardRuns(token, 5, controller.signal);
-      request
-        .then((runs) => {
-          if (controller.signal.aborted) return;
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const current = activeRunRef.current;
+        const request = current
+          ? loadRewardRun(token, current.runId, signal).then((run) => [run])
+          : listRewardRuns(token, 5, signal);
+        await request.then((runs) => {
+          if (signal.aborted) return;
+          setRunError(null);
           setRunsUnavailable(false);
           const inFlight = runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null;
           if (inFlight) {
@@ -261,23 +259,15 @@ export function Rewards({
             }
             setActiveRun(null);
           }
-        })
-        .catch((cause: unknown) => {
-          if (controller.signal.aborted) return;
-          if (cause instanceof RewardRunsUnavailableError) setRunsUnavailable(true);
         });
-    };
-    tick();
-    const interval = window.setInterval(
-      () => {
-        if (document.visibilityState === "visible") tick();
+      },
+      (cause: unknown) => {
+        if (cause instanceof RewardRunsUnavailableError) setRunsUnavailable(true);
+        else setRunError(operatorErrorSentence(cause));
       },
       activeRunId ? RUN_POLL_MS : LEDGER_POLL_MS,
     );
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
+    return () => refresh.stop();
   }, [token, refreshLedger, activeRunId]);
 
   const nextCalculationIn =
@@ -362,57 +352,79 @@ export function Rewards({
   const seededStamp = useRef<string | null>(null);
   const fetchedStamp = useRef<Record<string, string>>({});
   const preparationPollRef = useRef<AbortController | null>(null);
+  const cardInputs = useRef({ ledger, pendingTargets });
+  cardInputs.current = { ledger, pendingTargets };
+  const cardRefresh = useRef<ReturnType<typeof startVisibleRefresh> | null>(null);
   useEffect(() => {
-    if (!ledger) return;
-    if (seededStamp.current !== ledger.generatedAt) {
-      seededStamp.current = ledger.generatedAt;
-      const seeded: Record<string, RewardLedgerPayment[]> = {};
-      if (ledger.query.scope === "selection" && ledger.query.cycle !== null) {
-        const cycle = ledger.cycles.find((entry) => entry.cycle === ledger.query.cycle) ?? null;
-        const covered = (cycle?.distributions ?? [])
-          .map((d) => d.distribution)
-          .filter((d) => ledger.query.distribution === null || ledger.query.distribution === d);
-        for (const distribution of covered) {
-          const key = distributionKey(ledger.query.cycle, distribution);
-          seeded[key] = ledger.payments.filter(
-            (row) => row.cycle === ledger.query.cycle && row.distribution === distribution,
-          );
-          fetchedStamp.current[key] = ledger.generatedAt;
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const { ledger, pendingTargets } = cardInputs.current;
+        if (!ledger) return;
+        if (seededStamp.current !== ledger.generatedAt) {
+          seededStamp.current = ledger.generatedAt;
+          const seeded: Record<string, RewardLedgerPayment[]> = {};
+          if (ledger.query.scope === "selection" && ledger.query.cycle !== null) {
+            const cycle = ledger.cycles.find((entry) => entry.cycle === ledger.query.cycle) ?? null;
+            const covered = (cycle?.distributions ?? [])
+              .map((d) => d.distribution)
+              .filter((d) => ledger.query.distribution === null || ledger.query.distribution === d);
+            for (const distribution of covered) {
+              const key = distributionKey(ledger.query.cycle, distribution);
+              seeded[key] = ledger.payments.filter(
+                (row) => row.cycle === ledger.query.cycle && row.distribution === distribution,
+              );
+              fetchedStamp.current[key] = ledger.generatedAt;
+            }
+          }
+          if (Object.keys(seeded).length > 0) {
+            setCardPayments((current) => ({
+              byKey: { ...current.byKey, ...seeded },
+              errors: Object.fromEntries(
+                Object.entries(current.errors).filter(([key]) => !(key in seeded)),
+              ),
+            }));
+          }
         }
-      }
-      if (Object.keys(seeded).length > 0) {
-        setCardPayments((current) => ({ ...current, byKey: { ...current.byKey, ...seeded } }));
-      }
-    }
-    const controller = new AbortController();
-    for (const target of pendingTargets) {
-      if (fetchedStamp.current[target.key] === ledger.generatedAt) continue;
-      fetchedStamp.current[target.key] = ledger.generatedAt;
-      loadRewardLedger(
-        token,
-        { cycle: target.cycle, distribution: target.distribution },
-        controller.signal,
-      )
-        .then((result) => {
-          if (controller.signal.aborted) return;
-          setCardPayments((current) => ({
-            byKey: { ...current.byKey, [target.key]: result.payments },
-            errors: Object.fromEntries(
-              Object.entries(current.errors).filter(([key]) => key !== target.key),
-            ),
-          }));
-        })
-        .catch((cause: unknown) => {
-          if (controller.signal.aborted) return;
-          delete fetchedStamp.current[target.key];
-          setCardPayments((current) => ({
-            ...current,
-            errors: { ...current.errors, [target.key]: operatorErrorSentence(cause) },
-          }));
-        });
-    }
-    return () => controller.abort();
-  }, [ledger, pendingTargets, token]);
+        await Promise.all(
+          pendingTargets.map(async (target) => {
+            if (fetchedStamp.current[target.key] === ledger.generatedAt) return;
+            fetchedStamp.current[target.key] = ledger.generatedAt;
+            await loadRewardLedger(
+              token,
+              { cycle: target.cycle, distribution: target.distribution },
+              signal,
+            )
+              .then((result) => {
+                if (signal.aborted) return;
+                setCardPayments((current) => ({
+                  byKey: { ...current.byKey, [target.key]: result.payments },
+                  errors: Object.fromEntries(
+                    Object.entries(current.errors).filter(([key]) => key !== target.key),
+                  ),
+                }));
+              })
+              .catch((cause: unknown) => {
+                if (signal.aborted) return;
+                delete fetchedStamp.current[target.key];
+                setCardPayments((current) => ({
+                  ...current,
+                  errors: { ...current.errors, [target.key]: operatorErrorSentence(cause) },
+                }));
+              });
+          }),
+        );
+      },
+      (cause) => setAuxiliaryError(operatorErrorSentence(cause)),
+    );
+    cardRefresh.current = refresh;
+    return () => {
+      refresh.stop();
+      cardRefresh.current = null;
+    };
+  }, [token]);
+  useEffect(() => {
+    if (ledger) void cardRefresh.current?.refresh(true);
+  }, [ledger]);
 
   const openConfirm = useCallback(
     (action: RewardPrimaryAction) => {
@@ -581,8 +593,8 @@ export function Rewards({
   };
 
   const loadDistributionPayments = useCallback(
-    async (cycle: number, distributionIndex: 1 | 2) =>
-      (await loadRewardLedger(token, { cycle, distribution: distributionIndex })).payments,
+    async (cycle: number, distributionIndex: 1 | 2, signal?: AbortSignal) =>
+      (await loadRewardLedger(token, { cycle, distribution: distributionIndex }, signal)).payments,
     [token],
   );
 
@@ -678,6 +690,25 @@ export function Rewards({
   return (
     <>
       <PageHead title="Rewards" />
+      {ledger && ledgerError ? (
+        <div className="callout callout-caution content-notice" role="status">
+          Showing the last reward ledger from {new Date(ledger.generatedAt).toLocaleString()}.
+          Refresh failed: {ledgerError}{" "}
+          <button
+            className="btn btn-secondary sm"
+            type="button"
+            onClick={() => void refreshLedger()}
+          >
+            Retry reward ledger
+          </button>
+        </div>
+      ) : null}
+      {auxiliaryError || runError ? (
+        <div className="callout callout-caution content-notice" role="status">
+          Some reward status could not refresh; retained values may be stale.{" "}
+          {[auxiliaryError, runError].filter(Boolean).join(" · ")}
+        </div>
+      ) : null}
       {data.freshness?.status === "stale" ? (
         <div className="callout callout-caution content-notice" role="status">
           Showing last known reward data while Sidekick refreshes chain data.
@@ -713,7 +744,6 @@ export function Rewards({
             <CurrentDistributionDetails
               cycle={earning.cycle}
               distribution={currentDistributionDetails}
-              refreshKey={ledger.generatedAt}
               loadPayments={loadDistributionPayments}
               onExport={exportPayments}
               exportBusy={exportBusy}
@@ -726,7 +756,7 @@ export function Rewards({
           label="the reward ledger"
           loading={ledgerLoading}
           error={ledgerError}
-          retry={() => setLedgerRetry((value) => value + 1)}
+          retry={() => void refreshLedger()}
         />
       )}
       {walletFallback && anyAction ? (

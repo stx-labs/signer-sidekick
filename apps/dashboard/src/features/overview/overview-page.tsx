@@ -641,9 +641,10 @@ export function Overview({
         </section>
 
         <RewardsOverviewCard
+          key={`${data.monitoring.network}:${data.monitoring.managerPrincipal}`}
           token={token}
           rewards={rewards}
-          generatedAt={data.generatedAt}
+          cacheScope={`${data.monitoring.network}:${data.monitoring.managerPrincipal}`}
           fallback={
             <section
               className="card overview-domain"

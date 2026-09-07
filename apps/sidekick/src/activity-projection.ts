@@ -871,8 +871,11 @@ function rewardRunRecord(
   const summary = run.failureReason
     ? `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}. ${run.failureReason}`
     : `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}.`;
-  const deadlineAt =
-    run.status === "awaiting-approval" ? run.approvalExpiresAt : run.runtimeExpiresAt;
+  const deadlineAt = !isActive(state.displayStatus)
+    ? null
+    : run.status === "awaiting-approval"
+      ? run.approvalExpiresAt
+      : run.runtimeExpiresAt;
   const timeline: ActivityTimelineEntry[] = [];
   if (includeTimeline) {
     timeline.push({
@@ -880,7 +883,7 @@ function rewardRunRecord(
       eventId: `${activityId}:created`,
       code: "recipe-sealed",
       title: "Reward recipe sealed",
-      detail: `Sidekick sealed ${run.progress.total} calls for Cycle ${run.recipe.cycle}, ${distribution}.`,
+      detail: `Sidekick sealed ${run.progress.total} calls for Cycle ${run.recipe.cycle}, ${distribution}. Approval expiry: ${run.approvalExpiresAt}. Runtime cap: ${run.runtimeExpiresAt}.`,
       occurredAt: run.createdAt,
       source: "transaction-engine",
       txid: null,

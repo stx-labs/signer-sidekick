@@ -441,7 +441,7 @@ describe("deriveEarning", () => {
       label: "First half",
       percent: 100,
       status: { text: "First Distribution complete", tone: "done" },
-      note: "ended at block 963,199 · calculated Aug 19 · 0.014 sBTC · 40 of 40 paid · your fee 70,000 sats",
+      note: "ended at block 963,199 · calculated Aug 19 · 0.014 sBTC · 40 of 40 paid · known paid fee 70,000 sats",
       detailsAvailable: true,
     });
     expect(model?.halves[1]).toMatchObject({
@@ -449,6 +449,26 @@ describe("deriveEarning", () => {
       status: { text: "Accruing · 67% · 2d 10h left", tone: "live" },
       detailsAvailable: false,
     });
+  });
+
+  it("labels a mixed known/unknown paid-fee subtotal as known, not a complete fee total", () => {
+    const paid = complete(141, 1);
+    paid.payments.operatorFeeSats = "35000";
+    paid.allocation = {
+      toStakersSats: null,
+      operatorFeeSats: null,
+      coverage: "partial",
+      estimated: false,
+    };
+    const model = deriveEarning({
+      ledger: ledger(accruing(141, 2), [paid]),
+      snapshot: snapshot(),
+      burnBlockSeconds: 600,
+      now: new Date("2026-08-22T12:00:00Z"),
+    });
+    expect(model?.halves[0]?.note).toContain("known paid fee 35,000 sats");
+    expect(model?.halves[0]?.note).not.toContain("your fee");
+    expect(model?.halves[0]?.detailsAvailable).toBe(true);
   });
 
   it("marks a finished first half by its distribution status and the second as not started", () => {

@@ -805,17 +805,26 @@ function ActivityDetailPage({
           ) : null}
         </aside>
       </div>
-      {activeOperation && walletIntentId && walletAction.success ? (
+      {walletIntentId && walletAction.success ? (
         <section aria-labelledby="activity-operation-heading">
           <div className="section-title" id="activity-operation-heading">
             Progress and action
           </div>
-          {operatorData && !operatorStateStale ? (
+          {operatorData ? (
             <BrowserWalletActionPanel
+              preparationBlocked={
+                operatorStateStale || operatorData.freshness?.status === "stale"
+                  ? "Current operation evidence is stale; signing and replacement preparation are paused."
+                  : undefined
+              }
               action={walletAction.data}
               chainId={operatorData.preflight.node.networkId}
               existingIntentId={walletIntentId}
-              managerPrincipal={operatorData.managerPrincipal}
+              managerPrincipal={
+                walletAction.data === "calculate-rewards"
+                  ? (operatorData.preflight.pox.pox5ContractId ?? operatorData.managerPrincipal)
+                  : operatorData.managerPrincipal
+              }
               network={operatorData.network}
               onVerified={async () => {
                 try {
