@@ -8,6 +8,7 @@ import {
   ConnectionAssessmentService,
   type ConnectionManagerInspection,
   requireConnectedAssessment,
+  requireObservationAssessment,
 } from "./connection-assessment.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
@@ -134,15 +135,19 @@ describe("first-run connection assessment", () => {
       }),
     });
     expect(() => requireConnectedAssessment(assessor.current())).toThrow(Error);
+    expect(() => requireObservationAssessment(assessor.current())).toThrow(Error);
     await assessor.check();
     expect(() => requireConnectedAssessment(assessor.current())).not.toThrow();
+    expect(() => requireObservationAssessment(assessor.current())).not.toThrow();
     reachable = false;
     await assessor.check(true);
     expect(() => requireConnectedAssessment(assessor.current())).toThrow(UpstreamUnavailableError);
+    expect(() => requireObservationAssessment(assessor.current())).not.toThrow();
     reachable = true;
     wrongNetwork = true;
     await assessor.check(true);
     expect(assessor.current()?.status).toBe("blocked");
+    expect(() => requireObservationAssessment(assessor.current())).toThrow(Error);
     expect(() => requireConnectedAssessment(assessor.current())).toThrow(Error);
     expect(() => requireConnectedAssessment(assessor.current())).not.toThrow(
       UpstreamUnavailableError,

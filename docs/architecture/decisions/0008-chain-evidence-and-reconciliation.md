@@ -38,9 +38,9 @@ identity and canonical checks as success. A malformed block never yields partial
 Positive node/API disagreement (`reorged` or transaction `absent` from the claimed canonical
 block) is a conflict, not temporary unavailability. Runs halt, wallets reobserve without permitting
 replacement from that conflict, and sweeps retain their wallet authorization with a diagnostic.
-Transport failure, a node behind the height and API lag remain retryable observation failures.
-This slice still requires node corroboration: completion during node unavailability is a separate
-R3b evidence-policy change, not authorized by this amendment.
+Transport failure, a node behind the height and API lag never become positive conflicts.
+The R3a wallet path still requires node corroboration; the following R3b amendment changes only
+the locally signed run/sweep completion policy.
 
 The existing run maintenance tick also observes submitted wallet intents and broadcast sweeps,
 independently of gas-key readiness and browser presence. Slow submitted observation is single-flight
@@ -58,6 +58,42 @@ display limitation remains deferred; this change introduces no terminal revalida
 Sweeps persist their sealed plan and locally produced transaction ID with ambiguous broadcast state
 before submission. Signed bytes are not persisted. The authorization survives restart, timeouts and
 missing lookups until a verified terminal outcome; missing evidence does not authorize another sweep.
+
+### Configured-API execution evidence for locally signed work (R3b, first slice)
+
+The configured indexed API is an accepted operational source of canonical execution, not a
+cryptographic proof of execution. For a locally signed reward-run child or gas sweep, coherent
+API network, transaction ID, terminal status, canonical transaction and canonical block identity
+may establish success or abort when node corroboration is unavailable. Positive node disagreement
+still wins. Discovery-only inclusion, pending status, incoherent identity and an orphaned receipt
+cannot complete work. History ingestion and callback verification retain their node-proof rules.
+
+The binding is the existing sealed plan and signing-time record, not API payload JSON. The
+dedicated signer revalidates the sealed plan, constructs/signs its bytes and computes the txid
+itself. The coordinator stores that ID before broadcast. Observation revalidates the retained
+plan and its run/recipe, sender, network, nonce, fee and child identity; sweep observation checks
+its saved approval/broadcast identity, seal, sender, network, nonce, fee, recipient and amount.
+Without this binding, API-only evidence is insufficient. No signed payload or new approval
+artifact is stored, and no public request can opt into API trust.
+
+Read-only observation has a separate runtime accessor that allows a cached unavailable connection
+but refuses a proven identity/network mismatch or an unchecked connection. Preparation, signing,
+broadcast, role checks and the next child's anchored materialization keep the connected accessor.
+An already-running run can observe its submitted child without granting a subsequent signature;
+an API abort halts even if the optional external-completion state read is unavailable. Already
+halted runs still require explicit resume. Cold boot still waits for the first accepted connection
+before starting the operational runtime; this amendment does not bypass that startup gate.
+
+Persist `executionSource` as `node`, `api-with-node`, or `api` on run children and sweeps. Activity
+and sweep history display it; older rows keep an unknown/null source. Unresolved child/sweep
+diagnostics prevent API-only completion until a positive node result resolves them, even after
+restart or explicit resume. Migration 40 carries old halted-run diagnostics onto the submitted
+child without classifying error strings. This conservative legacy case may need node recovery.
+
+Browser-wallet API-only completion is a separate next slice: it requires retained exact mempool
+verification tied to the same sealed intent and txid. For now wallets still require current node
+bytes. There is no terminal-history poller, automatic replacement, nonce-proof sweep abandonment,
+API-backed current-state/signing access, or new infrastructure prerequisite in this amendment.
 
 ## Consequences
 

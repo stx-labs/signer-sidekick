@@ -917,9 +917,15 @@ function rewardRunRecord(
             eventId: `${activityId}:child:${child.index}:${child.status}`,
             code: `run-child-${child.status}`,
             title: `${child.operation.replaceAll("-", " ")} ${child.status.replaceAll("-", " ")}`,
-            detail:
+            detail: [
               child.failureReason ??
-              `Call ${child.index + 1} of ${run.progress.total} is ${child.status.replaceAll("-", " ")}.`,
+                `Call ${child.index + 1} of ${run.progress.total} is ${child.status.replaceAll("-", " ")}.`,
+              child.executionSource
+                ? `Transaction execution evidence: ${child.executionSource === "node" ? "local node" : child.executionSource === "api" ? "configured API" : "configured API, corroborated by local node"}.`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" "),
             occurredAt: child.updatedAt,
             source: "transaction-engine",
             txid: child.txid,

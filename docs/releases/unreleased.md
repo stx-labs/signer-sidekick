@@ -1,5 +1,24 @@
 # Unreleased
 
+## API-supported completion for locally signed work (R3b, first commit)
+
+- Reward runs and gas sweeps can accept coherent configured-API canonical execution when local
+  corroboration is unavailable, only with their retained signing-time txid and revalidated sealed
+  plan binding. This is operational API trust, not cryptographic execution proof. API summaries
+  cannot establish the byte binding. Positive node conflicts win, including retained diagnostics.
+- Observation access is independent of cached node availability, but proven identity/network
+  refusal and every fresh preparation/signing/broadcast gate remain. A canonical API abort is
+  terminal even when the optional external-completion state read is unavailable. Nothing resumes
+  a halted run automatically, signs a replacement, or abandons a missing sweep.
+- Migration 40 adds nullable execution-source fields to run children and sweeps. Activity and
+  sweep history display the source; old history remains unknown. Legacy halted-run diagnostics
+  are preserved on submitted children and require node corroboration after explicit resume.
+  File-backed databases receive the normal automatic backup before migration; rollback to an
+  older binary requires the corresponding older database backup.
+- Browser-wallet API-only completion remains the next R3b slice. Cold-start operational workers
+  still wait for an accepted node connection. No transaction-index or other infrastructure change,
+  signed-byte storage, terminal-history poller, or change to Bitcoin-delivery evidence is introduced.
+
 ## Exact wallet verification and submitted-work recovery (R3a, second commit)
 
 - Wallets without a node transaction-index row now use exact bytes from the canonical block and

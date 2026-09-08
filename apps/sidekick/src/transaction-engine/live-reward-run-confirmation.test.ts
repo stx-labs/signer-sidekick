@@ -1,8 +1,21 @@
-import { makeSTXTokenTransfer } from "@stacks/transactions";
+import {
+  deserializeTransaction,
+  getAddressFromPublicKey,
+  makeSTXTokenTransfer,
+  privateKeyToPublic,
+  TransactionSigner,
+} from "@stacks/transactions";
+import type { ConnectionAssessment } from "@stx-labs/signer-sidekick-api-contracts";
+import { planRewardOperation } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as chainClients from "../chain-clients.js";
+import {
+  requireConnectedAssessment,
+  requireObservationAssessment,
+} from "../connection-assessment.js";
 import { LiveRewardRunDriver } from "./live-reward-run.js";
 import type { LiveTransactionReader } from "./live-transaction-reader.js";
+import type { RewardRunDriver } from "./reward-run-service.js";
 import type { TransactionEngineRuntimeContext } from "./runtime.js";
 
 const transaction = await makeSTXTokenTransfer({
@@ -48,7 +61,11 @@ function nakamotoBlockBytes(body = transaction.serializeBytes()): Uint8Array {
   return bytes;
 }
 
-function driver(resultRepr: string, blockBytes = nakamotoBlockBytes()) {
+function driver(
+  resultRepr: string,
+  blockBytes = nakamotoBlockBytes(),
+  assessment?: () => ConnectionAssessment,
+) {
   const node = {
     getTenureInfo: vi.fn(async () => ({
       tip_block_id: `0x${"99".repeat(32)}`,
@@ -93,12 +110,22 @@ function driver(resultRepr: string, blockBytes = nakamotoBlockBytes()) {
     reader,
     value: new LiveRewardRunDriver({
       engine: { gasPayerIdentity: () => ({ principal: walletPrincipal }) } as never,
-      runtimeContext: () =>
-        ({
+      runtimeContext: () => {
+        if (assessment) requireConnectedAssessment(assessment());
+        return {
           config: { nodeRpcUrl: "http://node:20443" },
           node,
           api,
-        }) as unknown as TransactionEngineRuntimeContext,
+        } as unknown as TransactionEngineRuntimeContext;
+      },
+      observationRuntimeContext: () => {
+        if (assessment) requireObservationAssessment(assessment());
+        return {
+          config: { nodeRpcUrl: "http://node:20443" },
+          node,
+          api,
+        } as unknown as TransactionEngineRuntimeContext;
+      },
       feePolicy: () => ({
         minimumFeeUstx: 1_000n,
         standardFeeUstx: 2_000n,
@@ -116,6 +143,40 @@ const operations = [
   "settle-accepted-withdrawal",
   "reclaim-failed-withdrawal",
 ] as const;
+
+async function locallySignedInput(): Promise<Parameters<RewardRunDriver["reconcile"]>[0]> {
+  const key = `${"11".repeat(32)}01`;
+  const publicKey = privateKeyToPublic(key);
+  const principal = getAddressFromPublicKey(publicKey, "testnet");
+  const runId = "00000000-0000-4000-8000-000000000003";
+  const recipeSha256 = "12".repeat(32);
+  const plan = await planRewardOperation({
+    authorization: { schemaVersion: 2, kind: "operator-run", runId, recipeSha256 },
+    kind: "claim-rewards",
+    network: { kind: "testnet", chainId: 0x80000000 },
+    chainAnchor: { stacksBlockHeight: blockHeight, burnBlockHeight: 960240, indexBlockHash },
+    sender: { principal, publicKey },
+    managerSourceFingerprint: "34".repeat(32),
+    managerContract: "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.signer-manager",
+    pox5Contract: "ST000000000000000000002AMW42H.pox-5",
+    sbtcTokenContract: "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token",
+    nonce: 9n,
+    feeUstx: 1000n,
+    rewardCycle: 141n,
+    bondPeriods: [2n],
+    expectedSbtcOutflow: 20000n,
+  });
+  const transaction = deserializeTransaction(plan.unsignedTransactionHex);
+  new TransactionSigner(transaction).signOrigin(key);
+  const txid = `0x${transaction.txid()}` as const;
+  return {
+    run: { runId, recipeSha256, walletPrincipal: principal, recipe: { chainId: 0x80000000 } },
+    child: { operation: "claim-rewards", planSha256: plan.planSha256, failureReason: null, txid },
+    plan,
+    txid,
+    signedAttempt: { precomputedTxid: txid, nonce: "9", feeUstx: "1000", state: "accepted" },
+  } as Parameters<RewardRunDriver["reconcile"]>[0];
+}
 
 describe("reward run confirmation without node txindex", () => {
   const input = () =>
@@ -136,10 +197,13 @@ describe("reward run confirmation without node txindex", () => {
       httpStatus: 503,
       reason: "transport-error",
     } as never);
+    runtime.api.getTransactionDetails.mockRejectedValue(
+      new chainClients.UpstreamHttpError("not found", 404),
+    );
     expect(await runtime.value.reconcile(input())).toEqual({ status: "pending" });
     expect(runtime.node.getTenureInfo).not.toHaveBeenCalled();
     expect(runtime.node.getNakamotoBlockById).not.toHaveBeenCalled();
-    expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
+    expect(runtime.api.getTransactionDetails).toHaveBeenCalledOnce();
   });
 
   it("does not complete a node-index result missing its anchored height", async () => {
@@ -229,7 +293,7 @@ describe("reward run confirmation without node txindex", () => {
         plan: { material: { kind: operation } },
         txid: txId,
       } as never),
-    ).resolves.toEqual({ status: "confirmed", blockHeight });
+    ).resolves.toEqual({ status: "confirmed", blockHeight, executionSource: "api-with-node" });
     expect(runtime.api.getTransactionDetails).toHaveBeenCalledWith(txId);
     expect(runtime.reader.lookupUnconfirmedTransaction).not.toHaveBeenCalled();
     expect(runtime.node.getNakamotoBlockById).toHaveBeenCalledTimes(1);
@@ -258,7 +322,7 @@ describe("reward run confirmation without node txindex", () => {
         },
         txid: txId,
       } as never),
-    ).resolves.toEqual({ status: "confirmed", blockHeight });
+    ).resolves.toEqual({ status: "confirmed", blockHeight, executionSource: "api-with-node" });
   });
 
   it("does not confirm an API transaction the local canonical block does not contain", async () => {
@@ -275,7 +339,108 @@ describe("reward run confirmation without node txindex", () => {
         plan: { material: { kind: "claim-rewards" } },
         txid: txId,
       } as never),
-    ).resolves.toEqual({ status: "halt", reason: "Canonical transaction conflict: absent" });
+    ).resolves.toEqual({
+      status: "halt",
+      reason: "Canonical transaction conflict: absent",
+      requiresNodeCorroboration: true,
+    });
     expect(runtime.reader.lookupUnconfirmedTransaction).not.toHaveBeenCalled();
+  });
+
+  it("completes a locally signed run with an unavailable assessment but keeps materialization and broadcast gated", async () => {
+    let assessment = { status: "unavailable" } as ConnectionAssessment;
+    const runtime = driver("(ok true)", undefined, () => assessment);
+    const input = await locallySignedInput();
+    runtime.api.getNodeInfo.mockResolvedValue({ network_id: input.run.recipe.chainId });
+    runtime.api.getTransactionDetails.mockResolvedValue({
+      ...(await runtime.api.getTransactionDetails()),
+      tx_id: input.txid,
+    });
+    runtime.node.getTenureInfo.mockRejectedValue(
+      new chainClients.UpstreamUnavailableError("node offline"),
+    );
+    runtime.reader.lookupIndexedTransaction.mockRejectedValue(
+      new chainClients.UpstreamUnavailableError("index offline"),
+    );
+    expect(await runtime.value.reconcile(input)).toEqual({
+      status: "confirmed",
+      blockHeight,
+      executionSource: "api",
+    });
+    await expect(runtime.value.materialize(input)).rejects.toBeInstanceOf(
+      chainClients.UpstreamUnavailableError,
+    );
+    await expect(runtime.value.broadcast({} as never)).rejects.toBeInstanceOf(
+      chainClients.UpstreamUnavailableError,
+    );
+    expect(runtime.reader.readAnchoredAccount).not.toHaveBeenCalled();
+    assessment = { status: "blocked" } as ConnectionAssessment;
+    runtime.api.getTransactionDetails.mockClear();
+    await expect(runtime.value.reconcile(input)).rejects.toThrow("identity/network");
+    expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "missing",
+    "txid",
+    "nonce",
+    "fee",
+    "rejected",
+    "plan",
+    "seal",
+    "sender",
+    "run",
+    "recipe",
+    "network",
+    "prior-conflict",
+    "operation",
+    "child-txid",
+  ])("does not accept API-only completion with a %s local binding defect", async (kind) => {
+    const runtime = driver("(ok true)");
+    const input = await locallySignedInput();
+    runtime.api.getNodeInfo.mockResolvedValue({ network_id: input.run.recipe.chainId });
+    runtime.api.getTransactionDetails.mockResolvedValue({
+      ...(await runtime.api.getTransactionDetails()),
+      tx_id: input.txid,
+    });
+    runtime.node.getTenureInfo.mockRejectedValue(
+      new chainClients.UpstreamUnavailableError("offline"),
+    );
+    if (kind === "missing") delete input.signedAttempt;
+    const attempt = input.signedAttempt;
+    if (kind !== "missing" && !attempt) throw new Error("Missing fixture attempt");
+    if (kind === "txid" && attempt) attempt.precomputedTxid = txId;
+    if (kind === "nonce" && attempt) attempt.nonce = "10";
+    if (kind === "fee" && attempt) attempt.feeUstx = "2000";
+    if (kind === "rejected" && attempt) attempt.state = "rejected";
+    if (kind === "plan") input.plan.unsignedTransactionHex = "00";
+    if (kind === "seal") input.child.planSha256 = "00".repeat(32);
+    if (kind === "sender") input.run.walletPrincipal = walletPrincipal;
+    if (kind === "run") input.run.runId = "00000000-0000-4000-8000-000000000004";
+    if (kind === "recipe") input.run.recipeSha256 = "00".repeat(32);
+    if (kind === "network") input.run.recipe.chainId = 1;
+    if (kind === "prior-conflict") input.child.failureReason = "Previous node disagreement";
+    if (kind === "operation") input.child.operation = "calculate-rewards";
+    if (kind === "child-txid") input.child.txid = txId;
+    expect(await runtime.value.reconcile(input)).toEqual({ status: "pending" });
+  });
+
+  it("records a canonical API abort even when the optional external-completion read is unavailable", async () => {
+    const runtime = driver("(err u32)");
+    const input = await locallySignedInput();
+    runtime.api.getNodeInfo.mockResolvedValue({ network_id: input.run.recipe.chainId });
+    runtime.api.getTransactionDetails.mockResolvedValue({
+      ...(await runtime.api.getTransactionDetails()),
+      tx_id: input.txid,
+      tx_status: "abort_by_response",
+    });
+    runtime.node.getTenureInfo.mockRejectedValue(
+      new chainClients.UpstreamUnavailableError("offline"),
+    );
+    expect(await runtime.value.reconcile(input)).toEqual({
+      status: "halt",
+      reason: "Transaction aborted: (err u32)",
+      executionSource: "api",
+    });
   });
 });

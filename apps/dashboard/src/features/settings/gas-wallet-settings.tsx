@@ -386,6 +386,16 @@ export function GasWalletSettings({
                           <span className="mono">{shortUtc(sweep.createdAt)}</span>
                           <span>{stxAmount(sweep.amountUstx)}</span>
                           <Badge state={state.tone}>{state.label}</Badge>
+                          {sweep.executionSource ? (
+                            <span className="muted">
+                              Evidence:{" "}
+                              {sweep.executionSource === "node"
+                                ? "local node"
+                                : sweep.executionSource === "api"
+                                  ? "configured API"
+                                  : "API + local node"}
+                            </span>
+                          ) : null}
                         </div>
                       );
                     })}

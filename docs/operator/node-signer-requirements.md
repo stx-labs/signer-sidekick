@@ -40,8 +40,11 @@ primary consensus data — but deserializes a block per check instead of doing a
 
 Submitted wallet transactions, reward-run children and gas sweeps use this fallback too. Wallet
 verification uses the exact transaction bytes from that canonical block, not the API's call summary
-or postcondition count. Local block access is still needed when the index cannot answer; this
-release does not yet enable API-only completion during a local-node outage.
+or postcondition count. Browser-wallet verification still needs local bytes when the index cannot
+answer. Locally signed reward-run transactions and sweeps can instead complete from coherent
+configured-API execution evidence during a node outage, provided the saved signing-time binding
+is intact and no unresolved node conflict exists. Details show which source established execution.
+This does not make the node optional for startup, current state, preparation or signing.
 
 Enabling it trades storage for that speed. The index only covers blocks the node processes after you
 turn it on; it does not backfill, so transactions confirmed earlier keep using block reads. Keep the

@@ -17,6 +17,7 @@ import { loadConfig, loadManagerPrincipal, redactConfig } from "./config.js";
 import {
   ConnectionAssessmentService,
   requireConnectedAssessment,
+  requireObservationAssessment,
 } from "./connection-assessment.js";
 import { startConnectionRefreshLoop } from "./connection-refresh.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
@@ -222,6 +223,10 @@ export async function executeCliCommand({
         if (!engineConstructing) requireConnectedAssessment(connection.current());
         return runtimeSettings.clients();
       };
+      const observationRuntimeContext = () => {
+        requireObservationAssessment(connection.current());
+        return runtimeSettings.clients();
+      };
       let reportTransactionEngineError: (error: unknown) => void = () => undefined;
       let warnGasWallet: (message: string) => void = (message) => console.warn(message);
       let logRunStage: (stage: string, durationMs: number) => void = () => undefined;
@@ -350,6 +355,7 @@ export async function executeCliCommand({
         engineMode: engine.requestedMode,
         engine,
         runtimeContext: connectedRuntimeContext,
+        observationRuntimeContext,
         managerPrincipal,
         network: effectiveConfig.network,
         chainId,
@@ -366,6 +372,7 @@ export async function executeCliCommand({
         driver: new LiveRewardRunDriver({
           engine,
           runtimeContext: connectedRuntimeContext,
+          observationRuntimeContext,
           feePolicy,
           withdrawalRequestStatus: async (registryContract, requestId, tip) =>
             await service.withdrawalRequestStatus(registryContract, requestId, tip),

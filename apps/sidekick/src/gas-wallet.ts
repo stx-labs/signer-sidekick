@@ -11,6 +11,7 @@ import type {
   GasWalletRefusal,
   GasWalletStatus,
   GasWalletSweep,
+  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
@@ -23,6 +24,7 @@ import {
   type GasWalletSweepPlan,
   GasWalletSweepPlanError,
   planGasWalletSweep,
+  revalidateGasWalletSweepPlan,
 } from "./gas-wallet-sweep.js";
 import {
   GasWalletSweepRepositoryError,
@@ -35,10 +37,7 @@ import {
   type TransactionFeePolicy,
 } from "./transaction-engine/fee-policy.js";
 import type { SignedGasWalletSweepTransaction } from "./transaction-engine/gas-payer-signer.js";
-import {
-  LiveTransactionReader,
-  transactionIndexCannotAnswer,
-} from "./transaction-engine/live-transaction-reader.js";
+import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
 import type { TransactionEngineRuntimeContext } from "./transaction-engine/runtime.js";
 import type { TransactionEngineMode } from "./transaction-engine/runtime-config.js";
 import {
@@ -118,6 +117,8 @@ export interface GasWalletServiceOptions {
   engine: GasWalletEngine | null;
   /** Connected runtime context; throws while the configured connection is not current. */
   runtimeContext: () => TransactionEngineRuntimeContext;
+  /** Read-only observation still refuses identity mismatches but can outlive node transport. */
+  observationRuntimeContext?: () => TransactionEngineRuntimeContext;
   managerPrincipal: string;
   network: SidekickNetwork;
   /** Stacks chain id the node runs; sealed sweeps are bound to it. */
@@ -700,18 +701,23 @@ export class GasWalletService {
         retryLater = false;
         return toSweep(sweep);
       }
-      const context = this.#connectedContext();
+      const context = (this.#options.observationRuntimeContext ?? this.#options.runtimeContext)();
       const reader = (this.#options.createReader ?? defaultReader)(context.config.nodeRpcUrl);
-      const indexed = await reader.lookupIndexedTransaction(sweep.txid);
-      if (indexed.status === "observed" && !indexed.value.isCanonical) {
+      const indexed = await reader.lookupIndexedTransaction(sweep.txid).catch(() => null);
+      if (indexed?.status === "observed" && !indexed.value.isCanonical) {
         retryLater = false;
         return this.#recordSweepConflict(sweepId, "Transaction became noncanonical", now);
       }
       let confirmed:
-        | { success: boolean; resultRepr: string; blockHeight: number | null }
+        | {
+            success: boolean;
+            resultRepr: string;
+            blockHeight: number | null;
+            source: TransactionExecutionSource;
+          }
         | undefined;
       if (
-        indexed.status === "observed" &&
+        indexed?.status === "observed" &&
         indexed.value.isCanonical &&
         indexed.value.blockHeight !== null
       ) {
@@ -720,13 +726,16 @@ export class GasWalletService {
           resultRepr: indexed.value.resultRepr,
           blockHeight:
             indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
+          source: "node",
         };
-      } else if (transactionIndexCannotAnswer(indexed)) {
+      } else if (indexed?.status !== "observed") {
         const apiTransaction = await lookupCanonicalApiTransaction({
           api: context.api,
           node: context.node,
           chainId: this.#options.chainId,
           txId: sweep.txid as `0x${string}`,
+          allowApiEvidence:
+            sweep.failureReason === null && (await this.#hasLocalSweepBinding(sweep)),
         });
         if (apiTransaction.status === "conflict") {
           retryLater = false;
@@ -741,6 +750,7 @@ export class GasWalletService {
             success: apiTransaction.value.success,
             resultRepr: apiTransaction.value.resultRepr,
             blockHeight: apiTransaction.value.blockHeight,
+            source: apiTransaction.value.source,
           };
         }
       }
@@ -759,6 +769,7 @@ export class GasWalletService {
               status: confirmed.success ? "confirmed" : "failed",
               resolvedAt: at,
               blockHeight: confirmed.blockHeight,
+              executionSource: confirmed.source,
               failureReason: confirmed.success
                 ? null
                 : `Sweep aborted on chain: ${confirmed.resultRepr}`,
@@ -767,13 +778,33 @@ export class GasWalletService {
           ),
         );
       }
-      const unconfirmed = await reader.lookupUnconfirmedTransaction(sweep.txid);
-      retryLater = unconfirmed.status !== "observed";
+      const unconfirmed = await reader.lookupUnconfirmedTransaction(sweep.txid).catch(() => null);
+      retryLater = unconfirmed?.status !== "observed";
       // Missing/lagging sources do not prove a signed transaction can never execute. Keep
       // ambiguous broadcasts and their wallet authorization until a verified chain outcome.
       return toSweep(sweep);
     } finally {
       this.#observationCadence.record(sweepId, retryLater, now.getTime());
+    }
+  }
+
+  async #hasLocalSweepBinding(sweep: StoredGasWalletSweep): Promise<boolean> {
+    if (!sweep.txid || !sweep.approvedAt || !sweep.broadcastAt) return false;
+    try {
+      const storedPlan = this.#options.store.gasWalletSweeps.getPlan(sweep.sweepId);
+      if (!storedPlan) return false;
+      const plan = await revalidateGasWalletSweepPlan(storedPlan);
+      return (
+        plan.planSha256 === sweep.planSha256 &&
+        plan.material.network.chainId === this.#options.chainId &&
+        plan.material.sender.principal === sweep.walletPrincipal &&
+        plan.material.nonce === sweep.nonce &&
+        plan.material.feeUstx === sweep.feeUstx &&
+        plan.material.recipient === sweep.recipient &&
+        plan.material.amountUstx === sweep.amountUstx
+      );
+    } catch {
+      return false;
     }
   }
 

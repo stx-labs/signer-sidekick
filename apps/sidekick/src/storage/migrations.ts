@@ -2390,4 +2390,25 @@ export const migrations: readonly Migration[] = [
         ON sbtc_withdrawal_completions (sweep_txid);
     `,
   },
+  {
+    version: 40,
+    name: "transaction_execution_provenance",
+    sql: `
+      -- Null means historical source was not recorded; never infer it from completion status.
+      ALTER TABLE transaction_run_children ADD COLUMN execution_source TEXT
+        CHECK (execution_source IN ('node', 'api-with-node', 'api'));
+      ALTER TABLE gas_wallet_sweeps ADD COLUMN execution_source TEXT
+        CHECK (execution_source IN ('node', 'api-with-node', 'api'));
+      -- Earlier versions retained a run's conflict only on the parent. Carry unresolved
+      -- diagnostics to its submitted child without parsing error text. Such legacy halts
+      -- require node corroboration after explicit resume; an outage cannot erase a conflict.
+      UPDATE transaction_run_children
+      SET failure_reason = COALESCE(failure_reason, (
+        SELECT failure_reason FROM transaction_runs WHERE run_id = transaction_run_children.run_id
+      ))
+      WHERE status = 'broadcast' AND run_id IN (
+        SELECT run_id FROM transaction_runs WHERE status = 'halted'
+      );
+    `,
+  },
 ];

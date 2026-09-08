@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { getAddressFromPublicKey, privateKeyToPublic } from "@stacks/transactions";
 import type {
   ConnectionAssessment,
@@ -218,8 +222,11 @@ async function settle(service: RewardRunService, runId: string, limit = 20): Pro
 
 describe("reward run coordinator", () => {
   const stores: SidekickStore[] = [];
-  afterEach(() => {
+  const directories: string[] = [];
+  afterEach(async () => {
     for (const store of stores.splice(0)) store.close();
+    for (const directory of directories.splice(0))
+      await rm(directory, { recursive: true, force: true });
   });
 
   it("observes submitted work on existing maintenance with signing disabled, coalesces slow reads, and drains shutdown", async () => {
@@ -900,6 +907,17 @@ describe("reward run coordinator", () => {
     await first.stop();
 
     const recovered = driver();
+    const reconcile = vi
+      .spyOn(recovered.implementation, "reconcile")
+      .mockImplementation(async (input) => {
+        expect(input.signedAttempt).toMatchObject({
+          precomputedTxid: input.txid,
+          state: "accepted",
+        });
+        expect(input.signedAttempt?.nonce).toBe(input.plan.material.transaction.nonce);
+        expect(input.signedAttempt?.feeUstx).toBe(input.plan.material.transaction.feeUstx);
+        return { status: "confirmed", blockHeight: 9001, executionSource: "api" };
+      });
     const second = new RewardRunService({
       repository: store.rewardRuns,
       signer: signer(),
@@ -913,6 +931,111 @@ describe("reward run coordinator", () => {
     expect(complete.status).toBe("completed");
     expect(recovered.materialized).toEqual([]);
     expect(recovered.broadcasts).toEqual([]);
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(second.get(prepared.runId).children[0]?.executionSource).toBe("api");
+  });
+
+  it("migrates legacy halted broadcast diagnostics without losing the saved attempt or inventing execution provenance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sidekick-r3b-migration-"));
+    directories.push(directory);
+    const path = join(directory, "sidekick.sqlite");
+    const initial = await openSidekickStore(path, started.toISOString());
+    const live = driver({ reconcile: "halt" });
+    const options = {
+      signer: signer(),
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1000n,
+      now: () => started,
+    };
+    const first = new RewardRunService({
+      ...options,
+      repository: initial.store.rewardRuns,
+      driver: live.implementation,
+    });
+    const prepared = await first.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await first.approve(prepared.runId, prepared.recipeSha256);
+    const halted = await settle(first, prepared.runId);
+    expect(halted.status).toBe("halted");
+    const attempt = initial.store.rewardRuns.attempts(prepared.runId, 0)[0];
+    await first.stop();
+    initial.store.close();
+    // Recreate the previous schema and its parent-only unresolved diagnostic.
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      ALTER TABLE transaction_run_children DROP COLUMN execution_source;
+      ALTER TABLE gas_wallet_sweeps DROP COLUMN execution_source;
+      DELETE FROM schema_migrations WHERE version = 40;
+      PRAGMA user_version = 39;
+    `);
+    legacy.close();
+    const upgraded = await openSidekickStore(path, started.toISOString());
+    stores.push(upgraded.store);
+    expect(upgraded.backupPath).not.toBeNull();
+    expect(upgraded.store.rewardRuns.get(prepared.runId)?.children[0]).toMatchObject({
+      status: "broadcast",
+      executionSource: null,
+      failureReason: halted.failureReason,
+    });
+    expect(upgraded.store.rewardRuns.attempts(prepared.runId, 0)[0]).toEqual(attempt);
+    const reconcile = vi.fn<RewardRunDriver["reconcile"]>(async (input) => {
+      expect(input.child.failureReason).toBe(halted.failureReason);
+      expect(input.signedAttempt?.precomputedTxid).toBe(attempt?.precomputedTxid);
+      return { status: "pending" };
+    });
+    const restarted = new RewardRunService({
+      ...options,
+      repository: upgraded.store.rewardRuns,
+      driver: { ...live.implementation, reconcile },
+    });
+    await restarted.recover();
+    expect(reconcile).not.toHaveBeenCalled(); // A migration is never authority to resume.
+    restarted.resume(prepared.runId);
+    await restarted.recover();
+    expect(reconcile).toHaveBeenCalled();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await restarted.stop();
+  });
+
+  it("retains a positive reconciliation conflict on the child across explicit resume", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    const reason = "Canonical transaction conflict: absent";
+    const reconcile = vi
+      .fn<RewardRunDriver["reconcile"]>()
+      .mockResolvedValueOnce({ status: "halt", reason, requiresNodeCorroboration: true })
+      .mockImplementation(async (input) => {
+        expect(input.child.failureReason).toBe(reason);
+        return { status: "pending" };
+      });
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: { ...live.implementation, reconcile },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1000n,
+      now: () => started,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    expect((await settle(service, run.runId)).status).toBe("halted");
+    expect(service.get(run.runId).children[0]?.failureReason).toBe(reason);
+    service.resume(run.runId);
+    await service.recover();
+    expect(service.get(run.runId).status).toBe("running");
+    expect(service.get(run.runId).children[0]?.failureReason).toBe(reason);
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await service.stop();
   });
 
   it("coalesces slow recovery ticks and drains observation before shutdown", async () => {

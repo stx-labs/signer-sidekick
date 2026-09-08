@@ -20,7 +20,8 @@ export type CanonicalApiTransactionLookup =
         indexBlockHash: `0x${string}`;
         success: boolean;
         resultRepr: string;
-        transactionHex: string;
+        transactionHex: string | null;
+        source: "api-with-node" | "api";
       };
     }
   | { status: "not-found" }
@@ -37,15 +38,16 @@ function message(error: unknown): string {
 }
 
 /**
- * Uses an indexed API only to locate a transaction, then requires the local node to prove the
- * exact transaction is included in that canonical block. This is the confirmation path for
- * nodes that deliberately run without the derived transaction index.
+ * Coherent configured-API execution evidence, with node corroboration when available.
+ * API-only evidence is opt-in at the caller's durable exact-transaction binding boundary;
+ * public API payload summaries never establish that binding. Positive node conflicts win.
  */
 export async function lookupCanonicalApiTransaction(input: {
   api: CanonicalApiTransactionApi;
   node: CanonicalApiTransactionNode;
   chainId: number;
   txId: `0x${string}`;
+  allowApiEvidence?: boolean;
 }): Promise<CanonicalApiTransactionLookup> {
   let details: Awaited<ReturnType<CanonicalApiTransactionApi["getTransactionDetails"]>>;
   try {
@@ -67,6 +69,9 @@ export async function lookupCanonicalApiTransaction(input: {
   if (!details.canonical || details.block_hash === null) {
     return { status: "unavailable", reason: "Configured API has no canonical transaction block" };
   }
+  if (!["success", "abort_by_response", "abort_by_post_condition"].includes(details.tx_status)) {
+    return { status: "unavailable", reason: "Configured API has no terminal execution outcome" };
+  }
 
   try {
     const block = await input.api.getBlock(details.block_hash);
@@ -80,11 +85,24 @@ export async function lookupCanonicalApiTransaction(input: {
         reason: "Configured API transaction and block records are not coherent",
       };
     }
-    const proof = await checkTransactionInCanonicalBlock(input.node, {
+    const receipt = {
+      txid: details.tx_id,
       blockHeight: block.height,
       indexBlockHash: block.index_block_hash,
-      txId: input.txId,
-    });
+      success: details.tx_status === "success",
+      resultRepr: details.tx_result.repr,
+    };
+    let proof: Awaited<ReturnType<typeof checkTransactionInCanonicalBlock>>;
+    try {
+      proof = await checkTransactionInCanonicalBlock(input.node, {
+        blockHeight: block.height,
+        indexBlockHash: block.index_block_hash,
+        txId: input.txId,
+      });
+    } catch (error) {
+      if (!input.allowApiEvidence) return { status: "unavailable", reason: message(error) };
+      return { status: "observed", value: { ...receipt, transactionHex: null, source: "api" } };
+    }
     if (proof.status !== "included") {
       return {
         status: "conflict",
@@ -96,12 +114,9 @@ export async function lookupCanonicalApiTransaction(input: {
     return {
       status: "observed",
       value: {
-        txid: details.tx_id,
-        blockHeight: block.height,
-        indexBlockHash: block.index_block_hash,
-        success: details.tx_status === "success",
-        resultRepr: details.tx_result.repr,
+        ...receipt,
         transactionHex: proof.transaction.serialize(),
+        source: "api-with-node",
       },
     };
   } catch (error) {

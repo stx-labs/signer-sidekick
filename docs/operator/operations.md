@@ -143,6 +143,19 @@ Submitted browser-wallet transactions and gas sweeps also continue being observe
 dashboard or restarting Sidekick. Disabling the gas signer does not disable observation. Normal
 pages read the retained result; manual verification refresh remains available.
 
+Once the operational runtime has started, locally signed runs and sweeps may finish observation
+using the configured API during a node outage. Activity and sweep history show **configured API**,
+**API + local node**, or **local node** as the execution evidence. The API is an operational trust
+source; its execution record must be coherent and match the saved signing-time transaction ID and
+sealed plan. Missing binding or an unresolved conflict keeps verification pending. A confirmed API
+abort halts the run/fails the sweep; it never causes an automatic replacement transaction.
+Preparing or signing the next transaction still needs the connected node. Browser-wallet actions
+still require node bytes in this first R3b slice, and cold boot still waits for a connected node to
+start the operational runtime. Migration 40 records future evidence sources; older history is not
+assigned a guessed source. An older halted run with a retained diagnostic may require positive
+node corroboration after resume. Preserve the automatic pre-migration database backup if rolling
+back to an older binary; older versions cannot open the newer schema.
+
 A gas sweep with an ambiguous broadcast retains its transaction ID and wallet authorization even
 if lookups report it missing for longer than the original approval window. Do not prepare a second
 sweep or reset the database. Positive canonical conflicts are shown on the active sweep; the wallet

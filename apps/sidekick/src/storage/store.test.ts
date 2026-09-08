@@ -359,7 +359,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 39,
+      schemaVersion: 40,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1498,7 +1498,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 39,
+      schemaVersion: 40,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1524,7 +1524,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(39);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1607,7 +1607,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(39);
+    expect(upgraded.store.schemaVersion()).toBe(40);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1718,7 +1718,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(39);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1869,7 +1869,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(39);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -2026,7 +2026,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(39);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection

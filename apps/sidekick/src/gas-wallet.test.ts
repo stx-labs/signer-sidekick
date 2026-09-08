@@ -9,6 +9,7 @@ import {
   privateKeyToPublic,
 } from "@stacks/transactions";
 import {
+  type ConnectionAssessment,
   gasWalletStatusSchema,
   gasWalletSweepSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -21,6 +22,10 @@ import {
   UpstreamUnavailableError,
 } from "./chain-clients.js";
 import {
+  requireConnectedAssessment,
+  requireObservationAssessment,
+} from "./connection-assessment.js";
+import {
   type GasWalletEngine,
   GasWalletError,
   type GasWalletReader,
@@ -29,7 +34,10 @@ import {
 } from "./gas-wallet.js";
 import type { GasWalletSweepPlan } from "./gas-wallet-sweep.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
-import type { SignedGasWalletSweepTransaction } from "./transaction-engine/gas-payer-signer.js";
+import {
+  GasPayerSigner,
+  type SignedGasWalletSweepTransaction,
+} from "./transaction-engine/gas-payer-signer.js";
 import type { TransactionEngineRuntimeContext } from "./transaction-engine/runtime.js";
 import type { TransactionBroadcastResult } from "./transaction-engine/transaction-broadcaster.js";
 
@@ -675,6 +683,141 @@ describe("gas wallet service", () => {
     expect(reopened.store.gasWalletSweeps.active()).toBeNull();
     expect(h.engine.signGasWalletSweep).toHaveBeenCalledOnce();
     expect(h.broadcast).toHaveBeenCalledOnce();
+  });
+
+  it("completes a genuinely locally signed sweep via API after restart with the node unavailable and signer unloaded", async () => {
+    const h = await fixture();
+    const databasePath = join(h.directory, "api-completion.sqlite");
+    const initial = await openSidekickStore(databasePath);
+    let assessment = { status: "connected" } as ConnectionAssessment;
+    let submittedTxid = txid;
+    const context = h.options.runtimeContext();
+    const getTransactionDetails = vi.fn(async () => ({
+      tx_id: submittedTxid,
+      tx_status: "success" as const,
+      tx_result: { hex: "0x0703", repr: "(ok true)" },
+      canonical: true,
+      block_hash: blockHash,
+      block_height: blockHeight,
+    }));
+    const observationContext = {
+      ...context,
+      node: {
+        ...context.node,
+        getTenureInfo: async () => {
+          throw new UpstreamUnavailableError("node offline");
+        },
+      },
+      api: { ...context.api, getTransactionDetails },
+    } as unknown as TransactionEngineRuntimeContext;
+    const options = {
+      ...h.options,
+      store: initial.store,
+      runtimeContext: () => {
+        requireConnectedAssessment(assessment);
+        return context;
+      },
+      observationRuntimeContext: () => {
+        requireObservationAssessment(assessment);
+        return observationContext;
+      },
+    };
+    const first = new GasWalletService(options);
+    await first.create();
+    await first.enable();
+    const signer = await GasPayerSigner.fromSecretFile({
+      secretFilePath: h.options.secretFilePath,
+      expectedPrincipal: principal,
+      network: "testnet",
+    });
+    h.engine.signGasWalletSweep.mockImplementation((plan) => signer.signGasWalletSweepPlan(plan));
+    const plan = await first.prepareSweep({ recipient });
+    h.broadcast.mockRejectedValue(new Error("ambiguous transport failure"));
+    const submitted = await first.approveSweep(plan.sweepId);
+    if (!submitted.txid) throw new Error("Expected persisted locally signed identity");
+    submittedTxid = submitted.txid;
+    signer.destroy();
+    initial.store.close();
+    const reopened = await openSidekickStore(databasePath);
+    stores.push(reopened.store);
+    const restarted = new GasWalletService({ ...options, store: reopened.store, engine: null });
+    assessment = { status: "blocked" } as ConnectionAssessment;
+    await expect(restarted.observeSubmitted()).rejects.toThrow("identity/network");
+    expect(getTransactionDetails).not.toHaveBeenCalled();
+    assessment = { status: "unavailable" } as ConnectionAssessment;
+    // Manual refresh bypasses the pacing of the preceding refused read.
+    expect(await restarted.refreshSweep(plan.sweepId)).toMatchObject({
+      status: "confirmed",
+      executionSource: "api",
+      txid: submittedTxid,
+    });
+    expect(reopened.store.gasWalletSweeps.active()).toBeNull();
+    expect(reopened.store.gasWalletSweeps.get(plan.sweepId)?.executionSource).toBe("api");
+    const final = await openSidekickStore(databasePath);
+    stores.push(final.store);
+    expect(final.store.gasWalletSweeps.get(plan.sweepId)?.executionSource).toBe("api");
+    expect(h.engine.signGasWalletSweep).toHaveBeenCalledOnce();
+    expect(h.broadcast).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "plan-missing",
+    "plan-corrupt",
+    "approval-missing",
+    "broadcast-missing",
+    "prior-conflict",
+  ])("keeps an API-reported sweep pending when its local binding has %s", async (kind) => {
+    const h = await fixture();
+    await h.service.create();
+    await h.service.enable();
+    const planned = await h.service.prepareSweep({ recipient });
+    await h.service.approveSweep(planned.sweepId);
+    if (kind === "plan-missing") vi.spyOn(h.store.gasWalletSweeps, "getPlan").mockReturnValue(null);
+    if (kind === "plan-corrupt") {
+      const plan = h.store.gasWalletSweeps.getPlan(planned.sweepId);
+      if (!plan) throw new Error("Missing plan");
+      vi.spyOn(h.store.gasWalletSweeps, "getPlan").mockReturnValue({
+        ...plan,
+        unsignedTransactionHex: "00",
+      });
+    }
+    if (kind === "approval-missing")
+      h.store.gasWalletSweeps.update(
+        planned.sweepId,
+        { approvedAt: null },
+        h.state.now.toISOString(),
+      );
+    if (kind === "broadcast-missing")
+      h.store.gasWalletSweeps.update(
+        planned.sweepId,
+        { broadcastAt: null },
+        h.state.now.toISOString(),
+      );
+    if (kind === "prior-conflict")
+      h.store.gasWalletSweeps.update(
+        planned.sweepId,
+        { failureReason: "Unresolved node disagreement" },
+        h.state.now.toISOString(),
+      );
+    h.state.apiTransaction = "success";
+    const context = h.options.runtimeContext();
+    const service = new GasWalletService({
+      ...h.options,
+      observationRuntimeContext: () => ({
+        ...context,
+        node: {
+          ...context.node,
+          getTenureInfo: async () => {
+            throw new UpstreamUnavailableError("offline");
+          },
+        },
+      }),
+    });
+    expect(await service.refreshSweep(planned.sweepId)).toMatchObject({
+      status: "broadcast",
+      executionSource: null,
+    });
+    expect(h.store.gasWalletSweeps.active()?.sweepId).toBe(planned.sweepId);
   });
 
   it("bounds never-appearing sweep observations, retains authorization, and allows immediate manual refresh", async () => {

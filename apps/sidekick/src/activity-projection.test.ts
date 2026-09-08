@@ -597,6 +597,21 @@ describe("Activity projection", () => {
       aliases: expect.arrayContaining([`chain-tx:1:${txid}`, `reward-run:${run.runId}`]),
       summary: { stage: "complete" },
     });
+    store.rewardRuns.updateChild({
+      runId: run.runId,
+      childIndex: 0,
+      from: ["confirmed"],
+      to: "confirmed",
+      now: now.toISOString(),
+      provenance: "you",
+      executionSource: "api",
+    });
+    expect(service.detail(`chain-tx:1:${txid}`)?.timeline).toContainEqual(
+      expect.objectContaining({
+        txid,
+        detail: expect.stringContaining("Transaction execution evidence: configured API."),
+      }),
+    );
   });
 
   it("links an expired transaction review to the replacement for the same operation scope", async () => {

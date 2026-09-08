@@ -1999,6 +1999,10 @@ export class WalletIntentService {
     }
     // The API locates the receipt; the canonical node block supplies the exact bytes.
     // Success AND abort pass the same full manifest verifier before either becomes actionable.
+    if (receipt.value.transactionHex === null) {
+      this.recordUnavailable(stored, observedAt, "Exact wallet transaction bytes are unavailable");
+      return this.publicIntent(stored);
+    }
     return this.refreshIndexed(
       stored,
       manifest,

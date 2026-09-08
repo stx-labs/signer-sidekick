@@ -40,12 +40,13 @@ function fixture() {
     api,
     node,
     block,
-    lookup: () =>
+    lookup: (allowApiEvidence = false) =>
       lookupCanonicalApiTransaction({
         api: api as never,
         node: node as never,
         chainId: 0x80000000,
         txId,
+        allowApiEvidence,
       }),
   };
 }
@@ -139,5 +140,70 @@ describe("canonical API receipt", () => {
     const f = fixture();
     f.api.getTransactionDetails.mockRejectedValue(new UpstreamHttpError("not found", 404));
     expect(await f.lookup()).toEqual({ status: "not-found" });
+  });
+
+  it.each([
+    "timeout",
+    "behind",
+    "malformed-tail",
+  ])("accepts coherent API execution with a caller-established byte binding during %s", async (kind) => {
+    const f = fixture();
+    if (kind === "timeout")
+      f.node.getTenureInfo.mockRejectedValue(new UpstreamUnavailableError("timeout"));
+    if (kind === "behind")
+      f.node.getTenureInfo.mockResolvedValue({ tip_height: 99, tip_block_id: hash });
+    if (kind === "malformed-tail") {
+      const malformed = new Uint8Array([...f.block, 0]);
+      f.node.getNakamotoBlockById.mockResolvedValue(malformed);
+      f.node.getNakamotoBlockAtHeight.mockResolvedValue(malformed);
+    }
+    expect(await f.lookup(true)).toMatchObject({
+      status: "observed",
+      value: { txid: txId, success: true, source: "api", transactionHex: null },
+    });
+    expect(await f.lookup()).toMatchObject({ status: "unavailable" });
+  });
+
+  it.each([
+    "success",
+    "abort_by_response",
+    "abort_by_post_condition",
+  ])("requires coherent canonical identity for API-supported %s", async (tx_status) => {
+    const f = fixture();
+    f.node.getTenureInfo.mockRejectedValue(new UpstreamUnavailableError("offline"));
+    const details = { ...(await f.api.getTransactionDetails()), tx_status };
+    f.api.getTransactionDetails.mockResolvedValue(details);
+    expect(await f.lookup(true)).toMatchObject({
+      status: "observed",
+      value: { success: tx_status === "success", source: "api" },
+    });
+    f.api.getTransactionDetails.mockResolvedValue({ ...details, canonical: false });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+    f.api.getTransactionDetails.mockResolvedValue({ ...details, tx_id: hash });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+    f.api.getTransactionDetails.mockResolvedValue(details);
+    f.api.getNodeInfo.mockResolvedValue({ network_id: 1 });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+  });
+
+  it.each([
+    "absent",
+    "reorged",
+  ])("never overrides positive %s proof with API trust", async (reason) => {
+    const f = fixture();
+    const empty = new Uint8Array(220);
+    f.node.getNakamotoBlockAtHeight.mockResolvedValue(empty);
+    if (reason === "absent") f.node.getNakamotoBlockById.mockResolvedValue(empty);
+    expect(await f.lookup(true)).toMatchObject({ status: "conflict", reason });
+  });
+
+  it("does not turn a pending API record into an abort", async () => {
+    const f = fixture();
+    f.api.getTransactionDetails.mockResolvedValue({
+      ...(await f.api.getTransactionDetails()),
+      tx_status: "pending",
+    });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+    expect(f.api.getBlock).not.toHaveBeenCalled();
   });
 });

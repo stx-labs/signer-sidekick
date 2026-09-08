@@ -3347,6 +3347,15 @@ test("R3a displays retained sweep conflicts without browser-driven reconciliatio
     blockHeight: null,
     failureReason: conflict,
   };
+  const completed = {
+    ...sweep,
+    sweepId: "00000000-0000-4000-8000-00000000b002",
+    status: "confirmed",
+    failureReason: null,
+    resolvedAt: snapshot.generatedAt,
+    blockHeight: 1234,
+    executionSource: "api",
+  };
   let receiptPosts = 0;
   let statusReads = 0;
   await page.route("**/api/v1/settings/gas-wallet**", async (route) => {
@@ -3354,7 +3363,11 @@ test("R3a displays retained sweep conflicts without browser-driven reconciliatio
     if (request.pathname.endsWith("/refresh")) receiptPosts += 1;
     else statusReads += 1;
     await route.fulfill(
-      fixtureFulfillment({ ...gasWalletCreated, activeSweepId: sweepId, sweeps: [sweep] }),
+      fixtureFulfillment({
+        ...gasWalletCreated,
+        activeSweepId: sweepId,
+        sweeps: [sweep, completed],
+      }),
     );
   });
   await login(page);
@@ -3370,4 +3383,6 @@ test("R3a displays retained sweep conflicts without browser-driven reconciliatio
   expect(receiptPosts).toBe(0);
   await expect(section.getByRole("button", { name: "Check status" })).toBeVisible();
   await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
+  await section.getByText("Sweep history", { exact: true }).click();
+  await expect(section.getByText("Evidence: configured API", { exact: true })).toBeVisible();
 });

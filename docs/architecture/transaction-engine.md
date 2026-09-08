@@ -53,8 +53,12 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
   on the existing maintenance tick, bounded by the original runtime cap. Unclassified exceptions
   still halt; transport recovery is not a catch-all retry policy.
 - Materialization re-proves the preparation anchor before each child. Reconciliation checks the
-  submitted transaction, without re-reading the preparation block on every poll. The execution
-  evidence policy is unchanged; node-unavailable/API-supported completion is a separate change.
+  submitted transaction, without re-reading the preparation block on every poll. Locally signed
+  run children and sweeps can use coherent configured-API execution evidence during a node outage,
+  only with the retained signing-time txid/plan binding and no unresolved conflicting diagnostic.
+  `executionSource` records node, API with node corroboration, or API evidence; legacy source is null.
+  Observation allows cached transport unavailability, while all fresh signing access stays gated.
+  See ADR 0008 for the operational API trust boundary and the still node-dependent wallet path.
 - Slow reads do not overlap recovery ticks. Shutdown drains in-flight work, and the signature
   boundary rechecks run state, expiry and emergency controls after role reads finish.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.

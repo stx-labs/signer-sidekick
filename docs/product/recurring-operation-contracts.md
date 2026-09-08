@@ -8,8 +8,13 @@ new work but never erases submitted or canonical evidence.
 
 - Inputs come from one current, stable chain anchor and are re-read before signing.
 - Calls use deny mode and the narrowest exact asset postcondition available.
-- Completion requires exact transaction bytes and canonical successful execution, plus any
-  adapter-specific checkpoint proof. A later mutable setting or balance is not a historical receipt.
+- Completion requires exact transaction binding and canonical successful execution, plus any
+  adapter-specific checkpoint proof. Locally signed runs/sweeps bind the transaction through their
+  revalidated sealed plan and saved signing-time txid; coherent configured-API execution may then
+  suffice during node unavailability, but cannot override a positive node conflict. Browser-wallet
+  actions still require node-provided bytes. Evidence provenance is retained; see
+  [ADR 0008](../architecture/decisions/0008-chain-evidence-and-reconciliation.md).
+  A later mutable setting or balance is not a historical receipt.
 - Manager-admin and signer operations use the operator's browser wallet.
 - Permissionless reward calls may use the browser wallet or one approved operator-run recipe.
 

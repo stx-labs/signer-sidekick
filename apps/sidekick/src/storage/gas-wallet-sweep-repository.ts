@@ -1,4 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import {
+  type TransactionExecutionSource,
+  transactionExecutionSourceSchema,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import { type GasWalletSweepPlan, gasWalletSweepPlanSchema } from "../gas-wallet-sweep.js";
 
@@ -22,6 +26,7 @@ export interface StoredGasWalletSweep {
   planSha256: string;
   txid: `0x${string}` | null;
   broadcastAmbiguous: boolean;
+  executionSource: TransactionExecutionSource | null;
   createdAt: string;
   expiresAt: string;
   approvedAt: string | null;
@@ -48,6 +53,7 @@ const rowSchema = z
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
     broadcast_ambiguous: z.union([z.literal(0), z.literal(1)]),
+    execution_source: transactionExecutionSourceSchema.nullable(),
     created_at: z.string(),
     expires_at: z.string(),
     approved_at: z.string().nullable(),
@@ -72,6 +78,7 @@ function toRecord(row: z.infer<typeof rowSchema>): StoredGasWalletSweep {
     planSha256: row.plan_sha256,
     txid: row.txid as `0x${string}` | null,
     broadcastAmbiguous: row.broadcast_ambiguous === 1,
+    executionSource: row.execution_source,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     approvedAt: row.approved_at,
@@ -85,12 +92,13 @@ function toRecord(row: z.infer<typeof rowSchema>): StoredGasWalletSweep {
 
 const columns = `sweep_id, status, wallet_principal, recipient, amount_ustx, fee_ustx, nonce, balance_ustx,
   plan_sha256, txid, broadcast_ambiguous, created_at, expires_at, approved_at, broadcast_at,
-  resolved_at, block_height, failure_reason, updated_at`;
+  resolved_at, block_height, failure_reason, execution_source, updated_at`;
 
 export interface GasWalletSweepPatch {
   status?: StoredGasWalletSweepStatus;
   txid?: `0x${string}` | null;
   broadcastAmbiguous?: boolean;
+  executionSource?: TransactionExecutionSource | null;
   approvedAt?: string | null;
   broadcastAt?: string | null;
   resolvedAt?: string | null;
@@ -191,6 +199,7 @@ export class GasWalletSweepRepository {
     if (patch.resolvedAt !== undefined) add("resolved_at", patch.resolvedAt);
     if (patch.blockHeight !== undefined) add("block_height", patch.blockHeight);
     if (patch.failureReason !== undefined) add("failure_reason", patch.failureReason);
+    if (patch.executionSource !== undefined) add("execution_source", patch.executionSource);
     values.push(sweepId);
     const terminal =
       patch.status !== undefined &&

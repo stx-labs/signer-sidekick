@@ -31,6 +31,12 @@ export function requireConnectedAssessment(assessment: ConnectionAssessment | nu
   throw new Error(message);
 }
 
+/** Observation may outlive transport availability, never a proven identity/network refusal. */
+export function requireObservationAssessment(assessment: ConnectionAssessment | null): void {
+  if (assessment?.status === "connected" || assessment?.status === "unavailable") return;
+  throw new Error("Observation is paused until the configured identity/network is accepted");
+}
+
 const checkOrder = [
   "deployment-identity",
   "node-network",

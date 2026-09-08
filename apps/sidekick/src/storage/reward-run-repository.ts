@@ -12,6 +12,8 @@ import {
   rewardRunPrepareRequestSchema,
   rewardRunRecipeSchema,
   rewardRunSchema,
+  type TransactionExecutionSource,
+  transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import type { RewardOperationPlan } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { z } from "zod";
@@ -70,6 +72,7 @@ const childRowSchema = z.object({
     .regex(/^0x[0-9a-f]{64}$/)
     .nullable(),
   provenance: z.enum(["you", "another-caller", "policy-exception"]).nullable(),
+  execution_source: transactionExecutionSourceSchema.nullable(),
   failure_reason: z.string().nullable(),
   updated_at: z.string(),
 });
@@ -593,6 +596,7 @@ export class RewardRunRepository {
     now: string;
     txid?: `0x${string}` | null;
     provenance?: "you" | "another-caller" | "policy-exception" | null;
+    executionSource?: TransactionExecutionSource | null;
     failureReason?: string | null;
   }): RewardRunChild {
     const current = this.requireChild(input.runId, input.childIndex);
@@ -602,7 +606,7 @@ export class RewardRunRepository {
     const result = this.db
       .prepare(
         `UPDATE transaction_run_children SET status = ?, txid = COALESCE(?, txid),
-           provenance = ?, failure_reason = ?, updated_at = ?
+           provenance = ?, failure_reason = ?, execution_source = ?, updated_at = ?
          WHERE run_id = ? AND child_index = ? AND status = ?`,
       )
       .run(
@@ -610,6 +614,7 @@ export class RewardRunRepository {
         input.txid ?? null,
         input.provenance ?? null,
         input.failureReason ?? null,
+        input.executionSource ?? current.executionSource ?? null,
         input.now,
         input.runId,
         input.childIndex,
@@ -663,7 +668,7 @@ export class RewardRunRepository {
       .prepare(
         `UPDATE transaction_run_children SET status = 'pending', plan_sha256 = NULL,
            plan_json = NULL, materialized_amount_sats = NULL, txid = NULL, provenance = NULL,
-           failure_reason = NULL, updated_at = ?
+           failure_reason = NULL, execution_source = NULL, updated_at = ?
          WHERE run_id = ? AND child_index = ? AND status = 'halted'`,
       )
       .run(now, runId, childIndex);
@@ -787,7 +792,7 @@ export class RewardRunRepository {
     const rows = this.db
       .prepare(
         `SELECT child_index, operation_kind, account_key, maximum_amount_sats, status,
-          materialized_amount_sats, plan_sha256, txid, provenance, failure_reason, updated_at
+          materialized_amount_sats, plan_sha256, txid, provenance, execution_source, failure_reason, updated_at
          FROM transaction_run_children WHERE run_id = ? ORDER BY child_index ASC`,
       )
       .all(runId);
@@ -798,7 +803,7 @@ export class RewardRunRepository {
     const row = this.db
       .prepare(
         `SELECT child_index, operation_kind, account_key, maximum_amount_sats, status,
-          materialized_amount_sats, plan_sha256, txid, provenance, failure_reason, updated_at
+          materialized_amount_sats, plan_sha256, txid, provenance, execution_source, failure_reason, updated_at
          FROM transaction_run_children WHERE run_id = ? AND child_index = ?`,
       )
       .get(runId, childIndex);
@@ -822,6 +827,7 @@ export class RewardRunRepository {
       planSha256: row.plan_sha256,
       txid: row.txid as `0x${string}` | null,
       provenance: row.provenance,
+      executionSource: row.execution_source,
       failureReason: row.failure_reason,
       updatedAt: row.updated_at,
     };

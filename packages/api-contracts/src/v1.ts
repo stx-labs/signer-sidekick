@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type EngineChainAnchor, engineChainAnchorSchema } from "./engine.js";
+import { transactionExecutionSourceSchema } from "./reward-runs.js";
 
 export const connectionOutcomeCodeSchema = z.enum([
   "node-unreachable",
@@ -3283,6 +3284,7 @@ export const gasWalletSweepSchema = z
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
     broadcastAmbiguous: z.boolean(),
+    executionSource: transactionExecutionSourceSchema.nullable().optional(),
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     approvedAt: z.iso.datetime().nullable(),

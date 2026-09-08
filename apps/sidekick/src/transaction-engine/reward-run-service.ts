@@ -7,6 +7,7 @@ import type {
   RewardRunPreparation,
   RewardRunPrepareRequest,
   RewardRunRecipe,
+  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   REWARD_OPERATION_ADAPTER_REVISIONS,
@@ -94,9 +95,14 @@ export type RewardRunMaterialization =
 
 export type RewardRunReconciliation =
   | { status: "pending" }
-  | { status: "confirmed"; blockHeight: number }
-  | { status: "externally-completed"; reason: string }
-  | { status: "halt"; reason: string };
+  | { status: "confirmed"; blockHeight: number; executionSource?: TransactionExecutionSource }
+  | { status: "externally-completed"; reason: string; executionSource?: TransactionExecutionSource }
+  | {
+      status: "halt";
+      reason: string;
+      executionSource?: TransactionExecutionSource;
+      requiresNodeCorroboration?: boolean;
+    };
 
 /** Live S4 adapter seam. Implementations read and prove state; the coordinator owns authority. */
 export interface RewardRunDriver {
@@ -106,6 +112,12 @@ export interface RewardRunDriver {
     child: RewardRunChild;
     plan: RewardOperationPlan;
     txid: `0x${string}`;
+    signedAttempt?:
+      | Pick<
+          ReturnType<RewardRunRepository["attempts"]>[number],
+          "precomputedTxid" | "nonce" | "feeUstx" | "state"
+        >
+      | undefined;
   }): Promise<RewardRunReconciliation>;
   broadcast(signed: SignedRewardOperationTransaction): Promise<TransactionBroadcastResult>;
 }
@@ -815,9 +827,26 @@ export class RewardRunService {
         child,
         plan,
         txid: child.txid as `0x${string}`,
+        signedAttempt: this.#options.repository
+          .attempts(runId, child.index)
+          .find(({ precomputedTxid }) => precomputedTxid === child.txid),
       });
       if (reconciliation.status === "pending") return;
       if (reconciliation.status === "halt") {
+        if (reconciliation.executionSource || reconciliation.requiresNodeCorroboration) {
+          this.#options.repository.updateChild({
+            runId,
+            childIndex: child.index,
+            from: ["broadcast"],
+            to: "broadcast",
+            now: now.toISOString(),
+            provenance: child.provenance,
+            executionSource: reconciliation.executionSource ?? null,
+            failureReason: reconciliation.requiresNodeCorroboration
+              ? reconciliation.reason
+              : child.failureReason,
+          });
+        }
         this.#halt(run, reconciliation.reason);
         return;
       }
@@ -829,6 +858,7 @@ export class RewardRunService {
         to: status,
         now: now.toISOString(),
         provenance: status === "confirmed" ? "you" : "another-caller",
+        executionSource: reconciliation.executionSource ?? null,
       });
       const attempts = this.#options.repository.attempts(runId, child.index);
       const attempt = attempts.at(-1);

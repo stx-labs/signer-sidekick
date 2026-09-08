@@ -3,6 +3,7 @@ import type {
   ManagerCapabilities,
   RewardRunOperation,
   RewardRunPrepareRequest,
+  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeEarnedStakerRewards,
@@ -18,6 +19,7 @@ import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/po
 import {
   planRewardOperation,
   type RewardOperationPlanInput,
+  revalidateRewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { lookupCanonicalApiTransaction } from "../canonical-api-transaction.js";
 import { checkCanonicalNodeBlock } from "../canonical-node-block.js";
@@ -39,7 +41,6 @@ import {
   type LiveObservation,
   LiveTransactionReader,
   type TransactionFeeObservation,
-  transactionIndexCannotAnswer,
 } from "./live-transaction-reader.js";
 import type {
   RewardRunDraftFacts,
@@ -395,6 +396,8 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
 export interface LiveRewardRunDriverOptions {
   engine: Pick<SidekickTransactionEngineRuntime, "readRewardRunObservation" | "gasPayerIdentity">;
   runtimeContext: () => TransactionEngineRuntimeContext;
+  /** Allows cached transport unavailability, but still refuses proven identity mismatches. */
+  observationRuntimeContext?: () => TransactionEngineRuntimeContext;
   /** Live fee policy (Settings → Reward runs band under the deployment cap), read per child. */
   feePolicy: () => TransactionFeePolicy;
   withdrawalRequestStatus(
@@ -720,34 +723,48 @@ export class LiveRewardRunDriver implements RewardRunDriver {
   async reconcile(
     input: Parameters<RewardRunDriver["reconcile"]>[0],
   ): Promise<RewardRunReconciliation> {
-    const context = this.options.runtimeContext();
+    const context = (this.options.observationRuntimeContext ?? this.options.runtimeContext)();
     // Reconcile the submitted transaction, not the old preparation state. Materialization
     // still proves the recipe's anchor before any subsequent child can be signed.
     const reader = (
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
-    const indexed = await reader.lookupIndexedTransaction(input.txid);
-    let confirmed: { success: boolean; resultRepr: string; blockHeight: number } | undefined;
-    if (indexed.status === "observed") {
+    const indexed = await reader.lookupIndexedTransaction(input.txid).catch(() => null);
+    let confirmed:
+      | {
+          success: boolean;
+          resultRepr: string;
+          blockHeight: number;
+          source: TransactionExecutionSource;
+        }
+      | undefined;
+    if (indexed?.status === "observed") {
       if (!indexed.value.isCanonical)
-        return { status: "halt", reason: "Transaction became noncanonical" };
+        return {
+          status: "halt",
+          reason: "Transaction became noncanonical",
+          requiresNodeCorroboration: true,
+        };
       if (indexed.value.blockHeight === null) return { status: "pending" };
       confirmed = {
         success: indexed.value.resultRepr.trim().startsWith("(ok"),
         resultRepr: indexed.value.resultRepr,
         blockHeight: Number(indexed.value.blockHeight),
+        source: "node",
       };
-    } else if (transactionIndexCannotAnswer(indexed)) {
+    } else {
       const apiTransaction = await lookupCanonicalApiTransaction({
         api: context.api,
         node: context.node,
         chainId: input.run.recipe.chainId,
         txId: input.txid,
+        allowApiEvidence: await this.#hasLocalSigningBinding(input),
       });
       if (apiTransaction.status === "conflict") {
         return {
           status: "halt",
           reason: `Canonical transaction conflict: ${apiTransaction.reason}`,
+          requiresNodeCorroboration: true,
         };
       }
       if (apiTransaction.status === "observed") {
@@ -755,6 +772,7 @@ export class LiveRewardRunDriver implements RewardRunDriver {
           success: apiTransaction.value.success,
           resultRepr: apiTransaction.value.resultRepr,
           blockHeight: apiTransaction.value.blockHeight,
+          source: apiTransaction.value.source,
         };
       }
     }
@@ -771,18 +789,65 @@ export class LiveRewardRunDriver implements RewardRunDriver {
           return {
             status: "halt",
             reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
+            executionSource: confirmed.source,
           };
         }
-        return { status: "confirmed", blockHeight: confirmed.blockHeight };
+        return {
+          status: "confirmed",
+          blockHeight: confirmed.blockHeight,
+          executionSource: confirmed.source,
+        };
       }
-      const completed = await this.#desiredState(input);
+      // Failure is an execution fact even when the optional external-completion state read
+      // cannot run during an outage. It never authorizes another signature automatically.
+      const completed = await this.#desiredState(input).catch(() => false);
       return completed
-        ? { status: "externally-completed", reason: "Another caller completed the same operation" }
-        : { status: "halt", reason: `Transaction aborted: ${confirmed.resultRepr}` };
+        ? {
+            status: "externally-completed",
+            reason: "Another caller completed the same operation",
+            executionSource: confirmed.source,
+          }
+        : {
+            status: "halt",
+            reason: `Transaction aborted: ${confirmed.resultRepr}`,
+            executionSource: confirmed.source,
+          };
     }
-    const unconfirmed = await reader.lookupUnconfirmedTransaction(input.txid);
-    if (unconfirmed.status === "observed") return { status: "pending" };
+    // The indexed/API sources have no terminal outcome. A mempool read cannot change that.
     return { status: "pending" };
+  }
+
+  async #hasLocalSigningBinding(
+    input: Parameters<RewardRunDriver["reconcile"]>[0],
+  ): Promise<boolean> {
+    const attempt = input.signedAttempt;
+    if (
+      !attempt ||
+      attempt.state === "rejected" ||
+      attempt.precomputedTxid !== input.txid ||
+      input.child.failureReason
+    )
+      return false;
+    try {
+      const plan = await revalidateRewardOperationPlan(input.plan);
+      const authorization = plan.material.authorization;
+      // The signer builds the bytes from this revalidated sealed plan and computes the txid
+      // itself. The coordinator persists that attempt before any broadcast (also on restart).
+      return (
+        plan.planSha256 === input.child.planSha256 &&
+        input.child.txid === input.txid &&
+        plan.material.kind === input.child.operation &&
+        authorization.kind === "operator-run" &&
+        authorization.runId === input.run.runId &&
+        authorization.recipeSha256 === input.run.recipeSha256 &&
+        plan.material.sender.principal === input.run.walletPrincipal &&
+        plan.material.network.chainId === input.run.recipe.chainId &&
+        plan.material.transaction.nonce === attempt.nonce &&
+        plan.material.transaction.feeUstx === attempt.feeUstx
+      );
+    } catch {
+      return false;
+    }
   }
 
   async broadcast(signed: Parameters<RewardRunDriver["broadcast"]>[0]) {

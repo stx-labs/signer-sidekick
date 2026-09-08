@@ -3191,6 +3191,40 @@ describe("gas wallet routes", () => {
     expect(gasWallet.refreshSweep).toHaveBeenCalledWith(sweep.sweepId);
   });
 
+  it("allows read-only sweep refresh during cached unavailability without opening approval or identity-blocked access", async () => {
+    const token = "test-operator-token-with-32-chars";
+    let assessment = {
+      status: "unavailable",
+      lastSuccessful: { managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager" },
+    } as ConnectionAssessment;
+    const gasWallet = {
+      refreshSweep: vi
+        .fn()
+        .mockResolvedValue({ ...sweep, status: "confirmed", executionSource: "api" }),
+      approveSweep: vi.fn(),
+    };
+    const server = createServer({
+      service: { snapshot: vi.fn() } as never,
+      gasWallet: gasWallet as never,
+      connection: { current: () => assessment, check: async () => assessment },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+    const url = `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}`;
+    const refreshed = await server.inject({ method: "GET", url, headers });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json()).toMatchObject({ executionSource: "api" });
+    expect(
+      (await server.inject({ method: "POST", url: `${url}/approve`, headers })).statusCode,
+    ).toBe(503);
+    expect(gasWallet.approveSweep).not.toHaveBeenCalled();
+    assessment = { ...assessment, status: "blocked" };
+    expect((await server.inject({ method: "GET", url, headers })).statusCode).toBe(503);
+    expect(gasWallet.refreshSweep).toHaveBeenCalledOnce();
+  });
+
   it("rejects cross-site browser mutations and accepts same-origin ones", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {
