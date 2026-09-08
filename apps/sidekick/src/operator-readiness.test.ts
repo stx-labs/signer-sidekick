@@ -67,7 +67,7 @@ const manager: ManagerVerificationReport = {
   capabilities: {
     signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
     observedFunctions: { public: ["validate-stake!"], readOnly: [] },
-    sourceReview: { exactReviewed: true, reason: "Reviewed source" },
+    sourceReview: { reviewed: true, reason: "Reviewed source" },
     eventVocabulary: {
       id: "reference-manager-v1",
       normalizationAvailable: true,

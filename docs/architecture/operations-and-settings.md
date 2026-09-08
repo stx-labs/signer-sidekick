@@ -30,7 +30,8 @@ start, stop, install, or configure it.
 
 Sidekick never accepts a signer key, manager-admin key, mnemonic, or arbitrary signing request.
 Wallet actions use sealed, expiring intents and return only a transaction ID; Sidekick verifies the
-canonical bytes and expected poststate.
+exact bytes and canonical execution, plus adapter-specific checkpoint evidence. Later mutable
+manager state does not undo historical execution (see ADR 0008).
 
 Operator-run may generate one dedicated, low-balance gas wallet. Its key stays in
 `/data/gas-wallet.key` and signs only the explicit permissionless reward adapters in one approved,
@@ -46,8 +47,8 @@ baseline features; optional semantics and execution require a reviewed adapter.
 The server refreshes current operator state every 30 seconds even when no browser is open. Manager
 events request focused refreshes, while staking roster and historical data use slower periodic
 anti-entropy loops. All reconciliation is single-flight and persists durable cursors, canonical
-anchors, idempotent replay, reorg handling, and bounded retry backoff in SQLite. A delayed reference
-API is reported separately and does not block node-backed operations. See
+anchors and idempotent replay in SQLite, with reorg handling and bounded in-memory retry backoff.
+A delayed reference API is reported separately and does not block node-backed operations. See
 [ADR 0008](decisions/0008-chain-evidence-and-reconciliation.md).
 
 A separate private callback listener is the low-latency input from the configured Stacks node. It
@@ -64,12 +65,13 @@ Burn-block callbacks are trigger-only because the local Stacks RPC does not expo
 burn-header proof; they expire after the node reaches their claimed height. Malformed or forged
 claims are quarantined with a bounded reason. Callback delivery never grants a manager capability,
 and API backfill plus periodic anti-entropy remain the recovery paths for loss, reordering, restart,
-and reorg. Independently indexed manager events become permanent only after the local transaction
-index confirms their exact canonical Stacks height and index-block hash.
+and reorg. Indexed manager events require node-proved transaction inclusion at the exact canonical
+height and index-block hash, using the optional transaction index or canonical block bytes.
 
-A transaction absent from both indexed and pending node state may be explicitly superseded after a
-15-minute grace period. Replacement always creates a new sealed intent. Sidekick has no first-time
-contract deployment, staking, or public enrollment route.
+An eligible missing browser-wallet submission may be explicitly replaced after the 15-minute
+propagation grace and fresh absence checks. This is not a replacement policy for runs, sweeps,
+unavailable lookups or positive conflicts. See [Operations](../operator/operations.md#transaction-observation).
+Sidekick has no first-time contract deployment, staking, or public enrollment route.
 
 ## Runtime settings
 

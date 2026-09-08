@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChainAnchor } from "./chain-anchor.js";
 import { type RewardRealizationStore, syncRewardRealizations } from "./reward-realization-sync.js";
 import type { StoredRewardCalculationRealization } from "./storage/store.js";
+import { nakamotoBlockBytes } from "./test-helpers/nakamoto-block.js";
 
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const pox5 = "SP000000000000000000002Q6VF78.pox-5";
@@ -28,26 +29,9 @@ const realizationTransaction = await makeSTXTokenTransfer({
 });
 const txId = `0x${realizationTransaction.txid()}` as const;
 
-/** A Nakamoto block (version 1 header, no signer signatures) carrying `realizationTransaction`. */
+/** A canonical block carrying the calculation's actual transaction. */
 function canonicalBlockBytes(): Uint8Array {
-  const body = realizationTransaction.serializeBytes();
-  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
-  const view = new DataView(bytes.buffer);
-  bytes.fill(0xab, 0, 206);
-  view.setUint8(0, 1); // header version 1
-  let offset = 206;
-  view.setUint32(offset, 0); // signer_signature count
-  offset += 4;
-  view.setUint16(offset, 8); // pox_treatment BitVec.len
-  offset += 2;
-  view.setUint32(offset, 1); // BitVec.data length
-  offset += 4 + 1;
-  view.setUint32(offset, 0); // problematic_txs count
-  offset += 4;
-  view.setUint32(offset, 1); // transaction count
-  offset += 4;
-  bytes.set(body, offset);
-  return bytes;
+  return nakamotoBlockBytes(realizationTransaction.serializeBytes());
 }
 const txBlockHash = `0x${"22".repeat(32)}` as const;
 const txIndexHash = `0x${"33".repeat(32)}` as const;

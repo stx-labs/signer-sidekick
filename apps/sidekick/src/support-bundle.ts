@@ -266,6 +266,7 @@ const snapshotRefreshMetricsSchema = z
     snapshotGeneratedTimestampSeconds: z.number().nonnegative(),
     snapshotAgeSeconds: z.number().nonnegative(),
     snapshotFresh: z.union([z.literal(0), z.literal(1)]),
+    refreshInProgress: z.union([z.literal(0), z.literal(1)]),
     sourcePositions: z
       .object({
         nodeStacksHeight: z.number().int().nonnegative(),
@@ -508,7 +509,22 @@ async function collectSupportSection(
       );
       timer.unref?.();
     });
-    const data = schema.parse(await Promise.race([Promise.resolve().then(collector), timeout]));
+    const collected = await Promise.race([Promise.resolve().then(collector), timeout]);
+    if (collected === null || collected === undefined) {
+      const completedAt = now();
+      return {
+        status: "unavailable",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+        error: {
+          code: "not-yet-observed",
+          message: "No retained observation is available for this section",
+        },
+        data: null,
+      };
+    }
+    const data = schema.parse(collected);
     assertNoForbiddenSupportKeys(data);
     const completedAt = now();
     return {

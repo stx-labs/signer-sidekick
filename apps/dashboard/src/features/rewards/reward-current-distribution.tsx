@@ -2,12 +2,7 @@ import type {
   RewardLedgerDistribution,
   RewardLedgerPayment,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useState } from "react";
-import { operatorErrorSentence } from "../../shared/operator-error.js";
-import {
-  DistributionHistoryDetails,
-  type DistributionPaymentsState,
-} from "./reward-distribution-history.js";
+import { DistributionHistoryDetails } from "./reward-distribution-history.js";
 import { DistributionExportControls } from "./reward-export-controls.js";
 import type { PastCyclesExportQuery } from "./reward-past-cycles.js";
 import { distributionName } from "./reward-state.js";
@@ -16,7 +11,6 @@ import { distributionName } from "./reward-state.js";
 export function CurrentDistributionDetails({
   cycle,
   distribution,
-  refreshKey,
   loadPayments,
   onExport,
   exportBusy,
@@ -24,30 +18,15 @@ export function CurrentDistributionDetails({
 }: {
   cycle: number;
   distribution: RewardLedgerDistribution;
-  refreshKey: string;
-  loadPayments: (cycle: number, distribution: 1 | 2) => Promise<RewardLedgerPayment[]>;
+  loadPayments: (
+    cycle: number,
+    distribution: 1 | 2,
+    signal?: AbortSignal,
+  ) => Promise<RewardLedgerPayment[]>;
   onExport: (query: PastCyclesExportQuery) => void;
   exportBusy: boolean;
   onClose: () => void;
 }) {
-  const [state, setState] = useState<DistributionPaymentsState>({ rows: null, error: null });
-
-  useEffect(() => {
-    void refreshKey;
-    let current = true;
-    setState({ rows: null, error: null });
-    loadPayments(cycle, distribution.distribution)
-      .then((rows) => {
-        if (current) setState({ rows, error: null });
-      })
-      .catch((cause: unknown) => {
-        if (current) setState({ rows: null, error: operatorErrorSentence(cause) });
-      });
-    return () => {
-      current = false;
-    };
-  }, [cycle, distribution.distribution, loadPayments, refreshKey]);
-
   const title = `${distributionName(distribution.distribution)} details`;
   return (
     <section
@@ -65,8 +44,9 @@ export function CurrentDistributionDetails({
         </button>
       </div>
       <DistributionHistoryDetails
+        key={`${cycle}:${distribution.distribution}`}
         distribution={distribution}
-        state={state}
+        loadPayments={loadPayments}
         toolbarRight={
           <DistributionExportControls
             cycle={cycle}

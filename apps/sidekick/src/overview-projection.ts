@@ -572,6 +572,7 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
       rewardCycleId: null,
       estimatedNetworkRewardSats: null,
       estimatedPoolRewardSats: null,
+      accruedPoolRewardSats: null,
       distributionCheckpoint: null,
       estimatedOperatorFeeSats: null,
       operatorFeeUnavailableReason: "reward-outlook-unavailable",
@@ -616,6 +617,7 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
     estimatedNetworkRewardSats:
       forecast?.globalSats.point ?? (currentEstimate ? outlook?.accrued.globalSats : null) ?? null,
     estimatedPoolRewardSats: checkpointPoolSats,
+    accruedPoolRewardSats: currentEstimate?.grossSats ?? null,
     distributionCheckpoint: checkpointPoolSats === null ? null : targetCheckpoint,
     estimatedOperatorFeeSats: usesForecast
       ? (operatorFeeForecast?.sats.point ?? null)

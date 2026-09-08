@@ -93,6 +93,41 @@ Allocation coverage is explicit:
 The ledger can therefore start producing exact forward records immediately while retaining honest,
 useful older settlement history.
 
+The 2026-09-07 reward-truth correction adds a row-derived `allocation` to each existing ledger
+distribution projection, before payment filtering/pagination; it is not another persisted model.
+It sums actual paid and outstanding account rows with their individual fees. `coverage` is
+`complete`, `partial`, or `unavailable`; a complete amount requires available interpretation and
+recovery, an untruncated evidence window, known account gross and fees, and no combined or
+rolled-forward attribution. Reconcile represented gross against actual collect amounts when a
+collect exists, otherwise against the pool simulation. A collect with an unknown amount is not
+replaced by a simulation. A missing simulation does not invalidate a known collect.
+
+PoX-5 floors pool and account rewards separately. A nonnegative difference strictly below the
+number of distinct `(staker, bucket)` accounts is treated as contract rounding, not missing allocation;
+zero difference is also valid, including a proven empty zero allocation. Negative or larger
+differences remain partial. This amount-only tolerance cannot prove every account was enumerated:
+an omitted dust entitlement may be absorbed within the same strict bound.
+The optional `roundingSats` and `poolBasis` fields report this
+reconciliation (`collected` or `simulation`), also exported as appended CSV columns. Rounding is
+not added to account fees or indexed earned income: the reference manager leaves it reserved in
+`unclaimed-staker-rewards`, outside `earned-fees` and sweepable surplus. `estimated` identifies
+still-unpinned account fees. These amount-coverage labels do not replace historical attribution
+states; departed-member coverage alone does not invalidate fully reconciled account amounts.
+A known partial sum is not a distribution total.
+
+Never infer fees from pool gross minus visible payments, or apply a cycle-wide fee rate to missing
+account rows. Indexed **earned** fee totals count only paid rows; unknown fees stay nullable.
+A cycle earned-fee total is null if any paid fee is unknown, interpretation/recovery is incomplete,
+or its evidence window is truncated; the global known indexed subtotal remains explicitly partial.
+Missing manager interpretation, current live reward reads, or incomplete recovery must not produce
+a `complete`/zero-payments state. The ledger exposes `interpretation-unavailable` and a reason
+instead. Departed membership and evidence-window truncation remain coverage labels; they do not
+reopen a completed distribution with observed payments. Independently, a nonzero or unknown pool
+with no payment evidence still cannot establish completion. A proven zero allocation remains zero.
+Overview separately exposes the current
+conditional pool allocation and the next one-week distribution forecast, and the mobile projected
+fee refers only to that pending distribution, not already-paid cycle income.
+
 ### Withdrawal truth
 
 Bitcoin-L1 payout state is not complete when the manager emits a withdrawal request. Sidekick tracks

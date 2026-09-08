@@ -79,7 +79,8 @@ future explicit archival export may broaden that scope without changing the firs
 - Configure a keyed indexed API before the first backfill. For the default mainnet Hiro source,
   create a free key at [Hiro Platform](https://platform.hiro.so) and set `STACKS_API_KEY` before
   starting Sidekick. Unauthenticated access may be rate-limited during existing-pool recovery.
-- Live observer verification and current-state reconciliation always outrank historical work.
+- History pages and full callback batches yield between batches so HTTP/current work can proceed;
+  this is cooperative scheduling, not a strict priority queue.
 - Backfill is bounded, resumable, idempotent, and restart-safe.
 - Each pass has page, transaction, and wall-clock budgets and honors source-provided retry delays.
 - Work is fair across current members; one long-lived principal cannot starve the rest.
@@ -94,8 +95,9 @@ Every imported event carries one required evidence level:
 - `node-index-verified`: the node transaction index proved canonical inclusion at the exact height
   and index-block hash.
 - `canonical-block-correlated`: the API transaction was absent from the local transaction index,
-  but the local node proved the API's exact canonical block. This is useful historical evidence but
-  must not be described as transaction-index verified.
+  but canonical node block bytes proved transaction inclusion at the exact claimed height and
+  index-block hash. This is inclusion proof, not merely agreement on a block header; it must not
+  be described as transaction-index verified.
 - `indexer-reported`: discovery evidence only; it cannot authorize current state or an operation.
 
 Evidence may be upgraded when stronger local proof later becomes available. It is never silently

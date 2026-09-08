@@ -23,8 +23,10 @@ It does not define manager administration, fees, claims, payouts, withdrawal acc
 events. Those behaviors differ materially among deployed contracts. A trait-compliant manager can
 therefore always receive Sidekick's PoX-5 baseline, but manager-specific reads and transactions need
 runtime capability discovery plus a reviewed behavioral adapter. Executable use of an adapter
-requires the deployed contract's byte-exact source to match an immutable source fingerprint reviewed
-for that capability; that narrow gate never blocks attachment or baseline observation.
+requires an exact or canonical program match to a reviewed artifact, with the reviewed execution
+environment and required callable surface. Canonical recognition uses the existing string-aware
+comment/whitespace normalizer; it is not general semantic equivalence. That narrow gate never
+blocks attachment or baseline observation. Transaction plans continue to bind the deployed raw hash.
 
 The compatibility rule is:
 
@@ -168,7 +170,8 @@ manager-derived accounting views may be unavailable.
 
 One adapter should describe one reusable capability or tightly coupled behavior family, not bless a
 whole contract. Its deployment evidence key is the exact source SHA-256 plus Clarity version/epoch
-and canonical callable interface SHA-256. It must define:
+and canonical callable interface SHA-256. These identify provenance; admission checks the reviewed
+program, execution environment and required functions, not a whole-ABI hash allowlist. It must define:
 
 - exact function, argument, response, and error shapes;
 - authorization and referenced-contract assumptions;
@@ -178,10 +181,11 @@ and canonical callable interface SHA-256. It must define:
 - stale/race/nonce/finality behavior; and
 - contract, regtest, Devnet, and representative deployed-family fixtures.
 
-A transaction can be offered only when these checks pass and the deployed byte-exact source matches
-a fingerprint reviewed into that capability adapter. The fingerprint authorizes one capability,
-not the whole manager or a product version. Operator-run adds a separate exact-source application
-review; it does not weaken manager-adapter admission.
+A transaction can be offered only when these checks pass and the deployed program matches an exact
+or canonical fingerprint reviewed into that capability adapter. The fingerprint admits one capability,
+not the whole manager or a product version. Operator-run requires an approved sealed recipe and
+signing-path review under [ADR 0010](../architecture/decisions/0010-operator-run-execution-envelope.md),
+not a runtime application attestation. It does not weaken manager-adapter admission.
 
 ### Level 3: custom extensions
 

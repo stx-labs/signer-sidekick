@@ -1,7 +1,7 @@
 import type { ManagerCapabilities } from "@stx-labs/signer-sidekick-api-contracts";
 import { describe, expect, it } from "vitest";
+import { calculationResultMatchesTarget } from "../calculation-receipt.js";
 import {
-  calculationResultMatchesTarget,
   factReadsForOperations,
   reviewedRewardManagerAvailable,
   selectRewardRunFee,
@@ -67,6 +67,7 @@ describe("calculationResultMatchesTarget", () => {
 
   it("accepts the exact cycle and calculation height sealed in the recipe", () => {
     expect(calculationResultMatchesTarget(result, "5", 209)).toBe(true);
+    expect(calculationResultMatchesTarget(` \n${result}\n `, "5", 209)).toBe(true);
   });
 
   it("rejects a calculation for a different cycle or checkpoint height", () => {
@@ -77,6 +78,14 @@ describe("calculationResultMatchesTarget", () => {
   it("rejects a successful response that omits the target evidence", () => {
     expect(calculationResultMatchesTarget("(ok true)", "5", 209)).toBe(false);
   });
+
+  it.each([
+    "(err (tuple (calculation-height u209) (stx-cycle u5)))",
+    "(tuple (calculation-height u209) (stx-cycle u5))",
+    "(ok (tuple (calculation-height u209) (stx-cycle u5))) trailing data",
+  ])("rejects target fields without an ok response wrapper: %s", (repr) => {
+    expect(calculationResultMatchesTarget(repr, "5", 209)).toBe(false);
+  });
 });
 
 describe("reviewedRewardManagerAvailable", () => {
@@ -84,7 +93,7 @@ describe("reviewedRewardManagerAvailable", () => {
   const capabilities: ManagerCapabilities = {
     signerManagerTrait: { compatible: true, reason: "test" },
     observedFunctions: { public: [], readOnly: [] },
-    sourceReview: { exactReviewed: true, reason: "test" },
+    sourceReview: { reviewed: true, reason: "test" },
     eventVocabulary: {
       id: "reference-manager-v1",
       normalizationAvailable: true,

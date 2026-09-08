@@ -423,6 +423,57 @@ describe("Stacks API client", () => {
     );
   });
 
+  it.each([
+    "pending",
+    "dropped_replace_by_fee",
+    "dropped_replace_across_fork",
+    "dropped_too_expensive",
+    "dropped_stale_garbage_collect",
+    "dropped_problematic",
+  ])("reads HTTP 200 %s transaction details without execution fields", async (tx_status) => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        tx_id: txId,
+        tx_status,
+        sender_address: "SP000000000000000000002Q6VF78",
+        tx_type: "contract_call",
+        contract_call: {
+          contract_id: "SP000000000000000000002Q6VF78.pox-5",
+          function_name: "delegate-stx",
+          function_args: [{ hex: "0x01000000000000000000000000000001f4", repr: "u500" }],
+        },
+        nonce: 1,
+        fee_rate: "1000",
+        post_conditions: [],
+        sponsored: false,
+        anchor_mode: "any",
+        post_condition_mode: "deny",
+        receipt_time: 1784462580,
+        receipt_time_iso: "2026-07-19T12:03:00.000Z",
+        replaced_by_tx_id: null,
+      }),
+    );
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+
+    await expect(client.getTransactionDetails(txId)).resolves.toEqual({ tx_id: txId, tx_status });
+  });
+
+  it.each([
+    "success",
+    "abort_by_response",
+    "abort_by_post_condition",
+    "unknown",
+    "dropped_unknown",
+  ])("does not accept incomplete or unknown %s details as a mempool record", async (tx_status) => {
+    const txId = `0x${"ab".repeat(32)}`;
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ tx_id: txId, tx_status }));
+    const client = new StacksApiClient("https://api.example.test", undefined, undefined, fetchImpl);
+    await expect(client.getTransactionDetails(txId)).rejects.toThrow(UpstreamSchemaError);
+  });
+
   it("reads historical contract deployments when the indexed API omits contract_call", async () => {
     const txId = `0x${"ab".repeat(32)}`;
     const blockHash = `0x${"cd".repeat(32)}`;

@@ -12,6 +12,8 @@ import {
   rewardRunPrepareRequestSchema,
   rewardRunRecipeSchema,
   rewardRunSchema,
+  type TransactionExecutionSource,
+  transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import type { RewardOperationPlan } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
 import { z } from "zod";
@@ -70,6 +72,7 @@ const childRowSchema = z.object({
     .regex(/^0x[0-9a-f]{64}$/)
     .nullable(),
   provenance: z.enum(["you", "another-caller", "policy-exception"]).nullable(),
+  execution_source: transactionExecutionSourceSchema.nullable(),
   failure_reason: z.string().nullable(),
   updated_at: z.string(),
 });
@@ -441,28 +444,24 @@ export class RewardRunRepository {
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
-  /** Bounded newest-first read for the unified Activity projection. */
-  listForActivity(limit = 201): RewardRun[] {
-    const bounded = Math.max(1, Math.min(10_001, Math.trunc(limit)));
+  /** Maintenance never hydrates terminal history or hides old unfinished authorizations. */
+  listUnfinished(): RewardRun[] {
     const rows = this.db
-      .prepare("SELECT run_id FROM transaction_runs ORDER BY created_at DESC, run_id DESC LIMIT ?")
-      .all(bounded) as Array<{ run_id: string }>;
+      .prepare(`SELECT run_id FROM transaction_runs
+        WHERE status IN ('awaiting-approval', 'approved', 'running', 'paused', 'halted')
+        ORDER BY created_at ASC, run_id ASC`)
+      .all() as Array<{ run_id: string }>;
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
-  /** Bounded transaction IDs signed by operator runs, without hydrating every run and child. */
-  listOwnedTransactionIds(limit = 10_001): string[] {
-    const bounded = Math.max(1, Math.min(100_001, Math.trunc(limit)));
+  /** Ownership must not expire with the history page; read only IDs, never recipes/children. */
+  listOwnedTransactionIds(): string[] {
     const rows = this.db
       .prepare(
-        `SELECT txid FROM (
-           SELECT txid, updated_at FROM transaction_run_children WHERE txid IS NOT NULL
-           UNION ALL
-           SELECT precomputed_txid AS txid, updated_at FROM transaction_run_attempts
-         )
-         GROUP BY txid ORDER BY max(updated_at) DESC, txid DESC LIMIT ?`,
+        `SELECT txid FROM transaction_run_children WHERE txid IS NOT NULL
+         UNION SELECT precomputed_txid AS txid FROM transaction_run_attempts`,
       )
-      .all(bounded) as Array<{ txid: string }>;
+      .all() as Array<{ txid: string }>;
     return rows.map(({ txid }) => txid);
   }
 
@@ -593,6 +592,7 @@ export class RewardRunRepository {
     now: string;
     txid?: `0x${string}` | null;
     provenance?: "you" | "another-caller" | "policy-exception" | null;
+    executionSource?: TransactionExecutionSource | null;
     failureReason?: string | null;
   }): RewardRunChild {
     const current = this.requireChild(input.runId, input.childIndex);
@@ -602,7 +602,7 @@ export class RewardRunRepository {
     const result = this.db
       .prepare(
         `UPDATE transaction_run_children SET status = ?, txid = COALESCE(?, txid),
-           provenance = ?, failure_reason = ?, updated_at = ?
+           provenance = ?, failure_reason = ?, execution_source = ?, updated_at = ?
          WHERE run_id = ? AND child_index = ? AND status = ?`,
       )
       .run(
@@ -610,6 +610,7 @@ export class RewardRunRepository {
         input.txid ?? null,
         input.provenance ?? null,
         input.failureReason ?? null,
+        input.executionSource ?? current.executionSource ?? null,
         input.now,
         input.runId,
         input.childIndex,
@@ -663,7 +664,7 @@ export class RewardRunRepository {
       .prepare(
         `UPDATE transaction_run_children SET status = 'pending', plan_sha256 = NULL,
            plan_json = NULL, materialized_amount_sats = NULL, txid = NULL, provenance = NULL,
-           failure_reason = NULL, updated_at = ?
+           failure_reason = NULL, execution_source = NULL, updated_at = ?
          WHERE run_id = ? AND child_index = ? AND status = 'halted'`,
       )
       .run(now, runId, childIndex);
@@ -787,7 +788,7 @@ export class RewardRunRepository {
     const rows = this.db
       .prepare(
         `SELECT child_index, operation_kind, account_key, maximum_amount_sats, status,
-          materialized_amount_sats, plan_sha256, txid, provenance, failure_reason, updated_at
+          materialized_amount_sats, plan_sha256, txid, provenance, execution_source, failure_reason, updated_at
          FROM transaction_run_children WHERE run_id = ? ORDER BY child_index ASC`,
       )
       .all(runId);
@@ -798,7 +799,7 @@ export class RewardRunRepository {
     const row = this.db
       .prepare(
         `SELECT child_index, operation_kind, account_key, maximum_amount_sats, status,
-          materialized_amount_sats, plan_sha256, txid, provenance, failure_reason, updated_at
+          materialized_amount_sats, plan_sha256, txid, provenance, execution_source, failure_reason, updated_at
          FROM transaction_run_children WHERE run_id = ? AND child_index = ?`,
       )
       .get(runId, childIndex);
@@ -822,6 +823,7 @@ export class RewardRunRepository {
       planSha256: row.plan_sha256,
       txid: row.txid as `0x${string}` | null,
       provenance: row.provenance,
+      executionSource: row.execution_source,
       failureReason: row.failure_reason,
       updatedAt: row.updated_at,
     };

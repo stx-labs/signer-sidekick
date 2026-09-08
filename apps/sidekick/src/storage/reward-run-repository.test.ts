@@ -101,6 +101,34 @@ describe("reward run repository", () => {
     for (const store of stores.splice(0)) store.close();
   });
 
+  it.each([
+    "awaiting-approval",
+    "approved",
+    "running",
+    "paused",
+    "halted",
+  ] as const)("includes %s in maintenance independently of terminal history", async (status) => {
+    const { store } = await openSidekickStore(":memory:", now);
+    stores.push(store);
+    insertRun(store);
+    if (status !== "awaiting-approval")
+      store.rewardRuns.transition({
+        runId,
+        from: ["awaiting-approval"],
+        to: status,
+        now,
+        approvedAt: now,
+        ...(status === "approved"
+          ? {}
+          : { startedAt: now, runtimeExpiresAt: "2026-08-22T18:00:00.000Z" }),
+      });
+    expect(store.rewardRuns.listUnfinished().map((run) => [run.runId, run.status])).toEqual([
+      [runId, status],
+    ]);
+    store.rewardRuns.transition({ runId, from: [status], to: "expired", now, completedAt: now });
+    expect(store.rewardRuns.listUnfinished()).toEqual([]);
+  });
+
   it("persists and re-queues interrupted background preparation", async () => {
     const { store } = await openSidekickStore(":memory:", now);
     stores.push(store);

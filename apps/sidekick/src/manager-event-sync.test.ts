@@ -9,8 +9,9 @@ import {
 } from "@stacks/transactions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
-import { syncManagerEvents } from "./manager-event-sync.js";
+import { managerEventCheckpoint, syncManagerEvents } from "./manager-event-sync.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
+import { nakamotoBlockBytes } from "./test-helpers/nakamoto-block.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
@@ -31,26 +32,9 @@ const transactionOne = await makeSTXTokenTransfer({
 const txOne = `0x${transactionOne.txid()}`;
 const txTwo = `0x${"22".repeat(32)}`;
 
-/** A Nakamoto block (version 1 header, no signer signatures) carrying `transactionOne`. */
+/** A canonical block carrying the event's actual transaction. Header variants are parser tests. */
 function blockBytes(): Uint8Array {
-  const body = transactionOne.serializeBytes();
-  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
-  const view = new DataView(bytes.buffer);
-  bytes.fill(0xab, 0, 206);
-  view.setUint8(0, 1); // header version 1
-  let offset = 206;
-  view.setUint32(offset, 0); // signer_signature count
-  offset += 4;
-  view.setUint16(offset, 8); // pox_treatment BitVec.len
-  offset += 2;
-  view.setUint32(offset, 1); // BitVec.data length
-  offset += 4 + 1;
-  view.setUint32(offset, 0); // problematic_txs count
-  offset += 4;
-  view.setUint32(offset, 1); // transaction count
-  offset += 4;
-  bytes.set(body, offset);
-  return bytes;
+  return nakamotoBlockBytes(transactionOne.serializeBytes());
 }
 const cursorTwo = "8599999:2147483647:2:0";
 const openStores: SidekickStore[] = [];
@@ -172,6 +156,110 @@ afterEach(() => {
 });
 
 describe("manager event synchronization", () => {
+  it("replays generic history and replays again after downgrade/re-enable without duplicating claims", async () => {
+    const sidekickStore = await store();
+    const head = page(txTwo, 20, cvToHex(stringAsciiCV("unrecognized print")), "head", cursorTwo);
+    const history = page(txOne, 0, claimEventHex(), cursorTwo, null);
+    const claim = history.results[0];
+    if (!claim) throw new Error("Fixture must contain a claim");
+    history.results = Array.from({ length: 11 }, (_, event_index) => ({
+      ...claim,
+      event_index,
+    }));
+    const api = {
+      getSmartContractLogs: vi.fn(async (_manager: string, cursor: string | null) =>
+        cursor === null ? head : history,
+      ),
+      getTransaction: vi.fn(async (txId: string) =>
+        transaction(txId, txId === txOne ? 8_600_000 : 8_600_001),
+      ),
+    };
+    const sync = (eventVocabulary: "generic-v1" | "reference-manager-v1", minute: number) =>
+      syncManagerEvents({
+        store: sidekickStore,
+        api,
+        sourceId,
+        chainId: 1,
+        managerPrincipal: manager,
+        eventVocabulary,
+        observedAt: `2026-07-14T12:0${minute}:00.000Z`,
+        pageLimit: 100,
+      });
+    await sync("generic-v1", 0);
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(0);
+    expect(await sync("reference-manager-v1", 1)).toMatchObject({
+      pagesProcessed: 2,
+      replayedEvents: 12,
+      newEvents: 0,
+      stoppedAtKnownOverlap: false,
+    });
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(11);
+    await sync("generic-v1", 2);
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(0);
+    expect(
+      managerEventCheckpoint({
+        store: sidekickStore,
+        sourceId,
+        managerPrincipal: manager,
+        eventVocabulary: "reference-manager-v1",
+      }),
+    ).toBeNull();
+    // The old completed reference cursor exists, and the first page has no decodable events.
+    // Neither is permission to stop before the older claims are reinterpreted.
+    expect(await sync("reference-manager-v1", 3)).toMatchObject({
+      pagesProcessed: 2,
+      replayedEvents: 12,
+      newEvents: 0,
+      stoppedAtKnownOverlap: false,
+    });
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(11);
+    expect(await sync("reference-manager-v1", 4)).toMatchObject({ stoppedAtKnownOverlap: true });
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(11);
+  });
+
+  it("resumes an interrupted vocabulary replay at its saved page", async () => {
+    const sidekickStore = await store();
+    const head = page(txTwo, 1, claimEventHex(), "head", cursorTwo);
+    const history = page(txOne, 1, claimEventHex(), cursorTwo, null);
+    let failOlder = false;
+    const api = {
+      getSmartContractLogs: vi.fn(async (_manager: string, cursor: string | null) => {
+        if (cursor === cursorTwo && failOlder) throw new Error("temporary upstream failure");
+        return cursor === null ? head : history;
+      }),
+      getTransaction: vi.fn(async (txId: string) => transaction(txId, 8_600_000)),
+    };
+    const options = {
+      store: sidekickStore,
+      api,
+      sourceId,
+      chainId: 1,
+      managerPrincipal: manager,
+      pageLimit: 100,
+    };
+    await syncManagerEvents({ ...options, eventVocabulary: "generic-v1", observedAt });
+    failOlder = true;
+    await expect(
+      syncManagerEvents({
+        ...options,
+        eventVocabulary: "reference-manager-v1",
+        observedAt: "2026-07-14T12:01:00.000Z",
+      }),
+    ).rejects.toThrow("temporary upstream failure");
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(1);
+    api.getSmartContractLogs.mockClear();
+    failOlder = false;
+    expect(
+      await syncManagerEvents({
+        ...options,
+        eventVocabulary: "reference-manager-v1",
+        observedAt: "2026-07-14T12:02:00.000Z",
+      }),
+    ).toMatchObject({ resumed: true, pagesProcessed: 1 });
+    expect(api.getSmartContractLogs).toHaveBeenCalledWith(manager, cursorTwo, 100);
+    expect(sidekickStore.listManagerClaimRecords(1, manager)).toHaveLength(2);
+  });
+
   it("commits API event content only after a canonical local transaction witness", async () => {
     const sidekickStore = await store();
     const nodeTransactions = {
@@ -322,9 +410,7 @@ describe("manager event synchronization", () => {
     const sidekickStore = await store();
     const blocks = nodeBlocks();
     // A canonical block that simply does not carry the transaction the API reported.
-    const empty = blockBytes().slice(0, 206 + 4 + 2 + 4 + 1 + 4);
-    const emptyBlock = new Uint8Array(empty.byteLength + 4);
-    emptyBlock.set(empty);
+    const emptyBlock = nakamotoBlockBytes();
     blocks.getNakamotoBlockById.mockResolvedValue(emptyBlock);
     blocks.getNakamotoBlockAtHeight.mockResolvedValue(emptyBlock);
 

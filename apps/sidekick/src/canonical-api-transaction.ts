@@ -1,5 +1,10 @@
-import { proveTransactionInCanonicalBlock } from "./canonical-node-block.js";
-import { type StacksApiClient, type StacksNodeClient, UpstreamHttpError } from "./chain-clients.js";
+import { checkTransactionInCanonicalBlock } from "./canonical-node-block.js";
+import {
+  RateLimitedError,
+  type StacksApiClient,
+  type StacksNodeClient,
+  UpstreamHttpError,
+} from "./chain-clients.js";
 
 type CanonicalApiTransactionNode = Pick<
   StacksNodeClient,
@@ -20,25 +25,41 @@ export type CanonicalApiTransactionLookup =
         indexBlockHash: `0x${string}`;
         success: boolean;
         resultRepr: string;
+        transactionHex: string | null;
+        source: "api-with-node" | "api";
       };
     }
+  // No terminal API receipt, including pending/dropped; not proof of absence from the node mempool.
   | { status: "not-found" }
-  | { status: "unavailable"; reason: string };
+  | {
+      status: "conflict";
+      reason: "reorged" | "absent";
+      blockHeight: number;
+      indexBlockHash: `0x${string}`;
+    }
+  | { status: "unavailable"; reason: string; retryAfterMs?: number };
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "the source returned no diagnostic detail";
+function unavailable(error: unknown): CanonicalApiTransactionLookup {
+  return {
+    status: "unavailable",
+    reason: error instanceof Error ? error.message : "the source returned no diagnostic detail",
+    ...(error instanceof RateLimitedError && error.retryAfterMs !== null
+      ? { retryAfterMs: error.retryAfterMs }
+      : {}),
+  };
 }
 
 /**
- * Uses an indexed API only to locate a transaction, then requires the local node to prove the
- * exact transaction is included in that canonical block. This is the confirmation path for
- * nodes that deliberately run without the derived transaction index.
+ * Coherent configured-API execution evidence, with node corroboration when available.
+ * API-only evidence is opt-in at the caller's durable exact-transaction binding boundary;
+ * public API payload summaries never establish that binding. Positive node conflicts win.
  */
 export async function lookupCanonicalApiTransaction(input: {
   api: CanonicalApiTransactionApi;
   node: CanonicalApiTransactionNode;
   chainId: number;
   txId: `0x${string}`;
+  allowApiEvidence?: boolean | (() => boolean | Promise<boolean>);
 }): Promise<CanonicalApiTransactionLookup> {
   let details: Awaited<ReturnType<CanonicalApiTransactionApi["getTransactionDetails"]>>;
   try {
@@ -51,11 +72,18 @@ export async function lookupCanonicalApiTransaction(input: {
     if (error instanceof UpstreamHttpError && error.status === 404) {
       return { status: "not-found" };
     }
-    return { status: "unavailable", reason: message(error) };
+    return unavailable(error);
   }
 
   if (details.tx_id !== input.txId) {
     return { status: "unavailable", reason: "Configured API returned a different transaction" };
+  }
+  if (
+    details.tx_status !== "success" &&
+    details.tx_status !== "abort_by_response" &&
+    details.tx_status !== "abort_by_post_condition"
+  ) {
+    return { status: "not-found" };
   }
   if (!details.canonical || details.block_hash === null) {
     return { status: "unavailable", reason: "Configured API has no canonical transaction block" };
@@ -73,22 +101,45 @@ export async function lookupCanonicalApiTransaction(input: {
         reason: "Configured API transaction and block records are not coherent",
       };
     }
-    await proveTransactionInCanonicalBlock(input.node, {
+    const receipt = {
+      txid: details.tx_id,
       blockHeight: block.height,
       indexBlockHash: block.index_block_hash,
-      txId: input.txId,
-    });
+      success: details.tx_status === "success",
+      resultRepr: details.tx_result.repr,
+    };
+    let proof: Awaited<ReturnType<typeof checkTransactionInCanonicalBlock>>;
+    try {
+      proof = await checkTransactionInCanonicalBlock(input.node, {
+        blockHeight: block.height,
+        indexBlockHash: block.index_block_hash,
+        txId: input.txId,
+      });
+    } catch (error) {
+      const allowed =
+        typeof input.allowApiEvidence === "function"
+          ? await input.allowApiEvidence()
+          : input.allowApiEvidence;
+      if (!allowed) return unavailable(error);
+      return { status: "observed", value: { ...receipt, transactionHex: null, source: "api" } };
+    }
+    if (proof.status !== "included") {
+      return {
+        status: "conflict",
+        reason: proof.status,
+        blockHeight: block.height,
+        indexBlockHash: block.index_block_hash,
+      };
+    }
     return {
       status: "observed",
       value: {
-        txid: details.tx_id,
-        blockHeight: block.height,
-        indexBlockHash: block.index_block_hash,
-        success: details.tx_status === "success",
-        resultRepr: details.tx_result.repr,
+        ...receipt,
+        transactionHex: proof.transaction.serialize(),
+        source: "api-with-node",
       },
     };
   } catch (error) {
-    return { status: "unavailable", reason: message(error) };
+    return unavailable(error);
   }
 }

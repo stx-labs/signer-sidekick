@@ -173,14 +173,16 @@ export function missingReferenceManagerFunctions(contractInterface: ContractInte
 export function inspectManagerCapabilities(input: {
   contractInterface: ContractInterface;
   sourceSha256: string;
-  exactSourceReviewed: boolean;
+  sourceReviewed: boolean;
   sourceReviewReason: string;
+  sourceMatch?: "exact" | "canonical" | "unknown";
+  reviewedArtifactId?: string | null;
 }): ManagerCapabilities {
   const functions = availableFunctions(input.contractInterface);
   const actions: ManagerActionCapability[] = CAPABILITY_DEFINITIONS.map((definition) => {
     const missing = missingFunctions(functions, definition.functions);
     const interfaceAvailable = missing.length === 0;
-    const executionAvailable = interfaceAvailable && input.exactSourceReviewed;
+    const executionAvailable = interfaceAvailable && input.sourceReviewed;
     return {
       id: definition.id,
       interfaceAvailable,
@@ -195,9 +197,9 @@ export function inspectManagerCapabilities(input: {
         : null,
       reason: !interfaceAvailable
         ? `Manager is missing required ${missing.length === 1 ? "function" : "functions"}: ${missing.join(", ")}`
-        : input.exactSourceReviewed
-          ? `The deployed source exactly matches the reviewed ${definition.adapterId} capability`
-          : `The interface is present, but the deployed byte-exact source is not reviewed for ${definition.adapterId}`,
+        : input.sourceReviewed
+          ? `The deployed program matches the reviewed ${definition.adapterId} capability`
+          : `The interface is present, but the deployed program is not reviewed for ${definition.adapterId}`,
     };
   });
   const observedPublic = [
@@ -216,17 +218,17 @@ export function inspectManagerCapabilities(input: {
   ].sort();
   const eventVocabulary = {
     id: "reference-manager-v1" as const,
-    normalizationAvailable: input.exactSourceReviewed,
-    adapter: input.exactSourceReviewed
+    normalizationAvailable: input.sourceReviewed,
+    adapter: input.sourceReviewed
       ? {
           id: "reference-manager-print-events",
           revision: 1,
           reviewedSourceSha256: input.sourceSha256,
         }
       : null,
-    reason: input.exactSourceReviewed
-      ? "The deployed source exactly matches the reviewed reference-manager print-event vocabulary"
-      : "Manager print events remain generic because the deployed byte-exact source is not reviewed for the reference-manager event vocabulary",
+    reason: input.sourceReviewed
+      ? "The deployed program matches the reviewed reference-manager print-event vocabulary"
+      : "Manager print events remain generic because the deployed program is not reviewed for the reference-manager event vocabulary",
   };
   return {
     signerManagerTrait: signerManagerTraitCompatibility(input.contractInterface),
@@ -235,7 +237,9 @@ export function inspectManagerCapabilities(input: {
       readOnly: observedReadOnly,
     },
     sourceReview: {
-      exactReviewed: input.exactSourceReviewed,
+      reviewed: input.sourceReviewed,
+      match: input.sourceMatch ?? "unknown",
+      artifactId: input.reviewedArtifactId ?? null,
       reason: input.sourceReviewReason,
       clarityVersion: input.contractInterface.clarity_version ?? null,
       epoch: input.contractInterface.epoch ?? null,

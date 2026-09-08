@@ -74,6 +74,18 @@ export interface ApiCredential {
   value: string;
 }
 
+/** Roles may share a read only when the full base URL and effective credentials agree. */
+export function indexedApiMatchesReference(config: SidekickConfig): boolean {
+  if (!config.hiroReferenceApiUrl) return false;
+  const indexed = indexedApiCredential(config);
+  const reference = hiroReferenceApiCredential(config);
+  return (
+    config.apiUrl.replace(/\/$/, "") === config.hiroReferenceApiUrl.replace(/\/$/, "") &&
+    (indexed?.headerName.toLowerCase() ?? null) === (reference?.headerName.toLowerCase() ?? null) &&
+    (indexed?.value ?? null) === (reference?.value ?? null)
+  );
+}
+
 const defaultNetworkIds: Record<SidekickNetwork, number> = {
   mainnet: 1,
   testnet: 0x80000000,

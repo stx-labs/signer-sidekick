@@ -45,8 +45,16 @@ export function RewardFeeLedger({
   }> = [
     {
       key: "cycle",
-      label: currentCycle ? `Earned in cycle ${currentCycle.cycle}` : "Earned this cycle",
-      value: amount(currentCycle?.operatorFeeSats ?? "0"),
+      label: currentCycle
+        ? `${currentCycle.coverage === "historical-coverage-incomplete" ? "Known fees" : "Earned"} in cycle ${currentCycle.cycle}`
+        : "Earned this cycle",
+      value: amount(currentCycle?.operatorFeeSats ?? null),
+      sub:
+        currentCycle?.operatorFeeSats === null ? (
+          <span className="muted">
+            cycle fee total unavailable: payment fee evidence is incomplete
+          </span>
+        ) : undefined,
     },
     {
       key: "all-time",

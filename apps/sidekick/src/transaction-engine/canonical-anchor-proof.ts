@@ -148,19 +148,3 @@ export async function proveCanonicalAnchorRelationship(
   );
   return proof.status === "proven" ? { ...proof, plannedAnchor, liveAnchor } : proof;
 }
-
-/** Proves a stored local inclusion is on the current live anchor's canonical ancestry. */
-export async function proveCanonicalInclusionRelationship(
-  api: CanonicalAnchorProofApi,
-  inclusion: Pick<CanonicalStacksBlockReference, "stacksBlockHeight" | "indexBlockHash">,
-  liveAnchor: ChainAnchor,
-  options: { maximumAttempts?: number } = {},
-): Promise<CanonicalReferenceProof> {
-  const maximumAttempts = z
-    .number()
-    .int()
-    .min(1)
-    .max(3)
-    .parse(options.maximumAttempts ?? 2);
-  return await proveCanonicalReferenceRelationship(api, inclusion, liveAnchor, maximumAttempts);
-}

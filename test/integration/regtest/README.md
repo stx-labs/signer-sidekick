@@ -1,7 +1,7 @@
 # PoX-5 contract harness
 
-`pnpm test:regtest` runs the deterministic Clarinet lifecycle used by CI and the production-image
-build. It uses pinned PoX-5, sBTC, and generated reference-manager sources and requires no external
+`pnpm test:regtest` runs the deterministic Clarinet lifecycle used by CI and release validation.
+It uses pinned PoX-5, sBTC, and generated reference-manager sources and requires no external
 node, API, signer, or credentials.
 
 The lifecycle covers registration, STX position changes, reward calculation and claims, direct and

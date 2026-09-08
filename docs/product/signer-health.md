@@ -17,9 +17,24 @@ detailed signer-network exploration belongs in [Slotwatch](https://slotwatch.dev
 
 Sidekick polls cheap local node and signer endpoints every five seconds. Public/configured API
 references are refreshed every 30 seconds and back off to at least 60 seconds after a rate-limit
-response. Their original `checkedAt` time is retained between polls; reusing a reference sample
+response, honoring a finite Retry-After up to five minutes. Their original successful `checkedAt`
+time is retained between polls; reusing a reference sample
 never counts as an additional failure or independent source. Browser pages read the server-owned
 snapshot every 15 seconds while visible. Closing the browser does not stop collection.
+
+When indexed and comparison sources have the same endpoint and effective credentials, the
+collector shares the existing 30-second background API status read instead of issuing another
+request. Sharing is scoped to the runtime client (network, URL and credentials); it never caches
+fresh signing or canonical-evidence reads. Different credentials or base paths require separate
+availability reads, but the same origin still counts as only one network-comparison witness.
+The background advisory client disables nested retries and caps each cooldown at five minutes.
+See [Operations](../operator/operations.md#api-traffic) for the bounded cached-failure extension.
+
+GETs reuse the published diagnosis and original evidence timestamps; they do not recompute finding
+windows and database aggregates on every page poll. Collection publishes the next diagnosis,
+retains the last result on a transient failure, and cannot publish an old deployment's in-flight
+result under new settings. Database retention maintenance runs at most once every five minutes,
+not on every five-second collection. Evidence age remains visible; a cache hit is not a new sample.
 
 | Source | Role | Authority |
 | --- | --- | --- |
@@ -121,11 +136,12 @@ All operator health API routes require the existing operator credential:
 
 Process probes are separate from authenticated operator health data: `/health/live` reports process
 liveness, `/health/ready` reports that Sidekick and its database can serve requests, and
-`/health/operational` verifies the current node/manager connection, manager preflight, and the
-availability of node-health evidence. It returns the current diagnostic status in its body, but a
-warning finding does not make the probe fail; connection/preflight failure or an
-`unavailable` health state does. A node outage must not make `/health/ready` fail because Sidekick
-remains the diagnostic surface during that outage.
+`/health/operational` verifies completed worker startup, the current node/manager connection,
+manager preflight, and the availability of node-health evidence. It returns the current diagnostic
+status in its body, but a warning finding does not make the probe fail; connection/preflight failure or an
+`unavailable` health state does. Pending or failed worker startup returns HTTP 503 with
+`operational-startup-pending` until a background startup attempt succeeds. A node outage must not
+make `/health/ready` fail because Sidekick remains the diagnostic surface during that outage.
 
 The five-second collector starts with the Sidekick control plane and remains server-owned even when
 the manager connection is not yet operational or no browser is open. Manager readiness gates

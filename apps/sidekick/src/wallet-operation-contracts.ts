@@ -11,16 +11,10 @@ export type WalletOperationAuthority =
 
 export interface WalletOperationContract {
   action: BrowserWalletIntentAction;
-  lifecycle: "recurring";
   /** Manager capability, or null for a protocol-global operation. */
   capability: ManagerActionCapabilityId | null;
   authority: WalletOperationAuthority;
   functionName: string | null;
-  completionEvidence:
-    | "contract-source"
-    | "canonical-post-state"
-    | "immutable-engine-job"
-    | "sealed-wallet-proposal";
 }
 
 /**
@@ -31,75 +25,57 @@ export interface WalletOperationContract {
 export const WALLET_OPERATION_CONTRACTS = {
   "register-self": {
     action: "register-self",
-    lifecycle: "recurring",
     capability: "register-self",
     authority: "manager-admin-and-signer-grant",
     functionName: "register-self",
-    completionEvidence: "canonical-post-state",
   },
   "add-admin": {
     action: "add-admin",
-    lifecycle: "recurring",
     capability: "update-admin",
     authority: "manager-admin",
     functionName: "update-admin",
-    completionEvidence: "canonical-post-state",
   },
   "remove-admin": {
     action: "remove-admin",
-    lifecycle: "recurring",
     capability: "update-admin",
     authority: "manager-admin",
     functionName: "update-admin",
-    completionEvidence: "canonical-post-state",
   },
   "update-fees": {
     action: "update-fees",
-    lifecycle: "recurring",
     capability: "update-fees",
     authority: "manager-admin",
     functionName: "update-fees",
-    completionEvidence: "canonical-post-state",
   },
   "withdraw-fees": {
     action: "withdraw-fees",
-    lifecycle: "recurring",
     capability: "withdraw-fees",
     authority: "manager-admin",
     functionName: "withdraw-fees",
-    completionEvidence: "canonical-post-state",
   },
   "sweep-fee-refunds": {
     action: "sweep-fee-refunds",
-    lifecycle: "recurring",
     capability: "sweep-fee-refunds",
     authority: "manager-admin",
     functionName: "sweep-fee-refunds",
-    completionEvidence: "canonical-post-state",
   },
   "claim-rewards": {
     action: "claim-rewards",
-    lifecycle: "recurring",
     capability: "reference-reward-claims",
     authority: "permissionless",
     functionName: "claim-rewards",
-    completionEvidence: "sealed-wallet-proposal",
   },
   "claim-staker-rewards": {
     action: "claim-staker-rewards",
-    lifecycle: "recurring",
     capability: "reference-reward-claims",
     authority: "permissionless",
     functionName: "claim-staker-rewards",
-    completionEvidence: "canonical-post-state",
   },
   "calculate-rewards": {
     action: "calculate-rewards",
-    lifecycle: "recurring",
     capability: null,
     authority: "permissionless",
     functionName: "calculate-rewards",
-    completionEvidence: "canonical-post-state",
   },
 } as const satisfies Record<BrowserWalletIntentAction, WalletOperationContract>;
 

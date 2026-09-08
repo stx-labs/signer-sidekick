@@ -63,6 +63,7 @@ export type {
   RewardRunRecipe,
   RewardRunRecipeChild,
   RewardRunStatus,
+  TransactionExecutionSource,
 } from "./reward-runs.js";
 export {
   rewardRunAccountBoundSchema,
@@ -77,6 +78,7 @@ export {
   rewardRunRecipeSchema,
   rewardRunSchema,
   rewardRunStatusSchema,
+  transactionExecutionSourceSchema,
 } from "./reward-runs.js";
 export type {
   ActivityCoverage,
@@ -177,6 +179,7 @@ export {
   browserWalletIntentSchema,
   browserWalletIntentSubmissionRequestSchema,
   browserWalletTransactionSchema,
+  browserWalletVerificationSchema,
   connectionAssessmentSchema,
   connectionOutcomeCodeSchema,
   contextualActionSchema,

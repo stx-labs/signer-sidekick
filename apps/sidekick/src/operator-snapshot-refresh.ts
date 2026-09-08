@@ -41,6 +41,7 @@ export interface SnapshotRefreshMetricValues {
   snapshotGeneratedTimestampSeconds: number;
   snapshotAgeSeconds: number;
   snapshotFresh: 0 | 1;
+  refreshInProgress: 0 | 1;
   sourcePositions: {
     nodeStacksHeight: number;
     apiStacksHeight: number;
@@ -73,18 +74,23 @@ export class SnapshotRefreshMetricsTracker {
   private retryBackoffSeconds = 0;
   private lastSuccessTimestampSeconds = 0;
   private snapshotGeneratedTimestampSeconds = 0;
+  private refreshInProgress: 0 | 1 = 0;
   private sourcePositions: SnapshotRefreshMetricValues["sourcePositions"] = null;
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly freshForMs = DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
+    // A collection can itself occupy most of the interval (about 27s on node-vm).
+    // Allow one collection plus one scheduled wait; failures/last-success remain separate.
+    private readonly freshForMs = 2 * DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
   ) {}
 
   recordAttempt(): void {
     this.attemptsTotal += 1;
+    this.refreshInProgress = 1;
   }
 
   recordSuccess(value: unknown): void {
+    this.refreshInProgress = 0;
     this.successesTotal += 1;
     this.consecutiveFailures = 0;
     this.retryBackoffSeconds = 0;
@@ -122,6 +128,7 @@ export class SnapshotRefreshMetricsTracker {
   }
 
   recordFailure(retryInMs: number): void {
+    this.refreshInProgress = 0;
     this.failuresTotal += 1;
     this.consecutiveFailures += 1;
     this.retryBackoffSeconds = retryInMs / 1_000;
@@ -133,9 +140,7 @@ export class SnapshotRefreshMetricsTracker {
         ? Math.max(0, this.now() / 1_000 - this.snapshotGeneratedTimestampSeconds)
         : 0;
     const snapshotFresh =
-      this.lastSuccessTimestampSeconds > 0 &&
-      this.consecutiveFailures === 0 &&
-      this.now() - this.lastSuccessTimestampSeconds * 1_000 <= this.freshForMs
+      this.snapshotGeneratedTimestampSeconds > 0 && snapshotAgeSeconds * 1_000 <= this.freshForMs
         ? 1
         : 0;
     return {
@@ -148,6 +153,7 @@ export class SnapshotRefreshMetricsTracker {
       snapshotGeneratedTimestampSeconds: this.snapshotGeneratedTimestampSeconds,
       snapshotAgeSeconds,
       snapshotFresh,
+      refreshInProgress: this.refreshInProgress,
       sourcePositions: this.sourcePositions,
     };
   }

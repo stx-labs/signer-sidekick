@@ -1,5 +1,9 @@
 # Settings v2 — implementation handoff
 
+Historical design handoff, not current operator instructions. Settings v2 is implemented; use the
+[React page](../../apps/dashboard/src/features/settings/settings-page.tsx) and
+[Operations](../../docs/operator/operations.md) for current controls and wording.
+
 Target: rebuild `apps/dashboard/src/features/settings/` to match the v2 mockups. APIs are unchanged;
 this is layout, grouping, and copy. Same principles as the Rewards v2 page: one row paradigm, the
 UI shows state that changes, standing explanations live in ⓘ tooltips, actions only where they act.

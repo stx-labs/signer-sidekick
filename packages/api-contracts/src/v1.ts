@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type EngineChainAnchor, engineChainAnchorSchema } from "./engine.js";
+import { transactionExecutionSourceSchema } from "./reward-runs.js";
 
 export const connectionOutcomeCodeSchema = z.enum([
   "node-unreachable",
@@ -539,38 +540,12 @@ export const healthSnapshotSchema = z.looseObject({
 });
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 
-export type BrowserWalletIntentAction =
-  | "register-self"
-  | "add-admin"
-  | "remove-admin"
-  | "update-fees"
-  | "withdraw-fees"
-  | "sweep-fee-refunds"
-  | "claim-rewards"
-  | "claim-staker-rewards"
-  | "calculate-rewards";
-export type BrowserWalletIntentNetwork = "mainnet" | "testnet" | "devnet" | "regtest";
-export type BrowserWalletConnectNetwork = BrowserWalletIntentNetwork;
-export type BrowserWalletIntentCreateRequest =
-  | { action: "register-self"; actorPrincipal: string }
-  | { action: "add-admin" | "remove-admin"; actorPrincipal: string; adminPrincipal: string }
-  | { action: "update-fees"; actorPrincipal: string; feeBips: string }
-  | {
-      action: "withdraw-fees";
-      actorPrincipal: string;
-      amountSats: string;
-      recipient: string;
-    }
-  | { action: "sweep-fee-refunds"; actorPrincipal: string; recipient: string }
-  | { action: "claim-rewards"; actorPrincipal: string; jobId?: string | undefined }
-  | { action: "calculate-rewards"; actorPrincipal: string }
-  | {
-      action: "claim-staker-rewards";
-      actorPrincipal: string;
-      stakerPrincipal: string;
-      rewardCycle: string;
-      bondIndex: string | null;
-    };
+export type BrowserWalletIntentAction = z.infer<typeof browserWalletIntentActionSchema>;
+export type BrowserWalletIntentNetwork = z.infer<typeof browserWalletIntentNetworkSchema>;
+export type BrowserWalletConnectNetwork = z.infer<typeof browserWalletConnectNetworkSchema>;
+export type BrowserWalletIntentCreateRequest = z.infer<
+  typeof browserWalletIntentCreateRequestSchema
+>;
 export type BrowserWalletIntentRequest = BrowserWalletIntentCreateRequest;
 
 export interface SignerGrantSession {
@@ -598,91 +573,9 @@ export interface SignerGrantSession {
     };
   };
 }
-export type BrowserWalletIntentStatus =
-  | "prepared"
-  | "submitted"
-  | "mempool"
-  | "confirmed"
-  | "complete"
-  | "expired"
-  | "superseded"
-  | "failed"
-  | "reobserve";
-
-export type BrowserWalletTransaction = {
-  method: "stx_callContract";
-  params: {
-    contract: string;
-    functionName:
-      | "register-self"
-      | "update-admin"
-      | "update-fees"
-      | "withdraw-fees"
-      | "sweep-fee-refunds"
-      | "claim-rewards"
-      | "claim-staker-rewards"
-      | "calculate-rewards";
-    functionArgs: string[];
-    network: BrowserWalletConnectNetwork;
-    address: string;
-    sponsored: false;
-    postConditionMode: "deny";
-    postConditions: string[];
-  };
-};
-
-export interface BrowserWalletIntent {
-  schemaVersion: 2;
-  id: string;
-  action: BrowserWalletIntentAction;
-  network: BrowserWalletIntentNetwork;
-  chainId: number;
-  requiredSender: string;
-  createdAt: string;
-  expiresAt: string;
-  transaction: BrowserWalletTransaction;
-  request: BrowserWalletIntentRequest;
-  /** Immutable operation-specific completion binding. */
-  binding?:
-    | {
-        kind: "calculate-rewards";
-        pox5ContractId: string;
-        targetRewardCycle: number;
-        targetCheckpoint: "first-half" | "second-half";
-        expectedLastRewardComputeBurnHeight: number;
-      }
-    | undefined;
-  review: {
-    title: string;
-    summary: string;
-    expectedPostState: string;
-    fields: Array<{ label: string; value: string }>;
-  };
-  seal: {
-    factsSha256: string;
-    manifestSha256: string;
-  };
-  status: BrowserWalletIntentStatus;
-  txid: string | null;
-  verification: null | {
-    outcome:
-      | "submitted"
-      | "mempool"
-      | "canonical-success"
-      | "complete"
-      | "not-found"
-      | "noncanonical"
-      | "superseded"
-      | "mismatch"
-      | "abort"
-      | "unavailable";
-    observedAt: string;
-    canonical: boolean | null;
-    blockHeight: number | null;
-    indexBlockHash: string | null;
-    detail: string;
-  };
-}
+export type BrowserWalletIntentStatus = BrowserWalletIntent["status"];
+export type BrowserWalletTransaction = z.infer<typeof browserWalletTransactionSchema>;
+export type BrowserWalletIntent = z.infer<typeof browserWalletIntentSchema>;
 
 interface Eligibility {
   cycleId: number;
@@ -723,7 +616,9 @@ export interface ManagerCapabilities {
     readOnly: string[];
   };
   sourceReview: {
-    exactReviewed: boolean;
+    reviewed: boolean;
+    match?: "exact" | "canonical" | "unknown";
+    artifactId?: string | null;
     reason: string;
     clarityVersion?: string | null;
     epoch?: string | null;
@@ -1350,7 +1245,12 @@ function isManagerCapabilities(value: unknown): value is ManagerCapabilities {
     !isStringArray(observed.public) ||
     !isStringArray(observed.readOnly) ||
     !isRecord(sourceReview) ||
-    typeof sourceReview.exactReviewed !== "boolean" ||
+    typeof sourceReview.reviewed !== "boolean" ||
+    (sourceReview.match !== undefined &&
+      !["exact", "canonical", "unknown"].includes(String(sourceReview.match))) ||
+    (sourceReview.artifactId !== undefined &&
+      sourceReview.artifactId !== null &&
+      typeof sourceReview.artifactId !== "string") ||
     typeof sourceReview.reason !== "string" ||
     (sourceReview.clarityVersion !== undefined &&
       sourceReview.clarityVersion !== null &&
@@ -2329,6 +2229,12 @@ export const overviewRewardsSummarySchema = z
       .string()
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
+    /** Current conditional allocation, independent of the next-calculation forecast. */
+    accruedPoolRewardSats: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/)
+      .nullable()
+      .optional(),
     distributionCheckpoint: z.enum(["first-half", "second-half"]).nullable(),
     estimatedOperatorFeeSats: z
       .string()
@@ -2749,6 +2655,32 @@ export const browserWalletTransactionSchema = z.union([
     .strict(),
 ]);
 
+export const browserWalletVerificationSchema = z
+  .object({
+    outcome: z.enum([
+      "submitted",
+      "mempool",
+      "canonical-success",
+      "complete",
+      "not-found",
+      "noncanonical",
+      "superseded",
+      "mismatch",
+      "abort",
+      "unavailable",
+    ]),
+    observedAt: z.iso.datetime(),
+    canonical: z.boolean().nullable(),
+    blockHeight: z.number().int().nonnegative().nullable(),
+    indexBlockHash: z
+      .string()
+      .regex(/^0x[0-9a-f]{64}$/)
+      .nullable(),
+    detail: z.string().min(1),
+    executionSource: transactionExecutionSourceSchema.optional(),
+  })
+  .strict();
+
 export const browserWalletIntentSchema = z
   .object({
     schemaVersion: z.literal(2),
@@ -2803,31 +2735,7 @@ export const browserWalletIntentSchema = z
       .string()
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
-    verification: z
-      .object({
-        outcome: z.enum([
-          "submitted",
-          "mempool",
-          "canonical-success",
-          "complete",
-          "not-found",
-          "noncanonical",
-          "superseded",
-          "mismatch",
-          "abort",
-          "unavailable",
-        ]),
-        observedAt: z.iso.datetime(),
-        canonical: z.boolean().nullable(),
-        blockHeight: z.number().int().nonnegative().nullable(),
-        indexBlockHash: z
-          .string()
-          .regex(/^0x[0-9a-f]{64}$/)
-          .nullable(),
-        detail: z.string().min(1),
-      })
-      .strict()
-      .nullable(),
+    verification: browserWalletVerificationSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -2925,6 +2833,7 @@ export const rewardLedgerProvenanceSchema = z.enum(["you", "another-caller", "un
 export type RewardLedgerProvenance = z.infer<typeof rewardLedgerProvenanceSchema>;
 
 export const rewardLedgerDistributionStatusSchema = z.enum([
+  "interpretation-unavailable",
   "needs-attention",
   "accruing",
   "waiting-calculation",
@@ -3084,6 +2993,19 @@ export const rewardLedgerDistributionSchema = z
       .regex(/^(?:0|[1-9][0-9]*)$/)
       .nullable(),
     feeEvidence: z.enum(["locked", "provisional", "unknown"]),
+    /** Row-derived totals before pagination; missing coverage must never become a fee remainder. */
+    allocation: z
+      .object({
+        toStakersSats: ledgerSatsSchema.nullable(),
+        operatorFeeSats: ledgerSatsSchema.nullable(),
+        coverage: z.enum(["complete", "partial", "unavailable"]),
+        estimated: z.boolean(),
+        /** Separately floored pool/account difference; not earned operator fees. */
+        roundingSats: ledgerSatsSchema.nullable().optional(),
+        poolBasis: z.enum(["collected", "simulation"]).nullable().optional(),
+      })
+      .strict()
+      .optional(),
     payments: z
       .object({
         made: z.number().int().nonnegative(),
@@ -3101,7 +3023,8 @@ export const rewardLedgerDistributionSchema = z
         returned: z.number().int().nonnegative(),
         distributedSats: ledgerSatsSchema,
         outstandingSats: ledgerSatsSchema,
-        operatorFeeSats: ledgerSatsSchema,
+        /** Known indexed paid fees only, not a pending distribution's estimated allocation. */
+        operatorFeeSats: ledgerSatsSchema.nullable(),
       })
       .strict(),
     status: rewardLedgerDistributionStatusSchema,
@@ -3121,7 +3044,7 @@ export const rewardLedgerCycleSchema = z
     feeEvidence: z.enum(["locked", "provisional", "unknown"]),
     collectedSats: ledgerSatsSchema,
     distributedSats: ledgerSatsSchema,
-    operatorFeeSats: ledgerSatsSchema,
+    operatorFeeSats: ledgerSatsSchema.nullable(),
     outstandingSats: ledgerSatsSchema,
     coverage: rewardLedgerCoverageSchema,
     distributions: z.array(rewardLedgerDistributionSchema).max(2),
@@ -3133,6 +3056,13 @@ export const rewardLedgerSchema = z
   .object({
     schemaVersion: z.literal(1),
     generatedAt: z.iso.datetime(),
+    context: z
+      .object({
+        burnBlockTiming: healthSnapshotSchema.shape.burnBlockTiming,
+        rewardRealizations: z.array(rewardCalculationRealizationSchema),
+      })
+      .strict()
+      .optional(),
     managerPrincipal: z.string().min(1),
     network: z.string().min(1),
     pox5ContractId: z.string().min(1).nullable(),
@@ -3179,7 +3109,7 @@ export const rewardLedgerSchema = z
           .string()
           .regex(/^(?:0|[1-9][0-9]*)$/)
           .nullable(),
-        earnedIndexedSats: ledgerSatsSchema,
+        earnedIndexedSats: ledgerSatsSchema.nullable(),
         indexedPaymentCount: z.number().int().nonnegative(),
         unmatchedPaymentCount: z.number().int().nonnegative(),
         historyComplete: z.boolean(),
@@ -3255,6 +3185,7 @@ export const gasWalletSweepSchema = z
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
     broadcastAmbiguous: z.boolean(),
+    executionSource: transactionExecutionSourceSchema.nullable().optional(),
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     approvedAt: z.iso.datetime().nullable(),

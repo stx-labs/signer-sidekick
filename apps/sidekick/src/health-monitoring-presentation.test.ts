@@ -172,6 +172,29 @@ describe("Signer Health v2 diagnosis", () => {
       expect.objectContaining({ classification: "suspected-network-wide" }),
     );
 
+    const sameHostDifferentCredentials = buildHealthSnapshot({
+      observations: samples.map((sample) => ({
+        ...sample,
+        configuredApi: sample.hiro,
+        configuredApiSource: sample.hiroSource,
+      })),
+      config: {
+        ...config,
+        apiUrl: config.hiroReferenceApiUrl ?? config.apiUrl,
+        apiKey: "indexed-key",
+        apiKeyOrigin: new URL(config.hiroReferenceApiUrl ?? config.apiUrl).origin,
+        hiroReferenceApiKey: "comparison-key",
+        hiroReferenceApiKeyHeader: "x-api-key",
+        hiroReferenceApiKeyOrigin: new URL(config.hiroReferenceApiUrl ?? config.apiUrl).origin,
+      },
+      burnBlockTiming: null,
+      operator,
+    });
+    expect(sameHostDifferentCredentials.findings).not.toContainEqual(
+      expect.objectContaining({ classification: "suspected-network-wide" }),
+    );
+    expect(sameHostDifferentCredentials.configuredApi.distinctFromReference).toBe(false);
+
     const transientPeerAlignment = buildHealthSnapshot({
       observations: samples.map((sample, index) => ({
         ...sample,

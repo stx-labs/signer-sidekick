@@ -80,7 +80,7 @@ Connection success triggers a separate, read-only deployment-requirements assess
 replacement setup wizard, does not persist checklist progress, and does not add metrics or observer
 delivery to the five connection gates. It checks live behavior rather than trusting operator claims:
 
-- the required node RPC and local transaction-index endpoint;
+- the required node RPC and optional local transaction-index endpoint;
 - recommended node Prometheus and signer `/info`, `/heartbeat`, and `/metrics` endpoints; and
 - recommended Sidekick event delivery, which passes only after a callback is verified against the
   local node.
@@ -125,6 +125,14 @@ to parse prose:
 cannot be refreshed because the node is temporarily unavailable, retain its last-successful anchor
 and timestamp as stale evidence rather than converting it into either a fresh success or a
 configuration failure.
+
+The process reuses its existing background-refresh loop to call the cached, single-flight
+assessor without an HTTP request. A returned `unavailable` result applies failure backoff, not a
+successful-start notification. Connected assessment awaits the existing start-once operational
+startup; startup rejection is logged and retried. Hard refusals never authorize worker startup.
+The connection loop and existing snapshot loop each cap ordinary backoff at five minutes, so
+combined recovery after upstream restoration can take about ten minutes plus request/startup
+time. Shutdown drains connection assessment/startup before closing workers and storage.
 
 ## Entry behavior
 

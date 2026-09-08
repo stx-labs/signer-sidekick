@@ -9,7 +9,8 @@ reported and ignored without replacing built-in data.
 
 V1 profiles are operator configuration. They may guide read-only inspection and deterministic
 setup artifacts, but cannot enable executable behavior. Operator-run separately requires a
-code-backed capability adapter and an exact-source-reviewed Sidekick release.
+code-backed capability adapter, an approved sealed recipe and signing-path review under
+[ADR 0010](../docs/architecture/decisions/0010-operator-run-execution-envelope.md).
 
 See [deployment](../docs/operator/deployment.md) and
 [ADR 0007](../docs/architecture/decisions/0007-network-compatibility.md).

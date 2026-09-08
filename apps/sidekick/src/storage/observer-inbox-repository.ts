@@ -154,6 +154,12 @@ export interface ObserverInboxStatus {
 }
 
 export class ObserverInboxRepository {
+  private retainedStatus: {
+    revision: number;
+    dataVersion: number;
+    value: ObserverInboxStatus;
+  } | null = null;
+  private revision = 0;
   constructor(private readonly db: DatabaseSync) {}
 
   acceptDelivery(
@@ -307,11 +313,13 @@ export class ObserverInboxRepository {
         }
       }
       this.db.exec("COMMIT");
+      this.revision += 1;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    this.prunePayloads(value.receivedAt);
+    if (accepted.state !== "observer-claimed" && accepted.state !== "processing")
+      this.prunePayloads(value.receivedAt);
     return {
       deliveryId: accepted.delivery_id,
       duplicate: accepted.delivery_id !== proposedDeliveryId,
@@ -325,6 +333,17 @@ export class ObserverInboxRepository {
     const cutoff = new Date(
       Date.parse(parsedObservedAt) - OBSERVER_RAW_PAYLOAD_RETENTION_MS,
     ).toISOString();
+    const retained = this.db
+      .prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(payload_bytes), 0) AS bytes,
+      MIN(COALESCE(completed_at, updated_at)) AS oldest FROM observer_deliveries
+      WHERE state IN ('node-verified', 'quarantined', 'expired') AND payload_pruned = 0`)
+      .get() as { count: number; bytes: number; oldest: string | null };
+    if (
+      retained.count <= MAX_RETAINED_OBSERVER_RAW_PAYLOADS &&
+      retained.bytes <= MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES &&
+      (retained.oldest === null || retained.oldest >= cutoff)
+    )
+      return 0;
     const result = this.db
       .prepare(
         `WITH retained AS (
@@ -354,6 +373,7 @@ export class ObserverInboxRepository {
         MAX_RETAINED_OBSERVER_RAW_PAYLOADS,
         MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES,
       );
+    if (Number(result.changes) > 0) this.revision += 1;
     return Number(result.changes);
   }
 
@@ -367,6 +387,7 @@ export class ObserverInboxRepository {
          WHERE state = 'processing'`,
       )
       .run(parsedRecoveredAt, parsedRecoveredAt);
+    if (Number(result.changes) > 0) this.revision += 1;
     return Number(result.changes);
   }
 
@@ -396,6 +417,7 @@ export class ObserverInboxRepository {
       const delivery = row ? storedObserverDeliveryRowSchema.parse(row) : null;
       this.db.exec("COMMIT");
       if (!delivery) return null;
+      this.revision += 1;
       return {
         deliveryId: delivery.delivery_id,
         endpointKind: delivery.endpoint_kind,
@@ -431,6 +453,7 @@ export class ObserverInboxRepository {
     if (Number(result.changes) !== 1) {
       throw new Error(`Observer delivery ${deliveryId} is not being processed`);
     }
+    this.revision += 1;
     this.prunePayloads(completedAt);
   }
 
@@ -452,9 +475,25 @@ export class ObserverInboxRepository {
     if (Number(result.changes) !== 1) {
       throw new Error(`Observer delivery ${deliveryId} is not being processed`);
     }
+    this.revision += 1;
   }
 
   status(): ObserverInboxStatus {
+    // Mutations on this connection invalidate synchronously; data_version detects writes from
+    // another connection. Repeated GETs do not aggregate the delivery history again.
+    const dataVersion = Number(this.db.prepare("PRAGMA data_version").get()?.data_version);
+    if (
+      this.retainedStatus?.revision === this.revision &&
+      this.retainedStatus.dataVersion === dataVersion
+    ) {
+      return structuredClone(this.retainedStatus.value);
+    }
+    const value = this.readStatus();
+    this.retainedStatus = { revision: this.revision, dataVersion, value };
+    return structuredClone(value);
+  }
+
+  private readStatus(): ObserverInboxStatus {
     const totals = z
       .object({
         unique_deliveries: z.number().int().nonnegative(),

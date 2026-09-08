@@ -147,7 +147,7 @@ export function groupActivityHistory(
   const yesterday = today - 24 * 60 * 60 * 1_000;
   const groups = new Map<string, ActivityGroupSummary[]>();
   for (const item of items) {
-    const date = new Date(item.updatedAt);
+    const date = new Date(item.occurredAt);
     const day = localDayStart(date);
     const label =
       day === today

@@ -341,6 +341,7 @@ export class ObserverInboxProcessor {
       }
       if (batchAttempts === this.#maxBatchSize) {
         this.#drainRequested = true;
+        await yieldToEventLoop();
       }
     }
     return processed;
@@ -365,3 +366,5 @@ export class ObserverInboxProcessor {
     }
   }
 }
+
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";

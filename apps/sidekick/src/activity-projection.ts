@@ -14,13 +14,16 @@ import {
   type EngineChainAnchor,
   type OperatorDeadline,
   type RewardRun,
+  transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import { managerEventStream } from "./manager-event-vocabulary.js";
 import type { ObserverRuntimeStatus } from "./observer-server.js";
 import { pox5PoolActivityStream } from "./pox5-pool-activity-sync.js";
+import type { ActivityKey } from "./storage/activity-read-repository.js";
 import type { SidekickStore, StoredActivityChainEvent } from "./storage/store.js";
 import type {
+  ActivityScopeNeighbors,
   StoredWalletIntent,
   WalletIntentObservation,
   WalletIntentState,
@@ -402,7 +405,11 @@ function historyOrder(left: ActivityGroupSummary, right: ActivityGroupSummary): 
   const occurredDifference = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
   return occurredDifference !== 0
     ? occurredDifference
-    : left.activityId.localeCompare(right.activityId);
+    : left.activityId < right.activityId
+      ? -1
+      : left.activityId > right.activityId
+        ? 1
+        : 0;
 }
 
 export function projectActivityPage(input: ActivityProjectionInput): ActivityResponse {
@@ -451,21 +458,6 @@ function coverage(
   reason: string | null = null,
 ): ActivityCoverage {
   return { source, status, observedAt, anchor: null, reason };
-}
-
-function historyCoverage(
-  source: ActivityCoverage["source"],
-  observedAt: string | null,
-  truncated: boolean,
-): ActivityCoverage {
-  return coverage(
-    source,
-    truncated ? "delayed" : "current",
-    observedAt,
-    truncated
-      ? `Activity history is bounded to the newest ${maximumAuthorityRecords} ${source} records; active work remains complete.`
-      : null,
-  );
 }
 
 const walletActionPresentation = {
@@ -553,12 +545,18 @@ function walletIntentSummary(
     });
   }
   for (const observation of includeTimeline ? observations : []) {
+    const evidence = z
+      .object({
+        decoded: z.object({ executionSource: transactionExecutionSourceSchema.optional() }),
+      })
+      .safeParse(observation.evidence);
+    const executionSource = evidence.success ? evidence.data.decoded.executionSource : undefined;
     timeline.push({
       schemaVersion: 1,
       eventId: `${activityId}:observation:${observation.id}`,
       code: `observation-${observation.outcome}`,
       title: observation.outcome.replaceAll("-", " "),
-      detail: `Sidekick recorded ${observation.outcome.replaceAll("-", " ")} transaction evidence.`,
+      detail: `Sidekick recorded ${observation.outcome.replaceAll("-", " ")} transaction evidence.${executionSource ? ` Execution evidence: ${executionSource === "node" ? "local node" : executionSource === "api" ? "configured API" : "configured API, corroborated by local node"}.` : ""}`,
       occurredAt: observation.observedAt,
       source: "wallet-intents",
       txid: intent.txid,
@@ -871,8 +869,11 @@ function rewardRunRecord(
   const summary = run.failureReason
     ? `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}. ${run.failureReason}`
     : `Cycle ${run.recipe.cycle}, ${distribution}: ${progress}.`;
-  const deadlineAt =
-    run.status === "awaiting-approval" ? run.approvalExpiresAt : run.runtimeExpiresAt;
+  const deadlineAt = !isActive(state.displayStatus)
+    ? null
+    : run.status === "awaiting-approval"
+      ? run.approvalExpiresAt
+      : run.runtimeExpiresAt;
   const timeline: ActivityTimelineEntry[] = [];
   if (includeTimeline) {
     timeline.push({
@@ -880,7 +881,7 @@ function rewardRunRecord(
       eventId: `${activityId}:created`,
       code: "recipe-sealed",
       title: "Reward recipe sealed",
-      detail: `Sidekick sealed ${run.progress.total} calls for Cycle ${run.recipe.cycle}, ${distribution}.`,
+      detail: `Sidekick sealed ${run.progress.total} calls for Cycle ${run.recipe.cycle}, ${distribution}. Approval expiry: ${run.approvalExpiresAt}. Runtime cap: ${run.runtimeExpiresAt}.`,
       occurredAt: run.createdAt,
       source: "transaction-engine",
       txid: null,
@@ -914,9 +915,15 @@ function rewardRunRecord(
             eventId: `${activityId}:child:${child.index}:${child.status}`,
             code: `run-child-${child.status}`,
             title: `${child.operation.replaceAll("-", " ")} ${child.status.replaceAll("-", " ")}`,
-            detail:
+            detail: [
               child.failureReason ??
-              `Call ${child.index + 1} of ${run.progress.total} is ${child.status.replaceAll("-", " ")}.`,
+                `Call ${child.index + 1} of ${run.progress.total} is ${child.status.replaceAll("-", " ")}.`,
+              child.executionSource
+                ? `Transaction execution evidence: ${child.executionSource === "node" ? "local node" : child.executionSource === "api" ? "configured API" : "configured API, corroborated by local node"}.`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" "),
             occurredAt: child.updatedAt,
             source: "transaction-engine",
             txid: child.txid,
@@ -1048,6 +1055,7 @@ function chainEventRecord(
   managerCoverage: ActivityCoverage,
   poolCoverage: ActivityCoverage,
   pox5ContractId: string | null,
+  includeTimeline: boolean,
 ): ActivityRecord {
   const activityId = chainActivityId(chainId, txid);
   const canonicalEvents = events.filter(({ canonical }) => canonical);
@@ -1112,7 +1120,7 @@ function chainEventRecord(
       primaryAction: null,
       coverage: sourceCoverages,
     },
-    timeline: events
+    timeline: (includeTimeline ? events : [])
       .map((event) => ({
         schemaVersion: 1 as const,
         eventId: `${activityId}:event:${event.eventIndex}`,
@@ -1137,7 +1145,7 @@ function chainEventRecord(
 
 function mergeChainRecord(operation: ActivityRecord, chainRecord: ActivityRecord): void {
   operation.aliases = [...new Set([...operation.aliases, ...chainRecord.aliases])].sort();
-  operation.timeline = [...operation.timeline, ...chainRecord.timeline].sort(timelineOrder);
+  operation.timeline.push(...chainRecord.timeline);
   operation.summary.coverage = [
     ...new Map(
       [...operation.summary.coverage, ...chainRecord.summary.coverage].map((value) => [
@@ -1154,6 +1162,7 @@ function mergeChainRecord(operation: ActivityRecord, chainRecord: ActivityRecord
 function settingsRecord(
   audit: { revision: number; changedFields: string[]; changedAt: string },
   sourceCoverage: ActivityCoverage,
+  includeTimeline: boolean,
 ): ActivityRecord {
   const activityId = `settings:${audit.revision}`;
   const changed = audit.changedFields.join(", ");
@@ -1182,22 +1191,24 @@ function settingsRecord(
       primaryAction: null,
       coverage: [sourceCoverage],
     },
-    timeline: [
-      {
-        schemaVersion: 1,
-        eventId: `${activityId}:updated`,
-        code: "runtime-settings-updated",
-        title: "Runtime settings updated",
-        detail: `Revision ${audit.revision} changed ${changed}. Secret values are not retained in Activity.`,
-        occurredAt: audit.changedAt,
-        source: "settings-audit",
-        txid: null,
-        stacksBlockHeight: null,
-        indexBlockHash: null,
-        canonical: null,
-        finalized: null,
-      },
-    ],
+    timeline: includeTimeline
+      ? [
+          {
+            schemaVersion: 1,
+            eventId: `${activityId}:updated`,
+            code: "runtime-settings-updated",
+            title: "Runtime settings updated",
+            detail: `Revision ${audit.revision} changed ${changed}. Secret values are not retained in Activity.`,
+            occurredAt: audit.changedAt,
+            source: "settings-audit",
+            txid: null,
+            stacksBlockHeight: null,
+            indexBlockHash: null,
+            canonical: null,
+            finalized: null,
+          },
+        ]
+      : [],
     aliases: [activityId],
   };
 }
@@ -1223,6 +1234,24 @@ function requireBounded<T>(values: readonly T[], authority: string): void {
   }
 }
 
+interface ActivityReadContext {
+  cursors: Map<string, ReturnType<SidekickStore["chainState"]["getCursor"]>>;
+  observations: Map<string, WalletIntentObservation>;
+  observedIntentIds: Set<string>;
+  neighbors: Map<string, ActivityScopeNeighbors>;
+  events: Map<string, StoredActivityChainEvent[]>;
+}
+
+function activityReadContext(): ActivityReadContext {
+  return {
+    cursors: new Map(),
+    observations: new Map(),
+    observedIntentIds: new Set(),
+    neighbors: new Map(),
+    events: new Map(),
+  };
+}
+
 export class ActivityProjectionService {
   constructor(
     private readonly options: {
@@ -1239,21 +1268,53 @@ export class ActivityProjectionService {
 
   page(query: ActivityQuery, readOnly = false): ActivityResponse {
     const now = this.options.now?.() ?? new Date();
-    const loaded = this.load(readOnly, now, false);
-    const chainContext = this.options.context?.() ?? {
-      burnBlockHeight: null,
-      rewardCycleId: null,
-      phase: null,
+    const context = {
+      now,
+      ...(this.options.context?.() ?? { burnBlockHeight: null, rewardCycleId: null, phase: null }),
     };
-    return projectActivityPage({
-      records: loaded.records,
-      coverage: loaded.coverage,
+    const limit = activityPageLimitSchema.parse(query.limit);
+    const cursor = query.cursor === null ? null : decodeCursor(query.cursor, query);
+    const reads = activityReadContext();
+    const records = this.activeRecords(readOnly, now, reads);
+    const cutoff = timeCutoff(query.time, now);
+    // A selective domain/search can yield a short (even empty) page with a continuation.
+    // Bound hydration per request; never scan and decode every historical plan for a GET.
+    const keys = ["all", "resolved"].includes(query.status)
+      ? this.options.store.activity.historyKeys({
+          chainId: this.options.chainId,
+          contracts: [this.options.managerPrincipal, ...this.relatedActivityContracts()],
+          type: query.type,
+          cutoff: cutoff === null ? null : new Date(cutoff).toISOString(),
+          after: cursor,
+          limit: 201,
+        })
+      : [];
+    this.prepareSummaryReads(keys.slice(0, 200), reads);
+    let matching = 0;
+    let lastScanned: (typeof keys)[number] | null = null;
+    for (const key of keys.slice(0, 200)) {
+      const record = this.loadDetail(key.activityId, readOnly, now, false, reads);
+      lastScanned = key;
+      if (record && matchesFilters(record.summary, query, context)) {
+        records.push(record);
+        matching += 1;
+        if (matching > limit) break;
+      }
+    }
+    const result = projectActivityPage({
+      records,
+      coverage: this.pageCoverage(reads),
       query,
-      context: {
-        now,
-        ...chainContext,
-      },
+      context,
     });
+    if (result.nextCursor === null && keys.length > 200 && lastScanned) {
+      result.nextCursor = encodeCursor({
+        version: 2,
+        ...lastScanned,
+        filterSha256: filterSha256(query),
+      });
+    }
+    return result;
   }
 
   detail(activityId: string, readOnly = false): ActivityDetail | null {
@@ -1262,6 +1323,8 @@ export class ActivityProjectionService {
       requestedActivityId,
       readOnly,
       this.options.now?.() ?? new Date(),
+      true,
+      activityReadContext(),
     );
     if (!record) return null;
     return activityDetailSchema.parse({
@@ -1270,7 +1333,7 @@ export class ActivityProjectionService {
       canonicalActivityId: record.summary.activityId,
       aliases: [...new Set(record.aliases)].sort(),
       summary: record.summary,
-      timeline: record.timeline,
+      timeline: record.timeline.sort(timelineOrder),
     });
   }
 
@@ -1278,13 +1341,15 @@ export class ActivityProjectionService {
     requestedActivityId: string,
     readOnly: boolean,
     now: Date,
+    includeTimeline: boolean,
+    reads: ActivityReadContext,
   ): ActivityRecord | null {
     const walletMatch = /^wallet-intent:(.+)$/.exec(requestedActivityId);
     if (walletMatch?.[1]) {
       const parsedId = z.string().uuid().safeParse(walletMatch[1]);
       if (!parsedId.success) return null;
       const intent = this.options.store.walletIntents.get(parsedId.data);
-      return intent ? this.walletDetailRecord(intent, readOnly) : null;
+      return intent ? this.walletDetailRecord(intent, readOnly, includeTimeline, reads) : null;
     }
 
     const engineMatch = /^engine-job:(.+)$/.exec(requestedActivityId);
@@ -1292,7 +1357,7 @@ export class ActivityProjectionService {
       const parsedId = z.string().uuid().safeParse(engineMatch[1]);
       if (!parsedId.success) return null;
       const job = this.options.store.transactionEngine.getLogicalJob(parsedId.data);
-      return job ? this.engineDetailRecord(job, readOnly, now) : null;
+      return job ? this.engineDetailRecord(job, readOnly, now, includeTimeline, reads) : null;
     }
 
     const rewardRunMatch = /^reward-run:(.+)$/.exec(requestedActivityId);
@@ -1300,7 +1365,7 @@ export class ActivityProjectionService {
       const parsedId = z.string().uuid().safeParse(rewardRunMatch[1]);
       if (!parsedId.success) return null;
       const run = this.options.store.rewardRuns.get(parsedId.data);
-      return run ? this.rewardRunDetailRecord(run, readOnly) : null;
+      return run ? this.rewardRunDetailRecord(run, readOnly, includeTimeline, reads) : null;
     }
 
     const chainMatch = /^chain-tx:(\d+):(0x[0-9a-f]{64})$/.exec(requestedActivityId);
@@ -1310,15 +1375,19 @@ export class ActivityProjectionService {
       const txid = chainMatch[2];
       // Match the full projection's deterministic authority precedence: wallet intent, recipe run,
       // legacy engine job, then a standalone verified chain record.
-      const intent = this.options.store.walletIntents.getByTxid(txid);
-      if (intent) return this.walletDetailRecord(intent, readOnly);
-      const run = this.options.store.rewardRuns.getByTxid(txid);
-      if (run) return this.rewardRunDetailRecord(run, readOnly);
-      const job = this.options.store.transactionEngine.getLogicalJobByTxid(txid);
-      if (job) return this.engineDetailRecord(job, readOnly, now);
-      const events = this.detailChainEvents(txid);
-      const managerCoverage = this.indexedCoverage(events);
-      const poolCoverage = this.poolIndexedCoverage(events);
+      // History keys already exclude every owned transaction before pagination. Only a direct
+      // detail/alias request needs to resolve ownership again.
+      if (includeTimeline) {
+        const intent = this.options.store.walletIntents.getByTxid(txid);
+        if (intent) return this.walletDetailRecord(intent, readOnly, includeTimeline, reads);
+        const run = this.options.store.rewardRuns.getByTxid(txid);
+        if (run) return this.rewardRunDetailRecord(run, readOnly, includeTimeline, reads);
+        const job = this.options.store.transactionEngine.getLogicalJobByTxid(txid);
+        if (job) return this.engineDetailRecord(job, readOnly, now, includeTimeline, reads);
+      }
+      const events = this.detailChainEvents([txid], reads).get(txid) ?? [];
+      const managerCoverage = this.indexedCoverage(events, reads);
+      const poolCoverage = this.poolIndexedCoverage(events, reads);
       return events.length === 0
         ? null
         : chainEventRecord(
@@ -1328,6 +1397,7 @@ export class ActivityProjectionService {
             managerCoverage,
             poolCoverage,
             this.pox5ContractId(),
+            includeTimeline,
           );
     }
 
@@ -1337,26 +1407,44 @@ export class ActivityProjectionService {
       if (!Number.isSafeInteger(revision) || revision < 1) return null;
       const audit = this.options.store.runtimeSettings.getAudit(revision);
       return audit
-        ? settingsRecord(audit, coverage("settings-audit", "current", audit.changedAt))
+        ? settingsRecord(
+            audit,
+            coverage("settings-audit", "current", audit.changedAt),
+            includeTimeline,
+          )
         : null;
     }
     return null;
   }
 
-  private walletDetailRecord(intent: StoredWalletIntent, readOnly: boolean): ActivityRecord {
-    const { previous, next } = this.options.store.walletIntents.getActivityScopeNeighbors(intent);
+  private walletDetailRecord(
+    intent: StoredWalletIntent,
+    readOnly: boolean,
+    includeTimeline: boolean,
+    reads: ActivityReadContext,
+  ): ActivityRecord {
+    this.prepareSummaryReads(
+      [{ activityId: `wallet-intent:${intent.id}`, occurredAt: intent.createdAt }],
+      reads,
+    );
+    const { previous, next } = reads.neighbors.get(intent.id) ?? { previous: null, next: null };
+    const latestObservation = reads.observations.get(intent.id);
     const record = walletIntentSummary(
       intent,
-      this.options.store.walletIntents.listObservations(intent.id),
+      includeTimeline
+        ? this.options.store.walletIntents.listObservations(intent.id)
+        : latestObservation
+          ? [latestObservation]
+          : [],
       coverage("wallet-intents", "current", intent.updatedAt),
       readOnly,
       previous && ["expired", "superseded"].includes(previous.state)
         ? `wallet-intent:${previous.id}`
         : null,
       ["expired", "superseded"].includes(intent.state) && next ? `wallet-intent:${next.id}` : null,
-      true,
+      includeTimeline,
     );
-    this.mergeDetailChainEvents(record);
+    this.mergeDetailChainEvents(record, includeTimeline, reads);
     return record;
   }
 
@@ -1364,327 +1452,181 @@ export class ActivityProjectionService {
     job: StoredTransactionJob,
     readOnly: boolean,
     now: Date,
+    includeTimeline: boolean,
+    reads: ActivityReadContext,
   ): ActivityRecord {
     const previous = this.options.store.transactionEngine.getLogicalJobSupersededBy(job.jobId);
     const attempts = this.options.store.transactionEngine.listAttempts(job.jobId);
     const record = engineRecord(
       job,
       attempts,
-      this.options.store.transactionEngine.listReconciliationObservations(job.jobId),
+      includeTimeline
+        ? this.options.store.transactionEngine.listReconciliationObservations(job.jobId)
+        : [],
       coverage("transaction-engine", "current", job.updatedAt),
       readOnly,
       previous ? `engine-job:${previous.jobId}` : null,
       now,
-      true,
+      includeTimeline,
     );
     record.aliases = [
       record.summary.activityId,
       ...record.summary.txids.map((txid) => chainActivityId(this.options.chainId, txid)),
     ].sort();
-    this.mergeDetailChainEvents(record);
+    this.mergeDetailChainEvents(record, includeTimeline, reads);
     return record;
   }
 
-  private rewardRunDetailRecord(run: RewardRun, readOnly: boolean): ActivityRecord {
+  private rewardRunDetailRecord(
+    run: RewardRun,
+    readOnly: boolean,
+    includeTimeline: boolean,
+    reads: ActivityReadContext,
+  ): ActivityRecord {
     const record = rewardRunRecord(
       run,
       coverage("transaction-engine", "current", run.updatedAt),
       readOnly,
-      true,
+      includeTimeline,
       this.options.chainId,
     );
-    this.mergeDetailChainEvents(record);
+    this.mergeDetailChainEvents(record, includeTimeline, reads);
     return record;
   }
 
-  private detailChainEvents(txid: string): StoredActivityChainEvent[] {
-    return this.options.store.listManagerActivityChainEventsForTxid(
-      this.options.chainId,
-      this.options.managerPrincipal,
-      txid,
-      this.relatedActivityContracts(),
+  private prepareSummaryReads(keys: readonly ActivityKey[], reads: ActivityReadContext): void {
+    const ids = keys.flatMap(({ activityId }) => {
+      const id = /^wallet-intent:(.+)$/.exec(activityId)?.[1];
+      return id && !reads.observedIntentIds.has(id) ? [id] : [];
+    });
+    if (ids.length > 0) {
+      for (const id of ids) reads.observedIntentIds.add(id);
+      for (const [
+        id,
+        observation,
+      ] of this.options.store.walletIntents.listLatestObservationsForActivity(ids)) {
+        reads.observations.set(id, observation);
+      }
+      for (const [id, neighbors] of this.options.store.walletIntents.listActivityScopeNeighbors(
+        ids,
+      )) {
+        reads.neighbors.set(id, neighbors);
+      }
+    }
+    this.detailChainEvents(
+      keys.flatMap(({ activityId }) => {
+        const txid = /^chain-tx:\d+:(0x[0-9a-f]{64})$/.exec(activityId)?.[1];
+        return txid ? [txid] : [];
+      }),
+      reads,
     );
   }
 
-  private mergeDetailChainEvents(record: ActivityRecord): void {
+  private detailChainEvents(
+    txids: readonly string[],
+    reads: ActivityReadContext,
+  ): Map<string, StoredActivityChainEvent[]> {
+    const missing = [...new Set(txids)].filter((txid) => !reads.events.has(txid));
+    if (missing.length > 0) {
+      for (const txid of missing) reads.events.set(txid, []);
+      for (const event of this.options.store.listManagerActivityChainEventsForTxids(
+        this.options.chainId,
+        this.options.managerPrincipal,
+        missing,
+        this.relatedActivityContracts(),
+      ))
+        reads.events.get(event.txId)?.push(event);
+    }
+    return reads.events;
+  }
+
+  private mergeDetailChainEvents(
+    record: ActivityRecord,
+    includeTimeline: boolean,
+    reads: ActivityReadContext,
+  ): void {
+    const byTxid = this.detailChainEvents(record.summary.txids, reads);
     for (const txid of record.summary.txids) {
-      const events = this.detailChainEvents(txid);
+      const events = byTxid.get(txid) ?? [];
       if (events.length === 0) continue;
-      const managerCoverage = this.indexedCoverage(events);
-      const poolCoverage = this.poolIndexedCoverage(events);
       mergeChainRecord(
         record,
         chainEventRecord(
           this.options.chainId,
           txid,
           events,
-          managerCoverage,
-          poolCoverage,
+          this.indexedCoverage(events, reads),
+          this.poolIndexedCoverage(events, reads),
           this.pox5ContractId(),
+          includeTimeline,
         ),
       );
     }
   }
 
-  private load(
+  /** Overview needs active authorities, never terminal history. */
+  active(readOnly = false): ActivityResponse {
+    const now = this.options.now?.() ?? new Date();
+    const reads = activityReadContext();
+    const records = this.activeRecords(readOnly, now, reads);
+    return projectActivityPage({
+      records,
+      coverage: this.pageCoverage(reads),
+      query: {
+        status: "all",
+        type: "all",
+        domain: "all",
+        time: "all",
+        search: null,
+        cursor: null,
+        limit: 1,
+      },
+      context: {
+        now,
+        ...(this.options.context?.() ?? {
+          burnBlockHeight: null,
+          rewardCycleId: null,
+          phase: null,
+        }),
+      },
+    });
+  }
+
+  private activeRecords(
     readOnly: boolean,
     now: Date,
-    includeTimelines: boolean,
-  ): { records: ActivityRecord[]; coverage: ActivityCoverage[] } {
-    const recentWalletIntents = this.options.store.walletIntents.listForActivity(
-      maximumAuthorityRecords + 1,
-    );
-    const walletHistoryTruncated = recentWalletIntents.length > maximumAuthorityRecords;
-    const activeWalletIntents = this.options.store.walletIntents.listActiveForActivity(
-      maximumAuthorityRecords + 1,
-    );
-    requireBounded(activeWalletIntents, "Active wallet intent authority");
-    const walletIntents = [
-      ...new Map(
-        [...recentWalletIntents.slice(0, maximumAuthorityRecords), ...activeWalletIntents].map(
-          (intent) => [intent.id, intent],
-        ),
-      ).values(),
-    ];
-
-    const activeJobStates = [
-      "prepared",
-      "preflighted",
-      "awaiting_approval",
-      "nonce_reserved",
-      "broadcast",
-      "confirmed",
-      "blocked",
-      "ambiguous",
-      "noncanonical_reobserve",
-    ] as const satisfies readonly TransactionJobState[];
-    const activeJobs: StoredTransactionJob[] = [];
-    let cursor: string | undefined;
-    while (activeJobs.length <= maximumAuthorityRecords) {
-      const page = this.options.store.transactionEngine.listLogicalJobs({
-        limit: 200,
-        states: activeJobStates,
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-      activeJobs.push(...page.items);
-      if (page.nextCursor === null) break;
-      cursor = page.nextCursor;
-    }
-    requireBounded(activeJobs, "Active transaction engine authority");
-
-    const terminalJobs: StoredTransactionJob[] = [];
-    cursor = undefined;
-    let engineHistoryTruncated = false;
-    while (terminalJobs.length <= maximumAuthorityRecords) {
-      const page = this.options.store.transactionEngine.listLogicalJobs({
-        limit: 200,
-        states: ["reconciled", "superseded"],
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-      engineHistoryTruncated ||= page.total > maximumAuthorityRecords;
-      terminalJobs.push(...page.items);
-      if (page.nextCursor === null || terminalJobs.length > maximumAuthorityRecords) break;
-      cursor = page.nextCursor;
-    }
-    const jobs = [
-      ...new Map(
-        [...activeJobs, ...terminalJobs.slice(0, maximumAuthorityRecords)].map((job) => [
-          job.jobId,
-          job,
-        ]),
-      ).values(),
-    ];
-    const recentRewardRuns = this.options.store.rewardRuns.listForActivity(
-      maximumAuthorityRecords + 1,
-    );
-    const rewardRunHistoryTruncated = recentRewardRuns.length > maximumAuthorityRecords;
-    const rewardRuns = recentRewardRuns.slice(0, maximumAuthorityRecords);
-
-    const recentChainEvents = this.options.store.listManagerActivityChainEvents(
-      this.options.chainId,
-      this.options.managerPrincipal,
-      maximumAuthorityRecords + 1,
-      this.relatedActivityContracts(),
-    );
-    const chainHistoryTruncated = recentChainEvents.length > maximumAuthorityRecords;
-    const chainEvents = recentChainEvents.slice(0, maximumAuthorityRecords);
-    const recentSettingsAudit = this.options.store.runtimeSettings.listAudit(
-      maximumAuthorityRecords + 1,
-    );
-    const settingsHistoryTruncated = recentSettingsAudit.length > maximumAuthorityRecords;
-    const settingsAudit = recentSettingsAudit.slice(0, maximumAuthorityRecords);
-
-    const walletObservedAt = latestObservedAt(walletIntents);
-    const walletCoverage = historyCoverage(
-      "wallet-intents",
-      walletObservedAt,
-      walletHistoryTruncated,
-    );
-    const walletRecordCoverage = coverage("wallet-intents", "current", walletObservedAt);
-    const engineObservedAt = latestObservedAt([...jobs, ...rewardRuns]);
-    const engineCoverage = historyCoverage(
-      "transaction-engine",
-      engineObservedAt,
-      engineHistoryTruncated || rewardRunHistoryTruncated,
-    );
-    const engineRecordCoverage = coverage("transaction-engine", "current", engineObservedAt);
-    const indexedCoverage = this.indexedCoverage(chainEvents, chainHistoryTruncated);
-    const poolIndexedCoverage = this.poolIndexedCoverage(chainEvents, chainHistoryTruncated);
-    const settingsObservedAt = settingsAudit[0]?.changedAt ?? null;
-    const settingsCoverage = historyCoverage(
-      "settings-audit",
-      settingsObservedAt,
-      settingsHistoryTruncated,
-    );
-    const settingsRecordCoverage = coverage("settings-audit", "current", settingsObservedAt);
-    const observerCoverage = this.observerCoverage();
-
-    const walletByScope = new Map<string, StoredWalletIntent[]>();
-    for (const intent of walletIntents) {
-      const key = `${intent.action}:${intent.scope}`;
-      const values = walletByScope.get(key) ?? [];
-      values.push(intent);
-      walletByScope.set(key, values);
-    }
-    const latestWalletObservations = includeTimelines
-      ? null
-      : this.options.store.walletIntents.listLatestObservationsForActivity(
-          walletIntents.map(({ id }) => id),
-        );
-    const walletRecords = walletIntents.map((intent) => {
-      const related = [...(walletByScope.get(`${intent.action}:${intent.scope}`) ?? [])].sort(
-        (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
-      );
-      const index = related.findIndex(({ id }) => id === intent.id);
-      const previous = index > 0 ? related[index - 1] : undefined;
-      const next = index >= 0 ? related[index + 1] : undefined;
-      const latestObservation = latestWalletObservations?.get(intent.id);
-      return walletIntentSummary(
-        intent,
-        includeTimelines
-          ? this.options.store.walletIntents.listObservations(intent.id)
-          : latestObservation
-            ? [latestObservation]
-            : [],
-        walletRecordCoverage,
-        readOnly,
-        previous && ["expired", "superseded"].includes(previous.state)
-          ? `wallet-intent:${previous.id}`
-          : null,
-        ["expired", "superseded"].includes(intent.state) && next
-          ? `wallet-intent:${next.id}`
-          : null,
-        includeTimelines,
-      );
+    reads: ActivityReadContext,
+  ): ActivityRecord[] {
+    const keys = this.options.store.activity.activeKeys(maximumAuthorityRecords + 1);
+    requireBounded(keys, "Active operation authority");
+    this.prepareSummaryReads(keys, reads);
+    return keys.flatMap(({ activityId }) => {
+      const record = this.loadDetail(activityId, readOnly, now, false, reads);
+      return record ? [record] : [];
     });
+  }
 
-    const supersededEngineJobs = new Map<string, string>();
-    for (const job of jobs) {
-      if (job.supersededByJobId !== null) {
-        supersededEngineJobs.set(job.supersededByJobId, `engine-job:${job.jobId}`);
-      }
-    }
-    const attemptsByJob = includeTimelines
-      ? null
-      : this.options.store.transactionEngine.listAttemptsForActivity(
-          jobs.map(({ jobId }) => jobId),
-        );
-    const engineRecords = jobs.map((job) =>
-      engineRecord(
-        job,
-        includeTimelines
-          ? this.options.store.transactionEngine.listAttempts(job.jobId)
-          : (attemptsByJob?.get(job.jobId) ?? []),
-        includeTimelines
-          ? this.options.store.transactionEngine.listReconciliationObservations(job.jobId)
-          : [],
-        engineRecordCoverage,
-        readOnly,
-        supersededEngineJobs.get(job.jobId) ?? null,
-        now,
-        includeTimelines,
-      ),
-    );
-    const rewardRunRecords = rewardRuns.map((run) =>
-      rewardRunRecord(run, engineRecordCoverage, readOnly, includeTimelines, this.options.chainId),
-    );
-
-    const groupedEvents = new Map<string, StoredActivityChainEvent[]>();
-    for (const event of chainEvents) {
-      const values = groupedEvents.get(event.txId) ?? [];
-      values.push(event);
-      groupedEvents.set(event.txId, values);
-    }
-
-    // Engine records use a chain-agnostic placeholder while being built. Bind their aliases to the
-    // configured deployment chain here so absorbed chain-event links remain stable.
-    for (const record of engineRecords) {
-      record.aliases = [
-        record.summary.activityId,
-        ...record.summary.txids.map((txid) => chainActivityId(this.options.chainId, txid)),
-      ].sort();
-    }
-
-    const operationByTxid = new Map<string, ActivityRecord>();
-    for (const record of [...walletRecords, ...rewardRunRecords, ...engineRecords]) {
-      for (const txid of record.summary.txids) {
-        // Wallet intents, recipe runs, and legacy engine jobs are separate operation authorities.
-        // If corrupt or unexpected data assigns one transaction to more than one operation, keep
-        // the first deterministic owner rather than duplicating verified chain evidence.
-        if (!operationByTxid.has(txid)) operationByTxid.set(txid, record);
-      }
-    }
-    const chainRecords: ActivityRecord[] = [];
-    for (const [txid, events] of groupedEvents.entries()) {
-      const chainRecord = chainEventRecord(
-        this.options.chainId,
-        txid,
-        events,
-        indexedCoverage,
-        poolIndexedCoverage,
-        this.pox5ContractId(),
-      );
-      const operation = operationByTxid.get(txid);
-      if (!operation) {
-        chainRecords.push(chainRecord);
-        continue;
-      }
-      mergeChainRecord(operation, chainRecord);
-    }
-
-    const settingsRecords = settingsAudit.map((audit) =>
-      settingsRecord(audit, settingsRecordCoverage),
-    );
-
-    return {
-      records: [
-        ...walletRecords,
-        ...rewardRunRecords,
-        ...engineRecords,
-        ...chainRecords,
-        ...settingsRecords,
-      ],
-      coverage: [
-        walletCoverage,
-        engineCoverage,
-        indexedCoverage,
-        poolIndexedCoverage,
-        observerCoverage,
-        settingsCoverage,
-      ],
-    };
+  private pageCoverage(reads: ActivityReadContext): ActivityCoverage[] {
+    return [
+      coverage("wallet-intents", "current", null),
+      coverage("transaction-engine", "current", null),
+      this.indexedCoverage([], reads),
+      this.poolIndexedCoverage([], reads),
+      this.observerCoverage(),
+      coverage("settings-audit", "current", null),
+    ];
   }
 
   private indexedCoverage(
     events: readonly StoredActivityChainEvent[],
-    historyTruncated = false,
+    reads: ActivityReadContext,
   ): ActivityCoverage {
-    const generic = this.options.store.chainState.getCursor(
-      this.options.sourceId(),
+    const generic = this.readCursor(
+      reads,
       managerEventStream(this.options.managerPrincipal, "generic-v1"),
     );
-    const reference = this.options.store.chainState.getCursor(
-      this.options.sourceId(),
+    const reference = this.readCursor(
+      reads,
       managerEventStream(this.options.managerPrincipal, "reference-manager-v1"),
     );
     const cursor = [generic, reference]
@@ -1698,20 +1640,21 @@ export class ActivityProjectionService {
         "No manager-history synchronization cursor is available yet.",
       );
     }
-    if (historyTruncated) {
-      return coverage(
-        "indexed-manager-history",
-        "delayed",
-        cursor.updatedAt,
-        `Indexed manager Activity history is bounded to the newest ${maximumAuthorityRecords} records.`,
-      );
-    }
     return coverage(
       "indexed-manager-history",
       cursor.cursor === null ? "current" : "delayed",
       cursor.updatedAt,
       cursor.cursor === null ? null : "Indexed manager history synchronization is incomplete.",
     );
+  }
+
+  private readCursor(reads: ActivityReadContext, stream: string) {
+    if (!reads.cursors.has(stream))
+      reads.cursors.set(
+        stream,
+        this.options.store.chainState.getCursor(this.options.sourceId(), stream),
+      );
+    return reads.cursors.get(stream) ?? null;
   }
 
   private pox5ContractId(): string | null {
@@ -1725,7 +1668,7 @@ export class ActivityProjectionService {
 
   private poolIndexedCoverage(
     events: readonly StoredActivityChainEvent[],
-    historyTruncated = false,
+    reads: ActivityReadContext,
   ): ActivityCoverage {
     const pox5ContractId = this.pox5ContractId();
     if (!pox5ContractId) {
@@ -1736,8 +1679,8 @@ export class ActivityProjectionService {
         "PoX-5 pool activity is unavailable until the active contract is identified.",
       );
     }
-    const cursor = this.options.store.chainState.getCursor(
-      this.options.sourceId(),
+    const cursor = this.readCursor(
+      reads,
       pox5PoolActivityStream(pox5ContractId, this.options.managerPrincipal),
     );
     const poolEvents = events.filter(({ contractId }) => contractId === pox5ContractId);
@@ -1747,14 +1690,6 @@ export class ActivityProjectionService {
         "delayed",
         latestObservedAt(poolEvents),
         "No PoX-5 pool-activity synchronization cursor is available yet.",
-      );
-    }
-    if (historyTruncated) {
-      return coverage(
-        "indexed-pool-history",
-        "delayed",
-        cursor.updatedAt,
-        `Pool Activity history is bounded to the newest ${maximumAuthorityRecords} records.`,
       );
     }
     return coverage(

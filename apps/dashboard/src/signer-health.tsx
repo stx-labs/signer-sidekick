@@ -7,6 +7,7 @@ import type { DomainSection } from "./dashboard-route.js";
 import { useDomainSection } from "./shared/domain-section.js";
 import { stx } from "./shared/format.js";
 import { operatorErrorDetail, operatorErrorSentence } from "./shared/operator-error.js";
+import { startVisibleRefresh } from "./shared/visible-refresh.js";
 
 export type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 
@@ -178,12 +179,16 @@ export function SignerHealthPage({
       activeRequest.current = controller;
       setRefreshing(force);
       try {
-        setSnapshot(
-          await fetchHealthSnapshot(token, force ? "/api/v1/health/refresh" : "/api/v1/health", {
+        const result = await fetchHealthSnapshot(
+          token,
+          force ? "/api/v1/health/refresh" : "/api/v1/health",
+          {
             method: force ? "POST" : "GET",
             signal: controller.signal,
-          }),
+          },
         );
+        if (controller.signal.aborted) return;
+        setSnapshot(result);
         setError(null);
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -199,15 +204,13 @@ export function SignerHealthPage({
   );
 
   useEffect(() => {
-    void load();
-    const refreshVisible = () => {
-      if (document.visibilityState === "visible") void load();
-    };
-    const interval = setInterval(refreshVisible, 15_000);
-    document.addEventListener("visibilitychange", refreshVisible);
+    const refresh = startVisibleRefresh(
+      () => load(),
+      () => {},
+      15_000,
+    );
     return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", refreshVisible);
+      refresh.stop();
       activeRequest.current?.abort();
       activeRequest.current = null;
     };

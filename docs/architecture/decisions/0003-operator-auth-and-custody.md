@@ -9,9 +9,10 @@ Sidekick is a single-operator service and listens on loopback by default. Remote
 tunnel, private network, or authenticating TLS proxy. Browser mutations remain protected against
 cross-site requests when authentication is supplied ambiently by Basic auth or a trusted header.
 
-Sidekick never receives a signer key, manager-admin key, mnemonic, signed browser transaction, or
-generic signing request. Wallet actions are sealed, expiring intents; the API receives only a txid
-and independently verifies the canonical transaction and expected state.
+Sidekick never accepts a signer key, manager-admin key, mnemonic, signed transaction from the
+browser, or generic signing request. Wallet actions use sealed, expiring intents; the API receives
+only a txid and independently verifies exact canonical execution and any action-specific checkpoint.
+Node-fetched bytes and retained binding follow [ADR 0008](0008-chain-evidence-and-reconciliation.md).
 
 Operator-run may hold one Sidekick-generated, low-balance gas-wallet key. It is stored outside
 SQLite with owner-only permissions and signs only reviewed recipe operations through explicit

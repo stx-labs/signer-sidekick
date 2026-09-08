@@ -1,6 +1,6 @@
 import type { HealthSnapshot } from "@stx-labs/signer-sidekick-api-contracts";
 import { stacksTipIndexBlockHash } from "./chain-clients.js";
-import type { SidekickConfig } from "./config.js";
+import { indexedApiMatchesReference, type SidekickConfig } from "./config.js";
 import {
   HEALTH_RULE_CATALOG,
   HEALTH_RULE_THRESHOLDS,
@@ -44,10 +44,6 @@ interface HealthHistoryInput {
   skippedObservationRows?: number;
   skippedRollupRows?: number;
   skippedEpisodeRows?: number;
-}
-
-function sameOrigin(left: string, right: string): boolean {
-  return new URL(left).origin === new URL(right).origin;
 }
 
 function windowSince(
@@ -277,6 +273,13 @@ function sourceAdvanceStatus(
         : "advancing"
       : "stalled";
   return current;
+}
+
+function configuredApiHasDistinctOrigin(config: SidekickConfig): boolean {
+  return (
+    !config.hiroReferenceApiUrl ||
+    new URL(config.apiUrl).origin !== new URL(config.hiroReferenceApiUrl).origin
+  );
 }
 
 function evaluateHealthFindings(input: {
@@ -543,6 +546,7 @@ function evaluateHealthFindings(input: {
     hiroLastAdvanceAt !== null &&
     latestAt - Date.parse(hiroLastAdvanceAt) <= HEALTH_WINDOWS.networkAdvancementMs;
   const configuredApiAdvancing =
+    (configuredApiHasDistinctOrigin(config) || !hiroAdvancing) &&
     configuredApi.status === "healthy" &&
     configuredApiLastAdvanceAt !== null &&
     latestAt - Date.parse(configuredApiLastAdvanceAt) <= HEALTH_WINDOWS.networkAdvancementMs;
@@ -635,6 +639,7 @@ function evaluateHealthFindings(input: {
     hiroStagnationStartedAt !== null &&
     latestAt - Date.parse(hiroStagnationStartedAt) >= networkStall.minimumWindowMs;
   const configuredApiStalled =
+    (configuredApiHasDistinctOrigin(config) || !hiroStalled) &&
     configuredApi.status === "healthy" &&
     configuredApiStagnationStartedAt !== null &&
     latestAt - Date.parse(configuredApiStagnationStartedAt) >= networkStall.minimumWindowMs;
@@ -1326,12 +1331,13 @@ export function buildHealthSnapshot({
     "hiroSource",
     Boolean(config.hiroReferenceApiUrl),
   );
-  const configuredApiDistinct =
-    !config.hiroReferenceApiUrl || !sameOrigin(config.apiUrl, config.hiroReferenceApiUrl);
+  // Different credentials/paths need separate availability reads, but do not make
+  // the same host an independent witness to network-wide behavior.
+  const configuredApiDistinct = configuredApiHasDistinctOrigin(config);
   const configuredApiState = healthSourceState(
     observations,
     "configuredApiSource",
-    configuredApiDistinct,
+    !indexedApiMatchesReference(config),
   );
   const signerInfoState = healthSourceState(
     observations,

@@ -1,6 +1,6 @@
 # Architecture
 
-These documents define the first-release architecture of Signer Sidekick. They describe current
+These documents define the current architecture of Signer Sidekick. They describe
 system boundaries and invariants; implementation detail belongs in typed interfaces, schemas,
 migrations, and tests.
 

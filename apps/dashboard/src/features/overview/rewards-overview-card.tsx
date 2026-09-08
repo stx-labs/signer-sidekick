@@ -9,38 +9,26 @@ import { useEffect, useState } from "react";
 import { dashboardHash, domainHash } from "../../dashboard-route.js";
 import { Badge } from "../../shared/dashboard-ui.js";
 import { amount, feePercent } from "../../shared/format.js";
+import { operatorErrorSentence } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
+import { storeRewardHandoff } from "../rewards/reward-handoff.js";
 import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
+  allocationRoundingNote,
+  calculatedPoolTotal,
   currentDistribution,
   type DistributionCardModel,
   deriveDistributionCards,
   distributionAllocation,
   distributionName,
 } from "../rewards/reward-state.js";
-import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
 import { IN_PROGRESS_RUN_STATUSES, listRewardRuns } from "../rewards/run-api.js";
 import { cachedGasWalletStatus, loadGasWalletStatus } from "../settings/gas-wallet-api.js";
 
 const CARD_POLL_MS = 30_000;
 
-type CardState = "ready" | "accruing" | "distributing" | "complete" | "attention" | "overdue";
-
-/** The Overview follows the oldest distribution that still needs the operator, else the accrual. */
-function cardState(card: DistributionCardModel | null): CardState {
-  if (!card) return "accruing";
-  if (card.progress) return "distributing";
-  switch (card.badge.label) {
-    case "Needs attention":
-      return "attention";
-    case "Calculation overdue":
-      return "overdue";
-    case "All distributed":
-      return "complete";
-    default:
-      return "ready";
-  }
-}
+type CardState = DistributionCardModel["state"] | "accruing";
 
 const titles: Record<CardState, string> = {
   ready: "Rewards — ready to distribute",
@@ -54,69 +42,84 @@ const titles: Record<CardState, string> = {
 export function RewardsOverviewCard({
   token,
   rewards,
-  generatedAt,
+  cacheScope,
   fallback,
 }: {
   token: string;
   rewards: OverviewPage["rewards"];
-  generatedAt: string;
+  cacheScope: string;
   /** Rendered when the ledger is unavailable (older Sidekick, or still loading). */
   fallback: React.ReactNode;
 }) {
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [gasWallet, setGasWallet] = useState<GasWalletStatus | null | undefined>(() =>
-    cachedGasWalletStatus(),
+    cachedGasWalletStatus(token, cacheScope),
   );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
   const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
   useEffect(() => {
-    void generatedAt;
-    const controller = new AbortController();
-    const load = () => {
-      loadRewardLedger(token, {}, controller.signal)
-        .then((result) => {
-          if (!controller.signal.aborted) {
-            setLedger(result);
-          }
-        })
-        .catch(() => undefined);
-      loadGasWalletStatus(token, controller.signal)
-        .then((status) => {
-          if (!controller.signal.aborted) setGasWallet(status);
-        })
-        .catch(() => {
-          if (!controller.signal.aborted) {
-            setGasWallet((current) => (current === undefined ? null : current));
-          }
-        });
-      loadEngineStatus(token, controller.signal)
-        .then((status) => {
-          if (!controller.signal.aborted)
-            setEngineMode(status?.mode === "operator-run" ? "operator-run" : "observe");
-        })
-        .catch(() => undefined);
-      listRewardRuns(token, 3, controller.signal)
-        .then((runs) => {
-          if (!controller.signal.aborted) {
-            setActiveRun(runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null);
-          }
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") load();
-    }, CARD_POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
-  }, [token, generatedAt]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        const failures: string[] = [];
+        const failed = (cause: unknown) => {
+          failures.push(operatorErrorSentence(cause));
+        };
+        await Promise.all([
+          loadRewardLedger(token, {}, signal)
+            .then((result) => {
+              if (!signal.aborted) {
+                setLedger(result);
+              }
+            })
+            .catch(failed),
+          loadGasWalletStatus(token, signal, cacheScope)
+            .then((status) => {
+              if (!signal.aborted) setGasWallet(status);
+            })
+            .catch((cause: unknown) => {
+              failed(cause);
+            }),
+          loadEngineStatus(token, signal)
+            .then((status) => {
+              if (!signal.aborted)
+                setEngineMode(status?.mode === "operator-run" ? "operator-run" : "observe");
+            })
+            .catch((cause: unknown) => {
+              failed(cause);
+              if (!signal.aborted) setEngineMode(null);
+            }),
+          listRewardRuns(token, 3, signal)
+            .then((runs) => {
+              if (!signal.aborted) {
+                setActiveRun(runs.find((run) => IN_PROGRESS_RUN_STATUSES.has(run.status)) ?? null);
+              }
+            })
+            .catch(failed),
+        ]);
+        if (failures.length) throw new Error(failures.join("; "));
+        if (!signal.aborted) setError(null);
+      },
+      (cause) => setError(operatorErrorSentence(cause)),
+      CARD_POLL_MS,
+    );
+    return () => refresh.stop();
+  }, [token, cacheScope]);
 
-  if (!ledger) return <>{fallback}</>;
+  if (!ledger)
+    return (
+      <>
+        {error ? (
+          <div className="content-notice" role="alert">
+            Reward details unavailable: {error}. Retrying automatically.
+          </div>
+        ) : null}
+        {fallback}
+      </>
+    );
   const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
   const card = cards[0] ?? null;
-  const state = cardState(card);
+  const state = card?.state ?? "accruing";
   const distribution = card
     ? (ledger.cycles
         .find((entry) => entry.cycle === card.cycle)
@@ -128,15 +131,12 @@ export function RewardsOverviewCard({
   const calculated = distribution.calculation.state === "done";
   const primaryAction = card?.primary ?? card?.secondary?.action ?? null;
   const startRun = () => {
-    if (primaryAction) sessionStorage.setItem(PENDING_RUN_STORAGE_KEY, primaryAction.kind);
+    if (primaryAction) storeRewardHandoff(primaryAction, cacheScope);
     location.hash = domainHash("rewards", "claims");
   };
   const allocation = distributionAllocation(distribution);
-  const cycleCalculated = cycle
-    ? cycle.distributions
-        .reduce((sum, d) => sum + BigInt(d.calculation.poolSats ?? "0"), 0n)
-        .toString()
-    : null;
+  const roundingNote = allocationRoundingNote(allocation);
+  const cycleCalculated = cycle ? calculatedPoolTotal(cycle.distributions) : null;
   const headline = card ? card.headline : "Accruing — nothing to do until the network calculates";
   const badge = card ? card.badge : { tone: "neutral" as const, label: "Accruing" };
   const execution = card?.execution ?? null;
@@ -150,17 +150,25 @@ export function RewardsOverviewCard({
         <h2 id="overview-rewards-heading">{titles[state]}</h2>
         <Badge state={badge.tone}>{badge.label}</Badge>
       </div>
+      {error ? (
+        <p className="content-notice" role="status">
+          Reward status refresh failed; showing retained data from{" "}
+          {new Date(ledger.generatedAt).toLocaleString()}. {error}
+        </p>
+      ) : null}
       <div className="overview-domain-primary">
         <span>
           Cycle {cycleNumber} · {distributionName(distribution.distribution)}
         </span>
         <strong>{headline}</strong>
         <small>
-          {calculated
-            ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
-            : rewards.estimatedPoolRewardSats
-              ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
-              : "projection unavailable"}
+          {distribution.status === "interpretation-unavailable"
+            ? distribution.statusDetail
+            : calculated
+              ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
+              : rewards.estimatedPoolRewardSats
+                ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
+                : "projection unavailable"}
         </small>
         {cards.length > 1 ? (
           <small>
@@ -173,27 +181,43 @@ export function RewardsOverviewCard({
         {calculated ? (
           <>
             <div>
-              <dt>{allocation.estimated ? "Estimated to stakers" : "To stakers"}</dt>
+              <dt>
+                {allocation.coverage === "partial"
+                  ? "Known to stakers (partial)"
+                  : allocation.estimated
+                    ? "Estimated to stakers"
+                    : "To stakers"}
+              </dt>
               <dd>{amount(allocation.toStakersSats)}</dd>
             </div>
             <div>
-              <dt>{allocation.estimated ? "Your fee estimate" : "Your fee"}</dt>
+              <dt>
+                {allocation.coverage === "partial"
+                  ? "Known fee (partial)"
+                  : allocation.estimated
+                    ? "Your fee estimate"
+                    : "Your fee"}
+              </dt>
               <dd>
                 {amount(allocation.operatorFeeSats)}
                 {distribution.feeBips
-                  ? ` · ${feePercent(distribution.feeBips)}${distribution.feeEvidence === "locked" ? " locked" : ""}`
+                  ? ` · STX fee ${feePercent(distribution.feeBips)}${distribution.feeEvidence === "locked" ? " locked" : ""}`
                   : ""}
+                {roundingNote ? <small> · {roundingNote}</small> : null}
               </dd>
             </div>
           </>
         ) : (
           <>
             <div>
-              <dt>Earned so far</dt>
+              <dt>Pool if calculated now</dt>
               <dd>
-                {rewards.estimateKind === "if-calculated-now" && rewards.estimatedPoolRewardSats
-                  ? amount(rewards.estimatedPoolRewardSats)
-                  : "—"}
+                {amount(
+                  rewards.accruedPoolRewardSats ??
+                    (rewards.estimateKind === "if-calculated-now"
+                      ? rewards.estimatedPoolRewardSats
+                      : null),
+                )}
               </dd>
             </div>
             <div>
@@ -206,7 +230,7 @@ export function RewardsOverviewCard({
             </div>
           </>
         )}
-        {cycle && cycleCalculated && cycleCalculated !== "0" ? (
+        {cycle?.distributions.some((d) => d.calculation.state === "done") ? (
           <div>
             <dt>Cycle {cycle.cycle} calculated</dt>
             <dd>{amount(cycleCalculated)}</dd>

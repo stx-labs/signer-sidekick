@@ -7,13 +7,19 @@ import type {
   RewardRunPreparation,
   RewardRunPrepareRequest,
   RewardRunRecipe,
+  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   REWARD_OPERATION_ADAPTER_REVISIONS,
   type RewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
+import { isRetryableChainReadError, RateLimitedError } from "../chain-clients.js";
 import { withOperatorRequestSignal } from "../request-context.js";
 import type { RewardRunRepository } from "../storage/reward-run-repository.js";
+import {
+  SubmittedObservationCadence,
+  submittedObservationIntervalMs,
+} from "../submitted-observation-cadence.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import type { TransactionBroadcastResult } from "./transaction-broadcaster.js";
 
@@ -91,10 +97,15 @@ export type RewardRunMaterialization =
   | { status: "halt"; reason: string };
 
 export type RewardRunReconciliation =
-  | { status: "pending" }
-  | { status: "confirmed"; blockHeight: number }
-  | { status: "externally-completed"; reason: string }
-  | { status: "halt"; reason: string };
+  | { status: "pending"; retryLater?: boolean; retryAfterMs?: number }
+  | { status: "confirmed"; blockHeight: number; executionSource?: TransactionExecutionSource }
+  | { status: "externally-completed"; reason: string; executionSource?: TransactionExecutionSource }
+  | {
+      status: "halt";
+      reason: string;
+      executionSource?: TransactionExecutionSource;
+      requiresNodeCorroboration?: boolean;
+    };
 
 /** Live S4 adapter seam. Implementations read and prove state; the coordinator owns authority. */
 export interface RewardRunDriver {
@@ -104,6 +115,12 @@ export interface RewardRunDriver {
     child: RewardRunChild;
     plan: RewardOperationPlan;
     txid: `0x${string}`;
+    signedAttempt?:
+      | Pick<
+          ReturnType<RewardRunRepository["attempts"]>[number],
+          "precomputedTxid" | "nonce" | "feeUstx" | "state"
+        >
+      | undefined;
   }): Promise<RewardRunReconciliation>;
   broadcast(signed: SignedRewardOperationTransaction): Promise<TransactionBroadcastResult>;
 }
@@ -141,6 +158,7 @@ export interface RewardRunServiceOptions {
   approvalStartMinutes?: number;
   maximumRunHours?: number;
   pollIntervalMs?: number;
+  observeSubmitted?: readonly (() => Promise<void>)[];
   now?: () => Date;
   logger?: { warn(message: string): void };
 }
@@ -380,7 +398,12 @@ export class RewardRunService {
   #preparationTail: Promise<void> = Promise.resolve();
   #preparationController = new AbortController();
   #timer: NodeJS.Timeout | null = null;
+  #recoveryInFlight: Promise<void> | null = null;
+  #observationInFlight: Promise<void> | null = null;
+  #nextObservationAt = 0;
+  readonly #reconciliationCadence = new SubmittedObservationCadence();
   #closed = false;
+  readonly #waitingReasons = new Map<string, string>();
 
   constructor(options: RewardRunServiceOptions) {
     this.#options = options;
@@ -414,6 +437,9 @@ export class RewardRunService {
     this.#timer = null;
     this.#preparationController.abort(new Error("Reward-run preparation stopped"));
     await this.#preparationTail;
+    await this.#recoveryInFlight;
+    await this.#observationInFlight;
+    await this.#tail;
   }
 
   enqueuePreparation(request: RewardRunPrepareRequest): RewardRunPreparation {
@@ -648,6 +674,8 @@ export class RewardRunService {
       to: "running",
       now: now.toISOString(),
     });
+    // Explicit resume must re-observe immediately; pacing never supplies signing authority.
+    if (child?.txid) this.#reconciliationCadence.reset(child.txid);
     void this.#queue(() => this.#guardedTick(runId));
     return resumed;
   }
@@ -671,7 +699,46 @@ export class RewardRunService {
   }
 
   async recover(): Promise<void> {
-    for (const run of this.#options.repository.list(200).reverse()) {
+    if (this.#closed) return;
+    // Reuse this maintenance tick without letting a slow wallet/sweep lookup stall active
+    // runs. The shared promise bounds concurrency and is drained before storage closes.
+    const now = this.#now().getTime();
+    if (
+      !this.#observationInFlight &&
+      this.#options.observeSubmitted &&
+      now >= this.#nextObservationAt
+    ) {
+      this.#nextObservationAt = now + submittedObservationIntervalMs;
+      this.#observationInFlight = Promise.allSettled(
+        this.#options.observeSubmitted.map(async (observe) => await observe()),
+      )
+        .then((results) => {
+          for (const result of results) {
+            if (result.status === "rejected")
+              this.#options.logger?.warn(`Submitted observation failed: ${String(result.reason)}`);
+          }
+        })
+        .finally(() => {
+          this.#observationInFlight = null;
+        });
+    }
+    this.#recoveryInFlight ??= this.#recover().finally(() => {
+      this.#recoveryInFlight = null;
+    });
+    await this.#recoveryInFlight;
+  }
+
+  async #recover(): Promise<void> {
+    const runs = this.#options.repository.listUnfinished();
+    this.#reconciliationCadence.retain(
+      runs.flatMap((run) => {
+        const child = run.children[run.cursor];
+        return run.status === "running" && child?.status === "broadcast" && child.txid
+          ? [child.txid]
+          : [];
+      }),
+    );
+    for (const run of runs) {
       const now = this.#now();
       if (
         ["paused", "halted"].includes(run.status) &&
@@ -725,17 +792,7 @@ export class RewardRunService {
       });
     }
     if (run.status !== "running") return;
-    if (run.runtimeExpiresAt && Date.parse(run.runtimeExpiresAt) <= now.getTime()) {
-      this.#options.repository.transition({
-        runId,
-        from: ["running"],
-        to: "expired",
-        now: now.toISOString(),
-        completedAt: now.toISOString(),
-        failureReason: "Maximum run time elapsed",
-      });
-      return;
-    }
+    if (this.#expireRunningRun(run, now)) return;
     const child = run.children[run.cursor];
     if (!child) {
       this.#options.repository.transition({
@@ -781,14 +838,49 @@ export class RewardRunService {
         this.#halt(run, "Broadcast child is missing its sealed plan");
         return;
       }
-      const reconciliation = await this.#options.driver.reconcile({
-        run,
-        child,
-        plan,
-        txid: child.txid as `0x${string}`,
-      });
+      if (!this.#reconciliationCadence.isDue(child.txid, now.getTime())) return;
+      let retryLater = true;
+      let retryAfterMs: number | null | undefined;
+      let reconciliation: RewardRunReconciliation;
+      try {
+        reconciliation = await this.#options.driver.reconcile({
+          run,
+          child,
+          plan,
+          txid: child.txid as `0x${string}`,
+          signedAttempt: this.#options.repository
+            .attempts(runId, child.index)
+            .find(({ precomputedTxid }) => precomputedTxid === child.txid),
+        });
+        retryLater = reconciliation.status === "pending" && reconciliation.retryLater === true;
+        retryAfterMs = reconciliation.status === "pending" ? reconciliation.retryAfterMs : null;
+      } catch (error) {
+        if (error instanceof RateLimitedError) retryAfterMs = error.retryAfterMs;
+        throw error;
+      } finally {
+        this.#reconciliationCadence.record(
+          child.txid,
+          retryLater,
+          this.#now().getTime(),
+          retryAfterMs,
+        );
+      }
       if (reconciliation.status === "pending") return;
       if (reconciliation.status === "halt") {
+        if (reconciliation.executionSource || reconciliation.requiresNodeCorroboration) {
+          this.#options.repository.updateChild({
+            runId,
+            childIndex: child.index,
+            from: ["broadcast"],
+            to: "broadcast",
+            now: now.toISOString(),
+            provenance: child.provenance,
+            executionSource: reconciliation.executionSource ?? null,
+            failureReason: reconciliation.requiresNodeCorroboration
+              ? reconciliation.reason
+              : child.failureReason,
+          });
+        }
         this.#halt(run, reconciliation.reason);
         return;
       }
@@ -800,6 +892,7 @@ export class RewardRunService {
         to: status,
         now: now.toISOString(),
         provenance: status === "confirmed" ? "you" : "another-caller",
+        executionSource: reconciliation.executionSource ?? null,
       });
       const attempts = this.#options.repository.attempts(runId, child.index);
       const attempt = attempts.at(-1);
@@ -871,6 +964,14 @@ export class RewardRunService {
     // execution-control and dedicated-key refusal checks at the actual signature boundary.
     this.#assertExecutionAllowed([storedChild.operation]);
     await this.#assertDedicatedWallet(run.walletPrincipal, this.#now());
+    const beforeSign = this.get(runId);
+    if (
+      this.#closed ||
+      beforeSign.status !== "running" ||
+      this.#expireRunningRun(beforeSign, this.#now())
+    )
+      return;
+    this.#assertExecutionAllowed([storedChild.operation]);
     const signed = await this.#sign(storedChild.operation, materialized.plan);
     const fee = BigInt(signed.fee);
     if (fee !== plannedFee) {
@@ -1148,13 +1249,47 @@ export class RewardRunService {
     });
   }
 
+  #expireRunningRun(run: RewardRun, now: Date): boolean {
+    if (!run.runtimeExpiresAt || Date.parse(run.runtimeExpiresAt) > now.getTime()) return false;
+    this.#options.repository.transition({
+      runId: run.runId,
+      from: ["running"],
+      to: "expired",
+      now: now.toISOString(),
+      completedAt: now.toISOString(),
+      failureReason: "Maximum run time elapsed",
+    });
+    return true;
+  }
+
   async #guardedTick(runId: string): Promise<void> {
     try {
       await this.#tick(runId);
+      this.#waitingReasons.delete(runId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const current = this.#options.repository.get(runId);
+      const child = current?.children[current.cursor];
+      // A throw after an attempt was persisted may hide a submission. Never turn that
+      // ambiguity into an automatic retry; existing explicit-resume recovery owns it.
+      const submissionMayHaveStarted =
+        child?.status === "materialized" &&
+        this.#options.repository.attempts(runId, child.index).length > 0;
+      if (
+        current?.status === "running" &&
+        !submissionMayHaveStarted &&
+        isRetryableChainReadError(error)
+      ) {
+        if (this.#waitingReasons.get(runId) !== reason) {
+          this.#options.logger?.warn(
+            `Reward run ${runId} is waiting for upstream recovery: ${reason}`,
+          );
+          this.#waitingReasons.set(runId, reason);
+        }
+        return;
+      }
       if (current?.status === "running") this.#halt(current, reason);
+      this.#waitingReasons.delete(runId);
       this.#options.logger?.warn(`Reward run ${runId} halted: ${reason}`);
     }
   }

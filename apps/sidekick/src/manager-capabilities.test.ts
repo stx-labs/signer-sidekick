@@ -68,7 +68,7 @@ describe("manager capabilities", () => {
     const capabilities = inspectManagerCapabilities({
       contractInterface: { functions: [traitFunction()] },
       sourceSha256: "ab".repeat(32),
-      exactSourceReviewed: false,
+      sourceReviewed: false,
       sourceReviewReason: "Unknown source",
     });
 
@@ -92,7 +92,7 @@ describe("manager capabilities", () => {
     const capabilities = inspectManagerCapabilities({
       contractInterface: { functions: [incompatible] },
       sourceSha256: "ab".repeat(32),
-      exactSourceReviewed: false,
+      sourceReviewed: false,
       sourceReviewReason: "Unknown source",
     });
 
@@ -106,15 +106,15 @@ describe("manager capabilities", () => {
     const capabilities = inspectManagerCapabilities({
       contractInterface: referenceInterface(),
       sourceSha256: "ab".repeat(32),
-      exactSourceReviewed: false,
-      sourceReviewReason: "Canonical-only source match",
+      sourceReviewed: false,
+      sourceReviewReason: "Unknown source with a similar interface",
     });
 
     expect(managerActionCapability(capabilities, "update-admin")).toMatchObject({
       interfaceAvailable: true,
       executionAvailable: false,
       adapter: null,
-      reason: expect.stringContaining("byte-exact source is not reviewed"),
+      reason: expect.stringContaining("program is not reviewed"),
     });
   });
 
@@ -145,7 +145,7 @@ describe("manager capabilities", () => {
     const capabilities = inspectManagerCapabilities({
       contractInterface: referenceInterface(),
       sourceSha256,
-      exactSourceReviewed: true,
+      sourceReviewed: true,
       sourceReviewReason: "Exact built-in source match",
     });
 

@@ -52,7 +52,28 @@ describe("startSnapshotRefreshLoop", () => {
       consecutiveFailures: 1,
       retryBackoffSeconds: 15,
       snapshotAgeSeconds: 40,
+      snapshotFresh: 1,
+      refreshInProgress: 0,
+    });
+  });
+
+  it("separates source age from healthy in-flight work and does not rejuvenate old data", () => {
+    let now = Date.parse("2026-09-07T12:00:00Z");
+    const metrics = new SnapshotRefreshMetricsTracker(() => now);
+    metrics.recordAttempt();
+    metrics.recordSuccess({ generatedAt: new Date(now).toISOString() });
+    now += 60_001;
+    metrics.recordAttempt();
+    expect(metrics.snapshot()).toMatchObject({
       snapshotFresh: 0,
+      refreshInProgress: 1,
+      consecutiveFailures: 0,
+    });
+    metrics.recordSuccess({ generatedAt: "2026-09-07T12:00:00Z" });
+    expect(metrics.snapshot()).toMatchObject({
+      snapshotFresh: 0,
+      refreshInProgress: 0,
+      successesTotal: 2,
     });
   });
 

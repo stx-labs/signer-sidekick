@@ -1,7 +1,8 @@
 # Reward operations mockups
 
 Hi-fi mockups for the Rewards page, Overview card, Settings gas-wallet panel, confirm sheet, and
-mobile layout described in `docs/product/reward-operations-plan.md` (§6).
+mobile layout. These are design references; the [React implementation](../../apps/dashboard/src)
+and browser tests define current behavior. See the [delivery record](../../docs/product/reward-operations-plan.md).
 
 - `src/` — the only hand-edited files: one HTML fragment per screen, shared `partials/`,
   `mockup.css` (new `rw-` classes; candidates for `apps/dashboard/src/styles.css`),

@@ -125,6 +125,7 @@ export interface RewardLedgerSnapshotInput {
 
 export interface RewardLedgerCalculationInput {
   state?: string;
+  targetRewardCycle?: number | null;
   next: null | {
     state: "due" | "scheduled";
     targetRewardCycle: number;
@@ -458,7 +459,13 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   const query = input.query ?? {};
   const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const rewards = snapshot.rewards ?? null;
-  const currentCycle = rewards?.rewardCycle ?? null;
+  const currentCycle =
+    rewards?.rewardCycle ??
+    snapshot.rewardOutlook?.calculation?.targetRewardCycle ??
+    snapshot.rewardOutlook?.calculation?.next?.targetRewardCycle ??
+    null;
+  const interpretationAvailable =
+    snapshot.manager?.capabilities?.eventVocabulary?.normalizationAvailable === true;
   // Live window: the calculation-target cycle plus the previous cycle while it still has open work.
   const liveStatuses = new Map<number, RewardLedgerRewardStatusInput>();
   if (rewards) liveStatuses.set(rewards.rewardCycle, rewards);
@@ -628,6 +635,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       ...collectsByCycle.keys(),
       ...claimsByCycle.keys(),
       ...liveStatuses.keys(),
+      ...(currentCycle === null ? [] : [currentCycle]),
       ...(query.cycle === null || query.cycle === undefined ? [] : [query.cycle]),
     ]),
   ]
@@ -646,7 +654,8 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     const collects = collectsByCycle.get(cycle) ?? [];
     const cycleClaims = claimsByCycle.get(cycle) ?? [];
     const live = liveStatuses.get(cycle) ?? null;
-    const isLive = live !== null;
+    const isLive = live !== null || cycle === currentCycle;
+    const liveReadsUnavailable = isLive && (!live?.stakers || !live.buckets);
     const availableToCollect = live?.buckets
       ? text(
           live.buckets.reduce(
@@ -676,7 +685,13 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     // Recovery gaps apply to the current cycle too: a fresh install may not yet have seen payments
     // made earlier in this cycle. Departed members and the evidence window only concern history.
     const historicallyIncomplete =
-      recoveryIncomplete || (!isLive && (departedMembers || evidenceIncomplete));
+      !interpretationAvailable ||
+      recoveryIncomplete ||
+      liveReadsUnavailable ||
+      (!isLive && (departedMembers || evidenceIncomplete));
+    // Historical attribution limits do not undo observed payments or reopen completed work.
+    const interpretationUnavailable =
+      !interpretationAvailable || liveReadsUnavailable || recoveryIncomplete;
 
     // fee evidence for the cycle
     const feeBips = isLive
@@ -970,6 +985,14 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         0n,
       );
       const settled = rows.filter((row) => row.status !== "rolled-forward");
+      const paidFeeRows = settled.filter(
+        (row) => row.paymentTxId !== null && row.operatorFeeSats !== null,
+      );
+      const paidFeesKnown =
+        paidFeeRows.length > 0 ||
+        (interpretationAvailable &&
+          !historicallyIncomplete &&
+          !settled.some((row) => row.paymentTxId !== null));
       const counts = {
         made: rows.filter((row) =>
           ["paid", "sent", "arrived", "retired", "rejected", "returned"].includes(row.status),
@@ -993,11 +1016,9 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
             .filter((row) => row.paymentTxId === null)
             .reduce((total, row) => total + big(row.stakerEntitlementSats), 0n),
         ),
-        operatorFeeSats: text(
-          settled
-            .filter((row) => row.paymentTxId !== null)
-            .reduce((total, row) => total + big(row.operatorFeeSats ?? "0"), 0n),
-        ),
+        operatorFeeSats: paidFeesKnown
+          ? text(paidFeeRows.reduce((total, row) => total + big(row.operatorFeeSats), 0n))
+          : null,
       };
       const expectedNext =
         next !== null &&
@@ -1034,6 +1055,61 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
           ? "combined"
           : "exact";
       const isLatestCalculated = fact !== undefined && latestCalculated === index;
+      // Sum the actual account rows, never infer fees from an unexplained pool remainder.
+      // Pool and account shares are floored separately. Prefer collected chain amounts to the
+      // pool simulation, and report bounded rounding separately from the actual account fees.
+      const knownFeeRows = settled.filter((row) => row.operatorFeeSats !== null);
+      const knownGross = settled.reduce((sum, row) => sum + big(row.grossRewardSats), 0n);
+      const allocationPoolSats =
+        distributionCollects.length > 0
+          ? distributionCollects.every((collect) => collect.totalRewardsSats !== null)
+            ? collectedSats
+            : null
+          : fact?.realization.poolEstimate
+            ? big(fact.realization.poolEstimate.grossSats)
+            : null;
+      const difference = allocationPoolSats === null ? null : allocationPoolSats - knownGross;
+      const accountCount = new Set(settled.map((row) => `${row.stakerPrincipal}|${row.bucket}`))
+        .size;
+      const completeAllocation =
+        !interpretationUnavailable &&
+        !evidenceIncomplete &&
+        fact !== undefined &&
+        counts.rolledForward === 0 &&
+        settled.every(
+          (row) =>
+            !row.includesPriorDistribution &&
+            row.grossRewardSats !== null &&
+            row.operatorFeeSats !== null,
+        ) &&
+        difference !== null &&
+        difference >= 0n &&
+        (difference === 0n || difference < BigInt(accountCount));
+      const allocation: NonNullable<RewardLedgerDistribution["allocation"]> = {
+        toStakersSats:
+          settled.length > 0 || completeAllocation
+            ? text(settled.reduce((sum, row) => sum + big(row.stakerEntitlementSats), 0n))
+            : null,
+        operatorFeeSats:
+          knownFeeRows.length > 0 || completeAllocation
+            ? text(knownFeeRows.reduce((sum, row) => sum + big(row.operatorFeeSats), 0n))
+            : null,
+        coverage: completeAllocation ? "complete" : settled.length > 0 ? "partial" : "unavailable",
+        roundingSats: completeAllocation ? text(difference ?? 0n) : null,
+        poolBasis:
+          allocationPoolSats === null
+            ? null
+            : distributionCollects.length > 0
+              ? "collected"
+              : "simulation",
+        estimated: settled.some(
+          (row) =>
+            row.paymentTxId === null &&
+            (live?.buckets?.find((bucket) => bucketKey(bucket.bondIndex) === row.bucket)
+              ?.feeSnapshotBips ??
+              (row.bucket === "stx" ? live?.manager?.feeSnapshotBips : null)) == null,
+        ),
+      };
       let status: RewardLedgerDistributionStatus;
       let statusDetail: string;
       if (counts.rejected > 0) {
@@ -1050,6 +1126,13 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
           status = "accruing";
           statusDetail = "Accruing before the network calculation";
         }
+      } else if (interpretationUnavailable) {
+        status = "interpretation-unavailable";
+        statusDetail = !interpretationAvailable
+          ? "Reward details unavailable: manager event interpretation is not supported"
+          : liveReadsUnavailable
+            ? "Reward details unavailable: current reward balances have not been read"
+            : "Reward history is incomplete; payment completion cannot yet be established";
       } else if (
         isLatestCalculated &&
         ((availableToCollect !== null && big(availableToCollect) > 0n) || counts.outstanding > 0)
@@ -1064,6 +1147,14 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       } else if (counts.arriving > 0) {
         status = "all-distributed";
         statusDetail = `All distributed · ${counts.arriving} arriving over Bitcoin`;
+      } else if (
+        settled.length === 0 &&
+        counts.rolledForward === 0 &&
+        (allocationPoolSats === null || allocationPoolSats > 0n)
+      ) {
+        status = "interpretation-unavailable";
+        statusDetail =
+          "No payment evidence accounts for this calculation; completion cannot yet be established";
       } else {
         status = "complete";
         statusDetail = "Complete";
@@ -1093,6 +1184,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
         availableToCollectSats: isLive && isLatestCalculated ? availableToCollect : null,
         feeBips,
         feeEvidence,
+        allocation,
         payments: counts,
         status,
         statusDetail,
@@ -1116,9 +1208,12 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       distributedSats: text(
         distributions.reduce((total, d) => total + big(d.payments.distributedSats), 0n),
       ),
-      operatorFeeSats: text(
-        distributions.reduce((total, d) => total + big(d.payments.operatorFeeSats), 0n),
-      ),
+      operatorFeeSats:
+        !interpretationUnavailable &&
+        !evidenceIncomplete &&
+        paidRows.every((row) => row.operatorFeeSats !== null)
+          ? text(paidRows.reduce((total, row) => total + big(row.operatorFeeSats), 0n))
+          : null,
       outstandingSats: text(
         distributions.reduce((total, d) => total + big(d.payments.outstandingSats), 0n),
       ),
@@ -1191,6 +1286,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     aggregate?.unmatchedPaymentCount ??
     boundedFeeRows.filter((row) => row.operatorFeeSats === null).length;
   const historyComplete =
+    interpretationAvailable &&
     !recoveryIncomplete &&
     unmatchedPaymentCount === 0 &&
     (aggregate !== null || !evidenceWindow.truncated);
@@ -1234,7 +1330,10 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       filtered.length > paymentLimit || (scope === "all" && evidenceWindow.truncated),
     fees: {
       feeBips: rewards?.manager?.feeSnapshotBips ?? rewards?.manager?.configuredFeeBips ?? null,
-      earnedIndexedSats: text(earnedIndexed),
+      earnedIndexedSats:
+        interpretationAvailable && (historyComplete || indexedPaymentCount > unmatchedPaymentCount)
+          ? text(earnedIndexed)
+          : null,
       indexedPaymentCount,
       unmatchedPaymentCount,
       historyComplete,
@@ -1290,6 +1389,8 @@ export function rewardLedgerDistributionsCsv(ledger: RewardLedger): string {
     "outstanding_sats",
     "operator_fee_sats",
     "coverage",
+    "allocation_rounding_sats",
+    "allocation_pool_basis",
   ];
   const rows = ledger.cycles.flatMap((cycle) =>
     cycle.distributions.map((d) => [
@@ -1315,6 +1416,8 @@ export function rewardLedgerDistributionsCsv(ledger: RewardLedger): string {
       d.payments.outstandingSats,
       d.payments.operatorFeeSats,
       d.coverage,
+      d.allocation?.roundingSats ?? null,
+      d.allocation?.poolBasis ?? null,
     ]),
   );
   return csv([header, ...rows]);

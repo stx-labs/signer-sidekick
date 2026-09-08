@@ -1,8 +1,4 @@
-import {
-  type RewardLedger,
-  type RewardLedgerDistribution,
-  rewardLedgerSchema,
-} from "@stx-labs/signer-sidekick-api-contracts";
+import { type RewardLedger, rewardLedgerSchema } from "@stx-labs/signer-sidekick-api-contracts";
 import { apiDownload, apiJson } from "../../api-client.js";
 
 export interface RewardLedgerQuery {
@@ -60,19 +56,4 @@ export async function downloadRewardLedgerExport(
       format === "csv" ? ["text/csv"] : ["application/json", "application/json; charset=utf-8"],
     fallbackFilename: `signer-sidekick-reward-${name}.${format}`,
   });
-}
-
-/** The distribution the page is looking at: the live one by default, or the queried one. */
-export function selectedDistribution(ledger: RewardLedger): RewardLedgerDistribution | null {
-  const cycle =
-    ledger.query.cycle === null
-      ? ledger.cycles.find((entry) => entry.cycle === ledger.current.cycle)
-      : ledger.cycles.find((entry) => entry.cycle === ledger.query.cycle);
-  if (!cycle) return null;
-  const wanted = ledger.query.distribution ?? ledger.current.distribution ?? null;
-  return (
-    cycle.distributions.find((distribution) => distribution.distribution === wanted) ??
-    cycle.distributions.at(-1) ??
-    null
-  );
 }

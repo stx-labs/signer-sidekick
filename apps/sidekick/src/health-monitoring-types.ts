@@ -10,6 +10,7 @@ export type HealthSourceStatus = HealthSourceState["status"];
 export type BurnBlockTiming = NonNullable<HealthSnapshot["burnBlockTiming"]>;
 
 export interface SourceObservation {
+  retryAfterMs?: number;
   reachable: boolean;
   latencyMs: number | null;
   errorCode: string | null;
@@ -121,6 +122,7 @@ export interface HealthMonitoringOptions {
   store?: SidekickStore;
   getOperatorContext?: () => HealthOperatorContext | null;
   getBurnBlocks?: () => Promise<BurnBlockPage>;
+  getIndexedApiStatus?: () => Promise<{ value: HiroStatus; checkedAt: string }>;
   now?: () => Date;
   pollIntervalMs?: number;
   referencePollIntervalMs?: number;

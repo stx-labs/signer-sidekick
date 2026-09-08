@@ -1,10 +1,10 @@
 # Operator-run signing-path review
 
 Changes to the operator-run signing path land through the repository's required pull-request
-review (a second person must approve every merge to `main`). There is no runtime record and no
-fingerprint gate: the contract, not the caller, fixes every payout recipient and amount, and the gas
-wallet holds no admin or signer authority, so the review's job is to keep Sidekick's key narrow and
-unprivileged, not to ration when it may run.
+review (a second person must approve every merge to `main`). There is no runtime application-release
+attestation gate. Reviewed contract/source identities and sealed-plan checks still apply. The
+contract fixes payout recipients and amounts, and the gas wallet holds no admin or signer authority;
+review must keep its authority narrow.
 
 ## Review scope
 

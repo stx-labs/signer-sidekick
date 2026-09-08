@@ -27,7 +27,7 @@ separate private port, but it shares the service lifecycle and database.
 | Roster discovery and historical enumeration | Indexed API, followed by local-node verification wherever a proof exists |
 | Local signer behavior | Signer monitoring metrics correlated with local node state |
 | Network comparison | Multiple independent references used only to classify a local symptom |
-| Operation completion | Canonical transaction bytes plus the operation's expected poststate |
+| Operation completion | Exact canonical execution plus adapter-specific checkpoint evidence; configured-API execution needs retained signing-time binding for runs/sweeps, or exact mempool verification for the same wallet intent/txid; positive node conflicts veto it |
 | Durable history | SQLite record carrying its source, anchor, verification strength, and observation time |
 
 No optional API can override a node-proved fact. Missing API or signer-monitoring data degrades only
@@ -47,9 +47,9 @@ Periodic anti-entropy -> indexed discovery ------------+
                                            page APIs and support bundle
 ```
 
-Callbacks provide latency, not authority. Every worker is restart-safe, idempotent, single-flight
-per domain, and bounded by persisted cursors or retry state. The service refreshes the current
-operator snapshot without an open browser.
+Callbacks provide latency, not authority. Durable cursors and operation records preserve progress;
+single-flight work and bounded in-memory backoff limit retries. Restart resets pacing, not evidence.
+The service refreshes the current operator snapshot without an open browser.
 
 ## Operator action flow
 
