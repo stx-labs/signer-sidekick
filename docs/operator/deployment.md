@@ -84,6 +84,18 @@ availability of health evidence.
 Diagnostic warnings are reported in its body but do not fail the operational probe.
 The dashboard's **Settings → Deployment check** tests the same requirements and optional telemetry.
 
+## Pre-release testing
+
+For team testing, run **Actions → Test image → Run workflow** on `main` after that commit's CI
+passes. The manual workflow publishes amd64 and arm64 images under a unique
+`test-<commit>-<run>-<attempt>` tag; it does not change release versions, create a GitHub release,
+or move `latest`. Its summary contains the exact `docker pull` command and `SIDEKICK_IMAGE_TAG`.
+
+Use the [backup and upgrade procedure](operations.md#upgrade) before changing the image tag.
+Test images can migrate the database; returning to an older image may require its matching database
+backup. Keep the gas key and configuration with that backup, and do not run two instances against
+the same database or gas wallet. Prefer Observe mode for initial checks.
+
 ## Network paths
 
 | Direction | Port | Use |

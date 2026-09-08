@@ -1,4 +1,4 @@
-# Published-image overlay. Keep SIDEKICK_IMAGE_TAG pinned to the release's semver image tag.
+# Published-image overlay. Pin SIDEKICK_IMAGE_TAG to a release version or an explicit test tag.
 services:
   sidekick:
     build: !reset null
