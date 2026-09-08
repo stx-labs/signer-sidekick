@@ -253,6 +253,14 @@ function changedFields(
 }
 
 export class RuntimeSettingsController {
+  private retainedClients: {
+    nodeRpcUrl: string;
+    apiUrl: string;
+    apiKey: string | undefined;
+    apiKeyHeader: string;
+    node: StacksNodeClient;
+    api: StacksApiClient;
+  } | null = null;
   private settings: PersistedRuntimeSettings;
   private apiCredentials: RuntimeApiCredentials;
   private revision: number;
@@ -382,10 +390,28 @@ export class RuntimeSettingsController {
 
   clients(): { config: SidekickConfig; node: StacksNodeClient; api: StacksApiClient } {
     const config = this.effectiveConfig();
+    let retained = this.retainedClients;
+    if (
+      !retained ||
+      retained.nodeRpcUrl !== config.nodeRpcUrl ||
+      retained.apiUrl !== config.apiUrl ||
+      retained.apiKey !== config.apiKey ||
+      retained.apiKeyHeader !== config.apiKeyHeader
+    ) {
+      retained = {
+        nodeRpcUrl: config.nodeRpcUrl,
+        apiUrl: config.apiUrl,
+        apiKey: config.apiKey,
+        apiKeyHeader: config.apiKeyHeader,
+        node: new StacksNodeClient(config.nodeRpcUrl),
+        api: new StacksApiClient(config.apiUrl, config.apiKey, config.apiKeyHeader),
+      };
+      this.retainedClients = retained;
+    }
     return {
       config,
-      node: new StacksNodeClient(config.nodeRpcUrl),
-      api: new StacksApiClient(config.apiUrl, config.apiKey, config.apiKeyHeader),
+      node: retained.node,
+      api: retained.api,
     };
   }
 

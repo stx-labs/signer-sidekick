@@ -1,4 +1,5 @@
 import { deserializeTransaction, txidFromBytes } from "@stacks/transactions";
+import { upstreamRequestMetrics } from "../upstream-request-metrics.js";
 import type {
   SignedGasWalletSweepTransaction,
   SignedRewardOperationTransaction,
@@ -234,7 +235,9 @@ export class NoRetryTransactionBroadcaster {
         body: Buffer.from(validated.bytes),
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
+      upstreamRequestMetrics.record(this.#endpoint, "POST", response.status);
     } catch (error) {
+      upstreamRequestMetrics.record(this.#endpoint, "POST", null);
       return {
         status: "ambiguous",
         txid: validated.txid,

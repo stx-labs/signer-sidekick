@@ -216,6 +216,11 @@ describe("transaction engine runtime composition", () => {
       };
     });
     const base = observeComposition({ freshAnchor: anchor(101), seen: [], freshReads: vi.fn() });
+    vi.mocked(base.store.transactionEngine.listLogicalJobs).mockReturnValue({
+      items: [],
+      nextCursor: null,
+      total: 1,
+    });
     const runtime = new SidekickTransactionEngineRuntime({
       ...base,
       readFreshObservation: freshReads,
@@ -233,6 +238,40 @@ describe("transaction engine runtime composition", () => {
     expect(freshReads).toHaveBeenCalledTimes(2);
     await runtime.close();
     vi.useRealTimers();
+  });
+
+  it("does no upstream idle maintenance, resumes for pending work, and keeps explicit preparation fresh", async () => {
+    vi.useFakeTimers();
+    const freshReads = vi.fn();
+    const base = observeComposition({ freshAnchor: anchor(101), seen: [], freshReads });
+    const jobs = vi.mocked(base.store.transactionEngine.listLogicalJobs);
+    const runtime = new SidekickTransactionEngineRuntime(base);
+    runtime.start(15_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(freshReads).not.toHaveBeenCalled();
+    expect(jobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limit: 1,
+        states: expect.arrayContaining([
+          "blocked",
+          "broadcast",
+          "confirmed",
+          "ambiguous",
+          "noncanonical_reobserve",
+        ]),
+      }),
+    );
+    expect(jobs.mock.calls[0]?.[0]?.states).not.toContain("reconciled");
+    expect(jobs.mock.calls[0]?.[0]?.states).not.toContain("superseded");
+    await runtime.readRewardRunObservation();
+    expect(freshReads).toHaveBeenCalledTimes(1);
+    jobs.mockReturnValue({ items: [], nextCursor: null, total: 1 });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(freshReads).toHaveBeenCalledTimes(2);
+    jobs.mockReturnValue({ items: [], nextCursor: null, total: 0 });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(freshReads).toHaveBeenCalledTimes(2);
+    await runtime.close();
   });
 
   it("drains active and queued work before destroying the signer", async () => {

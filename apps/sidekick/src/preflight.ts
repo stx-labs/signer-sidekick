@@ -1,5 +1,6 @@
 import { STACKS_CORE_4_0_1 } from "@stx-labs/signer-sidekick-protocol";
 import { claritySourceSha256 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
+import { readBackgroundApiHealth } from "./background-api-health.js";
 import type {
   ApiStatus,
   ContractSource,
@@ -161,8 +162,9 @@ export async function runOperatorPreflight(
   config: SidekickConfig,
   node: StacksNodeClient,
   api: StacksApiClient,
+  options: { background?: boolean } = {},
 ): Promise<PreflightResult> {
-  const apiSignal = AbortSignal.timeout(2_500);
+  const apiSignal = AbortSignal.timeout(5_000);
   const [nodeInfo, nodePoxInfo, nodeHealth, apiObservation, compatibilityStore] = await Promise.all(
     [
       node.getInfo(),
@@ -170,10 +172,13 @@ export async function runOperatorPreflight(
       Promise.resolve()
         .then(() => node.getHealth())
         .catch(() => null),
-      Promise.all([
-        api.getNodeInfo({ signal: apiSignal }),
-        api.getStatus({ signal: apiSignal }),
-      ]).then(
+      (options.background
+        ? readBackgroundApiHealth(api, apiSignal)
+        : Promise.all([
+            api.getNodeInfo({ signal: apiSignal }),
+            api.getStatus({ signal: apiSignal }),
+          ])
+      ).then(
         ([apiNodeInfo, apiStatus]) => ({ apiNodeInfo, apiStatus, apiError: null }),
         (error: unknown) => ({
           apiNodeInfo: null,
@@ -414,9 +419,9 @@ export function evaluatePreflight(
   if (apiAvailable) {
     checks.push({
       id: "api-lag",
-      // The indexed API trailing the local node is expected: it renders Bitcoin height differently
-      // from the node RPC and indexes behind the tip. Only the local node trailing the API matters.
-      status: !apiNetworkCompatible ? "warn" : apiPosition === "ahead" ? "fail" : "pass",
+      // Tip differences are observations, not proof that either source is unsafe. Peer-relative
+      // node synchronization and operation-specific anchor checks decide whether work may proceed.
+      status: !apiNetworkCompatible || apiPosition === "ahead" ? "warn" : "pass",
       message: !apiNetworkCompatible
         ? "API tip comparison is unavailable because the API is on a different network"
         : apiPosition === "equal"

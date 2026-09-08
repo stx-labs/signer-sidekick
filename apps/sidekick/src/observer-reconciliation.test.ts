@@ -82,6 +82,35 @@ function burnDelivery(height: number): StoredObserverDelivery {
 }
 
 describe("ObserverReconciliationScheduler", () => {
+  it("passes verified callback heights to the shared background refresh path", async () => {
+    vi.useFakeTimers();
+    const service = {
+      refreshSnapshot: vi.fn().mockResolvedValue(undefined),
+      refreshBackgroundSnapshot: vi.fn().mockResolvedValue(undefined),
+      synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+      synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
+      synchronize: vi.fn().mockResolvedValue(undefined),
+    };
+    const scheduler = new ObserverReconciliationScheduler({
+      service,
+      managerPrincipal,
+      getPox5ContractId: () => pox5ContractId,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    try {
+      scheduler.start();
+      scheduler.request("current", { stacksHeight: 100, burnHeight: 200 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(service.refreshBackgroundSnapshot).toHaveBeenCalledWith({
+        minimumStacksHeight: 100,
+        minimumBurnHeight: 200,
+      });
+      expect(service.refreshSnapshot).not.toHaveBeenCalled();
+    } finally {
+      await scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
   it("runs restart catch-up for current state, manager activity, and rewards", async () => {
     vi.useFakeTimers();
     try {

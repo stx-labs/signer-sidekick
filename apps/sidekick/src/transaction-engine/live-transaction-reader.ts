@@ -9,6 +9,7 @@ import {
   validateStacksAddress,
 } from "@stacks/transactions";
 import { z } from "zod";
+import { upstreamRequestMetrics } from "../upstream-request-metrics.js";
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -542,7 +543,9 @@ export class LiveTransactionReader {
         ...init,
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
+      upstreamRequestMetrics.record(endpoint.toString(), init.method ?? "GET", response.status);
     } catch (error) {
+      upstreamRequestMetrics.record(endpoint.toString(), init.method ?? "GET", null);
       return { status: "unavailable", httpStatus: null, reason: unavailableReason(error) };
     }
 

@@ -26,6 +26,40 @@ async function controller() {
 }
 
 describe("runtime settings", () => {
+  it("reuses clients while settings are stable and invalidates caches on credential or endpoint changes", async () => {
+    const runtime = await controller();
+    const first = runtime.clients();
+    expect(runtime.clients().api).toBe(first.api);
+    const updateSources = async (changes: Record<string, unknown>) => {
+      const current = runtime.publicSettings();
+      const {
+        apiKeyConfigured: _configured,
+        apiKeySource: _source,
+        hiroReferenceApiKeyConfigured: _referenceConfigured,
+        hiroReferenceApiKeySource: _referenceSource,
+        ...dataSources
+      } = current.dataSources;
+      await runtime.update(
+        {
+          pool: current.pool,
+          display: current.display,
+          forecast: current.forecast,
+          embed: current.embed,
+          dataSources: { ...dataSources, ...changes },
+        },
+        "2026-07-15T12:01:00.000Z",
+      );
+    };
+    await updateSources({ apiKeyAction: { action: "replace", value: "rotated-secret" } });
+    const rotated = runtime.clients();
+    expect(rotated.api).not.toBe(first.api);
+    expect(runtime.clients().api).toBe(rotated.api);
+    await updateSources({ apiUrl: "http://127.0.0.1:4000" });
+    const moved = runtime.clients();
+    expect(moved.api).not.toBe(rotated.api);
+    await updateSources({ apiKeyHeader: "authorization" });
+    expect(runtime.clients().api).not.toBe(moved.api);
+  });
   it("loads persisted v1 settings with the migrated indexed credential", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-07-15T12:00:00.000Z");
     stores.push(store);

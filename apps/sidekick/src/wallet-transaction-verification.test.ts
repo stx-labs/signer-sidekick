@@ -102,6 +102,7 @@ describe("browser-wallet transaction verification", () => {
       senderKey,
       network: "mainnet",
       fee: 1_000,
+      nonce: 8,
       postConditionMode: PostConditionMode.Allow,
     });
     const request = {
@@ -130,6 +131,7 @@ describe("browser-wallet transaction verification", () => {
       senderKey,
       network: "mainnet",
       fee: 1_000,
+      nonce: 8,
     });
     expect(() =>
       verifyWalletTransactionHex({

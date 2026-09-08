@@ -21,6 +21,7 @@ import { operatorSupportApplication } from "./support-bundle.js";
 import { TransactionEngineApiServiceError } from "./transaction-engine/api-service.js";
 import { RewardRunError } from "./transaction-engine/reward-run-service.js";
 import { WalletIntentError } from "./wallet-intent-service.js";
+import { OperatorWorkflowError } from "./workflow-error.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 const walletIntentPrefixes = ["/api/v1/wallet-intents"] as const;
@@ -1576,6 +1577,7 @@ describe("local API", () => {
     const metrics = await server.inject({ method: "GET", url: "/metrics" });
     expect(metrics.statusCode).toBe(200);
     expect(metrics.body).toContain("sidekick_http_requests_total");
+    expect(metrics.body).toContain("# TYPE sidekick_upstream_requests_total counter");
     expect(metrics.body).toContain("sidekick_operator_snapshot_refresh_successes_total 1");
     expect(metrics.body).toContain("sidekick_operator_snapshot_age_seconds 10");
     expect(metrics.body).toContain(
@@ -1846,6 +1848,39 @@ describe("local API", () => {
       node: walletIntentAnchorMismatch.node,
       api: walletIntentAnchorMismatch.api,
       poxBurnBlockHeight: walletIntentAnchorMismatch.poxBurnBlockHeight,
+    });
+  });
+
+  it("preserves an exact retryable synchronization diagnosis for polling", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const message =
+      "Chain data sync is waiting because the indexed API is temporarily unavailable. Local-node data remains available; Sidekick will retry automatically.";
+    const service = {
+      snapshot: async () => ({ generatedAt: "2026-07-19T18:00:00.000Z" }),
+      synchronize: async () => {
+        throw new OperatorWorkflowError(
+          503,
+          "synchronization_source_temporarily_unavailable",
+          message,
+          true,
+        );
+      },
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+
+    await server.inject({ method: "POST", url: "/api/v1/sync", headers });
+    await vi.waitFor(async () => {
+      const response = await server.inject({ method: "GET", url: "/api/v1/sync", headers });
+      expect(response.json().operation.status).toBe("failed");
+    });
+    const operation = (await server.inject({ method: "GET", url: "/api/v1/sync", headers })).json()
+      .operation;
+    expect(operation.error).toEqual({
+      error: "synchronization_source_temporarily_unavailable",
+      message,
+      retryable: true,
     });
   });
 

@@ -26,8 +26,17 @@ export async function nodeProvesChainAnchorCanonical(
   anchor: ChainAnchor,
   liveAnchor: ChainAnchor,
 ): Promise<boolean> {
-  if (chainAnchorsEqual(anchor, liveAnchor)) return true;
-  if (anchor.stacksBlockHeight > liveAnchor.stacksBlockHeight) return false;
+  return (await readNodeChainAnchorProof(node, anchor, liveAnchor)) === "canonical";
+}
+
+/** Distinguish a proved fork from unavailable bytes so an API fallback cannot override the node. */
+export async function readNodeChainAnchorProof(
+  node: ChainAnchorProofNode,
+  anchor: ChainAnchor,
+  liveAnchor: ChainAnchor,
+): Promise<"canonical" | "non-canonical" | "unavailable"> {
+  if (chainAnchorsEqual(anchor, liveAnchor)) return "canonical";
+  if (anchor.stacksBlockHeight > liveAnchor.stacksBlockHeight) return "non-canonical";
   try {
     const [byId, atHeight] = await Promise.all([
       node.getNakamotoBlockById(anchor.indexBlockHash),
@@ -35,8 +44,9 @@ export async function nodeProvesChainAnchorCanonical(
         tip: liveAnchor.indexBlockHash,
       }),
     ]);
-    return bytesEqual(byId, atHeight);
+    if (byId.length === 0 || atHeight.length === 0) return "unavailable";
+    return bytesEqual(byId, atHeight) ? "canonical" : "non-canonical";
   } catch {
-    return false;
+    return "unavailable";
   }
 }

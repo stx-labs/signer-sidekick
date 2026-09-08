@@ -21,6 +21,82 @@ import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const stores: SidekickStore[] = [];
 
+describe("background snapshot reuse", () => {
+  async function fixture() {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://localhost:20443",
+        apiUrl: "http://localhost:3999",
+      } as SidekickConfig,
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      now: () => now,
+    });
+    const load = vi
+      .fn()
+      .mockResolvedValue({ chainAnchor: { stacksBlockHeight: 100, burnBlockHeight: 200 } });
+    (service as unknown as { load: typeof load }).load = load;
+    return {
+      service,
+      load,
+      setTime: (value: number) => {
+        now = value;
+      },
+    };
+  }
+
+  it("shares recent timer/callback work only when it covers the requested heights", async () => {
+    const { service, load, setTime } = await fixture();
+    await service.refreshBackgroundSnapshot();
+    await service.refreshBackgroundSnapshot({ minimumStacksHeight: 100, minimumBurnHeight: 200 });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenLastCalledWith(true);
+    await service.refreshBackgroundSnapshot({ minimumStacksHeight: 101 });
+    expect(load).toHaveBeenCalledTimes(2);
+    await service.refreshBackgroundSnapshot({ minimumBurnHeight: 201 });
+    expect(load).toHaveBeenCalledTimes(3);
+    setTime(30_000);
+    await service.refreshBackgroundSnapshot();
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not reuse cache for explicit refreshes or after projection invalidation", async () => {
+    const { service, load } = await fixture();
+    await service.refreshBackgroundSnapshot();
+    await service.refreshSnapshot();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenLastCalledWith(false);
+    (service as unknown as { cached: null }).cached = null;
+    await service.refreshBackgroundSnapshot();
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets overlapping background callers share work but starts explicit reads afterwards", async () => {
+    const { service, load } = await fixture();
+    let release: ((value: unknown) => void) | undefined;
+    load.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = service.refreshBackgroundSnapshot();
+    const second = service.refreshBackgroundSnapshot();
+    const explicit = service.refreshSnapshot();
+    expect(load).toHaveBeenCalledTimes(1);
+    release?.({ chainAnchor: { stacksBlockHeight: 100, burnBlockHeight: 200 } });
+    await Promise.all([first, second, explicit]);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenLastCalledWith(false);
+  });
+});
+
 afterEach(() => {
   for (const store of stores.splice(0)) store.close();
 });
@@ -490,6 +566,7 @@ describe("operator service", () => {
   it("serves last-good summary metadata after a refresh failure", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
+    let now = 0;
     const service = new OperatorService({
       config: {
         network: "mainnet",
@@ -505,6 +582,7 @@ describe("operator service", () => {
       node: {} as StacksNodeClient,
       api: {} as StacksApiClient,
       cacheTtlMs: 0,
+      now: () => now,
     });
     const generatedAt = "2026-07-19T18:00:00.000Z";
     const load = vi
@@ -521,19 +599,25 @@ describe("operator service", () => {
     await expect(service.summary()).resolves.toMatchObject({
       freshness: { status: "current", snapshotGeneratedAt: generatedAt, reason: null },
     });
+    now = 1;
     await expect(service.summary()).resolves.toMatchObject({
       generatedAt,
-      freshness: { status: "stale", reason: "refreshing" },
+      freshness: { status: "current", reason: null },
     });
     await Promise.resolve();
     await Promise.resolve();
     await expect(service.summary()).resolves.toMatchObject({
       generatedAt,
       freshness: {
-        status: "stale",
+        status: "current",
         snapshotGeneratedAt: generatedAt,
-        reason: "refresh-failed",
+        reason: null,
       },
+    });
+    now = 120_001;
+    await expect(service.summary()).resolves.toMatchObject({
+      generatedAt,
+      freshness: { status: "stale", reason: "refresh-failed" },
     });
   });
 
@@ -594,7 +678,7 @@ describe("operator service", () => {
     expect(service.healthMonitoringContext()).toEqual(retained);
   });
 
-  it("serves a stale snapshot immediately while one background refresh is in progress", async () => {
+  it("keeps a recent snapshot current while one background refresh is in progress", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
     let now = 0;
@@ -634,7 +718,7 @@ describe("operator service", () => {
     now = 11;
     await expect(service.summary()).resolves.toMatchObject({
       generatedAt: "first",
-      freshness: { status: "stale", reason: "refreshing" },
+      freshness: { status: "current", reason: null },
     });
     await expect(service.snapshot()).resolves.toMatchObject({ generatedAt: "first" });
     expect(load).toHaveBeenCalledTimes(2);
@@ -653,7 +737,7 @@ describe("operator service", () => {
     });
   });
 
-  it("backs off refreshes after a rate limit while a usable stale snapshot remains", async () => {
+  it("backs off refreshes after a rate limit while a recent snapshot remains current", async () => {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
     let now = 0;
@@ -690,23 +774,15 @@ describe("operator service", () => {
     await service.summary();
     now = 11;
     await expect(service.summary()).resolves.toMatchObject({
-      freshness: { status: "stale", reason: "refreshing" },
+      freshness: { status: "current", reason: null },
     });
     await Promise.resolve();
     await Promise.resolve();
     await expect(service.summary()).resolves.toMatchObject({
-      freshness: {
-        status: "stale",
-        reason: "rate-limited",
-        rateLimit: {
-          source: "hiro-api",
-          retryAfterSeconds: 30,
-          apiKeyConfigured: false,
-        },
-      },
+      freshness: { status: "current", reason: null },
     });
     await expect(service.summary(true)).resolves.toMatchObject({
-      freshness: { status: "stale", reason: "rate-limited" },
+      freshness: { status: "current", reason: null },
     });
 
     expect(load).toHaveBeenCalledTimes(2);
