@@ -80,7 +80,7 @@ Connection success triggers a separate, read-only deployment-requirements assess
 replacement setup wizard, does not persist checklist progress, and does not add metrics or observer
 delivery to the five connection gates. It checks live behavior rather than trusting operator claims:
 
-- the required node RPC and local transaction-index endpoint;
+- the required node RPC and optional local transaction-index endpoint;
 - recommended node Prometheus and signer `/info`, `/heartbeat`, and `/metrics` endpoints; and
 - recommended Sidekick event delivery, which passes only after a callback is verified against the
   local node.

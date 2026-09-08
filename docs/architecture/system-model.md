@@ -47,9 +47,9 @@ Periodic anti-entropy -> indexed discovery ------------+
                                            page APIs and support bundle
 ```
 
-Callbacks provide latency, not authority. Every worker is restart-safe, idempotent, single-flight
-per domain, and bounded by persisted cursors or retry state. The service refreshes the current
-operator snapshot without an open browser.
+Callbacks provide latency, not authority. Durable cursors and operation records preserve progress;
+single-flight work and bounded in-memory backoff limit retries. Restart resets pacing, not evidence.
+The service refreshes the current operator snapshot without an open browser.
 
 ## Operator action flow
 

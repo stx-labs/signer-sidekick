@@ -14,9 +14,10 @@ Generation fails when an upstream hash, replacement count, or expected principal
 node release never silently changes the meaning of an existing artifact or adapter.
 
 This provenance is narrower than manager compatibility. Sidekick can observe any manager that
-implements the baseline PoX-5 trait without possessing its source. Exact reviewed source identity
-is required only when Sidekick would rely on implementation-specific semantics or execute an
-adapter.
+implements the baseline PoX-5 trait without recognizing its source. Implementation-specific reads
+and actions require reviewed exact or canonical program recognition under
+[ADR 0006](0006-manager-compatibility.md). Sealed transactions still bind the deployed raw hash;
+canonical admission does not change artifact provenance or transaction identity.
 
 ## Consequences
 

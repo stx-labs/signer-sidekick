@@ -19,10 +19,10 @@ Set these values in `.env`:
 | `SIDEKICK_IMAGE_TAG` | Release version without the Git tag's `v` prefix |
 | `STACKS_NODE_RPC_URL` | Node RPC URL reachable from the container |
 | `SIDEKICK_MANAGER_PRINCIPAL` | Existing `SP_ADDRESS.contract-name` manager |
-| `SIDEKICK_AUTH_TOKEN` | Random operator credential |
-| `STACKS_API_KEY` | Hiro key from [platform.hiro.so](https://platform.hiro.so) |
+| `SIDEKICK_AUTH_TOKEN` | Unique random operator credential (at least 24 characters) |
+| `STACKS_API_KEY` | Recommended Hiro key from [platform.hiro.so](https://platform.hiro.so) |
 
-A Hiro key avoids public rate limits during existing-pool backfill. Set
+A Hiro key is recommended for existing-pool backfill; keyed requests can still be rate-limited. Set
 `STACKS_NODE_METRICS_URL` and `STACKS_SIGNER_MONITORING_URL` for full Signer Health diagnostics.
 `HIRO_REFERENCE_API_KEY` is needed only when the comparison API uses a different credential. When
 both API URLs have the same origin, Sidekick safely reuses `STACKS_API_KEY`.
@@ -30,37 +30,9 @@ both API URLs have the same origin, Sidekick safely reuses `STACKS_API_KEY`.
 The local node supplies current chain state. The indexed API supplies roster and history data; API
 lag does not block node-backed status.
 
-### API traffic and monitoring
-
-Background collection continues with the dashboard closed. Sidekick avoids upstream reads for
-idle legacy-engine maintenance, proves saved roster anchors with the local node first, and shares
-recent background snapshots when they cover the observer callback's verified heights. Advisory
-API health reads may be shared for up to 30 seconds; explicit wallet/run preparation and indexed
-canonicality fences still perform fresh reads. Changing an API endpoint or credential replaces
-the cached client. Network comparison still polls every 30 seconds and deduplicates same-origin
-comparison/indexed sources within that health check.
-
-The Bitcoin timing estimate keeps a 200-block display-only window: one recent page is fetched
-every five minutes, with an hourly full reconciliation. Changed or missing overlap and backwards
-movement trigger a full refresh. This window is not transaction evidence.
-
-The authenticated `/metrics` endpoint exposes `sidekick_upstream_requests_total` with `origin`,
-`route`, `method`, and `status` labels. It counts each chain, transaction, and health HTTP attempt,
-including retries. `no_response` means no HTTP response headers arrived; validation failures
-after a 200 response still count as HTTP 200. Blocked health URLs/DNS failures before an HTTP
-request are not counted. Paths are normalized and credentials, query strings, contract principals,
-and transaction IDs are omitted. Counters reset on restart; excess label cardinality rolls into
-an `other` series. These counters are separate from incoming dashboard/API request counts.
-
-For a single instance, Prometheus queries to compare a stable before/after deployment window:
-
-```promql
-sum by (origin, route) (rate(sidekick_upstream_requests_total[15m])) * 60
-sum by (origin) (increase(sidekick_upstream_requests_total[24h]))
-```
-
-Initial backfill, observer activity, source failures and transaction reconciliation add variable
-traffic. Measure actual usage rather than treating timer-based estimates as a daily quota.
+API calls continue with the browser closed. Compatible background reads are shared; backfill and
+submitted work add traffic. See [traffic measurement](operations.md#api-traffic), not timer-based
+daily estimates.
 
 ## Manager compatibility
 
@@ -103,9 +75,9 @@ The operational probe returns HTTP 503 with `operational-startup-pending` until 
 workers finish starting. This is expected briefly after `up -d`; retry the probe. Failed startup
 is retried in the background, while `/health/live` and `/health/ready` remain available for diagnosis.
 
-`connection check` fails when RPC, network, manager identity, PoX-5 interface, or transaction
-indexing is invalid. It confirms core monitoring compatibility; Settings reports manager-operation
-compatibility after Sidekick starts.
+`connection check` fails when the required RPC, network, manager identity or PoX-5 trait checks
+fail. Transaction indexing, telemetry and observer delivery are optional. It confirms core monitoring
+compatibility; Settings reports manager-operation compatibility after Sidekick starts.
 `/health/ready` confirms Sidekick and its database can serve requests; `/health/operational` also
 checks completed worker startup, the current node, manager connection, manager preflight, and
 availability of health evidence.
@@ -134,7 +106,9 @@ Generate the node configuration after `connection check` succeeds:
 docker compose run --rm --no-deps sidekick observer config NODE_REACHABLE_SIDEKICK_HOST:3700
 ```
 
-Merge the returned `observerToml` and `nodeToml` into the node configuration, then restart the node.
+Merge `observerToml` and `nodeToml` into the existing node configuration without replacing the
+signer's observer. `nodeToml` keeps callback dispatch nonblocking with a bounded queue. Apply the
+configuration and node restart through your infrastructure tooling.
 Port 3700 has no application authentication; expose it only to the node. Settings confirms the first
 node-verified callback. Polling and API backfill continue if callbacks stop.
 
@@ -171,11 +145,10 @@ are never accepted through the environment, and Observe remains the default.
    only the address.
 3. Fund the address with STX from any wallet. For every transaction Sidekick asks the local node
    to estimate the exact payload and pays the estimate within the **fee band** in Settings →
-   Reward runs (default 0.003–0.01 STX, the Leather wallet's standard contract-call band; the floor
-   is also paid when the node has no estimate), so bot-driven estimate spikes are neither paid nor
-   halted on. `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX) is the deployment's hard
-   per-transaction cap sealed into every run; a distribution of N payments takes about N + 1
-   transactions, and Settings shows how many the balance covers at the cap.
+   Reward runs (default 0.003–0.01 STX; the floor applies when no estimate is available).
+   `SIDEKICK_ENGINE_MAXIMUM_FEE_USTX` (default 0.1 STX) is the hard per-transaction cap sealed
+   into each run. Review the recipe's actual transaction count and gas budget; Bitcoin payouts
+   can require later settlement/reclaim calls.
 4. **Enable**. Before every signature Sidekick re-checks that the address is not the signer, a
    manager admin, or a contract, and refuses otherwise.
 

@@ -12,7 +12,7 @@ Activity is the durable operator journal for one Sidekick deployment. It answers
 > What happened, what is still happening, what needs my intervention, and did the expected
 > on-chain result become canonical and reconciled?
 
-The action workspace is the common place to inspect and execute one recurring operation. Overview,
+The action workspace reviews one browser-wallet operation; recipe-run approval stays in Rewards. Overview,
 Pool, Rewards, Signer Health, Settings, and Activity may all link directly to it. Operators must not
 visit an intermediate Manager or Operations page before they can act.
 
@@ -186,7 +186,7 @@ The valid combinations are closed:
 The API schema rejects every other combination. Whether an item requires attention is derived from
 `displayStatus`; the contract does not carry a second boolean that can disagree with it.
 
-The initial mappings are:
+The source-state mappings include:
 
 | Source states | Display status |
 | --- | --- |
@@ -196,12 +196,20 @@ The initial mappings are:
 | Wallet intent `failed` | `needs-attention` |
 | Wallet intent `expired` | `superseded` |
 | Wallet intent `superseded` | `superseded` |
-| Engine job `prepared`, `preflighted`, or `awaiting_approval` | `action-required` |
+| Legacy engine job `prepared`, `preflighted`, or `awaiting_approval` | `action-required` |
 | Engine job `nonce_reserved`, `broadcast`, or `confirmed` | `in-progress` |
 | Engine job `noncanonical_reobserve` | `in-progress` for a five-minute recovery window from the state transition; `needs-attention` when that deadline expires |
 | Engine job `ambiguous` or unresolved `blocked` | `needs-attention` |
 | Engine job `reconciled` | `complete` |
 | Engine job `superseded` | `superseded` |
+| Reward run `awaiting-approval` | `action-required` |
+| Reward run `approved` or `running` | `in-progress` |
+| Reward run `paused` or `halted` | `needs-attention` |
+| Reward run `completed` | `complete` |
+| Reward run `cancelled` or `expired` | `superseded` |
+
+Legacy engine records remain readable; they grant no new execution authority. Terminal runs have
+no actionable deadline; original approval/runtime limits remain in their timeline.
 
 An expired intent is always a terminal historical fact. Whether the underlying operation is
 currently due is evaluated by the ordinary current readiness projection, which may emit a separate
@@ -214,7 +222,7 @@ One operator operation is one Activity group, not a row for every state transiti
 
 Correlation order:
 
-1. A wallet intent or engine job and every transaction/event/post-state observation bound to it
+1. A wallet intent, reward run or historical engine job and each bound transaction/event observation
    form one `operation` group.
 2. Verified contract events not bound to an operation are grouped by canonical transaction ID.
    Multiple event indexes from one transaction appear in one `chain-event` group.
@@ -314,7 +322,7 @@ The timeline uses stable event codes rendered into operator language. Initial op
 - transaction observed in mempool;
 - transaction included in a canonical block;
 - contract execution succeeded or aborted;
-- inclusion finalized under the configured finality policy;
+- finality evidence, when reported by the underlying source;
 - expected post-state verified;
 - observation became unavailable;
 - inclusion became noncanonical;
@@ -328,7 +336,7 @@ keys, signed transaction bytes supplied by the browser, API-key values, or raw c
 
 ## Shared action workspace
 
-The workspace is one responsive page used by every recurring operation. It is not a setup wizard
+The workspace is one responsive page for supported browser-wallet operations. It is not a setup wizard
 and has no generic Continue button or step-completion persistence.
 
 ### Entry
@@ -338,8 +346,8 @@ is read-only: it loads availability and current facts but does not create an int
 nonce.
 
 If the same operation scope already has active work, the route resumes that activity instead of
-creating a duplicate. The operator is taken to its current stage and the URL changes to the stable
-activity-detail route once a durable activity ID exists.
+creating a duplicate. The saved wallet intent is reopened by its action URL's `intentId`; Activity
+provides the durable evidence route. Neither reopening path prepares a new transaction.
 
 ### Layout
 
@@ -368,7 +376,7 @@ reading order.
 5. The wallet signs/submits. Sidekick accepts only the returned transaction ID, never wallet keys or
    arbitrary signed bytes.
 6. Sidekick independently fetches and verifies the transaction against the sealed plan, observes
-   canonical execution/finality, and reconciles expected post-state.
+   canonical execution, and performs any action-specific checkpoint check.
 7. The workspace remains useful if the browser closes; returning resumes the durable activity.
 
 Wallet cancellation leaves the sealed intent available until it expires and offers **Open wallet**
@@ -404,53 +412,8 @@ Supported action targets:
 
 The API returns a discriminated action, not an arbitrary URL:
 
-```ts
-type DomainTarget =
-  | {
-      page: "overview";
-      section: "attention" | "cycle" | "pool" | "rewards" | "health" | null;
-    }
-  | { page: "pool"; section: "positions" | "forecast" | "roster" | null }
-  | {
-      page: "rewards";
-      section: "outlook" | "calculation" | "claims" | "fees" | "withdrawals" | "history" | null;
-    }
-  | { page: "activity"; section: "active" | "history" | null }
-  | {
-      page: "health";
-      section: "findings" | "node" | "signer" | "network" | "sources" | null;
-    };
-
-type OperatorOperationCode = RecurringWalletIntentAction | "calculate-rewards";
-
-type ContextualAction =
-  | {
-      kind: "launch-operation";
-      operation: OperatorOperationCode;
-      context:
-        | { kind: "none" }
-        | { kind: "engine-job"; jobId: string }
-        | {
-            kind: "staker-reward";
-            stakerPrincipal: string;
-            rewardCycle: string;
-            bondIndex: string | null;
-          };
-      label: string;
-    }
-  | { kind: "resume-activity"; activityId: string; label: string }
-  | {
-      kind: "open-settings";
-      section: "attachment" | "sources" | "capabilities" | "observer" | "auth" | "support";
-      label: string;
-    }
-  | {
-      kind: "recheck";
-      target: "connection" | "node" | "api" | "signer" | "activity";
-      label: string;
-    }
-  | ({ kind: "open-domain"; label: string } & DomainTarget);
-```
+[`packages/api-contracts/src/v1.ts`](../../packages/api-contracts/src/v1.ts) defines the strict,
+versioned fields. Keep the schema there rather than a second TypeScript definition in this document.
 
 The dashboard constructs a route only from this closed set. Labels remain server-supplied so a
 finding can name the exact action, but the backend cannot inject a navigation URL.
@@ -500,7 +463,7 @@ support-export sections.
 
 ## API projection
 
-Activity is a server-owned projection over wallet intents, transaction-engine jobs/attempts,
+Activity is a server-owned projection over wallet intents, reward runs, historical engine jobs/attempts,
 verified manager events, claims/withdrawals, runtime-setting audit, and later finding episodes. The
 frontend must not merge and sort those repositories itself.
 
@@ -508,78 +471,22 @@ The implementation is a deterministic read model over those existing durable rep
 not a second write-side activity log. Activity IDs are derived from their authority records:
 
 - `wallet-intent:<intent-id>`;
-- `engine-job:<job-id>`;
+- `reward-run:<run-id>`;
+- `engine-job:<job-id>` (historical);
 - `chain-tx:<chain-id>:<txid>`;
 - `settings:<revision>`; and
 - later, `finding:<finding-id>:<episode-id>`.
 
 The projection suppresses a `chain-tx` group when that transaction is already correlated with a
-wallet intent or engine job and adds its verified events to the operation detail instead. This
+wallet intent, reward run or historical engine job and adds its verified events to the operation detail instead. This
 keeps the underlying repositories authoritative and makes replay/reorg corrections visible without
 maintaining another mutable copy. A materialized cache may be added later only if measured query
 cost requires it; it must be versioned and fully rebuildable from the authority records.
 
-Versioned summary contract:
+Summary, page, detail and timeline schemas:
 
-```ts
-type ActivityDisplayStatus =
-  | "action-required"
-  | "in-progress"
-  | "needs-attention"
-  | "complete"
-  | "superseded"
-  | "observed";
-
-type ActivityOutcome =
-  | "pending"
-  | "succeeded"
-  | "failed"
-  | "aborted"
-  | "ambiguous"
-  | "superseded"
-  | "observed";
-
-interface ActivityGroupSummary {
-  schemaVersion: 1;
-  activityId: string;
-  kind: "operation" | "chain-event" | "configuration-change" | "finding-change";
-  domain: "manager" | "pool" | "rewards" | "node" | "signer" | "network" | "sidekick";
-  code: string;
-  title: string;
-  summary: string;
-  displayStatus: ActivityDisplayStatus;
-  outcome: ActivityOutcome;
-  occurredAt: string;
-  updatedAt: string;
-  deadline: OperatorDeadline | null;
-  urgencyAt: string | null;
-  actorPrincipal: string | null;
-  txids: string[];
-  anchor: ChainAnchor | null;
-  supersedesActivityId: string | null;
-  supersededByActivityId: string | null;
-  primaryAction: ContextualAction | null;
-  coverage: DomainCoverage[];
-}
-
-interface ActivityPage {
-  schemaVersion: 1;
-  generatedAt: string;
-  active: ActivityGroupSummary[];
-  items: ActivityGroupSummary[];
-  nextCursor: string | null;
-  coverage: DomainCoverage[];
-}
-
-interface ActivityDetail {
-  schemaVersion: 1;
-  requestedActivityId: string;
-  canonicalActivityId: string;
-  aliases: string[];
-  summary: ActivityGroupSummary;
-  timeline: ActivityTimelineEntry[];
-}
-```
+[`packages/api-contracts/src/v1.ts`](../../packages/api-contracts/src/v1.ts) defines the strict,
+versioned fields. Keep the schema there rather than a second TypeScript definition in this document.
 
 `GET /api/v1/activity` uses this versioned response; no parallel compatibility endpoint is
 maintained. `GET /api/v1/activity/<activity-id>` returns the

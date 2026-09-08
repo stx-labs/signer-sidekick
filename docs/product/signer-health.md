@@ -27,7 +27,8 @@ collector shares the existing 30-second background API status read instead of is
 request. Sharing is scoped to the runtime client (network, URL and credentials); it never caches
 fresh signing or canonical-evidence reads. Different credentials or base paths require separate
 availability reads, but the same origin still counts as only one network-comparison witness.
-The background advisory client disables nested retries and bounds rate-limit reuse to five minutes.
+The background advisory client disables nested retries and caps each cooldown at five minutes.
+See [Operations](../operator/operations.md#api-traffic) for the bounded cached-failure extension.
 
 GETs reuse the published diagnosis and original evidence timestamps; they do not recompute finding
 windows and database aggregates on every page poll. Collection publishes the next diagnosis,

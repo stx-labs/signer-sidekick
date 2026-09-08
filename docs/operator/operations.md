@@ -1,206 +1,186 @@
 # Operations
 
-Reuse the `COMPOSE_FILE` value from installation.
+Reuse the `COMPOSE_FILE` value from [installation](deployment.md). Commands below affect only
+Sidekick, not the Stacks node or signer.
 
 ## Upgrade
 
-Prefer to finish or pause an active reward run between transactions. Back up SQLite and the gas
-wallet together, then pull the pinned release and recreate:
+1. Review the target release notes. Finish or pause reward work at a transaction boundary and record
+   unresolved transaction IDs. Do not approve new work during the upgrade.
+2. Back up with the **current image and configuration**, before selecting the new version:
 
 ```sh
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "backups/$stamp"
-docker compose exec -T sidekick node /app/dist/main.js database backup /data/sidekick-backup.sqlite
-docker compose cp sidekick:/data/sidekick-backup.sqlite "backups/$stamp/sidekick.sqlite"
-docker compose exec -T sidekick rm /data/sidekick-backup.sqlite
-if docker compose exec -T sidekick test -f /data/gas-wallet.key; then
-  docker compose cp sidekick:/data/gas-wallet.key "backups/$stamp/gas-wallet.key"
-  chmod 600 "backups/$stamp/gas-wallet.key"
-fi
-docker compose pull
-docker compose up -d
+umask 077
+backup="backups/$(date -u +%Y%m%dT%H%M%SZ)"
+(
+set -eu
+mkdir -p "$backup"
+docker compose stop sidekick
+docker compose run --rm --no-deps sidekick database backup /data/sidekick-backup.sqlite
+docker compose cp sidekick:/data/sidekick-backup.sqlite "$backup/sidekick.sqlite"
+docker compose run --rm --no-deps --entrypoint rm sidekick /data/sidekick-backup.sqlite
+)
+```
+
+Stop if any backup step fails. If a gas wallet exists, also copy its key before proceeding:
+
+```sh
+docker compose cp sidekick:/data/gas-wallet.key "$backup/gas-wallet.key"
+chmod 600 "$backup/gas-wallet.key"
+```
+
+Keep the database, key, protected `.env`/profile configuration and old image/commit identity as one
+restore set. The database can contain API credentials; the key can spend the gas balance. A backup
+is incomplete if a configured gas-wallet key is missing. Keep Sidekick stopped until the set is safe.
+
+3. Select the target release checkout and set its `SIDEKICK_IMAGE_TAG` in `.env`. On large stores,
+   first time migration on an isolated database copy with `doctor`; do not start workers or signing
+   against that copy. Then recreate:
+
+```sh
+docker compose pull sidekick
+docker compose up -d --no-deps sidekick
 curl --fail http://127.0.0.1:3998/health/ready
 curl --fail http://127.0.0.1:3998/health/operational
 ```
 
-The operational probe returns HTTP 503 with `operational-startup-pending` until operational
-workers finish starting. This is expected briefly after `up -d`; retry the probe. Failed startup
-is retried in the background, while `/health/live` and `/health/ready` remain available for diagnosis.
+4. Retry the operational probe while startup is pending, then check build identity, history,
+   submitted work and background freshness. Do not mistake container health for indexing completion.
 
-The database may contain API credentials; `gas-wallet.key` can spend its STX balance. Keep them as
-one restore set.
-
-Schema 41 adds Activity and observer read indexes without rewriting accounting or operation rows.
-File-backed migration takes the normal automatic pre-migration database backup. An older binary
-refuses schema 41; rollback requires its compatible database backup, not just an image change.
-
-## Recovery and freshness
-
-A temporary node failure does not require a browser request or service restart to recheck the
-connection. Sidekick reassesses it at a normal 30-second cadence, with exponential failure backoff
-up to five minutes. Operational worker startup is awaited and retried if it fails; already-started
-workers keep their existing lifecycles. A proved identity/network mismatch still blocks operations.
-Connection and snapshot backoffs can combine to roughly ten minutes, plus request/startup time.
-This is a timer bound after upstream recovery, not a guarantee that upstreams recover.
-Snapshot maintenance also consults the same cached assessor, so it can discover recovery on its
-own due pass without another timer. It does not bypass a proven identity/network refusal.
-
-Use each domain's evidence rather than one global "synced" timestamp:
-
-- The dashboard's **Current snapshot** indicator refers to its operator snapshot only.
-- `/sync` records a full roster/manager reconciliation, including bounded pool/member history
-  work. It is not the last successful callback verification or reward-history observation.
-- Reward ledger coverage and accounting history describe their own recovered evidence.
-- Callback queue/gap metrics show verification work, independently of the node's chain tip.
-- `sidekick_operator_snapshot_age_seconds` and `_fresh` describe retained snapshot age. The
-  `_refresh_in_progress`, `_refresh_consecutive_failures`, `_retry_backoff_seconds` and
-  `_last_success_timestamp_seconds` metrics describe the refresh worker. An aged snapshot during
-  a healthy in-flight refresh is not proof the node is behind. Container readiness is not indexing
-  completeness either.
-
-The freshness gauge's default generation-age budget is **60 seconds**, allowing the normal
-30-second refresh interval plus collection time. It does not reset timestamps or hide failures;
-use age, failures, in-progress and last-success metrics together when alerting.
-
-Visible Rewards, Pool and reward-run Settings refresh automatically and on focus. If a resource
-refresh fails, retained values stay on screen with a local error; payment history also offers a
-retry and reloads when reopened. A "Settings saved, but status refresh failed" notice means the
-write succeeded: retry observation, not the save.
-Focus-triggered reads are coalesced and spaced over 100–499 ms across mounted resources. Initial
-loads and explicit refreshes remain immediate. Genuine no-op history synchronization preserves
-warm data; changes/replay/coverage invalidate it, while a known reorg removes affected cached data.
-
-Prepared wallet transactions can be reopened from their action URL's `intentId` or Activity even
-when new-action eligibility changes. Viewing and verification remain available through a stale
-snapshot, but fresh evidence is required for new preparation/signing. Completion evidence rules
-are unchanged. Already-halted reward runs still require operator review and explicit resume.
-Running runs now wait through typed upstream/rate-limit failures and retryable anchor reads on their
-existing maintenance tick, without extending the original runtime deadline. Cached connection
-unavailability does not cause a manual-resume halt; a positive identity refusal still does.
+Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
+Schema 41 adds ten Activity/observer indexes without rewriting financial rows. File-backed upgrades
+take an automatic pre-migration backup. Older binaries refuse newer schemas; rollback needs the
+compatible database, not just the old image. Never restore over newer submissions without reconciling
+them first.
 
 ## Restore
 
-Set `restore` to the selected backup directory.
+A restore discards everything recorded since the backup, including attempts the chain may still
+execute. Stop and investigate if the current database contains a newer approval or submission.
+Keep its evidence; do not restore to make an ambiguous transaction disappear.
+
+Set `SIDEKICK_ENGINE_MODE=observe` in `.env` before restoring. Select the intended image and a
+validated, matching-network/manager backup. If the backup had a gas wallet, its original key is
+required. The commands quarantine existing data rather than deleting it:
 
 ```sh
-restore=REPLACE_WITH_BACKUP_DIRECTORY
-docker compose down
+(
+set -eu
+restore=REPLACE_WITH_BACKUP_DIRECTORY_NAME
+test -f "$PWD/backups/$restore/sidekick.sqlite"
+docker compose stop sidekick
 docker compose run --rm --no-deps --user 0 --entrypoint sh \
   -v "$PWD/backups/$restore:/restore:ro" sidekick \
   -c 'set -eu
+test -f /restore/sidekick.sqlite
 q=$(mktemp -d /data/restore-quarantine.XXXXXX)
 for f in /data/sidekick.sqlite /data/sidekick.sqlite-wal /data/sidekick.sqlite-shm /data/gas-wallet.key; do
   if [ -e "$f" ]; then mv "$f" "$q/"; fi
 done
 cp /restore/sidekick.sqlite /data/sidekick.sqlite
 chown 10001:10001 /data/sidekick.sqlite
+chmod 600 /data/sidekick.sqlite
 if [ -f /restore/gas-wallet.key ]; then
   cp /restore/gas-wallet.key /data/gas-wallet.key
   chown 10001:10001 /data/gas-wallet.key
   chmod 600 /data/gas-wallet.key
 fi'
 docker compose run --rm --no-deps sidekick doctor
-docker compose up -d
+docker compose up -d --no-deps sidekick
+)
 ```
+
+Check identity, history and every unresolved transaction before re-enabling operator-run. Preserve
+the quarantined data until reconciliation is complete. Never run two services against one store
+or enable signing on a copied production database.
+
+## Recovery and freshness
+
+A temporary node failure is rechecked without a browser or restart. Connection/startup retries and
+snapshot refresh back off to five minutes each; combined recovery can take about ten minutes plus
+request/startup time after upstream recovery. Positive identity/network refusals still block work.
+
+| Probe | Meaning |
+| --- | --- |
+| `/health/live` | Process liveness |
+| `/health/ready` | Sidekick and its database can serve requests; a node outage alone does not fail it |
+| `/health/operational` | Workers started, connection/preflight pass and node-health evidence is available |
+
+The operational probe returns 503 `operational-startup-pending` until workers start, including
+during automatic startup retries. Diagnostic warning findings alone do not fail it.
+
+Read each domain separately: `/api/v1/sync` describes roster/history reconciliation, reward coverage
+describes recovered accounting, and callback queue/gap metrics describe verification. None alone
+proves everything is current.
+
+`sidekick_operator_snapshot_age_seconds` and `sidekick_operator_snapshot_fresh` describe retained
+generation age (60-second default budget). The `sidekick_operator_snapshot_refresh_*` metrics
+describe in-progress work and failures; `sidekick_operator_snapshot_last_success_timestamp_seconds`
+records last success and `sidekick_operator_snapshot_retry_backoff_seconds` the retry delay.
+An aged snapshot during a healthy read is not proof the node is behind.
+
+Visible pages refresh automatically and on focus. Failures retain dated values with a local retry.
+A “Settings saved, but status refresh failed” notice means retry observation, not the save.
+Saved wallet intents remain accessible by ID even when new preparation is unavailable.
 
 ## Rewards
 
-The Rewards page is one view of the reward cycle:
+- **Earning:** current accrual and the next one-week calculation forecast, kept separate.
+- **Distribute:** oldest pending distribution first, with its next action and paged payments.
+- **Past cycles:** distributions, payments, rolled-forward reasons and per-cycle/distribution CSV.
+- **Accounting:** indexed earned fees and whole-history export; unknown fees are not zero.
 
-- **Earning** — the accruing cycle: time left in the half, the next prepare phase, what the network
-  and this pool have earned or are projected to earn, and each half's distribution status.
-- **Distribute** — one card per distribution that still needs you, oldest first, with its single
-  next action (Collect & distribute, Distribute, Collect, Run calculation, Finish Bitcoin payouts),
-  its four figures, and its payments ten per page.
-- **Past cycles** — one line per cycle; open it for each distribution's payments, why a payment
-  rolled forward to the Second Distribution, and CSV export of that distribution or cycle.
-- **Accounting** — your fee ledger and the export of the whole history.
+Partial/estimated allocations are labeled. Contract-rounding reserve is not operator fee income.
+Missing interpretation or evidence means details unavailable, not that the pool earned nothing.
 
-A ₿ beside a staker marks a Bitcoin payout; hover it to see and copy their currently registered
-address. Historical manager events do not prove which address was registered when an older payout
-was initiated. Once the sBTC signers sweep an accepted withdrawal, the payment shows the Bitcoin
-transaction and block (read from the registry on the local node and kept), and the `txid` marker
-beside a status lists every transaction behind a payment — for a Bitcoin payout, the sweep plus its
-Stacks request and retirement.
+A ₿ marker shows the staker's **currently registered** Bitcoin address, not a proved historical
+destination. Stacks withdrawal-request success is not BTC delivery. Payment details distinguish
+the request, registry acceptance/Bitcoin sweep proof and manager retirement. The accepted-withdrawal
+cache currently has a known-reorg display limitation; investigate conflicting evidence rather than
+treating a cached arrival as fresh proof.
 
 ## Reward runs
 
-Submitted wallet transactions and gas-wallet sweeps are checked by the server even after the
-browser closes. Checks normally run every 30 seconds. Missing transactions and unavailable reads
-back off through 30 seconds, 1, 2, 4 and then 5 minutes between checks, without ever being dropped.
-A late appearance can therefore take up to five minutes plus the next 30-second scan to be picked
-up, with source latency, outages or a busy observation pass adding time. Manual **Check status**
-or **Refresh** bypasses that wait. Restart resets the in-memory backoff and checks retained work
-again. Missing does not mean failed and never authorizes another sweep.
+Start from a Distribute card. Recipe preparation is server-owned and resumes after restart.
+Review the sealed count, amounts and gas budget, then **Go**. Defaults: start approval within
+30 minutes, at most 200 transactions, and a six-hour runtime once started. One run or sweep owns
+the gas wallet; only one transaction is in flight.
 
-An active run checks its broadcast transaction every 30 seconds, while the five-second maintenance
-tick still enforces the original runtime deadline. Unavailable receipt reads back off through the
-same five-minute schedule; upstream Retry-After hints are capped at five minutes so a single
-oversized hint cannot silence observation for the remainder of the run's lifetime.
-A healthy API with no terminal receipt (including pending or 404) stays on the normal 30-second
-cadence. Confirmation can take the remaining wait plus source latency to appear. Explicit Resume
-of a halted run rechecks its existing attempt immediately; it does not sign a replacement.
+Pause/Cancel stop further work but cannot undo a broadcast. A halted run requires review and
+explicit Resume; an expired run cannot resume. Resume reconciles the saved attempt, never blindly
+signs a replacement. Preserve the database and gas-wallet key across restart.
 
-A wallet transaction with known canonical success but an unchanged, still-pending additional
-checkpoint/job/semantic check also backs off to five minutes. New evidence or a changed diagnostic
-returns it to the ordinary cadence. Manual Refresh still checks immediately and can complete the
-action once the required evidence is available. These timing changes do not loosen completion checks.
+Typed transient read failures wait within the original deadline. Positive conflicts, hard refusals
+and ambiguous submission halt. **Settings → Reward runs → Force Observe** or gas-wallet Disable
+stop signing, not observation. Future work still requires fresh anchored node checks and approval.
 
-A run starts from a Distribute card. Sidekick first prepares its sealed recipe in the background;
-large pools can take a few minutes, survive a closed browser, and resume preparation after restart.
-Review the resulting transaction count, then Go. Execution is also server-side, one transaction at
-a time. Progress, Pause, Resume, and Cancel stay on the card, and Activity keeps the record. Pause
-or cancel only between transactions; cancellation cannot undo a broadcast transaction. Another
-run cannot start until the current one finishes.
+## Transaction observation
 
-The gas wallet pays only network fees. A banner on Rewards warns when its balance cannot cover the
-next run — top it up from any wallet. **Settings → Reward runs → Force Observe**
-halts all signing at once; **Settings → Gas wallet** disables the wallet or sweeps its STX.
+The server observes submitted work without a browser or enabled gas signer, after operational
+startup. Cold boot still needs an accepted node connection before these workers start.
 
-If a run halts after an ambiguous broadcast, inspect its recorded transaction ID and chain evidence.
-Do not send a replacement. Resume makes Sidekick reconcile the existing attempt before continuing.
-During a retryable read failure the run stays running, makes no new signature from that failed read,
-and logs that it is waiting for upstream recovery. Retrying reads is not retrying submission: a
-failure after a signed attempt is persisted still halts rather than risking another broadcast.
-After a restart, preserve the same database and gas-wallet key so recovery cannot change signer or
-nonce identity.
+| Work | Normal checks | Backoff |
+| --- | --- | --- |
+| Running run's broadcast child | 30 seconds, including API pending/404 | Unavailable/throwing reads and Retry-After, capped at five minutes |
+| Submitted wallet or broadcast sweep | 30 seconds | Missing/unavailable reads, or unchanged wallet success with an extra check pending: 30, 60, 120, 240, then 300 seconds |
 
-Submitted browser-wallet transactions and gas sweeps also continue being observed after closing the
-dashboard or restarting Sidekick. Disabling the gas signer does not disable observation. Normal
-pages read the retained result; manual verification refresh remains available.
+Wallet/sweep scans add up to 30 seconds to the per-item wait; source latency or a busy pass adds
+time. Missing work is not retired by age. Manual Refresh bypasses pacing and coalesces in-flight
+reads; explicit run Resume checks its existing attempt immediately. Restart resets pacing, not
+the run deadline or transaction identity.
 
-Once the operational runtime has started, locally signed runs and sweeps may finish observation
-using the configured API during a node outage. Activity and sweep history show **configured API**,
-**API + local node**, or **local node** as the execution evidence. The API is an operational trust
-source; its execution record must be coherent and match the saved signing-time transaction ID and
-sealed plan. Missing binding or an unresolved conflict keeps verification pending. A confirmed API
-abort halts the run/fails the sweep; it never causes an automatic replacement transaction.
-Preparing or signing the next transaction still needs the connected node. Browser wallets may use
-API execution if Sidekick previously verified their exact mempool bytes against the same sealed
-intent. If Sidekick never saw those bytes, verification waits for node recovery; an API's summary
-alone does not suffice. Wallet details and Activity show the source. Manual Refresh verification
-works during cached unavailability for submitted IDs, without permitting a new preparation,
-submission or replacement. Extra calculation, legacy-job and asset-semantic verification may still
-wait after execution is known; the UI keeps that distinction. Cold boot still waits for a connected
-node to start operational workers. Migration 40 records run/sweep evidence sources; older history is not
-assigned a guessed source. An older halted run with a retained diagnostic may require positive
-node corroboration after resume. Preserve the automatic pre-migration database backup if rolling
-back to an older binary; older versions cannot open the newer schema.
+Details show **local node**, **API + local node** or **configured API** execution evidence.
+Runs/sweeps can use coherent API execution with revalidated signing-time binding; wallets need
+retained exact mempool verification of the same intent/txid, otherwise node bytes. An API summary
+alone is insufficient. Positive conflicts veto API-only completion. Extra calculation, historical-job
+or asset-semantic checks may remain pending after execution is known. See
+[ADR 0008](../architecture/decisions/0008-chain-evidence-and-reconciliation.md).
 
-Wallet provenance uses existing observation metadata and adds no migration. Preserve the database:
-its original exact mempool verification is the durable byte binding, even after later missing
-observations. An unresolved positive conflict cannot be cleared by an API receipt alone.
-
-A gas sweep with an ambiguous broadcast retains its transaction ID and wallet authorization even
-if lookups report it missing for longer than the original approval window. Do not prepare a second
-sweep or reset the database. Positive canonical conflicts are shown on the active sweep; the wallet
-stays reserved until a verified terminal outcome. Confirmation can release it automatically, without
-another signature. A permanently missing ambiguous sweep currently needs operator investigation;
-there is no automatic abandonment or replacement policy.
-
-An action marked complete records historical execution. A later fee/admin/registration change or
-new rewards on the same settlement account does not undo that transaction. For a Bitcoin-route
-staker claim, this means the Stacks withdrawal request succeeded, not that BTC arrived in the wallet.
+An eligible missing browser-wallet submission may be explicitly replaced only after fresh absence
+checks and its 15-minute propagation grace. Unavailable reads and conflicts do not grant replacement.
+An ambiguous sweep keeps its authorization until a verified terminal result; there is no automatic
+abandonment or second sweep. An expired run with a broadcast child likewise needs investigation,
+not blind re-approval.
 
 ## Diagnose
 
@@ -210,33 +190,46 @@ docker compose exec -T sidekick node /app/dist/main.js doctor connectivity
 docker compose logs --tail=200 sidekick
 ```
 
-For escalation, download the support bundle under **Settings → Support & security → Support &
-maintenance**. It includes Sidekick, node, signer, manager, pool, and operation evidence. It excludes
-credentials, private keys, signed transactions, environment dumps, and raw logs.
+Use **Settings → Support bundle** to download retained diagnostics with original timestamps.
+Missing sections are unavailable; asynchronous sections have a two-second collection bound.
+The export starts no live balance, connection or health probe. It excludes credentials, private
+keys, signed transactions, environment dumps and raw logs. For a stopped service, CLI `doctor`
+opens and may migrate the selected store; use the intended image.
 
-The export uses already-retained operator, connection, health, capability and gas-wallet results.
-It does not trigger a new preflight or live balance/health probe. Sections that have not yet been
-observed are explicitly unavailable, and retained data keeps its own timestamps. Each asynchronous
-section has a two-second collection bound; a partial download is useful during an outage and is
-not evidence that every source is currently healthy.
+## API traffic
+
+Background collection continues with the browser closed. Compatible indexed/comparison status
+reads share a 30-second advisory result, without caching fresh preparation or transaction evidence.
+The Bitcoin timing display refreshes one recent page every five minutes and reconciles its
+200-block window hourly; changed overlap triggers a full refresh.
+
+Authenticated `/metrics` exposes `sidekick_upstream_requests_total` by normalized origin, route,
+method and status. It counts HTTP attempts including retries; `no_response` means no headers arrived.
+Validation failure after HTTP 200 still counts as 200; checks blocked before HTTP are not counted.
+Credentials, queries and transaction/principal IDs are omitted; excess labels roll into `other`.
+Counters reset on restart and are separate from incoming dashboard traffic.
+
+Compare stable windows for one instance:
+
+```promql
+sum by (origin, route) (rate(sidekick_upstream_requests_total[15m])) * 60
+sum by (origin) (increase(sidekick_upstream_requests_total[24h]))
+```
+
+Backfill, active work, retries and manual requests add traffic. Measure them separately; no timer
+estimate is a daily quota. Health-source sharing has a known bounded edge: first combining a cached
+status failure with node-info can extend its cooldown once by up to five minutes. Fresh transaction
+checks do not use that advisory cache.
 
 ## Local read performance check
 
-After building the source checkout, run:
+After building:
 
 ```sh
 node scripts/benchmark-runtime-reads.mjs 20000
 ```
 
-This creates and removes its own temporary SQLite fixture: 20,000 terminal callback receipts,
-20,000 chain events and two hours of health samples. It reports 30 warmed service-level p50/p95/max
-reads for Overview active work, Activity's first page, observer status and health status. No live
-node/API, production database, credentials or financial operation is involved. Use the same script,
-fixture size, runtime and hardware for before/after comparisons. This measures local service work,
-not HTTP serialization, browser usability, callback lag or whole-instance API calls per day.
-
-Receipt rows are not removed by this optimization: existing bounded raw-payload pruning preserves
-duplicate/conflicting-delivery detection and latest verified markers. Health/observer memoization,
-read indexes and cooperative yields address measured read cost without creating summary tables or
-another source of truth. Validate queue lag, source errors, HTTP latency and total upstream traffic
-on each instance separately after an approved deployment.
+The script creates/removes its own synthetic SQLite fixture and reports 30 warmed p50/p95/max
+service reads for Overview active work, Activity, observer and health status. It uses no live source,
+production database or financial action. Compare the same fixture, runtime and hardware.
+This is not HTTP/browser latency, callback lag or daily API usage; validate those per instance.

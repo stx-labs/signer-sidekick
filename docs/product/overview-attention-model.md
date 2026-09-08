@@ -129,22 +129,19 @@ health is already prominent in the operational snapshot and is not repeated here
 The card links to `#pool`, normally its forecast or roster section. It does not reproduce the
 forecast chart or staker table.
 
-#### Current Reward Distribution
+#### Rewards
 
-- projected network-wide rewards, pool gross, operator fee, and staker net for one weekly
-  first-half or second-half distribution;
-- forecast confidence, target reward cycle, and distribution checkpoint; and
-- reward evidence coverage and age.
+The ledger-backed card follows the oldest distribution needing attention; otherwise it shows
+current accrual. Its title names the state (accruing, ready, distributing, complete or attention).
 
-Every monetary value in the summary uses the same one-distribution horizon. The reward cycle ID
-identifies the encompassing two-week protocol cycle; the distribution checkpoint identifies which
-weekly half the estimate covers. The card must not add rewards already allocated for the other half.
-When a checkpoint forecast exists, the card must not mix in current claim counts or calculation
-state. If no forecast is available, it may instead show the contract-exact if-calculated-now
-estimate, with that different horizon explicit in every label.
+Before calculation, show **Pool if calculated now** separately from **Projected at calculation**
+for the pending weekly distribution. Never substitute a forecast for missing accrued evidence.
+After calculation, show row-derived staker/fee allocations with partial or estimated labels and
+rounding separate from fees. An additional two-week calculated total must name its cycle explicitly.
 
-The card links to the relevant Rewards section. It does not show the full pipeline, bucket list, or
-historical distributions.
+The card links to the same distribution/action in Rewards. While the ledger is unavailable, the
+**Current Reward Distribution** fallback presents a single-horizon forecast or explicitly labeled
+if-calculated-now estimate. Neither view combines a paid half with the pending half's forecast.
 
 ## What qualifies as attention
 
@@ -237,12 +234,8 @@ the UI or action preflight.
 
 ## Deadlines
 
-```ts
-type OperatorDeadline =
-  | { kind: "burn-block"; burnBlockHeight: number; estimatedAt: string | null }
-  | { kind: "reward-cycle"; rewardCycleId: number; phase: "before-prepare" | "cycle-start" }
-  | { kind: "time"; at: string };
-```
+The strict types live in [`packages/api-contracts/src/v1.ts`](../../packages/api-contracts/src/v1.ts).
+Use those schemas instead of maintaining duplicate field definitions here.
 
 Bitcoin-block ETAs are estimates derived from the current sampled block interval and are labelled
 as such. A transaction or staking action always rechecks the canonical height/window; it never
@@ -270,15 +263,8 @@ use generic **Fix**, **Continue**, or **Retry**.
 Overview has no single `fresh` bit. Every operational-snapshot fact, each Attention item, every
 active operation, and each domain summary carries its own evidence state:
 
-```ts
-type OverviewEvidence = {
-  status: "current" | "delayed" | "unavailable" | "not-configured";
-  observedAt: string | null;
-  anchor: ChainAnchor | null;
-  source: "local-node" | "signer" | "indexed-api" | "network-reference" | "sidekick-store";
-  reason: string | null;
-};
-```
+The strict types live in [`packages/api-contracts/src/v1.ts`](../../packages/api-contracts/src/v1.ts).
+Use those schemas instead of maintaining duplicate field definitions here.
 
 Rules:
 
@@ -321,57 +307,11 @@ contract exists.
 
 ## API contract
 
-```ts
-type AttentionTier = "urgent" | "action-required" | "needs-attention";
-type OverviewDomain =
-  | "connection"
-  | "manager"
-  | "pool"
-  | "rewards"
-  | "node"
-  | "signer"
-  | "network"
-  | "sidekick";
+The strict types live in [`packages/api-contracts/src/v1.ts`](../../packages/api-contracts/src/v1.ts).
+Use those schemas instead of maintaining duplicate field definitions here.
 
-interface OverviewAttentionItem {
-  schemaVersion: 1;
-  attentionId: string;
-  tier: AttentionTier;
-  domain: OverviewDomain;
-  affectedDomains: OverviewDomain[];
-  code: string;
-  title: string;
-  summary: string;
-  impact: string;
-  openedAt: string | null;
-  updatedAt: string;
-  deadline: OperatorDeadline | null;
-  urgencyAt: string | null;
-  evidence: OverviewEvidence[];
-  relatedActivityId: string | null;
-  relatedFindingId: string | null;
-  primaryAction: ContextualAction;
-  detailsAction: ContextualAction | null;
-}
-
-interface OverviewPage {
-  schemaVersion: 1;
-  generatedAt: string;
-  monitoring: { network: string; managerPrincipal: string };
-  cycle: OverviewCycleSnapshot;
-  network: OverviewNetworkHealthSummary;
-  node: OverviewNodeHealthSummary;
-  signer: OverviewSignerHealthSummary;
-  attention: OverviewAttentionItem[];
-  inProgress: OverviewInProgressItem[];
-  pool: OverviewPoolSummary;
-  rewards: OverviewRewardsSummary;
-}
-```
-
-The operational-snapshot and two domain-summary types are closed contracts with the fields listed
-above; they are not generic label/value arrays. `OverviewInProgressItem` is a compact projection of
-an Activity group and always carries its canonical `activityId`.
+The snapshot and domain summaries are closed contracts, not generic label/value arrays.
+`OverviewInProgressItem` projects an Activity group and carries its canonical `activityId`.
 
 `GET /api/v1/overview` performs no upstream full synchronization and returns the latest
 available domain projections with independent evidence states. The dashboard boundary schema is

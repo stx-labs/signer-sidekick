@@ -1,7 +1,8 @@
 # Transaction engine safety contract
 
 Sidekick starts in **Observe** mode. Browser-wallet actions use sealed, expiring intents; Sidekick
-never receives wallet credentials or signed transaction bytes. **Operator-run** is an explicit
+never accepts wallet credentials or signed bytes from the browser. It fetches transaction bytes
+independently when needed for verification. **Operator-run** is an explicit
 deployment mode for the permissionless PoX-5 reward calls. It uses only the dedicated gas wallet
 and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-execution-envelope.md).
 
@@ -67,8 +68,9 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
   pending receipts, exponential backoff through five minutes for unavailable/throwing reads.
   Source Retry-After is preserved through the API receipt helper and live driver but capped at the
   same five-minute maximum; it cannot silence future checks or extend the run deadline. Pacing is
-  recorded after an actual read (including a throw), keyed by transaction ID, and pruned against retained running broadcast
-  children. Explicit Resume resets only that child's cooldown; restart resets all in-memory pacing.
+  recorded after an actual read (including a throw), keyed by transaction ID, and pruned against
+  retained running broadcast children. Explicit Resume resets only that child's cooldown;
+  restart resets all in-memory pacing.
   The five-second coordinator tick still checks expiry, and the next child still requires fresh
   materialization, role checks and authorization. No new timer, durable scheduling or evidence state.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.

@@ -170,7 +170,8 @@ manager-derived accounting views may be unavailable.
 
 One adapter should describe one reusable capability or tightly coupled behavior family, not bless a
 whole contract. Its deployment evidence key is the exact source SHA-256 plus Clarity version/epoch
-and canonical callable interface SHA-256. It must define:
+and canonical callable interface SHA-256. These identify provenance; admission checks the reviewed
+program, execution environment and required functions, not a whole-ABI hash allowlist. It must define:
 
 - exact function, argument, response, and error shapes;
 - authorization and referenced-contract assumptions;
@@ -182,8 +183,9 @@ and canonical callable interface SHA-256. It must define:
 
 A transaction can be offered only when these checks pass and the deployed program matches an exact
 or canonical fingerprint reviewed into that capability adapter. The fingerprint admits one capability,
-not the whole manager or a product version. Operator-run adds a separate exact-source application
-review; it does not weaken manager-adapter admission.
+not the whole manager or a product version. Operator-run requires an approved sealed recipe and
+signing-path review under [ADR 0010](../architecture/decisions/0010-operator-run-execution-envelope.md),
+not a runtime application attestation. It does not weaken manager-adapter admission.
 
 ### Level 3: custom extensions
 

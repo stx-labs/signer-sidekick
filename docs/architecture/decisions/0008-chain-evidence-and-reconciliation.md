@@ -1,133 +1,104 @@
 # ADR 0008: Node-authoritative event reconciliation
 
-- Status: Accepted
+- Status: Accepted; transaction-execution policy amended 2026-09-07–08
 - Date: 2026-08-16
 
 ## Decision
 
-The configured Stacks node is authoritative for current canonical chain state. Indexed APIs are
-discovery, roster, and historical sources; signer monitoring is protocol-health evidence. No remote
-source may override a node-proved fact, and one lagging optional source must not block unrelated
-node-backed work.
+The configured Stacks node is authoritative for current chain state. Indexed APIs supply discovery
+and history; the configured API may also prove submitted execution under the binding rules below.
+This is operational trust in that API, not cryptographic execution proof. No API may override a
+positive node-proved conflict. Optional-source failure degrades its domain, not unrelated work.
 
-Sidekick is event-driven but does not trust event callbacks. The private callback listener commits
-each bounded payload to a durable inbox before acknowledging it. A worker verifies the claimed
-Nakamoto block against a stable local-node anchor and admits only byte-identical canonical evidence.
-Malformed, conflicting, or forged claims are quarantined. Burn-block callbacks remain trigger-only
-where the local RPC cannot supply an equivalent proof.
+### Callbacks and history
 
-Verified events request focused reconciliation; they are not projections by themselves. Indexed
-manager events become durable domain history only after node-backed canonical verification,
-using the transaction index or the canonical block fallback. Idempotent replay, source-scoped cursors, reorg handling,
-bounded retries, and periodic anti-entropy repair missed, reordered, or delayed delivery.
+The private listener commits bounded callbacks to a durable inbox before acknowledgement. A worker
+checks the claimed Nakamoto block against a stable local-node anchor and accepts only byte-identical
+canonical evidence. Malformed, conflicting or forged claims are quarantined. Burn-block callbacks
+remain trigger-only where the node cannot supply an equivalent proof.
 
-The server maintains current operator state without an open browser. A single-flight snapshot loop
-refreshes current state every 30 seconds, while event triggers and slower domain-specific loops
-refresh rosters and history. The dashboard reads retained projections and can request a coalesced
-refresh; it is never the scheduler of record.
+Verified callbacks trigger focused refreshes; embedded events are not domain history. Indexed
+manager and calculation events require node-proved transaction inclusion at the exact canonical
+height and index-block hash, using the optional transaction index or canonical block bytes.
+Idempotent replay, source-scoped cursors and periodic anti-entropy repair gaps and reorgs.
+Current projections refresh without an open browser.
 
-### Submitted transaction observation (R3a)
+### Exact binding before execution
 
-Without a local transaction-index row, the configured API locates the transaction and reports its
-execution outcome. Transaction and block identity must agree. Sidekick then walks the node's
-canonical block and gives the matching transaction's bytes to the same full wallet verifier used
-by the index path. API summaries and postcondition counts are not substitutes for exact sender,
-network, signature, call arguments, deny mode and every postcondition. Abort undergoes the same
-identity and canonical checks as success. A malformed block never yields partial inclusion proof.
+| Submission | Binding required for configured-API execution during node unavailability |
+| --- | --- |
+| Locally signed run child | Revalidated sealed plan and persisted signing-time txid, matching the run/recipe authorization, child, sender, network, nonce and fee |
+| Gas-wallet sweep | Saved approval and broadcast identity, sealed plan, signing-time txid, sender, network, nonce, fee, recipient and amount |
+| Browser wallet | Persisted exact node-mempool verification for this same immutable intent, manifest and txid |
 
-Positive node/API disagreement (`reorged` or transaction `absent` from the claimed canonical
-block) is a conflict, not temporary unavailability. Runs halt, wallets reobserve without permitting
-replacement from that conflict, and sweeps retain their wallet authorization with a diagnostic.
-Transport failure, a node behind the height and API lag never become positive conflicts.
-The R3a wallet path still requires node corroboration; the following R3b amendment changes only
-the locally signed run/sweep completion policy.
+The dedicated signer rebuilds the sealed plan, constructs and signs the transaction, and computes
+its txid. Runs and sweeps persist that identity before broadcast; raw signed bytes are not stored.
+Observation revalidates the saved binding. API payload summaries cannot create it.
 
-The existing run maintenance tick also observes submitted wallet intents and broadcast sweeps,
-independently of gas-key readiness and browser presence. Slow submitted observation is single-flight
-but does not delay active-run ticks; shutdown drains it. It never prepares, signs, replaces or resumes
-an operation. Terminal history is not periodically revalidated. Explicit refresh preserves terminal
-execution during source unavailability but can revise it on positive contradictory evidence.
+Browser wallets return only a txid. Node index or block bytes pass the full verifier: sender,
+network, authorization, signature, exact call/arguments, deny mode and every postcondition.
+When the index cannot answer, the block walk must consume the whole canonical block; malformed
+bytes cannot yield partial proof.
 
-For reviewed registration, admin/fee updates and staker claims, exact canonical successful execution
-proves the historical action. Later settings changes or new reward accrual must not demote it.
-Calculation checkpoint checks, historical engine-job bindings and custom-asset semantic limitations
-remain. A successful BTC-route claim proves the Stacks withdrawal request, not Bitcoin delivery;
-arrival and retirement remain separate evidence. The accepted-withdrawal cache's known-reorg
-display limitation remains deferred; this change introduces no terminal revalidation scheduler.
+A wallet's retained mempool observation links that exact verification to its sealed manifest.
+Reading it validates the stored sender, network/version, authorization shape, call, argument digest
+and postcondition count; the original byte verifier proved the signature and each postcondition.
+Old API-summary or canonical-only records do not qualify. Missing or mismatched binding waits for
+node bytes. Later missing observations and restart do not erase the original proof.
 
-Sweeps persist their sealed plan and locally produced transaction ID with ambiguous broadcast state
-before submission. Signed bytes are not persisted. The authorization survives restart, timeouts and
-missing lookups until a verified terminal outcome; missing evidence does not authorize another sweep.
+### Canonical execution and conflicts
 
-### Configured-API execution evidence for locally signed work (R3b, first slice)
+The receipt must match the network and txid and contain a terminal status, canonical transaction
+and coherent canonical block. Pending/dropped statuses, absence, source lag, timeouts and malformed
+records never become success or abort. Abort receives the same identity/canonical checks as success.
+This receipt policy requires canonical inclusion, not an additional confirmation-depth wait.
+`SIDEKICK_ENGINE_FINALITY_DEPTH` belongs to legacy engine jobs, not reward runs or sweeps.
 
-The configured indexed API is an accepted operational source of canonical execution, not a
-cryptographic proof of execution. For a locally signed reward-run child or gas sweep, coherent
-API network, transaction ID, terminal status, canonical transaction and canonical block identity
-may establish success or abort when node corroboration is unavailable. Positive node disagreement
-still wins. Discovery-only inclusion, pending status, incoherent identity and an orphaned receipt
-cannot complete work. History ingestion and callback verification retain their node-proof rules.
+Positive node disagreement—an orphaned receipt or absence from the claimed canonical block—is a
+conflict. Runs halt; wallets reobserve without replacement from that conflict; sweeps retain their
+authorization. Transport failure and a node behind the claimed height are unavailable, not conflicts.
+Persisted conflicts survive missing/pending observations, restart and resume; API-only evidence
+cannot clear them. Positive node-backed verification is required to resolve them.
 
-The binding is the existing sealed plan and signing-time record, not API payload JSON. The
-dedicated signer revalidates the sealed plan, constructs/signs its bytes and computes the txid
-itself. The coordinator stores that ID before broadcast. Observation revalidates the retained
-plan and its run/recipe, sender, network, nonce, fee and child identity; sweep observation checks
-its saved approval/broadcast identity, seal, sender, network, nonce, fee, recipient and amount.
-Without this binding, API-only evidence is insufficient. No signed payload or new approval
-artifact is stored, and no public request can opt into API trust.
+Canonical execution is not always action completion. Exact successful registration, admin/fee
+updates and staker claims remain historical facts after later settings changes or new accrual.
+Calculation checkpoints, historical engine-job bindings and asset-semantic checks still apply.
+Known execution with an unavailable extra check remains pending completion. An API abort is not
+lost if an optional external-completion read fails.
 
-Read-only observation has a separate runtime accessor that allows a cached unavailable connection
-but refuses a proven identity/network mismatch or an unchecked connection. Preparation, signing,
-broadcast, role checks and the next child's anchored materialization keep the connected accessor.
-An already-running run can observe its submitted child without granting a subsequent signature;
-an API abort halts even if the optional external-completion state read is unavailable. Already
-halted runs still require explicit resume. Cold boot still waits for the first accepted connection
-before starting the operational runtime; this amendment does not bypass that startup gate.
+A BTC-route claim proves creation of the Stacks withdrawal request, not Bitcoin delivery.
+Arrival and retirement require separate evidence under [ADR 0009](0009-evidence-first-reward-distribution.md).
 
-Persist `executionSource` as `node`, `api-with-node`, or `api` on run children and sweeps. Activity
-and sweep history display it; older rows keep an unknown/null source. Unresolved child/sweep
-diagnostics prevent API-only completion until a positive node result resolves them, even after
-restart or explicit resume. Migration 40 carries old halted-run diagnostics onto the submitted
-child without classifying error strings. This conservative legacy case may need node recovery.
+### Observation does not grant signing authority
 
-### Configured-API execution evidence for browser wallets (R3b, second slice)
+Once operational startup has succeeded, the read-only observation accessor accepts cached node
+unavailability but rejects unchecked connections and positive identity/network refusals.
+Authenticated, same-origin manual refresh may observe an already-submitted ID during an outage.
+Preparation, submission recording, replacement, role checks, broadcast and the next child's fresh
+materialization keep their connected-node gates. Cold boot still needs an accepted connection
+before operational workers start; the control-plane health collector is independent.
 
-Browser wallets return a txid, not transaction bytes. API-only execution is accepted only after
-Sidekick has retained the full node-mempool byte verification for this same immutable intent and
-txid. The existing observation row links that result to its sealed manifest. Parsing validates
-the stored result's sender, network/version, authorization shape, call, argument digest and
-postcondition count against that manifest; the original byte verifier, not these summary fields,
-proved the signature and every postcondition. No API summary or old canonical-only decoded record
-qualifies as this proof. Missing, malformed or mismatched proof remains pending until node bytes
-are available. Neither a new proof artifact nor stored raw bytes are needed.
+Existing maintenance observes submitted wallets and broadcast sweeps independently of browser
+presence or gas-key enablement. Reads coalesce; shutdown drains them. Observation never signs,
+replaces or automatically resumes a halted run. See [Operations](../../operator/operations.md#transaction-observation)
+for cadence and recovery. A missing ambiguous sweep keeps its authorization; it cannot expire into
+permission to submit another.
 
-Filtered reads of existing observation history retain the mempool proof through missing/pending
-reads and restart. A later mempool, missing or unavailable observation cannot erase an unresolved
-noncanonical/mismatch result; API-only completion stays disabled until node-backed canonical
-verification resolves it. Current node-index/block bytes still use the original full verifier.
-Both paths feed the same action-specific completion logic for success and abort.
+### Persistence and limits
 
-Observation uses the same read-only accessor as runs/sweeps. Configured-network changes, positive
-node-network mismatch and cached identity refusal still block it; an unavailable node info/index
-read can reach the API. Authenticated, same-origin manual refresh during cached unavailability is
-allowed only for an already-submitted ID after operational startup. Unsigned refresh, preparation,
-submission recording, replacement and fresh signing keep their existing gates.
+Execution provenance is `node`, `api-with-node` or `api`; legacy unknown provenance remains null.
+Migration 40 adds run/sweep source columns and carries legacy halted-run diagnostics onto broadcast
+children. Those unclassified diagnostics conservatively veto API-only completion until node proof.
+Wallet provenance uses existing extensible observation metadata and preserves the older strict
+verification object; no raw-byte store or third approval artifact is added.
 
-Canonical execution and action completion remain distinct. Calculation checkpoint reads, legacy
-manager-claim job reconciliation and fee-withdrawal/refund semantic checks are not deleted. When
-an extra check cannot run, retain canonical-success and its source, not Complete or unavailable
-execution. A calculation abort stays an abort if its optional external-completion read fails.
-Stacks BTC-route success remains request creation, never Bitcoin delivery.
-
-`verification.executionSource` is exposed in wallet details and Activity. It is persisted as
-metadata in the existing extensible decoded evidence, keeping schema-1's strict verification
-object readable by older binaries. Older rows have no invented source; mempool proof remains
-unchanged. No migration beyond the prior slice's version 40, terminal-history poller, automatic
-replacement, nonce-proof abandonment, cold-boot bypass, or signing access expansion is added.
+Terminal history is not periodically revalidated. Explicit refresh retains terminal execution
+during unavailability but can revise it on positive contradiction. The accepted-withdrawal cache's
+known-reorg display limitation remains deferred. No terminal poller, nonce-proof sweep abandonment
+or cold-boot observation bypass is implied.
 
 ## Consequences
 
-Events improve latency without becoming an authority boundary. API rate limits or lag are visible
-as domain-specific coverage loss rather than a global outage. Restarts and closed browsers do not
-stop reconciliation, and every durable history claim has a traceable canonical proof or an explicit
-coverage limitation.
+Browser closure and transient node outages do not erase submitted work. Completion has one exact
+binding policy with explicit provenance; current-state signing, callbacks and history keep their
+node-proof boundaries. Preserve the database and compatible backup across upgrades and rollback.
