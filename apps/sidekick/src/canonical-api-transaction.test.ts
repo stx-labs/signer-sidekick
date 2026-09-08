@@ -2,6 +2,8 @@ import { makeSTXTokenTransfer } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
 import { RateLimitedError, UpstreamHttpError, UpstreamUnavailableError } from "./chain-clients.js";
+import { apiTransactionReceipt } from "./test-helpers/api-transaction.js";
+import { nakamotoBlockBytes } from "./test-helpers/nakamoto-block.js";
 
 const transaction = await makeSTXTokenTransfer({
   recipient: "ST000000000000000000002AMW42H",
@@ -15,20 +17,12 @@ const txId = `0x${transaction.txid()}` as const;
 const hash = `0x${"33".repeat(32)}` as const;
 
 function fixture() {
-  const body = transaction.serializeBytes();
-  const block = new Uint8Array(220 + body.length);
-  new DataView(block.buffer).setUint32(216, 1);
-  block.set(body, 220);
+  const block = nakamotoBlockBytes(transaction.serializeBytes());
   const api = {
     getNodeInfo: vi.fn(async () => ({ network_id: 0x80000000 })),
-    getTransactionDetails: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
-      tx_id: txId,
-      tx_status: "success",
-      canonical: true,
-      block_height: 100,
-      block_hash: hash,
-      tx_result: { repr: "(ok true)" },
-    })),
+    getTransactionDetails: vi.fn<() => Promise<Record<string, unknown>>>(async () =>
+      apiTransactionReceipt({ txId, blockHash: hash, blockHeight: 100 }),
+    ),
     getBlock: vi.fn(async () => ({ canonical: true, height: 100, hash, index_block_hash: hash })),
   };
   const node = {
@@ -40,7 +34,7 @@ function fixture() {
     api,
     node,
     block,
-    lookup: (allowApiEvidence = false) =>
+    lookup: (allowApiEvidence: boolean | (() => boolean | Promise<boolean>) = false) =>
       lookupCanonicalApiTransaction({
         api: api as never,
         node: node as never,
@@ -52,6 +46,32 @@ function fixture() {
 }
 
 describe("canonical API receipt", () => {
+  it.each([
+    "pending",
+    "not-found",
+    "api-unavailable",
+    "node-proof",
+    "conflict",
+    "node-unavailable",
+  ])("checks local binding lazily for %s", async (kind) => {
+    const f = fixture();
+    const binding = vi.fn(async () => true);
+    if (kind === "pending")
+      f.api.getTransactionDetails.mockResolvedValue({ tx_id: txId, tx_status: "pending" });
+    if (kind === "not-found")
+      f.api.getTransactionDetails.mockRejectedValue(new UpstreamHttpError("missing", 404));
+    if (kind === "api-unavailable")
+      f.api.getTransactionDetails.mockRejectedValue(new UpstreamUnavailableError("API offline"));
+    if (kind === "conflict")
+      f.node.getNakamotoBlockAtHeight.mockResolvedValue(nakamotoBlockBytes());
+    if (kind === "node-unavailable")
+      f.node.getTenureInfo.mockRejectedValue(new UpstreamUnavailableError("node offline"));
+    const result = await f.lookup(binding);
+    expect(binding).toHaveBeenCalledTimes(kind === "node-unavailable" ? 1 : 0);
+    if (kind === "node-unavailable")
+      expect(result).toMatchObject({ status: "observed", value: { source: "api" } });
+  });
+
   it.each([
     "getNodeInfo",
     "getTransactionDetails",

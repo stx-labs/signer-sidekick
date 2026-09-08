@@ -15,6 +15,7 @@ import { StatusBadge } from "../../shared/dashboard-ui.js";
 import { number } from "../../shared/format.js";
 import { operatorErrorDetail } from "../../shared/operator-error.js";
 import { rateLimitGuidance, rateLimitHeading } from "../../shared/rate-limit-guidance.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import {
   BrowserWalletError,
   browserWalletIntentNetwork,
@@ -179,7 +180,6 @@ export function BrowserWalletActionPanel({
   const [recoveryMessages, setRecoveryMessages] = useState<Record<string, string>>({});
   const [recoveryCanClear, setRecoveryCanClear] = useState(false);
   const notifiedCompleteIntent = useRef<string | null>(null);
-  const pollingController = useRef<AbortController | null>(null);
   const walletResult = walletResults.length === 1 ? (walletResults[0] ?? null) : null;
   const ambiguousWalletResults = walletResults.length > 1 ? walletResults : [];
 
@@ -281,40 +281,35 @@ export function BrowserWalletActionPanel({
     };
   }, [getIntent, recordTxid, recoverySelector]);
 
+  const pollingIntentId = intent?.id;
+  const pollingIntentStatus = intent?.status;
   useEffect(() => {
-    if (busy !== null || !intent || !POLLING_STATUSES.has(intent.status)) return;
-    let active = true;
-    let timeout: number | undefined;
-    const poll = async () => {
-      const controller = new AbortController();
-      pollingController.current = controller;
-      try {
+    if (
+      busy !== null ||
+      !pollingIntentId ||
+      !pollingIntentStatus ||
+      !POLLING_STATUSES.has(pollingIntentStatus)
+    )
+      return;
+    const polling = startVisibleRefresh(
+      async (signal) => {
         const result = await apiJson(
           token,
-          `${intentApiBase}/${encodeURIComponent(intent.id)}`,
+          `${intentApiBase}/${encodeURIComponent(pollingIntentId)}`,
           browserWalletIntentResponseSchema,
-          { signal: controller.signal },
+          { signal },
         );
-        if (!active || pollingController.current !== controller) return;
+        if (signal.aborted) return;
         setIntent(result.intent);
         setPollError(null);
-      } catch (cause) {
-        if (!active || controller.signal.aborted) return;
+      },
+      (cause) => {
         setPollError(automaticVerificationRefreshError(cause));
-      } finally {
-        if (pollingController.current === controller) pollingController.current = null;
-        if (active) timeout = window.setTimeout(() => void poll(), 15_000);
-      }
-    };
-    timeout = window.setTimeout(() => void poll(), 15_000);
-    return () => {
-      active = false;
-      if (timeout !== undefined) window.clearTimeout(timeout);
-      const controller = pollingController.current;
-      pollingController.current = null;
-      controller?.abort();
-    };
-  }, [busy, intent, intentApiBase, token]);
+      },
+      15_000,
+    );
+    return () => polling.stop();
+  }, [busy, pollingIntentId, pollingIntentStatus, intentApiBase, token]);
 
   useEffect(() => {
     if (intent?.status !== "complete" || notifiedCompleteIntent.current === intent.id) return;

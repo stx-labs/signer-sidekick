@@ -13,7 +13,8 @@ new work but never erases submitted or canonical evidence.
   revalidated sealed plan and saved signing-time txid; coherent configured-API execution may then
   suffice during node unavailability, but cannot override a positive node conflict. Browser-wallet
   actions use current node bytes or retained exact mempool verification of that same intent/txid.
-  Extra calculation checkpoint, legacy manager-job and asset-semantic checks still apply; known
+  The calculation receipt must match the sealed cycle/checkpoint. Legacy manager-job and
+  asset-semantic checks still apply; known
   canonical execution with an incomplete extra check is not Complete. Evidence provenance is retained; see
   [ADR 0008](../architecture/decisions/0008-chain-evidence-and-reconciliation.md).
   A later mutable setting or balance is not a historical receipt.
@@ -27,7 +28,7 @@ new work but never erases submitted or canonical evidence.
 | Register or rotate signer | Manager admin wallet plus unused signer grant | Exact sealed registration call and canonical success; fresh grant validity is a preparation check |
 | Add/remove admin; update fee | Manager admin wallet | Exact sealed call and canonical success; later admin/fee changes do not undo execution |
 | Withdraw fee; sweep refunds | Manager admin wallet | Exact allowed manager-to-recipient sBTC outflow |
-| Calculate | Permissionless fee payer | Reviewed PoX-5 profile, complete bond set, exact calculation poststate |
+| Calculate | Permissionless fee payer | Reviewed PoX-5 profile, complete bond set, canonical receipt matching the sealed cycle and calculation height |
 | Collect | Permissionless fee payer | Reviewed manager adapter, fee snapshot inputs, exact PoX-5-to-manager sBTC transfer |
 | Distribute | Permissionless fee payer | Exact staker/cycle/bucket entitlement and manager sBTC outflow; canonical success survives later accrual; BTC arrival remains separate |
 | Retire accepted Bitcoin payout | Permissionless fee payer | Registry accepted; request removed; no asset transfer |

@@ -23,6 +23,7 @@ import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
+  browserWalletVerificationSchema,
   type TransactionExecutionSource,
   transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -39,10 +40,11 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { validatePrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
 import { z } from "zod";
+import { calculationResultMatchesTarget } from "./calculation-receipt.js";
 import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
 import type { SidekickConfig } from "./config.js";
 import { managerActionCapability } from "./manager-capabilities.js";
-import type { ManagerVerificationContext } from "./manager-verification.js";
+import { inspectDeployedManager, type ManagerVerificationContext } from "./manager-verification.js";
 import {
   type OperatorAnchorSnapshot,
   readOperatorAnchorSnapshot,
@@ -211,31 +213,7 @@ const storedManifestSchema = z
 
 type StoredManifest = z.infer<typeof storedManifestSchema>;
 
-const publicVerificationSchema = z
-  .object({
-    outcome: z.enum([
-      "submitted",
-      "mempool",
-      "canonical-success",
-      "complete",
-      "not-found",
-      "noncanonical",
-      "superseded",
-      "mismatch",
-      "abort",
-      "unavailable",
-    ]),
-    observedAt: z.iso.datetime(),
-    canonical: z.boolean().nullable(),
-    blockHeight: z.number().int().nonnegative().nullable(),
-    indexBlockHash: z
-      .string()
-      .regex(/^0x[0-9a-f]{64}$/)
-      .nullable(),
-    detail: z.string().min(1),
-    executionSource: transactionExecutionSourceSchema.optional(),
-  })
-  .strict();
+const publicVerificationSchema = browserWalletVerificationSchema;
 
 const observationEvidenceSchema = z
   .object({
@@ -369,7 +347,6 @@ export class WalletIntentService {
       const historicalBlocker = await this.reconcileHistoricalScope(
         action,
         authoritative.scope,
-        factsSha256,
         observedAt,
         ignoredId,
       );
@@ -527,24 +504,7 @@ export class WalletIntentService {
   }
 
   async refresh(id: string, observedAt = new Date().toISOString()): Promise<BrowserWalletIntent> {
-    const existing = this.refreshes.get(id);
-    if (existing) return existing;
-    const previousObservationId = this.options.store.walletIntents.latestObservation(id)?.id;
-    let retryLater = true;
-    const refresh = this.refreshIntent(id, observedAt)
-      .then((intent) => {
-        retryLater =
-          ["not-found", "unavailable"].includes(intent.verification?.outcome ?? "") ||
-          (intent.verification?.outcome === "canonical-success" &&
-            this.options.store.walletIntents.latestObservation(id)?.id === previousObservationId);
-        return intent;
-      })
-      .finally(() => {
-        this.observationCadence.record(id, retryLater, Date.parse(observedAt));
-        this.refreshes.delete(id);
-      });
-    this.refreshes.set(id, refresh);
-    return refresh;
+    return this.refreshIntent(id, observedAt);
   }
 
   /** Called by server maintenance; never prepares, signs, replaces, or resumes work. */
@@ -554,7 +514,9 @@ export class WalletIntentService {
     for (const intent of intents) {
       if (!this.observationCadence.isDue(intent.id, Date.parse(observedAt))) continue;
       try {
-        await this.refresh(intent.id, observedAt);
+        // Each durable ID owns its cadence. Historical siblings are independently observed;
+        // recursively refreshing them here would bypass their missing-transaction backoff.
+        await this.refreshStored(intent, observedAt);
       } catch (error) {
         this.options.logger?.warn(`Wallet observation failed: ${String(error)}`);
       }
@@ -577,7 +539,6 @@ export class WalletIntentService {
       const blocker = await this.reconcileHistoricalScope(
         initial.action,
         initial.scope,
-        initial.factsSha256,
         observedAt,
       );
       if (blocker) {
@@ -605,19 +566,43 @@ export class WalletIntentService {
         return this.publicIntent(this.requireStored(initial.id));
       }
     }
-    const refreshed = await this.refreshStored(this.requireStored(initial.id), observedAt);
-    if (
-      initial.state === "superseded" &&
-      refreshed.verification?.outcome === "complete" &&
-      refreshed.verification.canonical
-    ) {
-      this.resolveEquivalentCompletion(initial.id, observedAt);
-      return this.publicIntent(this.requireStored(initial.id));
-    }
-    return refreshed;
+    return this.refreshStored(this.requireStored(initial.id), observedAt);
   }
 
   private async refreshStored(
+    input: StoredWalletIntent,
+    observedAt: string,
+  ): Promise<BrowserWalletIntent> {
+    const id = input.id;
+    const existing = this.refreshes.get(id);
+    if (existing) return existing;
+    const previousObservationId = this.options.store.walletIntents.latestObservation(id)?.id;
+    let retryLater = true;
+    const refresh = this.observeStored(this.requireStored(id), observedAt)
+      .then((intent) => {
+        retryLater =
+          ["not-found", "unavailable"].includes(intent.verification?.outcome ?? "") ||
+          (intent.verification?.outcome === "canonical-success" &&
+            this.options.store.walletIntents.latestObservation(id)?.id === previousObservationId);
+        if (
+          input.state === "superseded" &&
+          intent.verification?.outcome === "complete" &&
+          intent.verification.canonical
+        ) {
+          this.resolveEquivalentCompletion(id, observedAt);
+          return this.publicIntent(this.requireStored(id));
+        }
+        return intent;
+      })
+      .finally(() => {
+        this.observationCadence.record(id, retryLater, Date.parse(observedAt));
+        this.refreshes.delete(id);
+      });
+    this.refreshes.set(id, refresh);
+    return refresh;
+  }
+
+  private async observeStored(
     input: StoredWalletIntent,
     observedAt: string,
   ): Promise<BrowserWalletIntent> {
@@ -691,25 +676,27 @@ export class WalletIntentService {
       return await this.refreshIndexed(stored, manifest, indexed.value, observedAt, clients);
     }
     const fallback = await this.refreshIndexedFromApi(stored, manifest, observedAt, clients);
-    if (fallback) return fallback;
-    if (indexed === null || !transactionIndexCannotAnswer(indexed)) {
+    if (fallback && "intent" in fallback) return fallback.intent;
+
+    // API failure is not node-mempool evidence. Preserve exact bytes from an independently
+    // healthy node, but never turn missing bytes plus an unavailable receipt into replacement.
+    const pending = await reader.lookupUnconfirmedTransaction(stored.txid).catch(() => null);
+    if (pending?.status === "observed") {
+      return this.refreshPending(stored, manifest, pending.value, observedAt);
+    }
+    if (fallback || indexed === null || !transactionIndexCannotAnswer(indexed)) {
       this.recordUnavailable(
         stored,
         observedAt,
-        "Confirmed transaction lookup is unavailable. Sidekick will retry",
+        fallback?.unavailable ?? "Confirmed transaction lookup is unavailable. Sidekick will retry",
       );
       return this.publicIntent(stored);
     }
-
-    const pending = await reader.lookupUnconfirmedTransaction(stored.txid);
-    if (pending.status === "observed") {
-      return this.refreshPending(stored, manifest, pending.value, observedAt);
-    }
-    if (pending.status !== "not-found") {
+    if (pending?.status !== "not-found") {
       this.recordUnavailable(
         stored,
         observedAt,
-        `Pending transaction lookup is unavailable (${pending.reason}). Sidekick will retry`,
+        `Pending transaction lookup is unavailable (${pending?.reason ?? "lookup failed"}). Sidekick will retry`,
       );
       return this.publicIntent(stored);
     }
@@ -1230,19 +1217,20 @@ export class WalletIntentService {
         | "claim-staker-rewards",
       functionArgs: string[],
       postConditions: string[] = [],
-    ): BrowserWalletTransaction => ({
-      method: "stx_callContract",
-      params: {
-        contract: managerPrincipal,
-        functionName,
-        functionArgs,
-        network: network.network,
-        address: actorPrincipal,
-        sponsored: false,
-        postConditionMode: "deny",
-        postConditions,
-      },
-    });
+    ): BrowserWalletTransaction =>
+      browserWalletTransactionSchema.parse({
+        method: "stx_callContract",
+        params: {
+          contract: managerPrincipal,
+          functionName,
+          functionArgs,
+          network: network.network,
+          address: actorPrincipal,
+          sponsored: false,
+          postConditionMode: "deny",
+          postConditions,
+        },
+      });
 
     if (action === "register-self") {
       const verified = state.signerGrant.verified;
@@ -1732,7 +1720,6 @@ export class WalletIntentService {
     indexed: IndexedTransactionObservation,
     observedAt: string,
     clients: WalletRuntimeClients,
-    executionSucceeded = indexed.resultRepr.trimStart().startsWith("(ok"),
   ): Promise<BrowserWalletIntent> {
     const decoded = this.verifyObserved(stored, manifest, indexed.transactionHex, observedAt);
     if (!decoded) return this.publicIntent(this.requireStored(stored.id));
@@ -1743,7 +1730,7 @@ export class WalletIntentService {
       decoded,
       observedAt,
       clients,
-      executionSucceeded,
+      indexed.resultRepr.trimStart().startsWith("(ok"),
       "node",
     );
   }
@@ -1769,7 +1756,7 @@ export class WalletIntentService {
       );
       return this.publicIntent(stored);
     }
-    if (!indexed.isCanonical || indexed.blockHeight === null) {
+    if (!indexed.isCanonical) {
       const next =
         stored.state === "superseded" ? stored : this.transition(stored, "reobserve", observedAt);
       const blockHeight = indexed.blockHeight === null ? null : Number(indexed.blockHeight);
@@ -1777,14 +1764,12 @@ export class WalletIntentService {
       this.recordObservation(
         next,
         {
-          outcome: indexed.isCanonical ? "unavailable" : "noncanonical",
+          outcome: "noncanonical",
           observedAt,
-          canonical: indexed.isCanonical ? null : false,
+          canonical: false,
           blockHeight: hasSafeHeight ? blockHeight : null,
           indexBlockHash: hasSafeHeight ? indexed.indexBlockHash : null,
-          detail: indexed.isCanonical
-            ? "The confirmed transaction has no anchored block height. Sidekick will retry"
-            : "The transaction is no longer canonical. Sidekick will keep checking",
+          detail: "The transaction is no longer canonical. Sidekick will keep checking",
         },
         decoded,
       );
@@ -1797,7 +1782,7 @@ export class WalletIntentService {
       return this.publicIntent(stored);
     }
     try {
-      const { config, node, api } = clients;
+      const { config, node } = clients;
       if (!executionSucceeded) {
         if (manifest.action === "calculate-rewards" && manifest.binding) {
           // The abort remains a terminal fact even if this optional external-completion read fails.
@@ -1881,18 +1866,11 @@ export class WalletIntentService {
             "Reward-calculation intent is missing its exact PoX-5 completion binding",
           );
         }
-        const observedComputeHeight = decodeUInt(
-          await node.callReadOnly(
-            managerPrincipal,
-            "get-last-reward-compute-height",
-            manifest.requiredSender,
-            [],
-            { tip: indexed.indexBlockHash },
-          ),
-          "get-last-reward-compute-height",
+        complete = calculationResultMatchesTarget(
+          indexed.resultRepr,
+          String(manifest.binding.targetRewardCycle),
+          manifest.binding.expectedLastRewardComputeBurnHeight,
         );
-        complete =
-          observedComputeHeight === BigInt(manifest.binding.expectedLastRewardComputeBurnHeight);
       } else if (manifest.action === "claim-rewards") {
         if (request.action !== "claim-rewards") {
           throw new WalletIntentError(
@@ -1966,19 +1944,17 @@ export class WalletIntentService {
         // A successful BTC-route staker claim creates a withdrawal request, not BTC delivery.
         complete = true;
       } else {
-        const snapshot = await readOperatorAnchorSnapshot({
-          config,
+        const manager = await inspectDeployedManager(
           node,
-          api,
+          config.network,
           managerPrincipal,
-          managerVerification: this.options.managerVerification,
-          reportMissingManager: true,
-        });
+          this.options.managerVerification,
+          { tip: indexed.indexBlockHash },
+        );
         const verifiedReferenceManager =
-          (snapshot.manager.source.tier === "reference-built-in" &&
-            snapshot.manager.provenance.status === "built-in") ||
-          (snapshot.manager.source.tier === "reference-render" &&
-            snapshot.manager.provenance.status === "verified");
+          (manager.source.tier === "reference-built-in" &&
+            manager.provenance.status === "built-in") ||
+          (manager.source.tier === "reference-render" && manager.provenance.status === "verified");
         // The exact-equality sBTC postcondition binds the manager, amount, and asset. Only a
         // verified reference source gives Sidekick enough semantic assurance to claim that the
         // recipient argument produced the expected poststate.
@@ -1998,9 +1974,11 @@ export class WalletIntentService {
           indexBlockHash: indexed.indexBlockHash,
           detail: complete
             ? "Exact transaction and canonical execution verified"
-            : customAssetSemanticsUnattested && decoded.postConditionCount === 1
-              ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
-              : "Transaction confirmed. Waiting for the expected on-chain state",
+            : manifest.action === "calculate-rewards"
+              ? `The calculation receipt does not match the sealed cycle and checkpoint: ${indexed.resultRepr}`
+              : customAssetSemanticsUnattested && decoded.postConditionCount === 1
+                ? "Transaction and exact asset transfer verified. Sidekick cannot attest the custom manager's resulting state"
+                : "Transaction confirmed. Waiting for the expected on-chain state",
         },
         decoded,
       );
@@ -2030,7 +2008,7 @@ export class WalletIntentService {
     manifest: StoredManifest,
     observedAt: string,
     clients: WalletRuntimeClients,
-  ): Promise<BrowserWalletIntent | null> {
+  ): Promise<{ intent: BrowserWalletIntent } | { unavailable: string } | null> {
     const persisted = this.persistedMempoolVerification(stored, manifest);
     const conclusion = this.options.store.walletIntents.latestObservation(stored.id, {
       outcomes: ["noncanonical", "mismatch", "canonical-success", "complete", "abort"],
@@ -2046,12 +2024,9 @@ export class WalletIntentService {
     });
     if (receipt.status === "not-found") return null;
     if (receipt.status === "unavailable") {
-      this.recordUnavailable(
-        stored,
-        observedAt,
-        `Configured API transaction verification is unavailable: ${receipt.reason}. Sidekick will retry`,
-      );
-      return this.publicIntent(stored);
+      return {
+        unavailable: `Configured API transaction verification is unavailable: ${receipt.reason}. Sidekick will retry`,
+      };
     }
     if (receipt.status === "conflict") {
       const next =
@@ -2064,7 +2039,7 @@ export class WalletIntentService {
         indexBlockHash: receipt.indexBlockHash,
         detail: `Canonical transaction conflict: ${receipt.reason}. Sidekick will keep checking; do not repeat the transaction`,
       });
-      return this.publicIntent(next);
+      return { intent: this.publicIntent(next) };
     }
     // Both success and abort need exact binding, never the API's payload summary.
     const decoded =
@@ -2073,29 +2048,31 @@ export class WalletIntentService {
         : this.verifyObserved(stored, manifest, receipt.value.transactionHex, observedAt);
     if (!decoded) {
       if (receipt.value.transactionHex !== null)
-        return this.publicIntent(this.requireStored(stored.id));
+        return { intent: this.publicIntent(this.requireStored(stored.id)) };
       this.recordUnavailable(
         stored,
         observedAt,
         "Exact wallet transaction verification is unavailable",
       );
-      return this.publicIntent(stored);
+      return { intent: this.publicIntent(stored) };
     }
-    return this.refreshVerified(
-      stored,
-      manifest,
-      {
-        indexBlockHash: receipt.value.indexBlockHash,
-        blockHeight: BigInt(receipt.value.blockHeight),
-        isCanonical: true,
-        resultRepr: receipt.value.resultRepr,
-      },
-      decoded,
-      observedAt,
-      clients,
-      receipt.value.success,
-      receipt.value.source,
-    );
+    return {
+      intent: await this.refreshVerified(
+        stored,
+        manifest,
+        {
+          indexBlockHash: receipt.value.indexBlockHash,
+          blockHeight: BigInt(receipt.value.blockHeight),
+          isCanonical: true,
+          resultRepr: receipt.value.resultRepr,
+        },
+        decoded,
+        observedAt,
+        clients,
+        receipt.value.success,
+        receipt.value.source,
+      ),
+    };
   }
 
   private persistedMempoolVerification(
@@ -2217,7 +2194,6 @@ export class WalletIntentService {
   private async reconcileHistoricalScope(
     action: BrowserWalletIntentAction,
     scope: string,
-    _factsSha256: string,
     observedAt: string,
     ignoredId?: string,
   ): Promise<StoredWalletIntent | null> {

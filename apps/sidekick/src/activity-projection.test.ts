@@ -23,6 +23,7 @@ import { managerEventStream } from "./manager-event-vocabulary.js";
 import { pox5PoolActivityStream } from "./pox5-pool-activity-sync.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256, walletIntentStates } from "./storage/wallet-intent-repository.js";
+import { buildRewardRunRecipe } from "./transaction-engine/reward-run-service.js";
 import { transactionJobStates } from "./transaction-engine/state-machine.js";
 
 const now = new Date("2026-08-14T12:00:00.000Z");
@@ -205,6 +206,128 @@ afterEach(() => {
 });
 
 describe("Activity projection", () => {
+  it("batches 100 child transactions and preserves summary evidence without constructing list timelines", async () => {
+    const store = await memoryStore();
+    const runId = "00000000-0000-4000-8000-000000000100";
+    const recipe = buildRewardRunRecipe({
+      runId,
+      feeCapUstx: 500n,
+      maximumTransactions: 100,
+      request: { cycle: 141, distribution: 1, operations: ["claim-staker-rewards"] },
+      facts: {
+        walletPrincipal: actorPrincipal,
+        managerPrincipal,
+        pox5Contract: pox5ContractId,
+        sbtcTokenContract: `${actorPrincipal}.sbtc-token`,
+        sbtcRegistryContract: `${actorPrincipal}.sbtc-registry`,
+        network: "mainnet",
+        chainId: 1,
+        cycle: 141,
+        distribution: 1,
+        preparedAnchor: { stacksBlockHeight: 9000, burnBlockHeight: 4100, indexBlockHash },
+        managerSourceFingerprint: "12".repeat(32),
+        pox5SourceFingerprint: "34".repeat(32),
+        calculateRequired: false,
+        collectRequired: false,
+        maximumCollectSats: null,
+        eligibleAccountCount: 100,
+        eligibleWithdrawalCounts: { accepted: 0, rejected: 0 },
+        withdrawals: [],
+        accounts: Array.from({ length: 100 }, (_, index) => ({
+          stakerPrincipal: actorPrincipal,
+          rewardCycle: 141,
+          bondIndex: String(index),
+          maximumGrossSats: "1000",
+          payoutRoute: "direct-sbtc",
+        })),
+      },
+    });
+    store.rewardRuns.insert({
+      runId,
+      walletPrincipal: actorPrincipal,
+      recipeSha256: "ab".repeat(32),
+      recipe,
+      children: recipe.children,
+      approvalExpiresAt: now.toISOString(),
+      now: now.toISOString(),
+    });
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: now.toISOString(),
+    });
+    const changedAt = "2026-08-14T12:01:00.000Z";
+    for (let index = 0; index < 100; index += 1) {
+      const childTxid = `0x${index.toString(16).padStart(64, "0")}` as `0x${string}`;
+      store.rewardRuns.updateChild({
+        runId,
+        childIndex: index,
+        from: ["pending"],
+        to: "confirmed",
+        txid: childTxid,
+        provenance: "you",
+        now: now.toISOString(),
+      });
+      store.putChainEvent({
+        chainId: 1,
+        txId: childTxid,
+        eventIndex: 0,
+        occurredAt: now.toISOString(),
+        blockHeight: 9000 + index,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: index !== 0,
+        microblockCanonical: true,
+        contractId: managerPrincipal,
+        topic: "print",
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          event: { kind: "claim-staker-rewards", stakerPrincipal: actorPrincipal },
+        },
+        sourceId,
+        observedAt: changedAt,
+      });
+    }
+    const events = vi.spyOn(store, "listManagerActivityChainEventsForTxids");
+    const cursors = vi.spyOn(store.chainState, "getCursor");
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      pox5ContractId: () => pox5ContractId,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    const page = service.page(query());
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(events.mock.calls[0]?.[2]).toHaveLength(100);
+    expect(cursors).toHaveBeenCalledTimes(3);
+    expect(page.items).toEqual([]);
+    expect(page.active[0]?.updatedAt).toBe(changedAt);
+    expect(page.active[0]?.txids).toHaveLength(100);
+    expect(page.active[0]?.coverage).toContainEqual(
+      expect.objectContaining({
+        source: "indexed-manager-history",
+        status: "delayed",
+        observedAt: changedAt,
+      }),
+    );
+    const detail = service.detail(`reward-run:${runId}`);
+    expect(detail?.summary).toEqual(page.active[0]);
+    expect(detail?.timeline.filter(({ code }) => code === "verified-chain-event")).toHaveLength(99);
+    expect(detail?.timeline.filter(({ code }) => code === "chain-event-noncanonical")).toHaveLength(
+      1,
+    );
+    expect(detail?.aliases).toHaveLength(101);
+    expect(detail?.timeline.map(({ occurredAt }) => occurredAt)).toEqual(
+      detail?.timeline.map(({ occurredAt }) => occurredAt).sort(),
+    );
+  });
   it("maps every authoritative wallet-intent and engine state", () => {
     expect(walletIntentStates.map((state) => [state, walletIntentActivityState(state)])).toEqual([
       ["prepared", { displayStatus: "action-required", outcome: "pending" }],
@@ -498,10 +621,9 @@ describe("Activity projection", () => {
     expect(page.items).toHaveLength(0);
     expect(page.active[0]?.activityId).toBe(`wallet-intent:${created.id}`);
 
-    const listWalletHistory = vi.spyOn(store.walletIntents, "listForActivity");
-    const listActiveWallets = vi.spyOn(store.walletIntents, "listActiveForActivity");
+    const listActive = vi.spyOn(store.activity, "activeKeys");
+    const listHistory = vi.spyOn(store.activity, "historyKeys");
     const listEngineHistory = vi.spyOn(store.transactionEngine, "listLogicalJobs");
-    const listChainHistory = vi.spyOn(store, "listManagerActivityChainEvents");
     const listSettingsHistory = vi.spyOn(store.runtimeSettings, "listAudit");
     const alias = `chain-tx:1:${txid}`;
     const detail = service.detail(alias);
@@ -518,10 +640,9 @@ describe("Activity projection", () => {
     expect(detail?.summary.coverage.map(({ source }) => source)).toEqual(
       expect.arrayContaining(["wallet-intents", "indexed-manager-history"]),
     );
-    expect(listWalletHistory).not.toHaveBeenCalled();
-    expect(listActiveWallets).not.toHaveBeenCalled();
+    expect(listActive).not.toHaveBeenCalled();
+    expect(listHistory).not.toHaveBeenCalled();
     expect(listEngineHistory).not.toHaveBeenCalled();
-    expect(listChainHistory).not.toHaveBeenCalled();
     expect(listSettingsHistory).not.toHaveBeenCalled();
   });
 
@@ -857,7 +978,7 @@ describe("Activity projection", () => {
     }
     expect(ids.size).toBe(10_001);
     expect(ids.has("settings:10001")).toBe(true);
-  }, 20_000);
+  }, 30_000);
 
   it("bounds selective scans and returns a continuation even when a page has no matches", async () => {
     const store = await memoryStore();

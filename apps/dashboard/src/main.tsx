@@ -44,6 +44,7 @@ import {
   rateLimitHeading,
 } from "./shared/rate-limit-guidance.js";
 import { operatorStateIsStale } from "./shared/status-freshness.js";
+import { startVisibleRefresh } from "./shared/visible-refresh.js";
 import { SignerHealthPage } from "./signer-health.js";
 
 type Snapshot = DashboardSnapshot;
@@ -351,18 +352,15 @@ function App() {
   );
   useEffect(() => {
     if (!authenticated) return;
-    void loadConnection();
-  }, [authenticated, loadConnection]);
-  useEffect(() => {
-    if (!authenticated) return;
-    const refreshIfVisible = () => {
-      if (document.visibilityState === "visible") void loadConnection(true);
-    };
-    const interval = window.setInterval(refreshIfVisible, CONNECTION_RECHECK_MS);
-    document.addEventListener("visibilitychange", refreshIfVisible);
+    // The backend owns recovery. Only an explicit operator recheck forces fresh assessment.
+    const refresh = startVisibleRefresh(
+      () => loadConnection(),
+      () => {},
+      CONNECTION_RECHECK_MS,
+    );
     return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
+      refresh.stop();
+      connectionRequestGeneration.current += 1;
     };
   }, [authenticated, loadConnection]);
   const connectionStatus = connection?.status ?? null;
@@ -412,7 +410,13 @@ function App() {
     [authenticated, connectionAllowsDashboard, connectionStatus, token],
   );
   useEffect(() => {
-    if (page !== "overview") void load();
+    if (page === "overview") return;
+    const refresh = startVisibleRefresh(
+      () => load(true),
+      () => {},
+      STATUS_POLL_MS,
+    );
+    return () => refresh.stop();
   }, [load, page]);
   useEffect(() => {
     const rejectAuth = () => {
@@ -439,20 +443,6 @@ function App() {
     window.addEventListener(AUTH_REJECTED_EVENT, rejectAuth);
     return () => window.removeEventListener(AUTH_REJECTED_EVENT, rejectAuth);
   }, []);
-  useEffect(() => {
-    const refreshIfVisible = () => {
-      // Sidekick refreshes the retained snapshot autonomously. Poll that snapshot while the page is
-      // visible so multiple browsers do not turn the 15-second UI cadence into repeated full chain
-      // reads. Manual Refresh remains the explicit forced-read path.
-      if (document.visibilityState === "visible") void load(true);
-    };
-    const interval = window.setInterval(refreshIfVisible, STATUS_POLL_MS);
-    document.addEventListener("visibilitychange", refreshIfVisible);
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
-    };
-  }, [load]);
   useEffect(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 15_000);
     return () => window.clearInterval(interval);

@@ -11,13 +11,11 @@ import type {
   GasWalletRefusal,
   GasWalletStatus,
   GasWalletSweep,
-  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
   encodePrincipalHex,
 } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
-import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
 import { isRetryableChainReadError } from "./chain-clients.js";
 import type { SidekickNetwork } from "./config.js";
 import {
@@ -32,6 +30,7 @@ import {
 } from "./storage/gas-wallet-sweep-repository.js";
 import type { SidekickStore } from "./storage/store.js";
 import { SubmittedObservationCadence } from "./submitted-observation-cadence.js";
+import { readSubmittedTransactionOutcome } from "./submitted-transaction-outcome.js";
 import {
   selectTransactionFee,
   type TransactionFeePolicy,
@@ -708,63 +707,24 @@ export class GasWalletService {
       }
       const context = (this.#options.observationRuntimeContext ?? this.#options.runtimeContext)();
       const reader = (this.#options.createReader ?? defaultReader)(context.config.nodeRpcUrl);
-      const indexed = await reader.lookupIndexedTransaction(sweep.txid).catch(() => null);
-      if (indexed?.status === "observed" && !indexed.value.isCanonical) {
+      const confirmed = await readSubmittedTransactionOutcome({
+        reader,
+        api: context.api,
+        node: context.node,
+        chainId: this.#options.chainId,
+        txId: sweep.txid as `0x${string}`,
+        allowApiEvidence: () => sweep.failureReason === null && this.#hasLocalSweepBinding(sweep),
+      });
+      if (confirmed.status === "conflict") {
         retryLater = false;
-        return this.#recordSweepConflict(sweepId, "Transaction became noncanonical", now);
-      }
-      let confirmed:
-        | {
-            success: boolean;
-            resultRepr: string;
-            blockHeight: number | null;
-            source: TransactionExecutionSource;
-          }
-        | undefined;
-      if (
-        indexed?.status === "observed" &&
-        indexed.value.isCanonical &&
-        indexed.value.blockHeight !== null
-      ) {
-        confirmed = {
-          success: indexed.value.resultRepr.trim().startsWith("(ok"),
-          resultRepr: indexed.value.resultRepr,
-          blockHeight:
-            indexed.value.blockHeight === null ? null : Number(indexed.value.blockHeight),
-          source: "node",
-        };
-      } else if (indexed?.status !== "observed") {
-        const apiTransaction = await lookupCanonicalApiTransaction({
-          api: context.api,
-          node: context.node,
-          chainId: this.#options.chainId,
-          txId: sweep.txid as `0x${string}`,
-          allowApiEvidence:
-            sweep.failureReason === null && (await this.#hasLocalSweepBinding(sweep)),
-        });
-        if (apiTransaction.status === "conflict") {
-          retryLater = false;
-          return this.#recordSweepConflict(
-            sweepId,
-            `Canonical transaction conflict: ${apiTransaction.reason}`,
-            now,
-          );
-        }
-        if (apiTransaction.status === "observed") {
-          confirmed = {
-            success: apiTransaction.value.success,
-            resultRepr: apiTransaction.value.resultRepr,
-            blockHeight: apiTransaction.value.blockHeight,
-            source: apiTransaction.value.source,
-          };
-        }
+        return this.#recordSweepConflict(sweepId, confirmed.reason, now);
       }
       const current = this.#requireSweep(sweepId);
       if (current.status !== "broadcast") {
         retryLater = false;
         return toSweep(current);
       }
-      if (confirmed) {
+      if (confirmed.status === "confirmed") {
         retryLater = false;
         const at = now.toISOString();
         return toSweep(

@@ -12,39 +12,23 @@ import { amount, feePercent } from "../../shared/format.js";
 import { operatorErrorSentence } from "../../shared/operator-error.js";
 import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { loadEngineStatus } from "../operations/engine-api.js";
+import { storeRewardHandoff } from "../rewards/reward-handoff.js";
 import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
   allocationRoundingNote,
+  calculatedPoolTotal,
   currentDistribution,
   type DistributionCardModel,
   deriveDistributionCards,
   distributionAllocation,
   distributionName,
 } from "../rewards/reward-state.js";
-import { PENDING_RUN_STORAGE_KEY } from "../rewards/rewards-page.js";
 import { IN_PROGRESS_RUN_STATUSES, listRewardRuns } from "../rewards/run-api.js";
 import { cachedGasWalletStatus, loadGasWalletStatus } from "../settings/gas-wallet-api.js";
 
 const CARD_POLL_MS = 30_000;
 
-type CardState = "ready" | "accruing" | "distributing" | "complete" | "attention" | "overdue";
-
-/** The Overview follows the oldest distribution that still needs the operator, else the accrual. */
-function cardState(card: DistributionCardModel | null): CardState {
-  if (!card) return "accruing";
-  if (card.progress) return "distributing";
-  switch (card.badge.label) {
-    case "Needs attention":
-    case "Details unavailable":
-      return "attention";
-    case "Calculation overdue":
-      return "overdue";
-    case "All distributed":
-      return "complete";
-    default:
-      return "ready";
-  }
-}
+type CardState = DistributionCardModel["state"] | "accruing";
 
 const titles: Record<CardState, string> = {
   ready: "Rewards — ready to distribute",
@@ -135,7 +119,7 @@ export function RewardsOverviewCard({
     );
   const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
   const card = cards[0] ?? null;
-  const state = cardState(card);
+  const state = card?.state ?? "accruing";
   const distribution = card
     ? (ledger.cycles
         .find((entry) => entry.cycle === card.cycle)
@@ -147,16 +131,12 @@ export function RewardsOverviewCard({
   const calculated = distribution.calculation.state === "done";
   const primaryAction = card?.primary ?? card?.secondary?.action ?? null;
   const startRun = () => {
-    if (primaryAction) sessionStorage.setItem(PENDING_RUN_STORAGE_KEY, primaryAction.kind);
+    if (primaryAction) storeRewardHandoff(primaryAction, cacheScope);
     location.hash = domainHash("rewards", "claims");
   };
   const allocation = distributionAllocation(distribution);
   const roundingNote = allocationRoundingNote(allocation);
-  const cycleCalculated = cycle
-    ? cycle.distributions
-        .reduce((sum, d) => sum + BigInt(d.calculation.poolSats ?? "0"), 0n)
-        .toString()
-    : null;
+  const cycleCalculated = cycle ? calculatedPoolTotal(cycle.distributions) : null;
   const headline = card ? card.headline : "Accruing — nothing to do until the network calculates";
   const badge = card ? card.badge : { tone: "neutral" as const, label: "Accruing" };
   const execution = card?.execution ?? null;
@@ -250,7 +230,7 @@ export function RewardsOverviewCard({
             </div>
           </>
         )}
-        {cycle && cycleCalculated && cycleCalculated !== "0" ? (
+        {cycle?.distributions.some((d) => d.calculation.state === "done") ? (
           <div>
             <dt>Cycle {cycle.cycle} calculated</dt>
             <dd>{amount(cycleCalculated)}</dd>

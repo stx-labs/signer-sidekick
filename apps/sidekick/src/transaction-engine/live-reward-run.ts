@@ -3,7 +3,6 @@ import type {
   ManagerCapabilities,
   RewardRunOperation,
   RewardRunPrepareRequest,
-  TransactionExecutionSource,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeEarnedStakerRewards,
@@ -21,7 +20,7 @@ import {
   type RewardOperationPlanInput,
   revalidateRewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
-import { lookupCanonicalApiTransaction } from "../canonical-api-transaction.js";
+import { calculationResultMatchesTarget } from "../calculation-receipt.js";
 import { checkCanonicalNodeBlock } from "../canonical-node-block.js";
 import type { ChainAnchor } from "../chain-anchor.js";
 import { captureNodeChainAnchor, UpstreamUnavailableError } from "../chain-clients.js";
@@ -32,6 +31,7 @@ import {
 } from "../pox5-calculate-rewards.js";
 import type { WithdrawalRegistryStatus } from "../reward-ledger.js";
 import type { SidekickStore } from "../storage/store.js";
+import { readSubmittedTransactionOutcome } from "../submitted-transaction-outcome.js";
 import {
   type FeeSelection,
   selectTransactionFee,
@@ -190,16 +190,6 @@ async function managerCollectAtAnchor(input: {
     bondPeriods,
     totalSats: earned.reduce((total, value) => total + value, 0n),
   };
-}
-
-export function calculationResultMatchesTarget(
-  resultRepr: string,
-  targetRewardCycle: string,
-  expectedLastRewardComputeBurnHeight: number,
-): boolean {
-  const cycle = resultRepr.match(/\(stx-cycle u(\d+)\)/)?.[1];
-  const height = resultRepr.match(/\(calculation-height u(\d+)\)/)?.[1];
-  return cycle === targetRewardCycle && height === String(expectedLastRewardComputeBurnHeight);
 }
 
 /** Build the exact account/request universe from current node-anchored facts, never request data. */
@@ -729,101 +719,56 @@ export class LiveRewardRunDriver implements RewardRunDriver {
     const reader = (
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
-    const indexed = await reader.lookupIndexedTransaction(input.txid).catch(() => null);
-    let confirmed:
-      | {
-          success: boolean;
-          resultRepr: string;
-          blockHeight: number;
-          source: TransactionExecutionSource;
-        }
-      | undefined;
-    if (indexed?.status === "observed") {
-      if (!indexed.value.isCanonical)
-        return {
-          status: "halt",
-          reason: "Transaction became noncanonical",
-          requiresNodeCorroboration: true,
-        };
-      if (indexed.value.blockHeight === null) return { status: "pending" };
-      confirmed = {
-        success: indexed.value.resultRepr.trim().startsWith("(ok"),
-        resultRepr: indexed.value.resultRepr,
-        blockHeight: Number(indexed.value.blockHeight),
-        source: "node",
+    const confirmed = await readSubmittedTransactionOutcome({
+      reader,
+      api: context.api,
+      node: context.node,
+      chainId: input.run.recipe.chainId,
+      txId: input.txid,
+      allowApiEvidence: () => this.#hasLocalSigningBinding(input),
+    });
+    if (confirmed.status === "conflict")
+      return {
+        status: "halt",
+        reason: confirmed.reason,
+        requiresNodeCorroboration: true,
       };
-    } else {
-      const apiTransaction = await lookupCanonicalApiTransaction({
-        api: context.api,
-        node: context.node,
-        chainId: input.run.recipe.chainId,
-        txId: input.txid,
-        allowApiEvidence: await this.#hasLocalSigningBinding(input),
-      });
-      if (apiTransaction.status === "conflict") {
+    if (confirmed.status === "pending") return confirmed;
+    if (confirmed.success) {
+      if (
+        input.plan.material.kind === "calculate-rewards" &&
+        !calculationResultMatchesTarget(
+          confirmed.resultRepr,
+          input.plan.material.targetRewardCycle,
+          input.plan.material.expectedLastRewardComputeBurnHeight,
+        )
+      ) {
         return {
           status: "halt",
-          reason: `Canonical transaction conflict: ${apiTransaction.reason}`,
-          requiresNodeCorroboration: true,
-        };
-      }
-      if (apiTransaction.status === "observed") {
-        confirmed = {
-          success: apiTransaction.value.success,
-          resultRepr: apiTransaction.value.resultRepr,
-          blockHeight: apiTransaction.value.blockHeight,
-          source: apiTransaction.value.source,
-        };
-      }
-      if (apiTransaction.status === "unavailable") {
-        return {
-          status: "pending",
-          retryLater: true,
-          ...(apiTransaction.retryAfterMs !== undefined
-            ? { retryAfterMs: apiTransaction.retryAfterMs }
-            : {}),
-        };
-      }
-    }
-    if (confirmed) {
-      if (confirmed.success) {
-        if (
-          input.plan.material.kind === "calculate-rewards" &&
-          !calculationResultMatchesTarget(
-            confirmed.resultRepr,
-            input.plan.material.targetRewardCycle,
-            input.plan.material.expectedLastRewardComputeBurnHeight,
-          )
-        ) {
-          return {
-            status: "halt",
-            reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
-            executionSource: confirmed.source,
-          };
-        }
-        return {
-          status: "confirmed",
-          blockHeight: confirmed.blockHeight,
+          reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
           executionSource: confirmed.source,
         };
       }
-      // Failure is an execution fact even when the optional external-completion state read
-      // cannot run during an outage. It never authorizes another signature automatically.
-      const completed = await this.#desiredState(input).catch(() => false);
-      return completed
-        ? {
-            status: "externally-completed",
-            reason: "Another caller completed the same operation",
-            executionSource: confirmed.source,
-          }
-        : {
-            status: "halt",
-            reason: `Transaction aborted: ${confirmed.resultRepr}`,
-            executionSource: confirmed.source,
-          };
+      return {
+        status: "confirmed",
+        blockHeight: confirmed.blockHeight,
+        executionSource: confirmed.source,
+      };
     }
-    // The indexed/API sources have no terminal outcome. A mempool read cannot change that.
-    return { status: "pending" };
+    // Failure is an execution fact even when the optional external-completion state read
+    // cannot run during an outage. It never authorizes another signature automatically.
+    const completed = await this.#desiredState(input).catch(() => false);
+    return completed
+      ? {
+          status: "externally-completed",
+          reason: "Another caller completed the same operation",
+          executionSource: confirmed.source,
+        }
+      : {
+          status: "halt",
+          reason: `Transaction aborted: ${confirmed.resultRepr}`,
+          executionSource: confirmed.source,
+        };
   }
 
   async #hasLocalSigningBinding(

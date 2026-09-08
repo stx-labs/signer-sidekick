@@ -34,6 +34,8 @@ import {
 } from "./gas-wallet.js";
 import type { GasWalletSweepPlan } from "./gas-wallet-sweep.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
+import { apiTransactionReceipt } from "./test-helpers/api-transaction.js";
+import { nakamotoBlockBytes } from "./test-helpers/nakamoto-block.js";
 import {
   GasPayerSigner,
   type SignedGasWalletSweepTransaction,
@@ -58,27 +60,6 @@ const txid = `0x${proofTransaction.txid()}` as const;
 const blockHash = `0x${"22".repeat(32)}` as const;
 const indexBlockHash = `0x${"33".repeat(32)}` as const;
 const blockHeight = 1_234;
-
-function nakamotoBlockBytes(): Uint8Array {
-  const body = proofTransaction.serializeBytes();
-  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
-  const view = new DataView(bytes.buffer);
-  bytes.fill(0xab, 0, 206);
-  view.setUint8(0, 1);
-  let offset = 206;
-  view.setUint32(offset, 0);
-  offset += 4;
-  view.setUint16(offset, 8);
-  offset += 2;
-  view.setUint32(offset, 1);
-  offset += 5;
-  view.setUint32(offset, 0);
-  offset += 4;
-  view.setUint32(offset, 1);
-  offset += 4;
-  bytes.set(body, offset);
-  return bytes;
-}
 
 interface Harness {
   now: Date;
@@ -148,7 +129,7 @@ function engineStub(state: Harness) {
 
 function runtimeContextStub(state: Harness) {
   const callReadOnly = vi.fn(async () => boolCV(state.isAdmin));
-  const blockBytes = nakamotoBlockBytes();
+  const blockBytes = nakamotoBlockBytes(proofTransaction.serializeBytes());
   const runtimeContext = (): TransactionEngineRuntimeContext => {
     if (state.disconnected) throw new Error("The configured connection is not current");
     return {
@@ -169,14 +150,7 @@ function runtimeContextStub(state: Harness) {
           if (state.apiTransaction === "not-found") {
             throw new UpstreamHttpError("not found", 404);
           }
-          return {
-            tx_id: txid,
-            tx_status: "success",
-            tx_result: { hex: "0x0703", repr: "(ok true)" },
-            canonical: true,
-            block_hash: blockHash,
-            block_height: blockHeight,
-          };
+          return apiTransactionReceipt({ txId: txid, blockHash, blockHeight });
         },
         getBlock: async () => ({
           canonical: true,
@@ -692,14 +666,9 @@ describe("gas wallet service", () => {
     let assessment = { status: "connected" } as ConnectionAssessment;
     let submittedTxid = txid;
     const context = h.options.runtimeContext();
-    const getTransactionDetails = vi.fn(async () => ({
-      tx_id: submittedTxid,
-      tx_status: "success" as const,
-      tx_result: { hex: "0x0703", repr: "(ok true)" },
-      canonical: true,
-      block_hash: blockHash,
-      block_height: blockHeight,
-    }));
+    const getTransactionDetails = vi.fn(async () =>
+      apiTransactionReceipt({ txId: submittedTxid, blockHash, blockHeight }),
+    );
     const observationContext = {
       ...context,
       node: {
@@ -841,6 +810,7 @@ describe("gas wallet service", () => {
     h.state.broadcast = { status: "ambiguous", txid, httpStatus: null, reason: "timeout" };
     await service.approveSweep(planned.sweepId);
     h.state.unconfirmed = { status: "not-found", httpStatus: 404 };
+    const loadPlan = vi.spyOn(h.store.gasWalletSweeps, "getPlan");
     const startedAt = h.state.now.getTime();
     for (let seconds = 0; seconds < 3600; seconds += 5) {
       h.state.now = new Date(startedAt + seconds * 1000);
@@ -849,6 +819,7 @@ describe("gas wallet service", () => {
     expect(lookupIndexedTransaction).toHaveBeenCalledTimes(15);
     expect(getNodeInfo).toHaveBeenCalledTimes(15);
     expect(getTransactionDetails).toHaveBeenCalledTimes(15);
+    expect(loadPlan).not.toHaveBeenCalled();
     expect(h.store.gasWalletSweeps.active()).toMatchObject({
       status: "broadcast",
       txid,

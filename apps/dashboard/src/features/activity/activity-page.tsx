@@ -32,6 +32,7 @@ import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
 import { short } from "../../shared/format.js";
 import { operatorErrorDetail } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import {
   type ActivityFilters,
@@ -390,41 +391,33 @@ function ActivityFeed({
   }, [filterSearch, filters.search]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      if (refresh > 0) setError(null);
-      setLoading(true);
-      try {
-        const result = await apiJson(
-          token,
-          `/api/v1/activity?${activityRequestSearch(filters, cursor)}`,
-          activityResponseSchema,
-          { signal: controller.signal },
-        );
-        if (!controller.signal.aborted) {
-          setData(result);
-          setError(null);
+    const polling = startVisibleRefresh(
+      async (signal) => {
+        if (refresh > 0) setError(null);
+        setLoading(true);
+        try {
+          const result = await apiJson(
+            token,
+            `/api/v1/activity?${activityRequestSearch(filters, cursor)}`,
+            activityResponseSchema,
+            { signal },
+          );
+          if (!signal.aborted) {
+            setData(result);
+            setError(null);
+          }
+        } catch (cause) {
+          if (!signal.aborted) {
+            setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
+          }
+        } finally {
+          if (!signal.aborted) setLoading(false);
         }
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
-        }
-      } finally {
-        pending = false;
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-    void load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, activityRefreshMs);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
+      },
+      () => {},
+      activityRefreshMs,
+    );
+    return () => polling.stop();
   }, [token, filters, cursor, refresh]);
 
   const historyGroups = groupActivityHistory(data?.items ?? []);
@@ -568,43 +561,35 @@ function ActivityDetailPage({
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      if (refresh > 0) setError(null);
-      setLoading(true);
-      try {
-        const result = await apiJson(
-          token,
-          `/api/v1/activity/${encodeURIComponent(activityId)}`,
-          activityDetailSchema,
-          { signal: controller.signal },
-        );
-        if (controller.signal.aborted) return;
-        setData(result);
-        setError(null);
-        if (result.canonicalActivityId !== activityId) {
-          history.replaceState(null, "", activityHash(result.canonicalActivityId, search));
+    const polling = startVisibleRefresh(
+      async (signal) => {
+        if (refresh > 0) setError(null);
+        setLoading(true);
+        try {
+          const result = await apiJson(
+            token,
+            `/api/v1/activity/${encodeURIComponent(activityId)}`,
+            activityDetailSchema,
+            { signal },
+          );
+          if (signal.aborted) return;
+          setData(result);
+          setError(null);
+          if (result.canonicalActivityId !== activityId) {
+            history.replaceState(null, "", activityHash(result.canonicalActivityId, search));
+          }
+        } catch (cause) {
+          if (!signal.aborted) {
+            setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
+          }
+        } finally {
+          if (!signal.aborted) setLoading(false);
         }
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
-        }
-      } finally {
-        pending = false;
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-    void load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, activityRefreshMs);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
+      },
+      () => {},
+      activityRefreshMs,
+    );
+    return () => polling.stop();
   }, [token, activityId, search, refresh]);
 
   if (!data && loading) {

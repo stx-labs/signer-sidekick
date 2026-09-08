@@ -55,6 +55,85 @@ describe("background API health", () => {
     expect(api.getNodeInfo).toHaveBeenCalledTimes(2);
   });
 
+  it("does not restart a status cooldown when a later comparison consumes its rejection", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const api = client();
+    api.getStatus.mockRejectedValueOnce(new RateLimitedError("limited", 90_000));
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow("limited");
+    vi.setSystemTime(30_000);
+    const signal = new AbortController().signal;
+    await expect(readBackgroundApiHealth(api, signal)).rejects.toThrow("limited");
+    expect(api.getNodeInfo).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(89_999);
+    await expect(readBackgroundApiHealth(api, signal)).rejects.toThrow("limited");
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(90_000);
+    await readBackgroundApiHealth(api, signal);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+    expect(api.getNodeInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a genuinely new node-info failure independently of a retained status failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const api = client();
+    api.getStatus.mockRejectedValueOnce(new RateLimitedError("status limited", 90_000));
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow("status limited");
+    vi.setSystemTime(30_000);
+    api.getNodeInfo.mockRejectedValueOnce(new RateLimitedError("info limited", 120_000));
+    await expect(readBackgroundApiHealth(api, new AbortController().signal)).rejects.toThrow();
+    vi.setSystemTime(149_999);
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow("status limited");
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(150_000);
+    await readBackgroundApiStatus(api);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not shorten an outstanding source cooldown when the other source fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const api = client();
+    api.getStatus.mockRejectedValueOnce(new RateLimitedError("status limited", 120_000));
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow();
+    vi.setSystemTime(30_000);
+    api.getNodeInfo.mockRejectedValueOnce(new RateLimitedError("info limited", 30_000));
+    await expect(readBackgroundApiHealth(api, new AbortController().signal)).rejects.toThrow();
+    vi.setSystemTime(119_999);
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow();
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(120_000);
+    await readBackgroundApiStatus(api);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    "status",
+    "node-info",
+  ] as const)("preserves the %s 429 when the other source fails normally", async (source) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const api = client();
+    const rateLimit = new RateLimitedError("limited", 90_000);
+    if (source === "status") {
+      api.getStatus.mockRejectedValueOnce(rateLimit);
+      await expect(readBackgroundApiStatus(api)).rejects.toThrow("limited");
+      vi.setSystemTime(30_000);
+      api.getNodeInfo.mockRejectedValueOnce(new Error("info offline"));
+    } else {
+      api.getStatus.mockRejectedValueOnce(new Error("status offline"));
+      api.getNodeInfo.mockRejectedValueOnce(rateLimit);
+    }
+    await expect(readBackgroundApiHealth(api, new AbortController().signal)).rejects.toThrow();
+    vi.setSystemTime(89_999);
+    await expect(readBackgroundApiStatus(api)).rejects.toThrow();
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(90_000);
+    await readBackgroundApiStatus(api);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("coalesces concurrent observations, expires at 30 seconds, and isolates clients", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

@@ -59,7 +59,7 @@ export async function lookupCanonicalApiTransaction(input: {
   node: CanonicalApiTransactionNode;
   chainId: number;
   txId: `0x${string}`;
-  allowApiEvidence?: boolean;
+  allowApiEvidence?: boolean | (() => boolean | Promise<boolean>);
 }): Promise<CanonicalApiTransactionLookup> {
   let details: Awaited<ReturnType<CanonicalApiTransactionApi["getTransactionDetails"]>>;
   try {
@@ -116,7 +116,11 @@ export async function lookupCanonicalApiTransaction(input: {
         txId: input.txId,
       });
     } catch (error) {
-      if (!input.allowApiEvidence) return unavailable(error);
+      const allowed =
+        typeof input.allowApiEvidence === "function"
+          ? await input.allowApiEvidence()
+          : input.allowApiEvidence;
+      if (!allowed) return unavailable(error);
       return { status: "observed", value: { ...receipt, transactionHex: null, source: "api" } };
     }
     if (proof.status !== "included") {

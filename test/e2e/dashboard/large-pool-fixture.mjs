@@ -1378,6 +1378,7 @@ function rewardLedgerForCycles(url, cycles, current) {
     cycles: cycles.map(({ cycle }) => cycle),
     payments,
     paymentsTruncated: false,
+    context: { burnBlockTiming: health.burnBlockTiming, rewardRealizations: [] },
     fees: {
       feeBips: "500",
       earnedIndexedSats: cycles

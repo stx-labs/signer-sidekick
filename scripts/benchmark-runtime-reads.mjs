@@ -9,6 +9,10 @@ import { ActivityProjectionService } from "../apps/sidekick/dist/activity-projec
 import { HealthMonitoringService } from "../apps/sidekick/dist/health-monitoring.js";
 import { healthConfigurationFingerprint } from "../apps/sidekick/dist/health-monitoring-sources.js";
 import { openSidekickStore } from "../apps/sidekick/dist/storage/store.js";
+import {
+  buildRewardRunRecipe,
+  RewardRunService,
+} from "../apps/sidekick/dist/transaction-engine/reward-run-service.js";
 
 const count = Number(process.argv[2] ?? 20_000);
 if (!Number.isSafeInteger(count) || count < 100 || count > 100_000) {
@@ -31,6 +35,95 @@ const config = {
   databasePath,
 };
 const { store } = await openSidekickStore(databasePath, now.toISOString());
+const wallet = "SP000000000000000000002Q6VF78";
+function insertRun(index, children, active = false) {
+  const runId = `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const facts = {
+    walletPrincipal: wallet,
+    managerPrincipal: manager,
+    pox5Contract: `${wallet}.pox-5`,
+    sbtcTokenContract: `${wallet}.sbtc-token`,
+    sbtcRegistryContract: `${wallet}.sbtc-registry`,
+    network: "mainnet",
+    chainId: 1,
+    cycle: 141,
+    distribution: 1,
+    preparedAnchor: { stacksBlockHeight: 9000, burnBlockHeight: 4100, indexBlockHash: hash },
+    managerSourceFingerprint: "12".repeat(32),
+    pox5SourceFingerprint: "34".repeat(32),
+    calculateRequired: false,
+    collectRequired: false,
+    maximumCollectSats: null,
+    eligibleAccountCount: children,
+    eligibleWithdrawalCounts: { accepted: 0, rejected: 0 },
+    withdrawals: [],
+    accounts: Array.from({ length: children }, (_, bondIndex) => ({
+      stakerPrincipal: wallet,
+      rewardCycle: 141,
+      bondIndex: String(bondIndex),
+      maximumGrossSats: "1000",
+      payoutRoute: "direct-sbtc",
+    })),
+  };
+  const recipe = buildRewardRunRecipe({
+    runId,
+    facts,
+    request: { cycle: 141, distribution: 1, operations: ["claim-staker-rewards"] },
+    feeCapUstx: 500n,
+    maximumTransactions: children,
+  });
+  store.rewardRuns.insert({
+    runId,
+    walletPrincipal: wallet,
+    recipeSha256: "ab".repeat(32),
+    recipe,
+    children: recipe.children,
+    approvalExpiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+    now: now.toISOString(),
+  });
+  if (active) {
+    for (let childIndex = 0; childIndex < children; childIndex += 1) {
+      store.rewardRuns.updateChild({
+        runId,
+        childIndex,
+        from: ["pending"],
+        to: "confirmed",
+        txid: `0x${childIndex.toString(16).padStart(64, "0")}`,
+        provenance: "you",
+        now: now.toISOString(),
+      });
+    }
+    store.rewardRuns.transition({
+      runId,
+      from: ["awaiting-approval"],
+      to: "paused",
+      approvedAt: now.toISOString(),
+      startedAt: now.toISOString(),
+      runtimeExpiresAt: new Date(now.getTime() + 6 * 60 * 60_000).toISOString(),
+      now: now.toISOString(),
+    });
+  } else
+    store.rewardRuns.transition({
+      runId,
+      from: ["awaiting-approval"],
+      to: "cancelled",
+      now: now.toISOString(),
+      completedAt: now.toISOString(),
+    });
+}
+const unexpected = () => {
+  throw new Error("Benchmark must never sign, broadcast, or access a chain");
+};
+const maintenance = new RewardRunService({
+  repository: store.rewardRuns,
+  signer: { gasWalletSignerReady: () => false },
+  driver: { materialize: unexpected, broadcast: unexpected, reconcile: unexpected },
+  facts: unexpected,
+  refusalChecks: unexpected,
+  now: () => now,
+});
+const originalPrepare = DatabaseSync.prototype.prepare;
+let statements = 0;
 try {
   // SQL setup avoids timing the real ingestion pipeline. Reads use production services.
   const db = new DatabaseSync(databasePath);
@@ -51,10 +144,14 @@ try {
     first_received_at, last_received_at, last_processing_at, next_attempt_at,
     completed_at, updated_at, processing_attempts, payload_pruned
   ) VALUES (?, 'new-block', ?, '{}', 0, 'node-verified', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`);
+  const audit =
+    db.prepare(`INSERT INTO settings_audit (audit_id, revision, changed_fields_json, changed_at)
+    VALUES (?, ?, '["pool.displayName"]', ?)`);
   for (let index = 0; index < count; index += 1) {
     const id = index.toString(16).padStart(64, "0");
     const at = new Date(now.getTime() - (count - index) * 10_000).toISOString();
     event.run(`0x${id}`, index, hash, hash, manager, at, at, at);
+    audit.run(`audit-${index}`, index + 1, at);
     delivery.run(
       `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
       id,
@@ -71,6 +168,7 @@ try {
   }
   db.exec("COMMIT");
   db.close();
+  for (let index = 0; index < 200; index += 1) insertRun(index, 50);
   const fingerprint = healthConfigurationFingerprint(config);
   for (let index = 0; index < 1_440; index += 1) {
     const at = new Date(now.getTime() - (1_440 - index) * 5_000).toISOString();
@@ -114,13 +212,49 @@ try {
     "overview-active": () =>
       activity.active ? activity.active() : activity.page({ ...query, limit: 1 }),
     "activity-first-page": () => activity.page(query),
+    "activity-settings-page": () => activity.page({ ...query, type: "configuration" }),
+    "maintenance-terminal-history": () => maintenance.recover(),
     "observer-status": () => store.observerInbox.status(),
+    "observer-status-after-empty-claim": () => {
+      store.observerInbox.claimNextDelivery(now.toISOString());
+      return store.observerInbox.status();
+    },
+    "observer-status-after-empty-recovery": () => {
+      store.observerInbox.recoverDeliveries(now.toISOString());
+      return store.observerInbox.status();
+    },
+    "observer-status-after-empty-prune": () => {
+      store.observerInbox.prunePayloads(now.toISOString());
+      return store.observerInbox.status();
+    },
+    "observer-status-after-delivery": () => {
+      store.observerInbox.acceptDelivery({
+        endpointKind: "attachments",
+        contentSha256: "ff".repeat(32),
+        rawPayloadJson: "{}",
+        payloadBytes: 2,
+        state: "expired",
+        stateReason: "benchmark",
+        claimedBlockHeight: null,
+        claimedBlockHash: null,
+        claimedIndexBlockHash: null,
+        claimedBurnBlockHeight: null,
+        claimedBurnBlockHash: null,
+        receivedAt: now.toISOString(),
+      });
+      return store.observerInbox.status();
+    },
     "health-current": () => health.current(),
   };
+  DatabaseSync.prototype.prepare = function (...args) {
+    statements += 1;
+    return originalPrepare.apply(this, args);
+  };
   const results = {};
-  for (const [name, read] of Object.entries(cases)) {
+  async function measure(name, read) {
     await read(); // hydrate/JIT outside warm measurements
     const samples = [];
+    const startStatements = statements;
     for (let index = 0; index < 30; index += 1) {
       await new Promise(setImmediate);
       const started = performance.now();
@@ -128,14 +262,27 @@ try {
       samples.push(performance.now() - started);
     }
     samples.sort((a, b) => a - b);
-    results[name] = { p50Ms: samples[14], p95Ms: samples[28], maxMs: samples[29] };
+    results[name] = {
+      p50Ms: samples[14],
+      p95Ms: samples[28],
+      maxMs: samples[29],
+      preparedStatementsPerRead: (statements - startStatements) / 30,
+    };
   }
+  for (const [name, read] of Object.entries(cases)) await measure(name, read);
+  insertRun(200, 100, true);
+  await measure("activity-100-child-run", () => activity.active());
+  await measure("maintenance-100-child-paused-run", () => maintenance.recover());
   console.log(
     JSON.stringify(
       {
         node: process.version,
         rows: count,
         healthObservations: 1440,
+        settingsRows: count,
+        terminalRuns: 200,
+        terminalChildrenPerRun: 50,
+        activeRunChildren: 100,
         samplesPerRead: 30,
         synthetic: true,
         results,
@@ -145,6 +292,8 @@ try {
     ),
   );
 } finally {
+  DatabaseSync.prototype.prepare = originalPrepare;
+  await maintenance.stop();
   store.close();
   await rm(directory, { recursive: true, force: true });
 }

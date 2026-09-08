@@ -229,6 +229,70 @@ describe("reward run coordinator", () => {
       await rm(directory, { recursive: true, force: true });
   });
 
+  it("does not hydrate 200 terminal runs with 50 children during idle maintenance", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const retainedFacts = {
+      ...facts(),
+      calculateRequired: false,
+      collectRequired: false,
+      eligibleAccountCount: 50,
+      accounts: Array.from({ length: 50 }, (_, index) => ({
+        stakerPrincipal: stakerOne,
+        rewardCycle: 141,
+        bondIndex: String(index),
+        maximumGrossSats: "1000",
+        payoutRoute: "direct-sbtc" as const,
+      })),
+    };
+    for (let index = 0; index < 200; index += 1) {
+      const runId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const recipe = buildRewardRunRecipe({
+        runId,
+        facts: retainedFacts,
+        request: { cycle: 141, distribution: 1, operations: ["claim-staker-rewards"] },
+        feeCapUstx: 500n,
+        maximumTransactions: 50,
+      });
+      store.rewardRuns.insert({
+        runId,
+        walletPrincipal: wallet,
+        recipeSha256: "ab".repeat(32),
+        recipe,
+        children: recipe.children,
+        approvalExpiresAt: started.toISOString(),
+        now: started.toISOString(),
+      });
+      store.rewardRuns.transition({
+        runId,
+        from: ["awaiting-approval"],
+        to: "cancelled",
+        now: started.toISOString(),
+        completedAt: started.toISOString(),
+      });
+    }
+    const hydrate = vi.spyOn(store.rewardRuns, "get");
+    const history = vi.spyOn(store.rewardRuns, "list");
+    const live = driver();
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: live.implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      now: () => started,
+    });
+    try {
+      await service.recover();
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(history).not.toHaveBeenCalled();
+      expect(live.materialized).toEqual([]);
+      expect(live.broadcasts).toEqual([]);
+    } finally {
+      await service.stop();
+    }
+  }, 20_000);
+
   it("observes submitted work on existing maintenance with signing disabled, coalesces slow reads, and drains shutdown", async () => {
     const { store } = await openSidekickStore(":memory:", started.toISOString());
     stores.push(store);
@@ -1127,6 +1191,7 @@ describe("reward run coordinator", () => {
     // Recreate the previous schema and its parent-only unresolved diagnostic.
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      DROP INDEX settings_audit_revision;
       DROP INDEX IF EXISTS activity_chain_transactions;
     DROP INDEX IF EXISTS activity_run_transactions;
     DROP INDEX IF EXISTS activity_wallet_state;

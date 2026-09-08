@@ -48,8 +48,9 @@ curl --fail http://127.0.0.1:3998/health/operational
    submitted work and background freshness. Do not mistake container health for indexing completion.
 
 Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
-Schema 41 adds ten Activity/observer indexes without rewriting financial rows. File-backed upgrades
-take an automatic pre-migration backup. Older binaries refuse newer schemas; rollback needs the
+Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Neither rewrites
+financial rows. File-backed upgrades take an automatic pre-migration backup. Older binaries refuse
+newer schemas; rollback needs the
 compatible database, not just the old image. Never restore over newer submissions without reconciling
 them first.
 
@@ -70,6 +71,7 @@ restore=REPLACE_WITH_BACKUP_DIRECTORY_NAME
 test -f "$PWD/backups/$restore/sidekick.sqlite"
 docker compose stop sidekick
 docker compose run --rm --no-deps --user 0 --entrypoint sh \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
   -v "$PWD/backups/$restore:/restore:ro" sidekick \
   -c 'set -eu
 test -f /restore/sidekick.sqlite
@@ -132,6 +134,7 @@ Saved wallet intents remain accessible by ID even when new preparation is unavai
 
 Partial/estimated allocations are labeled. Contract-rounding reserve is not operator fee income.
 Missing interpretation or evidence means details unavailable, not that the pool earned nothing.
+The Overview card distinguishes accruing, ready, distributing, complete, needs attention and overdue.
 
 A ₿ marker shows the staker's **currently registered** Bitcoin address, not a proved historical
 destination. Stacks withdrawal-request success is not BTC delivery. Payment details distinguish
@@ -172,8 +175,8 @@ the run deadline or transaction identity.
 Details show **local node**, **API + local node** or **configured API** execution evidence.
 Runs/sweeps can use coherent API execution with revalidated signing-time binding; wallets need
 retained exact mempool verification of the same intent/txid, otherwise node bytes. An API summary
-alone is insufficient. Positive conflicts veto API-only completion. Extra calculation, historical-job
-or asset-semantic checks may remain pending after execution is known. See
+alone is insufficient. Positive conflicts veto API-only completion. Calculate verifies the sealed
+cycle/checkpoint from its receipt; historical-job or asset-semantic checks may remain pending. See
 [ADR 0008](../architecture/decisions/0008-chain-evidence-and-reconciliation.md).
 
 An eligible missing browser-wallet submission may be explicitly replaced only after fresh absence
@@ -203,7 +206,8 @@ reads share a 30-second advisory result, without caching fresh preparation or tr
 The Bitcoin timing display refreshes one recent page every five minutes and reconciles its
 200-block window hourly; changed overlap triggers a full refresh.
 
-Authenticated `/metrics` exposes `sidekick_upstream_requests_total` by normalized origin, route,
+`/metrics` is outside API bearer authentication; keep the listener private (loopback by default).
+It exposes `sidekick_upstream_requests_total` by normalized origin, route,
 method and status. It counts HTTP attempts including retries; `no_response` means no headers arrived.
 Validation failure after HTTP 200 still counts as 200; checks blocked before HTTP are not counted.
 Credentials, queries and transaction/principal IDs are omitted; excess labels roll into `other`.
@@ -217,9 +221,8 @@ sum by (origin) (increase(sidekick_upstream_requests_total[24h]))
 ```
 
 Backfill, active work, retries and manual requests add traffic. Measure them separately; no timer
-estimate is a daily quota. Health-source sharing has a known bounded edge: first combining a cached
-status failure with node-info can extend its cooldown once by up to five minutes. Fresh transaction
-checks do not use that advisory cache.
+estimate is a daily quota. Reusing a failed advisory result does not restart its cooldown. Fresh
+transaction checks do not use that advisory cache.
 
 ## Local read performance check
 
@@ -230,6 +233,7 @@ node scripts/benchmark-runtime-reads.mjs 20000
 ```
 
 The script creates/removes its own synthetic SQLite fixture and reports 30 warmed p50/p95/max
-service reads for Overview active work, Activity, observer and health status. It uses no live source,
-production database or financial action. Compare the same fixture, runtime and hardware.
+reads and SQL prepares for Activity, maintenance, observer and health status. It includes settings
+history, empty polls and a 100-child run. No live source, production database or financial action is
+used. Compare the same fixture, runtime and hardware.
 This is not HTTP/browser latency, callback lag or daily API usage; validate those per instance.

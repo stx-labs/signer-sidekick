@@ -1,17 +1,12 @@
 import { Coins, Percent } from "@phosphor-icons/react";
-import {
-  type DashboardSnapshot,
-  type GasWalletStatus,
-  type HealthSnapshot,
-  healthSnapshotSchema,
-  type RewardCalculationRealization,
-  type RewardLedger,
-  type RewardLedgerPayment,
-  type RewardRun,
-  rewardsPageResponseSchema,
+import type {
+  DashboardSnapshot,
+  GasWalletStatus,
+  RewardLedger,
+  RewardLedgerPayment,
+  RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiJson } from "../../api-client.js";
 import { actionHash, type DomainSection, settingsHash } from "../../dashboard-route.js";
 import { PageHead } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
@@ -33,6 +28,7 @@ import { type ConfirmState, RewardConfirmSheet } from "./reward-confirm-sheet.js
 import { CurrentDistributionDetails } from "./reward-current-distribution.js";
 import { DistributionCard } from "./reward-distribution-card.js";
 import { EarningCard } from "./reward-earning-card.js";
+import { consumeRewardHandoff } from "./reward-handoff.js";
 import {
   downloadRewardLedgerExport,
   loadRewardLedger,
@@ -71,8 +67,6 @@ type Snapshot = DashboardSnapshot;
 const RUN_POLL_MS = 5_000;
 const LEDGER_POLL_MS = 30_000;
 const PREPARATION_POLL_MS = 1_000;
-/** Overview's "Collect & distribute" hands the same confirm sheet over through this key. */
-export const PENDING_RUN_STORAGE_KEY = "sidekick-rewards-pending-run";
 
 function terminalRunNotice(run: RewardRun): string {
   switch (run.status) {
@@ -133,8 +127,8 @@ export function Rewards({
     cachedGasWalletStatus(token, cacheScope),
   );
   const [engineMode, setEngineMode] = useState<"observe" | "operator-run" | null>(null);
-  const [burnBlockTiming, setBurnBlockTiming] = useState<HealthSnapshot["burnBlockTiming"]>(null);
-  const [realizations, setRealizations] = useState<RewardCalculationRealization[]>([]);
+  const burnBlockTiming = ledger?.context?.burnBlockTiming ?? null;
+  const realizations = ledger?.context?.rewardRealizations ?? [];
   const [activeRun, setActiveRun] = useState<RewardRun | null>(null);
   const [confirm, setConfirm] = useState<{
     action: RewardPrimaryAction;
@@ -147,6 +141,7 @@ export function Rewards({
   const [exportBusy, setExportBusy] = useState(false);
   const [currentDistributionView, setCurrentDistributionView] = useState<1 | 2 | null>(null);
   const [cardPayments, setCardPayments] = useState<PaymentsCache>({ byKey: {}, errors: {} });
+  const [requestedPayments, setRequestedPayments] = useState<ReadonlySet<string>>(new Set());
   const walletPanelRef = useRef<HTMLDivElement | null>(null);
   const rewards = data.rewards;
   const calculation = data.rewardOutlook?.calculation ?? rewards?.calculation ?? null;
@@ -158,10 +153,17 @@ export function Rewards({
   // Ledger: the page's single source for cycles, the pending distributions, their payments, fees.
   useEffect(() => {
     setLedgerLoading(true);
+    setLedger(null);
+    setLedgerError(null);
     const refresh = startVisibleRefresh(
       async (signal) => {
         const result = await loadRewardLedger(token, {}, signal);
         if (signal.aborted) return;
+        if (`${result.network}:${result.managerPrincipal}` !== cacheScope) {
+          throw new Error(
+            "Reward ledger identity changed; waiting for the operator snapshot to refresh",
+          );
+        }
         setLedger(result);
         setLedgerError(null);
         setLedgerLoading(false);
@@ -177,7 +179,7 @@ export function Rewards({
       refresh.stop();
       ledgerRefresh.current = null;
     };
-  }, [token]);
+  }, [token, cacheScope]);
 
   // Execution availability: gas wallet + engine mode.
   useEffect(() => {
@@ -202,23 +204,6 @@ export function Rewards({
             .catch((cause: unknown) => {
               failures.push(operatorErrorSentence(cause));
               if (!signal.aborted) setEngineMode(null);
-            }),
-          // Projection accuracy + Bitcoin timing also need their own bounded refresh trigger.
-          apiJson(token, "/api/v1/health", healthSnapshotSchema, { signal })
-            .then((result) => {
-              if (!signal.aborted) setBurnBlockTiming(result.burnBlockTiming);
-            })
-            .catch((cause: unknown) => {
-              failures.push(operatorErrorSentence(cause));
-            }),
-          apiJson(token, "/api/v1/rewards?limit=1&offset=0", rewardsPageResponseSchema, {
-            signal,
-          })
-            .then((result) => {
-              if (!signal.aborted) setRealizations(result.rewardRealizations ?? []);
-            })
-            .catch((cause: unknown) => {
-              failures.push(operatorErrorSentence(cause));
             }),
         ]);
         if (failures.length) throw new Error(failures.join("; "));
@@ -335,19 +320,28 @@ export function Rewards({
     [ledger, paymentsByKey, gasWallet, engineMode, inProgressRun],
   );
 
-  // Payments per Distribute card. The ledger read carries the selected cycle's rows; every other
-  // card fetches its own distribution and refreshes whenever the ledger does. Targets come from the
-  // ledger alone so this effect never depends on the payments it stores.
+  // Load the actionable head and current cycle automatically. Older backlog details are opt-in,
+  // and an uncalculated card has no payment table to fetch. Summaries stay visible for every card.
   const pendingTargets = useMemo(
     () =>
       ledger
-        ? pendingDistributions(ledger).map(({ cycle, distribution }) => ({
-            key: distributionKey(cycle.cycle, distribution.distribution),
-            cycle: cycle.cycle,
-            distribution: distribution.distribution,
-          }))
+        ? pendingDistributions(ledger)
+            .filter(({ distribution }) => distribution.calculation.state === "done")
+            .filter(
+              ({ cycle, distribution }, index) =>
+                index === 0 ||
+                cycle.cycle === ledger.current.cycle ||
+                requestedPayments.has(distributionKey(cycle.cycle, distribution.distribution)) ||
+                (activeRun?.recipe.cycle === cycle.cycle &&
+                  activeRun.recipe.distribution === distribution.distribution),
+            )
+            .map(({ cycle, distribution }) => ({
+              key: distributionKey(cycle.cycle, distribution.distribution),
+              cycle: cycle.cycle,
+              distribution: distribution.distribution,
+            }))
         : [],
-    [ledger],
+    [ledger, requestedPayments, activeRun?.recipe.cycle, activeRun?.recipe.distribution],
   );
   const seededStamp = useRef<string | null>(null);
   const fetchedStamp = useRef<Record<string, string>>({});
@@ -356,10 +350,14 @@ export function Rewards({
   cardInputs.current = { ledger, pendingTargets };
   const cardRefresh = useRef<ReturnType<typeof startVisibleRefresh> | null>(null);
   useEffect(() => {
+    seededStamp.current = null;
+    fetchedStamp.current = {};
+    setCardPayments({ byKey: {}, errors: {} });
+    setRequestedPayments(new Set());
     const refresh = startVisibleRefresh(
       async (signal) => {
         const { ledger, pendingTargets } = cardInputs.current;
-        if (!ledger) return;
+        if (!ledger || `${ledger.network}:${ledger.managerPrincipal}` !== cacheScope) return;
         if (seededStamp.current !== ledger.generatedAt) {
           seededStamp.current = ledger.generatedAt;
           const seeded: Record<string, RewardLedgerPayment[]> = {};
@@ -421,10 +419,10 @@ export function Rewards({
       refresh.stop();
       cardRefresh.current = null;
     };
-  }, [token]);
+  }, [token, cacheScope]);
   useEffect(() => {
-    if (ledger) void cardRefresh.current?.refresh(true);
-  }, [ledger]);
+    if (ledger && pendingTargets.length > 0) void cardRefresh.current?.refresh(true);
+  }, [ledger, pendingTargets]);
 
   const openConfirm = useCallback(
     (action: RewardPrimaryAction) => {
@@ -500,18 +498,17 @@ export function Rewards({
     [],
   );
 
-  // Overview hands over a pending run kind; open the same sheet once the ledger is here.
+  // Navigation selects the exact current action; preparation still rebuilds its recipe.
   useEffect(() => {
     if (!ledger || cards.length === 0) return;
-    const pending = sessionStorage.getItem(PENDING_RUN_STORAGE_KEY);
-    if (!pending) return;
-    sessionStorage.removeItem(PENDING_RUN_STORAGE_KEY);
-    const match =
-      cards.find((card) => card.primary?.kind === pending)?.primary ??
-      cards.find((card) => card.secondary?.action.kind === pending)?.secondary?.action ??
-      null;
+    const match = consumeRewardHandoff(
+      cards
+        .flatMap((card) => [card.primary, card.secondary?.action ?? null])
+        .filter((action): action is RewardPrimaryAction => action !== null),
+      cacheScope,
+    );
     if (match) openConfirm(match);
-  }, [ledger, cards, openConfirm]);
+  }, [ledger, cards, openConfirm, cacheScope]);
 
   const go = (run: RewardRun) => {
     setConfirm((current) =>
@@ -808,6 +805,11 @@ export function Rewards({
                 model={card}
                 payments={cardPayments.byKey[card.key] ?? null}
                 paymentsError={cardPayments.errors[card.key] ?? null}
+                onLoadPayments={
+                  pendingTargets.some((target) => target.key === card.key)
+                    ? undefined
+                    : () => setRequestedPayments((current) => new Set([...current, card.key]))
+                }
                 onAction={openConfirm}
                 onRunControl={runControl}
                 runControlBusy={runControlBusy}

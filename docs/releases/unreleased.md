@@ -38,6 +38,14 @@
   are not independent health witnesses. Fresh preflight/transaction reads remain uncached.
 - Support downloads use retained, timestamped diagnostics and mark missing sections unavailable,
   with bounded collection rather than new upstream probes.
+- Superseded wallet checks honor their own cadence; API failure no longer prevents independent
+  node-mempool verification. Calculate uses the sealed checkpoint in its canonical receipt.
+- Unknown calculated amounts remain unknown. Acknowledged emergency controls survive older page
+  reads, and refresh errors stay visible alongside retained payments.
+- Ledger requests share concurrent work and carry page timing/calculation context. Pending cards
+  avoid unnecessary payment reads; Activity, maintenance and ownership reads avoid unused detail.
+  Manager cache size is bounded, empty observer polls retain cached status, and reused advisory
+  failures cannot extend cooldowns.
 
 These changes add no infrastructure prerequisite, signing authority, automatic replacement or
 unattended-run mode. Local benchmark and deterministic request budgets are not a daily traffic
@@ -47,8 +55,9 @@ guarantee; measure each instance with [Operations](../operator/operations.md).
 
 Back up the database, gas-wallet key and deployment configuration as one protected restore set.
 Migration **40** adds nullable run/sweep execution provenance and preserves legacy halted-run
-diagnostics; **41** adds ten read indexes without rewriting financial rows. On-disk upgrades take
-an automatic pre-migration backup. Older binaries refuse newer schemas: rollback needs a compatible
+diagnostics; **41** adds ten read indexes and **42** indexes settings revisions without rewriting
+financial rows. On-disk upgrades take an automatic pre-migration backup. Older binaries refuse
+newer schemas: rollback needs a compatible
 database, and restoring must not discard a newer submission. Follow [Operations](../operator/operations.md#upgrade).
 
 `/health/operational` returns 503 `operational-startup-pending` until workers start; failed startup
@@ -71,6 +80,7 @@ accepted-withdrawal cache's known-reorg display limitation remains. See
   `roundingSats` and `poolBasis` (`collected` or `simulation`) describe reconciliation, not
   additional fees. CSV appends `allocation_rounding_sats` and `allocation_pool_basis`; use headers.
 - Overview adds optional `accruedPoolRewardSats`; a forecast is not a substitute for missing accrual.
+- Ledger adds optional `context` with retained Bitcoin timing and calculation realizations.
 - Run/sweep `executionSource` and wallet `verification.executionSource` retain evidence provenance.
   Older history has no guessed source. The snapshot `refreshInProgress` support field and
   `sidekick_operator_snapshot_refresh_in_progress` gauge distinguish work from failure.

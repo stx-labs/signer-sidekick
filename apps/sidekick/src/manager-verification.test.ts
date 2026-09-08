@@ -8,7 +8,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
 import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
 import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractInterface,
   type StacksNodeClient,
@@ -16,13 +16,77 @@ import {
 } from "./chain-clients.js";
 import {
   createManagerVerificationContext,
+  inspectDeployedManager,
   inspectManagerOrReportMissing,
+  invalidateManagerVerificationCache,
+  MANAGER_SOURCE_CACHE_LIMIT,
   verifyManagerArtifact,
 } from "./manager-verification.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const temporaryDirectories: string[] = [];
+
+describe("bounded manager source cache", () => {
+  async function fixture() {
+    const context = await createManagerVerificationContext({
+      contractsDirectory: resolve(root, "contracts"),
+    });
+    const getContractSource = vi
+      .fn()
+      .mockResolvedValue({ source: "(define-constant example u1)", publish_height: 1 });
+    const getContractInterface = vi.fn().mockResolvedValue(compatibleInterface());
+    const node = { getContractSource, getContractInterface } as unknown as StacksNodeClient;
+    return { context, node, getContractSource, getContractInterface };
+  }
+
+  it("evicts old anchors while retaining recently used anchors and exact read options", async () => {
+    const { context, node, getContractSource, getContractInterface } = await fixture();
+    const tip = (index: number) => `0x${index.toString(16).padStart(64, "0")}` as const;
+    for (let index = 0; index < MANAGER_SOURCE_CACHE_LIMIT; index++) {
+      await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(index) });
+    }
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(0) });
+    expect(getContractSource).toHaveBeenCalledTimes(MANAGER_SOURCE_CACHE_LIMIT);
+    await inspectDeployedManager(node, "mainnet", manager, context, {
+      tip: tip(MANAGER_SOURCE_CACHE_LIMIT),
+    });
+    expect(context.sourceCache.size).toBe(MANAGER_SOURCE_CACHE_LIMIT);
+    expect(context.sourceCache.has(`mainnet:${tip(0)}:${manager}`)).toBe(true);
+    expect(context.sourceCache.has(`mainnet:${tip(1)}:${manager}`)).toBe(false);
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(1) });
+    expect(getContractSource).toHaveBeenCalledTimes(MANAGER_SOURCE_CACHE_LIMIT + 2);
+    expect(getContractInterface).toHaveBeenLastCalledWith(manager, { tip: tip(1) });
+  });
+
+  it("isolates network and principal keys and invalidates latest together with anchored entries", async () => {
+    const { context, node, getContractSource } = await fixture();
+    const other = "SP000000000000000000002Q6VF78.other-manager";
+    const tip = `0x${"ab".repeat(32)}` as const;
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip });
+    await inspectDeployedManager(node, "testnet", manager, context, { tip });
+    await inspectDeployedManager(node, "mainnet", other, context, { tip });
+    expect(getContractSource).toHaveBeenCalledTimes(4);
+    invalidateManagerVerificationCache(context, manager);
+    expect([...context.sourceCache.keys()]).toEqual([`mainnet:${tip}:${other}`]);
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    expect(getContractSource).toHaveBeenCalledTimes(5);
+    invalidateManagerVerificationCache(context);
+    expect(context.sourceCache.size).toBe(0);
+  });
+
+  it("does not cache a failed anchored source read", async () => {
+    const { context, node, getContractSource } = await fixture();
+    getContractSource.mockRejectedValueOnce(new Error("node unavailable"));
+    await expect(inspectDeployedManager(node, "mainnet", manager, context)).rejects.toThrow(
+      "node unavailable",
+    );
+    expect(context.sourceCache.size).toBe(0);
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    expect(getContractSource).toHaveBeenCalledTimes(2);
+  });
+});
 
 afterEach(async () => {
   await Promise.all(

@@ -21,6 +21,7 @@ import { Badge, PageHead } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
 import { compactDuration, number, sbtc, stx } from "../../shared/format.js";
 import { operatorErrorDetail, operatorErrorSentence } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { RewardsOverviewCard } from "./rewards-overview-card.js";
 
 const OVERVIEW_POLL_MS = 15_000;
@@ -302,18 +303,13 @@ export function Overview({
   );
 
   useEffect(() => {
-    void load();
-    const refreshIfVisible = () => {
-      // The server keeps the operator snapshot current without a browser. Visible-page polling
-      // should read that retained snapshot; only an explicit operator refresh should force another
-      // full chain read.
-      if (document.visibilityState === "visible") void load();
-    };
-    const interval = window.setInterval(refreshIfVisible, OVERVIEW_POLL_MS);
-    document.addEventListener("visibilitychange", refreshIfVisible);
+    const refresh = startVisibleRefresh(
+      () => load(),
+      () => {},
+      OVERVIEW_POLL_MS,
+    );
     return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
+      refresh.stop();
       activeRequest.current?.abort();
       activeRequest.current = null;
     };

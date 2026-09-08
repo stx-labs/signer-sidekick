@@ -1,6 +1,8 @@
 import { ClarityType } from "@stacks/transactions";
 import type {
   DashboardSnapshot,
+  HealthSnapshot,
+  RewardCalculationRealization,
   RewardLedger,
   RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
@@ -45,6 +47,10 @@ import type { readOperatorReadiness } from "./operator-readiness.js";
 import { readPoolForecast } from "./pool-forecast.js";
 import { syncPox5PoolActivity } from "./pox5-pool-activity-sync.js";
 import { indexedApiCompatible, type runOperatorPreflight } from "./preflight.js";
+import {
+  INTERACTIVE_REQUEST_DEADLINE_MS,
+  withInteractiveRequestDeadline,
+} from "./request-context.js";
 import { carryForwardRewards, type LastGoodRewards } from "./reward-last-good.js";
 import {
   buildRewardLedger,
@@ -99,6 +105,8 @@ export interface OperatorServiceOptions {
   nodeTransactions?: ManagerEventNodeTransactions;
   /** Operator runs sealed for a distribution; the ledger explains rolled-forward payments with it. */
   rewardRunHistory?: (cycle: number, distribution: 1 | 2) => readonly RewardRun[];
+  /** Retained advisory timing only; ledger reads never trigger health collection. */
+  burnBlockTiming?: () => HealthSnapshot["burnBlockTiming"];
 }
 
 export interface OperatorSynchronizationProgress {
@@ -959,48 +967,51 @@ export class OperatorService {
         ? { ...snapshot.rewards, stakers: stakers.slice(offset, offset + limit) }
         : null,
       rewardOutlook: snapshot.rewardOutlook ?? null,
-      rewardRealizations: snapshot.rewardOutlook
-        ? this.options.store
-            .listRewardCalculationRealizations(
-              this.options.managerPrincipal,
-              snapshot.rewardOutlook.pox5ContractId,
-              { limit: 12, canonicalOnly: true },
-            )
-            .map((realization) => ({
-              txId: realization.txId,
-              eventIndex: realization.eventIndex,
-              blockHeight: realization.blockHeight,
-              indexBlockHash: realization.indexBlockHash,
-              burnBlockHeight: realization.burnBlockHeight,
-              targetRewardCycle: realization.targetRewardCycle,
-              targetCheckpoint: realization.targetCheckpoint,
-              calculationBurnHeight: realization.calculationBurnHeight,
-              observedAt: realization.observedAt,
-              global: {
-                grossAccruedRewardsSats: realization.event.grossAccruedRewardsSats,
-                totalBondRewardsSats: realization.event.totalBondRewardsSats,
-                totalStxStakerRewardsSats: realization.event.totalStxStakerRewardsSats,
-                reserveDepositSats: realization.event.reserveDepositSats,
-              },
-              poolSats: realization.poolEstimate?.grossSats ?? null,
-              poolEstimateUnavailableReason: realization.poolEstimateUnavailableReason,
-              evaluation: realization.evaluation
-                ? {
-                    modelRevision: realization.evaluation.modelRevision,
-                    forecastObservedBurnHeight: realization.evaluation.forecastObservedBurnHeight,
-                    leadBlocks: realization.evaluation.leadBlocks,
-                    pointErrorSats: realization.evaluation.pointErrorSats,
-                    pointErrorBips: realization.evaluation.pointErrorBips,
-                    rangeContainsActual: realization.evaluation.rangeContainsActual,
-                    rangeWidthBips: realization.evaluation.rangeWidthBips,
-                  }
-                : null,
-            }))
-        : [],
+      rewardRealizations: this.rewardRealizations(snapshot.rewardOutlook?.pox5ContractId ?? null),
       total: stakers.length,
       offset,
       limit,
     };
+  }
+
+  private rewardRealizations(pox5ContractId: string | null): RewardCalculationRealization[] {
+    return pox5ContractId
+      ? this.options.store
+          .listRewardCalculationRealizations(this.options.managerPrincipal, pox5ContractId, {
+            limit: 12,
+            canonicalOnly: true,
+          })
+          .map((realization) => ({
+            txId: realization.txId,
+            eventIndex: realization.eventIndex,
+            blockHeight: realization.blockHeight,
+            indexBlockHash: realization.indexBlockHash,
+            burnBlockHeight: realization.burnBlockHeight,
+            targetRewardCycle: realization.targetRewardCycle,
+            targetCheckpoint: realization.targetCheckpoint,
+            calculationBurnHeight: realization.calculationBurnHeight,
+            observedAt: realization.observedAt,
+            global: {
+              grossAccruedRewardsSats: realization.event.grossAccruedRewardsSats,
+              totalBondRewardsSats: realization.event.totalBondRewardsSats,
+              totalStxStakerRewardsSats: realization.event.totalStxStakerRewardsSats,
+              reserveDepositSats: realization.event.reserveDepositSats,
+            },
+            poolSats: realization.poolEstimate?.grossSats ?? null,
+            poolEstimateUnavailableReason: realization.poolEstimateUnavailableReason,
+            evaluation: realization.evaluation
+              ? {
+                  modelRevision: realization.evaluation.modelRevision,
+                  forecastObservedBurnHeight: realization.evaluation.forecastObservedBurnHeight,
+                  leadBlocks: realization.evaluation.leadBlocks,
+                  pointErrorSats: realization.evaluation.pointErrorSats,
+                  pointErrorBips: realization.evaluation.pointErrorBips,
+                  rangeContainsActual: realization.evaluation.rangeContainsActual,
+                  rangeWidthBips: realization.evaluation.rangeWidthBips,
+                }
+              : null,
+          }))
+      : [];
   }
 
   /**
@@ -1118,7 +1129,11 @@ export class OperatorService {
     const sourceId = createChainSourceId(config.network, config.apiUrl);
     const pox5ContractId =
       snapshot.preflight?.pox?.pox5ContractId ?? snapshot.rewardOutlook?.pox5ContractId ?? null;
+    const revision = this.projectionRevision;
     const cacheKey = JSON.stringify([
+      chainId,
+      sourceId,
+      revision,
       snapshot.generatedAt,
       snapshot.chainAnchor?.indexBlockHash ?? null,
       query.cycle ?? null,
@@ -1128,6 +1143,8 @@ export class OperatorService {
     ]);
     const cached = this.rewardLedgerCache.get(cacheKey);
     if (cached) return cached;
+    const existing = this.rewardLedgerReads.get(cacheKey);
+    if (existing) return existing;
     const registry =
       BUILT_IN_NETWORK_COMPATIBILITY_PROFILES.find((profile) => profile.network === config.network)
         ?.sbtc.registryContract ?? null;
@@ -1144,57 +1161,62 @@ export class OperatorService {
       rewardsPrevious: snapshot.rewardsPrevious ?? null,
       rewardOutlook: snapshot.rewardOutlook ?? null,
     };
-    const ledger = await buildRewardLedger({
-      store: this.options.store,
-      chainId,
-      managerPrincipal: this.options.managerPrincipal,
-      pox5ContractId,
-      sourceId,
-      snapshot: snapshotInput,
-      ownedTxids: this.ownedTransactionIds(),
-      now: new Date(),
-      query,
-      ...(registry
-        ? {
-            withdrawalRequestEvidence: (
-              requests: readonly { requestId: string; initiatedBlockHeight: number }[],
-            ) => this.withdrawalRequestEvidence(registry, requests, tip),
+    // A shared read has a bounded lifetime independent of any one browser's cancellation.
+    const pending = withInteractiveRequestDeadline(INTERACTIVE_REQUEST_DEADLINE_MS, async () =>
+      buildRewardLedger({
+        store: this.options.store,
+        chainId,
+        managerPrincipal: this.options.managerPrincipal,
+        pox5ContractId,
+        sourceId,
+        snapshot: snapshotInput,
+        ownedTxids: this.ownedTransactionIds(),
+        now: new Date(),
+        query,
+        ...(registry
+          ? {
+              withdrawalRequestEvidence: (
+                requests: readonly { requestId: string; initiatedBlockHeight: number }[],
+              ) => this.withdrawalRequestEvidence(registry, requests, tip),
+            }
+          : {}),
+        ...(this.options.rewardRunHistory ? { runHistory: this.options.rewardRunHistory } : {}),
+      }),
+    )
+      .then((ledger): RewardLedger => {
+        const result = {
+          ...ledger,
+          context: {
+            burnBlockTiming: this.options.burnBlockTiming?.() ?? null,
+            rewardRealizations: this.rewardRealizations(pox5ContractId),
+          },
+        };
+        if (revision === this.projectionRevision) {
+          if (this.rewardLedgerCache.size >= 8) {
+            const oldest = this.rewardLedgerCache.keys().next().value;
+            if (oldest !== undefined) this.rewardLedgerCache.delete(oldest);
           }
-        : {}),
-      ...(this.options.rewardRunHistory ? { runHistory: this.options.rewardRunHistory } : {}),
-    });
-    if (this.rewardLedgerCache.size >= 8) {
-      const oldest = this.rewardLedgerCache.keys().next().value;
-      if (oldest !== undefined) this.rewardLedgerCache.delete(oldest);
-    }
-    this.rewardLedgerCache.set(cacheKey, ledger);
-    return ledger;
+          this.rewardLedgerCache.set(cacheKey, result);
+        }
+        return result;
+      })
+      .finally(() => {
+        if (this.rewardLedgerReads.get(cacheKey) === pending)
+          this.rewardLedgerReads.delete(cacheKey);
+      });
+    this.rewardLedgerReads.set(cacheKey, pending);
+    return pending;
   }
 
   private readonly rewardLedgerCache = new Map<string, RewardLedger>();
+  private readonly rewardLedgerReads = new Map<string, Promise<RewardLedger>>();
 
-  /** Transaction IDs Sidekick produced itself: wallet intents and engine attempts (bounded). */
+  /** Transaction IDs Sidekick produced itself, without hydrating historical plans or manifests. */
   private ownedTransactionIds(): Set<string> {
     const owned = new Set<string>();
-    for (const intent of this.options.store.walletIntents.listForActivity(10_001)) {
-      if (intent.txid) owned.add(intent.txid);
-    }
-    const jobIds: string[] = [];
-    let cursor: string | undefined;
-    while (jobIds.length <= 10_000) {
-      const page = this.options.store.transactionEngine.listLogicalJobs({
-        limit: 200,
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-      jobIds.push(...page.items.map(({ jobId }) => jobId));
-      if (page.nextCursor === null) break;
-      cursor = page.nextCursor;
-    }
-    for (const attempts of this.options.store.transactionEngine
-      .listAttemptsForActivity(jobIds)
-      .values()) {
-      for (const attempt of attempts) owned.add(attempt.precomputedTxid);
-    }
+    for (const txid of this.options.store.walletIntents.listOwnedTransactionIds()) owned.add(txid);
+    for (const txid of this.options.store.transactionEngine.listOwnedTransactionIds())
+      owned.add(txid);
     for (const txid of this.options.store.rewardRuns.listOwnedTransactionIds()) owned.add(txid);
     return owned;
   }

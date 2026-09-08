@@ -213,61 +213,74 @@ export class HealthMonitoringService {
       return this.storedSnapshot();
     }
 
-    if (burnBlocks) this.burnBlockTiming = calculateBurnBlockTiming(burnBlocks);
-    this.observations.push(observation);
-    this.options.store?.healthMonitoring.recordObservation(configFingerprint, observation);
-    this.observations = trimHealthObservations(
-      this.observations,
-      observedAt,
-      this.options.historyWindowMs ?? 2 * 60 * 60 * 1_000,
-    );
-    const rollupCutoff = new Date(
-      Math.floor(observedAtMs / (5 * 60 * 1_000)) * (5 * 60 * 1_000),
-    ).toISOString();
-    const rollup = buildHealthRollup(
-      this.observations.filter(({ observedAt: value }) => value >= rollupCutoff),
-    );
-    if (rollup) {
-      this.options.store?.healthMonitoring.upsertRollup(configFingerprint, rollup, observedAt);
+    const retainedObservations = this.observations;
+    const retainedBurnTiming = this.burnBlockTiming;
+    try {
+      if (burnBlocks) this.burnBlockTiming = calculateBurnBlockTiming(burnBlocks);
+      this.observations = [...this.observations, observation];
+      this.options.store?.healthMonitoring.recordObservation(configFingerprint, observation);
+      this.observations = trimHealthObservations(
+        this.observations,
+        observedAt,
+        this.options.historyWindowMs ?? 2 * 60 * 60 * 1_000,
+      );
+      const rollupCutoff = new Date(
+        Math.floor(observedAtMs / (5 * 60 * 1_000)) * (5 * 60 * 1_000),
+      ).toISOString();
+      const rollup = buildHealthRollup(
+        this.observations.filter(({ observedAt: value }) => value >= rollupCutoff),
+      );
+      if (rollup) {
+        this.options.store?.healthMonitoring.upsertRollup(configFingerprint, rollup, observedAt);
+      }
+      // Retention is maintenance, not part of every five-second read/collection.
+      if (observedAtMs - this.lastPrunedAt >= 5 * 60_000) {
+        this.options.store?.healthMonitoring.prune(observedAt);
+        this.lastPrunedAt = observedAtMs;
+      }
+      const retainDuringWarmup = observedAtMs < this.resolutionHoldUntil;
+      const preliminary = this.buildSnapshot(undefined, retainDuringWarmup);
+      const findings = retainDuringWarmup
+        ? this.retainActiveFindings(preliminary.findings)
+        : preliminary.findings;
+      const episodes = this.options.store?.healthMonitoring.reconcileFindingEpisodes(
+        configFingerprint,
+        findings,
+        observedAt,
+      );
+      // Only episode identity/timestamps change during reconciliation; don't rebuild the same
+      // diagnostic windows and reread rollups a second time.
+      const byFinding = new Map(
+        episodes
+          ?.filter(({ status }) => status === "active")
+          .map((episode) => [episode.id, episode]),
+      );
+      const value: HealthSnapshot = {
+        ...preliminary,
+        findings: findings.map((finding) => {
+          const episode = byFinding.get(finding.id);
+          return {
+            ...finding,
+            episodeId: episode?.episodeId ?? finding.episodeId,
+            firstObservedAt: episode?.firstObservedAt ?? finding.firstObservedAt,
+            lastObservedAt: episode?.lastObservedAt ?? finding.lastObservedAt,
+          };
+        }),
+        history: {
+          ...preliminary.history,
+          recentEpisodes: episodes ?? preliminary.history.recentEpisodes,
+        },
+      };
+      this.published = { key: this.snapshotKey(), value };
+      return value;
+    } catch (error) {
+      // A context change may rebuild the read-only view after a failed persistence/rollup pass.
+      // Keep that view on the last coherent observation set, not partially processed memory.
+      // Independently persisted valid history samples are not rolled back.
+      this.observations = retainedObservations;
+      this.burnBlockTiming = retainedBurnTiming;
+      throw error;
     }
-    // Retention is maintenance, not part of every five-second read/collection.
-    if (observedAtMs - this.lastPrunedAt >= 5 * 60_000) {
-      this.options.store?.healthMonitoring.prune(observedAt);
-      this.lastPrunedAt = observedAtMs;
-    }
-    const retainDuringWarmup = observedAtMs < this.resolutionHoldUntil;
-    const preliminary = this.buildSnapshot(undefined, retainDuringWarmup);
-    const findings = retainDuringWarmup
-      ? this.retainActiveFindings(preliminary.findings)
-      : preliminary.findings;
-    const episodes = this.options.store?.healthMonitoring.reconcileFindingEpisodes(
-      configFingerprint,
-      findings,
-      observedAt,
-    );
-    // Only episode identity/timestamps change during reconciliation; don't rebuild the same
-    // diagnostic windows and reread rollups a second time.
-    const byFinding = new Map(
-      episodes?.filter(({ status }) => status === "active").map((episode) => [episode.id, episode]),
-    );
-    const value: HealthSnapshot = {
-      ...preliminary,
-      findings: findings.map((finding) => {
-        const episode = byFinding.get(finding.id);
-        return {
-          ...finding,
-          episodeId: episode?.episodeId ?? finding.episodeId,
-          firstObservedAt: episode?.firstObservedAt ?? finding.firstObservedAt,
-          lastObservedAt: episode?.lastObservedAt ?? finding.lastObservedAt,
-        };
-      }),
-      history: {
-        ...preliminary.history,
-        recentEpisodes: episodes ?? preliminary.history.recentEpisodes,
-      },
-    };
-    this.published = { key: this.snapshotKey(), value };
-    return value;
   }
 
   private buildSnapshot(

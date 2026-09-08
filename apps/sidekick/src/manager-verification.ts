@@ -84,6 +84,8 @@ interface CachedManagerContract {
   contractInterface: ContractInterface;
 }
 
+export const MANAGER_SOURCE_CACHE_LIMIT = 64;
+
 export interface ManagerVerificationContext {
   installedProfiles: InstalledManagerProfileStore;
   upstreamSource: string | null;
@@ -649,13 +651,25 @@ export async function inspectDeployedManager(
 ): Promise<ManagerVerificationReport> {
   const cacheKey = `${configuredNetwork}:${options?.tip ?? "latest"}:${managerPrincipal}`;
   let contract = context?.sourceCache.get(cacheKey);
+  if (contract && context) {
+    // Keep recently used anchors without retaining every inspected tip for the process lifetime.
+    context.sourceCache.delete(cacheKey);
+    context.sourceCache.set(cacheKey, contract);
+  }
   if (!contract) {
     const [contractSource, contractInterface] = await Promise.all([
       node.getContractSource(managerPrincipal, options),
       node.getContractInterface(managerPrincipal, options),
     ]);
     contract = { contractSource, contractInterface };
-    context?.sourceCache.set(cacheKey, contract);
+    if (context) {
+      while (context.sourceCache.size >= MANAGER_SOURCE_CACHE_LIMIT) {
+        const oldest = context.sourceCache.keys().next().value;
+        if (oldest === undefined) break;
+        context.sourceCache.delete(oldest);
+      }
+      context.sourceCache.set(cacheKey, contract);
+    }
   }
   return verifyManagerArtifact(
     configuredNetwork,

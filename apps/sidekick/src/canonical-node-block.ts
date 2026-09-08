@@ -102,16 +102,6 @@ export async function checkCanonicalNodeBlock(
   return (await canonicalBlockBytes(node, input)) ? "canonical" : "reorged";
 }
 
-/** Throw on a positive canonical mismatch for ingestion callers that require a proof. */
-export async function proveCanonicalNodeBlock(
-  node: CanonicalBlockNode,
-  input: Parameters<typeof checkCanonicalNodeBlock>[1],
-): Promise<void> {
-  if ((await checkCanonicalNodeBlock(node, input)) === "reorged") {
-    throw new Error("Indexed transaction block is not canonical according to the local node");
-  }
-}
-
 /**
  * Proves a transaction is included in the local node's canonical block at a height, throwing
  * otherwise.

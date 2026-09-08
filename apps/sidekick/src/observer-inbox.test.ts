@@ -61,6 +61,33 @@ function node(
 }
 
 describe("observer inbox verification", () => {
+  it("retains diagnostics across empty maintenance polls and failed mutations", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    try {
+      const read = vi.spyOn(
+        store.observerInbox as unknown as { readStatus(): unknown },
+        "readStatus",
+      );
+      store.observerInbox.status();
+      for (let poll = 0; poll < 20; poll += 1) {
+        expect(store.observerInbox.claimNextDelivery(processedAt)).toBeNull();
+        expect(store.observerInbox.recoverDeliveries(processedAt)).toBe(0);
+        expect(store.observerInbox.prunePayloads(processedAt)).toBe(0);
+        expect(() =>
+          store.observerInbox.finishDelivery({
+            deliveryId: delivery().deliveryId,
+            state: "node-verified",
+            reason: "absent",
+            completedAt: processedAt,
+          }),
+        ).toThrow("not being processed");
+        expect(store.observerInbox.status().uniqueDeliveries).toBe(0);
+      }
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      store.close();
+    }
+  });
   it("invalidates retained diagnostics on every delivery transition and preserves dedup/markers after pruning", async () => {
     const { store } = await openSidekickStore(":memory:");
     try {

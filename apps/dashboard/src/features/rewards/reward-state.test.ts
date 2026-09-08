@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { rewardRunFixture } from "./reward-run.fixture.js";
 import {
   allocationRoundingNote,
+  calculatedPoolTotal,
   comparePayments,
   deriveCycleGeometry,
   deriveDistributionCards,
@@ -359,6 +360,35 @@ describe("deriveCycleGeometry", () => {
 });
 
 describe("deriveEarning", () => {
+  it.each([
+    ["1000", null, null],
+    [null, null, null],
+    ["0", "0", "0"],
+    ["1000", "2000", "3000"],
+  ])("preserves calculated coverage for %s and %s", (firstAmount, secondAmount, expected) => {
+    const first = complete(141, 1);
+    const second = complete(141, 2);
+    first.calculation.poolSats = firstAmount;
+    second.calculation.poolSats = secondAmount;
+    expect(calculatedPoolTotal([first, second])).toBe(expected);
+    const fact = deriveEarning({ ledger: ledger(second, [first]), snapshot: null })?.facts.find(
+      (entry) => entry.key === "cycle",
+    );
+    expect(fact?.value).toBe(expected === null ? "—" : Number(expected).toLocaleString("en-US"));
+    if (expected === null) expect(fact?.sub).toContain("calculated pool total unavailable");
+  });
+
+  it("excludes uncalculated values from the shared total and keeps their projection separate", () => {
+    const first = complete(141, 1);
+    first.calculation.poolSats = "1000";
+    const second = accruing(141, 2);
+    second.calculation.poolSats = "99999999";
+    expect(calculatedPoolTotal([first, second])).toBe("1000");
+    expect(calculatedPoolTotal([second])).toBe("0");
+    const model = deriveEarning({ ledger: ledger(second, [first]), snapshot: null });
+    expect(model?.facts.find((entry) => entry.key === "cycle")?.value).toBe("1,000");
+  });
+
   it("counts known collected fees without a pool simulation and excludes rounding from income", () => {
     const first = complete(141, 1);
     first.calculation.poolSats = null;

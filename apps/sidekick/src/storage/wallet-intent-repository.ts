@@ -192,6 +192,11 @@ export interface StoredWalletIntent {
   updatedAt: string;
 }
 
+export interface ActivityScopeNeighbors {
+  previous: Pick<StoredWalletIntent, "id" | "state"> | null;
+  next: Pick<StoredWalletIntent, "id" | "state"> | null;
+}
+
 function mapIntent(input: unknown): StoredWalletIntent {
   const row = walletIntentRowSchema.parse(input);
   const manifest = parseCanonicalObject(row.manifest_json, "wallet intent manifest", 262_144);
@@ -527,57 +532,55 @@ export class WalletIntentRepository {
     return row === undefined ? null : mapIntent(row);
   }
 
-  getActivityScopeNeighbors(intent: StoredWalletIntent): {
-    previous: StoredWalletIntent | null;
-    next: StoredWalletIntent | null;
-  } {
-    const action = z.enum(walletIntentActions).parse(intent.action);
-    const scope = identifierSchema.parse(intent.scope);
-    const createdAt = instantSchema.parse(intent.createdAt);
-    const id = uuidSchema.parse(intent.id);
-    const previous = this.db
-      .prepare(
-        `SELECT * FROM browser_wallet_intents
-         WHERE action = ? AND scope = ?
-           AND (created_at < ? OR (created_at = ? AND intent_id < ?))
-         ORDER BY created_at DESC, intent_id DESC LIMIT 1`,
-      )
-      .get(action, scope, createdAt, createdAt, id);
-    const next = this.db
-      .prepare(
-        `SELECT * FROM browser_wallet_intents
-         WHERE action = ? AND scope = ?
-           AND (created_at > ? OR (created_at = ? AND intent_id > ?))
-         ORDER BY created_at ASC, intent_id ASC LIMIT 1`,
-      )
-      .get(action, scope, createdAt, createdAt, id);
-    return {
-      previous: previous === undefined ? null : mapIntent(previous),
-      next: next === undefined ? null : mapIntent(next),
-    };
+  /** Preserve relationship IDs without decoding neighboring proposals. */
+  listActivityScopeNeighbors(intentIds: readonly string[]): Map<string, ActivityScopeNeighbors> {
+    const ids = [...new Set(intentIds.map((id) => uuidSchema.parse(id)))];
+    const result = new Map<string, ActivityScopeNeighbors>();
+    for (let offset = 0; offset < ids.length; offset += sqliteBatchSize) {
+      const batch = ids.slice(offset, offset + sqliteBatchSize);
+      const rows = this.db
+        .prepare(`SELECT selected.intent_id, previous.intent_id AS previous_id,
+        previous.state AS previous_state, next.intent_id AS next_id, next.state AS next_state
+        FROM browser_wallet_intents AS selected
+        LEFT JOIN browser_wallet_intents AS previous ON previous.intent_id = (
+          SELECT intent_id FROM browser_wallet_intents WHERE action = selected.action AND scope = selected.scope
+            AND (created_at < selected.created_at OR (created_at = selected.created_at AND intent_id < selected.intent_id))
+          ORDER BY created_at DESC, intent_id DESC LIMIT 1)
+        LEFT JOIN browser_wallet_intents AS next ON next.intent_id = (
+          SELECT intent_id FROM browser_wallet_intents WHERE action = selected.action AND scope = selected.scope
+            AND (created_at > selected.created_at OR (created_at = selected.created_at AND intent_id > selected.intent_id))
+          ORDER BY created_at ASC, intent_id ASC LIMIT 1)
+        WHERE selected.intent_id IN (${batch.map(() => "?").join(", ")})`)
+        .all(...batch);
+      for (const row of rows)
+        result.set(uuidSchema.parse(row.intent_id), {
+          previous:
+            row.previous_id === null
+              ? null
+              : {
+                  id: uuidSchema.parse(row.previous_id),
+                  state: z.enum(walletIntentStates).parse(row.previous_state),
+                },
+          next:
+            row.next_id === null
+              ? null
+              : {
+                  id: uuidSchema.parse(row.next_id),
+                  state: z.enum(walletIntentStates).parse(row.next_state),
+                },
+        });
+    }
+    return result;
   }
 
-  listForActivity(limit = 10_001): StoredWalletIntent[] {
-    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
-    return this.db
-      .prepare(
-        `SELECT * FROM browser_wallet_intents
-         ORDER BY updated_at DESC, intent_id ASC LIMIT ?`,
-      )
-      .all(parsedLimit)
-      .map(mapIntent);
-  }
-
-  listActiveForActivity(limit = 10_001): StoredWalletIntent[] {
-    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
-    return this.db
-      .prepare(
-        `SELECT * FROM browser_wallet_intents
-         WHERE state IN ('prepared', 'submitted', 'mempool', 'confirmed', 'failed', 'reobserve')
-         ORDER BY updated_at DESC, intent_id ASC LIMIT ?`,
-      )
-      .all(parsedLimit)
-      .map(mapIntent);
+  /** Only submitted intent IDs confer ownership; rejected observation bytes do not. */
+  listOwnedTransactionIds(): string[] {
+    return (
+      this.db
+        .prepare(`SELECT DISTINCT txid FROM browser_wallet_intents
+      WHERE txid IS NOT NULL`)
+        .all() as Array<{ txid: string }>
+    ).map(({ txid }) => txid);
   }
 
   /** Submitted work only; prepared and terminal history require no background chain reads. */

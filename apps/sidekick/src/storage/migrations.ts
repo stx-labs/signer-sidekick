@@ -2441,4 +2441,12 @@ export const migrations: readonly Migration[] = [
         WHERE state = 'quarantined' AND state_reason IS NOT NULL;
     `,
   },
+  {
+    version: 42,
+    name: "settings_audit_revision_lookup",
+    sql: `
+      CREATE INDEX settings_audit_revision
+        ON settings_audit (revision, changed_at DESC, audit_id DESC);
+    `,
+  },
 ];

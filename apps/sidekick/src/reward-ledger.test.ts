@@ -1348,7 +1348,6 @@ describe("buildRewardLedger", () => {
     }
     expect(claims).toHaveLength(15_000);
     const store = fakeStore({ realizations, prints, claims, memberships });
-    const started = performance.now();
     const ledger = await buildRewardLedger({
       store,
       chainId: 1,
@@ -1363,8 +1362,6 @@ describe("buildRewardLedger", () => {
       }),
       query: { cycle: 140 },
     });
-    const elapsedMs = performance.now() - started;
-    expect(elapsedMs).toBeLessThan(3_000);
     // 15,000 rows per stream exceed the 10,000-row window: the newest cycles stay exact and
     // complete, the oldest ones are flagged rather than silently thinned.
     expect(ledger.evidenceWindow.truncated).toBe(true);

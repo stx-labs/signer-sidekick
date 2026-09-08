@@ -179,6 +179,7 @@ export {
   browserWalletIntentSchema,
   browserWalletIntentSubmissionRequestSchema,
   browserWalletTransactionSchema,
+  browserWalletVerificationSchema,
   connectionAssessmentSchema,
   connectionOutcomeCodeSchema,
   contextualActionSchema,

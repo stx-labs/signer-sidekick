@@ -81,7 +81,7 @@ describe("WalletIntentRepository", () => {
       }),
     ).intent;
 
-    expect(store.schemaVersion()).toBe(41);
+    expect(store.schemaVersion()).toBe(42);
     expect(store.walletIntents.get(intent.id)).toMatchObject({
       action: "add-admin",
       scope: manager,
@@ -89,7 +89,7 @@ describe("WalletIntentRepository", () => {
     });
   });
 
-  it("lists durable intents for Activity in stable newest-first order", async () => {
+  it("reads owned transaction IDs without adding a rejected observation's unrelated ID", async () => {
     const store = await memoryStore();
     const older = store.walletIntents.create(
       intentInput({
@@ -105,8 +105,18 @@ describe("WalletIntentRepository", () => {
       }),
     ).intent;
 
-    expect(store.walletIntents.listForActivity(1).map(({ id }) => id)).toEqual([newer.id]);
-    expect(store.walletIntents.listForActivity().map(({ id }) => id)).toEqual([newer.id, older.id]);
+    store.walletIntents.submit({ id: older.id, txid: txidOne, submittedAt: afterSubmission });
+    store.walletIntents.submit({ id: newer.id, txid: txidTwo, submittedAt: afterSubmission });
+    store.walletIntents.appendObservation({
+      intentId: older.id,
+      outcome: "mismatch",
+      canonical: null,
+      blockHeight: null,
+      indexBlockHash: null,
+      evidence: { txid: `0x${"ff".repeat(32)}` },
+      observedAt: afterSubmission,
+    });
+    expect(store.walletIntents.listOwnedTransactionIds().sort()).toEqual([txidOne, txidTwo].sort());
   });
 
   it("loads one Activity intent by txid and only its operation scope", async () => {
@@ -131,11 +141,17 @@ describe("WalletIntentRepository", () => {
     store.walletIntents.submit({ id: first.id, txid: txidOne, submittedAt: afterSubmission });
 
     expect(store.walletIntents.getByTxid(txidOne)?.id).toBe(first.id);
-    expect(store.walletIntents.getActivityScopeNeighbors(first)).toMatchObject({
+    const neighbors = store.walletIntents.listActivityScopeNeighbors([
+      first.id,
+      second.id,
+      first.id,
+    ]);
+    expect(neighbors.size).toBe(2);
+    expect(neighbors.get(first.id)).toMatchObject({
       previous: null,
       next: { id: second.id },
     });
-    expect(store.walletIntents.getActivityScopeNeighbors(second)).toMatchObject({
+    expect(neighbors.get(second.id)).toMatchObject({
       previous: { id: first.id },
       next: null,
     });
@@ -164,7 +180,9 @@ describe("WalletIntentRepository", () => {
     ).intent;
 
     expect(store.walletIntents.get(terminal.id)?.state).toBe("expired");
-    expect(store.walletIntents.listActiveForActivity().map(({ id }) => id)).toEqual([active.id]);
+    expect(store.activity.activeKeys(100)).toEqual([
+      { activityId: `wallet-intent:${active.id}`, occurredAt: active.createdAt },
+    ]);
   });
 
   it("migrates, survives restart, and returns observations oldest-to-newest", async () => {
@@ -173,7 +191,7 @@ describe("WalletIntentRepository", () => {
     const path = join(directory, "sidekick.sqlite");
     const initial = await openSidekickStore(path, createdAt);
     stores.push(initial.store);
-    expect(initial.store.schemaVersion()).toBe(41);
+    expect(initial.store.schemaVersion()).toBe(42);
 
     const created = initial.store.walletIntents.create(
       intentInput({ id: "10000000-0000-4000-8000-000000000001" }),

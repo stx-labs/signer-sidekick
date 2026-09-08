@@ -270,6 +270,7 @@ export async function executeCliCommand({
         },
         rewardRunHistory: (cycle, distribution) =>
           store.rewardRuns.listForTarget(cycle, distribution),
+        burnBlockTiming: () => health.storedSnapshot().burnBlockTiming,
       });
       const signerGrant = new SignerGrantService({
         runtimeSettings,

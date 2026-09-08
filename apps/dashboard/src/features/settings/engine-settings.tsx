@@ -5,7 +5,7 @@ import type {
   OperationReadiness,
   RuntimeSettings,
 } from "@stx-labs/signer-sidekick-api-contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { activityHash, settingsHash } from "../../dashboard-route.js";
 import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
 import { operatorActionError } from "../../shared/operator-error.js";
@@ -197,15 +197,17 @@ export function EngineSettings({
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<EngineControlAction | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
+  const mutationGeneration = useRef(0);
   useEffect(() => {
     const refresh = startVisibleRefresh(
       async (signal) => {
+        const generation = mutationGeneration.current;
         try {
           const [statusResult, readinessResult] = await Promise.allSettled([
             loadEngineStatus(token, signal),
             loadOperationReadiness(token, signal),
           ]);
-          if (signal.aborted) return;
+          if (signal.aborted || generation !== mutationGeneration.current) return;
           if (statusResult.status === "fulfilled") {
             setStatus(statusResult.value);
             onStatus?.(statusResult.value);
@@ -237,12 +239,14 @@ export function EngineSettings({
     )
       return;
     setAction("force-observe");
+    mutationGeneration.current += 1;
     setError(null);
     try {
       const result = await forceEngineObserve(token, {
         decision: "force-observe",
         reason: "Operator confirmed emergency force-Observe from Settings",
       });
+      mutationGeneration.current += 1;
       setStatus(result.status);
       onStatus?.(result.status);
     } catch (cause) {
@@ -267,12 +271,14 @@ export function EngineSettings({
     )
       return;
     setAction(`disable:${adapterId}`);
+    mutationGeneration.current += 1;
     setError(null);
     try {
       const result = await disableEngineAdapter(token, adapterId, {
         decision: "disable",
         reason: "Operator disabled adapter from Settings",
       });
+      mutationGeneration.current += 1;
       setStatus(result.status);
       onStatus?.(result.status);
     } catch (cause) {

@@ -729,7 +729,7 @@ export class RewardRunService {
   }
 
   async #recover(): Promise<void> {
-    const runs = this.#options.repository.list(200).reverse();
+    const runs = this.#options.repository.listUnfinished();
     this.#reconciliationCadence.retain(
       runs.flatMap((run) => {
         const child = run.children[run.cursor];

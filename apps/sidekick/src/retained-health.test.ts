@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SidekickConfig } from "./config.js";
 import { HealthMonitoringService } from "./health-monitoring.js";
 import { collectHealthObservation } from "./health-monitoring-sources.js";
-import type { HealthObservation } from "./health-monitoring-types.js";
+import type { HealthObservation, HealthOperatorContext } from "./health-monitoring-types.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 vi.mock("./health-monitoring-sources.js", async (original) => ({
@@ -38,6 +38,63 @@ function observation(observedAt: string): HealthObservation {
 }
 
 describe("retained health reads", () => {
+  it.each([
+    "recordObservation",
+    "upsertRollup",
+    "reconcileFindingEpisodes",
+  ] as const)("keeps coherent memory after %s fails, even if operator context changes before recovery", async (method) => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = new Date("2026-09-08T12:00:00Z");
+    let height = 200;
+    let context: HealthOperatorContext | null = null;
+    vi.mocked(collectHealthObservation).mockImplementation(async (_config, at) => ({
+      ...observation(at),
+      nodeInfo: { network_id: 1, burn_block_height: 100, stacks_tip_height: height },
+    }));
+    const health = new HealthMonitoringService({
+      getConfig: () =>
+        ({
+          network: "mainnet",
+          apiUrl: "http://api.invalid",
+          nodeRpcUrl: "http://node.invalid",
+        }) as SidekickConfig,
+      getOperatorContext: () => context,
+      store,
+      now: () => now,
+    });
+    const first = await health.refresh();
+    now = new Date(now.getTime() + 5_000);
+    height = 300;
+    vi.spyOn(store.healthMonitoring, method).mockImplementationOnce(() => {
+      throw new Error("storage failed");
+    });
+    await expect(health.refresh()).rejects.toThrow("storage failed");
+    expect(await health.current()).toBe(first);
+    context = {
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      currentRewardCycle: 141,
+      registered: true,
+      signerKeyHex: null,
+      signerKeyGrantValid: true,
+      expectedCurrentParticipation: true,
+      expectedNextParticipation: true,
+    };
+    expect(health.storedSnapshot().node.stacksTipHeight).toBe(200);
+    expect(health.storedSnapshot().generatedAt).toBe(first.generatedAt);
+    // A valid raw sample may already be durable; failed publication rolls back
+    // current-state memory, not independently persisted history.
+    expect(health.storedSnapshot().history.observationCount).toBe(
+      method === "recordObservation" ? 1 : 2,
+    );
+    now = new Date(now.getTime() + 5_000);
+    const recovered = await health.refresh();
+    expect(recovered.node.stacksTipHeight).toBe(300);
+    expect(recovered.generatedAt).not.toBe(first.generatedAt);
+    expect(await health.current()).toBe(recovered);
+  });
+
   it("does not publish an old deployment's in-flight collection after settings change", async () => {
     let config = {
       network: "mainnet",

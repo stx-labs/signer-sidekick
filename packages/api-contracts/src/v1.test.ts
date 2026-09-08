@@ -26,6 +26,18 @@ import {
 } from "./v1.js";
 
 describe("reward truth contracts", () => {
+  it("accepts additive ledger context without inventing missing timing or calculations", () => {
+    expect(rewardLedgerSchema.shape.context.parse(undefined)).toBeUndefined();
+    expect(
+      rewardLedgerSchema.shape.context.parse({ burnBlockTiming: null, rewardRealizations: [] }),
+    ).toEqual({ burnBlockTiming: null, rewardRealizations: [] });
+    expect(
+      rewardLedgerSchema.shape.context.safeParse({
+        burnBlockTiming: null,
+        rewardRealizations: [{}],
+      }).success,
+    ).toBe(false);
+  });
   it("accepts unavailable interpretation and unknown fees without coercing them to zero", () => {
     expect(rewardLedgerDistributionSchema.shape.status.parse("interpretation-unavailable")).toBe(
       "interpretation-unavailable",

@@ -228,16 +228,36 @@ try {
 
   const backup = runCli(["database", "backup", "/data/smoke-backup.sqlite"]);
   invariant(backup.quickCheck === "ok", "SQLite backup quick_check failed");
+  // Exercise the documented quarantine/copy/ownership lane on this disposable volume.
+  // Root still needs explicit capabilities because the ordinary runtime drops all of them.
+  runDocker([
+    "run",
+    "--rm",
+    ...hardenedRuntime,
+    "--user",
+    "0",
+    "--cap-add",
+    "CHOWN",
+    "--cap-add",
+    "DAC_OVERRIDE",
+    "--cap-add",
+    "FOWNER",
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    `set -eu
+test -f /data/smoke-backup.sqlite
+q=$(mktemp -d /data/restore-quarantine.XXXXXX)
+for f in /data/sidekick.sqlite /data/sidekick.sqlite-wal /data/sidekick.sqlite-shm; do
+  if [ -e "$f" ]; then mv "$f" "$q/"; fi
+done
+cp /data/smoke-backup.sqlite /data/sidekick.sqlite
+chown 10001:10001 /data/sidekick.sqlite
+chmod 600 /data/sidekick.sqlite`,
+  ]);
   const restoredDoctor = parseJson(
-    runDocker([
-      "run",
-      "--rm",
-      ...hardenedRuntime,
-      "--env",
-      "SIDEKICK_DATABASE_PATH=/data/smoke-backup.sqlite",
-      image,
-      "doctor",
-    ]),
+    runDocker(["run", "--rm", ...hardenedRuntime, image, "doctor"]),
     "restored database doctor",
   );
   invariant(restoredDoctor.status === "ok", "Restored database doctor failed");
@@ -268,10 +288,12 @@ const dashboard = await fetch(base + "/");
 const dashboardBody = await dashboard.text();
 const denied = await fetch(base + "/api/v1/status");
 let ready;
+let operational;
 for (let attempt = 0; attempt < 120; attempt += 1) {
   ready = await fetch(base + "/health/ready");
-  if (ready.ok) break;
-  if (attempt === 119) throw new Error("server did not become ready");
+  operational = await fetch(base + "/health/operational");
+  if (ready.ok && operational.ok) break;
+  if (attempt === 119) throw new Error("server did not become operational");
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 const status = await fetch(base + "/api/v1/status", {
@@ -306,6 +328,7 @@ console.log(JSON.stringify({
   dashboardHasAssets: dashboardBody.includes("/assets/"),
   deniedStatus: denied.status,
   readyStatus: ready.status,
+  operationalStatus: operational.status,
   statusStatus: status.status,
   registration: statusBody.registration,
   operatorReadiness: statusBody.readiness?.status ?? statusBody.setup?.status ?? null,
@@ -322,6 +345,7 @@ console.log(JSON.stringify({
   invariant(http.dashboardStatus === 200 && http.dashboardHasAssets, "Dashboard probe failed");
   invariant(http.deniedStatus === 401, "Operator API did not reject an unauthenticated request");
   invariant(http.readyStatus === 200, "Readiness probe failed");
+  invariant(http.operationalStatus === 200, "Operational startup probe failed");
   invariant(http.statusStatus === 200, "Authenticated status probe failed");
   invariant(http.registration?.registered === true, "Manager is not registered");
   invariant(http.registration?.signerKeyGrantValid === true, "Manager signer grant is invalid");

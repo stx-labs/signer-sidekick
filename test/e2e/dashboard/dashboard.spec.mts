@@ -23,6 +23,18 @@ import {
 const credential = "fixture-operator-token-32-characters";
 const consoleErrors = new WeakMap<Page, string[]>();
 
+async function overrideFixtures(
+  page: Page,
+  response: (request: URL, method: string) => unknown | Promise<unknown>,
+) {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body = await response(request, route.request().method());
+    await route.fulfill(fixtureFulfillment(body ?? responseFor(request.href)));
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
   consoleErrors.set(page, errors);
@@ -929,7 +941,7 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
             freshness: {
               status: "stale",
               snapshotGeneratedAt: "2026-07-15T12:10:00.000Z",
-              servedAt: new Date().toISOString(),
+              servedAt: snapshot.generatedAt,
               reason: "refresh-failed",
             },
           }
@@ -1293,6 +1305,108 @@ test("reviews exact engine intent and keeps emergency controls idempotent", asyn
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+for (const control of ["force-observe", "disable"] as const) {
+  test(`keeps acknowledged ${control} controls after an older delayed poll`, async ({ page }) => {
+    await page.clock.install();
+    const fixture = engineFixture();
+    let status = fixture.status;
+    let hold = false;
+    let held = false;
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await overrideFixtures(page, async (request) => {
+      if (request.pathname === "/api/v1/operations/readiness") {
+        if (hold) {
+          held = true;
+          await delayed;
+        }
+        return fixture.readiness;
+      }
+      if (request.pathname === "/api/v1/engine") return status;
+      if (request.pathname === "/api/v1/engine/force-observe") {
+        status = {
+          ...status,
+          mode: "observe",
+          forcedObserve: {
+            active: true,
+            reason: "acknowledged brake",
+            actor: "operator-session",
+            forcedAt: snapshot.generatedAt,
+          },
+        };
+        return { status };
+      }
+      if (request.pathname.endsWith("/reference-manager-claim-rewards/disable")) {
+        const adapter = {
+          ...status.adapters[0],
+          enabled: false,
+          availability: "disabled",
+          blockReason: "acknowledged disable",
+        };
+        status = { ...status, adapters: [adapter] };
+        return { status, adapter };
+      }
+      return undefined;
+    });
+    try {
+      await login(page);
+      await openPage(page, "settings", "Settings");
+      const engine = page.locator('section[aria-label="Reward runs"]');
+      await expect(engine).toContainText("1 runs active");
+      if (control === "disable") await engine.getByRole("button", { name: "Manage" }).click();
+      hold = true;
+      await page.clock.runFor(30_000);
+      await expect.poll(() => held).toBe(true);
+      page.once("dialog", (dialog) => dialog.accept());
+      await engine
+        .getByRole("button", {
+          name: control === "disable" ? "Disable" : "Force Observe",
+          exact: true,
+        })
+        .click();
+      const acknowledged = engine
+        .getByText(control === "disable" ? "disabled" : "Forced Observe", { exact: true })
+        .first();
+      await expect(acknowledged).toBeVisible();
+      hold = false;
+      const oldReadFinished = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/v1/operations/readiness",
+      );
+      release();
+      await oldReadFinished;
+      // Flush the delayed read and React's publication before checking the acknowledged state.
+      await page.clock.runFor(500);
+      await expect(acknowledged).toBeVisible();
+      if (control === "force-observe") await expect(engine).toContainText("acknowledged brake");
+    } finally {
+      release();
+    }
+  });
+}
+
+test("passive connection polling uses retained GETs without forcing reassessment", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let reads = 0;
+  let rechecks = 0;
+  await overrideFixtures(page, (request, method) => {
+    if (request.pathname === "/api/v1/connection") {
+      expect(method).toBe("GET");
+      reads += 1;
+    }
+    if (request.pathname === "/api/v1/connection/recheck") rechecks += 1;
+    return undefined;
+  });
+  await login(page);
+  const initialReads = reads;
+  await page.clock.runFor(60_100);
+  await expect.poll(() => reads).toBeGreaterThan(initialReads);
+  expect(rechecks).toBe(0);
 });
 
 test("opens one exact engine job in the shared action workspace", async ({ page }) => {
@@ -2804,7 +2918,20 @@ test("manual wallet verification supersedes a retained-state GET without automat
     await expect(walletReview.getByRole("button", { name: "Refresh verification" })).toBeVisible();
 
     holdAutomaticRead = true;
-    await page.clock.runFor(15_000);
+    await page.evaluate(() =>
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      }),
+    );
+    await page.clock.runFor(30_000);
+    expect(automaticReads).toBe(0);
+    expect(refreshCalls).toBe(0);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.clock.runFor(500);
     await expect.poll(() => automaticReads).toBe(1);
     expect(refreshCalls).toBe(0);
     await walletReview.getByRole("button", { name: "Refresh verification" }).click();
@@ -3180,6 +3307,97 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
     .poll(() => downloads.some((url) => url.includes("/payments.json?scope=all")))
     .toBe(true);
 });
+
+test("loads backlog payment details on demand, skips uncalculated cards, and retains rows after errors", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const detailReads: string[] = [];
+  let auxiliaryReads = 0;
+  let failOldest = false;
+  await overrideFixtures(page, (request) => {
+    if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/rewards")
+      auxiliaryReads += 1;
+    if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+    const key = `${request.searchParams.get("cycle")}:${request.searchParams.get("distribution")}`;
+    if (request.searchParams.has("cycle")) detailReads.push(key);
+    if (failOldest && key === "128:1")
+      return { fixtureStatus: 503, error: "temporary ledger failure" };
+    const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+    ledger.generatedAt = failOldest ? "2026-07-15T12:10:30.000Z" : snapshot.generatedAt;
+    for (const cycle of ledger.cycles) {
+      for (const distribution of cycle.distributions) {
+        distribution.status = "ready";
+        distribution.availableToCollectSats = "1000";
+        distribution.payments.outstanding = 1;
+      }
+    }
+    const uncalculated = structuredClone(ledger.cycles[0]);
+    uncalculated.cycle = 127;
+    uncalculated.distributions = uncalculated.distributions.slice(0, 1).map((distribution) => ({
+      ...distribution,
+      cycle: 127,
+      distribution: 2,
+      status: "calculation-overdue",
+      current: false,
+      calculation: { ...distribution.calculation, state: "overdue", poolSats: null },
+    }));
+    ledger.cycles.push(uncalculated);
+    return ledger;
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.locator("#rewards-distribution-128-1 .rw-payments")).toBeVisible();
+  const lazy = page.locator("#rewards-distribution-139-1");
+  await expect(lazy.getByRole("button", { name: "Load payments" })).toBeVisible();
+  expect(detailReads).toEqual(["128:1"]);
+  expect(auxiliaryReads).toBe(0);
+  await lazy.getByRole("button", { name: "Load payments" }).click();
+  await expect(lazy.locator(".rw-payments")).toBeVisible();
+  expect(detailReads).toEqual(["128:1", "139:1"]);
+  expect(detailReads).not.toContain("127:2");
+  failOldest = true;
+  await page.clock.runFor(30_100);
+  const oldest = page.locator("#rewards-distribution-128-1");
+  await expect(oldest.getByText(/Payment refresh failed; showing retained payments/)).toBeVisible();
+  await expect(oldest.locator(".rw-payments")).toBeVisible();
+  expect(detailReads).not.toContain("127:2");
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+for (const [first, second, displayed] of [
+  ["1000", null, "—"],
+  [null, null, "—"],
+  ["0", "0", "0 sats"],
+] as const) {
+  test(`keeps calculated totals honest across Overview and Rewards (${first}, ${second})`, async ({
+    page,
+  }) => {
+    await overrideFixtures(page, (request) => {
+      if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+      const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+      const cycle = ledger.cycles[0];
+      const firstDistribution = cycle.distributions[0];
+      firstDistribution.calculation.poolSats = first;
+      cycle.distributions = [
+        firstDistribution,
+        {
+          ...structuredClone(firstDistribution),
+          distribution: 2,
+          calculation: { ...firstDistribution.calculation, poolSats: second },
+        },
+      ];
+      return ledger;
+    });
+    await login(page);
+    const total = page.locator("#overview-rewards dl div", { hasText: "Cycle 140 calculated" });
+    await expect(total.locator("dd")).toHaveText(displayed);
+    await openPage(page, "rewards", "Rewards");
+    const fact = page.locator('[data-earning-fact="cycle"] dd');
+    await expect(fact.locator(".rw-earning-mobile-value")).toHaveText(displayed);
+    if (second === null) await expect(fact).toContainText("calculated pool total unavailable");
+  });
+}
 
 test("keeps the reward action tooltip inside intermediate desktop viewports", async ({
   page,

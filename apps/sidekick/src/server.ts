@@ -72,6 +72,7 @@ import type { SnapshotRefreshMetricsTracker } from "./operator-snapshot-refresh.
 import { projectOverview } from "./overview-projection.js";
 import { PrometheusText } from "./prometheus-text.js";
 import {
+  INTERACTIVE_REQUEST_DEADLINE_MS,
   InteractiveRequestCancelledError,
   InteractiveRequestDeadlineError,
   withInteractiveRequestDeadline,
@@ -104,7 +105,6 @@ import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
 import { WalletIntentError, type WalletIntentService } from "./wallet-intent-service.js";
 import { OperatorWorkflowError } from "./workflow-error.js";
 
-const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
 const RECONCILIATION_SNAPSHOT_DEADLINE_MS = 60_000;
 
 interface RosterRow {

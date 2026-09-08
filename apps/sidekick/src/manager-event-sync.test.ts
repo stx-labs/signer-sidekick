@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SmartContractLogPage, TransactionSummary } from "./chain-clients.js";
 import { managerEventCheckpoint, syncManagerEvents } from "./manager-event-sync.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
+import { nakamotoBlockBytes } from "./test-helpers/nakamoto-block.js";
 
 const observedAt = "2026-07-14T12:00:00.000Z";
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
@@ -31,26 +32,9 @@ const transactionOne = await makeSTXTokenTransfer({
 const txOne = `0x${transactionOne.txid()}`;
 const txTwo = `0x${"22".repeat(32)}`;
 
-/** A Nakamoto block (version 1 header, no signer signatures) carrying `transactionOne`. */
+/** A canonical block carrying the event's actual transaction. Header variants are parser tests. */
 function blockBytes(): Uint8Array {
-  const body = transactionOne.serializeBytes();
-  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
-  const view = new DataView(bytes.buffer);
-  bytes.fill(0xab, 0, 206);
-  view.setUint8(0, 1); // header version 1
-  let offset = 206;
-  view.setUint32(offset, 0); // signer_signature count
-  offset += 4;
-  view.setUint16(offset, 8); // pox_treatment BitVec.len
-  offset += 2;
-  view.setUint32(offset, 1); // BitVec.data length
-  offset += 4 + 1;
-  view.setUint32(offset, 0); // problematic_txs count
-  offset += 4;
-  view.setUint32(offset, 1); // transaction count
-  offset += 4;
-  bytes.set(body, offset);
-  return bytes;
+  return nakamotoBlockBytes(transactionOne.serializeBytes());
 }
 const cursorTwo = "8599999:2147483647:2:0";
 const openStores: SidekickStore[] = [];
@@ -426,9 +410,7 @@ describe("manager event synchronization", () => {
     const sidekickStore = await store();
     const blocks = nodeBlocks();
     // A canonical block that simply does not carry the transaction the API reported.
-    const empty = blockBytes().slice(0, 206 + 4 + 2 + 4 + 1 + 4);
-    const emptyBlock = new Uint8Array(empty.byteLength + 4);
-    emptyBlock.set(empty);
+    const emptyBlock = nakamotoBlockBytes();
     blocks.getNakamotoBlockById.mockResolvedValue(emptyBlock);
     blocks.getNakamotoBlockAtHeight.mockResolvedValue(emptyBlock);
 

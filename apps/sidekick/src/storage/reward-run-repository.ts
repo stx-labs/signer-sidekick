@@ -444,28 +444,24 @@ export class RewardRunRepository {
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
-  /** Bounded newest-first read for the unified Activity projection. */
-  listForActivity(limit = 201): RewardRun[] {
-    const bounded = Math.max(1, Math.min(10_001, Math.trunc(limit)));
+  /** Maintenance never hydrates terminal history or hides old unfinished authorizations. */
+  listUnfinished(): RewardRun[] {
     const rows = this.db
-      .prepare("SELECT run_id FROM transaction_runs ORDER BY created_at DESC, run_id DESC LIMIT ?")
-      .all(bounded) as Array<{ run_id: string }>;
+      .prepare(`SELECT run_id FROM transaction_runs
+        WHERE status IN ('awaiting-approval', 'approved', 'running', 'paused', 'halted')
+        ORDER BY created_at ASC, run_id ASC`)
+      .all() as Array<{ run_id: string }>;
     return rows.map(({ run_id }) => this.require(run_id));
   }
 
-  /** Bounded transaction IDs signed by operator runs, without hydrating every run and child. */
-  listOwnedTransactionIds(limit = 10_001): string[] {
-    const bounded = Math.max(1, Math.min(100_001, Math.trunc(limit)));
+  /** Ownership must not expire with the history page; read only IDs, never recipes/children. */
+  listOwnedTransactionIds(): string[] {
     const rows = this.db
       .prepare(
-        `SELECT txid FROM (
-           SELECT txid, updated_at FROM transaction_run_children WHERE txid IS NOT NULL
-           UNION ALL
-           SELECT precomputed_txid AS txid, updated_at FROM transaction_run_attempts
-         )
-         GROUP BY txid ORDER BY max(updated_at) DESC, txid DESC LIMIT ?`,
+        `SELECT txid FROM transaction_run_children WHERE txid IS NOT NULL
+         UNION SELECT precomputed_txid AS txid FROM transaction_run_attempts`,
       )
-      .all(bounded) as Array<{ txid: string }>;
+      .all() as Array<{ txid: string }>;
     return rows.map(({ txid }) => txid);
   }
 

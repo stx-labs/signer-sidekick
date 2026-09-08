@@ -103,6 +103,19 @@ export function paymentTotal(distribution: RewardLedgerDistribution): number {
   return p.made + p.outstanding + p.notPayable + p.belowFee;
 }
 
+/** Only completed calculations contribute; an unknown completed amount is not zero. */
+export function calculatedPoolTotal(
+  distributions: readonly RewardLedgerDistribution[],
+): string | null {
+  let sum = 0n;
+  for (const distribution of distributions) {
+    if (distribution.calculation.state !== "done") continue;
+    if (distribution.calculation.poolSats === null) return null;
+    sum += BigInt(distribution.calculation.poolSats);
+  }
+  return sum.toString();
+}
+
 export type DistributionAllocation = NonNullable<RewardLedgerDistribution["allocation"]>;
 
 /**
@@ -531,20 +544,20 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
         : null,
   });
   const done = (index: 1 | 2) => distributionFor(index)?.calculation.state === "done";
-  const calculatedSum = ([1, 2] as const).reduce(
-    (sum, index) => sum + big(distributionFor(index)?.calculation.poolSats ?? null),
-    0n,
-  );
+  const calculatedTotal = calculatedPoolTotal(ledgerCycle?.distributions ?? []);
+  const calculatedSum = calculatedTotal === null ? null : BigInt(calculatedTotal);
   const uncalculated = ([1, 2] as const).filter((index) => !done(index));
   const projectedSum = poolPoint === null ? null : big(poolPoint) * BigInt(uncalculated.length);
   const cycleTotal =
-    projectedSum === null
-      ? uncalculated.length === 0
-        ? calculatedSum
-        : calculatedSum > 0n
+    calculatedSum === null
+      ? null
+      : projectedSum === null
+        ? uncalculated.length === 0
           ? calculatedSum
-          : null
-      : calculatedSum + projectedSum;
+          : calculatedSum > 0n
+            ? calculatedSum
+            : null
+        : calculatedSum + projectedSum;
   const calculatedFee = ([1, 2] as const).reduce((sum, index) => {
     const d = distributionFor(index);
     if (d?.calculation.state !== "done") return sum;
@@ -563,7 +576,9 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
       : null;
   const cycleParts = amountParts(cycleTotal === null ? null : text(cycleTotal));
   const cycleSub: string[] = [];
-  if (calculatedSum > 0n && projectedSum !== null && uncalculated.length > 0) {
+  if (calculatedSum === null) {
+    cycleSub.push("calculated pool total unavailable");
+  } else if (calculatedSum > 0n && projectedSum !== null && uncalculated.length > 0) {
     cycleSub.push(
       `${amount(text(calculatedSum))} calculated + ${amount(text(projectedSum))} projected`,
     );
@@ -574,7 +589,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
   } else if (uncalculated.length === 0) {
     cycleSub.push("both halves calculated");
   }
-  if (cycleTotal !== null && cycleTotal > 0n)
+  if (calculatedSum === null || (cycleTotal !== null && cycleTotal > 0n))
     cycleSub.push(
       cycleFee === null
         ? "cycle fee total unavailable"
@@ -687,6 +702,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
 // ---------------------------------------------------------------------------------------------
 
 export interface DistributionCardModel {
+  state: "ready" | "distributing" | "complete" | "attention" | "overdue";
   key: string;
   cycle: number;
   distribution: 1 | 2;
@@ -1023,6 +1039,17 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     }
 
     return {
+      state: runForThis
+        ? "distributing"
+        : distribution.status === "interpretation-unavailable" ||
+            distribution.status === "needs-attention" ||
+            rejected > 0
+          ? "attention"
+          : !calculated
+            ? "overdue"
+            : p.outstanding === 0 && available === 0n
+              ? "complete"
+              : "ready",
       key,
       cycle: cycle.cycle,
       distribution: distribution.distribution,

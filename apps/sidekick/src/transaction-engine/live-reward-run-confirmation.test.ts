@@ -13,6 +13,8 @@ import {
   requireConnectedAssessment,
   requireObservationAssessment,
 } from "../connection-assessment.js";
+import { apiTransactionReceipt } from "../test-helpers/api-transaction.js";
+import { nakamotoBlockBytes } from "../test-helpers/nakamoto-block.js";
 import { LiveRewardRunDriver } from "./live-reward-run.js";
 import type { LiveTransactionReader } from "./live-transaction-reader.js";
 import type { RewardRunDriver } from "./reward-run-service.js";
@@ -41,29 +43,9 @@ const blockHeight = 8_600_002;
 const walletPrincipal = "ST000000000000000000002AMW42H";
 afterEach(() => vi.restoreAllMocks());
 
-function nakamotoBlockBytes(body = transaction.serializeBytes()): Uint8Array {
-  const bytes = new Uint8Array(206 + 4 + 2 + 4 + 1 + 4 + 4 + body.byteLength);
-  const view = new DataView(bytes.buffer);
-  bytes.fill(0xab, 0, 206);
-  view.setUint8(0, 1);
-  let offset = 206;
-  view.setUint32(offset, 0);
-  offset += 4;
-  view.setUint16(offset, 8);
-  offset += 2;
-  view.setUint32(offset, 1);
-  offset += 5;
-  view.setUint32(offset, 0);
-  offset += 4;
-  view.setUint32(offset, 1);
-  offset += 4;
-  bytes.set(body, offset);
-  return bytes;
-}
-
 function driver(
   resultRepr: string,
-  blockBytes = nakamotoBlockBytes(),
+  blockBytes = nakamotoBlockBytes(transaction.serializeBytes()),
   assessment?: () => ConnectionAssessment,
 ) {
   const node = {
@@ -77,14 +59,9 @@ function driver(
   };
   const api = {
     getNodeInfo: vi.fn(async () => ({ network_id: 1 })),
-    getTransactionDetails: vi.fn(async () => ({
-      tx_id: txId,
-      tx_status: "success",
-      tx_result: { hex: "0x0703", repr: resultRepr },
-      canonical: true,
-      block_hash: blockHash,
-      block_height: blockHeight,
-    })),
+    getTransactionDetails: vi.fn(async () =>
+      apiTransactionReceipt({ txId, blockHash, blockHeight, resultRepr }),
+    ),
     getBlock: vi.fn(async () => ({
       canonical: true,
       height: blockHeight,
@@ -206,6 +183,21 @@ describe("reward run confirmation without node txindex", () => {
     expect(runtime.api.getTransactionDetails).toHaveBeenCalledOnce();
   });
 
+  it("does not load or revalidate the local signed plan without a terminal receipt", async () => {
+    const runtime = driver("(ok true)");
+    const submitted = await locallySignedInput();
+    const loadPlan = vi.fn(() => {
+      throw new Error("Pending observation must not load the plan");
+    });
+    Object.defineProperty(submitted, "plan", { get: loadPlan });
+    runtime.api.getNodeInfo.mockResolvedValue({ network_id: 0x80000000 });
+    runtime.api.getTransactionDetails.mockRejectedValue(
+      new chainClients.UpstreamHttpError("missing", 404),
+    );
+    expect(await runtime.value.reconcile(submitted)).toEqual({ status: "pending" });
+    expect(loadPlan).not.toHaveBeenCalled();
+  });
+
   it.each([
     null,
     600_000,
@@ -235,6 +227,20 @@ describe("reward run confirmation without node txindex", () => {
       },
     } as never);
     expect(await runtime.value.reconcile(input())).toEqual({ status: "pending" });
+    expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    -1n,
+    BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+  ])("does not publish an unsafe node receipt height %s", async (height) => {
+    const runtime = driver("(ok true)");
+    runtime.reader.lookupIndexedTransaction.mockResolvedValue({
+      status: "observed",
+      value: { isCanonical: true, blockHeight: height, resultRepr: "(ok true)" },
+    } as never);
+    expect(await runtime.value.reconcile(input())).toEqual({ status: "pending", retryLater: true });
+    expect(runtime.api.getTransactionDetails).not.toHaveBeenCalled();
   });
 
   it("still halts a new materialization on positive preparation-anchor mismatch", async () => {

@@ -169,7 +169,6 @@ export class ObserverInboxRepository {
       maximumPendingPayloadBytes: MAX_PENDING_OBSERVER_PAYLOAD_BYTES,
     },
   ): AcceptedObserverDelivery {
-    this.revision += 1;
     const value = observerDeliveryInputSchema.parse(input);
     const parsedLimits = z
       .object({
@@ -314,6 +313,7 @@ export class ObserverInboxRepository {
         }
       }
       this.db.exec("COMMIT");
+      this.revision += 1;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -329,7 +329,6 @@ export class ObserverInboxRepository {
   }
 
   prunePayloads(observedAt: string): number {
-    this.revision += 1;
     const parsedObservedAt = z.iso.datetime().parse(observedAt);
     const cutoff = new Date(
       Date.parse(parsedObservedAt) - OBSERVER_RAW_PAYLOAD_RETENTION_MS,
@@ -374,11 +373,11 @@ export class ObserverInboxRepository {
         MAX_RETAINED_OBSERVER_RAW_PAYLOADS,
         MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES,
       );
+    if (Number(result.changes) > 0) this.revision += 1;
     return Number(result.changes);
   }
 
   recoverDeliveries(recoveredAt: string): number {
-    this.revision += 1;
     const parsedRecoveredAt = z.iso.datetime().parse(recoveredAt);
     const result = this.db
       .prepare(
@@ -388,11 +387,11 @@ export class ObserverInboxRepository {
          WHERE state = 'processing'`,
       )
       .run(parsedRecoveredAt, parsedRecoveredAt);
+    if (Number(result.changes) > 0) this.revision += 1;
     return Number(result.changes);
   }
 
   claimNextDelivery(claimedAt: string): StoredObserverDelivery | null {
-    this.revision += 1;
     const parsedClaimedAt = z.iso.datetime().parse(claimedAt);
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -418,6 +417,7 @@ export class ObserverInboxRepository {
       const delivery = row ? storedObserverDeliveryRowSchema.parse(row) : null;
       this.db.exec("COMMIT");
       if (!delivery) return null;
+      this.revision += 1;
       return {
         deliveryId: delivery.delivery_id,
         endpointKind: delivery.endpoint_kind,
@@ -439,7 +439,6 @@ export class ObserverInboxRepository {
   }
 
   finishDelivery(input: ObserverDeliveryCompletion): void {
-    this.revision += 1;
     const deliveryId = z.string().uuid().parse(input.deliveryId);
     const state = z.enum(["node-verified", "quarantined", "expired"]).parse(input.state);
     const reason = z.string().min(1).max(500).parse(input.reason);
@@ -454,11 +453,11 @@ export class ObserverInboxRepository {
     if (Number(result.changes) !== 1) {
       throw new Error(`Observer delivery ${deliveryId} is not being processed`);
     }
+    this.revision += 1;
     this.prunePayloads(completedAt);
   }
 
   retryDelivery(input: ObserverDeliveryRetry): void {
-    this.revision += 1;
     const deliveryId = z.string().uuid().parse(input.deliveryId);
     const reason = z.string().min(1).max(500).parse(input.reason);
     const retriedAt = z.iso.datetime().parse(input.retriedAt);
@@ -476,6 +475,7 @@ export class ObserverInboxRepository {
     if (Number(result.changes) !== 1) {
       throw new Error(`Observer delivery ${deliveryId} is not being processed`);
     }
+    this.revision += 1;
   }
 
   status(): ObserverInboxStatus {
