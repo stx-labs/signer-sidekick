@@ -12,7 +12,9 @@ new work but never erases submitted or canonical evidence.
   adapter-specific checkpoint proof. Locally signed runs/sweeps bind the transaction through their
   revalidated sealed plan and saved signing-time txid; coherent configured-API execution may then
   suffice during node unavailability, but cannot override a positive node conflict. Browser-wallet
-  actions still require node-provided bytes. Evidence provenance is retained; see
+  actions use current node bytes or retained exact mempool verification of that same intent/txid.
+  Extra calculation checkpoint, legacy manager-job and asset-semantic checks still apply; known
+  canonical execution with an incomplete extra check is not Complete. Evidence provenance is retained; see
   [ADR 0008](../architecture/decisions/0008-chain-evidence-and-reconciliation.md).
   A later mutable setting or balance is not a historical receipt.
 - Manager-admin and signer operations use the operator's browser wallet.

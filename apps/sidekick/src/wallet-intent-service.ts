@@ -23,6 +23,8 @@ import {
   browserWalletIntentCreateRequestSchema,
   browserWalletIntentSchema,
   browserWalletTransactionSchema,
+  type TransactionExecutionSource,
+  transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   decodeBoolean,
@@ -80,8 +82,10 @@ import {
   defaultPrivateChainId,
   mainnetChainId,
   mainnetWalletNetwork,
+  readPersistedWalletVerification,
   testnetChainId,
   testnetWalletNetwork,
+  type VerifiedWalletTransaction,
   verifyWalletTransactionHex,
   WalletTransactionMismatchError,
   type WalletTransactionNetworkBinding,
@@ -229,6 +233,7 @@ const publicVerificationSchema = z
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
     detail: z.string().min(1),
+    executionSource: transactionExecutionSourceSchema.optional(),
   })
   .strict();
 
@@ -238,7 +243,17 @@ const observationEvidenceSchema = z
     verification: publicVerificationSchema,
     decoded: z.unknown().nullable(),
   })
-  .strict();
+  .strict()
+  .transform((evidence) => {
+    const source = transactionExecutionSourceSchema.safeParse(
+      evidence.decoded && typeof evidence.decoded === "object"
+        ? (evidence.decoded as Record<string, unknown>).executionSource
+        : undefined,
+    );
+    return source.success
+      ? { ...evidence, verification: { ...evidence.verification, executionSource: source.data } }
+      : evidence;
+  });
 
 export interface WalletIntentRuntimeState {
   managerPrincipal: string;
@@ -328,6 +343,8 @@ export class WalletIntentService {
     private readonly options: {
       store: SidekickStore;
       runtimeSettings: RuntimeSettingsController;
+      /** Read-only access may outlive node transport, but not a proven identity refusal. */
+      observationRuntimeContext?: () => WalletRuntimeClients;
       managerVerification?: ManagerVerificationContext;
       readState: () => WalletIntentRuntimeState;
       canRepairSignerRegistration: () => Promise<boolean>;
@@ -647,8 +664,11 @@ export class WalletIntentService {
     }
     if (!stored.txid) return this.publicIntent(stored);
 
-    const clients = this.options.runtimeSettings.clients();
+    let clients: WalletRuntimeClients;
     try {
+      clients = (
+        this.options.observationRuntimeContext ?? (() => this.options.runtimeSettings.clients())
+      )();
       await this.assertCurrentNetworkRouting(manifest, clients);
     } catch (error) {
       this.recordUnavailable(
@@ -662,19 +682,17 @@ export class WalletIntentService {
     const reader =
       this.options.readerFactory?.(config.nodeRpcUrl) ??
       new LiveTransactionReader({ baseUrl: config.nodeRpcUrl });
-    const indexed = await reader.lookupIndexedTransaction(stored.txid);
-    if (indexed.status === "observed") {
+    const indexed = await reader.lookupIndexedTransaction(stored.txid).catch(() => null);
+    if (indexed?.status === "observed") {
       return await this.refreshIndexed(stored, manifest, indexed.value, observedAt, clients);
     }
-    if (transactionIndexCannotAnswer(indexed)) {
-      const fallback = await this.refreshIndexedFromApi(stored, manifest, observedAt, clients);
-      if (fallback) return fallback;
-    }
-    if (indexed.status !== "not-found" && !transactionIndexCannotAnswer(indexed)) {
+    const fallback = await this.refreshIndexedFromApi(stored, manifest, observedAt, clients);
+    if (fallback) return fallback;
+    if (indexed === null || !transactionIndexCannotAnswer(indexed)) {
       this.recordUnavailable(
         stored,
         observedAt,
-        `Confirmed transaction lookup is unavailable (${indexed.reason}). Sidekick will retry`,
+        "Confirmed transaction lookup is unavailable. Sidekick will retry",
       );
       return this.publicIntent(stored);
     }
@@ -815,8 +833,8 @@ export class WalletIntentService {
     if (current.network !== manifest.network || current.chainId !== manifest.chainId) {
       throw new Error("Sidekick's configured network changed. Prepare a new transaction");
     }
-    const nodeInfo = await clients.node.getInfo();
-    if (nodeInfo.network_id !== manifest.chainId) {
+    const nodeInfo = await clients.node.getInfo().catch(() => null);
+    if (nodeInfo && nodeInfo.network_id !== manifest.chainId) {
       throw new Error(
         "The local node no longer matches this transaction's network. Check Settings, then retry",
       );
@@ -1714,6 +1732,31 @@ export class WalletIntentService {
   ): Promise<BrowserWalletIntent> {
     const decoded = this.verifyObserved(stored, manifest, indexed.transactionHex, observedAt);
     if (!decoded) return this.publicIntent(this.requireStored(stored.id));
+    return this.refreshVerified(
+      stored,
+      manifest,
+      indexed,
+      decoded,
+      observedAt,
+      clients,
+      executionSucceeded,
+      "node",
+    );
+  }
+
+  private async refreshVerified(
+    stored: StoredWalletIntent,
+    manifest: StoredManifest,
+    indexed: Pick<
+      IndexedTransactionObservation,
+      "isCanonical" | "blockHeight" | "indexBlockHash" | "resultRepr"
+    >,
+    decoded: VerifiedWalletTransaction,
+    observedAt: string,
+    clients: WalletRuntimeClients,
+    executionSucceeded: boolean,
+    executionSource: TransactionExecutionSource,
+  ): Promise<BrowserWalletIntent> {
     if (indexed.isCanonical && indexed.blockHeight === null) {
       this.recordUnavailable(
         stored,
@@ -1753,17 +1796,19 @@ export class WalletIntentService {
       const { config, node, api } = clients;
       if (!executionSucceeded) {
         if (manifest.action === "calculate-rewards" && manifest.binding) {
-          const observedComputeHeight = decodeUInt(
-            await node.callReadOnly(
+          // The abort remains a terminal fact even if this optional external-completion read fails.
+          const observedComputeHeight = await node
+            .callReadOnly(
               manifest.binding.pox5ContractId,
               "get-last-reward-compute-height",
               manifest.requiredSender,
               [],
               { tip: indexed.indexBlockHash },
-            ),
-            "get-last-reward-compute-height",
-          );
+            )
+            .then((value) => decodeUInt(value, "get-last-reward-compute-height"))
+            .catch(() => null);
           if (
+            observedComputeHeight !== null &&
             observedComputeHeight >= BigInt(manifest.binding.expectedLastRewardComputeBurnHeight)
           ) {
             const next =
@@ -1774,6 +1819,7 @@ export class WalletIntentService {
               next,
               {
                 outcome: "superseded",
+                executionSource,
                 observedAt,
                 canonical: true,
                 blockHeight,
@@ -1791,6 +1837,7 @@ export class WalletIntentService {
           next,
           {
             outcome: "abort",
+            executionSource,
             observedAt,
             canonical: true,
             blockHeight,
@@ -1884,6 +1931,7 @@ export class WalletIntentService {
               next,
               {
                 outcome: "superseded",
+                executionSource,
                 observedAt,
                 canonical: true,
                 blockHeight,
@@ -1897,7 +1945,7 @@ export class WalletIntentService {
           }
           complete = jobStatus === "complete";
         } else {
-          // The local node supplied raw transaction bytes, and `verifyObserved` already proved
+          // Current node bytes or their retained exact mempool verification already proved
           // their sender, exact call arguments, deny mode, and equality postcondition against the
           // immutable wallet manifest. No historical single-job approval participates in this path.
           complete = decoded.postConditionCount === 1;
@@ -1939,6 +1987,7 @@ export class WalletIntentService {
         next,
         {
           outcome: complete ? "complete" : "canonical-success",
+          executionSource,
           observedAt,
           canonical: true,
           blockHeight,
@@ -1953,11 +2002,20 @@ export class WalletIntentService {
       );
       return this.publicIntent(next);
     } catch (error) {
+      if (!executionSucceeded) throw error;
       const current = this.requireStored(stored.id);
-      this.recordUnavailable(
+      this.recordObservation(
         current,
-        observedAt,
-        `Post-state verification is temporarily unavailable: ${error instanceof Error ? error.message : "the verifier returned no diagnostic detail"}. Sidekick will retry`,
+        {
+          outcome: "canonical-success",
+          executionSource,
+          observedAt,
+          canonical: true,
+          blockHeight,
+          indexBlockHash: indexed.indexBlockHash,
+          detail: `Canonical execution verified; additional action verification is unavailable: ${error instanceof Error ? error.message : "the verifier returned no diagnostic detail"}. Sidekick will retry`,
+        },
+        decoded,
       );
       return this.publicIntent(current);
     }
@@ -1969,11 +2027,18 @@ export class WalletIntentService {
     observedAt: string,
     clients: WalletRuntimeClients,
   ): Promise<BrowserWalletIntent | null> {
+    const persisted = this.persistedMempoolVerification(stored, manifest);
+    const conclusion = this.options.store.walletIntents.latestObservation(stored.id, {
+      outcomes: ["noncanonical", "mismatch", "canonical-success", "complete", "abort"],
+    });
+    // Pending/missing/unavailable observations never erase positive contradictory evidence.
+    const conflicted = conclusion?.outcome === "noncanonical" || conclusion?.outcome === "mismatch";
     const receipt = await lookupCanonicalApiTransaction({
       api: clients.api,
       node: clients.node,
       chainId: manifest.chainId,
       txId: stored.txid as `0x${string}`,
+      allowApiEvidence: persisted !== null && !conflicted,
     });
     if (receipt.status === "not-found") return null;
     if (receipt.status === "unavailable") {
@@ -1997,29 +2062,69 @@ export class WalletIntentService {
       });
       return this.publicIntent(next);
     }
-    // The API locates the receipt; the canonical node block supplies the exact bytes.
-    // Success AND abort pass the same full manifest verifier before either becomes actionable.
-    if (receipt.value.transactionHex === null) {
-      this.recordUnavailable(stored, observedAt, "Exact wallet transaction bytes are unavailable");
+    // Both success and abort need exact binding, never the API's payload summary.
+    const decoded =
+      receipt.value.transactionHex === null
+        ? persisted
+        : this.verifyObserved(stored, manifest, receipt.value.transactionHex, observedAt);
+    if (!decoded) {
+      if (receipt.value.transactionHex !== null)
+        return this.publicIntent(this.requireStored(stored.id));
+      this.recordUnavailable(
+        stored,
+        observedAt,
+        "Exact wallet transaction verification is unavailable",
+      );
       return this.publicIntent(stored);
     }
-    return this.refreshIndexed(
+    return this.refreshVerified(
       stored,
       manifest,
       {
-        txid: receipt.value.txid,
-        transactionHex: receipt.value.transactionHex,
-        nonce: 0n,
-        feeUstx: 0n,
         indexBlockHash: receipt.value.indexBlockHash,
         blockHeight: BigInt(receipt.value.blockHeight),
         isCanonical: true,
         resultRepr: receipt.value.resultRepr,
       },
+      decoded,
       observedAt,
       clients,
       receipt.value.success,
+      receipt.value.source,
     );
+  }
+
+  private persistedMempoolVerification(
+    stored: StoredWalletIntent,
+    manifest: StoredManifest,
+  ): VerifiedWalletTransaction | null {
+    // Old schema-1 mempool rows were also written only after verifyWalletTransactionHex.
+    // The repository's immutable intent/manifest link is the binding; API-created decoded
+    // summaries from older canonical-success rows must never qualify as a byte proof.
+    const observation = this.options.store.walletIntents.latestObservation(stored.id, {
+      outcomes: ["mempool"],
+    });
+    if (
+      !observation ||
+      observation.intentId !== stored.id ||
+      observation.outcome !== "mempool" ||
+      observation.canonical !== null
+    )
+      return null;
+    const evidence = observationEvidenceSchema.safeParse(observation.evidence);
+    if (
+      !evidence.success ||
+      evidence.data.verification.outcome !== "mempool" ||
+      evidence.data.verification.canonical !== null
+    )
+      return null;
+    return readPersistedWalletVerification({
+      decoded: evidence.data.decoded,
+      expectedTxid: stored.txid ?? "",
+      requiredSender: manifest.requiredSender,
+      request: manifest.transaction,
+      expectedNetwork: createWalletTransactionNetworkBinding(manifest.network, manifest.chainId),
+    });
   }
 
   private refreshPending(
@@ -2299,6 +2404,13 @@ export class WalletIntentService {
     verification: z.infer<typeof publicVerificationSchema>,
     decoded: unknown = null,
   ): void {
+    // Keep schema-1's strict verification object readable by older binaries. Decoded evidence
+    // is its existing extensible metadata slot; provenance is not a new transaction binding.
+    const { executionSource, ...retainedVerification } = verification;
+    const retainedDecoded =
+      executionSource && decoded && typeof decoded === "object"
+        ? { ...decoded, executionSource }
+        : decoded;
     const previous = this.options.store.walletIntents.latestObservation(stored.id);
     const previousEvidence = previous
       ? observationEvidenceSchema.safeParse(previous.evidence)
@@ -2310,12 +2422,13 @@ export class WalletIntentService {
         blockHeight: value.blockHeight,
         indexBlockHash: value.indexBlockHash,
         detail: value.detail,
+        executionSource: value.executionSource ?? null,
         decoded: decodedValue,
       });
     if (
       previousEvidence?.success &&
       fingerprint(previousEvidence.data.verification, previousEvidence.data.decoded) ===
-        fingerprint(verification, decoded)
+        fingerprint(verification, retainedDecoded)
     ) {
       return;
     }
@@ -2325,7 +2438,7 @@ export class WalletIntentService {
       canonical: verification.canonical,
       blockHeight: verification.blockHeight,
       indexBlockHash: verification.indexBlockHash,
-      evidence: { schemaVersion: 1, verification, decoded },
+      evidence: { schemaVersion: 1, verification: retainedVerification, decoded: retainedDecoded },
       observedAt: verification.observedAt,
     });
   }

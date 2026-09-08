@@ -1,5 +1,26 @@
 # Unreleased
 
+## API-supported browser-wallet execution (R3b, second commit)
+
+- Browser-wallet actions may accept coherent configured-API execution during a node outage only
+  with retained exact mempool verification tied to the same immutable intent and txid. Old API-only
+  summaries do not qualify. Node bytes still use the full signature/call/postcondition verifier.
+- A normal HTTP 200 pending/dropped API record no longer blocks node-mempool verification as a
+  schema failure. It means no terminal API receipt, so exact node bytes can still be verified and
+  retained for later API-supported completion. Dropped is not an abort or replacement permission;
+  node observation and the existing missing-transaction propagation grace still apply.
+- Proof survives missing observations and restart; pending/missing/unavailable reads cannot erase
+  a positive conflict. One completion path handles node and API evidence, with additional
+  calculation checkpoint, legacy-job and asset-semantic checks preserved. Known canonical
+  execution remains visible if an extra check is unavailable; an abort is not lost to that outage.
+- Manual refresh of submitted IDs works through cached node unavailability, with authentication,
+  CSRF, startup and identity gates preserved. Fresh preparation, submission and replacement remain
+  gated. Evidence source is shown in wallet details and Activity and saved in existing extensible
+  observation metadata, without breaking the older strict verification object or adding a migration.
+- No new scheduler, raw-byte storage, signing authority, automatic replacement, or infrastructure
+  change. Cold boot still requires an accepted node connection. Active-run polling/backoff and
+  nonce-proof sweep abandonment remain separate follow-ups.
+
 ## API-supported completion for locally signed work (R3b, first commit)
 
 - Reward runs and gas sweeps can accept coherent configured-API canonical execution when local
@@ -15,7 +36,7 @@
   are preserved on submitted children and require node corroboration after explicit resume.
   File-backed databases receive the normal automatic backup before migration; rollback to an
   older binary requires the corresponding older database backup.
-- Browser-wallet API-only completion remains the next R3b slice. Cold-start operational workers
+- Browser-wallet API-only completion is covered by the second slice above. Cold-start operational workers
   still wait for an accepted node connection. No transaction-index or other infrastructure change,
   signed-byte storage, terminal-history poller, or change to Bitcoin-delivery evidence is introduced.
 

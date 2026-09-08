@@ -337,8 +337,8 @@ const transactionEventPageSchema = z
 
 // `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
 // endpoint supplies execution outcomes for the no-txindex fallback. Its public call details
-// are not a byte binding: wallet verification uses the transaction from the canonical node block.
-const transactionDetailSchema = z
+// are not a byte binding: wallet verification uses exact node bytes, including retained mempool proof.
+const executedTransactionDetailSchema = z
   .object({
     tx_id: canonicalHex,
     tx_status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
@@ -378,6 +378,25 @@ const transactionDetailSchema = z
     block_height: z.number().int().nonnegative().safe(),
   })
   .strip();
+
+// The same v1 endpoint returns HTTP 200 for mempool/dropped transactions with no execution fields.
+// Project only their identity/status; they supply no receipt and cannot establish byte binding.
+const transactionDetailSchema = z.discriminatedUnion("tx_status", [
+  executedTransactionDetailSchema,
+  z
+    .object({
+      tx_id: canonicalHex,
+      tx_status: z.enum([
+        "pending",
+        "dropped_replace_by_fee",
+        "dropped_replace_across_fork",
+        "dropped_too_expensive",
+        "dropped_stale_garbage_collect",
+        "dropped_problematic",
+      ]),
+    })
+    .strip(),
+]);
 
 const stacksBlockSummarySchema = z
   .object({

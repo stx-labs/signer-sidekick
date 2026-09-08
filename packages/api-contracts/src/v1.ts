@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { type EngineChainAnchor, engineChainAnchorSchema } from "./engine.js";
-import { transactionExecutionSourceSchema } from "./reward-runs.js";
+import {
+  type TransactionExecutionSource,
+  transactionExecutionSourceSchema,
+} from "./reward-runs.js";
 
 export const connectionOutcomeCodeSchema = z.enum([
   "node-unreachable",
@@ -682,6 +685,7 @@ export interface BrowserWalletIntent {
     blockHeight: number | null;
     indexBlockHash: string | null;
     detail: string;
+    executionSource?: TransactionExecutionSource | undefined;
   };
 }
 
@@ -2839,6 +2843,7 @@ export const browserWalletIntentSchema = z
           .regex(/^0x[0-9a-f]{64}$/)
           .nullable(),
         detail: z.string().min(1),
+        executionSource: transactionExecutionSourceSchema.optional(),
       })
       .strict()
       .nullable(),

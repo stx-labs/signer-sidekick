@@ -1492,8 +1492,23 @@ export function createServer(options: ServerOptions = {}) {
       connection?.status === "unavailable" &&
       connection.lastSuccessful !== null &&
       (request.method === "GET" || request.method === "HEAD");
+    const walletRefreshId =
+      request.method === "POST"
+        ? pathname.match(/^\/api\/v1\/wallet-intents\/([0-9a-f-]{36})\/refresh$/i)?.[1]
+        : undefined;
+    // This POST only observes a previously submitted ID. Unsigned refreshes revalidate
+    // preparation, and submission/replacement/approval routes retain the connection gate.
+    const submittedWalletObservationAccess =
+      connection?.status === "unavailable" &&
+      connection.lastSuccessful !== null &&
+      options.isOperational?.() !== false &&
+      walletRefreshId !== undefined &&
+      Boolean(options.wallet?.get(walletRefreshId).txid);
     const connectionBlocksRequest =
-      connection !== undefined && connection?.status !== "connected" && !retainedReadOnlyAccess;
+      connection !== undefined &&
+      connection?.status !== "connected" &&
+      !retainedReadOnlyAccess &&
+      !submittedWalletObservationAccess;
     if (
       !safeWhileDisconnected &&
       (connectionBlocksRequest || (options.isOperational?.() === false && !retainedReadOnlyAccess))

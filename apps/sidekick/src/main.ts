@@ -275,6 +275,7 @@ export async function executeCliCommand({
         managerPrincipal,
       });
       const wallet = new WalletIntentService({
+        observationRuntimeContext,
         logger: { warn: (message) => warnGasWallet(message) },
         store,
         runtimeSettings,

@@ -14,6 +14,7 @@ import {
   type EngineChainAnchor,
   type OperatorDeadline,
   type RewardRun,
+  transactionExecutionSourceSchema,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { z } from "zod";
 import { managerEventStream } from "./manager-event-vocabulary.js";
@@ -553,12 +554,18 @@ function walletIntentSummary(
     });
   }
   for (const observation of includeTimeline ? observations : []) {
+    const evidence = z
+      .object({
+        decoded: z.object({ executionSource: transactionExecutionSourceSchema.optional() }),
+      })
+      .safeParse(observation.evidence);
+    const executionSource = evidence.success ? evidence.data.decoded.executionSource : undefined;
     timeline.push({
       schemaVersion: 1,
       eventId: `${activityId}:observation:${observation.id}`,
       code: `observation-${observation.outcome}`,
       title: observation.outcome.replaceAll("-", " "),
-      detail: `Sidekick recorded ${observation.outcome.replaceAll("-", " ")} transaction evidence.`,
+      detail: `Sidekick recorded ${observation.outcome.replaceAll("-", " ")} transaction evidence.${executionSource ? ` Execution evidence: ${executionSource === "node" ? "local node" : executionSource === "api" ? "configured API" : "configured API, corroborated by local node"}.` : ""}`,
       occurredAt: observation.observedAt,
       source: "wallet-intents",
       txid: intent.txid,

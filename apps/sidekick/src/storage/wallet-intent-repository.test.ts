@@ -221,6 +221,22 @@ describe("WalletIntentRepository", () => {
         excludeOutcomes: ["canonical-match"],
       })?.outcome,
     ).toBe("mempool-match");
+    expect(
+      reopened.store.walletIntents.latestObservation(created.intent.id, {
+        outcomes: ["mempool-match"],
+      })?.outcome,
+    ).toBe("mempool-match");
+    expect(
+      reopened.store.walletIntents.latestObservation(created.intent.id, {
+        outcomes: ["mempool-match"],
+        excludeOutcomes: ["mempool-match"],
+      }),
+    ).toBeNull();
+    expect(
+      reopened.store.walletIntents.latestObservation("10000000-0000-4000-8000-000000000002", {
+        outcomes: ["mempool-match"],
+      }),
+    ).toBeNull();
   });
 
   it("loads only the latest observation for each Activity intent in one batched read", async () => {

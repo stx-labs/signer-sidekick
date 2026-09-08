@@ -18,6 +18,7 @@ import type {
   BrowserWalletIntentNetwork,
   BrowserWalletTransaction,
 } from "@stx-labs/signer-sidekick-api-contracts";
+import { z } from "zod";
 
 const mainnetTransactionVersion = 0;
 const testnetTransactionVersion = 128;
@@ -87,6 +88,70 @@ export interface VerifiedWalletTransaction {
     argumentsSha256: string;
     signerKeyHex: string | null;
   };
+}
+
+const verifiedWalletTransactionSchema: z.ZodType<VerifiedWalletTransaction> = z
+  .object({
+    txid: z.templateLiteral(["0x", z.string().regex(/^[0-9a-f]{64}$/)]),
+    sender: z.string(),
+    chainId: z.number().int().nonnegative(),
+    transactionVersion: z.number().int().nonnegative(),
+    sponsored: z.literal(false),
+    anchorMode: z.literal("any"),
+    postConditionMode: z.literal("deny"),
+    postConditionCount: z.number().int().nonnegative(),
+    payload: z
+      .object({
+        kind: z.literal("call-contract"),
+        contract: z.string(),
+        functionName: z.enum([
+          "register-self",
+          "update-admin",
+          "update-fees",
+          "withdraw-fees",
+          "sweep-fee-refunds",
+          "claim-staker-rewards",
+          "claim-rewards",
+          "calculate-rewards",
+        ]),
+        argumentsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+        signerKeyHex: z
+          .string()
+          .regex(/^(02|03)[0-9a-f]{64}$/)
+          .nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * Read only a server-persisted mempool result of the full byte verifier below, linked to the
+ * same immutable intent. This is NOT an API-summary verifier: signature and full postconditions
+ * were proved from the bytes then; these fields check the retained record's identity now.
+ */
+export function readPersistedWalletVerification(input: {
+  decoded: unknown;
+  expectedTxid: string;
+  requiredSender: string;
+  request: BrowserWalletTransaction;
+  expectedNetwork: WalletTransactionNetworkBinding;
+}): VerifiedWalletTransaction | null {
+  const parsed = verifiedWalletTransactionSchema.safeParse(input.decoded);
+  if (!parsed.success) return null;
+  const value = parsed.data;
+  const params = input.request.params;
+  return value.txid === input.expectedTxid &&
+    value.sender === input.requiredSender &&
+    params.address === input.requiredSender &&
+    value.chainId === input.expectedNetwork.chainId &&
+    value.transactionVersion === input.expectedNetwork.transactionVersion &&
+    params.network === input.expectedNetwork.network &&
+    value.postConditionCount === params.postConditions.length &&
+    value.payload.contract === params.contract &&
+    value.payload.functionName === params.functionName &&
+    value.payload.argumentsSha256 === sha256(JSON.stringify(params.functionArgs))
+    ? value
+    : null;
 }
 
 export class WalletTransactionMismatchError extends Error {

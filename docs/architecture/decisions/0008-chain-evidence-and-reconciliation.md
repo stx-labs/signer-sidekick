@@ -90,10 +90,40 @@ diagnostics prevent API-only completion until a positive node result resolves th
 restart or explicit resume. Migration 40 carries old halted-run diagnostics onto the submitted
 child without classifying error strings. This conservative legacy case may need node recovery.
 
-Browser-wallet API-only completion is a separate next slice: it requires retained exact mempool
-verification tied to the same sealed intent and txid. For now wallets still require current node
-bytes. There is no terminal-history poller, automatic replacement, nonce-proof sweep abandonment,
-API-backed current-state/signing access, or new infrastructure prerequisite in this amendment.
+### Configured-API execution evidence for browser wallets (R3b, second slice)
+
+Browser wallets return a txid, not transaction bytes. API-only execution is accepted only after
+Sidekick has retained the full node-mempool byte verification for this same immutable intent and
+txid. The existing observation row links that result to its sealed manifest. Parsing validates
+the stored result's sender, network/version, authorization shape, call, argument digest and
+postcondition count against that manifest; the original byte verifier, not these summary fields,
+proved the signature and every postcondition. No API summary or old canonical-only decoded record
+qualifies as this proof. Missing, malformed or mismatched proof remains pending until node bytes
+are available. Neither a new proof artifact nor stored raw bytes are needed.
+
+Filtered reads of existing observation history retain the mempool proof through missing/pending
+reads and restart. A later mempool, missing or unavailable observation cannot erase an unresolved
+noncanonical/mismatch result; API-only completion stays disabled until node-backed canonical
+verification resolves it. Current node-index/block bytes still use the original full verifier.
+Both paths feed the same action-specific completion logic for success and abort.
+
+Observation uses the same read-only accessor as runs/sweeps. Configured-network changes, positive
+node-network mismatch and cached identity refusal still block it; an unavailable node info/index
+read can reach the API. Authenticated, same-origin manual refresh during cached unavailability is
+allowed only for an already-submitted ID after operational startup. Unsigned refresh, preparation,
+submission recording, replacement and fresh signing keep their existing gates.
+
+Canonical execution and action completion remain distinct. Calculation checkpoint reads, legacy
+manager-claim job reconciliation and fee-withdrawal/refund semantic checks are not deleted. When
+an extra check cannot run, retain canonical-success and its source, not Complete or unavailable
+execution. A calculation abort stays an abort if its optional external-completion read fails.
+Stacks BTC-route success remains request creation, never Bitcoin delivery.
+
+`verification.executionSource` is exposed in wallet details and Activity. It is persisted as
+metadata in the existing extensible decoded evidence, keeping schema-1's strict verification
+object readable by older binaries. Older rows have no invented source; mempool proof remains
+unchanged. No migration beyond the prior slice's version 40, terminal-history poller, automatic
+replacement, nonce-proof abandonment, cold-boot bypass, or signing access expansion is added.
 
 ## Consequences
 

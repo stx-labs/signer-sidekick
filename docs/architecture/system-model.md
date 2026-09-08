@@ -27,7 +27,7 @@ separate private port, but it shares the service lifecycle and database.
 | Roster discovery and historical enumeration | Indexed API, followed by local-node verification wherever a proof exists |
 | Local signer behavior | Signer monitoring metrics correlated with local node state |
 | Network comparison | Multiple independent references used only to classify a local symptom |
-| Operation completion | Exact canonical execution plus adapter-specific checkpoint evidence; locally signed runs/sweeps may use coherent configured-API execution with retained signing-time binding; wallets still need node bytes |
+| Operation completion | Exact canonical execution plus adapter-specific checkpoint evidence; configured-API execution needs retained signing-time binding for runs/sweeps, or exact mempool verification for the same wallet intent/txid; positive node conflicts veto it |
 | Durable history | SQLite record carrying its source, anchor, verification strength, and observation time |
 
 No optional API can override a node-proved fact. Missing API or signer-monitoring data degrades only

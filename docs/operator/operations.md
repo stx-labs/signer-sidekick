@@ -149,12 +149,21 @@ using the configured API during a node outage. Activity and sweep history show *
 source; its execution record must be coherent and match the saved signing-time transaction ID and
 sealed plan. Missing binding or an unresolved conflict keeps verification pending. A confirmed API
 abort halts the run/fails the sweep; it never causes an automatic replacement transaction.
-Preparing or signing the next transaction still needs the connected node. Browser-wallet actions
-still require node bytes in this first R3b slice, and cold boot still waits for a connected node to
-start the operational runtime. Migration 40 records future evidence sources; older history is not
+Preparing or signing the next transaction still needs the connected node. Browser wallets may use
+API execution if Sidekick previously verified their exact mempool bytes against the same sealed
+intent. If Sidekick never saw those bytes, verification waits for node recovery; an API's summary
+alone does not suffice. Wallet details and Activity show the source. Manual Refresh verification
+works during cached unavailability for submitted IDs, without permitting a new preparation,
+submission or replacement. Extra calculation, legacy-job and asset-semantic verification may still
+wait after execution is known; the UI keeps that distinction. Cold boot still waits for a connected
+node to start operational workers. Migration 40 records run/sweep evidence sources; older history is not
 assigned a guessed source. An older halted run with a retained diagnostic may require positive
 node corroboration after resume. Preserve the automatic pre-migration database backup if rolling
 back to an older binary; older versions cannot open the newer schema.
+
+Wallet provenance uses existing observation metadata and adds no migration. Preserve the database:
+its original exact mempool verification is the durable byte binding, even after later missing
+observations. An unresolved positive conflict cannot be cleared by an API receipt alone.
 
 A gas sweep with an ambiguous broadcast retains its transaction ID and wallet authorization even
 if lookups report it missing for longer than the original approval window. Do not prepare a second

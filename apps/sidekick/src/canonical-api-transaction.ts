@@ -24,6 +24,7 @@ export type CanonicalApiTransactionLookup =
         source: "api-with-node" | "api";
       };
     }
+  // No terminal API receipt, including pending/dropped; not proof of absence from the node mempool.
   | { status: "not-found" }
   | {
       status: "conflict";
@@ -66,11 +67,15 @@ export async function lookupCanonicalApiTransaction(input: {
   if (details.tx_id !== input.txId) {
     return { status: "unavailable", reason: "Configured API returned a different transaction" };
   }
+  if (
+    details.tx_status !== "success" &&
+    details.tx_status !== "abort_by_response" &&
+    details.tx_status !== "abort_by_post_condition"
+  ) {
+    return { status: "not-found" };
+  }
   if (!details.canonical || details.block_hash === null) {
     return { status: "unavailable", reason: "Configured API has no canonical transaction block" };
-  }
-  if (!["success", "abort_by_response", "abort_by_post_condition"].includes(details.tx_status)) {
-    return { status: "unavailable", reason: "Configured API has no terminal execution outcome" };
   }
 
   try {

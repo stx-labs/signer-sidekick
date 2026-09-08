@@ -746,6 +746,16 @@ export function BrowserWalletActionPanel({
               </div>
             ) : null}
             {intent.verification ? <div>{intent.verification.detail}</div> : null}
+            {intent.verification?.executionSource ? (
+              <div className="muted">
+                Evidence:{" "}
+                {intent.verification.executionSource === "node"
+                  ? "local node"
+                  : intent.verification.executionSource === "api"
+                    ? "configured API"
+                    : "API + local node"}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

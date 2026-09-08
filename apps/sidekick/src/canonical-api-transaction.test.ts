@@ -21,7 +21,7 @@ function fixture() {
   block.set(body, 220);
   const api = {
     getNodeInfo: vi.fn(async () => ({ network_id: 0x80000000 })),
-    getTransactionDetails: vi.fn(async () => ({
+    getTransactionDetails: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
       tx_id: txId,
       tx_status: "success",
       canonical: true,
@@ -197,13 +197,23 @@ describe("canonical API receipt", () => {
     expect(await f.lookup(true)).toMatchObject({ status: "conflict", reason });
   });
 
-  it("does not turn a pending API record into an abort", async () => {
+  it.each([
+    "pending",
+    "dropped_replace_by_fee",
+  ])("treats %s as no terminal receipt, not unavailability or an abort", async (tx_status) => {
     const f = fixture();
     f.api.getTransactionDetails.mockResolvedValue({
-      ...(await f.api.getTransactionDetails()),
-      tx_status: "pending",
+      tx_id: txId,
+      tx_status,
     });
-    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+    expect(await f.lookup(true)).toEqual({ status: "not-found" });
+    expect(await f.lookup()).toEqual({ status: "not-found" });
     expect(f.api.getBlock).not.toHaveBeenCalled();
+    expect(f.node.getTenureInfo).not.toHaveBeenCalled();
+    f.api.getTransactionDetails.mockResolvedValue({ tx_id: hash, tx_status });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
+    f.api.getTransactionDetails.mockResolvedValue({ tx_id: txId, tx_status });
+    f.api.getNodeInfo.mockResolvedValue({ network_id: 1 });
+    expect(await f.lookup(true)).toMatchObject({ status: "unavailable" });
   });
 });

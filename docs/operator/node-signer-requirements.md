@@ -40,10 +40,11 @@ primary consensus data — but deserializes a block per check instead of doing a
 
 Submitted wallet transactions, reward-run children and gas sweeps use this fallback too. Wallet
 verification uses the exact transaction bytes from that canonical block, not the API's call summary
-or postcondition count. Browser-wallet verification still needs local bytes when the index cannot
-answer. Locally signed reward-run transactions and sweeps can instead complete from coherent
-configured-API execution evidence during a node outage, provided the saved signing-time binding
-is intact and no unresolved node conflict exists. Details show which source established execution.
+or postcondition count. Browser-wallet execution may use coherent configured-API evidence during
+a node outage only when Sidekick retained exact mempool verification for the same intent/txid.
+Otherwise it waits for node bytes. Locally signed runs/sweeps use their saved signing-time binding.
+Unresolved node conflicts veto API-only completion. Details show the execution source; additional
+calculation, legacy job and asset-semantic checks may still wait for node-backed evidence.
 This does not make the node optional for startup, current state, preparation or signing.
 
 Enabling it trades storage for that speed. The index only covers blocks the node processes after you

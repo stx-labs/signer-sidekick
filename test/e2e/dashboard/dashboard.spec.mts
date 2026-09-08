@@ -1745,6 +1745,7 @@ test("R2 Activity keeps terminal wallet evidence viewable while the snapshot is 
 }) => {
   const actor = snapshot.managerPrincipal.split(".")[0];
   const complete = updateFeesWalletIntent(actor, "complete");
+  complete.intent.verification = { ...complete.intent.verification, executionSource: "api" };
   await page.route("**/api/v1/wallet-intents/**", async (route) =>
     route.fulfill(fixtureFulfillment(complete)),
   );
@@ -1780,6 +1781,7 @@ test("R2 Activity keeps terminal wallet evidence viewable while the snapshot is 
   }, complete.intent.id);
   const panel = page.getByRole("region", { name: "Browser wallet" });
   await expect(panel.getByText("The manual refresh verified the fee update.")).toBeVisible();
+  await expect(panel.getByText("Evidence: configured API", { exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Refresh verification" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Connect wallet and sign" })).toHaveCount(0);
 });

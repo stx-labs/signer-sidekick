@@ -932,7 +932,7 @@ export class WalletIntentRepository {
 
   latestObservation(
     id: string,
-    options: { excludeOutcomes?: readonly string[] } = {},
+    options: { excludeOutcomes?: readonly string[]; outcomes?: readonly string[] } = {},
   ): WalletIntentObservation | null {
     const excludedOutcomes = [
       ...new Set((options.excludeOutcomes ?? []).map((outcome) => outcomeSchema.parse(outcome))),
@@ -941,13 +941,18 @@ export class WalletIntentRepository {
       excludedOutcomes.length === 0
         ? ""
         : ` AND outcome NOT IN (${excludedOutcomes.map(() => "?").join(", ")})`;
+    const outcomes = [
+      ...new Set((options.outcomes ?? []).map((outcome) => outcomeSchema.parse(outcome))),
+    ];
+    const inclusion =
+      outcomes.length === 0 ? "" : ` AND outcome IN (${outcomes.map(() => "?").join(", ")})`;
     const row = this.db
       .prepare(
         `SELECT * FROM browser_wallet_intent_observations WHERE intent_id = ?
-         ${exclusion}
+         ${exclusion}${inclusion}
          ORDER BY observed_at DESC, rowid DESC LIMIT 1`,
       )
-      .get(uuidSchema.parse(id), ...excludedOutcomes);
+      .get(uuidSchema.parse(id), ...excludedOutcomes, ...outcomes);
     return row === undefined ? null : mapObservation(row);
   }
 }

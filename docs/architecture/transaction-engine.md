@@ -58,7 +58,9 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
   only with the retained signing-time txid/plan binding and no unresolved conflicting diagnostic.
   `executionSource` records node, API with node corroboration, or API evidence; legacy source is null.
   Observation allows cached transport unavailability, while all fresh signing access stays gated.
-  See ADR 0008 for the operational API trust boundary and the still node-dependent wallet path.
+  Browser wallets may use the same execution source only with persisted exact mempool verification
+  for the same sealed intent/txid. Additional checkpoint, legacy-job and asset-semantic checks
+  remain. See ADR 0008 for the operational API trust boundary and retained-conflict rules.
 - Slow reads do not overlap recovery ticks. Shutdown drains in-flight work, and the signature
   boundary rechecks run state, expiry and emergency controls after role reads finish.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.

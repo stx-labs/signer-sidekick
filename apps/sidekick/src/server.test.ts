@@ -1049,6 +1049,71 @@ describe("local API", () => {
     expect(metrics.body).toContain("sidekick_signer_validation_p95_seconds 0.475");
   });
 
+  it("allows only submitted wallet observation through cached unavailability, with auth and startup gates intact", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const id = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
+    const txid = `0x${"ab".repeat(32)}`;
+    let assessment = { status: "unavailable", lastSuccessful: {} } as ConnectionAssessment;
+    let operational = true;
+    const wallet = {
+      get: vi.fn().mockReturnValue({ id, txid, status: "submitted" }),
+      refresh: vi.fn().mockResolvedValue({
+        id,
+        txid,
+        status: "complete",
+        verification: { executionSource: "api" },
+      }),
+      prepare: vi.fn(),
+      submit: vi.fn(),
+      replace: vi.fn(),
+    };
+    const server = createServer({
+      service: { snapshot: vi.fn() } as never,
+      wallet,
+      authToken: token,
+      logger: false,
+      isOperational: () => operational,
+      connection: { current: () => assessment, check: async () => assessment },
+    });
+    servers.push(server);
+    const url = `/api/v1/wallet-intents/${id}/refresh`;
+    const headers = { authorization: `Bearer ${token}` };
+    expect((await server.inject({ method: "POST", url })).statusCode).toBe(401);
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url,
+          headers: { ...headers, "sec-fetch-site": "cross-site" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    const result = await server.inject({ method: "POST", url, headers });
+    expect(result.statusCode).toBe(200);
+    expect(result.json().intent.verification.executionSource).toBe("api");
+    for (const blockedUrl of [
+      "/api/v1/wallet-intents",
+      `/api/v1/wallet-intents/${id}/submission`,
+      `/api/v1/wallet-intents/${id}/replacement`,
+    ]) {
+      expect((await server.inject({ method: "POST", url: blockedUrl, headers })).statusCode).toBe(
+        503,
+      );
+    }
+    wallet.get.mockReturnValue({ id, txid: null, status: "prepared" });
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    wallet.get.mockReturnValue({ id, txid, status: "submitted" });
+    operational = false;
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    operational = true;
+    assessment = { ...assessment, status: "blocked" };
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    expect(wallet.refresh).toHaveBeenCalledOnce();
+    expect(wallet.prepare).not.toHaveBeenCalled();
+    expect(wallet.submit).not.toHaveBeenCalled();
+    expect(wallet.replace).not.toHaveBeenCalled();
+  });
+
   it("accepts only sealed wallet-intent actions and txids", async () => {
     const token = "test-operator-token-with-32-chars";
     const intentId = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";

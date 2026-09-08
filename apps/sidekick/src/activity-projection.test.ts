@@ -428,6 +428,15 @@ describe("Activity projection", () => {
       txid,
       submittedAt: "2026-08-14T10:05:00.000Z",
     });
+    store.walletIntents.appendObservation({
+      intentId: created.id,
+      outcome: "canonical-success",
+      canonical: true,
+      blockHeight: 8_750_000,
+      indexBlockHash,
+      observedAt: "2026-08-14T10:06:00.000Z",
+      evidence: { decoded: { executionSource: "api" } },
+    });
     store.putChainEvent({
       chainId: 1,
       txId: txid,
@@ -482,6 +491,9 @@ describe("Activity projection", () => {
       aliases: expect.arrayContaining([alias, `wallet-intent:${created.id}`]),
     });
     expect(detail?.timeline.some(({ code }) => code === "transaction-id-reported")).toBe(true);
+    expect(
+      detail?.timeline.some(({ detail }) => detail.includes("Execution evidence: configured API.")),
+    ).toBe(true);
     expect(detail?.timeline.some(({ code }) => code === "verified-chain-event")).toBe(true);
     expect(detail?.summary.coverage.map(({ source }) => source)).toEqual(
       expect.arrayContaining(["wallet-intents", "indexed-manager-history"]),
