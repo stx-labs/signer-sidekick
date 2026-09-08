@@ -336,9 +336,9 @@ const transactionEventPageSchema = z
   .strict();
 
 // `/extended/v3/transactions` intentionally exposes only inclusion data. The v1 transaction
-// endpoint supplies the signed transaction's public call details needed for the narrow fallback
-// used when a node explicitly has transaction indexing disabled.
-const transactionDetailSchema = z
+// endpoint supplies execution outcomes for the no-txindex fallback. Its public call details
+// are not a byte binding: wallet verification uses exact node bytes, including retained mempool proof.
+const executedTransactionDetailSchema = z
   .object({
     tx_id: canonicalHex,
     tx_status: z.enum(["success", "abort_by_response", "abort_by_post_condition"]),
@@ -378,6 +378,25 @@ const transactionDetailSchema = z
     block_height: z.number().int().nonnegative().safe(),
   })
   .strip();
+
+// The same v1 endpoint returns HTTP 200 for mempool/dropped transactions with no execution fields.
+// Project only their identity/status; they supply no receipt and cannot establish byte binding.
+const transactionDetailSchema = z.discriminatedUnion("tx_status", [
+  executedTransactionDetailSchema,
+  z
+    .object({
+      tx_id: canonicalHex,
+      tx_status: z.enum([
+        "pending",
+        "dropped_replace_by_fee",
+        "dropped_replace_across_fork",
+        "dropped_too_expensive",
+        "dropped_stale_garbage_collect",
+        "dropped_problematic",
+      ]),
+    })
+    .strip(),
+]);
 
 const stacksBlockSummarySchema = z
   .object({
@@ -673,7 +692,7 @@ function appendQuery(url: string, values: Readonly<Record<string, string | null>
   return parsed.toString();
 }
 
-function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
+export function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
   if (value === null) return null;
   if (/^[0-9]+$/.test(value)) return Number(value) * 1_000;
   if (!value.includes(",")) return null;
@@ -758,7 +777,7 @@ async function fetchJson<T>(
   fetchImpl: Fetch,
   url: string,
   schema: z.ZodType<T>,
-  request: RequestInit = {},
+  request: RequestInit & { retry?: boolean } = {},
 ): Promise<T> {
   const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
   cancellationSignal?.throwIfAborted();
@@ -783,14 +802,15 @@ async function fetchJson<T>(
 async function fetchResponse(
   fetchImpl: Fetch,
   url: string,
-  request: RequestInit = {},
+  request: RequestInit & { retry?: boolean } = {},
 ): Promise<{
   response: Response;
   cancellationSignal: AbortSignal | undefined;
   endpoint: string;
 }> {
   const endpoint = sanitizedEndpoint(url);
-  const maxAttempts = 4;
+  const maxAttempts = request.retry === false ? 1 : 4;
+  const { retry: _retry, ...requestInit } = request;
   const interactiveSignal = currentInteractiveRequestSignal();
   const cancellationSignals = [request.signal, interactiveSignal].filter(
     (signal): signal is AbortSignal => signal !== null && signal !== undefined,
@@ -804,7 +824,7 @@ async function fetchResponse(
       const signals = [AbortSignal.timeout(10_000)];
       if (cancellationSignal) signals.push(cancellationSignal);
       response = await fetchImpl(url, {
-        ...request,
+        ...requestInit,
         signal: AbortSignal.any(signals),
       });
       upstreamRequestMetrics.record(url, request.method ?? "GET", response.status);
@@ -829,7 +849,12 @@ async function fetchResponse(
         // A short, explicit retry is useful for long paginated reconciliations without turning an
         // interactive status request into a multi-second retry storm. Longer or unspecified
         // limits return immediately so OperatorService can serve its last-good observation.
-        if (retryAfterMs !== null && retryAfterMs <= 1_000 && attempt === 1) {
+        if (
+          retryAfterMs !== null &&
+          retryAfterMs <= 1_000 &&
+          attempt === 1 &&
+          attempt < maxAttempts
+        ) {
           await cancelResponse(response);
           await sleep(retryAfterMs, cancellationSignal);
           continue;
@@ -1069,15 +1094,17 @@ export class StacksApiClient {
     this.headers = apiKey ? { [apiKeyHeader]: apiKey } : undefined;
   }
 
-  getNodeInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+  getNodeInfo(options: { signal?: AbortSignal; retry?: boolean } = {}): Promise<NodeInfo> {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(options.retry === false ? { retry: false } : {}),
       ...(this.headers ? { headers: this.headers } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
   }
 
-  getStatus(options: { signal?: AbortSignal } = {}): Promise<ApiStatus> {
+  getStatus(options: { signal?: AbortSignal; retry?: boolean } = {}): Promise<ApiStatus> {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/extended/v1/status`, apiStatusSchema, {
+      ...(options.retry === false ? { retry: false } : {}),
       ...(this.headers ? { headers: this.headers } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
@@ -1454,6 +1481,15 @@ export class ChainAnchorError extends Error {
     this.retryable = options.retryable ?? false;
     this.tips = options.tips ?? null;
   }
+}
+
+/** Known read failures that can be retried without accepting missing or conflicting evidence. */
+export function isRetryableChainReadError(error: unknown): boolean {
+  return (
+    error instanceof UpstreamUnavailableError ||
+    error instanceof RateLimitedError ||
+    (error instanceof ChainAnchorError && error.retryable)
+  );
 }
 
 function sameApiTip(left: ApiStatus, right: ApiStatus): boolean {

@@ -16,7 +16,7 @@ import type { SettingsSection } from "../../dashboard-route.js";
 import { Badge, ErrorCallout, Field, PageHead } from "../../shared/dashboard-ui.js";
 import { DOCUMENT_LINKS } from "../../shared/document-links.js";
 import { shortUtc } from "../../shared/format.js";
-import { operatorActionError } from "../../shared/operator-error.js";
+import { operatorActionError, operatorErrorDetail } from "../../shared/operator-error.js";
 import { DeploymentRequirementsPanel } from "./deployment-requirements.js";
 import { EngineSettings } from "./engine-settings.js";
 import { ManagerSettings } from "./manager-settings.js";
@@ -417,7 +417,14 @@ export function SettingsPage({
         setEngineDirty(false);
       }
       setSavedSection(section);
-      await onSaved?.();
+      try {
+        await onSaved?.();
+      } catch (cause) {
+        setSectionError({
+          section,
+          message: `Settings saved, but status refresh failed: ${operatorErrorDetail(cause, "Retry the status refresh; you do not need to save again")}`,
+        });
+      }
     } catch (cause) {
       setSectionError({
         section,
@@ -1200,6 +1207,7 @@ export function SettingsPage({
         )}
 
         <EngineSettings
+          cacheScope={data ? `${data.network}:${data.managerPrincipal}` : null}
           feeBand={settings.engine ?? null}
           feeBandDirty={engineDirty}
           feeBandError={sectionError?.section === "engine" ? sectionError.message : null}

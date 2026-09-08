@@ -17,9 +17,143 @@ import {
   sortPoolRoster,
   sortRewardStakers,
 } from "./operator-service.js";
+import { currentInteractiveRequestSignal, withOperatorRequestSignal } from "./request-context.js";
 import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const stores: SidekickStore[] = [];
+
+describe("reward ledger shared reads", () => {
+  async function fixture() {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    const timing = {
+      averageSeconds: 610,
+      windowHours: 12 as const,
+      sampleBlocks: 70,
+      sampledAt: "2026-09-08T12:00:00.000Z",
+    };
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://unused.invalid",
+        apiUrl: "http://unused.invalid",
+      } as SidekickConfig,
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: {} as StacksNodeClient,
+      api: {} as StacksApiClient,
+      burnBlockTiming: () => timing,
+    });
+    const snapshot = {
+      generatedAt: "2026-09-08T12:00:00.000Z",
+      network: "mainnet",
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      chainAnchor: null,
+      roster: [],
+      rewards: null,
+      rewardsPrevious: null,
+      rewardOutlook: null,
+      preflight: { pox: { pox5ContractId: null } },
+      historyRecovery: null,
+      manager: { capabilities: { eventVocabulary: { normalizationAvailable: true } } },
+    } as unknown as Awaited<ReturnType<OperatorService["snapshot"]>>;
+    vi.spyOn(service, "snapshot").mockResolvedValue(snapshot);
+    const builds = vi.spyOn(service, "withdrawalRequestEvidence").mockResolvedValue(new Map());
+    return { service, builds, timing, store };
+  }
+
+  it("coalesces simultaneous same-key reads and includes retained page context", async () => {
+    const { service, builds, timing } = await fixture();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    builds.mockImplementationOnce(async () => {
+      await held;
+      return new Map();
+    });
+    const first = service.rewardLedger();
+    const second = service.rewardLedger();
+    await new Promise(setImmediate);
+    expect(builds).toHaveBeenCalledTimes(1);
+    release();
+    const [one, two] = await Promise.all([first, second]);
+    expect(one).toBe(two);
+    expect(one.context).toEqual({ burnBlockTiming: timing, rewardRealizations: [] });
+    expect(await service.rewardLedger()).toBe(one);
+    expect(builds).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds retained queries and coalesces a backlog larger than the retained cache", async () => {
+    const { service, builds } = await fixture();
+    await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        Promise.all([
+          service.rewardLedger({ cycle: 130 + index }),
+          service.rewardLedger({ cycle: 130 + index }),
+        ]),
+      ),
+    );
+    expect(builds).toHaveBeenCalledTimes(12);
+    expect(
+      (service as unknown as { rewardLedgerCache: Map<string, unknown> }).rewardLedgerCache.size,
+    ).toBe(8);
+    await service.rewardLedger({ cycle: 141 });
+    expect(builds).toHaveBeenCalledTimes(12);
+  });
+
+  it("does not retain a rejected build or let one caller abort another's shared source read", async () => {
+    const { service, builds, store } = await fixture();
+    vi.spyOn(store.walletIntents, "listOwnedTransactionIds").mockImplementationOnce(() => {
+      throw new Error("storage failed");
+    });
+    const failed = await Promise.allSettled([service.rewardLedger(), service.rewardLedger()]);
+    expect(failed.map(({ status }) => status)).toEqual(["rejected", "rejected"]);
+    expect(builds).toHaveBeenCalledTimes(0);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let sharedSignal: AbortSignal | undefined;
+    builds.mockImplementationOnce(async () => {
+      sharedSignal = currentInteractiveRequestSignal();
+      await held;
+      return new Map();
+    });
+    const caller = new AbortController();
+    const first = withOperatorRequestSignal(caller.signal, () => service.rewardLedger());
+    const second = service.rewardLedger();
+    await new Promise(setImmediate);
+    caller.abort();
+    expect(sharedSignal).toBeDefined();
+    expect(sharedSignal?.aborted).toBe(false);
+    release();
+    await Promise.all([first, second]);
+    expect(builds).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish an old in-flight build after a same-anchor history invalidation", async () => {
+    const { service, builds } = await fixture();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    builds.mockImplementationOnce(async () => {
+      await held;
+      return new Map();
+    });
+    const old = service.rewardLedger();
+    await new Promise(setImmediate);
+    (
+      service as unknown as { invalidateSynchronizedProjection(noncanonical: boolean): void }
+    ).invalidateSynchronizedProjection(true);
+    const current = await service.rewardLedger();
+    release();
+    expect(await old).not.toBe(current);
+    expect(await service.rewardLedger()).toBe(current);
+    expect(builds).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("background snapshot reuse", () => {
   async function fixture() {

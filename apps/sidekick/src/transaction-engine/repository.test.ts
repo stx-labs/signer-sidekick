@@ -189,6 +189,7 @@ describe("transaction engine repository", () => {
 
     expect(attempts.get(job.jobId)).toEqual([attempt]);
     expect(attempts.has(withoutAttempt.jobId)).toBe(false);
+    expect(store.transactionEngine.listOwnedTransactionIds()).toEqual([attempt.precomputedTxid]);
     expect(store.transactionEngine.getLogicalJobByTxid(attempt.precomputedTxid)?.jobId).toBe(
       job.jobId,
     );

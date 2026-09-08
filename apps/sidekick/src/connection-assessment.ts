@@ -8,6 +8,7 @@ import {
   type StacksNodeClient,
   stacksTipIndexBlockHash,
   UpstreamHttpError,
+  UpstreamUnavailableError,
 } from "./chain-clients.js";
 import { configuredNetworkId, type SidekickConfig } from "./config.js";
 import { inspectManagerCapabilities } from "./manager-capabilities.js";
@@ -21,6 +22,20 @@ import type { SidekickStore } from "./storage/store.js";
 
 type ConnectionCheck = ConnectionAssessment["checks"][number];
 type ObservedConnection = NonNullable<ConnectionAssessment["observed"]>;
+
+/** Keep cached transport unavailability distinct from a positive identity/network refusal. */
+export function requireConnectedAssessment(assessment: ConnectionAssessment | null): void {
+  if (assessment?.status === "connected") return;
+  const message = "The configured connection is not current; operator activity is paused";
+  if (assessment?.status === "unavailable") throw new UpstreamUnavailableError(message);
+  throw new Error(message);
+}
+
+/** Observation may outlive transport availability, never a proven identity/network refusal. */
+export function requireObservationAssessment(assessment: ConnectionAssessment | null): void {
+  if (assessment?.status === "connected" || assessment?.status === "unavailable") return;
+  throw new Error("Observation is paused until the configured identity/network is accepted");
+}
 
 const checkOrder = [
   "deployment-identity",
@@ -157,7 +172,7 @@ export class ConnectionAssessmentService {
     const trait = inspectManagerCapabilities({
       contractInterface,
       sourceSha256: "",
-      exactSourceReviewed: false,
+      sourceReviewed: false,
       sourceReviewReason: "Connection assessment checks only the universal signer-manager trait",
     }).signerManagerTrait;
     return {

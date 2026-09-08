@@ -2390,4 +2390,63 @@ export const migrations: readonly Migration[] = [
         ON sbtc_withdrawal_completions (sweep_txid);
     `,
   },
+  {
+    version: 40,
+    name: "transaction_execution_provenance",
+    sql: `
+      -- Null means historical source was not recorded; never infer it from completion status.
+      ALTER TABLE transaction_run_children ADD COLUMN execution_source TEXT
+        CHECK (execution_source IN ('node', 'api-with-node', 'api'));
+      ALTER TABLE gas_wallet_sweeps ADD COLUMN execution_source TEXT
+        CHECK (execution_source IN ('node', 'api-with-node', 'api'));
+      -- Earlier versions retained a run's conflict only on the parent. Carry unresolved
+      -- diagnostics to its submitted child without parsing error text. Such legacy halts
+      -- require node corroboration after explicit resume; an outage cannot erase a conflict.
+      UPDATE transaction_run_children
+      SET failure_reason = COALESCE(failure_reason, (
+        SELECT failure_reason FROM transaction_runs WHERE run_id = transaction_run_children.run_id
+      ))
+      WHERE status = 'broadcast' AND run_id IN (
+        SELECT run_id FROM transaction_runs WHERE status = 'halted'
+      );
+    `,
+  },
+  {
+    version: 41,
+    name: "bounded_activity_and_observer_reads",
+    sql: `
+      CREATE INDEX observer_terminal_payloads
+        ON observer_deliveries (COALESCE(completed_at, updated_at), payload_bytes)
+        WHERE state IN ('node-verified', 'quarantined', 'expired') AND payload_pruned = 0;
+      CREATE INDEX activity_chain_transactions
+        ON chain_events (chain_id, contract_id, tx_id, COALESCE(occurred_at, first_seen_at));
+      CREATE INDEX activity_run_transactions ON transaction_run_children (txid)
+        WHERE txid IS NOT NULL;
+      CREATE INDEX activity_wallet_state ON browser_wallet_intents (state, created_at, intent_id);
+      CREATE INDEX activity_job_state ON transaction_jobs (state, created_at, job_id);
+      CREATE INDEX activity_run_state ON transaction_runs (status, created_at, run_id);
+      CREATE INDEX observer_latest_stacks
+        ON observer_deliveries (claimed_block_height DESC, last_received_at DESC)
+        WHERE claimed_block_height IS NOT NULL AND claimed_block_hash IS NOT NULL
+          AND claimed_index_block_hash IS NOT NULL;
+      CREATE INDEX observer_latest_burn
+        ON observer_deliveries (claimed_burn_block_height DESC, last_received_at DESC)
+        WHERE claimed_burn_block_height IS NOT NULL AND claimed_burn_block_hash IS NOT NULL;
+      CREATE INDEX observer_latest_verified
+        ON observer_deliveries (claimed_block_height DESC, completed_at DESC)
+        WHERE state = 'node-verified' AND claimed_block_height IS NOT NULL
+          AND claimed_index_block_hash IS NOT NULL AND completed_at IS NOT NULL;
+      CREATE INDEX observer_latest_quarantine
+        ON observer_deliveries (last_received_at DESC, delivery_id DESC)
+        WHERE state = 'quarantined' AND state_reason IS NOT NULL;
+    `,
+  },
+  {
+    version: 42,
+    name: "settings_audit_revision_lookup",
+    sql: `
+      CREATE INDEX settings_audit_revision
+        ON settings_audit (revision, changed_at DESC, audit_id DESC);
+    `,
+  },
 ];

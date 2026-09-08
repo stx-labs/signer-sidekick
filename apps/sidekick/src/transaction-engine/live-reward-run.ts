@@ -18,11 +18,12 @@ import { bondPeriodsForRewardCycle } from "@stx-labs/signer-sidekick-protocol/po
 import {
   planRewardOperation,
   type RewardOperationPlanInput,
+  revalidateRewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
-import { lookupCanonicalApiTransaction } from "../canonical-api-transaction.js";
-import { proveCanonicalNodeBlock } from "../canonical-node-block.js";
+import { calculationResultMatchesTarget } from "../calculation-receipt.js";
+import { checkCanonicalNodeBlock } from "../canonical-node-block.js";
 import type { ChainAnchor } from "../chain-anchor.js";
-import { captureNodeChainAnchor } from "../chain-clients.js";
+import { captureNodeChainAnchor, UpstreamUnavailableError } from "../chain-clients.js";
 import { managerActionCapability } from "../manager-capabilities.js";
 import {
   Pox5CalculateRewardsError,
@@ -30,6 +31,7 @@ import {
 } from "../pox5-calculate-rewards.js";
 import type { WithdrawalRegistryStatus } from "../reward-ledger.js";
 import type { SidekickStore } from "../storage/store.js";
+import { readSubmittedTransactionOutcome } from "../submitted-transaction-outcome.js";
 import {
   type FeeSelection,
   selectTransactionFee,
@@ -39,7 +41,6 @@ import {
   type LiveObservation,
   LiveTransactionReader,
   type TransactionFeeObservation,
-  transactionIndexCannotAnswer,
 } from "./live-transaction-reader.js";
 import type {
   RewardRunDraftFacts,
@@ -191,16 +192,6 @@ async function managerCollectAtAnchor(input: {
   };
 }
 
-export function calculationResultMatchesTarget(
-  resultRepr: string,
-  targetRewardCycle: string,
-  expectedLastRewardComputeBurnHeight: number,
-): boolean {
-  const cycle = resultRepr.match(/\(stx-cycle u(\d+)\)/)?.[1];
-  const height = resultRepr.match(/\(calculation-height u(\d+)\)/)?.[1];
-  return cycle === targetRewardCycle && height === String(expectedLastRewardComputeBurnHeight);
-}
-
 /** Build the exact account/request universe from current node-anchored facts, never request data. */
 export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
   return async (request: RewardRunPrepareRequest): Promise<RewardRunDraftFacts> => {
@@ -242,7 +233,7 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
       requestedOperations.some((operation) => MANAGER_OPERATIONS.has(operation)) &&
       !reviewedRewardManagerAvailable(setup.manager.capabilities, managerSourceFingerprint)
     ) {
-      throw new Error("Manager reward execution requires a byte-exact reviewed adapter");
+      throw new Error("Manager reward execution requires a reviewed compatible adapter");
     }
     const context = options.runtimeContext();
     const chainAnchor = await captureNodeChainAnchor(context.node);
@@ -395,6 +386,8 @@ export function createLiveRewardRunFacts(options: LiveRewardRunFactsOptions) {
 export interface LiveRewardRunDriverOptions {
   engine: Pick<SidekickTransactionEngineRuntime, "readRewardRunObservation" | "gasPayerIdentity">;
   runtimeContext: () => TransactionEngineRuntimeContext;
+  /** Allows cached transport unavailability, but still refuses proven identity mismatches. */
+  observationRuntimeContext?: () => TransactionEngineRuntimeContext;
   /** Live fee policy (Settings → Reward runs band under the deployment cap), read per child. */
   feePolicy: () => TransactionFeePolicy;
   withdrawalRequestStatus(
@@ -414,10 +407,13 @@ export class LiveRewardRunDriver implements RewardRunDriver {
     input: Parameters<RewardRunDriver["materialize"]>[0],
   ): Promise<RewardRunMaterialization> {
     const context = this.options.runtimeContext();
-    await proveCanonicalNodeBlock(context.node, {
+    const preparation = await checkCanonicalNodeBlock(context.node, {
       blockHeight: input.run.recipe.preparedAnchor.stacksBlockHeight,
       indexBlockHash: input.run.recipe.preparedAnchor.indexBlockHash as `0x${string}`,
     });
+    if (preparation === "reorged") {
+      return { status: "halt", reason: "The reward run preparation anchor became noncanonical" };
+    }
     const wallet = this.options.engine.gasPayerIdentity();
     if (!wallet || wallet.principal !== input.run.walletPrincipal) {
       return { status: "halt", reason: "The loaded gas wallet identity changed" };
@@ -427,6 +423,18 @@ export class LiveRewardRunDriver implements RewardRunDriver {
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
     const account = await reader.readAnchoredAccount(wallet.principal, anchor.indexBlockHash);
+    if (
+      account.status === "unavailable" &&
+      (account.reason === "response-read-error" ||
+        account.httpStatus === null ||
+        account.httpStatus === 408 ||
+        account.httpStatus === 429 ||
+        account.httpStatus >= 500)
+    ) {
+      throw new UpstreamUnavailableError(
+        `The gas wallet account read is unavailable (${account.reason})`,
+      );
+    }
     if (account.status !== "observed") {
       return { status: "halt", reason: `The gas wallet account read is ${account.status}` };
     }
@@ -705,68 +713,95 @@ export class LiveRewardRunDriver implements RewardRunDriver {
   async reconcile(
     input: Parameters<RewardRunDriver["reconcile"]>[0],
   ): Promise<RewardRunReconciliation> {
-    const context = this.options.runtimeContext();
-    try {
-      await proveCanonicalNodeBlock(context.node, {
-        blockHeight: input.run.recipe.preparedAnchor.stacksBlockHeight,
-        indexBlockHash: input.run.recipe.preparedAnchor.indexBlockHash as `0x${string}`,
-      });
-    } catch {
-      return { status: "halt", reason: "The reward run preparation anchor became noncanonical" };
-    }
+    const context = (this.options.observationRuntimeContext ?? this.options.runtimeContext)();
+    // Reconcile the submitted transaction, not the old preparation state. Materialization
+    // still proves the recipe's anchor before any subsequent child can be signed.
     const reader = (
       this.options.createReader ?? ((url) => new LiveTransactionReader({ baseUrl: url }))
     )(context.config.nodeRpcUrl);
-    const indexed = await reader.lookupIndexedTransaction(input.txid);
-    let confirmed: { success: boolean; resultRepr: string; blockHeight: number } | undefined;
-    if (indexed.status === "observed") {
-      if (!indexed.value.isCanonical)
-        return { status: "halt", reason: "Transaction became noncanonical" };
-      confirmed = {
-        success: indexed.value.resultRepr.trim().startsWith("(ok"),
-        resultRepr: indexed.value.resultRepr,
-        blockHeight: Number(indexed.value.blockHeight ?? 0n),
+    const confirmed = await readSubmittedTransactionOutcome({
+      reader,
+      api: context.api,
+      node: context.node,
+      chainId: input.run.recipe.chainId,
+      txId: input.txid,
+      allowApiEvidence: () => this.#hasLocalSigningBinding(input),
+    });
+    if (confirmed.status === "conflict")
+      return {
+        status: "halt",
+        reason: confirmed.reason,
+        requiresNodeCorroboration: true,
       };
-    } else if (transactionIndexCannotAnswer(indexed)) {
-      const apiTransaction = await lookupCanonicalApiTransaction({
-        api: context.api,
-        node: context.node,
-        chainId: input.run.recipe.chainId,
-        txId: input.txid,
-      });
-      if (apiTransaction.status === "observed") {
-        confirmed = {
-          success: apiTransaction.value.success,
-          resultRepr: apiTransaction.value.resultRepr,
-          blockHeight: apiTransaction.value.blockHeight,
+    if (confirmed.status === "pending") return confirmed;
+    if (confirmed.success) {
+      if (
+        input.plan.material.kind === "calculate-rewards" &&
+        !calculationResultMatchesTarget(
+          confirmed.resultRepr,
+          input.plan.material.targetRewardCycle,
+          input.plan.material.expectedLastRewardComputeBurnHeight,
+        )
+      ) {
+        return {
+          status: "halt",
+          reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
+          executionSource: confirmed.source,
         };
       }
+      return {
+        status: "confirmed",
+        blockHeight: confirmed.blockHeight,
+        executionSource: confirmed.source,
+      };
     }
-    if (confirmed) {
-      if (confirmed.success) {
-        if (
-          input.plan.material.kind === "calculate-rewards" &&
-          !calculationResultMatchesTarget(
-            confirmed.resultRepr,
-            input.plan.material.targetRewardCycle,
-            input.plan.material.expectedLastRewardComputeBurnHeight,
-          )
-        ) {
-          return {
-            status: "halt",
-            reason: "Confirmed reward calculation does not match the sealed cycle and checkpoint",
-          };
+    // Failure is an execution fact even when the optional external-completion state read
+    // cannot run during an outage. It never authorizes another signature automatically.
+    const completed = await this.#desiredState(input).catch(() => false);
+    return completed
+      ? {
+          status: "externally-completed",
+          reason: "Another caller completed the same operation",
+          executionSource: confirmed.source,
         }
-        return { status: "confirmed", blockHeight: confirmed.blockHeight };
-      }
-      const completed = await this.#desiredState(input);
-      return completed
-        ? { status: "externally-completed", reason: "Another caller completed the same operation" }
-        : { status: "halt", reason: `Transaction aborted: ${confirmed.resultRepr}` };
+      : {
+          status: "halt",
+          reason: `Transaction aborted: ${confirmed.resultRepr}`,
+          executionSource: confirmed.source,
+        };
+  }
+
+  async #hasLocalSigningBinding(
+    input: Parameters<RewardRunDriver["reconcile"]>[0],
+  ): Promise<boolean> {
+    const attempt = input.signedAttempt;
+    if (
+      !attempt ||
+      attempt.state === "rejected" ||
+      attempt.precomputedTxid !== input.txid ||
+      input.child.failureReason
+    )
+      return false;
+    try {
+      const plan = await revalidateRewardOperationPlan(input.plan);
+      const authorization = plan.material.authorization;
+      // The signer builds the bytes from this revalidated sealed plan and computes the txid
+      // itself. The coordinator persists that attempt before any broadcast (also on restart).
+      return (
+        plan.planSha256 === input.child.planSha256 &&
+        input.child.txid === input.txid &&
+        plan.material.kind === input.child.operation &&
+        authorization.kind === "operator-run" &&
+        authorization.runId === input.run.runId &&
+        authorization.recipeSha256 === input.run.recipeSha256 &&
+        plan.material.sender.principal === input.run.walletPrincipal &&
+        plan.material.network.chainId === input.run.recipe.chainId &&
+        plan.material.transaction.nonce === attempt.nonce &&
+        plan.material.transaction.feeUstx === attempt.feeUstx
+      );
+    } catch {
+      return false;
     }
-    const unconfirmed = await reader.lookupUnconfirmedTransaction(input.txid);
-    if (unconfirmed.status === "observed") return { status: "pending" };
-    return { status: "pending" };
   }
 
   async broadcast(signed: Parameters<RewardRunDriver["broadcast"]>[0]) {

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityProjectionError } from "./activity-projection.js";
 import { ChainAnchorError, RateLimitedError, UpstreamHttpError } from "./chain-clients.js";
 import type { SidekickConfig } from "./config.js";
+import { startConnectionRefreshLoop } from "./connection-refresh.js";
 import { GasWalletError } from "./gas-wallet.js";
 import { HealthSourceError } from "./health-http.js";
 import { buildHealthSnapshot } from "./health-monitoring-presentation.js";
@@ -317,7 +318,7 @@ describe("local API", () => {
         capabilities: {
           signerManagerTrait: { compatible: true, reason: "matched" },
           observedFunctions: { public: [], readOnly: [] },
-          sourceReview: { exactReviewed: true, reason: "reviewed" },
+          sourceReview: { reviewed: true, reason: "reviewed" },
           eventVocabulary: {
             id: "reference-manager-v1",
             normalizationAvailable: true,
@@ -531,7 +532,7 @@ describe("local API", () => {
     expect(operational.statusCode).toBe(503);
     expect(operational.json()).toMatchObject({
       status: "not-operational",
-      code: "manager-not-deployed",
+      code: "operational-startup-pending",
     });
 
     const recheck = await server.inject({
@@ -543,6 +544,88 @@ describe("local API", () => {
     expect(recheck.json()).toMatchObject({ status: "connected", outcomeCode: null });
     expect(check).toHaveBeenLastCalledWith(true);
     expect(onConnectionAssessed).toHaveBeenLastCalledWith(connected);
+  });
+
+  it("keeps the operational probe unavailable after rejected startup until background retry succeeds", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const connected = {
+      status: "connected",
+      outcomeCode: null,
+      checkedAt: "2026-09-07T12:00:00.000Z",
+      stale: false,
+    } as ConnectionAssessment;
+    const check = vi.fn(async () => connected);
+    const service = {
+      snapshot: vi.fn(async () => ({ preflight: { status: "pass" } })),
+      synchronize: vi.fn(async () => ({})),
+    };
+    let operationalStarted = false;
+    const start = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("worker startup unavailable"))
+      .mockImplementation(async () => {
+        operationalStarted = true;
+      });
+    const server = createServer({
+      service,
+      connection: { current: () => connected, check },
+      isOperational: () => operationalStarted,
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    await server.ready();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const loop = startConnectionRefreshLoop({ check }, start, logger);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ retryInMs: 30_000 }),
+        expect.any(String),
+      );
+      const pending = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(pending.statusCode).toBe(503);
+      expect(pending.json()).toEqual({
+        status: "not-operational",
+        code: "operational-startup-pending",
+      });
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(service.snapshot).not.toHaveBeenCalled();
+      for (const url of ["/health/live", "/health/ready"]) {
+        expect((await server.inject({ method: "GET", url })).statusCode).toBe(200);
+      }
+      const headers = { authorization: `Bearer ${token}` };
+      expect(
+        (await server.inject({ method: "GET", url: "/api/v1/status", headers })).statusCode,
+      ).toBe(503);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(start).toHaveBeenCalledTimes(2);
+      const operational = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(operational.statusCode).toBe(200);
+      expect(operational.json()).toMatchObject({ status: "operational" });
+      expect(service.snapshot).toHaveBeenCalledOnce();
+      expect(
+        (await server.inject({ method: "GET", url: "/api/v1/status", headers })).statusCode,
+      ).toBe(200);
+
+      check.mockResolvedValue({
+        ...connected,
+        status: "blocked",
+        outcomeCode: "manager-not-deployed",
+      });
+      const blocked = await server.inject({ method: "GET", url: "/health/operational" });
+      expect(blocked.statusCode).toBe(503);
+      expect(blocked.json()).toMatchObject({
+        status: "not-operational",
+        code: "manager-not-deployed",
+      });
+    } finally {
+      await loop.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("preserves read-only operator evidence after a proved connection becomes unavailable", async () => {
@@ -698,7 +781,7 @@ describe("local API", () => {
         capabilities: {
           signerManagerTrait: { compatible: true, reason: "Exact trait signature" },
           observedFunctions: { public: [], readOnly: [] },
-          sourceReview: { exactReviewed: false, reason: "Observe-only fixture" },
+          sourceReview: { reviewed: false, reason: "Observe-only fixture" },
           eventVocabulary: {
             id: "reference-manager-v1",
             normalizationAvailable: false,
@@ -712,9 +795,11 @@ describe("local API", () => {
       roster: [],
       alerts: [],
     }));
+    const freshSupportSnapshot = vi.fn(() => Promise.reject(new Error("must not collect")));
     const service = {
       snapshot: async () => ({}),
-      supportSnapshot,
+      supportSnapshot: freshSupportSnapshot,
+      storedSupportSnapshot: supportSnapshot,
       synchronize: async () => ({}),
     };
     const server = createServer({
@@ -768,7 +853,8 @@ describe("local API", () => {
       },
     });
     expect(response.body).not.toContain(token);
-    expect(supportSnapshot).toHaveBeenCalledWith(true);
+    expect(supportSnapshot).toHaveBeenCalledWith();
+    expect(freshSupportSnapshot).not.toHaveBeenCalled();
   });
 
   it("accepts the API key from an explicitly configured trusted proxy header", async () => {
@@ -964,6 +1050,71 @@ describe("local API", () => {
     // Interpolated within the [1s, 10s] bucket instead of the raw 10s boundary.
     expect(metrics.body).toContain("sidekick_signer_response_p95_seconds 9.4");
     expect(metrics.body).toContain("sidekick_signer_validation_p95_seconds 0.475");
+  });
+
+  it("allows only submitted wallet observation through cached unavailability, with auth and startup gates intact", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const id = "4e011bf7-f291-42c4-a35b-ab299a87ff8c";
+    const txid = `0x${"ab".repeat(32)}`;
+    let assessment = { status: "unavailable", lastSuccessful: {} } as ConnectionAssessment;
+    let operational = true;
+    const wallet = {
+      get: vi.fn().mockReturnValue({ id, txid, status: "submitted" }),
+      refresh: vi.fn().mockResolvedValue({
+        id,
+        txid,
+        status: "complete",
+        verification: { executionSource: "api" },
+      }),
+      prepare: vi.fn(),
+      submit: vi.fn(),
+      replace: vi.fn(),
+    };
+    const server = createServer({
+      service: { snapshot: vi.fn() } as never,
+      wallet,
+      authToken: token,
+      logger: false,
+      isOperational: () => operational,
+      connection: { current: () => assessment, check: async () => assessment },
+    });
+    servers.push(server);
+    const url = `/api/v1/wallet-intents/${id}/refresh`;
+    const headers = { authorization: `Bearer ${token}` };
+    expect((await server.inject({ method: "POST", url })).statusCode).toBe(401);
+    expect(
+      (
+        await server.inject({
+          method: "POST",
+          url,
+          headers: { ...headers, "sec-fetch-site": "cross-site" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    const result = await server.inject({ method: "POST", url, headers });
+    expect(result.statusCode).toBe(200);
+    expect(result.json().intent.verification.executionSource).toBe("api");
+    for (const blockedUrl of [
+      "/api/v1/wallet-intents",
+      `/api/v1/wallet-intents/${id}/submission`,
+      `/api/v1/wallet-intents/${id}/replacement`,
+    ]) {
+      expect((await server.inject({ method: "POST", url: blockedUrl, headers })).statusCode).toBe(
+        503,
+      );
+    }
+    wallet.get.mockReturnValue({ id, txid: null, status: "prepared" });
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    wallet.get.mockReturnValue({ id, txid, status: "submitted" });
+    operational = false;
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    operational = true;
+    assessment = { ...assessment, status: "blocked" };
+    expect((await server.inject({ method: "POST", url, headers })).statusCode).toBe(503);
+    expect(wallet.refresh).toHaveBeenCalledOnce();
+    expect(wallet.prepare).not.toHaveBeenCalled();
+    expect(wallet.submit).not.toHaveBeenCalled();
+    expect(wallet.replace).not.toHaveBeenCalled();
   });
 
   it("accepts only sealed wallet-intent actions and txids", async () => {
@@ -3106,6 +3257,40 @@ describe("gas wallet routes", () => {
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.headers["cache-control"]).toBe("no-store");
     expect(gasWallet.refreshSweep).toHaveBeenCalledWith(sweep.sweepId);
+  });
+
+  it("allows read-only sweep refresh during cached unavailability without opening approval or identity-blocked access", async () => {
+    const token = "test-operator-token-with-32-chars";
+    let assessment = {
+      status: "unavailable",
+      lastSuccessful: { managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager" },
+    } as ConnectionAssessment;
+    const gasWallet = {
+      refreshSweep: vi
+        .fn()
+        .mockResolvedValue({ ...sweep, status: "confirmed", executionSource: "api" }),
+      approveSweep: vi.fn(),
+    };
+    const server = createServer({
+      service: { snapshot: vi.fn() } as never,
+      gasWallet: gasWallet as never,
+      connection: { current: () => assessment, check: async () => assessment },
+      authToken: token,
+      logger: false,
+    });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+    const url = `/api/v1/settings/gas-wallet/sweep/${sweep.sweepId}`;
+    const refreshed = await server.inject({ method: "GET", url, headers });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json()).toMatchObject({ executionSource: "api" });
+    expect(
+      (await server.inject({ method: "POST", url: `${url}/approve`, headers })).statusCode,
+    ).toBe(503);
+    expect(gasWallet.approveSweep).not.toHaveBeenCalled();
+    assessment = { ...assessment, status: "blocked" };
+    expect((await server.inject({ method: "GET", url, headers })).statusCode).toBe(503);
+    expect(gasWallet.refreshSweep).toHaveBeenCalledOnce();
   });
 
   it("rejects cross-site browser mutations and accepts same-origin ones", async () => {

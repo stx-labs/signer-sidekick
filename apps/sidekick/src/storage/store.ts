@@ -14,6 +14,7 @@ import {
 } from "../reward-calibration.js";
 import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
+import { ActivityReadRepository } from "./activity-read-repository.js";
 import {
   type ChainCursorInput,
   ChainStateRepository,
@@ -1680,6 +1681,7 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 }
 
 export class SidekickStore {
+  readonly activity: ActivityReadRepository;
   readonly transactionEngine: TransactionEngineRepository;
   readonly walletIntents: WalletIntentRepository;
   readonly healthMonitoring: HealthMonitoringRepository;
@@ -1694,6 +1696,7 @@ export class SidekickStore {
   readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
 
   constructor(private readonly db: DatabaseSync) {
+    this.activity = new ActivityReadRepository(db);
     this.transactionEngine = new TransactionEngineRepository(db);
     this.walletIntents = new WalletIntentRepository(db);
     this.healthMonitoring = new HealthMonitoringRepository(db);
@@ -2105,18 +2108,31 @@ export class SidekickStore {
     };
   }
 
-  listManagerActivityChainEvents(
+  /** Request-sized batches; never truncate prints belonging to a selected transaction. */
+  listManagerActivityChainEventsForTxids(
     chainId: number,
     managerPrincipal: string,
-    limit = 10_001,
+    txIds: readonly string[],
     relatedContractIds: readonly string[] = [],
   ): StoredActivityChainEvent[] {
+    const ids = [...new Set(txIds.map((txId) => hashSchema.parse(txId)))];
+    if (ids.length === 0) return [];
+    if (ids.length > 500)
+      return ids.flatMap((_, index) =>
+        index % 500 === 0
+          ? this.listManagerActivityChainEventsForTxids(
+              chainId,
+              managerPrincipal,
+              ids.slice(index, index + 500),
+              relatedContractIds,
+            )
+          : [],
+      );
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
     const contracts = [
       ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
     ];
-    const parsedLimit = z.number().int().min(1).max(10_001).parse(limit);
     const rows = this.db
       .prepare(
         `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
@@ -2124,74 +2140,10 @@ export class SidekickStore {
            contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
            first_seen_at, updated_at
          FROM chain_events
-         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")})
-         ORDER BY COALESCE(occurred_at, first_seen_at) DESC, tx_id ASC, event_index ASC LIMIT ?`,
+         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id IN (${ids.map(() => "?").join(", ")})
+         ORDER BY tx_id ASC, event_index ASC`,
       )
-      .all(parsedChainId, ...contracts, parsedLimit) as Array<{
-      chain_id: number;
-      tx_id: string;
-      event_index: number;
-      block_height: number;
-      index_block_hash: string;
-      canonical: 0 | 1;
-      evidence_level: "node-index-verified" | "canonical-block-correlated" | "indexer-reported";
-      contract_id: string;
-      topic: string | null;
-      decoded_schema_version: number | null;
-      decoded_payload_json: string | null;
-      occurred_at: string | null;
-      first_seen_at: string;
-      updated_at: string;
-    }>;
-    return rows.map((row) => ({
-      chainId: z.number().int().nonnegative().parse(row.chain_id),
-      txId: hashSchema.parse(row.tx_id),
-      eventIndex: z.number().int().nonnegative().parse(row.event_index),
-      blockHeight: z.number().int().nonnegative().parse(row.block_height),
-      indexBlockHash: hashSchema.parse(row.index_block_hash),
-      canonical: row.canonical === 1,
-      evidenceLevel: row.evidence_level,
-      contractId: principalSchema.parse(row.contract_id),
-      topic: z.string().min(1).max(500).nullable().parse(row.topic),
-      decodedSchemaVersion: z
-        .number()
-        .int()
-        .positive()
-        .nullable()
-        .parse(row.decoded_schema_version),
-      decodedPayload:
-        row.decoded_payload_json === null
-          ? null
-          : (JSON.parse(row.decoded_payload_json) as unknown),
-      occurredAt: row.occurred_at === null ? null : z.iso.datetime().parse(row.occurred_at),
-      firstSeenAt: z.iso.datetime().parse(row.first_seen_at),
-      updatedAt: z.iso.datetime().parse(row.updated_at),
-    }));
-  }
-
-  listManagerActivityChainEventsForTxid(
-    chainId: number,
-    managerPrincipal: string,
-    txId: string,
-    relatedContractIds: readonly string[] = [],
-  ): StoredActivityChainEvent[] {
-    const parsedChainId = z.number().int().nonnegative().parse(chainId);
-    const manager = principalSchema.parse(managerPrincipal);
-    const contracts = [
-      ...new Set([manager, ...relatedContractIds.map((value) => principalSchema.parse(value))]),
-    ];
-    const parsedTxId = hashSchema.parse(txId);
-    const rows = this.db
-      .prepare(
-        `SELECT chain_id, tx_id, event_index, block_height, index_block_hash, canonical,
-           evidence_level,
-           contract_id, topic, decoded_schema_version, decoded_payload_json, occurred_at,
-           first_seen_at, updated_at
-         FROM chain_events
-         WHERE chain_id = ? AND contract_id IN (${contracts.map(() => "?").join(", ")}) AND tx_id = ?
-         ORDER BY event_index ASC`,
-      )
-      .all(parsedChainId, ...contracts, parsedTxId) as Array<{
+      .all(parsedChainId, ...contracts, ...ids) as Array<{
       chain_id: number;
       tx_id: string;
       event_index: number;

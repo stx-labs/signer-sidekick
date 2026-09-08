@@ -64,7 +64,7 @@ export function ManagerSettings({
   );
   const actions = data.manager.capabilities.actions;
   const operationSummary = summarizeManagerCapabilities(actions);
-  const sourceReviewed = data.manager.capabilities.sourceReview.exactReviewed;
+  const sourceReviewed = data.manager.capabilities.sourceReview.reviewed;
   const traitCompatible = data.manager.capabilities.signerManagerTrait.compatible;
   const coreMonitoringAvailable = data.manager.attachAllowed && traitCompatible;
   const admins = data.activity.admins;

@@ -12,6 +12,7 @@ export function DistributionCard({
   model,
   payments,
   paymentsError = null,
+  onLoadPayments,
   onAction,
   onRunControl,
   runControlBusy = null,
@@ -21,6 +22,7 @@ export function DistributionCard({
   /** Null while the distribution's payments are still loading. */
   payments: readonly RewardLedgerPayment[] | null;
   paymentsError?: string | null;
+  onLoadPayments?: (() => void) | undefined;
   onAction: (action: RewardPrimaryAction) => void;
   onRunControl?: ((runId: string, control: "pause" | "resume" | "cancel") => void) | undefined;
   runControlBusy?: "pause" | "resume" | "cancel" | null;
@@ -177,7 +179,16 @@ export function DistributionCard({
       ) : null}
       {model.calculated ? (
         <div className="rw-pending-payments">
-          {payments === null ? (
+          {payments !== null && paymentsError ? (
+            <p className="content-notice" role="status">
+              Payment refresh failed; showing retained payments. {paymentsError}
+            </p>
+          ) : null}
+          {payments === null && onLoadPayments ? (
+            <button className="btn btn-secondary" type="button" onClick={onLoadPayments}>
+              Load payments
+            </button>
+          ) : payments === null ? (
             <div className="tbl-wrap rw-loading" role="status">
               {paymentsError ? `Could not load payments: ${paymentsError}` : "Loading payments…"}
             </div>

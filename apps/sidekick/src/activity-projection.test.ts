@@ -23,6 +23,7 @@ import { managerEventStream } from "./manager-event-vocabulary.js";
 import { pox5PoolActivityStream } from "./pox5-pool-activity-sync.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
 import { canonicalJsonSha256, walletIntentStates } from "./storage/wallet-intent-repository.js";
+import { buildRewardRunRecipe } from "./transaction-engine/reward-run-service.js";
 import { transactionJobStates } from "./transaction-engine/state-machine.js";
 
 const now = new Date("2026-08-14T12:00:00.000Z");
@@ -205,6 +206,128 @@ afterEach(() => {
 });
 
 describe("Activity projection", () => {
+  it("batches 100 child transactions and preserves summary evidence without constructing list timelines", async () => {
+    const store = await memoryStore();
+    const runId = "00000000-0000-4000-8000-000000000100";
+    const recipe = buildRewardRunRecipe({
+      runId,
+      feeCapUstx: 500n,
+      maximumTransactions: 100,
+      request: { cycle: 141, distribution: 1, operations: ["claim-staker-rewards"] },
+      facts: {
+        walletPrincipal: actorPrincipal,
+        managerPrincipal,
+        pox5Contract: pox5ContractId,
+        sbtcTokenContract: `${actorPrincipal}.sbtc-token`,
+        sbtcRegistryContract: `${actorPrincipal}.sbtc-registry`,
+        network: "mainnet",
+        chainId: 1,
+        cycle: 141,
+        distribution: 1,
+        preparedAnchor: { stacksBlockHeight: 9000, burnBlockHeight: 4100, indexBlockHash },
+        managerSourceFingerprint: "12".repeat(32),
+        pox5SourceFingerprint: "34".repeat(32),
+        calculateRequired: false,
+        collectRequired: false,
+        maximumCollectSats: null,
+        eligibleAccountCount: 100,
+        eligibleWithdrawalCounts: { accepted: 0, rejected: 0 },
+        withdrawals: [],
+        accounts: Array.from({ length: 100 }, (_, index) => ({
+          stakerPrincipal: actorPrincipal,
+          rewardCycle: 141,
+          bondIndex: String(index),
+          maximumGrossSats: "1000",
+          payoutRoute: "direct-sbtc",
+        })),
+      },
+    });
+    store.rewardRuns.insert({
+      runId,
+      walletPrincipal: actorPrincipal,
+      recipeSha256: "ab".repeat(32),
+      recipe,
+      children: recipe.children,
+      approvalExpiresAt: now.toISOString(),
+      now: now.toISOString(),
+    });
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: now.toISOString(),
+    });
+    const changedAt = "2026-08-14T12:01:00.000Z";
+    for (let index = 0; index < 100; index += 1) {
+      const childTxid = `0x${index.toString(16).padStart(64, "0")}` as `0x${string}`;
+      store.rewardRuns.updateChild({
+        runId,
+        childIndex: index,
+        from: ["pending"],
+        to: "confirmed",
+        txid: childTxid,
+        provenance: "you",
+        now: now.toISOString(),
+      });
+      store.putChainEvent({
+        chainId: 1,
+        txId: childTxid,
+        eventIndex: 0,
+        occurredAt: now.toISOString(),
+        blockHeight: 9000 + index,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: index !== 0,
+        microblockCanonical: true,
+        contractId: managerPrincipal,
+        topic: "print",
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          event: { kind: "claim-staker-rewards", stakerPrincipal: actorPrincipal },
+        },
+        sourceId,
+        observedAt: changedAt,
+      });
+    }
+    const events = vi.spyOn(store, "listManagerActivityChainEventsForTxids");
+    const cursors = vi.spyOn(store.chainState, "getCursor");
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      pox5ContractId: () => pox5ContractId,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    const page = service.page(query());
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(events.mock.calls[0]?.[2]).toHaveLength(100);
+    expect(cursors).toHaveBeenCalledTimes(3);
+    expect(page.items).toEqual([]);
+    expect(page.active[0]?.updatedAt).toBe(changedAt);
+    expect(page.active[0]?.txids).toHaveLength(100);
+    expect(page.active[0]?.coverage).toContainEqual(
+      expect.objectContaining({
+        source: "indexed-manager-history",
+        status: "delayed",
+        observedAt: changedAt,
+      }),
+    );
+    const detail = service.detail(`reward-run:${runId}`);
+    expect(detail?.summary).toEqual(page.active[0]);
+    expect(detail?.timeline.filter(({ code }) => code === "verified-chain-event")).toHaveLength(99);
+    expect(detail?.timeline.filter(({ code }) => code === "chain-event-noncanonical")).toHaveLength(
+      1,
+    );
+    expect(detail?.aliases).toHaveLength(101);
+    expect(detail?.timeline.map(({ occurredAt }) => occurredAt)).toEqual(
+      detail?.timeline.map(({ occurredAt }) => occurredAt).sort(),
+    );
+  });
   it("maps every authoritative wallet-intent and engine state", () => {
     expect(walletIntentStates.map((state) => [state, walletIntentActivityState(state)])).toEqual([
       ["prepared", { displayStatus: "action-required", outcome: "pending" }],
@@ -369,6 +492,26 @@ describe("Activity projection", () => {
     ).toThrowError(ActivityProjectionError);
   });
 
+  it("uses the same binary tie order for sorting and cursor continuation", () => {
+    const records = ["activity:a", "activity:A", "activity:0"].map((id) =>
+      record(summary(id, "complete", "succeeded")),
+    );
+    const context = { now, burnBlockHeight: null, rewardCycleId: null, phase: null };
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    do {
+      const page = projectActivityPage({
+        records,
+        coverage: [sourceCoverage],
+        query: query({ limit: 1, cursor }),
+        context,
+      });
+      ids.push(...page.items.map(({ activityId }) => activityId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual(["activity:0", "activity:A", "activity:a"]);
+  });
+
   it("keeps every closed Activity status reachable through its documented filter", () => {
     const records = [
       record(summary("activity:action", "action-required", "pending")),
@@ -428,6 +571,15 @@ describe("Activity projection", () => {
       txid,
       submittedAt: "2026-08-14T10:05:00.000Z",
     });
+    store.walletIntents.appendObservation({
+      intentId: created.id,
+      outcome: "canonical-success",
+      canonical: true,
+      blockHeight: 8_750_000,
+      indexBlockHash,
+      observedAt: "2026-08-14T10:06:00.000Z",
+      evidence: { decoded: { executionSource: "api" } },
+    });
     store.putChainEvent({
       chainId: 1,
       txId: txid,
@@ -469,10 +621,9 @@ describe("Activity projection", () => {
     expect(page.items).toHaveLength(0);
     expect(page.active[0]?.activityId).toBe(`wallet-intent:${created.id}`);
 
-    const listWalletHistory = vi.spyOn(store.walletIntents, "listForActivity");
-    const listActiveWallets = vi.spyOn(store.walletIntents, "listActiveForActivity");
+    const listActive = vi.spyOn(store.activity, "activeKeys");
+    const listHistory = vi.spyOn(store.activity, "historyKeys");
     const listEngineHistory = vi.spyOn(store.transactionEngine, "listLogicalJobs");
-    const listChainHistory = vi.spyOn(store, "listManagerActivityChainEvents");
     const listSettingsHistory = vi.spyOn(store.runtimeSettings, "listAudit");
     const alias = `chain-tx:1:${txid}`;
     const detail = service.detail(alias);
@@ -482,14 +633,16 @@ describe("Activity projection", () => {
       aliases: expect.arrayContaining([alias, `wallet-intent:${created.id}`]),
     });
     expect(detail?.timeline.some(({ code }) => code === "transaction-id-reported")).toBe(true);
+    expect(
+      detail?.timeline.some(({ detail }) => detail.includes("Execution evidence: configured API.")),
+    ).toBe(true);
     expect(detail?.timeline.some(({ code }) => code === "verified-chain-event")).toBe(true);
     expect(detail?.summary.coverage.map(({ source }) => source)).toEqual(
       expect.arrayContaining(["wallet-intents", "indexed-manager-history"]),
     );
-    expect(listWalletHistory).not.toHaveBeenCalled();
-    expect(listActiveWallets).not.toHaveBeenCalled();
+    expect(listActive).not.toHaveBeenCalled();
+    expect(listHistory).not.toHaveBeenCalled();
     expect(listEngineHistory).not.toHaveBeenCalled();
-    expect(listChainHistory).not.toHaveBeenCalled();
     expect(listSettingsHistory).not.toHaveBeenCalled();
   });
 
@@ -569,6 +722,69 @@ describe("Activity projection", () => {
     expect(service.page(query({ domain: "pool", time: "24h" })).items).toEqual([]);
   });
 
+  it("groups transaction events and excludes an off-page owner before key pagination", async () => {
+    const store = await memoryStore();
+    const run = insertCompletedRewardRun(store);
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: now.toISOString(),
+    });
+    const firstTx = `0x${"44".repeat(32)}`;
+    const secondTx = `0x${"55".repeat(32)}`;
+    for (const [txId, eventIndex, occurredAt] of [
+      [txid, 0, "2026-08-14T12:00:00.000Z"],
+      [firstTx, 0, "2026-08-14T12:00:00.000Z"],
+      [firstTx, 1, "2026-08-14T11:30:00.000Z"],
+      [secondTx, 0, "2026-08-14T11:45:00.000Z"],
+    ] as const) {
+      store.putChainEvent({
+        chainId: 1,
+        txId,
+        eventIndex,
+        occurredAt,
+        blockHeight: 8_750_000,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: true,
+        microblockCanonical: true,
+        contractId: managerPrincipal,
+        topic: "print",
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          event: { kind: "claim-staker-rewards", stakerPrincipal: actorPrincipal },
+        },
+        sourceId,
+        observedAt: now.toISOString(),
+      });
+    }
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    do {
+      const page = service.page(query({ limit: 1, cursor }));
+      ids.push(...page.items.map(({ activityId }) => activityId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual([
+      `chain-tx:1:${secondTx}`,
+      `chain-tx:1:${firstTx}`,
+      `reward-run:${run.runId}`,
+    ]);
+    expect(service.detail(`chain-tx:1:${firstTx}`)?.timeline).toHaveLength(2);
+  });
+
   it("projects completed recipe runs as actions and resolves their transaction aliases", async () => {
     const store = await memoryStore();
     const run = insertCompletedRewardRun(store);
@@ -587,6 +803,8 @@ describe("Activity projection", () => {
         title: "Collect rewards",
         displayStatus: "complete",
         outcome: "succeeded",
+        deadline: null,
+        urgencyAt: null,
         txids: [txid],
       }),
     );
@@ -595,6 +813,21 @@ describe("Activity projection", () => {
       aliases: expect.arrayContaining([`chain-tx:1:${txid}`, `reward-run:${run.runId}`]),
       summary: { stage: "complete" },
     });
+    store.rewardRuns.updateChild({
+      runId: run.runId,
+      childIndex: 0,
+      from: ["confirmed"],
+      to: "confirmed",
+      now: now.toISOString(),
+      provenance: "you",
+      executionSource: "api",
+    });
+    expect(service.detail(`chain-tx:1:${txid}`)?.timeline).toContainEqual(
+      expect.objectContaining({
+        txid,
+        detail: expect.stringContaining("Transaction execution evidence: configured API."),
+      }),
+    );
   });
 
   it("links an expired transaction review to the replacement for the same operation scope", async () => {
@@ -696,37 +929,21 @@ describe("Activity projection", () => {
 
     expect(service.page(query()).active).toHaveLength(1);
     expect(listLatestObservations).toHaveBeenCalledOnce();
-    expect(listAttemptsForActivity).toHaveBeenCalledOnce();
+    expect(listAttemptsForActivity).not.toHaveBeenCalled();
     expect(listObservations).not.toHaveBeenCalled();
     expect(listAttempts).not.toHaveBeenCalled();
   });
 
-  it("degrades bounded terminal coverage instead of failing the Activity page", () => {
-    const settingsAudit = Array.from({ length: 10_001 }, (_, index) => ({
-      revision: index + 1,
-      changedFields: ["dataSources.nodeRpcUrl"],
-      changedAt: new Date(now.getTime() - index * 1_000).toISOString(),
-    }));
-    const store = {
-      walletIntents: {
-        listForActivity: () => [],
-        listActiveForActivity: () => [],
-        listObservations: () => [],
-        listLatestObservationsForActivity: () => new Map(),
-      },
-      transactionEngine: {
-        listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
-        listAttemptsForActivity: () => new Map(),
-      },
-      rewardRuns: {
-        listForActivity: () => [],
-      },
-      runtimeSettings: {
-        listAudit: () => settingsAudit,
-      },
-      listManagerActivityChainEvents: () => [],
-      chainState: { getCursor: () => null },
-    } as unknown as SidekickStore;
+  it("paginates all terminal history instead of truncating the newest 10000", async () => {
+    const store = await memoryStore();
+    for (let index = 0; index < 10_001; index += 1) {
+      store.runtimeSettings.put({
+        settings: {},
+        apiCredentials: {},
+        changedFields: ["dataSources.nodeRpcUrl"],
+        observedAt: new Date(now.getTime() - index * 1_000).toISOString(),
+      });
+    }
     const service = new ActivityProjectionService({
       store,
       chainId: 1,
@@ -734,18 +951,59 @@ describe("Activity projection", () => {
       sourceId: () => sourceId,
       now: () => now,
     });
-
-    const page = service.page(query());
-    expect(page.items).toHaveLength(50);
-    expect(page.items[0]?.coverage).toContainEqual(
-      expect.objectContaining({ source: "settings-audit", status: "current" }),
-    );
+    const history = vi.spyOn(store.activity, "historyKeys");
+    const detail = vi.spyOn(store.runtimeSettings, "getAudit");
+    expect(service.active().active).toEqual([]);
+    expect(history).not.toHaveBeenCalled();
+    expect(detail).not.toHaveBeenCalled();
+    const page = service.page(query({ type: "configuration", limit: 100 }));
+    expect(page.items).toHaveLength(100);
+    expect(detail).toHaveBeenCalledTimes(101);
     expect(page.coverage).toContainEqual(
       expect.objectContaining({
         source: "settings-audit",
-        status: "delayed",
-        reason: expect.stringContaining("newest 10000"),
+        status: "current",
+        reason: null,
       }),
     );
+    let cursor = page.nextCursor;
+    const ids = new Set(page.items.map(({ activityId }) => activityId));
+    while (cursor) {
+      const next = service.page(query({ type: "configuration", limit: 100, cursor }));
+      for (const { activityId } of next.items) {
+        expect(ids.has(activityId)).toBe(false);
+        ids.add(activityId);
+      }
+      cursor = next.nextCursor;
+    }
+    expect(ids.size).toBe(10_001);
+    expect(ids.has("settings:10001")).toBe(true);
+  }, 30_000);
+
+  it("bounds selective scans and returns a continuation even when a page has no matches", async () => {
+    const store = await memoryStore();
+    for (let index = 0; index < 205; index += 1) {
+      store.runtimeSettings.put({
+        settings: {},
+        apiCredentials: {},
+        changedFields: ["fee"],
+        observedAt: new Date(now.getTime() - index * 1_000).toISOString(),
+      });
+    }
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    const detail = vi.spyOn(store.runtimeSettings, "getAudit");
+    const first = service.page(query({ search: "settings:205" }));
+    expect(first.items).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    expect(detail).toHaveBeenCalledTimes(200);
+    const last = service.page(query({ search: "settings:205", cursor: first.nextCursor }));
+    expect(last.items.map(({ activityId }) => activityId)).toEqual(["settings:205"]);
+    expect(last.nextCursor).toBeNull();
   });
 });

@@ -25,9 +25,10 @@ or explain the operator's core PoX-5 state. The manager trait standardizes only 
 broader operations cannot be inferred from trait compliance alone. Sidekick exposes a manager-neutral
 PoX-5 baseline for every attached manager and adds normalized manager interactions only when runtime
 capabilities satisfy a reviewed behavioral adapter. Executable adapter admission requires the deployed
-source to match an immutable source fingerprint reviewed for that capability; this is an execution
-gate, not a manager-version, attachment, or observation gate. The initial mainnet contract census and
-the compatibility layers are documented in [Manager compatibility baseline](manager-compatibility-baseline.md).
+program to match a reviewed artifact exactly or canonically, with matching execution environment
+and required functions. This gates a capability, not manager attachment or observation. The initial
+mainnet census and compatibility layers are documented in
+[Manager compatibility baseline](manager-compatibility-baseline.md).
 
 The design is **event-driven but not event-trusting**. Stacks Core callbacks make Sidekick react
 promptly even when no browser is open, but a callback is a trigger and evidence, not the final
@@ -97,7 +98,7 @@ products. The Overview answers “what needs attention now?”; other pages expl
 - Signer-protocol health from node RPC, signer monitoring, calibrated metrics, and independent
   network-reference evidence, without overstating certainty.
 - Actionable alerts and a comprehensive redacted support snapshot.
-- Observe as the default; operator-run only in an exact-source reviewed release.
+- Observe as the default; operator-run only after approval of one sealed recipe with reviewed adapters.
 
 ### Out of scope
 
@@ -105,7 +106,8 @@ products. The Overview answers “what needs attention now?”; other pages expl
 - Public pool pages, public wallet connections, or staker transaction submission.
 - Node, signer, Bitcoin, API, database, Docker, systemd, or host lifecycle management.
 - Host CPU, memory, disk, logs, backups, or general observability.
-- Signer private keys, manager-admin private keys, wallet custody, or a Docker socket.
+- Signer/admin key custody, general-purpose wallet custody, or a Docker socket; the dedicated
+  gas wallet is the explicit exception described above.
 - Bond creation, Bitcoin L1 lock creation, SPV proof submission, early exits, or rollovers.
 - Contract-source or contract-version allowlists that block otherwise provable baseline behavior.
 - Multi-tenant or hosted control-plane behavior.
@@ -145,9 +147,9 @@ products. The Overview answers “what needs attention now?”; other pages expl
   monthly while the deployed population changes. Census evidence prioritizes review but never grants a
   runtime capability. See [research/signer-manager-census](../../research/signer-manager-census/README.md).
 - **Capability deployment identity:** source bytes alone do not identify executable semantics (the
-  same source deploys under multiple Clarity versions). Capability evidence binds exact source
-  SHA-256, Clarity version/epoch, and canonical callable-interface SHA-256; token hashes remain
-  research evidence only.
+  same source deploys under multiple Clarity versions). Capability evidence records the deployed raw
+  SHA-256 and interface fingerprint; admission checks exact/canonical program recognition,
+  Clarity version/epoch and required functions. The census token digest remains research-only.
 - **Frozen operator navigation:** Overview, Pool, Rewards, Activity, Signer Health, Settings. Manager
   and Operations were removed after their actions/history moved; old URLs get no redirects; action
   workspaces are contextual routes. Normative contract:

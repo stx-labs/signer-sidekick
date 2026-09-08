@@ -1414,6 +1414,15 @@ export class TransactionEngineRepository {
       .map((row) => mapAttemptRow(attemptRowSchema.parse(row)));
   }
 
+  /** Signed attempts confer ownership without hydrating jobs, plans or reconciliations. */
+  listOwnedTransactionIds(): string[] {
+    return (
+      this.db
+        .prepare(`SELECT DISTINCT precomputed_txid AS txid FROM transaction_attempts`)
+        .all() as Array<{ txid: string }>
+    ).map(({ txid }) => txid);
+  }
+
   /** Returns attempts grouped by job without issuing one query per Activity record. */
   listAttemptsForActivity(jobIds: readonly string[]): Map<string, StoredTransactionAttempt[]> {
     const ids = [...new Set(jobIds.map((jobId) => uuidSchema.parse(jobId)))];

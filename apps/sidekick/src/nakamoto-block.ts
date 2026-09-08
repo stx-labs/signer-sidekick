@@ -58,7 +58,7 @@ function transactionArrayOffset(block: Uint8Array): number {
 }
 
 /**
- * Recovers the transaction ids a Nakamoto block commits to, straight from the
+ * Recovers the transactions a Nakamoto block commits to, straight from the
  * consensus-serialized block the node served.
  *
  * This is what lets Sidekick confirm a transaction is *in* a block without the
@@ -70,15 +70,17 @@ function transactionArrayOffset(block: Uint8Array): number {
  * the block, so a trailing-byte mismatch means the header walk went wrong; that
  * throws rather than returning a partial set a caller could read as "absent".
  */
-export function readNakamotoBlockTxids(block: Uint8Array): `0x${string}`[] {
+function walkNakamotoBlockTransactions(
+  block: Uint8Array,
+  visit: (transaction: ReturnType<typeof deserializeTransaction>) => void,
+): void {
   const reader = new BytesReader(block);
   reader.readOffset = transactionArrayOffset(block);
   const count = reader.readUInt32BE();
 
-  const txids: `0x${string}`[] = [];
   for (let index = 0; index < count; index++) {
     try {
-      txids.push(`0x${deserializeTransaction(reader).txid().toLowerCase()}`);
+      visit(deserializeTransaction(reader));
     } catch (cause) {
       throw new Error(`Nakamoto block transaction ${index} could not be deserialized`, { cause });
     }
@@ -87,7 +89,24 @@ export function readNakamotoBlockTxids(block: Uint8Array): `0x${string}`[] {
   if (reader.readOffset !== block.byteLength) {
     throw new Error("Nakamoto block transactions did not consume the block exactly");
   }
+}
+
+export function readNakamotoBlockTxids(block: Uint8Array): `0x${string}`[] {
+  const txids: `0x${string}`[] = [];
+  walkNakamotoBlockTransactions(block, (tx) => txids.push(`0x${tx.txid().toLowerCase()}`));
   return txids;
+}
+
+/** Retain only the matching transaction, but validate the complete block before returning it. */
+export function findNakamotoBlockTransaction(
+  block: Uint8Array,
+  txId: string,
+): ReturnType<typeof deserializeTransaction> | null {
+  let match: ReturnType<typeof deserializeTransaction> | null = null;
+  walkNakamotoBlockTransactions(block, (tx) => {
+    if (`0x${tx.txid().toLowerCase()}` === txId.toLowerCase()) match = tx;
+  });
+  return match;
 }
 
 /** Whether `txId` is one of the transactions the block commits to. */

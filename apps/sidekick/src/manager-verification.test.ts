@@ -8,7 +8,7 @@ import {
 } from "@stx-labs/signer-sidekick-protocol/manager-adapter";
 import { generateManagerArtifact } from "@stx-labs/signer-sidekick-protocol/manager-artifact";
 import { managerArtifactFromNetworkProfile } from "@stx-labs/signer-sidekick-protocol/network-manager-artifact";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractInterface,
   type StacksNodeClient,
@@ -16,13 +16,77 @@ import {
 } from "./chain-clients.js";
 import {
   createManagerVerificationContext,
+  inspectDeployedManager,
   inspectManagerOrReportMissing,
+  invalidateManagerVerificationCache,
+  MANAGER_SOURCE_CACHE_LIMIT,
   verifyManagerArtifact,
 } from "./manager-verification.js";
 
 const root = resolve(import.meta.dirname, "../../..");
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
 const temporaryDirectories: string[] = [];
+
+describe("bounded manager source cache", () => {
+  async function fixture() {
+    const context = await createManagerVerificationContext({
+      contractsDirectory: resolve(root, "contracts"),
+    });
+    const getContractSource = vi
+      .fn()
+      .mockResolvedValue({ source: "(define-constant example u1)", publish_height: 1 });
+    const getContractInterface = vi.fn().mockResolvedValue(compatibleInterface());
+    const node = { getContractSource, getContractInterface } as unknown as StacksNodeClient;
+    return { context, node, getContractSource, getContractInterface };
+  }
+
+  it("evicts old anchors while retaining recently used anchors and exact read options", async () => {
+    const { context, node, getContractSource, getContractInterface } = await fixture();
+    const tip = (index: number) => `0x${index.toString(16).padStart(64, "0")}` as const;
+    for (let index = 0; index < MANAGER_SOURCE_CACHE_LIMIT; index++) {
+      await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(index) });
+    }
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(0) });
+    expect(getContractSource).toHaveBeenCalledTimes(MANAGER_SOURCE_CACHE_LIMIT);
+    await inspectDeployedManager(node, "mainnet", manager, context, {
+      tip: tip(MANAGER_SOURCE_CACHE_LIMIT),
+    });
+    expect(context.sourceCache.size).toBe(MANAGER_SOURCE_CACHE_LIMIT);
+    expect(context.sourceCache.has(`mainnet:${tip(0)}:${manager}`)).toBe(true);
+    expect(context.sourceCache.has(`mainnet:${tip(1)}:${manager}`)).toBe(false);
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip: tip(1) });
+    expect(getContractSource).toHaveBeenCalledTimes(MANAGER_SOURCE_CACHE_LIMIT + 2);
+    expect(getContractInterface).toHaveBeenLastCalledWith(manager, { tip: tip(1) });
+  });
+
+  it("isolates network and principal keys and invalidates latest together with anchored entries", async () => {
+    const { context, node, getContractSource } = await fixture();
+    const other = "SP000000000000000000002Q6VF78.other-manager";
+    const tip = `0x${"ab".repeat(32)}` as const;
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    await inspectDeployedManager(node, "mainnet", manager, context, { tip });
+    await inspectDeployedManager(node, "testnet", manager, context, { tip });
+    await inspectDeployedManager(node, "mainnet", other, context, { tip });
+    expect(getContractSource).toHaveBeenCalledTimes(4);
+    invalidateManagerVerificationCache(context, manager);
+    expect([...context.sourceCache.keys()]).toEqual([`mainnet:${tip}:${other}`]);
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    expect(getContractSource).toHaveBeenCalledTimes(5);
+    invalidateManagerVerificationCache(context);
+    expect(context.sourceCache.size).toBe(0);
+  });
+
+  it("does not cache a failed anchored source read", async () => {
+    const { context, node, getContractSource } = await fixture();
+    getContractSource.mockRejectedValueOnce(new Error("node unavailable"));
+    await expect(inspectDeployedManager(node, "mainnet", manager, context)).rejects.toThrow(
+      "node unavailable",
+    );
+    expect(context.sourceCache.size).toBe(0);
+    await inspectDeployedManager(node, "mainnet", manager, context);
+    expect(getContractSource).toHaveBeenCalledTimes(2);
+  });
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -90,6 +154,102 @@ function compatibleInterface(): ContractInterface {
 }
 
 describe("deployed manager verification", () => {
+  it.each([
+    ["missing final newline", (source: string) => source.trimEnd()],
+    ["CRLF", (source: string) => source.replaceAll("\n", "\r\n")],
+    [
+      "comments and whitespace",
+      (source: string) => `;; an operator note with "quotes"\n\n${source.replaceAll("  ", "\t")}\n`,
+    ],
+  ])("admits the reviewed program with %s while binding execution to deployed bytes", async (_, transform) => {
+    const original = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const source = transform(original);
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      compatibleInterface(),
+    );
+    expect(report.source).toMatchObject({ match: "canonical", recognized: true });
+    expect(report.capabilities.sourceReview).toMatchObject({
+      reviewed: true,
+      match: "canonical",
+      artifactId: "stacks-4.0.0-mainnet-reference-manager",
+    });
+    expect(report.capabilities.eventVocabulary.normalizationAvailable).toBe(true);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => executionAvailable)).toBe(
+      true,
+    );
+    expect(
+      report.capabilities.actions.every(
+        ({ adapter }) => adapter?.reviewedSourceSha256 === claritySourceSha256(source),
+      ),
+    ).toBe(true);
+    expect(claritySourceSha256(source)).not.toBe(claritySourceSha256(original));
+    // Program recognition is not production approval or authorization for unattended execution.
+    expect(report.automationEligible).toBe(false);
+  });
+
+  it.each([
+    ["constant", (source: string) => source.replace("u10000", "u10001")],
+    ["caller", (source: string) => source.replace("tx-sender", "contract-caller")],
+    [
+      "identifier boundary",
+      (source: string) =>
+        source.replace("(define-public (claim-rewards", "(define-public (claim- rewards"),
+    ],
+    [
+      "string literal",
+      (source: string) => source.replace('"claim-staker-rewards"', '"claim-staker-reward"'),
+    ],
+  ])("does not admit an unreviewed %s change", async (_, transform) => {
+    const original = await readFile(
+      resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+      "utf8",
+    );
+    const source = transform(original);
+    expect(source).not.toBe(original);
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      compatibleInterface(),
+    );
+    expect(report.capabilities.sourceReview.reviewed).toBe(false);
+    expect(report.capabilities.eventVocabulary.normalizationAvailable).toBe(false);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    "Clarity4",
+    undefined,
+  ])("still rejects a canonical match with unreviewed execution semantics: %s", async (clarityVersion) => {
+    const source = (
+      await readFile(
+        resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
+        "utf8",
+      )
+    ).trimEnd();
+    const contractInterface = compatibleInterface();
+    contractInterface.clarity_version = clarityVersion;
+    const report = verifyManagerArtifact(
+      "mainnet",
+      manager,
+      { source, publish_height: 8_600_000 },
+      contractInterface,
+    );
+    expect(report.source.match).toBe("canonical");
+    expect(report.capabilities.sourceReview.reviewed).toBe(false);
+    expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
+      true,
+    );
+  });
+
   it("recognizes the mainnet reference artifact but keeps it in observe mode until approval", async () => {
     const source = await readFile(
       resolve(root, "contracts/reference-manager/generated/mainnet/signer-manager.clar"),
@@ -131,7 +291,7 @@ describe("deployed manager verification", () => {
 
     expect(report).toMatchObject({
       attachAllowed: true,
-      capabilities: { sourceReview: { exactReviewed: false } },
+      capabilities: { sourceReview: { reviewed: false } },
     });
     expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
       true,
@@ -156,7 +316,7 @@ describe("deployed manager verification", () => {
       contractInterface,
     );
 
-    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: false });
+    expect(report.capabilities.sourceReview).toMatchObject({ reviewed: false });
     expect(report.capabilities.actions.every(({ executionAvailable }) => !executionAvailable)).toBe(
       true,
     );
@@ -179,9 +339,7 @@ describe("deployed manager verification", () => {
       automationEligible: false,
       recommendedMode: "observe",
     });
-    expect(report.automationEligibilityReason).toContain(
-      "No reviewed byte-exact capability fingerprint",
-    );
+    expect(report.automationEligibilityReason).toContain("No reviewed reference program");
   });
 
   it("recognizes a reference manager derived from operator compatibility data", async () => {
@@ -276,7 +434,7 @@ describe("deployed manager verification", () => {
       attachAllowed: true,
       automationEligible: true,
     });
-    expect(report.capabilities.sourceReview).toMatchObject({ exactReviewed: true });
+    expect(report.capabilities.sourceReview).toMatchObject({ reviewed: true });
     expect(report.capabilities.actions.some(({ executionAvailable }) => executionAvailable)).toBe(
       true,
     );

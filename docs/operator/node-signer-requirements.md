@@ -27,8 +27,10 @@ Merge into `[node]`:
 [node]
 rpc_bind = "127.0.0.1:20443"
 stacker = true
-txindex = true
-prometheus_bind = "127.0.0.1:9153"
+# Optional verification optimization; no resync is required by Sidekick.
+# txindex = true
+# Optional telemetry:
+# prometheus_bind = "127.0.0.1:9153"
 ```
 
 Use addresses reachable from the Sidekick container.
@@ -37,6 +39,11 @@ Use addresses reachable from the Sidekick container.
 verifies manager activity and reward realization by reading the canonical block at the transaction's
 height and confirming the transaction is in it. That is equally authoritative — block bytes are
 primary consensus data — but deserializes a block per check instead of doing a single-row lookup.
+
+Wallets, runs and sweeps also support block-based verification. During node unavailability,
+configured-API execution can suffice with the required retained transaction binding; see
+[transaction observation](operations.md#transaction-observation). The node remains required for
+operational startup, current state, preparation and signing.
 
 Enabling it trades storage for that speed. The index only covers blocks the node processes after you
 turn it on; it does not backfill, so transactions confirmed earlier keep using block reads. Keep the

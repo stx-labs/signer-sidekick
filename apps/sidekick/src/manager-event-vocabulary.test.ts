@@ -8,7 +8,7 @@ describe("manager event vocabulary", () => {
       managerEventVocabularyFor({
         signerManagerTrait: { compatible: true, reason: "Exact trait" },
         observedFunctions: { public: [], readOnly: [] },
-        sourceReview: { exactReviewed: true, reason: "Reviewed source" },
+        sourceReview: { reviewed: true, reason: "Reviewed source" },
         eventVocabulary: {
           id: "reference-manager-v1",
           normalizationAvailable: true,

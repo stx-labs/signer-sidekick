@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, ErrorCallout } from "../../shared/dashboard-ui.js";
 import { short, shortUtc, stxAmount } from "../../shared/format.js";
 import { operatorErrorSentence } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import {
   approveGasWalletSweep,
   cachedGasWalletStatus,
@@ -16,8 +17,6 @@ import {
   refreshGasWalletSweep,
 } from "./gas-wallet-api.js";
 import { SettingsInfo, SettingsRow } from "./settings-ui.js";
-
-const SWEEP_POLL_MS = 10_000;
 
 function signerBadge(status: GasWalletStatus): {
   tone: "success" | "caution" | "error" | "neutral";
@@ -69,13 +68,15 @@ function afterFee(balance: string | null, fee: string): string | null {
 export function GasWalletSettings({
   onStatus,
   token,
+  cacheScope,
   readOnly = false,
 }: {
   onStatus?: (status: GasWalletStatus | null) => void;
   token: string;
+  cacheScope: string | null;
   readOnly?: boolean;
 }) {
-  const cachedStatus = cachedGasWalletStatus();
+  const cachedStatus = cachedGasWalletStatus(token, cacheScope);
   const [status, setStatus] = useState<GasWalletStatus | null>(cachedStatus ?? null);
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(cachedStatus === undefined);
@@ -84,42 +85,37 @@ export function GasWalletSettings({
   const [recipient, setRecipient] = useState("");
   const [copied, setCopied] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
-  const controller = useRef<AbortController | null>(null);
+  const refreshRef = useRef<ReturnType<typeof startVisibleRefresh> | null>(null);
 
   const load = useCallback(async () => {
-    controller.current?.abort();
-    const request = new AbortController();
-    controller.current = request;
-    try {
-      const result = await loadGasWalletStatus(token, request.signal);
-      if (request.signal.aborted) return;
-      setUnavailable(result === null);
-      setStatus(result);
-      onStatus?.(result);
-      setError(null);
-    } catch (cause) {
-      if (!request.signal.aborted) setError(operatorErrorSentence(cause));
-    } finally {
-      if (controller.current === request) setLoading(false);
-    }
-  }, [onStatus, token]);
+    await refreshRef.current?.refresh(true);
+  }, []);
 
   useEffect(() => {
-    void load();
-    return () => controller.current?.abort();
-  }, [load]);
+    const refresh = startVisibleRefresh(
+      async (signal) => {
+        try {
+          const result = await loadGasWalletStatus(token, signal, cacheScope);
+          if (signal.aborted) return;
+          setUnavailable(result === null);
+          setStatus(result);
+          onStatus?.(result);
+          setError(null);
+        } finally {
+          if (!signal.aborted) setLoading(false);
+        }
+      },
+      (cause) => setError(operatorErrorSentence(cause)),
+    );
+    refreshRef.current = refresh;
+    return () => {
+      refresh.stop();
+      refreshRef.current = null;
+    };
+  }, [onStatus, token, cacheScope]);
 
   const activeSweep =
     status?.sweeps.find((sweep) => sweep.sweepId === status.activeSweepId) ?? null;
-  useEffect(() => {
-    if (activeSweep?.status !== "broadcast") return;
-    const interval = window.setInterval(() => {
-      refreshGasWalletSweep(token, activeSweep.sweepId)
-        .then(() => load())
-        .catch(() => undefined);
-    }, SWEEP_POLL_MS);
-    return () => window.clearInterval(interval);
-  }, [activeSweep, load, token]);
 
   const act = (label: string, operation: () => Promise<unknown>) => {
     setBusy(label);
@@ -156,7 +152,20 @@ export function GasWalletSettings({
         <SettingsRow
           name="Gas wallet"
           status="Unavailable"
-          value={<span className="muted">This Sidekick build does not expose a gas wallet</span>}
+          value={
+            <span className="muted">
+              {unavailable
+                ? "This Sidekick build does not expose a gas wallet"
+                : "Gas-wallet status could not be loaded; retrying automatically"}
+            </span>
+          }
+          actions={
+            !unavailable ? (
+              <button className="btn btn-secondary sm" type="button" onClick={() => void load()}>
+                Retry gas-wallet status
+              </button>
+            ) : undefined
+          }
         />
         <ErrorCallout error={error} />
       </>
@@ -321,6 +330,7 @@ export function GasWalletSettings({
                     </strong>{" "}
                     {stxAmount(activeSweep.amountUstx)} to{" "}
                     <span className="identifier">{short(activeSweep.recipient, 8, 6)}</span>
+                    {activeSweep.failureReason ? <p>{activeSweep.failureReason}</p> : null}
                     <div className="actions">
                       {activeSweep.status === "planned" ? (
                         <>
@@ -376,6 +386,16 @@ export function GasWalletSettings({
                           <span className="mono">{shortUtc(sweep.createdAt)}</span>
                           <span>{stxAmount(sweep.amountUstx)}</span>
                           <Badge state={state.tone}>{state.label}</Badge>
+                          {sweep.executionSource ? (
+                            <span className="muted">
+                              Evidence:{" "}
+                              {sweep.executionSource === "node"
+                                ? "local node"
+                                : sweep.executionSource === "api"
+                                  ? "configured API"
+                                  : "API + local node"}
+                            </span>
+                          ) : null}
                         </div>
                       );
                     })}

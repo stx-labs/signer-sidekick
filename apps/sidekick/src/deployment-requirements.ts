@@ -453,19 +453,19 @@ export class DeploymentRequirementsService {
     const connection = this.#options.getConnection();
     const observer = this.#options.getObserverStatus();
     const fingerprint = JSON.stringify([
+      config.network,
       config.nodeRpcUrl,
       config.nodeMetricsUrl ?? null,
       config.signerMonitoringUrl ?? null,
       config.hiroReferenceApiUrl ?? null,
       config.hiroReferenceApiKeyHeader,
-      Boolean(hiroReferenceApiCredential(config)),
+      hiroReferenceApiCredential(config),
       connection?.status ?? null,
-      connection?.checkedAt ?? null,
+      connection?.outcomeCode ?? null,
       observer.enabled,
       observer.listening,
-      observer.inbox.lastVerifiedStacksBlock?.height ?? null,
+      observer.inbox.lastVerifiedStacksBlock !== null,
       observer.gap?.status ?? null,
-      observer.gap?.checkedAt ?? null,
     ]);
     if (
       !force &&
@@ -479,9 +479,12 @@ export class DeploymentRequirementsService {
     const promise = this.#collect(now, config, connection, observer);
     this.#inFlight = { fingerprint, promise };
     try {
-      this.#cached = await promise;
-      this.#cachedFingerprint = fingerprint;
-      return this.#cached;
+      const value = await promise;
+      if (this.#inFlight?.promise === promise) {
+        this.#cached = value;
+        this.#cachedFingerprint = fingerprint;
+      }
+      return value;
     } finally {
       if (this.#inFlight?.promise === promise) this.#inFlight = null;
     }

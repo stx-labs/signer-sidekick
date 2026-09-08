@@ -1,7 +1,8 @@
 # Transaction engine safety contract
 
 Sidekick starts in **Observe** mode. Browser-wallet actions use sealed, expiring intents; Sidekick
-never receives wallet credentials or signed transaction bytes. **Operator-run** is an explicit
+never accepts wallet credentials or signed bytes from the browser. It fetches transaction bytes
+independently when needed for verification. **Operator-run** is an explicit
 deployment mode for the permissionless PoX-5 reward calls. It uses only the dedicated gas wallet
 and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-execution-envelope.md).
 
@@ -44,14 +45,48 @@ One run or sweep owns the gas wallet at a time, with one transaction in flight. 
 `awaiting-approval → approved → running → paused → completed | halted | cancelled | expired`.
 Approval must be used within 30 minutes; a started run expires after 6 hours.
 
-- Signed bytes and txid are committed before the single broadcast attempt.
-- Submission is not confirmation; confirmation is not completion until the expected state is
-  proved.
-- A reset, timeout, conflicting nonce, reorg, or uncertain response halts without replacement.
+- For reward runs and gas sweeps, the sealed plan and precomputed transaction ID are persisted
+  before the single broadcast attempt. Raw signed bytes are not stored.
+- Submission is not confirmation. Completion requires exact canonical successful execution and
+  any adapter-specific checkpoint proof, not a repeated read of later mutable settings/balances.
+- A reset or timeout during submission, conflicting nonce, reorg, or uncertain submission outcome
+  halts without replacement. Typed upstream/read failures and retryable anchor capture instead wait
+  on the existing maintenance tick, bounded by the original runtime cap. Unclassified exceptions
+  still halt; transport recovery is not a catch-all retry policy.
+- Materialization re-proves the preparation anchor before each child. Reconciliation checks the
+  submitted transaction, without re-reading the preparation block on every poll. Locally signed
+  run children and sweeps can use coherent configured-API execution evidence during a node outage,
+  only with the retained signing-time txid/plan binding and no unresolved conflicting diagnostic.
+  `executionSource` records node, API with node corroboration, or API evidence; legacy source is null.
+  Observation allows cached transport unavailability, while all fresh signing access stays gated.
+  Browser wallets may use the same execution source only with persisted exact mempool verification
+  for the same sealed intent/txid. Additional checkpoint, legacy-job and asset-semantic checks
+  remain. See ADR 0008 for the operational API trust boundary and retained-conflict rules.
+- Slow reads do not overlap recovery ticks. Shutdown drains in-flight work, and the signature
+  boundary rechecks run state, expiry and emergency controls after role reads finish.
+- Broadcast-child reconciliation uses the bounded
+  [submitted-observation cadence](../operator/operations.md#transaction-observation).
+  Source Retry-After cannot silence future checks or extend the run deadline. Pacing is
+  recorded after an actual read (including a throw), keyed by transaction ID, and pruned against
+  retained running broadcast children. Explicit Resume resets only that child's cooldown;
+  restart resets all in-memory pacing.
+  The coordinator tick still checks expiry, and the next child still requires fresh
+  materialization, role checks and authorization. No new timer, durable scheduling or evidence state.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.
 - A predictable contract abort plus the already-proved target state is external completion.
 - Restart resumes from the durable cursor and never re-signs an existing attempt.
 - Cancel releases work that has not been signed; it cannot undo a broadcast transaction.
+- The existing maintenance tick observes submitted wallets and broadcast sweeps without a browser
+  or enabled gas signer. It grants no signing, replacement or automatic halted-run-resume authority.
+  Submitted-work scans are paced independently of run recovery. Missing/unavailable results or
+  read errors back off without retiring the transaction. Observed results
+  reset to the normal cadence, except unchanged canonical-success wallet observations whose extra action
+  check remains pending: the existing observation-row deduplication identifies these for backoff.
+  This in-memory pacing is not evidence, resets on restart, and is pruned
+  against the durable active set.
+  Manual refresh bypasses the due-time check and still coalesces with an in-flight read.
+  Positive sweep conflicts retain the wallet authorization; ambiguous missing transactions never
+  expire into permission to submit another sweep.
 
 The executable contract is the typed schemas and tests under `apps/sidekick/src/transaction-engine`,
 `packages/protocol`, and `packages/api-contracts`. Operator recovery is in

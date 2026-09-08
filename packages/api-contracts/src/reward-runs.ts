@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const transactionExecutionSourceSchema = z.enum(["node", "api-with-node", "api"]);
+export type TransactionExecutionSource = z.infer<typeof transactionExecutionSourceSchema>;
+
 export const rewardRunStatusSchema = z.enum([
   "awaiting-approval",
   "approved",
@@ -154,6 +157,7 @@ export const rewardRunChildSchema = z
       .regex(/^0x[0-9a-f]{64}$/)
       .nullable(),
     provenance: z.enum(["you", "another-caller", "policy-exception"]).nullable(),
+    executionSource: transactionExecutionSourceSchema.nullable().optional(),
     failureReason: z.string().nullable(),
     updatedAt: z.string(),
   })

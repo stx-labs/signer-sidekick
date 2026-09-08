@@ -103,56 +103,41 @@ export function paymentTotal(distribution: RewardLedgerDistribution): number {
   return p.made + p.outstanding + p.notPayable + p.belowFee;
 }
 
-export interface DistributionAllocation {
-  toStakersSats: string | null;
-  operatorFeeSats: string | null;
-  /** True when payment rows are not available and the split uses the locked/configured rate. */
-  estimated: boolean;
+/** Only completed calculations contribute; an unknown completed amount is not zero. */
+export function calculatedPoolTotal(
+  distributions: readonly RewardLedgerDistribution[],
+): string | null {
+  let sum = 0n;
+  for (const distribution of distributions) {
+    if (distribution.calculation.state !== "done") continue;
+    if (distribution.calculation.poolSats === null) return null;
+    sum += BigInt(distribution.calculation.poolSats);
+  }
+  return sum.toString();
 }
 
+export type DistributionAllocation = NonNullable<RewardLedgerDistribution["allocation"]>;
+
 /**
- * Split a calculated pool total between stakers and the operator without mistaking an
- * unmaterialized payment set for operator income. Once every payment is represented, the ledger
- * amounts are exact. Before then, the aggregate fee rate is the best available estimate; the
- * final total can differ by a few sats because the manager rounds once per staker and bucket.
+ * Use row-derived totals from the ledger. Pool-minus-payments is not fee evidence, even when a
+ * status badge says complete. Older servers without the aggregate remain explicitly unavailable.
  */
 export function distributionAllocation(
   distribution: RewardLedgerDistribution,
 ): DistributionAllocation {
-  const poolText = distribution.calculation.poolSats;
-  if (distribution.calculation.state !== "done" || poolText === null) {
-    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
-  }
-  const pool = big(poolText);
-  const payments = distribution.payments;
-  const toStakers = big(payments.distributedSats) + big(payments.outstandingSats);
-  const completePaymentSet =
-    paymentTotal(distribution) > 0 &&
-    (payments.outstanding + payments.notPayable + payments.belowFee > 0 ||
-      distribution.status === "complete" ||
-      distribution.status === "all-distributed");
-  if (completePaymentSet && toStakers <= pool) {
-    return {
-      toStakersSats: text(toStakers),
-      operatorFeeSats: text(pool - toStakers),
+  return (
+    distribution.allocation ?? {
+      toStakersSats: null,
+      operatorFeeSats: null,
       estimated: false,
-    };
-  }
+      coverage: "unavailable",
+    }
+  );
+}
 
-  const feeBipsText = distribution.feeBips;
-  if (feeBipsText === null) {
-    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
-  }
-  const feeBips = big(feeBipsText);
-  if (feeBips > 10_000n) {
-    return { toStakersSats: null, operatorFeeSats: null, estimated: false };
-  }
-  const operatorFee = (pool * feeBips) / 10_000n;
-  return {
-    toStakersSats: text(pool - operatorFee),
-    operatorFeeSats: text(operatorFee),
-    estimated: true,
-  };
+export function allocationRoundingNote(allocation: DistributionAllocation): string | null {
+  if (big(allocation.roundingSats ?? null) === 0n) return null;
+  return `${amount(allocation.roundingSats ?? null)} ${allocation.poolBasis === "collected" ? "rounding retained in manager" : "projected rounding"}; not earned fees`;
 }
 
 /** Older cycles remain historical even while one of their distributions still needs action. */
@@ -179,6 +164,8 @@ function shortTx(txId: string | null): string {
 /** "Calculated Aug 22, 03:14 UTC · by another caller · tx 0x7c1e…a9f4" lines for ⓘ tooltips. */
 export function distributionTooltip(distribution: RewardLedgerDistribution): string | null {
   const lines: string[] = [];
+  const rounding = allocationRoundingNote(distributionAllocation(distribution));
+  if (rounding) lines.push(rounding);
   if (distribution.calculation.state === "done") {
     lines.push(
       [
@@ -445,6 +432,8 @@ function halfStatus(distribution: RewardLedgerDistribution | null): EarningHalf[
   }
   const p = distribution.payments;
   switch (distribution.status) {
+    case "interpretation-unavailable":
+      return { text: "Reward details unavailable", tone: "attention" };
     case "needs-attention":
       return { text: "Needs attention", tone: "attention" };
     case "ready":
@@ -555,34 +544,41 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
         : null,
   });
   const done = (index: 1 | 2) => distributionFor(index)?.calculation.state === "done";
-  const calculatedSum = ([1, 2] as const).reduce(
-    (sum, index) => sum + big(distributionFor(index)?.calculation.poolSats ?? null),
-    0n,
-  );
+  const calculatedTotal = calculatedPoolTotal(ledgerCycle?.distributions ?? []);
+  const calculatedSum = calculatedTotal === null ? null : BigInt(calculatedTotal);
   const uncalculated = ([1, 2] as const).filter((index) => !done(index));
   const projectedSum = poolPoint === null ? null : big(poolPoint) * BigInt(uncalculated.length);
   const cycleTotal =
-    projectedSum === null
-      ? uncalculated.length === 0
-        ? calculatedSum
-        : calculatedSum > 0n
+    calculatedSum === null
+      ? null
+      : projectedSum === null
+        ? uncalculated.length === 0
           ? calculatedSum
-          : null
-      : calculatedSum + projectedSum;
+          : calculatedSum > 0n
+            ? calculatedSum
+            : null
+        : calculatedSum + projectedSum;
   const calculatedFee = ([1, 2] as const).reduce((sum, index) => {
     const d = distributionFor(index);
-    if (d?.calculation.state !== "done" || !d.calculation.poolSats) return sum;
-    const expected =
-      big(d.calculation.poolSats) -
-      big(d.payments.distributedSats) -
-      big(d.payments.outstandingSats);
-    return sum + (expected > 0n ? expected : big(d.payments.operatorFeeSats));
+    if (d?.calculation.state !== "done") return sum;
+    return sum + big(distributionAllocation(d).operatorFeeSats);
   }, 0n);
+  const calculatedFeeComplete = ([1, 2] as const).every((index) => {
+    const d = distributionFor(index);
+    return (
+      d?.calculation.state !== "done" ||
+      (d.allocation?.coverage === "complete" && d.allocation.operatorFeeSats !== null)
+    );
+  });
   const cycleFee =
-    calculatedFee + (feeForecast === null ? 0n : big(feeForecast) * BigInt(uncalculated.length));
+    calculatedFeeComplete && (uncalculated.length === 0 || feeForecast !== null)
+      ? calculatedFee + big(feeForecast) * BigInt(uncalculated.length)
+      : null;
   const cycleParts = amountParts(cycleTotal === null ? null : text(cycleTotal));
   const cycleSub: string[] = [];
-  if (calculatedSum > 0n && projectedSum !== null && uncalculated.length > 0) {
+  if (calculatedSum === null) {
+    cycleSub.push("calculated pool total unavailable");
+  } else if (calculatedSum > 0n && projectedSum !== null && uncalculated.length > 0) {
     cycleSub.push(
       `${amount(text(calculatedSum))} calculated + ${amount(text(projectedSum))} projected`,
     );
@@ -593,7 +589,12 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
   } else if (uncalculated.length === 0) {
     cycleSub.push("both halves calculated");
   }
-  if (cycleTotal !== null && cycleTotal > 0n) cycleSub.push(`your fee ${amount(text(cycleFee))}`);
+  if (calculatedSum === null || (cycleTotal !== null && cycleTotal > 0n))
+    cycleSub.push(
+      cycleFee === null
+        ? "cycle fee total unavailable"
+        : `cycle fee total ${amount(text(cycleFee))}`,
+    );
   facts.push({
     key: "cycle",
     label: "Pool projected this cycle",
@@ -620,7 +621,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
             `calculated ${shortDate(d.calculation.observedAt)}`,
             amount(d.calculation.poolSats),
             detailsAvailable ? `${d.payments.made} of ${paymentTotal(d)} paid` : null,
-            detailsAvailable ? `your fee ${amount(d.payments.operatorFeeSats)}` : null,
+            detailsAvailable ? `known paid fee ${amount(d.payments.operatorFeeSats)}` : null,
           ]
             .filter(Boolean)
             .join(" · ")
@@ -690,7 +691,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
     when,
     prepare,
     facts,
-    mobileFee: cycleTotal !== null && cycleTotal > 0n ? amount(text(cycleFee)) : null,
+    mobileFee: amount(feeForecast),
     halves,
     coverage: ledgerCycle?.coverage ?? null,
   };
@@ -701,6 +702,7 @@ export function deriveEarning(input: EarningInput): EarningModel | null {
 // ---------------------------------------------------------------------------------------------
 
 export interface DistributionCardModel {
+  state: "ready" | "distributing" | "complete" | "attention" | "overdue";
   key: string;
   cycle: number;
   distribution: 1 | 2;
@@ -736,6 +738,7 @@ export function distributionKey(cycle: number, distribution: 1 | 2): string {
 }
 
 const pendingStatuses: ReadonlySet<RewardLedgerDistribution["status"]> = new Set([
+  "interpretation-unavailable",
   "needs-attention",
   "calculation-overdue",
   "ready",
@@ -801,7 +804,9 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     // ---- actions ----
     let primary: RewardPrimaryAction | null = null;
     let secondary: DistributionCardModel["secondary"] = null;
-    if (distribution.status === "calculation-overdue") {
+    if (distribution.status === "interpretation-unavailable") {
+      // Missing payment interpretation is not an empty work queue or permission to prepare.
+    } else if (distribution.status === "calculation-overdue") {
       primary = {
         kind: "calculate",
         label: "Run calculation",
@@ -824,7 +829,7 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
           tooltip: `Retire ${plural(arrived, "settled payout")} — nothing moves. A rejected payout would return sBTC to the staker.`,
         };
     }
-    if (primary === null && calculated) {
+    if (primary === null && calculated && distribution.status !== "interpretation-unavailable") {
       if (available > 0n && p.outstanding > 0) {
         primary = {
           kind: "collect-and-distribute",
@@ -908,6 +913,10 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
           (halted || paused || runForThis.status === "approved") &&
           runForThis.progress.inFlight === 0,
       };
+    } else if (distribution.status === "interpretation-unavailable") {
+      badge = { tone: "caution", label: "Details unavailable" };
+      headline = "Reward details unavailable";
+      sub = distribution.statusDetail;
     } else if (distribution.status === "needs-attention" || rejected > 0) {
       badge = { tone: "error", label: "Needs attention" };
       headline =
@@ -978,32 +987,51 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
               : null
             : available > 0n
               ? `${amount(text(available))} ready to collect`
-              : "not yet collected",
+              : distribution.status === "interpretation-unavailable"
+                ? "No collection recorded"
+                : "not yet collected",
         tooltip: distribution.collects.length > 0 ? distributionTooltip(distribution) : null,
       });
       const routes = routeSummary(payments);
       tiles.push({
         label: "Distributed",
-        value: String(p.made),
-        unit: `of ${total}`,
+        value:
+          distribution.status === "interpretation-unavailable" && total === 0
+            ? "—"
+            : String(p.made),
+        unit:
+          distribution.status === "interpretation-unavailable" ? "known payments" : `of ${total}`,
         detail:
-          p.outstanding > 0
-            ? `${amount(p.outstandingSats)} ${p.made > 0 ? "waiting" : "to stakers"}`
-            : `${amount(p.distributedSats)}${routes ? ` · ${routes}` : ""}${p.rolledForward > 0 ? ` · ${p.rolledForward} rolled forward` : ""}`,
+          distribution.status === "interpretation-unavailable"
+            ? "Payment coverage incomplete"
+            : p.outstanding > 0
+              ? `${amount(p.outstandingSats)} ${p.made > 0 ? "waiting" : "to stakers"}`
+              : `${amount(p.distributedSats)}${routes ? ` · ${routes}` : ""}${p.rolledForward > 0 ? ` · ${p.rolledForward} rolled forward` : ""}`,
         tooltip: null,
       });
       const feeParts = amountParts(yourFee);
       const bips = distribution.feeBips ?? cycle.feeBips ?? null;
       const locked = distribution.feeEvidence === "locked" || cycle.feeEvidence === "locked";
       tiles.push({
-        label: allocation.estimated ? "Your fee estimate" : "Your fee",
+        label:
+          allocation.coverage === "partial"
+            ? "Known fee (partial)"
+            : allocation.estimated
+              ? "Your fee estimate"
+              : "Your fee",
         value: feeParts?.value ?? "—",
         unit: feeParts?.unit ?? null,
-        detail: bips
-          ? `${feePercent(bips)}${locked ? " locked" : ""}${allocation.estimated ? " · estimated" : ""}`
-          : null,
+        detail:
+          [
+            bips
+              ? `STX fee ${feePercent(bips)}${locked ? " locked" : ""}${allocation.estimated ? " · estimated" : ""}`
+              : null,
+            allocationRoundingNote(allocation),
+          ]
+            .filter(Boolean)
+            .join(" · ") || null,
         tooltip: allocation.estimated
-          ? "Estimated from the pool total and manager fee. The final total can differ by a few sats because each staker and bond bucket is rounded separately."
+          ? "Includes account fee estimates that are not yet pinned on-chain."
           : yourFee
             ? exactSats(yourFee)
             : null,
@@ -1011,6 +1039,17 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
     }
 
     return {
+      state: runForThis
+        ? "distributing"
+        : distribution.status === "interpretation-unavailable" ||
+            distribution.status === "needs-attention" ||
+            rejected > 0
+          ? "attention"
+          : !calculated
+            ? "overdue"
+            : p.outstanding === 0 && available === 0n
+              ? "complete"
+              : "ready",
       key,
       cycle: cycle.cycle,
       distribution: distribution.distribution,

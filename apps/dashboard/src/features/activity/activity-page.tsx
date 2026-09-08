@@ -32,6 +32,7 @@ import { Badge, PageHead, StatLine } from "../../shared/dashboard-ui.js";
 import { useDomainSection } from "../../shared/domain-section.js";
 import { short } from "../../shared/format.js";
 import { operatorErrorDetail } from "../../shared/operator-error.js";
+import { startVisibleRefresh } from "../../shared/visible-refresh.js";
 import { BrowserWalletActionPanel } from "../operations/browser-wallet-action.js";
 import {
   type ActivityFilters,
@@ -390,41 +391,33 @@ function ActivityFeed({
   }, [filterSearch, filters.search]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      if (refresh > 0) setError(null);
-      setLoading(true);
-      try {
-        const result = await apiJson(
-          token,
-          `/api/v1/activity?${activityRequestSearch(filters, cursor)}`,
-          activityResponseSchema,
-          { signal: controller.signal },
-        );
-        if (!controller.signal.aborted) {
-          setData(result);
-          setError(null);
+    const polling = startVisibleRefresh(
+      async (signal) => {
+        if (refresh > 0) setError(null);
+        setLoading(true);
+        try {
+          const result = await apiJson(
+            token,
+            `/api/v1/activity?${activityRequestSearch(filters, cursor)}`,
+            activityResponseSchema,
+            { signal },
+          );
+          if (!signal.aborted) {
+            setData(result);
+            setError(null);
+          }
+        } catch (cause) {
+          if (!signal.aborted) {
+            setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
+          }
+        } finally {
+          if (!signal.aborted) setLoading(false);
         }
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
-        }
-      } finally {
-        pending = false;
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-    void load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, activityRefreshMs);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
+      },
+      () => {},
+      activityRefreshMs,
+    );
+    return () => polling.stop();
   }, [token, filters, cursor, refresh]);
 
   const historyGroups = groupActivityHistory(data?.items ?? []);
@@ -497,7 +490,9 @@ function ActivityFeed({
         </div>
         {data && historyGroups.length === 0 ? (
           <div className="card activity-empty">
-            No operator or verified chain activity matches these filters.
+            {data.nextCursor
+              ? "No matches on this page. Choose Next to search older history."
+              : "No operator or verified chain activity matches these filters."}
           </div>
         ) : null}
         {historyGroups.map((group) => (
@@ -566,43 +561,35 @@ function ActivityDetailPage({
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      if (refresh > 0) setError(null);
-      setLoading(true);
-      try {
-        const result = await apiJson(
-          token,
-          `/api/v1/activity/${encodeURIComponent(activityId)}`,
-          activityDetailSchema,
-          { signal: controller.signal },
-        );
-        if (controller.signal.aborted) return;
-        setData(result);
-        setError(null);
-        if (result.canonicalActivityId !== activityId) {
-          history.replaceState(null, "", activityHash(result.canonicalActivityId, search));
+    const polling = startVisibleRefresh(
+      async (signal) => {
+        if (refresh > 0) setError(null);
+        setLoading(true);
+        try {
+          const result = await apiJson(
+            token,
+            `/api/v1/activity/${encodeURIComponent(activityId)}`,
+            activityDetailSchema,
+            { signal },
+          );
+          if (signal.aborted) return;
+          setData(result);
+          setError(null);
+          if (result.canonicalActivityId !== activityId) {
+            history.replaceState(null, "", activityHash(result.canonicalActivityId, search));
+          }
+        } catch (cause) {
+          if (!signal.aborted) {
+            setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
+          }
+        } finally {
+          if (!signal.aborted) setLoading(false);
         }
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError(operatorErrorDetail(cause, "Sidekick returned no Activity error detail"));
-        }
-      } finally {
-        pending = false;
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-    void load();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, activityRefreshMs);
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
+      },
+      () => {},
+      activityRefreshMs,
+    );
+    return () => polling.stop();
   }, [token, activityId, search, refresh]);
 
   if (!data && loading) {
@@ -805,17 +792,26 @@ function ActivityDetailPage({
           ) : null}
         </aside>
       </div>
-      {activeOperation && walletIntentId && walletAction.success ? (
+      {walletIntentId && walletAction.success ? (
         <section aria-labelledby="activity-operation-heading">
           <div className="section-title" id="activity-operation-heading">
             Progress and action
           </div>
-          {operatorData && !operatorStateStale ? (
+          {operatorData ? (
             <BrowserWalletActionPanel
+              preparationBlocked={
+                operatorStateStale || operatorData.freshness?.status === "stale"
+                  ? "Current operation evidence is stale; signing and replacement preparation are paused."
+                  : undefined
+              }
               action={walletAction.data}
               chainId={operatorData.preflight.node.networkId}
               existingIntentId={walletIntentId}
-              managerPrincipal={operatorData.managerPrincipal}
+              managerPrincipal={
+                walletAction.data === "calculate-rewards"
+                  ? (operatorData.preflight.pox.pox5ContractId ?? operatorData.managerPrincipal)
+                  : operatorData.managerPrincipal
+              }
               network={operatorData.network}
               onVerified={async () => {
                 try {

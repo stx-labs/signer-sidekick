@@ -1,7 +1,6 @@
 # Reward operations delivery status
 
 - Status: S0–S6 implemented.
-- Branch: `codex/reward-forecast-and-overview-clarity`
 - Mockups: `design/mockups/`
 
 This file tracks delivery only. Current behavior is defined by:
@@ -34,6 +33,9 @@ This file tracks delivery only. Current behavior is defined by:
 
 Before mainnet operator-run:
 
+The dated Devnet results below record original workflow acceptance, not a test of every later
+release. Re-run affected scenarios for changes to execution or recovery.
+
 1. run the extended Devnet scenario through calculate, collect, at least two payouts including the
    Bitcoin route, settle, reclaim, browser closure, and restart recovery — passed 2026-08-22 on
    `141eb8c` (artifact `1787449724061-64391`) and again on the S3.2 tree (artifact
@@ -46,9 +48,9 @@ Before mainnet operator-run:
 
 ## Scale follow-ups
 
-The current model is bounded and tested at 150 stakers across 50 cycles. Add cycle-windowed evidence
-queries, paged payment endpoints, streamed CSV, and recent-fee gas estimates when measured production
-cost justifies them; none changes the ledger or recipe model.
+Ledger fixtures cover 150 stakers across 50 cycles. Activity uses storage-level pagination and
+reward runs use the node's fee estimate within a configured band. Measure remaining cycle-window,
+payment-query and CSV costs before adding another projection or changing the ledger/recipe model.
 
 Unattended execution, pipelined nonces, public staker UI, signer/admin key custody, and selective
 recipient runs remain out of scope.

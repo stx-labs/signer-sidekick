@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import type { RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
 import {
   completedFirstRewardLedger,
   connection,
@@ -21,6 +22,18 @@ import {
 
 const credential = "fixture-operator-token-32-characters";
 const consoleErrors = new WeakMap<Page, string[]>();
+
+async function overrideFixtures(
+  page: Page,
+  response: (request: URL, method: string) => unknown | Promise<unknown>,
+) {
+  await page.unroute("**/api/v1/**");
+  await page.route("**/api/v1/**", async (route) => {
+    const request = new URL(route.request().url());
+    const body = await response(request, route.request().method());
+    await route.fulfill(fixtureFulfillment(body ?? responseFor(request.href)));
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
@@ -234,6 +247,12 @@ test("uses one Pool-style Rewards action while rewards accrue", async ({ page })
 
   const rewardsSummary = page.locator("#overview-rewards");
   await expect(rewardsSummary.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(rewardsSummary.getByText("Pool if calculated now").locator("..")).toContainText(
+    "0.001 sBTC",
+  );
+  await expect(rewardsSummary.getByText("Projected at calculation").locator("..")).toContainText(
+    "0.0015 sBTC",
+  );
   await expect(rewardsSummary.getByRole("link", { name: "View projection" })).toHaveCount(0);
   const openRewards = rewardsSummary.getByRole("link", { name: "Open Rewards" });
   await expect(openRewards).toHaveCount(1);
@@ -266,22 +285,105 @@ test("shows the prior cycle in history while its last distribution remains pendi
 
   await login(page);
   const overview = page.locator("#overview-rewards");
-  await expect(overview.getByText("Your fee estimate").locator("..")).toContainText("0.00371 sBTC");
-  await expect(overview.getByText("Estimated to stakers").locator("..")).toContainText(
-    "0.0705 sBTC",
-  );
+  await expect(overview.getByText("Your fee", { exact: true }).locator("..")).toContainText("—");
+  await expect(overview.getByText("To stakers", { exact: true }).locator("..")).toContainText("—");
+  await expect(overview).not.toContainText("0.00371 sBTC");
+  await expect(overview.getByRole("button", { name: /^Collect/ })).toHaveCount(0);
 
   await page.evaluate(() => {
     location.hash = "#rewards";
   });
   await expect(page.getByRole("heading", { name: "Rewards" })).toBeVisible();
   await expect(page.getByText("Cycle 141 · Second Distribution")).toBeVisible();
+  await expect(page.getByText("Reward details unavailable", { exact: true })).toBeVisible();
   const history = page.getByRole("region", { name: "Past cycles" });
   const previousCycle = history.getByRole("row", { name: "Cycle 141" });
   await expect(previousCycle).toBeVisible();
   await previousCycle.getByRole("button", { name: "Show distributions" }).click();
   await expect(history.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
   await expect(history.getByRole("tab", { name: /Second Distribution/ })).toBeVisible();
+});
+
+test("shows collected rounding separately from complete fees and keeps covered history closed", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const body = structuredClone(responseFor(route.request().url())) as RewardLedger;
+    const current = body.cycles[0]?.distributions[0];
+    if (!current?.allocation) throw new Error("Expected fixture allocation");
+    current.allocation.roundingSats = "2";
+    current.allocation.poolBasis = "collected";
+    current.calculation.poolSats = null;
+    current.collectedSats = (
+      BigInt(current.allocation.toStakersSats ?? "0") +
+      BigInt(current.allocation.operatorFeeSats ?? "0") +
+      2n
+    ).toString();
+    current.availableToCollectSats = "0";
+    current.collects = [
+      {
+        sats: current.collectedSats,
+        stxSats: current.collectedSats,
+        txId: `0x${"55".repeat(32)}`,
+        blockHeight: 4990,
+        by: "you",
+      },
+    ];
+    for (const cycle of body.cycles.slice(1)) {
+      cycle.coverage = "historical-coverage-incomplete";
+      for (const distribution of cycle.distributions) {
+        distribution.coverage = "historical-coverage-incomplete";
+      }
+    }
+    await route.fulfill(fixtureFulfillment(body));
+  });
+
+  await login(page);
+  const overviewCard = page.locator("#overview-rewards");
+  await expect(overviewCard.getByText("Your fee", { exact: true })).toBeVisible();
+  await expect(overviewCard).toContainText("2 sats rounding retained in manager; not earned fees");
+  await expect(overviewCard).not.toContainText("Known fee (partial)");
+  await expect(overviewCard).not.toContainText("more distributions waiting");
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("heading", { name: "Rewards", exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByText("2 sats rounding retained in manager; not earned fees", { exact: false })
+      .first(),
+  ).toBeVisible();
+  await expect(page.getByText("Known fee (partial)", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Reward details unavailable", { exact: true })).toHaveCount(0);
+});
+
+test("explains missing cycle fee totals without hiding the known indexed subtotal", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const body = structuredClone(responseFor(route.request().url())) as RewardLedger;
+    const current = body.cycles[0];
+    if (!current) throw new Error("Expected fixture cycle");
+    current.operatorFeeSats = null;
+    body.fees.historyComplete = false;
+    body.fees.earnedIndexedSats = "500";
+    body.fees.unmatchedPaymentCount = 1;
+    await route.fulfill(fixtureFulfillment(body));
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("heading", { name: "Your fee ledger", exact: true })).toBeVisible();
+  const cycle = page.locator('[data-fee-fact="cycle"]');
+  await expect(cycle.locator("dd")).toContainText("—");
+  await expect(cycle).toContainText(
+    "cycle fee total unavailable: payment fee evidence is incomplete",
+  );
+  await expect(page.locator('[data-fee-fact="all-time"]')).toContainText("500 sats");
+  await expect(page.locator('[data-fee-fact="all-time"]')).toContainText(
+    "Earned in indexed history",
+  );
 });
 
 test("preserves spacing between emphasized callout titles and their details", async ({ page }) => {
@@ -839,7 +941,7 @@ test("blocks manager actions until stale operator state refreshes", async ({ pag
             freshness: {
               status: "stale",
               snapshotGeneratedAt: "2026-07-15T12:10:00.000Z",
-              servedAt: new Date().toISOString(),
+              servedAt: snapshot.generatedAt,
               reason: "refresh-failed",
             },
           }
@@ -962,6 +1064,28 @@ test("renders every operator screen without leaking the credential", async ({ pa
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("continues an empty bounded Activity search page into older matches", async ({ page }) => {
+  await page.route("**/api/v1/activity?*", async (route) => {
+    const url = new URL(route.request().url());
+    const fixture = responseFor(route.request().url()) as Record<string, unknown>;
+    await route.fulfill(
+      fixtureFulfillment(
+        url.searchParams.has("cursor")
+          ? { ...fixture, active: [], nextCursor: null }
+          : { ...fixture, active: [], items: [], nextCursor: "older-page" },
+      ),
+    );
+  });
+  await login(page);
+  await openPage(page, "activity", "Activity");
+  await expect(
+    page.getByText("No matches on this page. Choose Next to search older history."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Staker reward claimed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
 });
 
 test("shows active work and durable Activity evidence without horizontal overflow", async ({
@@ -1181,6 +1305,108 @@ test("reviews exact engine intent and keeps emergency controls idempotent", asyn
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+for (const control of ["force-observe", "disable"] as const) {
+  test(`keeps acknowledged ${control} controls after an older delayed poll`, async ({ page }) => {
+    await page.clock.install();
+    const fixture = engineFixture();
+    let status = fixture.status;
+    let hold = false;
+    let held = false;
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await overrideFixtures(page, async (request) => {
+      if (request.pathname === "/api/v1/operations/readiness") {
+        if (hold) {
+          held = true;
+          await delayed;
+        }
+        return fixture.readiness;
+      }
+      if (request.pathname === "/api/v1/engine") return status;
+      if (request.pathname === "/api/v1/engine/force-observe") {
+        status = {
+          ...status,
+          mode: "observe",
+          forcedObserve: {
+            active: true,
+            reason: "acknowledged brake",
+            actor: "operator-session",
+            forcedAt: snapshot.generatedAt,
+          },
+        };
+        return { status };
+      }
+      if (request.pathname.endsWith("/reference-manager-claim-rewards/disable")) {
+        const adapter = {
+          ...status.adapters[0],
+          enabled: false,
+          availability: "disabled",
+          blockReason: "acknowledged disable",
+        };
+        status = { ...status, adapters: [adapter] };
+        return { status, adapter };
+      }
+      return undefined;
+    });
+    try {
+      await login(page);
+      await openPage(page, "settings", "Settings");
+      const engine = page.locator('section[aria-label="Reward runs"]');
+      await expect(engine).toContainText("1 runs active");
+      if (control === "disable") await engine.getByRole("button", { name: "Manage" }).click();
+      hold = true;
+      await page.clock.runFor(30_000);
+      await expect.poll(() => held).toBe(true);
+      page.once("dialog", (dialog) => dialog.accept());
+      await engine
+        .getByRole("button", {
+          name: control === "disable" ? "Disable" : "Force Observe",
+          exact: true,
+        })
+        .click();
+      const acknowledged = engine
+        .getByText(control === "disable" ? "disabled" : "Forced Observe", { exact: true })
+        .first();
+      await expect(acknowledged).toBeVisible();
+      hold = false;
+      const oldReadFinished = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/v1/operations/readiness",
+      );
+      release();
+      await oldReadFinished;
+      // Flush the delayed read and React's publication before checking the acknowledged state.
+      await page.clock.runFor(500);
+      await expect(acknowledged).toBeVisible();
+      if (control === "force-observe") await expect(engine).toContainText("acknowledged brake");
+    } finally {
+      release();
+    }
+  });
+}
+
+test("passive connection polling uses retained GETs without forcing reassessment", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let reads = 0;
+  let rechecks = 0;
+  await overrideFixtures(page, (request, method) => {
+    if (request.pathname === "/api/v1/connection") {
+      expect(method).toBe("GET");
+      reads += 1;
+    }
+    if (request.pathname === "/api/v1/connection/recheck") rechecks += 1;
+    return undefined;
+  });
+  await login(page);
+  const initialReads = reads;
+  await page.clock.runFor(60_100);
+  await expect.poll(() => reads).toBeGreaterThan(initialReads);
+  expect(rechecks).toBe(0);
 });
 
 test("opens one exact engine job in the shared action workspace", async ({ page }) => {
@@ -1419,6 +1645,288 @@ test("edits indexed and comparison API credentials independently", async ({ page
     },
     forecast: { horizonCycles: 12 },
   });
+});
+
+for (const surface of ["overview", "rewards", "pool"] as const) {
+  test(`R2 ${surface} completes slow resource reads while parent snapshots advance`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    if (surface !== "overview") {
+      await login(page);
+      // The Overview heading precedes its ledger effect. Finish that initial read before
+      // installing a delay/counter for the next screen's request to the same endpoint.
+      await expect(
+        page.locator("#overview-rewards").getByRole("link", { name: "Review payments" }),
+      ).toBeVisible();
+    }
+    let release!: () => void;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    let reads = 0;
+    let parentReads = 0;
+    const path = surface === "pool" ? "/api/v1/pool" : "/api/v1/rewards/ledger";
+    const failed: string[] = [];
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname === path)
+        failed.push(request.failure()?.errorText ?? "failed");
+    });
+    await page.route(`**${path}*`, async (route) => {
+      reads += 1;
+      await held;
+      await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+    });
+    const parent = surface === "overview" ? "/api/v1/overview" : "/api/v1/status";
+    await page.route(`**${parent}*`, async (route) => {
+      parentReads += 1;
+      const body = responseFor(route.request().url());
+      await route.fulfill(
+        fixtureFulfillment({
+          ...body,
+          generatedAt: new Date(Date.now() + parentReads * 1000).toISOString(),
+        }),
+      );
+    });
+    if (surface === "overview") await login(page);
+    else await openPage(page, surface, surface === "pool" ? "Pool positions" : "Rewards");
+    await expect.poll(() => reads).toBe(1);
+    await page.clock.runFor(16_000);
+    await expect.poll(() => parentReads).toBeGreaterThan(1);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    expect(reads).toBe(1);
+    release();
+    if (surface === "overview")
+      await expect(
+        page.locator("#overview-rewards").getByRole("link", { name: "Review payments" }),
+      ).toBeVisible();
+    else if (surface === "rewards") await expect(page.locator("#rewards-cycle-139")).toBeVisible();
+    else await expect(page.locator("tbody tr").first()).toBeVisible();
+    expect(failed).toEqual([]);
+  });
+}
+
+test("R2 retries historical payments after failure and retains rows through refresh failure", async ({
+  page,
+}) => {
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  let fail = true;
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("cycle") === "139" && fail) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporarily_unavailable" }),
+      });
+    } else await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  const cycle = page.locator("#rewards-cycle-139");
+  await cycle.getByRole("button", { name: "Show distributions" }).click();
+  await expect(page.getByRole("button", { name: "Retry payments" })).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+  await cycle.getByRole("button", { name: "Hide distributions" }).click();
+  fail = false;
+  await cycle.getByRole("button", { name: "Show distributions" }).click();
+  const history = page.locator(".rw-ledger-panel");
+  await expect(history.locator("tbody tr").first()).toBeVisible();
+  fail = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(history.getByRole("button", { name: "Retry payments" })).toBeVisible();
+  await expect(history.locator("tbody tr").first()).toBeVisible();
+  discardExpectedHttpConsoleError(page, 503);
+  fail = false;
+  await history.getByRole("button", { name: "Retry payments" }).click();
+  await expect(history.getByRole("button", { name: "Retry payments" })).toHaveCount(0);
+});
+
+test("R2 refreshes external gas funding on focus and preserves acknowledged Settings saves", async ({
+  page,
+}) => {
+  let balance = "1000000";
+  let failStatus = false;
+  await page.route("**/api/v1/settings/gas-wallet", async (route) => {
+    await route.fulfill(fixtureFulfillment({ ...gasWalletCreated, balanceUstx: balance }));
+  });
+  await page.route("**/api/v1/settings", async (route) => {
+    if (route.request().method() === "PUT") failStatus = true;
+    await route.fulfill(fixtureFulfillment(snapshot.runtimeSettings));
+  });
+  await page.route("**/api/v1/status*", async (route) => {
+    if (failStatus)
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporarily_unavailable" }),
+      });
+    else await route.fulfill(fixtureFulfillment(responseFor(route.request().url())));
+  });
+  await login(page);
+  await openPage(page, "settings", "Settings");
+  await expect(page.locator(".st-wallet-sub")).toContainText("1.00 STX");
+  balance = "9000000";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(".st-wallet-sub")).toContainText("9.00 STX");
+  await openSettingsSection(page, "sources", "Connections");
+  const indexed = await editConnection(page, "Indexed chain API");
+  await indexed.locator('input[type="password"]').fill("new-fixture-secret");
+  await page.getByRole("button", { name: "Save connections" }).click();
+  await expect(page.getByText(/Settings saved, but status refresh failed/)).toBeVisible();
+  await expect(page.getByText(/Could not save connections/)).toHaveCount(0);
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+test("R2 preserves a sealed wallet intent by ID through stale snapshots and reload", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0] ?? "";
+  const prepared = {
+    intent: {
+      ...updateFeesWalletIntent(actor, "submitted").intent,
+      status: "prepared",
+      txid: null,
+      verification: null,
+    },
+  };
+  let stale = false;
+  await page.route("**/api/v1/wallet-intents/*", async (route) =>
+    route.fulfill(fixtureFulfillment(prepared)),
+  );
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment(
+        stale
+          ? {
+              ...current,
+              freshness: { ...current.freshness, status: "stale", reason: "refresh-failed" },
+            }
+          : current,
+      ),
+    );
+  });
+  await login(page);
+  await page.evaluate((id) => {
+    location.hash = `#action/update-fees?intentId=${id}`;
+  }, prepared.intent.id);
+  await expect(page.getByText("Set the manager fee to 250 basis points.")).toBeVisible();
+  stale = true;
+  await page.reload();
+  await expect(page.getByText("Set the manager fee to 250 basis points.")).toBeVisible();
+  await expect(page.getByText(/Fresh operation evidence is required/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review wallet transaction", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect wallet and sign" })).toHaveCount(0);
+});
+
+test("R2 keeps a submitted manager claim visible after its claimable balance reaches zero", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0];
+  const base = updateFeesWalletIntent(actor, "submitted").intent;
+  const claim = {
+    intent: {
+      ...base,
+      action: "claim-rewards",
+      request: { action: "claim-rewards", actorPrincipal: actor },
+      transaction: {
+        ...base.transaction,
+        params: {
+          ...base.transaction.params,
+          functionName: "claim-rewards",
+          functionArgs: ["0x01", "0x0b00000000"],
+          postConditions: ["0x0000"],
+        },
+      },
+      review: {
+        ...base.review,
+        title: "Claim manager funding",
+        summary: "A sealed manager claim remains observable.",
+      },
+    },
+  };
+  let claimable = "1000";
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...current,
+        rewards: {
+          ...current.rewards,
+          global: { ...current.rewards.global, signerEarnedAcrossBucketsSats: claimable },
+        },
+      }),
+    );
+  });
+  await page.route("**/api/v1/wallet-intents*", async (route) =>
+    route.fulfill(fixtureFulfillment(claim)),
+  );
+  await page.route("**/api/v1/wallet-intents/**", async (route) =>
+    route.fulfill(fixtureFulfillment(claim)),
+  );
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#action/claim-rewards";
+  });
+  await page.getByRole("textbox", { name: /^Signing account/ }).fill(actor);
+  await page.getByRole("button", { name: "Review wallet transaction" }).click();
+  await expect(page).toHaveURL(/#action\/claim-rewards\?intentId=/);
+  await expect(page.getByText("A sealed manager claim remains observable.")).toBeVisible();
+  claimable = "0";
+  await page.reload();
+  await expect(page.getByText("A sealed manager claim remains observable.")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Refresh verification", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/No manager reward balance is currently claimable/)).toHaveCount(0);
+});
+
+test("R2 Activity keeps terminal wallet evidence viewable while the snapshot is stale", async ({
+  page,
+}) => {
+  const actor = snapshot.managerPrincipal.split(".")[0];
+  const complete = updateFeesWalletIntent(actor, "complete");
+  complete.intent.verification = { ...complete.intent.verification, executionSource: "api" };
+  await page.route("**/api/v1/wallet-intents/**", async (route) =>
+    route.fulfill(fixtureFulfillment(complete)),
+  );
+  await page.route("**/api/v1/activity/**", async (route) => {
+    const body = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...body,
+        summary: {
+          ...body.summary,
+          displayStatus: "complete",
+          outcome: "succeeded",
+          stage: "complete",
+          primaryAction: null,
+          deadline: null,
+          urgencyAt: null,
+        },
+      }),
+    );
+  });
+  await page.route("**/api/v1/status*", async (route) => {
+    const current = responseFor(route.request().url());
+    await route.fulfill(
+      fixtureFulfillment({
+        ...current,
+        freshness: { ...current.freshness, status: "stale", reason: "refresh-failed" },
+      }),
+    );
+  });
+  await login(page);
+  await page.evaluate((id) => {
+    location.hash = `#activity/${encodeURIComponent(`wallet-intent:${id}`)}`;
+  }, complete.intent.id);
+  const panel = page.getByRole("region", { name: "Browser wallet" });
+  await expect(panel.getByText("The manual refresh verified the fee update.")).toBeVisible();
+  await expect(panel.getByText("Evidence: configured API", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Refresh verification" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Connect wallet and sign" })).toHaveCount(0);
 });
 
 test("keeps sustained health findings on the Signer Health page", async ({ page }) => {
@@ -2251,7 +2759,7 @@ test("shows custom manager compatibility per operation without blocking core mon
       status.manager.source.recognized = true;
       status.manager.source.profileId = "operator-custom-manager";
       status.manager.source.origin = "operator-installed";
-      status.manager.capabilities.sourceReview.exactReviewed = false;
+      status.manager.capabilities.sourceReview.reviewed = false;
       status.manager.capabilities.sourceReview.reason = "No reviewed exact source match";
       for (const capability of status.manager.capabilities.actions) {
         capability.executionAvailable = false;
@@ -2339,10 +2847,14 @@ test("paginates and searches a pool with hundreds of stakers", async ({ page }) 
   await expect(page.getByText("1–1 of 1")).toBeVisible();
 });
 
-test("manual wallet verification supersedes an overlapping automatic poll", async ({ page }) => {
+test("manual wallet verification supersedes a retained-state GET without automatic reconciliation POSTs", async ({
+  page,
+}) => {
   await page.clock.install();
   const actorPrincipal = snapshot.managerPrincipal.split(".")[0];
   let refreshCalls = 0;
+  let automaticReads = 0;
+  let holdAutomaticRead = false;
   let releaseAutomaticRefresh: (() => void) | null = null;
   const automaticRefreshReleased = new Promise<void>((resolve) => {
     releaseAutomaticRefresh = resolve;
@@ -2361,16 +2873,22 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
       body = updateFeesWalletIntent(actorPrincipal, "submitted");
     } else if (
       request.pathname ===
-      `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}/refresh`
+      `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}`
     ) {
-      refreshCalls += 1;
-      if (refreshCalls === 1) {
+      expect(route.request().method()).toBe("GET");
+      if (holdAutomaticRead) {
+        automaticReads += 1;
         heldAutomaticRefresh = true;
         await automaticRefreshReleased;
         body = updateFeesWalletIntent(actorPrincipal, "mempool");
-      } else {
-        body = updateFeesWalletIntent(actorPrincipal, "complete");
-      }
+      } else body = updateFeesWalletIntent(actorPrincipal, "submitted");
+    } else if (
+      request.pathname ===
+      `/api/v1/wallet-intents/${registerWalletIntent(actorPrincipal).intent.id}/refresh`
+    ) {
+      refreshCalls += 1;
+      expect(route.request().method()).toBe("POST");
+      body = updateFeesWalletIntent(actorPrincipal, "complete");
     } else {
       body = responseFor(route.request().url());
     }
@@ -2396,12 +2914,28 @@ test("manual wallet verification supersedes an overlapping automatic poll", asyn
     await page.getByLabel("New fee (basis points)").fill("250");
     const walletReview = page.getByRole("region", { name: "Browser wallet" });
     await walletReview.getByRole("button", { name: "Review wallet transaction" }).click();
+    await expect(page).toHaveURL(/#action\/update-fees\?intentId=/);
     await expect(walletReview.getByRole("button", { name: "Refresh verification" })).toBeVisible();
 
-    await page.clock.runFor(15_000);
-    await expect.poll(() => refreshCalls).toBe(1);
+    holdAutomaticRead = true;
+    await page.evaluate(() =>
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      }),
+    );
+    await page.clock.runFor(30_000);
+    expect(automaticReads).toBe(0);
+    expect(refreshCalls).toBe(0);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.clock.runFor(500);
+    await expect.poll(() => automaticReads).toBe(1);
+    expect(refreshCalls).toBe(0);
     await walletReview.getByRole("button", { name: "Refresh verification" }).click();
-    await expect.poll(() => refreshCalls).toBe(2);
+    await expect.poll(() => refreshCalls).toBe(1);
     await expect(walletReview).toContainText("The manual refresh verified the fee update.");
   } finally {
     releaseAutomaticRefresh?.();
@@ -2774,6 +3308,97 @@ test("shows the ready distribution with payments, exports, and the wallet fallba
     .toBe(true);
 });
 
+test("loads backlog payment details on demand, skips uncalculated cards, and retains rows after errors", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const detailReads: string[] = [];
+  let auxiliaryReads = 0;
+  let failOldest = false;
+  await overrideFixtures(page, (request) => {
+    if (request.pathname === "/api/v1/health" || request.pathname === "/api/v1/rewards")
+      auxiliaryReads += 1;
+    if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+    const key = `${request.searchParams.get("cycle")}:${request.searchParams.get("distribution")}`;
+    if (request.searchParams.has("cycle")) detailReads.push(key);
+    if (failOldest && key === "128:1")
+      return { fixtureStatus: 503, error: "temporary ledger failure" };
+    const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+    ledger.generatedAt = failOldest ? "2026-07-15T12:10:30.000Z" : snapshot.generatedAt;
+    for (const cycle of ledger.cycles) {
+      for (const distribution of cycle.distributions) {
+        distribution.status = "ready";
+        distribution.availableToCollectSats = "1000";
+        distribution.payments.outstanding = 1;
+      }
+    }
+    const uncalculated = structuredClone(ledger.cycles[0]);
+    uncalculated.cycle = 127;
+    uncalculated.distributions = uncalculated.distributions.slice(0, 1).map((distribution) => ({
+      ...distribution,
+      cycle: 127,
+      distribution: 2,
+      status: "calculation-overdue",
+      current: false,
+      calculation: { ...distribution.calculation, state: "overdue", poolSats: null },
+    }));
+    ledger.cycles.push(uncalculated);
+    return ledger;
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.locator("#rewards-distribution-128-1 .rw-payments")).toBeVisible();
+  const lazy = page.locator("#rewards-distribution-139-1");
+  await expect(lazy.getByRole("button", { name: "Load payments" })).toBeVisible();
+  expect(detailReads).toEqual(["128:1"]);
+  expect(auxiliaryReads).toBe(0);
+  await lazy.getByRole("button", { name: "Load payments" }).click();
+  await expect(lazy.locator(".rw-payments")).toBeVisible();
+  expect(detailReads).toEqual(["128:1", "139:1"]);
+  expect(detailReads).not.toContain("127:2");
+  failOldest = true;
+  await page.clock.runFor(30_100);
+  const oldest = page.locator("#rewards-distribution-128-1");
+  await expect(oldest.getByText(/Payment refresh failed; showing retained payments/)).toBeVisible();
+  await expect(oldest.locator(".rw-payments")).toBeVisible();
+  expect(detailReads).not.toContain("127:2");
+  discardExpectedHttpConsoleError(page, 503);
+});
+
+for (const [first, second, displayed] of [
+  ["1000", null, "—"],
+  [null, null, "—"],
+  ["0", "0", "0 sats"],
+] as const) {
+  test(`keeps calculated totals honest across Overview and Rewards (${first}, ${second})`, async ({
+    page,
+  }) => {
+    await overrideFixtures(page, (request) => {
+      if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+      const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+      const cycle = ledger.cycles[0];
+      const firstDistribution = cycle.distributions[0];
+      firstDistribution.calculation.poolSats = first;
+      cycle.distributions = [
+        firstDistribution,
+        {
+          ...structuredClone(firstDistribution),
+          distribution: 2,
+          calculation: { ...firstDistribution.calculation, poolSats: second },
+        },
+      ];
+      return ledger;
+    });
+    await login(page);
+    const total = page.locator("#overview-rewards dl div", { hasText: "Cycle 140 calculated" });
+    await expect(total.locator("dd")).toHaveText(displayed);
+    await openPage(page, "rewards", "Rewards");
+    const fact = page.locator('[data-earning-fact="cycle"] dd');
+    await expect(fact.locator(".rw-earning-mobile-value")).toHaveText(displayed);
+    if (second === null) await expect(fact).toContainText("calculated pool total unavailable");
+  });
+}
+
 test("keeps the reward action tooltip inside intermediate desktop viewports", async ({
   page,
 }, testInfo) => {
@@ -2942,4 +3567,71 @@ test("creates a gas wallet from Settings", async ({ page }) => {
   await expect(section.getByRole("button", { name: "Enable" })).toBeVisible();
   await section.getByRole("button", { name: "Sweep remaining STX" }).click();
   await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
+});
+
+test("R3a displays retained sweep conflicts without browser-driven reconciliation", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const conflict =
+    "Canonical transaction conflict: absent. Wallet authorization retained; do not repeat this sweep";
+  const sweepId = "00000000-0000-4000-8000-00000000b001";
+  const sweep = {
+    sweepId,
+    status: "broadcast",
+    walletPrincipal: gasWalletCreated.principal,
+    recipient: snapshot.managerPrincipal.split(".")[0],
+    amountUstx: "1000000",
+    feeUstx: "1000",
+    nonce: "1",
+    balanceUstx: "1001000",
+    planSha256: "11".repeat(32),
+    txid: `0x${"cd".repeat(32)}`,
+    broadcastAmbiguous: true,
+    createdAt: snapshot.generatedAt,
+    expiresAt: snapshot.generatedAt,
+    approvedAt: snapshot.generatedAt,
+    broadcastAt: snapshot.generatedAt,
+    resolvedAt: null,
+    blockHeight: null,
+    failureReason: conflict,
+  };
+  const completed = {
+    ...sweep,
+    sweepId: "00000000-0000-4000-8000-00000000b002",
+    status: "confirmed",
+    failureReason: null,
+    resolvedAt: snapshot.generatedAt,
+    blockHeight: 1234,
+    executionSource: "api",
+  };
+  let receiptPosts = 0;
+  let statusReads = 0;
+  await page.route("**/api/v1/settings/gas-wallet**", async (route) => {
+    const request = new URL(route.request().url());
+    if (request.pathname.endsWith("/refresh")) receiptPosts += 1;
+    else statusReads += 1;
+    await route.fulfill(
+      fixtureFulfillment({
+        ...gasWalletCreated,
+        activeSweepId: sweepId,
+        sweeps: [sweep, completed],
+      }),
+    );
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#settings?section=gas-wallet";
+  });
+  const section = page.locator('section[aria-label="Reward runs"]');
+  await section.getByRole("button", { name: "Sweep remaining STX" }).click();
+  await expect(section.getByText(conflict)).toBeVisible();
+  const initialReads = statusReads;
+  await page.clock.runFor(31_000);
+  await expect.poll(() => statusReads).toBeGreaterThan(initialReads);
+  expect(receiptPosts).toBe(0);
+  await expect(section.getByRole("button", { name: "Check status" })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
+  await section.getByText("Sweep history", { exact: true }).click();
+  await expect(section.getByText("Evidence: configured API", { exact: true })).toBeVisible();
 });

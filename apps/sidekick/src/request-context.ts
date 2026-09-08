@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+export const INTERACTIVE_REQUEST_DEADLINE_MS = 15_000;
+
 interface InteractiveRequestContext {
   readonly signal: AbortSignal;
 }

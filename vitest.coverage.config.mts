@@ -17,6 +17,7 @@ export default defineConfig({
       ],
       exclude: [
         "**/*.test.ts",
+        "apps/sidekick/src/test-helpers/**",
         "apps/sidekick/src/main.ts",
         "packages/protocol/src/generate-manager.ts",
       ],

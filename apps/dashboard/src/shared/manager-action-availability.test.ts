@@ -32,7 +32,7 @@ function context(): ManagerActionContext {
           public: ["validate-stake!", "update-admin"],
           readOnly: ["is-admin"],
         },
-        sourceReview: { exactReviewed: true, reason: "Exact reviewed source" },
+        sourceReview: { reviewed: true, reason: "Exact reviewed source" },
         eventVocabulary: {
           id: "reference-manager-v1",
           normalizationAvailable: true,

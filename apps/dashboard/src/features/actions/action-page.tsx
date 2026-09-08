@@ -1,9 +1,10 @@
 import { ArrowClockwise, ArrowLeft, ShieldCheck, WarningCircle } from "@phosphor-icons/react";
-import type {
-  DashboardSnapshot,
-  EngineJobDetail,
-  EngineStatus,
-  OperatorOperationCode,
+import {
+  browserWalletIntentActionSchema,
+  type DashboardSnapshot,
+  type EngineJobDetail,
+  type EngineStatus,
+  type OperatorOperationCode,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CopyableIdentifier } from "../../copyable-identifier.js";
@@ -87,6 +88,7 @@ function UnavailableAction({ reason }: { reason: string }) {
 }
 
 function ManagerOperation({
+  onPrepared,
   data,
   operation,
   operatorStateStale,
@@ -95,6 +97,7 @@ function ManagerOperation({
   refreshingStatus,
   token,
 }: {
+  onPrepared: (intentId: string) => void;
   data: Snapshot;
   operation: Extract<OperatorOperationCode, keyof typeof managerActionCopy>;
   operatorStateStale: boolean;
@@ -151,6 +154,7 @@ function ManagerOperation({
         </div>
       ) : null}
       <ManagerActionWorkspace
+        onPrepared={onPrepared}
         action={operation}
         closeHref={dashboardHash(operationCopy[operation].returnPage)}
         data={data}
@@ -163,6 +167,7 @@ function ManagerOperation({
 }
 
 function EngineClaimOperation({
+  onPrepared,
   chainId,
   context,
   data,
@@ -170,6 +175,7 @@ function EngineClaimOperation({
   operatorStateStale,
   token,
 }: {
+  onPrepared: (intentId: string) => void;
   chainId: number;
   context: ActionContext;
   data: Snapshot;
@@ -266,6 +272,7 @@ function EngineClaimOperation({
         </Field>
         {request ? (
           <BrowserWalletActionPanel
+            onPrepared={onPrepared}
             chainId={chainId}
             createRequest={request}
             managerPrincipal={data.managerPrincipal}
@@ -322,12 +329,14 @@ function EngineClaimOperation({
 }
 
 function StakerRewardOperation({
+  onPrepared,
   context,
   data,
   operatorStateStale,
   onOperatorStateChanged,
   token,
 }: {
+  onPrepared: (intentId: string) => void;
   context: ActionContext;
   data: Snapshot;
   operatorStateStale: boolean;
@@ -397,6 +406,7 @@ function StakerRewardOperation({
       </Field>
       {request ? (
         <BrowserWalletActionPanel
+          onPrepared={onPrepared}
           chainId={data.preflight.node.networkId}
           createRequest={request}
           managerPrincipal={data.managerPrincipal}
@@ -417,11 +427,13 @@ function StakerRewardOperation({
 }
 
 function CalculateRewardsOperation({
+  onPrepared,
   data,
   operatorStateStale,
   onOperatorStateChanged,
   token,
 }: {
+  onPrepared: (intentId: string) => void;
   data: Snapshot;
   operatorStateStale: boolean;
   onOperatorStateChanged: () => void | Promise<void>;
@@ -484,6 +496,7 @@ function CalculateRewardsOperation({
       </Field>
       {request ? (
         <BrowserWalletActionPanel
+          onPrepared={onPrepared}
           chainId={data.preflight.node.networkId}
           createRequest={request}
           managerPrincipal={pox5ContractId}
@@ -523,6 +536,38 @@ export function ActionPage({
   token: string;
 }) {
   const copy = operationCopy[operation];
+  const [intentId, setIntentId] = useState(() => {
+    const id = new URLSearchParams(window.location.hash.split("?")[1]).get("intentId");
+    return id && id.length <= 200 ? id : null;
+  });
+  const onPrepared = useCallback((id: string) => {
+    setIntentId(id);
+    const [path, query] = window.location.hash.split("?");
+    const params = new URLSearchParams(query);
+    params.set("intentId", id);
+    window.history.replaceState(null, "", `${path}?${params}`);
+  }, []);
+  const walletAction = browserWalletIntentActionSchema.safeParse(operation);
+  const managerAvailability =
+    operation === "calculate-rewards"
+      ? null
+      : managerActionAvailability(
+          data,
+          isManagerActionId(operation)
+            ? managerCapabilityIdForAction(operation)
+            : rewardManagerCapabilityId(operation),
+          operatorStateStale,
+        );
+  const preparationBlocked =
+    operatorStateStale || data.freshness?.status === "stale"
+      ? "Fresh operation evidence is required before signing or preparing a replacement."
+      : managerAvailability && !managerAvailability.available
+        ? managerAvailability.reason
+        : operation === "calculate-rewards" &&
+            (!data.preflight.pox.pox5ContractId ||
+              data.preflight.compatibility.status !== "matched")
+          ? "The active PoX-5 source must match a reviewed network profile before signing."
+          : undefined;
   return (
     <>
       <ActionBack operation={operation} />
@@ -546,8 +591,25 @@ export function ActionPage({
           View related Activity
         </a>
       </section>
-      {isManagerActionId(operation) ? (
+      {intentId && walletAction.success ? (
+        <BrowserWalletActionPanel
+          action={walletAction.data}
+          chainId={data.preflight.node.networkId}
+          existingIntentId={intentId}
+          managerPrincipal={
+            operation === "calculate-rewards"
+              ? (data.preflight.pox.pox5ContractId ?? data.managerPrincipal)
+              : data.managerPrincipal
+          }
+          network={data.network}
+          onPrepared={onPrepared}
+          onVerified={onOperatorStateChanged}
+          preparationBlocked={preparationBlocked}
+          token={token}
+        />
+      ) : isManagerActionId(operation) ? (
         <ManagerOperation
+          onPrepared={onPrepared}
           data={data}
           operation={operation}
           operatorStateStale={operatorStateStale}
@@ -558,6 +620,7 @@ export function ActionPage({
         />
       ) : operation === "claim-rewards" ? (
         <EngineClaimOperation
+          onPrepared={onPrepared}
           chainId={data.preflight.node.networkId}
           context={context}
           data={data}
@@ -567,6 +630,7 @@ export function ActionPage({
         />
       ) : operation === "claim-staker-rewards" ? (
         <StakerRewardOperation
+          onPrepared={onPrepared}
           context={context}
           data={data}
           operatorStateStale={operatorStateStale}
@@ -575,6 +639,7 @@ export function ActionPage({
         />
       ) : operation === "calculate-rewards" ? (
         <CalculateRewardsOperation
+          onPrepared={onPrepared}
           data={data}
           operatorStateStale={operatorStateStale}
           onOperatorStateChanged={onOperatorStateChanged}

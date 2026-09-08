@@ -3,6 +3,7 @@ import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
+import { retryAfterMilliseconds } from "./chain-clients.js";
 import { parseEndpointUrl } from "./config.js";
 import { currentInteractiveRequestSignal } from "./request-context.js";
 import { upstreamRequestMetrics } from "./upstream-request-metrics.js";
@@ -25,14 +26,16 @@ export class HealthSourceError extends Error {
       | "http-error"
       | "unexpected-content",
     message: string,
-    options?: ErrorOptions & { status?: number },
+    options?: ErrorOptions & { status?: number; retryAfterMs?: number | null },
   ) {
     super(message, options);
     this.name = "HealthSourceError";
     this.status = options?.status ?? null;
+    this.retryAfterMs = options?.retryAfterMs ?? null;
   }
 
   readonly status: number | null;
+  readonly retryAfterMs: number | null;
 }
 
 export interface HealthHttpResponse {
@@ -255,7 +258,14 @@ export async function fetchHealthSource(
                     ? "rate-limited"
                     : "http-error";
             finishError(
-              new HealthSourceError(code, `Health endpoint returned HTTP ${status}`, { status }),
+              new HealthSourceError(code, `Health endpoint returned HTTP ${status}`, {
+                status,
+                retryAfterMs: retryAfterMilliseconds(
+                  typeof response.headers["retry-after"] === "string"
+                    ? response.headers["retry-after"]
+                    : null,
+                ),
+              }),
             );
             return;
           }

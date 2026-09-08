@@ -301,7 +301,7 @@ export const snapshot = {
         ],
         readOnly: ["is-admin", "get-earned-fees", "get-earned-staker-rewards"],
       },
-      sourceReview: { exactReviewed: true, reason: "Fixture source is reviewed." },
+      sourceReview: { reviewed: true, reason: "Fixture source is reviewed." },
       eventVocabulary: {
         id: "reference-manager-v1",
         normalizationAvailable: true,
@@ -1131,6 +1131,7 @@ export const overview = {
     rewardCycleId: 140,
     estimatedNetworkRewardSats: "200000",
     estimatedPoolRewardSats: "150000",
+    accruedPoolRewardSats: "100000",
     distributionCheckpoint: "first-half",
     estimatedOperatorFeeSats: "7500",
     operatorFeeUnavailableReason: null,
@@ -1263,6 +1264,18 @@ function ledgerDistribution(cycle, distribution, status, stakers) {
       availableToCollectSats: outstanding ? pool.toString() : "0",
       feeBips: "500",
       feeEvidence: "locked",
+      allocation: calculated
+        ? {
+            toStakersSats: payments
+              .reduce((sum, p) => sum + BigInt(p.stakerEntitlementSats), 0n)
+              .toString(),
+            operatorFeeSats: payments
+              .reduce((sum, p) => sum + BigInt(p.operatorFeeSats), 0n)
+              .toString(),
+            coverage: "complete",
+            estimated: false,
+          }
+        : undefined,
       payments: {
         made: outstanding ? 0 : payments.length,
         outstanding: outstanding ? payments.length : 0,
@@ -1365,6 +1378,7 @@ function rewardLedgerForCycles(url, cycles, current) {
     cycles: cycles.map(({ cycle }) => cycle),
     payments,
     paymentsTruncated: false,
+    context: { burnBlockTiming: health.burnBlockTiming, rewardRealizations: [] },
     fees: {
       feeBips: "500",
       earnedIndexedSats: cycles
@@ -1402,6 +1416,15 @@ export function crossedCycleRewardLedger(url) {
   const previous = ledgerCycle(141, ["complete", "ready"], ledgerStakers);
   previous.payments = previous.payments.filter((payment) => payment.distribution === 1);
   const pending = previous.cycle.distributions[1];
+  // Deliberately missing live account rows: no inferred fee split, even with a pool calculation.
+  pending.allocation = {
+    toStakersSats: null,
+    operatorFeeSats: null,
+    coverage: "unavailable",
+    estimated: false,
+  };
+  pending.status = "interpretation-unavailable";
+  pending.statusDetail = "Current reward balances have not been read";
   pending.payments = {
     ...pending.payments,
     outstanding: 0,

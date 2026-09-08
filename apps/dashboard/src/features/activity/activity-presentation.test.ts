@@ -87,4 +87,11 @@ describe("Activity presentation", () => {
       }),
     ]);
   });
+
+  it("keeps re-observed old activity under its occurrence day", () => {
+    const now = new Date(2026, 7, 14, 12);
+    const old = item("replayed", now.toISOString());
+    old.occurredAt = new Date(2026, 7, 13, 10).toISOString();
+    expect(groupActivityHistory([old], now).map(({ label }) => label)).toEqual(["Yesterday"]);
+  });
 });
