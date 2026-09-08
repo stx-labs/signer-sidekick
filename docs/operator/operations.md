@@ -120,6 +120,19 @@ up, with source latency, outages or a busy observation pass adding time. Manual 
 or **Refresh** bypasses that wait. Restart resets the in-memory backoff and checks retained work
 again. Missing does not mean failed and never authorizes another sweep.
 
+An active run checks its broadcast transaction every 30 seconds, while the five-second maintenance
+tick still enforces the original runtime deadline. Unavailable receipt reads back off through the
+same five-minute schedule; upstream Retry-After hints are capped at five minutes so a single
+oversized hint cannot silence observation for the remainder of the run's lifetime.
+A healthy API with no terminal receipt (including pending or 404) stays on the normal 30-second
+cadence. Confirmation can take the remaining wait plus source latency to appear. Explicit Resume
+of a halted run rechecks its existing attempt immediately; it does not sign a replacement.
+
+A wallet transaction with known canonical success but an unchanged, still-pending additional
+checkpoint/job/semantic check also backs off to five minutes. New evidence or a changed diagnostic
+returns it to the ordinary cadence. Manual Refresh still checks immediately and can complete the
+action once the required evidence is available. These timing changes do not loosen completion checks.
+
 A run starts from a Distribute card. Sidekick first prepares its sealed recipe in the background;
 large pools can take a few minutes, survive a closed browser, and resume preparation after restart.
 Review the resulting transaction count, then Go. Execution is also server-side, one transaction at

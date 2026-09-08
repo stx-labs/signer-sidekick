@@ -1973,8 +1973,38 @@ describe("manager wallet action preparation", () => {
         executionSource: "api",
       },
     });
-    if (status === "success")
+    if (status === "success") {
       expect(result.verification?.detail).toContain("additional action verification");
+      const countBefore = details.mock.calls.length;
+      const first = h.store.walletIntents.latestObservation(h.prepared.id);
+      const startAt = Date.parse("2026-07-19T12:04:00.000Z");
+      const at = (seconds: number) => new Date(startAt + seconds * 1000).toISOString();
+      for (let seconds = 0; seconds < 3600; seconds += 5)
+        await wallet.observeSubmitted(at(seconds));
+      expect(details).toHaveBeenCalledTimes(countBefore + 15);
+      expect(h.store.walletIntents.latestObservation(h.prepared.id)?.id).toBe(first?.id);
+      expect(wallet.get(h.prepared.id)).toMatchObject({
+        status: "confirmed",
+        verification: { outcome: "canonical-success", executionSource: "api" },
+      });
+      // Changed diagnostic/evidence gets the ordinary cadence; manual reads bypass backoff.
+      node.callReadOnly.mockRejectedValue(
+        new UpstreamUnavailableError("checkpoint still unavailable"),
+      );
+      await wallet.refresh(h.prepared.id, at(3601));
+      expect(h.store.walletIntents.latestObservation(h.prepared.id)?.id).not.toBe(first?.id);
+      await wallet.observeSubmitted(at(3630));
+      expect(details).toHaveBeenCalledTimes(countBefore + 16);
+      await wallet.observeSubmitted(at(3631));
+      expect(details).toHaveBeenCalledTimes(countBefore + 17);
+      node.callReadOnly.mockResolvedValue(uintCV(7_999));
+      expect(await wallet.refresh(h.prepared.id, at(3632))).toMatchObject({
+        status: "complete",
+        verification: { outcome: "complete", executionSource: "api" },
+      });
+      await wallet.observeSubmitted(at(4000));
+      expect(details).toHaveBeenCalledTimes(countBefore + 18);
+    }
   });
 
   it("observes submitted work after service restart without a browser, and stops querying terminal history", async () => {

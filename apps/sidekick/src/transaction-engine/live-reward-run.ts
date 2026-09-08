@@ -775,6 +775,15 @@ export class LiveRewardRunDriver implements RewardRunDriver {
           source: apiTransaction.value.source,
         };
       }
+      if (apiTransaction.status === "unavailable") {
+        return {
+          status: "pending",
+          retryLater: true,
+          ...(apiTransaction.retryAfterMs !== undefined
+            ? { retryAfterMs: apiTransaction.retryAfterMs }
+            : {}),
+        };
+      }
     }
     if (confirmed) {
       if (confirmed.success) {

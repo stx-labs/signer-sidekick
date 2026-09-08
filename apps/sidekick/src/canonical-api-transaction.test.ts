@@ -1,7 +1,7 @@
 import { makeSTXTokenTransfer } from "@stacks/transactions";
 import { describe, expect, it, vi } from "vitest";
 import { lookupCanonicalApiTransaction } from "./canonical-api-transaction.js";
-import { UpstreamHttpError, UpstreamUnavailableError } from "./chain-clients.js";
+import { RateLimitedError, UpstreamHttpError, UpstreamUnavailableError } from "./chain-clients.js";
 
 const transaction = await makeSTXTokenTransfer({
   recipient: "ST000000000000000000002AMW42H",
@@ -52,6 +52,21 @@ function fixture() {
 }
 
 describe("canonical API receipt", () => {
+  it.each([
+    "getNodeInfo",
+    "getTransactionDetails",
+    "getBlock",
+  ] as const)("retains Retry-After from the API %s read without inventing execution", async (method) => {
+    const f = fixture();
+    f.api[method].mockRejectedValue(new RateLimitedError("slow down", 600_000));
+    expect(await f.lookup(true)).toEqual({
+      status: "unavailable",
+      reason: "slow down",
+      retryAfterMs: 600_000,
+    });
+    expect(f.node.getTenureInfo).not.toHaveBeenCalled();
+  });
+
   it("returns exact canonical block bytes for the ordinary wallet verifier", async () => {
     const f = fixture();
     expect(await f.lookup()).toMatchObject({

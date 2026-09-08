@@ -264,6 +264,124 @@ describe("reward run coordinator", () => {
     expect(live.broadcasts).toEqual([]);
   });
 
+  it.each([
+    "pending",
+    "unavailable",
+    "throw",
+  ] as const)("bounds active-run %s receipt reads per hour and finds a late confirmation without re-signing", async (kind) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let now = started;
+    const reconcile = vi.fn<RewardRunDriver["reconcile"]>(async () => {
+      if (kind === "throw") throw new UpstreamUnavailableError("offline");
+      return kind === "unavailable"
+        ? { status: "pending", retryLater: true }
+        : { status: "pending" };
+    });
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: { ...live.implementation, reconcile },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => now,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    await service.recover();
+    const deadline = service.get(run.runId).runtimeExpiresAt;
+    for (let seconds = 5; seconds < 3600; seconds += 5) {
+      now = new Date(started.getTime() + seconds * 1000);
+      await service.recover();
+    }
+    expect(reconcile).toHaveBeenCalledTimes(kind === "pending" ? 120 : 15);
+    expect(service.get(run.runId)).toMatchObject({
+      status: "running",
+      cursor: 0,
+      runtimeExpiresAt: deadline,
+    });
+    expect(sign).toHaveBeenCalledOnce();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    reconcile.mockResolvedValue({
+      status: "confirmed",
+      blockHeight: 9_001,
+      executionSource: "api",
+    });
+    now = new Date(started.getTime() + 3750_000);
+    await service.recover();
+    expect((await settle(service, run.runId)).status).toBe("completed");
+    expect(service.get(run.runId).children[0]?.executionSource).toBe("api");
+    expect(sign).toHaveBeenCalledOnce();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await service.stop();
+  });
+
+  it.each([
+    "returned",
+    "thrown",
+  ] as const)("continues five-minute reads despite a %s day-long Retry-After, without re-signing or extending expiry", async (kind) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let now = started;
+    const retryAfterMs = 24 * 60 * 60_000;
+    const reconcile = vi.fn<RewardRunDriver["reconcile"]>(async () => {
+      if (kind === "thrown") throw new RateLimitedError("limited", retryAfterMs);
+      return { status: "pending", retryLater: true, retryAfterMs };
+    });
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: { ...live.implementation, reconcile },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => now,
+    });
+    const run = await service.prepare({
+      cycle: 141,
+      distribution: 1,
+      operations: ["claim-rewards"],
+    });
+    await service.approve(run.runId, run.recipeSha256);
+    await service.recover();
+    const deadline = service.get(run.runId).runtimeExpiresAt;
+    expect(deadline).toBe(new Date(started.getTime() + 6 * 60 * 60_000).toISOString());
+    now = new Date(started.getTime() + 299_999);
+    await service.recover();
+    expect(reconcile).toHaveBeenCalledOnce();
+    // A source hint cannot silence observation: keep checking throughout the original lifetime.
+    for (let elapsed = 300_000; elapsed < 6 * 60 * 60_000; elapsed += 300_000) {
+      now = new Date(started.getTime() + elapsed);
+      await service.recover();
+      expect(reconcile).toHaveBeenCalledTimes(1 + elapsed / 300_000);
+      expect(service.get(run.runId)).toMatchObject({
+        status: "running",
+        cursor: 0,
+        runtimeExpiresAt: deadline,
+      });
+    }
+    now = new Date(started.getTime() + 6 * 60 * 60_000 - 5_000);
+    await service.recover();
+    expect(service.get(run.runId).status).toBe("running");
+    expect(reconcile).toHaveBeenCalledTimes(72);
+    now = new Date(started.getTime() + 6 * 60 * 60_000);
+    await service.recover();
+    expect(service.get(run.runId)).toMatchObject({ status: "expired", runtimeExpiresAt: deadline });
+    expect(reconcile).toHaveBeenCalledTimes(72);
+    expect(sign).toHaveBeenCalledOnce();
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    await service.stop();
+  });
+
   it("retries failed submitted observation without halting or delaying an active run", async () => {
     const { store } = await openSidekickStore(":memory:", started.toISOString());
     stores.push(store);
@@ -447,6 +565,7 @@ describe("reward run coordinator", () => {
     stores.push(store);
     const live = driver();
     let assessment = { status: "unavailable" } as ConnectionAssessment;
+    let now = started;
     const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
     const service = new RewardRunService({
       repository: store.rewardRuns,
@@ -461,7 +580,7 @@ describe("reward run coordinator", () => {
       facts: async () => facts(),
       refusalChecks: async () => goodRefusal,
       maximumFeeUstx: 1_000n,
-      now: () => started,
+      now: () => now,
     });
     const run = await service.prepare({
       cycle: 141,
@@ -477,11 +596,52 @@ describe("reward run coordinator", () => {
     expect(sign).toHaveBeenCalledTimes(stage === "materialize" ? 0 : 1);
     const deadline = waiting.runtimeExpiresAt;
     assessment = { status: "connected" } as ConnectionAssessment;
+    now = new Date(started.getTime() + 30_000);
     const completed = await settle(service, run.runId);
     expect(completed.status).toBe("completed");
     expect(completed.runtimeExpiresAt).toBe(deadline);
     expect(sign).toHaveBeenCalledTimes(1);
     expect(live.broadcasts).toEqual(["claim-rewards"]);
+  });
+
+  it("keeps the next child's fresh preparation gated after API evidence completes a paced broadcast", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const live = driver();
+    let assessment = { status: "unavailable" } as ConnectionAssessment;
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: {
+        ...live.implementation,
+        async materialize(input) {
+          if (input.child.index > 0) requireConnectedAssessment(assessment);
+          return live.implementation.materialize(input);
+        },
+        async reconcile() {
+          return { status: "confirmed", blockHeight: 9_001, executionSource: "api" };
+        },
+      },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    const run = await service.prepare({ cycle: 141, distribution: 1 });
+    await service.approve(run.runId, run.recipeSha256);
+    await settle(service, run.runId);
+    expect(service.get(run.runId)).toMatchObject({ status: "running", cursor: 1 });
+    expect(service.get(run.runId).children[0]?.executionSource).toBe("api");
+    expect(live.materialized).toEqual(["claim-rewards"]);
+    expect(live.broadcasts).toEqual(["claim-rewards"]);
+    assessment = { status: "connected" } as ConnectionAssessment;
+    expect((await settle(service, run.runId)).status).toBe("completed");
+    expect(live.broadcasts).toEqual([
+      "claim-rewards",
+      "claim-staker-rewards",
+      "claim-staker-rewards",
+    ]);
+    await service.stop();
   });
 
   it.each([

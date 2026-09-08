@@ -1,5 +1,19 @@
 # Unreleased
 
+## Bounded transaction observation (R4, first slice)
+
+- Active runs check broadcast receipts every 30 seconds instead of every five-second recovery
+  tick. Unavailable reads and transient read errors back off through five minutes; Retry-After
+  from the active-run receipt path is capped at the same five-minute maximum. Oversized hints
+  cannot stop observation for the rest of the run. The original runtime cap is still
+  checked every tick, and the next child keeps every fresh pre-sign check.
+- Unchanged canonical-success wallet observations whose additional action check is still pending
+  now back off too. New evidence resets the ordinary cadence; manual refresh remains immediate.
+- Reuses existing in-memory pacing and observation deduplication: no new scheduler, migration,
+  evidence policy, signing/replacement permission or automatic resume. Normal run API pending/404
+  responses remain on the 30-second cadence. Source outages and bounded cooldowns delay visibility of
+  confirmation without inventing a failure or extending authority.
+
 ## API-supported browser-wallet execution (R3b, second commit)
 
 - Browser-wallet actions may accept coherent configured-API execution during a node outage only

@@ -529,10 +529,14 @@ export class WalletIntentService {
   async refresh(id: string, observedAt = new Date().toISOString()): Promise<BrowserWalletIntent> {
     const existing = this.refreshes.get(id);
     if (existing) return existing;
+    const previousObservationId = this.options.store.walletIntents.latestObservation(id)?.id;
     let retryLater = true;
     const refresh = this.refreshIntent(id, observedAt)
       .then((intent) => {
-        retryLater = ["not-found", "unavailable"].includes(intent.verification?.outcome ?? "");
+        retryLater =
+          ["not-found", "unavailable"].includes(intent.verification?.outcome ?? "") ||
+          (intent.verification?.outcome === "canonical-success" &&
+            this.options.store.walletIntents.latestObservation(id)?.id === previousObservationId);
         return intent;
       })
       .finally(() => {

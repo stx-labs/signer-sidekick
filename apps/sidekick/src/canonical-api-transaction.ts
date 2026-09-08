@@ -1,5 +1,10 @@
 import { checkTransactionInCanonicalBlock } from "./canonical-node-block.js";
-import { type StacksApiClient, type StacksNodeClient, UpstreamHttpError } from "./chain-clients.js";
+import {
+  RateLimitedError,
+  type StacksApiClient,
+  type StacksNodeClient,
+  UpstreamHttpError,
+} from "./chain-clients.js";
 
 type CanonicalApiTransactionNode = Pick<
   StacksNodeClient,
@@ -32,10 +37,16 @@ export type CanonicalApiTransactionLookup =
       blockHeight: number;
       indexBlockHash: `0x${string}`;
     }
-  | { status: "unavailable"; reason: string };
+  | { status: "unavailable"; reason: string; retryAfterMs?: number };
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "the source returned no diagnostic detail";
+function unavailable(error: unknown): CanonicalApiTransactionLookup {
+  return {
+    status: "unavailable",
+    reason: error instanceof Error ? error.message : "the source returned no diagnostic detail",
+    ...(error instanceof RateLimitedError && error.retryAfterMs !== null
+      ? { retryAfterMs: error.retryAfterMs }
+      : {}),
+  };
 }
 
 /**
@@ -61,7 +72,7 @@ export async function lookupCanonicalApiTransaction(input: {
     if (error instanceof UpstreamHttpError && error.status === 404) {
       return { status: "not-found" };
     }
-    return { status: "unavailable", reason: message(error) };
+    return unavailable(error);
   }
 
   if (details.tx_id !== input.txId) {
@@ -105,7 +116,7 @@ export async function lookupCanonicalApiTransaction(input: {
         txId: input.txId,
       });
     } catch (error) {
-      if (!input.allowApiEvidence) return { status: "unavailable", reason: message(error) };
+      if (!input.allowApiEvidence) return unavailable(error);
       return { status: "observed", value: { ...receipt, transactionHex: null, source: "api" } };
     }
     if (proof.status !== "included") {
@@ -125,6 +136,6 @@ export async function lookupCanonicalApiTransaction(input: {
       },
     };
   } catch (error) {
-    return { status: "unavailable", reason: message(error) };
+    return unavailable(error);
   }
 }

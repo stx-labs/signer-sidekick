@@ -63,6 +63,14 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
   remain. See ADR 0008 for the operational API trust boundary and retained-conflict rules.
 - Slow reads do not overlap recovery ticks. Shutdown drains in-flight work, and the signature
   boundary rechecks run state, expiry and emergency controls after role reads finish.
+- Broadcast-child reconciliation uses the existing submitted-observation cadence: 30 seconds for
+  pending receipts, exponential backoff through five minutes for unavailable/throwing reads.
+  Source Retry-After is preserved through the API receipt helper and live driver but capped at the
+  same five-minute maximum; it cannot silence future checks or extend the run deadline. Pacing is
+  recorded after an actual read (including a throw), keyed by transaction ID, and pruned against retained running broadcast
+  children. Explicit Resume resets only that child's cooldown; restart resets all in-memory pacing.
+  The five-second coordinator tick still checks expiry, and the next child still requires fresh
+  materialization, role checks and authorization. No new timer, durable scheduling or evidence state.
 - Resume first reconciles the existing attempt. It never blindly signs the next nonce.
 - A predictable contract abort plus the already-proved target state is external completion.
 - Restart resumes from the durable cursor and never re-signs an existing attempt.
@@ -72,7 +80,9 @@ Approval must be used within 30 minutes; a started run expires after 6 hours.
   Submitted-work scans run at most every 30 seconds, independently of five-second run recovery.
   Per-item missing/unavailable results or read errors wait 30, 60, 120, 240, then 300 seconds
   between reads; the cap repeats indefinitely, never retiring the transaction. Observed results
-  reset to 30 seconds. This in-memory pacing is not evidence, resets on restart, and is pruned
+  reset to 30 seconds, except unchanged canonical-success wallet observations whose extra action
+  check remains pending: the existing observation-row deduplication identifies these for backoff.
+  This in-memory pacing is not evidence, resets on restart, and is pruned
   against the durable active set.
   Manual refresh bypasses the due-time check and still coalesces with an in-flight read.
   Positive sweep conflicts retain the wallet authorization; ambiguous missing transactions never

@@ -13,10 +13,13 @@ import {
   REWARD_OPERATION_ADAPTER_REVISIONS,
   type RewardOperationPlan,
 } from "@stx-labs/signer-sidekick-protocol/reward-operation-plan";
-import { isRetryableChainReadError } from "../chain-clients.js";
+import { isRetryableChainReadError, RateLimitedError } from "../chain-clients.js";
 import { withOperatorRequestSignal } from "../request-context.js";
 import type { RewardRunRepository } from "../storage/reward-run-repository.js";
-import { submittedObservationIntervalMs } from "../submitted-observation-cadence.js";
+import {
+  SubmittedObservationCadence,
+  submittedObservationIntervalMs,
+} from "../submitted-observation-cadence.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import type { TransactionBroadcastResult } from "./transaction-broadcaster.js";
 
@@ -94,7 +97,7 @@ export type RewardRunMaterialization =
   | { status: "halt"; reason: string };
 
 export type RewardRunReconciliation =
-  | { status: "pending" }
+  | { status: "pending"; retryLater?: boolean; retryAfterMs?: number }
   | { status: "confirmed"; blockHeight: number; executionSource?: TransactionExecutionSource }
   | { status: "externally-completed"; reason: string; executionSource?: TransactionExecutionSource }
   | {
@@ -398,6 +401,7 @@ export class RewardRunService {
   #recoveryInFlight: Promise<void> | null = null;
   #observationInFlight: Promise<void> | null = null;
   #nextObservationAt = 0;
+  readonly #reconciliationCadence = new SubmittedObservationCadence();
   #closed = false;
 
   constructor(options: RewardRunServiceOptions) {
@@ -669,6 +673,8 @@ export class RewardRunService {
       to: "running",
       now: now.toISOString(),
     });
+    // Explicit resume must re-observe immediately; pacing never supplies signing authority.
+    if (child?.txid) this.#reconciliationCadence.reset(child.txid);
     void this.#queue(() => this.#guardedTick(runId));
     return resumed;
   }
@@ -722,7 +728,16 @@ export class RewardRunService {
   }
 
   async #recover(): Promise<void> {
-    for (const run of this.#options.repository.list(200).reverse()) {
+    const runs = this.#options.repository.list(200).reverse();
+    this.#reconciliationCadence.retain(
+      runs.flatMap((run) => {
+        const child = run.children[run.cursor];
+        return run.status === "running" && child?.status === "broadcast" && child.txid
+          ? [child.txid]
+          : [];
+      }),
+    );
+    for (const run of runs) {
       const now = this.#now();
       if (
         ["paused", "halted"].includes(run.status) &&
@@ -822,15 +837,33 @@ export class RewardRunService {
         this.#halt(run, "Broadcast child is missing its sealed plan");
         return;
       }
-      const reconciliation = await this.#options.driver.reconcile({
-        run,
-        child,
-        plan,
-        txid: child.txid as `0x${string}`,
-        signedAttempt: this.#options.repository
-          .attempts(runId, child.index)
-          .find(({ precomputedTxid }) => precomputedTxid === child.txid),
-      });
+      if (!this.#reconciliationCadence.isDue(child.txid, now.getTime())) return;
+      let retryLater = true;
+      let retryAfterMs: number | null | undefined;
+      let reconciliation: RewardRunReconciliation;
+      try {
+        reconciliation = await this.#options.driver.reconcile({
+          run,
+          child,
+          plan,
+          txid: child.txid as `0x${string}`,
+          signedAttempt: this.#options.repository
+            .attempts(runId, child.index)
+            .find(({ precomputedTxid }) => precomputedTxid === child.txid),
+        });
+        retryLater = reconciliation.status === "pending" && reconciliation.retryLater === true;
+        retryAfterMs = reconciliation.status === "pending" ? reconciliation.retryAfterMs : null;
+      } catch (error) {
+        if (error instanceof RateLimitedError) retryAfterMs = error.retryAfterMs;
+        throw error;
+      } finally {
+        this.#reconciliationCadence.record(
+          child.txid,
+          retryLater,
+          this.#now().getTime(),
+          retryAfterMs,
+        );
+      }
       if (reconciliation.status === "pending") return;
       if (reconciliation.status === "halt") {
         if (reconciliation.executionSource || reconciliation.requiresNodeCorroboration) {

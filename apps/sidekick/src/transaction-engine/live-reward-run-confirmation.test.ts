@@ -206,6 +206,24 @@ describe("reward run confirmation without node txindex", () => {
     expect(runtime.api.getTransactionDetails).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    null,
+    600_000,
+  ])("requests read backoff for an unavailable API with hint %s", async (retryAfterMs) => {
+    const runtime = driver("(ok true)");
+    runtime.api.getTransactionDetails.mockRejectedValue(
+      retryAfterMs === null
+        ? new chainClients.UpstreamUnavailableError("offline")
+        : new chainClients.RateLimitedError("limited", retryAfterMs),
+    );
+    expect(await runtime.value.reconcile(input())).toEqual({
+      status: "pending",
+      retryLater: true,
+      ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+    });
+    expect(runtime.node.getTenureInfo).not.toHaveBeenCalled();
+  });
+
   it("does not complete a node-index result missing its anchored height", async () => {
     const runtime = driver("(ok true)");
     runtime.reader.lookupIndexedTransaction.mockResolvedValue({
@@ -422,7 +440,7 @@ describe("reward run confirmation without node txindex", () => {
     if (kind === "prior-conflict") input.child.failureReason = "Previous node disagreement";
     if (kind === "operation") input.child.operation = "calculate-rewards";
     if (kind === "child-txid") input.child.txid = txId;
-    expect(await runtime.value.reconcile(input)).toEqual({ status: "pending" });
+    expect(await runtime.value.reconcile(input)).toEqual({ status: "pending", retryLater: true });
   });
 
   it("records a canonical API abort even when the optional external-completion read is unavailable", async () => {

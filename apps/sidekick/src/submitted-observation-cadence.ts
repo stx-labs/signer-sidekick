@@ -9,15 +9,22 @@ export class SubmittedObservationCadence {
     return now >= (this.items.get(id)?.nextAt ?? 0);
   }
 
-  record(id: string, retryLater: boolean, now: number): void {
+  reset(id: string): void {
+    this.items.delete(id);
+  }
+
+  record(id: string, retryLater: boolean, now: number, retryAfterMs?: number | null): void {
     const retryDelayMs = retryLater
       ? Math.min(
           maximumRetryIntervalMs,
           Math.max(submittedObservationIntervalMs, (this.items.get(id)?.retryDelayMs ?? 0) * 2),
         )
       : 0;
+    const sourceDelayMs = Number.isFinite(retryAfterMs)
+      ? Math.min(maximumRetryIntervalMs, retryAfterMs ?? 0)
+      : 0;
     this.items.set(id, {
-      nextAt: now + Math.max(submittedObservationIntervalMs, retryDelayMs),
+      nextAt: now + Math.max(submittedObservationIntervalMs, retryDelayMs, sourceDelayMs),
       retryDelayMs,
     });
   }
